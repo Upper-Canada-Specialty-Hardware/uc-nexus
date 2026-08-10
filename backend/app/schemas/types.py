@@ -1383,6 +1383,9 @@ class WarehouseDashboard:
     total_item_count: int
     total_value: float
     unlocated_count: int
+    # Stock pool: units on hand and rows with no aisle. No value - StockItem has no unit cost.
+    stock_item_count: int
+    stock_unlocated_count: int
     pending_pull_shop: int
     pending_pull_shipping: int
     received_last_7_days: int

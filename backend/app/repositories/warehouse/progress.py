@@ -49,6 +49,22 @@ def get_warehouse_dashboard(session: Session) -> dict:
         or 0
     )
 
+    # Stock-pool tiles. No valuation - StockItem carries no unit cost by decision. stock_item_count is
+    # units on hand (the same sense as total_item_count above); stock_unlocated_count is the row count
+    # with no aisle, mirroring unlocated_count on the project side.
+    stock_item_count = session.scalar(select(func.coalesce(func.sum(StockItemModel.quantity), 0))) or 0
+    stock_unlocated_count = (
+        session.scalar(
+            select(func.count())
+            .select_from(StockItemModel)
+            .where(
+                StockItemModel.aisle.is_(None),
+                StockItemModel.quantity > 0,
+            )
+        )
+        or 0
+    )
+
     # Pending pull requests by source
     pending_shop = (
         session.scalar(
@@ -127,6 +143,8 @@ def get_warehouse_dashboard(session: Session) -> dict:
         "total_item_count": int(inv_stats[0]),
         "total_value": float(inv_stats[1]),
         "unlocated_count": int(unlocated_count),
+        "stock_item_count": int(stock_item_count),
+        "stock_unlocated_count": int(stock_unlocated_count),
         "pending_pull_shop": int(pending_shop),
         "pending_pull_shipping": int(pending_shipping),
         "received_last_7_days": int(received_recent),

@@ -81,6 +81,7 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
         inventoryLocationId: item.id,
         adjustment: discrepancy,
         reason: `Spot check: system=${item.quantity}, physical=${physicalNum}`,
+        spotCheck: true,
       },
     });
   };

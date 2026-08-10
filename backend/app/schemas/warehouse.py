@@ -668,6 +668,8 @@ class WarehouseQueries:
                 total_item_count=d["total_item_count"],
                 total_value=d["total_value"],
                 unlocated_count=d["unlocated_count"],
+                stock_item_count=d["stock_item_count"],
+                stock_unlocated_count=d["stock_unlocated_count"],
                 pending_pull_shop=d["pending_pull_shop"],
                 pending_pull_shipping=d["pending_pull_shipping"],
                 received_last_7_days=d["received_last_7_days"],
@@ -1291,10 +1293,16 @@ class WarehouseMutations:
     # Admin Corrections
     @strawberry.mutation
     def adjust_inventory_quantity(
-        self, info: strawberry.Info, inventory_location_id: strawberry.ID, adjustment: int, reason: str
+        self,
+        info: strawberry.Info,
+        inventory_location_id: strawberry.ID,
+        adjustment: int,
+        reason: str,
+        spot_check: bool = False,
     ) -> InventoryLocation:
         """Move a project inventory row's count by a delta, with a reason, writing an ADJUSTMENT
-        audit row.
+        audit row - or a SPOT_CHECK one when `spot_check` is set (the physical-count reconciliation
+        path, whose audit detail also carries systemQuantity/physicalQuantity).
 
         Every one of those rows said "Admin/Manager" until #427, whoever actually made the change:
         the repository hardcoded it and there was no parameter to pass the truth through. `auditLog`,
@@ -1304,7 +1312,12 @@ class WarehouseMutations:
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             result = warehouse_repository.adjust_inventory_quantity(
-                session, uuid.UUID(str(inventory_location_id)), adjustment, reason, performed_by=actor
+                session,
+                uuid.UUID(str(inventory_location_id)),
+                adjustment,
+                reason,
+                performed_by=actor,
+                spot_check=spot_check,
             )
             session.commit()
             session.refresh(result)

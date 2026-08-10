@@ -29,7 +29,7 @@ export const GET_INVENTORY_ROWS = gql`
   query GetInventoryRows($projectId: ID, $warehouseId: ID) {
     inventoryRows(projectId: $projectId, warehouseId: $warehouseId) {
       inventoryLocation {
-        id projectId poLineItemId receiveLineItemId stockItemId
+        id projectId poLineItemId receiveLineItemId stockItemId warehouseId
         hardwareCategory productCode quantity deficientQuantity available
         aisle row bay receivedAt createdAt updatedAt
       }
@@ -293,6 +293,8 @@ export const GET_WAREHOUSE_DASHBOARD = gql`
       totalItemCount
       totalValue
       unlocatedCount
+      stockItemCount
+      stockUnlocatedCount
       pendingPullShop
       pendingPullShipping
       backOrderedCount
@@ -309,6 +311,7 @@ export const GET_STOCK_ITEMS = gql`
     $aisle: String
     $onlyDeficient: Boolean
     $warehouseId: ID
+    $onlyUnlocated: Boolean
   ) {
     stockItems(
       productCodeContains: $productCodeContains
@@ -316,6 +319,7 @@ export const GET_STOCK_ITEMS = gql`
       aisle: $aisle
       onlyDeficient: $onlyDeficient
       warehouseId: $warehouseId
+      onlyUnlocated: $onlyUnlocated
     ) {
       id
       warehouseId
@@ -392,8 +396,18 @@ export const GET_DEFICIENCY_REVIEWS = gql`
 `;
 
 export const ADJUST_INVENTORY_QUANTITY = gql`
-  mutation AdjustInventoryQuantity($inventoryLocationId: ID!, $adjustment: Int!, $reason: String!) {
-    adjustInventoryQuantity(inventoryLocationId: $inventoryLocationId, adjustment: $adjustment, reason: $reason) {
+  mutation AdjustInventoryQuantity(
+    $inventoryLocationId: ID!
+    $adjustment: Int!
+    $reason: String!
+    $spotCheck: Boolean
+  ) {
+    adjustInventoryQuantity(
+      inventoryLocationId: $inventoryLocationId
+      adjustment: $adjustment
+      reason: $reason
+      spotCheck: $spotCheck
+    ) {
       id
       projectId
       poLineItemId

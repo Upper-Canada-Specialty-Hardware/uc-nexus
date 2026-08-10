@@ -58,6 +58,7 @@ class StockQueries:
         aisle: str | None = None,
         only_deficient: bool = False,
         warehouse_id: strawberry.ID | None = None,
+        only_unlocated: bool = False,
     ) -> list[StockItem]:
         with SessionLocal() as session:
             rows = stock_repository.get_stock_items(
@@ -67,6 +68,7 @@ class StockQueries:
                 aisle=aisle,
                 only_deficient=only_deficient,
                 warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
+                only_unlocated=only_unlocated,
             )
             return [stock_item_to_type(r) for r in rows]
 

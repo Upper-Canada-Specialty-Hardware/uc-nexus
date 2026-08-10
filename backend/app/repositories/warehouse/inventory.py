@@ -59,7 +59,7 @@ def get_unlocated_inventory(
 
 
 def adjust_inventory_quantity(
-    session: Session, inv_id: uuid.UUID, adjustment: int, reason: str, *, performed_by: str
+    session: Session, inv_id: uuid.UUID, adjustment: int, reason: str, *, performed_by: str, spot_check: bool = False
 ) -> InventoryLocationModel:
     """Adjust the quantity of an InventoryLocation by a positive or negative amount.
 
@@ -67,7 +67,12 @@ def adjust_inventory_quantity(
     and hardcode "Admin/Manager" on its audit row, so every quantity adjustment in the system was
     filed under an admin no matter who made it - and, worse, the resolver had no way to pass the
     truth through even once somebody noticed. Requiring it means a new caller has to answer the
-    question rather than inherit a wrong answer."""
+    question rather than inherit a wrong answer.
+
+    `spot_check` marks a physical-count reconciliation: the audit row's action is SPOT_CHECK rather
+    than ADJUSTMENT and its detail carries systemQuantity/physicalQuantity, so the history render can
+    show what was counted against what the system held. The SPOT_CHECK enum value existed unused
+    until this - the spot-check UI wrote a plain ADJUSTMENT before."""
     il = session.get(InventoryLocationModel, inv_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inv_id} not found")
@@ -89,19 +94,25 @@ def adjust_inventory_quantity(
     old_quantity = il.quantity
     il.quantity = new_quantity
 
+    detail = {
+        "oldQuantity": old_quantity,
+        "newQuantity": new_quantity,
+        "adjustment": adjustment,
+        "reason": reason,
+    }
+    if spot_check:
+        # The counted-vs-system pair the SPOT_CHECK history render reads.
+        detail["systemQuantity"] = old_quantity
+        detail["physicalQuantity"] = new_quantity
+
     _log_audit_event(
         session,
         project_id=il.project_id,
         entity_type=AuditEntityType.INVENTORY_LOCATION,
         entity_id=il.id,
-        action=AuditAction.ADJUSTMENT,
+        action=AuditAction.SPOT_CHECK if spot_check else AuditAction.ADJUSTMENT,
         performed_by=performed_by,
-        detail={
-            "oldQuantity": old_quantity,
-            "newQuantity": new_quantity,
-            "adjustment": adjustment,
-            "reason": reason,
-        },
+        detail=detail,
     )
 
     return il
