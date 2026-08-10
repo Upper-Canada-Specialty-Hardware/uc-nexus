@@ -312,6 +312,27 @@ Until that is fixed, seed inventory one product at a time: register a single-lin
 approve it, repeat. Two of those took about ten minutes end to end and were enough to drive a
 shop-assembly request and two shipping-out requests.
 
+**A USD-currency GP vendor fails registration with `taMCCurrencyValidate` error state 961.** Hit
+2026-08-10 on pr-569 with BANNER SOLUTIONS (currency showed USD, tax detail disabled as
+"Not applicable for a foreign-currency PO"): the push died in `taPoHdr` with
+`An error occurred in the taMCCurrencyValidate proc` - TUBC has no exchange setup for a
+foreign-currency PO. Pick a CAD vendor instead (ALLMAR INC. worked on the same PO seconds later).
+The dialog's Currency field tells you before you submit.
+
+**The register dialog's `Buyer (you)` field is the authority on your buyer identity, not the User
+Management grid.** On pr-569 the grid's GP BUYER column showed `BCPurchasing` for the signed-in
+account while the dialog submitted as `mira` - so the buyer-assignment fix (Admin -> Buyers) must
+target the id the DIALOG shows, or the alert stays. Assign the dialog's id to the project and the
+alert clears on reopen.
+
+**Receiving is now draft-first with a required packing slip and a manager approval gate.** The
+Receive wizard's location step is gone: select POs -> quantities -> ATTACH A PACKING SLIP (any
+image/pdf; required, submit stays blocked without it) -> Submit for Approval. Nothing posts to GP or
+lands in inventory until a Warehouse Manager approves it at `/app/warehouse/receive-approvals`
+(Approve & Post to GP -> confirm). Approval posts the GP receipt and the units land UNLOCATED - they
+appear on Put Away for aisle/row/bay assignment. Budget one extra hop when seeding: receive, approve,
+then put away.
+
 Two other things worth knowing when GP is refusing outright:
 
 - **There is no way to fake a placed PO, and that is deliberate (#509).** `markPoAsOrdered` used to
@@ -398,6 +419,10 @@ caught two failures that all three stacked PRs were reporting as clean:
 ### General Rules
 - Always `take_snapshot` after any navigation or click before acting on the page.
 - Prefer `fill_form` (batch) over individual `fill` calls — individual fills can bleed values into adjacent fields.
+- **`fill` / `fill_form` APPEND to a MUI number input that already holds a value** (a spinbutton
+  defaulted to `2` filled with `1` ends up `21`, over max, submit disabled). Seen on every default-
+  quantity dialog 2026-08-10. Set such fields via `evaluate_script` with the native value setter +
+  an `input` event instead, then re-read the value before submitting.
 - Use `take_screenshot` when you need to verify visual rendering (layout, colors, spacing).
 
 ### MUI Select Dropdowns
