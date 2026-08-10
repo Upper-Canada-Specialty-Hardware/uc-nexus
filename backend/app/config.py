@@ -24,9 +24,53 @@ TESTING_ENABLED = os.getenv("TESTING_ENABLED", "").lower() in ("true", "1", "yes
 # stores nothing replayable. Blank disables the secret path, leaving only the admin path.
 TESTING_SIGN_IN_SECRET_HASH = os.getenv("TESTING_SIGN_IN_SECRET_HASH", "")
 
+# The same digest, but the copy that PREVIEW environments inherit - and the reason a fresh PR
+# environment is testable without anybody setting a variable on it.
+#
+# The direct one above cannot do that job. It must stay unset in production (its preimage mints a REAL
+# Clerk session for a real staff account, which is what #422/#424 shut off), and Railway clones a
+# preview from production, so there is nothing there for a preview to inherit. Every PR environment
+# therefore needed the variable set on it by hand, which is one manual step per PR standing between
+# "PR opened" and "an agent can test it".
+#
+# So this is the RELAY_SEED_SECRET_HASH shape, for the same reason and with the same safeguard: it
+# lives on PRODUCTION, sits inert there because `testing_sign_in_secret_hash()` refuses to read it in
+# production, and is inherited by every preview created afterwards.
+#
+# What it does mean: one secret opens the sign-in bootstrap on every preview environment at once,
+# rather than one secret per environment. That is the same trade RELAY_SEED_SECRET_HASH already makes,
+# and it is bounded the same way - previews hold disposable data, and the sign-in route is still gated
+# on TESTING_ENABLED first. Rotate it here and every preview follows on its next deploy.
+PREVIEW_TESTING_SIGN_IN_SECRET_HASH = os.getenv("PREVIEW_TESTING_SIGN_IN_SECRET_HASH", "")
+
 # Railway sets this to the environment's name ("production", "pr-414", ...). Empty off Railway.
 # app/services/relay_seed.py uses it as the production kill-switch for credential seeding.
 RAILWAY_ENVIRONMENT_NAME = os.getenv("RAILWAY_ENVIRONMENT_NAME", "")
+
+
+def is_production_environment() -> bool:
+    """Whether this deployment is the production Railway environment.
+
+    Named off RAILWAY_ENVIRONMENT_NAME rather than inferred from a URL or a flag, so it cannot be
+    turned off by a variable somebody sets on production by mistake. Empty off Railway, which reads as
+    "not production" - correct for a local checkout.
+    """
+    return RAILWAY_ENVIRONMENT_NAME.strip().lower() == "production"
+
+
+def testing_sign_in_secret_hash() -> str:
+    """The digest /testing/clerk-sign-in accepts, or "" when the secret path is closed.
+
+    Resolved at call time, not import time, so a test can set the environment without reimporting.
+    An explicit per-environment `TESTING_SIGN_IN_SECRET_HASH` always wins, which keeps the documented
+    manual override working and lets one environment carry its own secret.
+    """
+    if TESTING_SIGN_IN_SECRET_HASH.strip():
+        return TESTING_SIGN_IN_SECRET_HASH.strip()
+    if PREVIEW_TESTING_SIGN_IN_SECRET_HASH.strip() and not is_production_environment():
+        return PREVIEW_TESTING_SIGN_IN_SECRET_HASH.strip()
+    return ""
+
 
 # SHA-256 hex of the workstation relay's long-lived Bearer secret - the same digest already sitting in
 # production's relay_installs.secret_hash, copied from Admin -> Relay Installs. Set ONLY on the Railway

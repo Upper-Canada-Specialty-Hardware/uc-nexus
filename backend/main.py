@@ -469,16 +469,20 @@ def get_clerk_sign_in_token(request: Request, email: str = "jayp@ucsh.com"):
 
     import httpx
 
-    from app.config import CLERK_SECRET_KEY, TESTING_ENABLED, TESTING_SIGN_IN_SECRET_HASH
+    from app.config import CLERK_SECRET_KEY, TESTING_ENABLED, testing_sign_in_secret_hash
 
     if not TESTING_ENABLED:
         return JSONResponse(status_code=403, content={"error": "Testing is not enabled"})
 
+    # Resolved rather than read: a preview environment inherits the digest from production under a
+    # different name and would otherwise need it set by hand, one manual step per PR. Production
+    # itself still resolves to "" no matter which variable is present there.
+    expected_hash = testing_sign_in_secret_hash()
     presented = (request.headers.get("x-testing-secret") or "").strip()
-    secret_ok = bool(TESTING_SIGN_IN_SECRET_HASH) and bool(presented)
+    secret_ok = bool(expected_hash) and bool(presented)
     if secret_ok:
         digest = hashlib.sha256(presented.encode("utf-8")).hexdigest()
-        secret_ok = hmac.compare_digest(digest, TESTING_SIGN_IN_SECRET_HASH.strip().lower())
+        secret_ok = hmac.compare_digest(digest, expected_hash.lower())
     if not secret_ok:
         try:
             require_admin_request(request)
