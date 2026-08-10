@@ -235,7 +235,7 @@ export function DraftCard({
   const [rowMenu, setRowMenu] = useState<{ anchor: HTMLElement; line: DraftLine } | null>(null);
 
   return (
-    <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1.5, p: 2, mb: 2, opacity: draft.included ? 1 : 0.6 }}>
+    <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 2, mb: 2, opacity: draft.included ? 1 : 0.6 }}>
       {/* Header: include toggle + editable label + PO total + card menu */}
       <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 1.5, mb: 2 }}>
         <FormControlLabel
@@ -257,7 +257,9 @@ export function DraftCard({
         />
         <Box sx={{ textAlign: 'right', ml: 'auto' }}>
           <Typography sx={microLabelSx}>PO total</Typography>
-          <Typography variant="subtitle1" sx={{ ...tabularSx, fontWeight: 700 }}>
+          {/* Card's gauge value: the DESIGN ramp's title step (1.25rem), not subtitle1's off-ramp
+              1rem. component="p" keeps it out of the heading outline. */}
+          <Typography variant="h6" component="p" sx={{ ...tabularSx, fontWeight: 700 }}>
             ${poTotal.toFixed(2)}
           </Typography>
         </Box>

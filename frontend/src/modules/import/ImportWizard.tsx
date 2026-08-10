@@ -1676,7 +1676,7 @@ export default function ImportWizard({
 
                 {purpose === 'po' && (
                   <Box sx={{ mb: 1 }}>
-                    <Typography variant="body1">
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
                       {includedDraftCount} Purchase Order draft(s)
                     </Typography>
                   </Box>
@@ -1684,7 +1684,7 @@ export default function ImportWizard({
 
                 {purpose === 'shipping' && (
                   <Box sx={{ mb: 1 }}>
-                    <Typography variant="body1">
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
                       1 Shipping Out Request across {requestLines.length} line(s) (number assigned on
                       finalize)
                     </Typography>
@@ -1693,7 +1693,7 @@ export default function ImportWizard({
 
                 {purpose === 'assembly' && (
                   <Box sx={{ mb: 1 }}>
-                    <Typography variant="body1">
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
                       1 Shop Assembly Request across {requestLines.length} line(s) (number assigned on
                       finalize)
                     </Typography>
