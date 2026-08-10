@@ -43,6 +43,7 @@ import type {
   ImportPurpose,
   InventoryAvailabilityRow,
   ReconciliationRow,
+  SelectionMode,
 } from './types';
 import {
   aggregationKey,
@@ -63,6 +64,7 @@ import { FadeIn, StaggerItem, StaggerList } from '../../motion';
 import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
 import SelectOpeningsStep from './SelectOpeningsStep';
+import SelectHardwareStep from './SelectHardwareStep';
 import ReconciliationStep from './ReconciliationStep';
 import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
@@ -83,7 +85,7 @@ import {
 
 // ---- Local Types ----
 
-type StepId = 'upload' | 'purpose' | 'openings' | 'reconciliation'
+type StepId = 'upload' | 'purpose' | 'openings' | 'hardware' | 'reconciliation'
   | 'classification' | 'purchase-orders' | 'shop-assembly'
   | 'shipping-prs' | 'finalize';
 
@@ -163,6 +165,10 @@ interface ImportWizardProps {
   /** Preselect the purpose when the wizard was opened from somewhere that already knows it - the
    *  keep-or-ship decision's "Ship out now" being the only such caller today. */
   initialPurpose?: ImportPurpose;
+  /** #565: which PO pathway to run. 'hardware' hides the Purpose step (purpose is locked to po) and
+   *  swaps Select Openings for Select Hardware - the buyer picks products, not doors. Defaults to the
+   *  by-opening pathway. */
+  initialSelectionMode?: SelectionMode;
   /** Skip the upload step by loading the project's last persisted schedule, when there is one. Same
    *  caller: they came from a decision about hardware on an existing project, so the schedule that
    *  hardware was bought against is by definition already imported. */
@@ -174,6 +180,7 @@ export default function ImportWizard({
   project,
   onClose,
   initialPurpose,
+  initialSelectionMode,
   autoStartFromLatest,
 }: ImportWizardProps) {
   const { showToast } = useToast();
@@ -184,17 +191,26 @@ export default function ImportWizard({
   // Step tracking
   const [activeStepId, setActiveStepId] = useState<StepId>('upload');
 
+  // #565: the pathway is fixed for the life of this open - the module remounts the wizard per entry,
+  // so a derived constant is enough and there is no in-wizard control to switch it. 'hardware' hides
+  // the Purpose step and swaps Select Openings for Select Hardware.
+  const selectionMode: SelectionMode = initialSelectionMode ?? 'openings';
+  const isHardwareMode = selectionMode === 'hardware';
+
   // Selected project context (from prop)
   const existingProjectId = project.id;
   const existingProjectName = project.description || project.projectId;
   const isReimport = project.openingCount > 0;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Step 2 state
-  const [purpose, setPurpose] = useState<ImportPurpose | null>(null);
+  // Step 2 state. #565: hardware mode locks the purpose to po (its step is hidden), so it seeds po
+  // rather than null - every downstream `purpose === 'po'` branch then holds without a Purpose step.
+  const [purpose, setPurpose] = useState<ImportPurpose | null>(isHardwareMode ? 'po' : null);
 
-  // Step 3 state
+  // Step 3 state. Openings mode selects by door; hardware mode (#565) selects by product, keyed by
+  // itemGroupKey (`hardware_category|product_code`). Only one is live per pathway.
   const [selectedOpenings, setSelectedOpenings] = useState<Set<string>>(new Set());
+  const [selectedProductKeys, setSelectedProductKeys] = useState<Set<string>>(new Set());
 
   // Action step state
   // #570: the PO drafts the buyer is composing. Seeded one-per-manufacturer from the aggregated
@@ -242,11 +258,15 @@ export default function ImportWizard({
   // ---- Dynamic Steps ----
 
   const steps = useMemo<StepDescriptor[]>(() => {
-    const base: StepDescriptor[] = [
-      { id: 'upload', label: 'Upload File' },
-      { id: 'purpose', label: 'Purpose' },
-      { id: 'openings', label: 'Select Openings' },
-    ];
+    const base: StepDescriptor[] = [{ id: 'upload', label: 'Upload File' }];
+    // #565: hardware mode has no Purpose step (purpose is locked to po) and picks products instead of
+    // openings. The by-opening pathway keeps its Purpose then Select Openings pair.
+    if (isHardwareMode) {
+      base.push({ id: 'hardware', label: 'Select Hardware' });
+    } else {
+      base.push({ id: 'purpose', label: 'Purpose' });
+      base.push({ id: 'openings', label: 'Select Openings' });
+    }
     // Reconciliation compares the incoming schedule against what the project has already committed,
     // so on a project with no persisted openings it has nothing to compare and rendered a single
     // "New project - all items will be ordered fresh" banner over an otherwise empty full-screen
@@ -269,19 +289,21 @@ export default function ImportWizard({
     if (purpose === 'shipping') base.push({ id: 'shipping-prs', label: 'Shipping Out' });
     base.push({ id: 'finalize', label: 'Finalize' });
     return base;
-  }, [purpose]);
+  }, [purpose, isReimport, isHardwareMode]);
 
   // Guard against orphaned step (e.g. user unchecks a purpose while on that step).
   // Derived via useMemo instead of a useEffect+setState to avoid cascading renders.
   const effectiveStepId = useMemo<StepId>(
-    () =>
-      // Falls back to 'openings' rather than 'reconciliation': reconciliation is now conditional, so
-      // naming it here could orphan the orphan-guard itself on a first import. 'openings' is in every
-      // variant of the stepper.
-      activeStepId !== 'upload' && !steps.find((s) => s.id === activeStepId)
-        ? 'openings'
-        : activeStepId,
-    [steps, activeStepId],
+    () => {
+      // Falls back to the pathway's step-2 rather than 'reconciliation': reconciliation is
+      // conditional, so naming it here could orphan the orphan-guard itself on a first import.
+      // #565: in hardware mode 'openings' is not in the stepper at all, so the fallback is 'hardware'.
+      const fallback: StepId = isHardwareMode ? 'hardware' : 'openings';
+      return activeStepId !== 'upload' && !steps.find((s) => s.id === activeStepId)
+        ? fallback
+        : activeStepId;
+    },
+    [steps, activeStepId, isHardwareMode],
   );
 
   const activeStepIndex = useMemo(
@@ -375,9 +397,16 @@ export default function ImportWizard({
   const openings = parsed?.openings ?? [];
   const hardwareItems = parsed?.hardwareItems ?? [];
 
+  // #565: the one fork the two pathways share. Openings mode keeps the items whose opening was
+  // picked; hardware mode keeps the items whose product was picked. Everything downstream
+  // (runReconcile, the recon rollup, classification rows, vendorGroups/draftGroups, finalize refs)
+  // derives from this, so filtering by product instead of by opening is the whole of the difference.
   const selectedHardwareItems = useMemo(
-    () => hardwareItems.filter((hi) => selectedOpenings.has(hi.opening_number)),
-    [hardwareItems, selectedOpenings],
+    () =>
+      isHardwareMode
+        ? hardwareItems.filter((hi) => selectedProductKeys.has(itemGroupKey(hi)))
+        : hardwareItems.filter((hi) => selectedOpenings.has(hi.opening_number)),
+    [hardwareItems, selectedOpenings, selectedProductKeys, isHardwareMode],
   );
 
   // Pre-reconciliation aggregated items (for display in combined openings/hardware step)
@@ -696,8 +725,11 @@ export default function ImportWizard({
   }, [open, autoStartFromLatest, hydratedFromPersisted, purpose, activeStepId]);
 
   const resetDownstreamWizardState = useCallback(() => {
-    setPurpose(null);
+    // #565: hardware mode has no Purpose step to re-answer, so a reset holds the locked po rather
+    // than dropping to null and stranding every `purpose === 'po'` branch downstream.
+    setPurpose(isHardwareMode ? 'po' : null);
     setSelectedOpenings(new Set());
+    setSelectedProductKeys(new Set());
     setDraftGroups([]);
     setSeededDraftSignature(null);
     setUnitCostOverrides(new Map());
@@ -712,7 +744,7 @@ export default function ImportWizard({
     setSelectedReconItems(new Set());
     setMutationError(null);
     setFinalizeResult(null);
-  }, []);
+  }, [isHardwareMode]);
 
   const handleResetSource = useCallback(() => {
     parser.reset();
@@ -782,7 +814,8 @@ export default function ImportWizard({
       return;
     }
 
-    if (effectiveStepId === 'openings') {
+    // #565: leaving the pathway's step-2 (openings, or hardware) is what kicks off reconciliation.
+    if (effectiveStepId === 'openings' || effectiveStepId === 'hardware') {
       setSelectedReconItems(new Set());
       runReconcile();
     }
@@ -1090,6 +1123,8 @@ export default function ImportWizard({
   const canProceedStep0 = parser.state === 'done';
   const canProceedStep1 = purpose !== null;
   const canProceedStep2 = selectedOpenings.size > 0;
+  // #565: hardware mode's step-2 gate - at least one product picked.
+  const canProceedHardware = selectedProductKeys.size > 0;
   // #567: over-ordering no longer gates Next - it warns at the modal (see reconOverOrderProducts and
   // handleNext). The PO purpose only requires a non-empty selection here.
   const canProceedStep3 = useMemo(() => {
@@ -1171,6 +1206,9 @@ export default function ImportWizard({
       break;
     case 'openings':
       canProceedCurrentStep = canProceedStep2;
+      break;
+    case 'hardware':
+      canProceedCurrentStep = canProceedHardware;
       break;
     case 'reconciliation':
       canProceedCurrentStep = canProceedStep3;
@@ -1508,6 +1546,15 @@ export default function ImportWizard({
             />
           )}
 
+          {/* ============ Step: Select Hardware (#565) ============ */}
+          {effectiveStepId === 'hardware' && (
+            <SelectHardwareStep
+              hardwareItems={hardwareItems}
+              selectedProductKeys={selectedProductKeys}
+              onSelectionChange={setSelectedProductKeys}
+            />
+          )}
+
           {/* ============ Step: Reconciliation ============ */}
           {effectiveStepId === 'reconciliation' && (
             <ReconciliationStep
@@ -1620,7 +1667,9 @@ export default function ImportWizard({
                   {existingProjectName}
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: 2 }}>
-                  {selectedOpenings.size} openings | {selectedHardwareItems.length} hardware items
+                  {isHardwareMode
+                    ? `${selectedProductKeys.size} products | ${selectedHardwareItems.length} hardware items`
+                    : `${selectedOpenings.size} openings | ${selectedHardwareItems.length} hardware items`}
                 </Typography>
 
                 <Divider sx={{ my: 2 }} />

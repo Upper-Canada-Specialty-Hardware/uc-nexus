@@ -1151,6 +1151,10 @@ function POListPage() {
           setChooserOpen(false);
           navigate('/app/import?purpose=po');
         }}
+        onFromHardware={() => {
+          setChooserOpen(false);
+          navigate('/app/import?purpose=po&mode=hardware');
+        }}
         onManual={() => {
           setChooserOpen(false);
           setCreateOpen(true);

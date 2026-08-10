@@ -305,11 +305,13 @@ function renderWizard(
     project = firstImportProject,
     mocks = [],
     initialPurpose,
+    initialSelectionMode,
     autoStartFromLatest,
   }: {
     project?: Project;
     mocks?: MockedResponse[];
     initialPurpose?: 'po' | 'assembly' | 'shipping';
+    initialSelectionMode?: 'openings' | 'hardware';
     autoStartFromLatest?: boolean;
   } = {},
 ) {
@@ -324,6 +326,7 @@ function renderWizard(
               project={project}
               onClose={onClose}
               initialPurpose={initialPurpose}
+              initialSelectionMode={initialSelectionMode}
               autoStartFromLatest={autoStartFromLatest}
             />
           </ToastProvider>
@@ -516,6 +519,74 @@ describe('ImportWizard step transitions', () => {
     await flushApollo();
 
     expect(screen.getByRole('heading', { name: 'Reconciliation' })).toBeInTheDocument();
+  });
+});
+
+// #565: the hardware pathway is the PO purpose reached by product rather than by door. The Purpose
+// step is gone (purpose is locked to po) and Select Openings is replaced by Select Hardware; every
+// downstream step is the same as the by-opening PO flow.
+describe('ImportWizard hardware mode', () => {
+  const HARDWARE_FIRST_IMPORT_STEPS = [
+    'Upload File',
+    'Select Hardware',
+    'Classification',
+    'Purchase Orders',
+    'Finalize',
+  ];
+
+  it('hides the Purpose step and swaps Select Openings for Select Hardware', () => {
+    renderWizard({ initialSelectionMode: 'hardware' });
+
+    // No Purpose step, no Select Openings; the product picker takes their place. Classification and
+    // Purchase Orders still follow because the purpose is po.
+    expect(stepLabels()).toEqual(HARDWARE_FIRST_IMPORT_STEPS);
+    expect(screen.queryByText('Select Openings')).not.toBeInTheDocument();
+  });
+
+  it('keeps Reconciliation on a re-import, still with no Purpose step', async () => {
+    renderWizard({
+      project: reimportProject,
+      mocks: reimportMocks,
+      initialSelectionMode: 'hardware',
+    });
+    await flushApollo();
+
+    expect(stepLabels()).toEqual([
+      'Upload File',
+      'Select Hardware',
+      'Reconciliation',
+      'Classification',
+      'Purchase Orders',
+      'Finalize',
+    ]);
+  });
+
+  it('blocks Next on Select Hardware until at least one product is picked', () => {
+    renderWizard({ initialSelectionMode: 'hardware' });
+
+    // Parsed on the upload step, so Next is live; stepping forward lands on the product picker.
+    clickNext();
+
+    expect(screen.getByRole('heading', { name: 'Hardware' })).toBeInTheDocument();
+    // Two products in the fixture (HNG-100 hinges, LCK-200 locks), one row each.
+    expect(screen.getByText('0 of 2 selected')).toBeInTheDocument();
+    expect(nextButton()).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    expect(screen.getByText('2 of 2 selected')).toBeInTheDocument();
+    expect(nextButton()).toBeEnabled();
+  });
+
+  it('carries the product selection through to Classification', () => {
+    renderWizard({ initialSelectionMode: 'hardware' });
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+
+    // No Reconciliation on a first import, so the product pick lands straight on Classification, and
+    // both selected products are there to classify.
+    expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
+    expect(screen.getByText('0 of 2 items classified')).toBeInTheDocument();
   });
 });
 

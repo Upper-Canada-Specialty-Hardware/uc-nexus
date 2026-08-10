@@ -8,6 +8,11 @@ export function aggregationKey(hi: { opening_number: string; product_code: strin
 
 export type ImportPurpose = 'po' | 'assembly' | 'shipping';
 
+// #565: how a PO import picks what to order. 'openings' walks the door schedule and selects openings;
+// 'hardware' selects products directly and takes quantities from the schedule. Both feed the same PO
+// drafts output - the only difference is which axis of the same opening-level items gets filtered.
+export type SelectionMode = 'openings' | 'hardware';
+
 /**
  * One (hardware_category, product_code) row of `projectInventoryAvailability` (#342):
  * `availableQuantity = onHandQuantity - deficientQuantity - reservedQuantity`, the number the
