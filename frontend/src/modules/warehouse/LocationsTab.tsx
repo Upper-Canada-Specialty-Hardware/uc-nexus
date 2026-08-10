@@ -31,7 +31,6 @@ import LocationActionDialog, {
 } from './LocationActionDialog';
 import LocationAuditStrip from './LocationAuditStrip';
 import TransferDialog, { type TransferSource } from './TransferDialog';
-import { leafSuffix } from '../../utils/leaf';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { springs } from '../../motion';
 
@@ -69,20 +68,6 @@ interface ContentsInventoryItem {
   unitCost: number | null;
 }
 
-interface ContentsOpeningItem {
-  id: string;
-  warehouseId: string | null;
-  openingNumber: string;
-  building: string | null;
-  floor: string | null;
-  leaf: number | null;
-  state: string;
-  quantity: number;
-  aisle: string | null;
-  row: string | null;
-  bay: string | null;
-}
-
 interface ContentsStockItem {
   id: string;
   warehouseId: string | null;
@@ -99,7 +84,6 @@ interface ContentsStockItem {
 interface LocationContentsData {
   locationContents: {
     inventoryItems: ContentsInventoryItem[];
-    openingItems: ContentsOpeningItem[];
     stockItems: ContentsStockItem[];
   };
 }
@@ -292,7 +276,6 @@ function ContentsPanel({
   });
 
   const invItems = data?.locationContents?.inventoryItems ?? [];
-  const oiItems = data?.locationContents?.openingItems ?? [];
   const stockItems = data?.locationContents?.stockItems ?? [];
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -331,18 +314,6 @@ function ContentsPanel({
         bay: i.inventoryLocation.bay,
       }),
     );
-    oiItems.forEach((o) =>
-      map.set(o.id, {
-        id: o.id,
-        kind: 'opening',
-        productCode: o.openingNumber,
-        quantity: o.quantity,
-        warehouseId: o.warehouseId,
-        aisle: o.aisle,
-        row: o.row,
-        bay: o.bay,
-      }),
-    );
     stockItems.forEach((s) =>
       map.set(s.id, {
         id: s.id,
@@ -356,7 +327,7 @@ function ContentsPanel({
       }),
     );
     return map;
-  }, [invItems, oiItems, stockItems]);
+  }, [invItems, stockItems]);
 
   const bulkTargets = useMemo(
     () => Array.from(selectedIds).map((id) => allTargetsById.get(id)).filter(Boolean) as LocationActionTarget[],
@@ -372,7 +343,7 @@ function ContentsPanel({
     setDialog({ mode, targets: bulkTargets });
   };
 
-  const totalCount = invItems.length + oiItems.length + stockItems.length;
+  const totalCount = invItems.length + stockItems.length;
 
   return (
     <Paper variant="outlined" sx={{ p: 2, position: 'sticky', top: 16, minWidth: 0 }}>
@@ -491,52 +462,6 @@ function ContentsPanel({
                         bay: il.bay,
                       })
                     }
-                  />
-                </Box>
-              );
-            })}
-          </Stack>
-          <Divider sx={{ my: 1.5 }} />
-        </>
-      )}
-
-      {oiItems.length > 0 && (
-        <>
-          <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
-            Opening Items ({oiItems.length})
-          </Typography>
-          <Stack spacing={0.5}>
-            {oiItems.map((oi) => {
-              const target: LocationActionTarget = allTargetsById.get(oi.id)!;
-              return (
-                <Box
-                  key={oi.id}
-                  sx={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 1,
-                    p: 0.5,
-                    borderRadius: 1,
-                    '&:hover': { bgcolor: 'action.hover' },
-                  }}
-                >
-                  <Checkbox
-                    size="small"
-                    checked={selectedIds.has(oi.id)}
-                    onChange={() => toggleSelect(oi.id)}
-                  />
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography noWrap sx={monoSx}>{oi.openingNumber}{leafSuffix(oi.leaf)}</Typography>
-                    <Typography variant="caption" color="text.secondary" sx={tabularSx}>
-                      Qty {oi.quantity} · {oi.building ?? ''} {oi.floor ?? ''}
-                    </Typography>
-                  </Box>
-                  <Chip label={oi.state.replace('_', ' ')} size="small" variant="outlined" />
-                  <RowActionMenu
-                    showAdjust={false}
-                    onMove={() => openSingle(target, 'move')}
-                    onAdjust={() => {}}
-                    onUnlocate={() => openSingle(target, 'unlocate')}
                   />
                 </Box>
               );

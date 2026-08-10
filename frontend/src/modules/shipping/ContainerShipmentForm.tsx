@@ -26,7 +26,6 @@ import {
   type DeliveryDetails,
 } from './deliveryRequest';
 import { CONTAINER_TYPE_LABEL, isStacked, type Container } from './staging';
-import { leafSuffix } from '../../utils/leaf';
 import { microLabelSx, monoSx } from '../../theme';
 
 interface Props {
@@ -59,17 +58,10 @@ export default function ContainerShipmentForm({
   const [details, setDetails] = useState<DeliveryDetails>(EMPTY_DELIVERY_DETAILS);
   const [error, setError] = useState<string | null>(null);
 
-  const totals = useMemo(() => {
-    const leaves = containers.reduce(
-      (n, c) => n + c.items.filter((i) => i.itemType === 'OPENING_ITEM').length,
-      0,
-    );
-    const looseUnits = containers.reduce(
-      (n, c) => n + c.items.filter((i) => i.itemType === 'LOOSE').reduce((m, i) => m + i.quantity, 0),
-      0,
-    );
-    return { leaves, looseUnits };
-  }, [containers]);
+  const totalUnits = useMemo(
+    () => containers.reduce((n, c) => n + c.items.reduce((m, i) => m + i.quantity, 0), 0),
+    [containers],
+  );
 
   const [confirm, { loading }] = useMutation(CONFIRM_SHIPMENT_FROM_CONTAINERS, {
     refetchQueries: SHIPPING_REFETCH_QUERIES,
@@ -117,8 +109,7 @@ export default function ContainerShipmentForm({
 
           <Box>
             <Typography sx={{ ...microLabelSx, display: 'block', mb: 0.5 }}>
-              On the truck: {containers.length} container(s), {totals.leaves} door leaf/leaves,{' '}
-              {totals.looseUnits} loose unit(s)
+              On the truck: {containers.length} container(s), {totalUnits} unit(s)
             </Typography>
             <Stack spacing={1}>
               {containers.map((c) => (
@@ -129,9 +120,8 @@ export default function ContainerShipmentForm({
                   {c.items.map((i, index) => (
                     <Typography key={i.id} variant="caption" sx={{ display: 'block', ...monoSx }}>
                       {isStacked(c.containerType) && `${index + 1}. `}
-                      {i.itemType === 'OPENING_ITEM'
-                        ? `${i.openingNumber}${leafSuffix(i.leaf)}`
-                        : `${i.productCode} × ${i.quantity}`}
+                      {i.openingNumber ? `${i.openingNumber} · ` : ''}
+                      {i.productCode} × {i.quantity}
                     </Typography>
                   ))}
                 </Box>

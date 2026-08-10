@@ -9,7 +9,6 @@ export const GET_PO_STATISTICS = gql`
       vendorConfirmed
       partiallyReceived
       closed
-      cancelled
     }
   }
 `;

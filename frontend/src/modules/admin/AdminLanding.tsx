@@ -107,7 +107,10 @@ export default function AdminLanding() {
               <StatCard icon={<Users {...TILE_ICON} />} label="Users" value={s.userCount} />
             </StaggerItem>
             <StaggerItem style={{ flex: '1 1 0', minWidth: 130, display: 'flex' }}>
-              <StatCard icon={<Boxes {...TILE_ICON} />} label="Hardware Items" value={s.hardwareItemCount} />
+              {/* Distinct (category, product code) pairs, not a row count - `get_admin_stats` groups
+                  before counting. Labelled "Hardware Items" it sat next to a raw Openings count and
+                  read as though the schedule had imported short (1,122 against 29,126 actual rows). */}
+              <StatCard icon={<Boxes {...TILE_ICON} />} label="Distinct Products" value={s.hardwareItemCount} />
             </StaggerItem>
             <StaggerItem style={{ flex: '1 1 0', minWidth: 130, display: 'flex' }}>
               <StatCard icon={<DoorOpen {...TILE_ICON} />} label="Openings" value={s.openingCount} />

@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import strawberry
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from graphql import GraphQLError, GraphQLResolveInfo
@@ -22,6 +22,7 @@ from app.repositories import relay_repository
 from app.schemas.mutations import Mutation
 from app.schemas.queries import Query
 from app.services import gp_job_sync, gp_outbox_worker, relay_adopt, relay_seed
+from app.services import relay_channels as relay_channels_service
 from app.services.relay_gateway import HEARTBEAT_INTERVAL_SECONDS
 from app.services.relay_gateway import gateway as relay_gateway
 
@@ -256,6 +257,34 @@ async def _serve_relay_link(websocket: WebSocket, require_hello: bool = False) -
             raise exc
 
 
+@app.get("/relay-channels")
+def relay_channels(request: Request):
+    """Which preview backends the calling relay should ALSO be dialling.
+
+    Authenticated by the same enrolled Bearer secret the relay presents on /relay-link, so this adds
+    no credential and no new trust relationship: a caller that could read this could already open the
+    channel. Answers `{"urls": [...]}`, empty wherever discovery is off - which is everywhere except
+    production, and production only when RAILWAY_API_TOKEN is set.
+
+    The relay unions this with its own config file rather than replacing it, and re-validates every URL
+    against the preview hostname pattern before dialling. So the worst a wrong answer here can do is
+    offer a channel the relay declines, and a discovered channel can never become the primary one.
+    """
+    auth_header = request.headers.get("authorization") or ""
+    scheme, _, secret = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not secret.strip():
+        raise HTTPException(status_code=401, detail="relay credential required")
+
+    with SessionLocal() as session:
+        install = relay_repository.authenticate_secret(session, secret.strip())
+        authenticated = install is not None
+        session.commit()
+    if not authenticated:
+        raise HTTPException(status_code=401, detail="relay credential required")
+
+    return {"urls": relay_channels_service.discover_preview_channels()}
+
+
 @app.websocket("/relay-link")
 async def relay_link(websocket: WebSocket):
     """The relay's outbound wss channel. It dials in with `Authorization: Bearer <enrolled secret>`
@@ -440,16 +469,20 @@ def get_clerk_sign_in_token(request: Request, email: str = "jayp@ucsh.com"):
 
     import httpx
 
-    from app.config import CLERK_SECRET_KEY, TESTING_ENABLED, TESTING_SIGN_IN_SECRET_HASH
+    from app.config import CLERK_SECRET_KEY, TESTING_ENABLED, testing_sign_in_secret_hash
 
     if not TESTING_ENABLED:
         return JSONResponse(status_code=403, content={"error": "Testing is not enabled"})
 
+    # Resolved rather than read: a preview environment inherits the digest from production under a
+    # different name and would otherwise need it set by hand, one manual step per PR. Production
+    # itself still resolves to "" no matter which variable is present there.
+    expected_hash = testing_sign_in_secret_hash()
     presented = (request.headers.get("x-testing-secret") or "").strip()
-    secret_ok = bool(TESTING_SIGN_IN_SECRET_HASH) and bool(presented)
+    secret_ok = bool(expected_hash) and bool(presented)
     if secret_ok:
         digest = hashlib.sha256(presented.encode("utf-8")).hexdigest()
-        secret_ok = hmac.compare_digest(digest, TESTING_SIGN_IN_SECRET_HASH.strip().lower())
+        secret_ok = hmac.compare_digest(digest, expected_hash.lower())
     if not secret_ok:
         try:
             require_admin_request(request)

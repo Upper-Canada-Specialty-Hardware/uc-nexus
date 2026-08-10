@@ -17,7 +17,6 @@ from decimal import Decimal
 from app.models.enums import (
     HardwareItemState,
     POStatus,
-    PullRequestItemType,
     PullRequestSource,
     PullRequestStatus,
 )
@@ -165,7 +164,6 @@ def test_buckets_po_lifecycle_and_deducts_open_pulls(db_session):
         PullRequestItem(
             id=uuid.uuid4(),
             pull_request_id=pr.id,
-            item_type=PullRequestItemType.LOOSE,
             opening_number="A01",
             hardware_category=CATEGORY,
             product_code="HG-100",

@@ -3,9 +3,6 @@ import enum
 import strawberry
 
 from app.models.enums import (
-    AssemblyStatus as AssemblyStatusDB,
-)
-from app.models.enums import (
     AuditAction as AuditActionDB,
 )
 from app.models.enums import (
@@ -30,9 +27,6 @@ from app.models.enums import (
     NotificationType as NotificationTypeDB,
 )
 from app.models.enums import (
-    OpeningItemState as OpeningItemStateDB,
-)
-from app.models.enums import (
     PODocumentType as PODocumentTypeDB,
 )
 from app.models.enums import (
@@ -42,16 +36,10 @@ from app.models.enums import (
     PullPickLineState as PullPickLineStateDB,
 )
 from app.models.enums import (
-    PullRequestItemType as PullRequestItemTypeDB,
-)
-from app.models.enums import (
     PullRequestSource as PullRequestSourceDB,
 )
 from app.models.enums import (
     PullRequestStatus as PullRequestStatusDB,
-)
-from app.models.enums import (
-    PullStatus as PullStatusDB,
 )
 from app.models.enums import (
     ReceiveDecisionChoice as ReceiveDecisionChoiceDB,
@@ -86,15 +74,11 @@ HardwareItemState = strawberry.enum(HardwareItemStateDB)
 POStatus = strawberry.enum(POStatusDB)
 PullRequestSource = strawberry.enum(PullRequestSourceDB)
 PullRequestStatus = strawberry.enum(PullRequestStatusDB)
-PullRequestItemType = strawberry.enum(PullRequestItemTypeDB)
 PullPickLineState = strawberry.enum(PullPickLineStateDB)
-OpeningItemState = strawberry.enum(OpeningItemStateDB)
 ShopAssemblyRequestStatus = strawberry.enum(ShopAssemblyRequestStatusDB)
 ShippingOutRequestStatus = strawberry.enum(ShippingOutRequestStatusDB)
 ShipmentStatus = strawberry.enum(ShipmentStatusDB)
 ShipmentContainerType = strawberry.enum(ShipmentContainerTypeDB)
-PullStatus = strawberry.enum(PullStatusDB)
-AssemblyStatus = strawberry.enum(AssemblyStatusDB)
 NotificationType = strawberry.enum(NotificationTypeDB)
 PODocumentType = strawberry.enum(PODocumentTypeDB)
 DestockSource = strawberry.enum(DestockSourceDB)
@@ -140,82 +124,30 @@ class PickOutcome(enum.Enum):
 
 
 @strawberry.enum
-class PipelineStage(enum.Enum):
-    """How far one door leaf has travelled through shop assembly (#344), derived from existing
-    state - no column stores it.
+class RequestStage(enum.Enum):
+    """Where one request sits on the ladder the requests list draws as columns.
 
-    The ladder is the one the floor actually asks about: *where is opening A01 leaf 2?* Each value
-    is the furthest point the leaf has provably reached, so the stage of a whole request is the
-    stage of its least-advanced opening - what is holding it up.
-
-    REJECTED and CANCELLED are off the ladder rather than on the end of it: they are the two ways a
-    leaf leaves the pipeline without being assembled, and reading them as "further along than
-    IN_PROGRESS" would be nonsense.
+    Derived from the request's own status and the state of the pull it minted - no column stores it.
+    REJECTED is off the ladder rather than on the end of it: it is how a request leaves without ever
+    being pulled, and reading it as "further along than PULLING" would be nonsense.
     """
 
-    # The request exists and is waiting for a human to accept it. No pull has been minted.
+    # The request exists and is waiting for a reviewer to accept it. No pull has been minted.
     REQUESTED = "REQUESTED"
-    # Accepted: the warehouse pull exists but has not been approved, so nothing has been picked.
+    # Accepted: the warehouse pull exists but nobody has started picking it.
     ACCEPTED = "ACCEPTED"
-    # The pull is approved and stock is deducted, but this opening's own cart is not built yet.
+    # The pull is being picked.
     PULLING = "PULLING"
-    # This opening's cart is staged (#343) and nobody is holding it - it is on the assignment board.
-    STAGED = "STAGED"
-    # Claimed by an assembler, with nothing recorded against it yet.
-    ASSIGNED = "ASSIGNED"
-    # Hardware has been recorded onto the leaf but it is not fully dispositioned (#340).
-    IN_PROGRESS = "IN_PROGRESS"
-    # Assembled: an OpeningItem exists for the leaf and it is in (or ready to leave) inventory.
-    COMPLETED = "COMPLETED"
-    # The assembled leaf has left the building.
-    SHIPPED = "SHIPPED"
-    # The source request was rejected, which released its claim on inventory.
+    # The pull completed. That is the last thing v1 records about this hardware.
+    DONE = "DONE"
+    # The request was rejected, which released its claim on inventory.
     REJECTED = "REJECTED"
-    # The pull this opening was on was cancelled and its hardware restocked (#343). The opening is
-    # back on a PENDING request awaiting re-acceptance, so this is a state the *history* is in.
-    CANCELLED = "CANCELLED"
 
 
 @strawberry.enum
 class TransferSourceType(enum.Enum):
     INVENTORY_LOCATION = "INVENTORY_LOCATION"
     STOCK_ITEM = "STOCK_ITEM"
-
-
-@strawberry.enum
-class LeafStatus(enum.Enum):
-    """Per-leaf status in the per-opening leaf-status rollup (#313). The first three mirror
-    OpeningItemState; NOT_ASSEMBLED is synthetic - a leaf the schedule expects (1..leaf_count) that
-    has no OpeningItem yet."""
-
-    NOT_ASSEMBLED = "NOT_ASSEMBLED"
-    IN_INVENTORY = "IN_INVENTORY"
-    SHIP_READY = "SHIP_READY"
-    SHIPPED_OUT = "SHIPPED_OUT"
-
-
-@strawberry.enum
-class OpeningStage(enum.Enum):
-    """One opening's headline stage on the admin Opening Status page.
-
-    Derived, never stored - like LeafStatus above. It names the FURTHEST BEHIND thing still
-    outstanding rather than the furthest along, because the question the page answers is "what is
-    holding this opening up": an opening whose leaf 1 has shipped while leaf 2 was never bought reads
-    ORDERING. The per-bucket unit counts beside it are the truth; this is the scanning aid.
-    """
-
-    # The schedule lists nothing for this opening, and nothing has ever shipped for it.
-    NO_HARDWARE = "NO_HARDWARE"
-    # Every unit is still unbought.
-    NOT_STARTED = "NOT_STARTED"
-    # Something is unbought or only on a draft PO.
-    ORDERING = "ORDERING"
-    # Everything is on a placed PO, but units are still waiting to reach a leaf.
-    ASSEMBLY = "ASSEMBLY"
-    # Every leaf is assembled; hardware is still in the building.
-    SHIPPING = "SHIPPING"
-    # Every leaf has shipped out.
-    COMPLETE = "COMPLETE"
 
 
 @strawberry.enum

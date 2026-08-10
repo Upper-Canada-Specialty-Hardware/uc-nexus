@@ -146,6 +146,7 @@ _ROUTE_GATES = frozenset({"require_admin_request"})
 _ROUTE_EXEMPT: dict[str, str] = {
     "health": "public liveness probe returning a constant; deploy healthchecks call it anonymously",
     "relay_link": "authenticated by the enrolled relay's Bearer secret on the websocket handshake, not Clerk",
+    "relay_channels": "same enrolled relay Bearer secret as relay_link, checked inline; a workstation has no session",
 }
 
 

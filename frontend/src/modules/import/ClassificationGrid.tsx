@@ -89,10 +89,22 @@ function siteShopEligibleKeys(rows: ClassificationRow[], exemptValue?: string): 
   return uniqueClassificationKeys(rows.filter((r) => !exemptValue || r.classification !== exemptValue));
 }
 
+// TITAN writes Vendor_Discount against List_Price, and when it has no list price it writes a $0.01
+// placeholder instead of nothing. The discount it then derives is arithmetically meaningless - a real
+// export carries rows reading -1199%, -1499% and -4199% against a $0.01 list and a $12-42 unit cost -
+// and a buyer reading a purchasing grid has to mentally discard them. A discount outside +/-100% is
+// not a discount, so it shows as a dash and keeps the raw figure in the title for anyone chasing it.
+const DISCOUNT_PLAUSIBLE_PCT = 100;
+
+function formatVendorDiscount(value: number | null | undefined): string {
+  if (value == null) return '—';
+  return Math.abs(value) > DISCOUNT_PLAUSIBLE_PCT ? '—' : `${value}%`;
+}
+
 function formatGroupKey(field: GroupByField, value: unknown): string {
   if (value == null || value === '') return '(None)';
   if (field === 'unitCost' || field === 'listPrice') return `$${Number(value).toFixed(2)}`;
-  if (field === 'vendorDiscount') return `${Number(value)}%`;
+  if (field === 'vendorDiscount') return formatVendorDiscount(Number(value));
   return String(value);
 }
 
@@ -185,7 +197,13 @@ const ALL_COLUMNS: GridColDef[] = [
     headerName: 'Discount',
     flex: 0.5,
     type: 'number',
-    valueFormatter: (value: number | null) => value != null ? `${value}%` : '—',
+    valueFormatter: (value: number | null) => formatVendorDiscount(value),
+    renderCell: (params) => {
+      const raw = params.value as number | null;
+      const shown = formatVendorDiscount(raw);
+      const suppressed = raw != null && shown === '—';
+      return <span title={suppressed ? `TITAN reported ${raw}% against a placeholder list price` : undefined}>{shown}</span>;
+    },
   },
   {
     field: 'unitCost',

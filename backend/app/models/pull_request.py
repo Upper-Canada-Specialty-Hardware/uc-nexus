@@ -1,11 +1,11 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, SmallInteger, String, text
+from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
-from .enums import PullRequestItemType, PullRequestSource, PullRequestStatus
+from .enums import PullRequestSource, PullRequestStatus
 
 
 class PullRequest(Base):
@@ -67,57 +67,28 @@ class PullRequest(Base):
 
 
 class PullRequestItem(Base):
-    """One tag: this quantity of this product now belongs to this door leaf of this opening.
+    """One tag: this quantity of this product now belongs to this opening.
 
-    This row is where hardware regains the opening identity that receiving dropped (inventory is
-    fungible - see docs/HARDWARE_IDENTITY_LIFECYCLE.md). The two item types tag differently:
-    LOOSE claims fungible stock, so approval deducts inventory FIFO and is gated on sufficiency;
-    OPENING_ITEM moves an assembled leaf that was already tagged at shop assembly, so approval
-    deducts nothing and only locks the OpeningItem row.
+    This row is where hardware regains the demand identity that receiving dropped (inventory is
+    fungible - see docs/HARDWARE_IDENTITY_LIFECYCLE.md). Every line claims fungible stock, so
+    approval deducts inventory FIFO and is gated on sufficiency. `opening_number` rides along as a
+    tag: the pick sheet groups its carts by it, and nothing else keys off it.
     """
 
     __tablename__ = "pull_request_items"
     __table_args__ = (
         Index("ix_pull_request_items_pull_request", "pull_request_id"),
-        Index("ix_pull_request_items_opening_item", "opening_item_id"),
-        Index("ix_pull_request_items_sa_opening_item", "sa_opening_item_id"),
         CheckConstraint("requested_quantity >= 1", name="ck_pull_request_items_requested_quantity_positive"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     pull_request_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("pull_requests.id"), nullable=False)
-    item_type: Mapped[PullRequestItemType] = mapped_column(
-        Enum(
-            PullRequestItemType,
-            name="pull_request_item_type",
-            create_constraint=True,
-        ),
-        nullable=False,
-    )
-    # Null on a line copied from a shipping-out request that was raised straight off inventory
-    # (#451) - a hinge on a shelf belongs to the project, not to a door. The pick sheet groups its
-    # carts by this, so an unattributed line simply has no cart to name.
+    # Null on a line raised straight off inventory (#451) - a hinge on a shelf belongs to the
+    # project, not to a door. The pick sheet groups its carts by this, so an unattributed line simply
+    # has no cart to name.
     opening_number: Mapped[str | None] = mapped_column(String, nullable=True)
-    opening_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("opening_items.id"), nullable=True)
-    # The deficient shop-assembly checklist item this line replaces (#339). Set only on PR-REPL
-    # replacement lines minted by report_deficiency_at_assembly, so a replacement pull can be traced
-    # back to the exact ShopAssemblyOpeningItem that failed at the bench. Null on every other line.
-    sa_opening_item_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("shop_assembly_opening_items.id"), nullable=True
-    )
-    # Door leaf this pull line is for (#311): SHOP_ASSEMBLY LOOSE from ShopAssemblyOpening.leaf,
-    # SHIPPING_OUT OPENING_ITEM from OpeningItem.leaf. Snapshot so a leaf-1 pull reads distinct from
-    # a leaf-2 pull. Null = legacy / leaf-agnostic.
-    leaf: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
-    hardware_category: Mapped[str | None] = mapped_column(String, nullable=True)
-    product_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    hardware_category: Mapped[str] = mapped_column(String, nullable=False)
+    product_code: Mapped[str] = mapped_column(String, nullable=False)
     requested_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
-    # Fetch check-off for an OPENING_ITEM line (#367). The leaf was tagged at assembly and its
-    # hardware left fungible inventory then, so there is nothing here to deduct - only to walk to the
-    # rack and collect. Persisted rather than held in component state so a picker who reloads the
-    # sheet, or hands it to the next shift, does not lose what has already been collected. Always
-    # null on a LOOSE line, which is picked by quantity instead.
-    fetched_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    fetched_by: Mapped[str | None] = mapped_column(String, nullable=True)
 
     pull_request: Mapped["PullRequest"] = relationship(back_populates="items")

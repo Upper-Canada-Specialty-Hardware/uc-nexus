@@ -29,16 +29,9 @@ class InventoryReservation(Base):
       deduction, which stays exactly as it was: at approval the pull walks the project's rows
       oldest-first, and the reservation only ever governed *how much* was free, never *which* row.
 
-    Exactly one of `shop_assembly_request_id` / `shipping_out_request_id` / `pull_request_id` is set,
-    matching `source`.
-
-    The third holder is a **replacement pull**, and it is the one claim with no request behind it: a
-    deficiency found at the bench is not something anybody could have requested in advance. Before
-    it existed, the PR-REPL pull went to the back of the queue - it held nothing, so any request
-    created after the defect was found could claim the very stock the replacement was waiting on, and
-    the pull stayed blocked while the warehouse watched the hardware walk. Reserving at flag time
-    puts the replacement in the queue at the moment the defect is discovered, which is the moment the
-    claim becomes real.
+    Exactly one of `shop_assembly_request_id` / `shipping_out_request_id` is set, matching `source`.
+    Every claim has a request behind it: a reservation is created when a request is composed and
+    spent when the pull that request minted is approved.
     """
 
     __tablename__ = "inventory_reservations"
@@ -54,23 +47,18 @@ class InventoryReservation(Base):
         # Release and consumption are both "every reservation of this request".
         Index("ix_inventory_reservations_shop_assembly_request", "shop_assembly_request_id"),
         Index("ix_inventory_reservations_shipping_out_request", "shipping_out_request_id"),
-        Index("ix_inventory_reservations_pull_request", "pull_request_id"),
         CheckConstraint("quantity >= 1", name="ck_inventory_reservations_quantity_positive"),
-        # The discriminator and the FKs cannot disagree, and a reservation can never be orphaned
-        # from its holder (which is what would strand a claim nothing can ever release). Each source
-        # requires exactly its own FK and nulls the other two.
+        # The discriminator and the FK cannot disagree, and a reservation can never be orphaned from
+        # its holder (which is what would strand a claim nothing can ever release). Each source
+        # requires exactly its own FK and nulls the other.
         #
-        # `source::text` rather than a bare enum comparison: the REPLACEMENT_PULL label and this
-        # constraint were added in one migration, and PostgreSQL refuses to *use* a new enum label in
-        # the transaction that created it. Comparing the column as text never touches the enum type,
-        # so the migration needs no `COMMIT` in the middle of itself.
+        # `source::text` rather than a bare enum comparison, so a migration that changes the labels
+        # never has to touch the enum type inside the same transaction that rewrites this.
         CheckConstraint(
             "(source::text = 'SHOP_ASSEMBLY_REQUEST' AND shop_assembly_request_id IS NOT NULL "
-            "AND shipping_out_request_id IS NULL AND pull_request_id IS NULL) "
+            "AND shipping_out_request_id IS NULL) "
             "OR (source::text = 'SHIPPING_OUT_REQUEST' AND shipping_out_request_id IS NOT NULL "
-            "AND shop_assembly_request_id IS NULL AND pull_request_id IS NULL) "
-            "OR (source::text = 'REPLACEMENT_PULL' AND pull_request_id IS NOT NULL "
-            "AND shop_assembly_request_id IS NULL AND shipping_out_request_id IS NULL)",
+            "AND shop_assembly_request_id IS NULL)",
             name="ck_inventory_reservations_source_matches_request",
         ),
     )
@@ -89,11 +77,5 @@ class InventoryReservation(Base):
     )
     shipping_out_request_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("shipping_out_requests.id", ondelete="CASCADE"), nullable=True
-    )
-    # The PR-REPL pull a REPLACEMENT_PULL claim is held for. CASCADE for the same reason as the other
-    # two: `discard_pending_pull_request` hard-deletes a pull, and a claim outliving the only thing
-    # that could ever spend or release it is a permanently stranded reservation.
-    pull_request_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("pull_requests.id", ondelete="CASCADE"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)

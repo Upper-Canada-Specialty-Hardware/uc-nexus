@@ -16,8 +16,8 @@ Currently, there is no way to:
 A typical partial-shipment scenario:
 
 1. Opening 101 needs 10 hardware items per the hardware schedule
-2. A SAR is created — only 6 items are available (RECEIVED) in the warehouse
-3. Shop assembly completes with 6 items → OpeningItem created
+2. A shop-assembly request is created — only 6 items are available (RECEIVED) in the warehouse
+3. That request's pull is picked and completed: 6 items go to the bench
 4. Timeline pressure forces the opening to ship immediately with 6 of 10 items
 5. 2 more items arrive at the warehouse later (into general, fungible inventory)
 6. 2 items are still on order
@@ -34,10 +34,10 @@ Allow users to review shipped openings, identify hardware shortfalls, and claim 
 
 1. **Select Project** — User chooses a project to review
 2. **Import Hardware Schedule** — User uploads the TITAN XML to define what each opening needs (the schedule is the source of truth for opening requirements)
-3. **Review Shipped Openings** — For each Opening with SHIPPED_OUT status, show:
-   - What hardware was shipped with it (from OpeningItemHardware records)
+3. **Review Shipped Openings** — For each opening, show:
+   - What hardware has left for it (completed pulls and packing slips)
    - What the hardware schedule says the opening needs
-   - The shortfall (needed minus shipped)
+   - The shortfall (needed minus sent)
 4. **Allocate from Inventory** — For each shortfall item, the user can claim available inventory:
    - Show what's currently in warehouse inventory (RECEIVED items, not already allocated)
    - User selects quantities to allocate to the shipped opening
@@ -57,11 +57,16 @@ Allow users to review shipped openings, identify hardware shortfalls, and claim 
 
 | Existing Entity | How Reallocation Uses It |
 |---|---|
-| **OpeningItem** (state: SHIPPED_OUT) | Identifies which openings have shipped |
-| **OpeningItemHardware** | Shows what hardware was included when the opening shipped |
-| **Hardware Schedule XML** | Defines what each opening needs — used to compute shortfalls |
-| **Warehouse Inventory** (HardwareItems with RECEIVED PO status, not yet pulled) | Pool of available items to allocate |
+| **`request_composer.get_request_coverage`** | Already computes `owed - sent - claimed` per (opening, category, product). That is the shortfall this module was going to derive by hand, so it should read it rather than recompute it |
+| **PackingSlipItem** | What physically left, per opening — the `sent` half of the above |
+| **Hardware Schedule** (`HardwareItem`) | Defines what each opening needs — the `owed` half |
+| **`projectInventoryAvailability`** | Pool of items free to allocate, already net of every live request's reservation |
 | **Project / Opening** | Scoping — reallocation operates per project |
+
+Since v1 dropped door management there is no assembled unit to read "what shipped with this opening"
+off, and no per-leaf shortfall to compute. The composer's answer is per opening and is the only
+shortfall figure in the system; a second one here would be exactly the drift the composer exists to
+prevent.
 
 ### New Entities Needed
 
@@ -73,5 +78,5 @@ Allow users to review shipped openings, identify hardware shortfalls, and claim 
 - **Import Module**: Reallocation reuses the same TITAN XML parser to understand opening requirements. The hardware schedule import step is shared.
 - **Warehouse Module**: Reallocation reads warehouse inventory to show what's available. Claimed items would need to be visible in the warehouse as "allocated" so they aren't double-claimed.
 - **Shipping Module**: Allocated items eventually need to ship. This could create Shipping Out pull requests for loose hardware, integrating with the existing shipping PR workflow.
-- **Shop Assembly Module**: Not directly involved. If an opening hasn't shipped yet and more items arrive, a new SAR can be created through the normal import flow. Reallocation only applies to already-shipped openings.
+- **Shop Assembly Module**: Not directly involved. If an opening hasn't shipped yet and more items arrive, a new request can be composed through the normal flow — the composer will offer them, because arriving stock does not change `sent`.
 - **Reconciliation Step (Import Wizard)**: Independent. Reconciliation is pre-shipment state visibility. Reallocation is post-shipment gap-filling. They should not be conflated.

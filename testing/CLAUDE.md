@@ -28,20 +28,32 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 > true production created alongside; the agent-side rule does not change at any point in that
 > evolution.
 
-- **Railway PR environments, a.k.a. "Preview Environments" (the testing target)** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **That inheritance is a copy taken when the environment is created, not a live link** (#431): a variable added to production afterwards never reaches a PR environment that already exists, so set it on that environment's own backend service too and let it redeploy. Found the hard way with `RELAY_SEED_SECRET_HASH` on pr-430 - see the relay section below. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`); trigger the missing one from the dashboard or via the API (`serviceInstanceDeployV2(environmentId, serviceId)`). Environments auto-delete when the PR closes.
+- **Railway PR environments, a.k.a. "Preview Environments" (the testing target)** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **That inheritance is a copy taken when the environment is created, not a live link** (#431): a variable added to production afterwards never reaches a PR environment that already exists, so set it on that environment's own backend service too and let it redeploy. Found the hard way with `RELAY_SEED_SECRET_HASH` on pr-430 - see the relay section below. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`). The missing service shows one `SKIPPED` deployment and its `/health` 404s. **A PR touching NEITHER `backend/` nor `frontend/` - a relay-only or docs-only one - leaves the whole environment unbuilt, Postgres included**, and the backend then dies on `could not translate host name "postgres.railway.internal"`, which reads like a networking fault rather than a service that was never started. Check the database first: `railway deployment list --service Postgres` returning nothing at all is the tell. Fix it from the CLI, in this order, no dashboard and no raw API call:
+
+```
+railway redeploy --project <id> --environment uc-nexus-pr-<N> --service Postgres --from-source -y
+railway redeploy --project <id> --environment uc-nexus-pr-<N> --service backend  --from-source -y
+```
+
+`--from-source` matters - a plain `redeploy` re-runs the last deployment, and on a service that never deployed there is nothing to re-run. Database first, and then **wait for Postgres to be accepting connections, not merely deployed**: firing the backend 28 seconds behind it got `connection to server at "postgres.railway.internal" ... Connection timed out`, a different failure from the DNS one and equally misleading, because by then the name resolves fine. Give it a minute, or just redeploy the backend again. Hit on a relay-only PR, 2026-08-10.
+
+Environments auto-delete when the PR closes, **so never merge the PR whose environment you are testing in** - it disappears mid-session and every fetch starts failing for a reason that looks like a network fault.
 - **Local (manual fallback)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Run the backend with `poetry run uvicorn main:app --reload` (from `backend/`) and the frontend with `npm run dev` (from `frontend/`). Needs a local Postgres (not provided; the worktree-localdev adoption was dropped).
 - **Auth**: Clerk sign-in, automated via one-time sign-in tokens (no manual password/verification needed).
   - Backend endpoint `GET /testing/clerk-sign-in` generates the token (requires `TESTING_ENABLED=true`).
   - Since #422 the endpoint also requires a credential: an Admin/Manager `Authorization` bearer, or
     the shared testing secret in an `X-Testing-Secret` header. The secret is the bootstrap path on a
-    fresh PR environment (no session exists there yet): its SHA-256 hex must sit in the backend's
-    `TESTING_SIGN_IN_SECRET_HASH` variable. `TESTING_ENABLED` was re-enabled on production
-    2026-07-30 (humans test there until the staging/production split), so new Preview Environments
-    inherit it on again; `TESTING_SIGN_IN_SECRET_HASH` stays unset on production on purpose (its
-    secret path must not be mintable there), so for each Preview Environment you test on, set a
-    `TESTING_SIGN_IN_SECRET_HASH` you know the preimage of on that environment's backend service
-    (see `backend/.env.example` for the generator one-liner). An environment created while
-    production still had `TESTING_ENABLED=false` needs that set by hand too.
+    fresh PR environment, where by definition no session exists yet.
+  - **A Preview Environment resolves that secret on its own, with nothing set on it.** Production
+    holds `PREVIEW_TESTING_SIGN_IN_SECRET_HASH`, every preview inherits it at creation, and the
+    resolver reads it anywhere that is not production. `TESTING_SIGN_IN_SECRET_HASH` still stays
+    unset on production on purpose - its secret path must not be mintable there - and production
+    resolves to no digest however many of these variables it holds, which is what makes storing the
+    inherited one there safe. Setting `TESTING_SIGN_IN_SECRET_HASH` directly on one environment
+    still overrides, for an environment that predates the inherited variable or wants its own secret
+    (see `backend/.env.example` for the generator one-liner). `TESTING_ENABLED` was re-enabled on
+    production 2026-07-30 (humans test there until the staging/production split), so new Preview
+    Environments inherit it on again; one created while it was still false needs it set by hand.
   - Navigate to the frontend URL with `?__clerk_ticket=TOKEN` to auto-authenticate.
   - Tokens are one-time use; fetch a fresh one each session. Works on any runtime with the same Clerk dev instance.
   - **Every environment inherits production Clerk keys**, so the accounts in a PR environment are real
@@ -90,11 +102,52 @@ session instead. Establish this in the first minute:
 { inventoryHierarchy { hardwareCategory totalQuantity } }
 ```
 
+**The relay runs on a separate GP-credentialed workstation, already enrolled and already pointed at
+the PR environments. Never install, start, or configure one on the machine your session runs on** -
+`%LOCALAPPDATA%\UCNexusRelay` being absent and `127.0.0.1:7321` being closed are the expected state
+here, not a dependency to satisfy. `connected: false` is a state on somebody else's machine: report
+it and ask. Setting one up locally cannot work anyway, because this box is not domain-joined and
+cannot authenticate to GP SQL. Full rule in
+[PR-ENVIRONMENT.md](PR-ENVIRONMENT.md#the-relay-is-on-another-machine-never-stand-one-up-locally).
+
 `connected: false` plus `inventoryHierarchy: []` is the signature. Confirm it from the backend side
 with `relayInstalls { label enrolled enrolledAt lastSeenAt }` and the Railway backend deploy log:
 
 - A relay that is **running but not trusted** logs `"WebSocket /relay-link" 403` every ~30s forever.
   The workstation is dialling out fine; the backend is refusing the handshake.
+- **Not dialling at all reads differently from being refused, and the pair of signals settles it in
+  one minute.** A seeded environment always has its install row, so the row existing proves nothing;
+  read `lastSeenAt` next to the deploy log. `lastSeenAt: null` on a `seed:uc-nexus-pr-<N>` row means
+  no handshake has EVER succeeded there, and if the deploy log also carries **zero** `/relay-link`
+  lines - not 403s, none at all - then nothing is dialling this backend and the cause is upstream of
+  auth: the URL is not in the relay workstation's `extra_backend_urls`, or the relay is stopped.
+  A 403 cadence with the same null `lastSeenAt` would instead mean it is dialling and presenting the
+  wrong secret. Observed on pr-554, 2026-08-09: row `seed:uc-nexus-pr-554` (TUBC, enrolled,
+  `lastSeenAt: null`), zero `/relay-link` lines across the deployment, `relayStatus.connected: false`,
+  `projects: []`. That was the not-dialling signature, and at the time it meant a human had not added
+  the URL on the workstation. **Since channel discovery it should not happen at all**: production
+  serves the live preview list at `/relay-channels` and the relay picks a new environment up within a
+  minute or two. So the same signature now means discovery is off or failing, and the first thing to
+  check is whether `RAILWAY_API_TOKEN` is set on the PRODUCTION backend - without it the route
+  correctly answers an empty list and every preview environment stays dark.
+- **Prove the log records a refusal before you trust its silence.** "No `/relay-link` lines" only
+  means "nobody dialled" if a dial would have left a line, and an empty log is equally consistent
+  with logging being broken or the edge never routing the upgrade. Settle it in one shot by dialling
+  it yourself from the signed-in page - a bogus handshake can only be rejected, so this is read-only:
+
+  ```js
+  new WebSocket('wss://backend-uc-nexus-pr-<N>.up.railway.app/relay-link');
+  ```
+
+  Then re-read the log. Exactly one new `"WebSocket /relay-link" 403` proves the endpoint is live,
+  the edge passes the upgrade through, and refusals are recorded - so the zero lines before it are
+  real evidence rather than an artefact. On pr-554 this turned "probably not dialling" into proof.
+- **Check the seed hash matches production's before blaming the channel list.** The relay presents the
+  secret it enrolled with against production, so a PR environment whose `RELAY_SEED_SECRET_HASH`
+  drifted would dial and 403 forever. `railway variables --environment uc-nexus-pr-<N> --service
+  backend --json` against the same read on `production`, compared, rules that out in seconds. On
+  pr-554 they were byte-identical, which is what makes "not in `extra_backend_urls`" the remaining
+  explanation rather than one of two.
 - **`lastSeenAt == enrolledAt` is suggestive, NOT proof.** `last_seen_at` is written in two places:
   `enroll_install` (`relay_repository.py:70-71`) and `authenticate_secret` on a successful match
   (`:95`, committed by `main.py:170`). But `authenticate_secret` runs *only on the connect handshake* -
@@ -257,7 +310,7 @@ register dialog's own Remove-line-item buttons are the workaround, and receiving
 
 Until that is fixed, seed inventory one product at a time: register a single-line PO, receive it,
 approve it, repeat. Two of those took about ten minutes end to end and were enough to drive a
-shop-assembly request, an assembled leaf and two shipping-out requests.
+shop-assembly request and two shipping-out requests.
 
 Two other things worth knowing when GP is refusing outright:
 
@@ -384,7 +437,7 @@ caught two failures that all three stacked PRs were reporting as clean:
                               with ?purpose=po
 /app/po                    -> Purchase Orders (project landing -> PO list)
 /app/warehouse             -> Warehouse landing (stat cards + Go-to cards for sub-routes)
-/app/warehouse/inventory   -> Inventory (hardware/opening items by project)
+/app/warehouse/inventory   -> Inventory (hardware items by project)
 /app/warehouse/locations   -> Locations (master-detail bin browser)
 /app/warehouse/receiving   -> Receiving wizard
 /app/warehouse/put-away    -> Put Away (unlocated items queue)
@@ -392,49 +445,47 @@ caught two failures that all three stacked PRs were reporting as clean:
 /app/warehouse/stock-pool  -> Stock Pool (non-project stock items)
 /app/warehouse/deficient-items -> Deficient Items Review
 /app/warehouse/shipments   -> Shipments (global packing slip list + return dialog)
-/app/shop-assembly         -> Shop Assembly landing (stat card + Go-to cards)
-/app/shop-assembly/requests  -> Accept / reject / reopen shop-assembly requests
-/app/shop-assembly/assemble  -> Assemble List (all openings on approved pulls)
-/app/shop-assembly/assign    -> Assignment Board (manager)
-/app/shop-assembly/my-work   -> My Work (+ Replacement Installs)
-/app/shop-assembly/pipeline  -> Pipeline (read-only; where every request and leaf has got to)
+/app/shop-assembly         -> Shop Assembly landing (stat cards + one Go-to card)
+/app/shop-assembly/requests  -> Requests: accept / reject / reopen, with the stage each has reached
 /app/shipping              -> Shipping Out (ship-ready items, packing slips)
 /app/admin                 -> Admin (reports, vendors, projects, users, cleanup)
 ```
 
 ---
 
-## The shop-assembly lifecycle, end to end
+## The request lifecycle, end to end
 
 The module guides below are organised by *screen*, which is the wrong shape for a first read: one
-door leaf's journey crosses four of them. This is that journey once, with the screen that owns each
+request's journey crosses three of them. This is that journey once, with the screen that owns each
 step. Everything in it is exercisable against Railway.
+
+**v1 does not manage doors.** The opening is a label - demand attribution before receiving, a text
+tag on a line after it - and hardware exits the system when a pull completes. There is no assembled
+unit, no bench tracking and no per-leaf anything downstream of the schedule, so "which doors can we
+build / ship / are complete" is not a question this version answers.
 
 | # | What happens | Where you do it | What changes underneath |
 | --- | --- | --- | --- |
-| 1 | **Request** a leaf for shop assembly | Shop Assembly -> Start a Request | A PENDING `ShopAssemblyRequest`, and the hardware is **reserved** on the spot (#342). Creating over-subscribed is refused whole, naming every short combo |
-| 2 | **Accept** it | Shop Assembly -> Requests | A PENDING warehouse pull. A pure human gate - nothing is re-checked, nothing is spent. Rejecting instead is what releases the claim |
+| 1 | **Compose** a request | Shop Assembly or Shipping -> Start a Request | The composer offers `owed - sent - claimed` per opening; you assign what is free to each line. A PENDING request, and the hardware is **reserved** on the spot (#342) |
+| 2 | **Accept** it | Shop Assembly -> Requests, or Shipping -> Requests | A PENDING warehouse pull carrying one line per allocated request line. A pure human gate - nothing is re-checked, nothing is spent. Rejecting instead is what releases the claim |
 | 3a | **Start the pick** | Warehouse -> Pull Requests -> Start pick | The pull is claimed and opened. **Nothing moves**, and there is no sufficiency gate - a pull with an empty shelf still opens (#367) |
 | 3b | **Confirm the pick** | The pick page, `/pull-requests/:id/pick` | The picker dictates a quantity per location; confirming deducts *those rows* and consumes the claim, atomically. This is the only moment inventory moves |
-| 4 | **Stage** each opening's cart | Warehouse -> Pull Requests -> Staging panel | One `pull_status` flips to PULLED per opening (#343). That leaf is assignable *immediately*, while the rest of the pull is still being picked. Nothing moves in inventory |
-| 5 | **Claim** the leaf | Shop Assembly -> Assemble List / Assignment Board | An assignment. A manager may take one off somebody; a self-claim may not |
-| 6 | **Build** it, unit by unit | Shop Assembly -> My Work -> the modal | `installed_quantity` per line, saved as you go (#340). A defect flagged here goes back to inventory *now* and mints a `PR-REPL-*` pull immediately |
-| 7 | **Finish** it | Same modal -> Mark Complete | An `OpeningItem` per leaf, carrying what was actually installed. Refused while any unit is unaccounted for, or if nothing at all was installed |
-| 8 | **Replacement arrives** | Warehouse -> Pull Requests -> pick+complete the `PR-REPL-*` pull | The leaf gets its expectation back (#341). Still on the bench: it becomes Remaining again. Already finished: a Replacement Install card on My Work. Already shipped: a warning, and reallocation's problem |
-| 9 | **Ship** it | Shipping Out | `SHIP_READY`, then a packing slip. A leaf still owed hardware is flagged and takes an explicit "Ship it short" |
-| - | **Undo the pull** at any point before assembly starts | Warehouse -> Pull Requests -> Cancel Pull | Stock restocked, openings released, request back to Pending (#343). Refused, naming blockers, once any opening is IN_PROGRESS or COMPLETED |
-| - | **See all of it at once** | Shop Assembly -> Pipeline | Read-only (#344). Answers "where is opening A01 leaf 2?" without opening the other four screens |
+| 4 | **Hand it over** | Warehouse -> Pull Requests -> Mark as Pulled | The pull completes. **This is a terminal exit** - for shop assembly the cart goes to the bench and the system stops looking; for shipping out the hardware joins the staged pool |
+| 5 | **Ship** (shipping out only) | Shipping Out -> Staging / Ship | A packing slip against what the completed pull staged, then SCHEDULED -> PICKED_UP -> DELIVERED |
+| - | **Undo the pull** while it is being picked | Warehouse -> Pull Requests -> Cancel Pull | Stock restocked to the rows it came off, request back to Pending with its claim re-created (#343). Refused on a completed pull - the hardware has been handed over |
+| - | **See where every request is** | Shop Assembly -> Requests | The stage chip: Requested -> Accepted -> Pulling -> Done, with Rejected off the ladder |
 
-Two things a fresh reader gets wrong every time:
+Three things a fresh reader gets wrong every time:
 
-- **"Pulled" is per opening, not per pull.** Since #343 a leaf can be workable while its own sibling
-  on the same pull is still on the shelf. A row with no buttons on the Assemble List is not broken;
-  its cart is not built yet.
 - **Reserved is not deducted.** Between steps 1 and 3b the hardware is claimed but still on the shelf,
   so the Warehouse inventory number and the Start-a-Request availability number legitimately disagree.
 - **Started is not picked either (#367).** A pull sits IN_PROGRESS from the moment somebody presses
   Start pick, which is *before* any stock has moved. `Status` alone can no longer tell you whether
   the hardware has left - the queue's **Phase** column and `pickedAt` are what answer that.
+- **The composer does not re-offer what has gone out.** An opening whose hinges left on a completed
+  pull reads zero next time, even though the schedule still says it needs them. That is the `sent`
+  term working, not a bug. Two requests for one opening are both allowed; the second one is simply
+  offered nothing.
 
 ---
 
@@ -629,16 +680,16 @@ requests are holding it.
 
 **Confirming a pick consumes its source request's reservation (#367 moved this off approve).** A pull
 whose request reserved exactly what it needs still picks fine - the check excludes the request's own
-claim (self-coverage). A `PR-REPL-*` replacement pull *does* hold a claim now (minted when the defect
-was flagged, topped up as stock arrives), usually smaller than what it is owed, so being partly
-covered is its normal resting state and a short pick on one is not an integrity error.
+claim (self-coverage). **Every claim has a request behind it** - no pull holds one directly, so a
+pull whose source request was rejected after the accept simply competes with everyone else and
+consumes nothing.
 
 
 **Entry**: `/app/warehouse` -> Warehouse landing page with stat cards and "Go to" card buttons for: Inventory, Locations, Receiving, Put Away, Pull Requests, Stock Pool, Deficient Items, Shipments. (No longer "three tabs" - this has evolved to a full landing page.) Since PR #395 the Deficient Items card shows `deficientCount` (deficient units across project inventory + stock pool - the same rows the review page lists, amber edge when non-zero). The card count matching its destination page is the thing to assert.
 
 **There is no Deliveries page any more (#416).** It was a read-only lens over active POs, and its "Upcoming Deliveries" accordion asked `expectedDeliveries` for the exact PO population `openPOs` already drew the Receiving page's awaiting-receipt table from - the same three statuses, not soft-deleted - so on one page it would have been the same list twice. Only the back-order grid survived the merge, as a **Back-Ordered Items** section of Receiving; the accordion's urgency chip moved onto the awaiting-receipt table's Expected Delivery column. `expectedDeliveries` is gone from the schema entirely (querying it errors `Cannot query field`), `backOrderedCount` now rides the **Receiving** card, and `/app/warehouse/deliveries` redirects to `/app/warehouse/receiving`. Anything in an older session note about a Deliveries card, its project landing, or its "All Projects" toggle (PR #397) describes a page that no longer exists.
 
-**Inventory tab default**: Navigating directly to `/app/warehouse/inventory` defaults to "All Projects" view — shows the "Projects" back button, "All Projects" heading, and Hardware Items / Opening Items sub-tabs immediately. The ProjectLandingPage is NOT shown on initial load. Clicking "Projects" brings up the ProjectLandingPage where you can filter to a specific project or click "All Projects" to return to the all-projects view.
+**Inventory tab default**: Navigating directly to `/app/warehouse/inventory` defaults to "All Projects" view — shows the "Projects" back button, "All Projects" heading, and the Hardware Items grid immediately. There is no Opening Items tab any more: nothing assembled is tracked. The ProjectLandingPage is NOT shown on initial load. Clicking "Projects" brings up the ProjectLandingPage where you can filter to a specific project or click "All Projects" to return to the all-projects view.
 
 **Receiving** (wizard):
 1. Select POs to receive (shows ORDERED/VENDOR_CONFIRMED/PARTIALLY_RECEIVED POs)
@@ -699,7 +750,7 @@ became its own phase:
 | `Picking` | Nothing off the shelf yet | IN_PROGRESS, `pickedAt` null, no pick lines |
 | `Short` | Part-picked - remainder outstanding | A short confirm landed; some stock is gone, the rest is owed |
 | `Staging` | `4 of 8 staged` | Picked, now building carts |
-| `Picked` | Ready to mark pulled | Picked, and staging does not apply (shipping-out / `PR-REPL-*`) |
+| `Picked` | Ready to hand over | Picked. Marking it pulled completes it, which is where v1 stops following the hardware |
 | `Completed` / `Cancelled` | - | Terminal |
 
 An IN_PROGRESS row reading `PICKED` in Phase is the normal, correct state for a shipping-out or
@@ -797,13 +848,14 @@ PENDING pull - reopen or reject the source request instead - and on a completed 
   hardware could **not** be re-reserved you get a *warning* toast carrying the request's new
   `integrityNote` instead - that is a real state, not a failure.
 - **Refusal keeps the dialog open** and renders the server's message in a red alert
-  (`data-testid="cancel-blocked"`) listing every opening whose assembly has started. Cancelling is
-  all-or-nothing; finish or unwind those leaves first.
-- After a cancel: stock is back in project inventory, the pull's openings are NOT_PULLED and
-  unassigned (they vanish from the Assemble List), and the source request is back in the
-  Shop Assembly / Shipping accept queue as Pending. Re-accepting it mints a **new** pull with the
-  **same request number** - so a search by number can legitimately return a cancelled row and a live
-  one.
+  (`data-testid="cancel-blocked"`).
+- **Only a pull being picked can be cancelled.** A completed one has handed its hardware over - to
+  the bench or to a shipping desk - and v1 does not follow it past that point, so there is nothing
+  left to reverse. The button is absent on a completed row.
+- After a cancel: stock is back in project inventory on the rows it came off, and the source request
+  is back in the Shop Assembly / Shipping accept queue as Pending with its claim re-created.
+  Re-accepting it mints a **new** pull with the **same request number** - so a search by number can
+  legitimately return a cancelled row and a live one.
 
 **Stock Pool** (`/app/warehouse/stock-pool`): Shows stock items not tied to a project. Has a "Warehouse" filter dropdown in the filter row with options "All warehouses", "Warden (WRD)", "VP (VP)". Grid has a "Warehouse" column (visible when data rows exist). Empty state shows "Nothing in the stock pool yet" message.
 
@@ -849,117 +901,36 @@ Both entry points open a "Transfer <productCode>" MUI dialog with: an "X availab
 
 ### Shop Assembly Module
 
-**Entry**: `/app/shop-assembly` -> landing page: one "Active Pull Requests" stat card plus five "Go to"
-cards - Requests, Assemble List, Assignments, My Work, Pipeline.
+**Entry**: `/app/shop-assembly` -> landing page: "Active Pull Requests" and "Awaiting Review" stat
+cards, a **Start a Request** button, and one "Go to" card for Requests.
 
-- Manager creates/approves Shop Assembly Requests (SARs)
-- Approved SARs generate pull requests for warehouse
-- Users get assigned openings, pull hardware, assemble, mark complete
+The module is two screens in v1. Composing happens in the import wizard (the button deep-links to
+`?purpose=assembly`), and everything after the pull completes is untracked - the bench is outside the
+system.
 
-**The Assemble List fills incrementally since #343.** It now lists the openings of any *approved*
-pull, not only completed ones, and groups them by the opening's own pull status: Pulled ("Ready"),
-Partial ("Waiting"), Not Pulled ("Pending"). Only a **Pulled** row offers "Assign to me" / "Start
-assembly" - an un-staged row is visible but inert, which is deliberate (the floor can see what is
-coming). If a leaf you expect is missing entirely, its pull is still PENDING in the warehouse or was
-cancelled; if it is present but has no buttons, the warehouse has not staged that opening yet.
+**Requests page**, `/app/shop-assembly/requests`. A Pending / Accepted / Rejected toggle:
 
-**Accept is a pure human gate since #342.** There is no inventory check on Accept any more and no
-shortfall can surface there - the hardware was reserved when the request was created. Accepting
-neither spends nor releases that claim; approving the warehouse pull spends it; **rejecting** is the
-only thing that releases it.
+- **Pending** is the queue: Accept mints the warehouse pull, Reject releases the claim.
+- **Accepted** shows every accepted request with its **stage chip** (Accepted / Pulling / Done) and a
+  count per rung above the list - this is where the old Pipeline page went. Reopen is offered on
+  every row but **disabled with the reason beside it** once the warehouse has started the pull; that
+  is deliberate, because hiding it reads as a missing feature rather than a closed window.
+- **Rejected** is history.
 
-- **Reopen (#325) deliberately does NOT release.** A reopened request goes back to Pending still
-  holding its hardware, so a second request for the same product stays short until you *reject* the
-  reopened one. The reopen confirm dialog says so. If a colleague reports "I released it but the
-  stock is still claimed", they reopened instead of rejecting.
-- An amber alert at the top of an expanded request is its `integrityNote`: either a schedule
-  re-upload landed under it, or the reservations backfill could not cover it (that second one only
-  appears on data that predates #342).
+Expanding a row shows its lines **grouped by opening tag**, with Owed and Allocated per line and a
+`N short` chip where they differ. Grouping is display only - the lines are flat underneath, and a
+line raised straight off inventory carries no opening at all and sorts last under "No opening".
 
-**Assembly modal is a progress editor, not a one-shot checklist (#340).** Clicking a row in My Work
-(or "Start assembly" / "Continue assembly" on the Assemble List) opens it. Per line it shows Pulled /
-Installed / Deficient / Remaining, with the Installed cell an editable number spinbutton labelled
-`Installed units: <productCode>`.
+**Accept is a pure human gate since #342.** There is no inventory check on Accept and no shortfall
+can surface there - the hardware was reserved when the request was created. Accepting neither spends
+nor releases that claim; confirming the pick spends it; **rejecting** is the only thing that releases
+it.
 
-- **Save Progress** persists the counts and leaves the modal open; the leaf stays in My Work and its
-  status chip flips Pending -> In Progress. Reopening rehydrates from the saved counts, so this is the
-  thing to exercise when checking resumability.
-- **Mark Complete** stays disabled until every unit on every line is either installed or flagged
-  deficient (the modal spells out how many are unaccounted for underneath the location fields), and
-  also stays disabled if everything was flagged deficient. It saves any outstanding draft first, then
-  completes, so pressing it fires *two* mutations.
-- **Flag deficient** opens a nested dialog (quantity + reason, both required) with a warning alert.
-  Confirming it is irreversible from this screen: the units go back to inventory flagged deficient and
-  a PR-REPL replacement pull is minted immediately, before the leaf is finished. Watch for the
-  spinbutton-append gotcha on the quantity field - clear it before typing. The dialog closes on
-  failure as well as on success, deliberately: a flag that errored may still have committed, so it
-  makes you re-open and re-read rather than offering you the same submit twice.
-- **Replacement pull numbers.** The first replacement pull for a source pull is
-  `PR-REPL-<source pull number>`. Flag again while that pull is still **Pending** and the units are
-  added to its existing line - same pull, bigger quantity. Flag again after it has been approved or
-  completed and you get a **second** pull, `PR-REPL-<source pull number>-2` (then `-3`, ...). Do not
-  read the missing `-1` as a bug; do expect to search for the suffixed number in the pull queue.
-- Both number inputs are MUI spinbuttons, so the usual "fill appends to the existing value" trap
-  applies; the deficiency quantity is capped at the line's remaining units and the flag button stays
-  disabled if you exceed it.
-- Assignment: a manager may reassign an In Progress leaf to someone else (progress travels with it);
-  a plain user self-claiming cannot take one that is already held - that returns a CONFLICT toast.
-  Unassigning an In Progress leaf is allowed and puts it back in the pool with its counts intact.
+**The short count is on the summary line, not buried in the tables.** Approving a request that is
+knowingly short is fine; approving one without knowing it is short is not.
 
-**Replacement Installs section on My Work (#341).** Below the My Work grid, and only rendered when
-there is something in it, so an empty shop shows nothing at all. It appears when a PR-REPL
-replacement pull is *completed* in the warehouse for a leaf the assembler already finished.
-
-- To produce one end to end: flag a unit deficient in the assembly modal, finish the leaf, then go to
-  Warehouse -> Pull Requests, approve the `PR-REPL-<original PR number>` request and complete it. The
-  card shows up on the assembler's My Work on the next fetch.
-- If the leaf is *not* finished yet, completing the same replacement pull produces **no card** - the
-  unit just goes back to being Remaining in the assembly modal and Mark Complete is blocked again.
-  That is the intended behaviour, not a missing feature.
-- "Mark Installed" is confirm-gated and installs the whole arrived quantity at once. Afterwards the
-  leaf's `installedHardware` carries the extra units; the card disappears.
-- A leaf that has **shipped** shows a "Leaf already shipped" chip and no button; one that is
-  **SHIP_READY** (staged at the dock by a completed shipping-out pull) shows "Leaf staged for
-  shipment" and no button either. The second case is recoverable - unwind the shipping-out request
-  and the button comes back - which the caption says. The backend refuses both.
-- A card whose leaf already shipped shows a "Leaf already shipped" chip and a warning alert instead
-  of the button - it cannot be installed, only reallocated. A `REPLACEMENT_AFTER_SHIPMENT`
-  notification was also raised for the SHIPPING role when the pull completed.
-
-**Pipeline page (#344)**, `/app/shop-assembly/pipeline`, reachable from the landing "Pipeline" card.
-It is **read-only on purpose** - every state it shows already has a screen that owns changing it, and
-a second place to act on them would be a second place for the rules to live.
-
-- The grid is one row per shop-assembly request across **all** projects by default, with a
-  Pending / Approved / Rejected / All toggle. Columns: Request, Project, Stage, Staged (`2 of 4`),
-  Progress (`6/16 units`), Assembled, Shipped, Flags.
-- **Stage is the request's least-advanced opening**, not its best news. A request with one finished
-  leaf and one that has not been staged reads "Awaiting pull". That is the intended reading: the
-  question is what is holding it up. The ladder is Requested -> Accepted -> Awaiting pull -> Staged ->
-  Assigned -> In progress -> Assembled -> Shipped, plus Rejected and "Pull cancelled" off the end.
-- The Staged / Assembled / Shipped columns are **blank** on a request with no openings, the same rule
-  the pull queue's staging chip follows - "0 of 0" would read as "nothing done".
-- Flags appear only when something is wrong: "Needs review" (the `integrityNote`), "N awaiting
-  replacement", "N arrived after shipping". A clean row shows no chips at all.
-- Clicking a row opens the detail modal: the alerts first (integrity note, cancellation history,
-  replacement-after-shipping), then a chip row and a progress rail, then **one table row per door
-  leaf** - stage, when and by whom it was staged, who holds it, units, the assembled leaf's warehouse
-  location, and what it is still owed.
-- Good end-to-end exercise: stage one leaf of a pair, and watch the pair's two rows in the detail sit
-  at "Staged" and "Awaiting pull" while the request itself reads "Awaiting pull".
-- A **cancelled** pull is the case worth checking deliberately. Cancelling detaches the openings and
-  puts the request back to Pending, so without this view the request looks as though it was never
-  accepted; here it reads "Pull cancelled" with an alert naming who cancelled it and why.
-
-**Notifications raised by this module (#344)**, all visible in the bell (which shows every audience,
-so you will see all of them regardless of your role):
-
-| Type | Fires when | Watch out for |
-| --- | --- | --- |
-| `ASSEMBLY_WORK_AVAILABLE` | You confirm a staging batch, or complete a pull that still had un-staged openings | **One per confirmation, not per opening.** Staging three carts in one action gives one notification naming them. Re-staging an already-staged opening gives none |
-| `REPLACEMENT_ARRIVED` | A `PR-REPL-*` pull completes for a leaf that has **not** shipped | Addressed to the assembler's Clerk user id, so `recipientRole` looks like `user_2ab...`. None is raised if nobody is holding the leaf |
-| `REPLACEMENT_AFTER_SHIPMENT` | Same, but the leaf has already shipped | Exactly one of these two fires, never both |
-| `PULL_UNBLOCKED` | A receive lands stock that makes a blocked `PR-REPL-*` pull fully coverable | Deduped three ways: only pulls wanting a combo you actually received; only if the pull is coverable *after* the receive; and only one **unread** one per pull. Mark it read and receive again to get a second. A receive is the only path that raises it - a cancel-restock can also make a pull coverable and stays silent |
+**The Shop Assembly Manager role gates nothing in v1.** It stays defined in Clerk (its only consumer
+was the assignment roster), so a user holding it sees exactly what anybody else does.
 
 ### Shipping Module
 
@@ -986,23 +957,21 @@ cleared field really clears), Mark Picked Up (SCHEDULED), Mark Delivered (PICKED
 (unchanged). Lifecycle/edit mutations return the whole header, so the row updates through the Apollo
 cache with no reload - assert on the row, do not wait for a refetch.
 
-**Loose hardware only becomes ship-ready when its SHIPPING_OUT pull is COMPLETED.** Confirming the
-pick leaves the pull IN_PROGRESS with phase "Picked - ready to mark pulled" and the Ship tab's Loose
-Hardware grid stays empty; "Mark as Pulled" in the pull detail modal is what completes it. Budget for
-that extra step when scripting the chain.
+**Hardware only reaches the staged pool when its SHIPPING_OUT pull is COMPLETED.** Confirming the
+pick leaves the pull IN_PROGRESS with phase "Picked - ready to hand over" and the Ship tab stays
+empty; "Mark as Pulled" in the pull detail modal is what completes it. Budget for that extra step
+when scripting the chain.
 
-**Incomplete-leaf guard in the Start-a-Request shipping wizard (#341).** On the Shipping PRs step, an
-assembled leaf that is still owed hardware carries an amber "Incomplete - awaiting replacement" chip
-and a "<n> unit(s) still awaiting replacement" caption.
+**The shipping wizard composes off the same query shop assembly does.** On the Shipping Out step you
+get one row per (opening, product) with Still owed / Already sent / On order and a Send box clamped
+to what is genuinely free. Shop Hardware is filtered out - it goes to the bench, not on a truck -
+and unclassified lines DO appear here, because hardware nobody classified goes to site by default
+rather than being silently dropped.
 
-- Ticking its checkbox does **not** select it - it opens a "Ship an incomplete leaf?" dialog first.
-  "Ship it short" selects it and records the acknowledgment; "Leave it here" leaves the checkbox
-  clear. Unticking an already-selected flagged leaf never asks.
-- Without that confirmation the finalize is refused by the backend with a VALIDATION_ERROR naming
-  every flagged leaf, so driving the mutation directly (without `acknowledgeIncompleteLeaves: true`)
-  is the way to exercise the guard from GraphQL.
-- The flag is `openingItems { awaitingReplacementQuantity }` - condemned-and-unreplaced plus
-  arrived-but-not-fitted. It only drops to 0 once the replacement is actually installed on the leaf.
+- There is no per-leaf selection and no "ship it short" confirmation any more. Sending short is the
+  ordinary case: assign less than the suggestion, or untick the line.
+- **Re-run auto-assign** rebuilds the allocation from current availability. It is also what a
+  race refusal triggers, with a banner saying availability moved.
 
 ### Admin Module
 
@@ -1099,10 +1068,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - `inventoryHierarchy` returns `totalAvailableQuantity` at both category and product-code levels (issue #229): available = quantity - deficient, so a 10-qty row with 7 deficient shows total 10 / available 3. Cross-check against `deficientItems`.
 - `Notification` has no `kind` field - it is `type` (`{ notifications { id type message isRead createdAt recipientRole projectId } }`). Querying `kind` fails the whole document, so a mistyped notification field takes the relay/pull/request fields in the same query down with it.
 - The bell panel is a plain MUI Popover with a "Notifications" heading and one bold row per unread item; the app-bar badge count matches `notifications` where `isRead: false`. It renders every audience regardless of your role, so 4 in the badge means 4 rows in the panel.
-- **Pre-#346 completed leaves read as `0/N units` everywhere.** `installed_quantity` was added with `server_default "0"`, so leaves assembled before slice 2 landed have no per-line progress and `assemblyPipelineSummaries.installedUnitCount` comes back 0 even for openings that are `completedOpeningCount`/`shippedOpeningCount`. The Pipeline grid's Progress column and the detail modal's Units column both render that faithfully - a row reading "Shipped / 2 of 2 assembled / 0/2 units" is legacy data, not a bug. Current code cannot produce it: `complete_assembly` refuses a leaf where every line is `installed_quantity == 0`.
-- Same vintage: the Pipeline detail's per-leaf **Staged** column shows `-` while the pull's own staging panel shows a green "Staged" chip. The panel reads `pull_status`; the pipeline reads `staged_at`/`staged_by`, which the pre-#343 "Mark as Pulled" path never wrote. Not a contradiction, just two fields with different histories.
-- The Shipping browse page's "Door leaves shipped" is a **section label**, not a stat card - there is no count in it. The `0` that lands next to it in `document.body.innerText` on the All-Projects view is the **cart badge** from the app bar. Do not read it as "zero leaves shipped"; the per-opening chips below are the truth (a shipped opening renders as a filled green chip, `Opening 0019-EX: 2 of 2 leaves shipped`).
-- `shopAssemblyRequests` returning `[]` does **not** mean the pipeline is empty - it is the *pending accept queue*. `assemblyPipelineSummaries` covers every request in every state and is the right query for "what exists". A request whose pull is already approved shows up in the second and not the first.
+- `shopAssemblyRequests` takes a `status` and defaults to **PENDING**, so `[]` means the accept queue is empty, not that no requests exist. Ask for `status: APPROVED` (or `REJECTED`) to see the rest; every row carries a derived `stage` telling you how far its pull has got.
 
 ### Driving the app with the Chrome MCP tools
 
@@ -1149,7 +1115,7 @@ queries/mutations and every action are unchanged, but a lot of chrome moved:
 
 - **Navigation is a persistent left rail on desktop** (collapsible via the panel icon in the app
   bar; state persists in localStorage `uc-nexus-rail-collapsed`). The hamburger-opens-drawer flow
-  now exists only below the `md` breakpoint. Sub-items (incl. the new Pipeline entry) expand under
+  now exists only below the `md` breakpoint. Sub-items expand under
   the active module. The `<- Warehouse` / `<- Projects` back buttons are gone - breadcrumbs (now
   labelled "Purchase Orders", "Start a Request") are the way back.
 - **Icons are lucide (stroke) not Material (filled)**; icon-only buttons gained aria-labels
@@ -1164,16 +1130,9 @@ queries/mutations and every action are unchanged, but a lot of chrome moved:
 - **Escape behavior changed on purpose**: Pull Request detail modal now closes on Escape;
   Receive modal and Transfer dialog now *block* Escape once you have typed values into them
   (they used to discard silently). The assembly modal's close semantics are unchanged.
-- **Shipping browse (Ship tab)** is no longer a chip wall: one row per opening (mono ref +
-  per-leaf tags), with a text search on opening # and an All / Shippable / Shipped / Not ready
-  filter. Long project groups window at 30 rows with a "Show N more of M" tail - enumerate via
-  the search box or expand the tail. Selection/cart semantics unchanged. (The shop-assembly /
-  warehouse shared chip panel caught up on 2026-07-29, PR #400: `OpeningLeafStatusPanel` windows
-  each project group at 30 rows with a "Show N more of M" tail, adds a "Search opening #" box once
-  there are more than 30 rows - searching expands across the window - and grouped project headers
-  carry a "N of M leaves assembled/shipped" summary. On the Assemble List the panel now renders
-  BELOW the Ready/Waiting/Pending work sections, so asserting on the top of that page means the
-  work sections, not the chip wall.)
+- **Shipping browse (Ship tab)** lists the staged pool - what a completed shipping-out pull put on
+  the floor, minus what a slip has already carried out - with a text search and the container
+  workspace beside it. The per-leaf status panel it used to carry is gone with the leaves.
 - **Import wizard**: step 1 shows a single success strip (the old second green alert is merged
   in); Purpose options are cards now but the radio semantics and the exact label strings
   ("Create Purchase Orders", "Pull Request for Shop Assembly", "Pull Request for Shipping Out")

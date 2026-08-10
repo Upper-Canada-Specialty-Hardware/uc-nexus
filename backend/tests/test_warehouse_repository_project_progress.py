@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from app.models.enums import HardwareItemState, POStatus, PullRequestItemType, ShipmentStatus
+from app.models.enums import HardwareItemState, POStatus, ShipmentStatus
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
@@ -121,7 +121,6 @@ def _make_packing_slip_item(
     psi = PackingSlipItem(
         id=uuid.uuid4(),
         packing_slip_id=packing_slip_id,
-        item_type=PullRequestItemType.LOOSE,
         product_code=product_code,
         hardware_category=hardware_category,
         quantity=quantity,
