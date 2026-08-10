@@ -32,7 +32,7 @@ export default function ReclassifyStockModal({ item, onClose, onSuccess }: Props
   });
 
   const q = Number(quantity);
-  const isSplit = q > 0 && q < item.available;
+  const isSplit = q > 0 && q < item.quantity;
   const valid =
     Number.isInteger(q) &&
     q >= 1 &&
