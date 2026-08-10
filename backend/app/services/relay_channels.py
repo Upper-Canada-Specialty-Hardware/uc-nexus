@@ -82,6 +82,20 @@ def channel_url_for(environment_name: str) -> str:
     return _CHANNEL_URL.format(environment=environment_name)
 
 
+def _error_summary(errors: object) -> str:
+    """Railway's GraphQL errors as one short readable string.
+
+    The whole point of this line is that a person reads it in a deploy log and knows what to change,
+    so it pulls the messages out rather than dumping the raw structure. "Not Authorized" says the
+    token is the wrong kind; a field or argument complaint says the query shape has moved.
+    """
+    if isinstance(errors, list):
+        messages = [str((e or {}).get("message", e)) for e in errors if e is not None]
+        if messages:
+            return "; ".join(messages)[:500]
+    return str(errors)[:500]
+
+
 def _environment_names(payload: dict) -> list[str]:
     """Environment names out of either response shape, tolerating a missing branch rather than raising.
 
@@ -115,9 +129,14 @@ def _fetch_environment_names() -> list[str] | None:
             response.raise_for_status()
             payload = response.json()
         except Exception as e:
+            # Details inline, not in `extra`. The backend logs through the stdlib's default formatter,
+            # which renders the message and drops every extra field - so a diagnostic put there is
+            # invisible in Railway's deploy log, which is the only place anybody reads this from. Cost
+            # one deploy cycle to learn the first time.
             logger.warning(
-                "could not reach the Railway API for preview channel discovery",
-                extra={"error": str(e), "url": RAILWAY_API_URL},
+                "could not reach the Railway API for preview channel discovery: %s (url=%s)",
+                e,
+                RAILWAY_API_URL,
             )
             return None
         if payload.get("errors"):
@@ -126,8 +145,9 @@ def _fetch_environment_names() -> list[str] | None:
         return _environment_names(payload)
     logger.warning(
         "the Railway API refused both environment queries; preview channel discovery is off until "
-        "this is fixed, and the relay keeps whatever it already had",
-        extra={"errors": str(last_errors)[:500]},
+        "this is fixed, and the relay keeps whatever it already had. project_id=%s errors=%s",
+        RAILWAY_PROJECT_ID or "(unset)",
+        _error_summary(last_errors),
     )
     return None
 

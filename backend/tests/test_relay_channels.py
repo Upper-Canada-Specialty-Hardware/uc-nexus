@@ -144,6 +144,29 @@ def test_a_shape_nobody_expected_is_an_empty_list_not_a_crash(monkeypatch, confi
     assert relay_channels.discover_preview_channels() == []
 
 
+def test_a_refusal_names_the_reason_in_the_message_itself(monkeypatch, configured, caplog):
+    # The whole value of this warning is that somebody reads it in a Railway deploy log and knows what
+    # to change. The first version put Railway's errors in the log record's `extra`, which the stdlib's
+    # default formatter drops - so the line arrived saying only "refused both queries" and cost a
+    # deploy cycle to learn nothing. The reason has to be IN the message.
+    _serve(monkeypatch, {"errors": [{"message": "Not Authorized"}]})
+    with caplog.at_level("WARNING"):
+        assert relay_channels.discover_preview_channels() == []
+    rendered = caplog.records[-1].getMessage()
+    assert "Not Authorized" in rendered
+    assert "project" in rendered
+
+
+def test_an_unreachable_api_names_the_reason_too(monkeypatch, configured, caplog):
+    def _fail(*a, **k):
+        raise RuntimeError("getaddrinfo failed")
+
+    monkeypatch.setattr(relay_channels.httpx, "post", _fail)
+    with caplog.at_level("WARNING"):
+        assert relay_channels.discover_preview_channels() == []
+    assert "getaddrinfo failed" in caplog.records[-1].getMessage()
+
+
 def test_the_answer_is_cached_between_relay_ticks(monkeypatch, configured):
     calls: list[str] = []
     _serve(monkeypatch, _envs("uc-nexus-pr-554"), calls=calls)
