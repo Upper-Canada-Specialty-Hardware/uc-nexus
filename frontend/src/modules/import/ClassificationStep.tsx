@@ -1,8 +1,9 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Alert, Box, Typography } from '@mui/material';
 import { tabularSx } from '../../theme';
-import ClassificationGrid, { type ClassificationRow } from './ClassificationGrid';
-import { SCOPE_OPTIONS, ASSEMBLY_OPTIONS } from './types';
+import ClassificationGrid, { type ClassificationRow, type GroupByField } from './ClassificationGrid';
+import GuidedClassification from './GuidedClassification';
+import { SCOPE_OPTIONS, ASSEMBLY_OPTIONS, isRowClassified } from './types';
 import type { ImportPurpose } from './types';
 
 interface ClassificationStepProps {
@@ -16,6 +17,11 @@ interface ClassificationStepProps {
   isReimport: boolean;
 }
 
+// #568: the step is a two-phase screen. The guided flow walks the unclassified items group by group;
+// the existing grid stays on as the review/correction screen you land on afterwards (or straight
+// away, when nothing is unclassified).
+type Phase = 'guided' | 'review';
+
 export default function ClassificationStep({
   classificationRows,
   onClassify,
@@ -25,16 +31,23 @@ export default function ClassificationStep({
   openingCount,
   isReimport,
 }: ClassificationStepProps) {
-  const classifiedCount = classificationRows.filter((r) => r.classification !== '').length;
-  const allClassified = classifiedCount === classificationRows.length;
-
   const isReadOnly = purpose !== 'po' && purpose !== 'assembly';
 
   const options = purpose === 'po' ? SCOPE_OPTIONS : ASSEMBLY_OPTIONS;
+  // The two-axis (PO) case carries a Site/Shop second axis; a one-axis (assembly) case does not.
+  const hasSiteShop = purpose === 'po';
+  const siteShopOptions = hasSiteShop ? ASSEMBLY_OPTIONS : undefined;
+  const siteShopExemptValue = hasSiteShop ? 'BY_OTHERS' : undefined;
+  const classifyOpts = useMemo(
+    () => ({ hasSiteShop, siteShopExemptValue }),
+    [hasSiteShop, siteShopExemptValue],
+  );
+
+  const classifiedCount = classificationRows.filter((r) => r.classification !== '').length;
+  const allClassified = classifiedCount === classificationRows.length;
 
   // Issue #216: for PO purpose, every in-scope (non-By-Others) item also needs a Site/Shop pick.
-  // The Next gate this drives is lifted into ImportWizard (#566), which owns classificationRows and
-  // computes it there; here these counts only feed the progress readouts below.
+  // The Next gate this drives is lifted into ImportWizard (#566); here these counts feed the readouts.
   const inScopeRows = useMemo(
     () => (purpose === 'po' ? classificationRows.filter((r) => r.classification !== 'BY_OTHERS') : []),
     [purpose, classificationRows],
@@ -42,8 +55,20 @@ export default function ClassificationStep({
   const siteShopCount = inScopeRows.filter((r) => (r.siteShop ?? '') !== '').length;
   const allSiteShopClassified = siteShopCount === inScopeRows.length;
 
+  // Grouping is owned here so the review grid opens on whatever grouping the guided flow used. Default
+  // manufacturer - the user's ask: group by maker so a whole vendor's parts get one answer.
+  const [groupByFields, setGroupByFields] = useState<GroupByField[]>(['vendorNo']);
+
+  // Open guided when there is anything to guide and the step is editable; otherwise land on review.
+  const [phase, setPhase] = useState<Phase>(() => {
+    if (isReadOnly) return 'review';
+    return classificationRows.some((r) => !isRowClassified(r, classifyOpts)) ? 'guided' : 'review';
+  });
+
+  const missingCount = classificationRows.filter((r) => !isRowClassified(r, classifyOpts)).length;
+
   return (
-    <Box>
+    <Box sx={{ minWidth: 0 }}>
       <Typography variant="h6" sx={{ mb: 2 }}>
         Classification
       </Typography>
@@ -86,15 +111,44 @@ export default function ClassificationStep({
         </>
       )}
 
-      <ClassificationGrid
-        rows={classificationRows}
-        options={options}
-        onClassify={onClassify}
-        readOnly={isReadOnly}
-        siteShopOptions={purpose === 'po' ? ASSEMBLY_OPTIONS : undefined}
-        onClassifySiteShop={purpose === 'po' ? onClassifySiteShop : undefined}
-        siteShopExemptValue={purpose === 'po' ? 'BY_OTHERS' : undefined}
-      />
+      {!isReadOnly && phase === 'guided' ? (
+        <GuidedClassification
+          rows={classificationRows}
+          options={options}
+          onClassify={onClassify}
+          siteShopOptions={siteShopOptions}
+          onClassifySiteShop={hasSiteShop ? onClassifySiteShop : undefined}
+          siteShopExemptValue={siteShopExemptValue}
+          groupByFields={groupByFields}
+          onChangeGroupByFields={setGroupByFields}
+          onComplete={() => setPhase('review')}
+          onSkipToReview={() => setPhase('review')}
+        />
+      ) : (
+        <>
+          {!isReadOnly && (
+            <Typography
+              variant="body2"
+              sx={{ mb: 1.5, fontWeight: 600 }}
+              color={missingCount === 0 ? 'success.main' : 'text.secondary'}
+            >
+              {missingCount === 0
+                ? `Review: all ${classificationRows.length} classified.`
+                : `Review: ${classifiedCount} classified, ${missingCount} still missing a classification.`}
+            </Typography>
+          )}
+          <ClassificationGrid
+            rows={classificationRows}
+            options={options}
+            onClassify={onClassify}
+            readOnly={isReadOnly}
+            siteShopOptions={siteShopOptions}
+            onClassifySiteShop={hasSiteShop ? onClassifySiteShop : undefined}
+            siteShopExemptValue={siteShopExemptValue}
+            initialGroupByFields={groupByFields}
+          />
+        </>
+      )}
     </Box>
   );
 }

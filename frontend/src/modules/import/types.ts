@@ -70,6 +70,20 @@ export interface ClassificationInputEntry {
   classification: string;
 }
 
+// #568: a single definition of "this row is fully classified", shared by the guided flow, the review
+// grid's unclassified filter, and the step's phase choice so the three cannot drift. A row needs its
+// primary axis; a two-axis (PO) row also needs Site/Shop unless its primary is the exempt value
+// (By Others), which is out of scope and carries none.
+export function isRowClassified(
+  row: { classification: string; siteShop?: string },
+  opts: { hasSiteShop: boolean; siteShopExemptValue?: string },
+): boolean {
+  if (row.classification === '') return false;
+  if (!opts.hasSiteShop) return true;
+  if (opts.siteShopExemptValue && row.classification === opts.siteShopExemptValue) return true;
+  return (row.siteShop ?? '') !== '';
+}
+
 // #321: project the shared classifications Map into finalize ClassificationInput entries, keeping
 // only real Site/Shop values. Re-imports seed the Map with BY_OTHERS (an ownership value, not a
 // Site/Shop one) from the exclusion table; those items are out of scope for shop assembly and the
