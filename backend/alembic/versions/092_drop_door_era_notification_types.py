@@ -40,8 +40,10 @@ _NOTIFICATION_TYPE_WITHOUT = (
 
 
 def upgrade() -> None:
+    # Compared as text: on a fresh database this migration runs in the same transaction as the
+    # 061/064 ADD VALUEs, and an enum-literal IN would trip UnsafeNewEnumValueUsage there.
     values = ", ".join(f"'{t}'" for t in _REMOVED)
-    op.execute(f"DELETE FROM notifications WHERE type IN ({values})")
+    op.execute(f"DELETE FROM notifications WHERE type::text IN ({values})")
     op.execute("ALTER TYPE notification_type RENAME TO notification_type_old")
     op.execute(f"CREATE TYPE notification_type AS ENUM ({_NOTIFICATION_TYPE_WITHOUT})")
     op.execute("ALTER TABLE notifications ALTER COLUMN type TYPE notification_type USING type::text::notification_type")
