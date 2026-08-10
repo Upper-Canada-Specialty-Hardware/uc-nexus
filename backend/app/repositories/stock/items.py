@@ -21,8 +21,10 @@ def get_stock_items(
     aisle: str | None = None,
     only_deficient: bool = False,
     warehouse_id: uuid.UUID | None = None,
+    only_unlocated: bool = False,
 ) -> list[StockItem]:
-    """List stock_items optionally filtered by product code, category, aisle, or deficient-only.
+    """List stock_items optionally filtered by product code, category, aisle, deficient-only, or
+    unlocated-only (no aisle - the rows the Put Away stock section works through).
 
     Hides fully-emptied rows (quantity = 0 AND deficient_quantity = 0). These rows are kept in the
     DB so they can remain the origin of any inventory_locations row that was allocated out of them
@@ -47,6 +49,8 @@ def get_stock_items(
         stmt = stmt.where(StockItem.deficient_quantity > 0)
     if warehouse_id is not None:
         stmt = stmt.where(StockItem.warehouse_id == warehouse_id)
+    if only_unlocated:
+        stmt = stmt.where(StockItem.aisle.is_(None))
     return list(session.scalars(stmt).all())
 
 

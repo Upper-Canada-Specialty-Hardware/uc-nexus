@@ -24,6 +24,8 @@ from app.repositories.warehouse import progress
 from app.schemas import warehouse as warehouse_schema_module
 from main import schema
 
+from .inventory_fixtures import make_stock_item
+
 
 def _make_project(session) -> Project:
     p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test")
@@ -96,6 +98,22 @@ def test_deficient_count_sums_project_inventory_and_stock_pool(db_session):
 
     dashboard = progress.get_warehouse_dashboard(session)
     assert dashboard["deficient_count"] == baseline + 5
+
+
+def test_stock_tiles_count_units_on_hand_and_unlocated_rows(db_session):
+    """stock_item_count sums StockItem.quantity (units, like total_item_count); stock_unlocated_count
+    counts rows with no aisle and quantity > 0 (rows, like unlocated_count on the project side)."""
+    session = db_session
+    baseline = progress.get_warehouse_dashboard(session)
+
+    # One located row and two unlocated rows: 5 + 3 + 4 = 12 units, 2 of them unlocated.
+    make_stock_item(session, quantity=5, code="ST-LOC", aisle="A", row="1", bay="1")
+    make_stock_item(session, quantity=3, code="ST-U1")
+    make_stock_item(session, quantity=4, code="ST-U2")
+
+    dashboard = progress.get_warehouse_dashboard(session)
+    assert dashboard["stock_item_count"] == baseline["stock_item_count"] + 12
+    assert dashboard["stock_unlocated_count"] == baseline["stock_unlocated_count"] + 2
 
 
 class _FakeRequest:

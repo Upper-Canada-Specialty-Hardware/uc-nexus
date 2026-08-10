@@ -33,7 +33,12 @@ import {
   ASSIGN_INVENTORY_LOCATION,
   SPLIT_INVENTORY_LOCATION,
 } from '../../graphql/shared';
-import { GET_UNLOCATED_INVENTORY, GET_LOCATION_DISTINCT_VALUES } from '../../graphql/warehouse';
+import {
+  GET_UNLOCATED_INVENTORY,
+  GET_LOCATION_DISTINCT_VALUES,
+  GET_STOCK_ITEMS,
+  ASSIGN_STOCK_ITEM_LOCATION,
+} from '../../graphql/warehouse';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
@@ -55,6 +60,16 @@ interface UnlocatedItem {
   poNumber: string | null;
   classification: string | null;
   unitCost: number;
+}
+
+/** An unlocated stock-pool row: fungible hardware with no project claim, awaiting a rack location. */
+interface StockRow {
+  id: string;
+  warehouseId: string | null;
+  hardwareCategory: string;
+  productCode: string;
+  quantity: number;
+  receivedAt: string;
 }
 
 interface Project {
@@ -131,6 +146,18 @@ export default function PutAwayTab() {
     variables: { projectId: projectFilter || undefined, warehouseId: warehouseFilter || undefined },
   });
 
+  // Stock pool put-away. Stock is project-less, so it honors only the warehouse filter and the
+  // section is skipped entirely under a project filter (nothing project-scoped to show). onlyUnlocated
+  // narrows the shared stockItems query to rows with no aisle.
+  const { data: stockData, refetch: refetchStock } = useQuery<{ stockItems: StockRow[] }>(
+    GET_STOCK_ITEMS,
+    {
+      variables: { onlyUnlocated: true, warehouseId: warehouseFilter || null },
+      skip: !!projectFilter,
+      fetchPolicy: 'cache-and-network',
+    },
+  );
+
   const aisleOptions = distinctData?.locationDistinctValues.aisles ?? [];
   const rowOptions = distinctData?.locationDistinctValues.rows ?? [];
   const bayOptions = distinctData?.locationDistinctValues.bays ?? [];
@@ -138,6 +165,7 @@ export default function PutAwayTab() {
   // Mutation
   const [assignLocation] = useMutation(ASSIGN_INVENTORY_LOCATION);
   const [splitLocation] = useMutation(SPLIT_INVENTORY_LOCATION);
+  const [assignStockLocation] = useMutation(ASSIGN_STOCK_ITEM_LOCATION);
 
   // Derived
   const projects = projectsData?.projects ?? [];
@@ -149,12 +177,17 @@ export default function PutAwayTab() {
   }, [warehouses]);
   const items = useMemo(() => unlocatedData?.unlocatedInventory ?? [], [unlocatedData]);
   const grouped = useMemo(() => groupByCategory(items), [items]);
+  const stockRows = useMemo(() => stockData?.stockItems ?? [], [stockData]);
   // Per-row warehouse is redundant noise once the list is filtered to one building, or when only one
   // warehouse holds unlocated stock. Show it only when the queue actually spans warehouses.
   const showWarehouse = useMemo(() => {
     if (warehouseFilter) return false;
     return new Set(items.map((i) => i.inventoryLocation.warehouseId).filter(Boolean)).size > 1;
   }, [warehouseFilter, items]);
+  const showStockWarehouse = useMemo(() => {
+    if (warehouseFilter) return false;
+    return new Set(stockRows.map((s) => s.warehouseId).filter(Boolean)).size > 1;
+  }, [warehouseFilter, stockRows]);
 
   // Handlers
   const getLocationInput = useCallback(
@@ -251,6 +284,31 @@ export default function PutAwayTab() {
     [getLocationInput, assignLocation, splitLocation, splitQty, showToast, refetch],
   );
 
+  const handleAssignStock = useCallback(
+    async (id: string, productCode: string) => {
+      const loc = getLocationInput(id);
+      setAssigningId(id);
+      try {
+        await assignStockLocation({
+          variables: { stockItemId: id, aisle: loc.aisle.trim(), row: loc.row.trim(), bay: loc.bay.trim() },
+        });
+        showToast(`Location assigned for ${productCode}`, 'success');
+        setLocationInputs((prev) => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+        refetchStock();
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Failed to assign location';
+        showToast(message, 'error');
+      } finally {
+        setAssigningId(null);
+      }
+    },
+    [getLocationInput, assignStockLocation, showToast, refetchStock],
+  );
+
   // ---- Render ----
 
   if (loading && !unlocatedData) {
@@ -315,7 +373,7 @@ export default function PutAwayTab() {
 
       {items.length === 0 && (
         <Alert severity="success" sx={{ mt: 2 }}>
-          All inventory has been assigned locations.
+          All project inventory has been assigned locations.
         </Alert>
       )}
 
@@ -471,6 +529,95 @@ export default function PutAwayTab() {
           );
         })}
       </StaggerList>
+
+      {/* Stock pool: project-less, so it honors only the warehouse filter and is hidden under a
+          project filter. assignStockItemLocation gives each unlocated row its aisle/row/bay. */}
+      {!projectFilter && stockRows.length > 0 && (
+        <Box sx={{ mt: 4 }}>
+          <Typography variant="h6" sx={{ mb: 0.5 }}>
+            Stock Pool
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+            Unlocated fungible stock with no project claim. Give each a rack location.
+          </Typography>
+          <TableContainer component={Paper} variant="outlined">
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Product Code</TableCell>
+                  <TableCell>Category</TableCell>
+                  {showStockWarehouse && <TableCell>Warehouse</TableCell>}
+                  <TableCell align="right">Qty</TableCell>
+                  <TableCell>Received</TableCell>
+                  <TableCell sx={{ minWidth: 300 }}>Destination</TableCell>
+                  <TableCell />
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {stockRows.map((si) => {
+                  const id = si.id;
+                  const loc = getLocationInput(id);
+                  const valid = isValid(id);
+                  const isAssigning = assigningId === id;
+                  return (
+                    <TableRow key={id} hover>
+                      <TableCell sx={monoSx}>{si.productCode}</TableCell>
+                      <TableCell>{si.hardwareCategory}</TableCell>
+                      {showStockWarehouse && (
+                        <TableCell>
+                          {si.warehouseId ? (
+                            <Chip
+                              label={warehouseCode.get(si.warehouseId) ?? '—'}
+                              size="small"
+                              variant="outlined"
+                            />
+                          ) : (
+                            '—'
+                          )}
+                        </TableCell>
+                      )}
+                      <TableCell align="right">{si.quantity}</TableCell>
+                      <TableCell sx={tabularSx}>{formatDate(si.receivedAt)}</TableCell>
+                      <TableCell>
+                        <Box sx={{ display: 'flex', gap: 1, minWidth: 300 }}>
+                          <LocationAutocomplete
+                            label="Aisle"
+                            value={loc.aisle}
+                            onChange={(v) => updateLocationInput(id, 'aisle', v)}
+                            options={aisleOptions}
+                          />
+                          <LocationAutocomplete
+                            label="Row"
+                            value={loc.row}
+                            onChange={(v) => updateLocationInput(id, 'row', v)}
+                            options={rowOptions}
+                          />
+                          <LocationAutocomplete
+                            label="Bay"
+                            value={loc.bay}
+                            onChange={(v) => updateLocationInput(id, 'bay', v)}
+                            options={bayOptions}
+                          />
+                        </Box>
+                      </TableCell>
+                      <TableCell>
+                        <Button
+                          variant="contained"
+                          size="small"
+                          disabled={!valid || isAssigning}
+                          onClick={() => handleAssignStock(id, si.productCode)}
+                        >
+                          {isAssigning ? <CircularProgress size={20} /> : 'Assign'}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Box>
+      )}
     </Box>
   );
 }

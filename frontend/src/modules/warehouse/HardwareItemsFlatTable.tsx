@@ -1,21 +1,16 @@
 import { useState, useMemo, useCallback } from 'react';
 import { Box, Alert, Button, Chip, CircularProgress, Typography } from '@mui/material';
 import { DataGrid, type GridColDef, GridToolbar } from '@mui/x-data-grid';
-import { useQuery, useMutation } from '@apollo/client/react';
-import {
-  GET_INVENTORY_ROWS,
-  GET_PROJECT_INVENTORY_AVAILABILITY,
-  REPORT_INVENTORY_DEFICIENCY,
-} from '../../graphql/warehouse';
-import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
-import { useToast } from '../../components/Toast';
+import { useQuery } from '@apollo/client/react';
+import { GET_INVENTORY_ROWS } from '../../graphql/warehouse';
 import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
 import AuditHistoryDrawer from './AuditHistoryDrawer';
 import SpotCheckModal from './SpotCheckModal';
 import DestockInventoryModal from './stock/DestockInventoryModal';
+import FlagDeficientModal from './FlagDeficientModal';
+import TransferDialog, { type TransferSource } from './TransferDialog';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
-import type { InventoryAvailabilityRow } from '../import/types';
 
 /** One InventoryLocation as the API returns it. */
 interface InventoryItem {
@@ -24,6 +19,7 @@ interface InventoryItem {
   poLineItemId: string | null;
   receiveLineItemId: string | null;
   stockItemId: string | null;
+  warehouseId: string | null;
   hardwareCategory: string;
   productCode: string;
   quantity: number;
@@ -46,8 +42,8 @@ interface InventoryItem {
  * products. One row per inventory line answers both: a product-level rollup is one sort away, and
  * the whole thing exports to CSV.
  *
- * Every row action the accordion carried is kept - history, spot check, destock, flag deficient,
- * correction - because they were the only place those operations were reachable.
+ * Every row action the accordion carried is kept - history, spot check, destock, transfer, flag
+ * deficient, correction - because they were the only place those operations were reachable.
  */
 
 interface InventoryRow {
@@ -89,41 +85,17 @@ interface HardwareItemsFlatTableProps {
 }
 
 export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatTableProps) {
-  const { showToast } = useToast();
-
   const { data, loading, error, refetch } = useQuery<{ inventoryRows: InventoryRow[] }>(
     GET_INVENTORY_ROWS,
     { variables: { projectId } },
   );
 
-  // One project-scoped read of the reservation numbers (not one per row), so Flag Deficient can warn
-  // when it pushes a combo's available below what active requests have claimed. The All-Projects view
-  // has no single project to key it by, so it skips the read and flags without the reserved figure.
-  const { data: availData } = useQuery<{ projectInventoryAvailability: InventoryAvailabilityRow[] }>(
-    GET_PROJECT_INVENTORY_AVAILABILITY,
-    { variables: { projectId }, skip: !projectId, fetchPolicy: 'cache-and-network' },
-  );
-  const availByCombo = useMemo(() => {
-    const map = new Map<string, InventoryAvailabilityRow>();
-    for (const r of availData?.projectInventoryAvailability ?? []) {
-      map.set(`${r.hardwareCategory}|${r.productCode}`, r);
-    }
-    return map;
-  }, [availData]);
-
   const [correctionItem, setCorrectionItem] = useState<InventoryItem | null>(null);
   const [auditItem, setAuditItem] = useState<InventoryItem | null>(null);
   const [spotCheckItem, setSpotCheckItem] = useState<InventoryItem | null>(null);
   const [destockItem, setDestockItem] = useState<InventoryItem | null>(null);
-
-  const [reportDeficient] = useMutation(REPORT_INVENTORY_DEFICIENCY, {
-    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
-    awaitRefetchQueries: true,
-    onCompleted: () => {
-      void refetch();
-    },
-    onError: (err) => showToast(err.message, 'error'),
-  });
+  const [flagItem, setFlagItem] = useState<InventoryItem | null>(null);
+  const [transferSource, setTransferSource] = useState<TransferSource | null>(null);
 
   const onChanged = useCallback(() => {
     void refetch();
@@ -238,7 +210,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
     cols.push({
       field: 'actions',
       headerName: 'Actions',
-      width: 380,
+      width: 470,
       sortable: false,
       filterable: false,
       // Excluded from CSV: these are buttons, not data.
@@ -259,45 +231,27 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
             </Button>
             <Button
               size="small"
+              onClick={() =>
+                setTransferSource({
+                  type: 'INVENTORY_LOCATION',
+                  id: il.id,
+                  productCode: il.productCode,
+                  available,
+                  warehouseId: il.warehouseId,
+                  aisle: il.aisle,
+                  row: il.row,
+                  bay: il.bay,
+                })
+              }
+              disabled={available <= 0}
+            >
+              Transfer
+            </Button>
+            <Button
+              size="small"
               color="warning"
               disabled={available <= 0}
-              onClick={async () => {
-                if (available <= 0) {
-                  showToast('Nothing left to flag - all units already deficient', 'info');
-                  return;
-                }
-                const input = window.prompt(
-                  `Flag how many of ${il.productCode} as deficient? (max ${available})`,
-                  '1',
-                );
-                if (!input) return;
-                const q = Number(input);
-                if (!Number.isInteger(q) || q < 1 || q > available) {
-                  showToast('Invalid quantity', 'error');
-                  return;
-                }
-                const reason = window.prompt('Reason (optional)', '') || null;
-                // Flagging q deficient nets q out of the combo's sound on-hand. Warn (but still flag)
-                // when that drops below what active requests reserved - reserved comes from the one
-                // project-scoped read above, so this stays a warning without a per-row query.
-                const combo = availByCombo.get(`${il.hardwareCategory}|${il.productCode}`);
-                const reserved = combo?.reservedQuantity ?? 0;
-                const strands =
-                  combo != null && combo.onHandQuantity - combo.deficientQuantity - q < reserved;
-                try {
-                  await reportDeficient({
-                    variables: { input: { inventoryLocationId: il.id, quantity: q, reasonText: reason } },
-                  });
-                  showToast(
-                    strands
-                      ? `Flagged ${q} deficient - now below the ${reserved} unit(s) reserved by active requests`
-                      : 'Deficient quantity flagged on row',
-                    strands ? 'warning' : 'success',
-                  );
-                } catch {
-                  // onError already surfaced the failure as a toast.
-                }
-              }}
+              onClick={() => setFlagItem(il)}
             >
               Flag Deficient
             </Button>
@@ -310,7 +264,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
     });
 
     return cols;
-  }, [projectId, reportDeficient, showToast, availByCombo]);
+  }, [projectId]);
 
   if (loading) {
     return (
@@ -394,6 +348,28 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
           onClose={() => setDestockItem(null)}
           onSuccess={() => {
             setDestockItem(null);
+            onChanged();
+          }}
+        />
+      )}
+
+      {flagItem && (
+        <FlagDeficientModal
+          item={flagItem}
+          onClose={() => setFlagItem(null)}
+          onSuccess={() => {
+            setFlagItem(null);
+            onChanged();
+          }}
+        />
+      )}
+
+      {transferSource && (
+        <TransferDialog
+          source={transferSource}
+          onClose={() => setTransferSource(null)}
+          onSuccess={() => {
+            setTransferSource(null);
             onChanged();
           }}
         />
