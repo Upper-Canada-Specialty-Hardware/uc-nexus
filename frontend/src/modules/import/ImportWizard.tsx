@@ -48,9 +48,15 @@ import {
   aggregationKey,
   backfillScopeFromSiteShop,
   classificationKey,
+  draftSeedSignature,
   itemGroupKey,
+  productKey,
+  seedDraftGroups,
   toClassificationInputs,
+  type DraftGroup,
 } from './types';
+import { buildPoDrafts } from './poDrafts';
+import * as draftOps from './draftOps';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
@@ -191,13 +197,17 @@ export default function ImportWizard({
   const [selectedOpenings, setSelectedOpenings] = useState<Set<string>>(new Set());
 
   // Action step state
-  const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
-  // #490: costCode joins notes and the preferred date as a per-manufacturer-card value, so the
-  // buyer can record the GP cost code with the request instead of only at registration.
-  const [vendorPOInfo, setVendorPOInfo] = useState<
-    Map<string, { notes: string; preferredDeliveryDate: string; costCode: string }>
-  >(new Map());
+  // #570: the PO drafts the buyer is composing. Seeded one-per-manufacturer from the aggregated
+  // selection, then freely sliced - lines move between drafts, drafts merge/split/rename. `included`,
+  // the notes/date/cost-code, and the ledger all live on the draft now, not on a manufacturer key.
+  const [draftGroups, setDraftGroups] = useState<DraftGroup[]>([]);
+  // The selection signature the drafts above were seeded from; a change re-seeds (see the effect).
+  const [seededDraftSignature, setSeededDraftSignature] = useState<string | null>(null);
+  // #570: keyed by productKey (`product|category`) now, not `vendor|product|category` - cost is a
+  // property of the product, shared across whichever drafts it lands in.
   const [unitCostOverrides, setUnitCostOverrides] = useState<Map<string, number>>(new Map());
+  // Monotonic id source for buyer-created drafts, so a new draft never collides with a seeded id.
+  const newDraftSeq = useRef(0);
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
   // Issue #216: PO-purpose second axis (SITE_HARDWARE/SHOP_HARDWARE), set by the PM at request
   // creation. Same classificationKey keying as `classifications` (which holds scope for PO purpose).
@@ -562,6 +572,38 @@ export default function ImportWizard({
     return new Map(Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b)));
   }, [aggregatedHardwareItems, purpose, classifications]);
 
+  // #570: the product metadata the PO step's draft ledgers render - the base unit cost, product code
+  // and category per productKey. Drafts carry only productKey -> qty, so the display detail is looked
+  // up from here (the first opening-level item wins; cost is a product property).
+  const poProductCatalog = useMemo(() => {
+    const map = new Map<string, { productCode: string; hardwareCategory: string; unitCost: number }>();
+    for (const items of vendorGroups.values()) {
+      for (const hi of items) {
+        const pk = productKey(hi);
+        if (!map.has(pk)) {
+          map.set(pk, {
+            productCode: hi.product_code,
+            hardwareCategory: hi.hardware_category,
+            unitCost: hi.unit_cost ?? 0,
+          });
+        }
+      }
+    }
+    return map;
+  }, [vendorGroups]);
+
+  // #570: re-seed the PO drafts when, and only when, the aggregated selection changes. Held against a
+  // signature so Back-and-forward through the wizard preserves the buyer's slicing; a real change to
+  // the selection (different openings, a reclassification) re-seeds from the new manufacturer groups.
+  const draftSeedSig = useMemo(() => draftSeedSignature(vendorGroups), [vendorGroups]);
+  useEffect(() => {
+    if (purpose !== 'po') return;
+    if (seededDraftSignature === draftSeedSig) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot re-seed keyed off the selection signature, same pattern as the composer
+    setDraftGroups(seedDraftGroups(vendorGroups));
+    setSeededDraftSignature(draftSeedSig);
+  }, [purpose, draftSeedSig, vendorGroups, seededDraftSignature]);
+
   // ---- Step Navigation ----
 
   const handleFileSelect = useCallback(
@@ -656,8 +698,8 @@ export default function ImportWizard({
   const resetDownstreamWizardState = useCallback(() => {
     setPurpose(null);
     setSelectedOpenings(new Set());
-    setSelectedVendors(new Set());
-    setVendorPOInfo(new Map());
+    setDraftGroups([]);
+    setSeededDraftSignature(null);
     setUnitCostOverrides(new Map());
     setOrderAsValues(new Map());
     setClassifications(new Map());
@@ -765,37 +807,47 @@ export default function ImportWizard({
     setSelectedOpenings(newSelected);
   }, []);
 
-  // Vendor selection
-  const toggleVendor = useCallback((vendor: string) => {
-    setSelectedVendors((prev) => {
-      const next = new Set(prev);
-      if (next.has(vendor)) {
-        next.delete(vendor);
-      } else {
-        next.add(vendor);
-      }
-      return next;
-    });
+  // #570: draft organizing, delegating to the pure reducers in draftOps so the conservation invariant
+  // is unit-tested there. Each handler is just a setDraftGroups wrapper.
+  const toggleDraftIncluded = useCallback((draftId: string) => {
+    setDraftGroups((prev) => draftOps.toggleIncluded(prev, draftId));
   }, []);
 
-  // Manufacturer-group PO info
-  const updateVendorPO = useCallback(
-    (manufacturerKey: string, field: 'notes' | 'preferredDeliveryDate' | 'costCode', value: string | null) => {
-      setVendorPOInfo((prev) => {
-        const next = new Map(prev);
-        const existing = next.get(manufacturerKey) ?? { notes: '', preferredDeliveryDate: '', costCode: '' };
-        next.set(manufacturerKey, { ...existing, [field]: value ?? '' });
-        return next;
-      });
+  const renameDraft = useCallback((draftId: string, label: string) => {
+    setDraftGroups((prev) => draftOps.renameDraft(prev, draftId, label));
+  }, []);
+
+  const updateDraftInfo = useCallback(
+    (draftId: string, field: 'notes' | 'preferredDeliveryDate' | 'costCode', value: string) => {
+      setDraftGroups((prev) => draftOps.updateInfo(prev, draftId, field, value));
     },
     [],
   );
 
-  // Unit cost overrides
-  const updateUnitCost = useCallback((vendor: string, productCode: string, hardwareCategory: string, value: number) => {
+  // Move `qty` units of a line to another draft: the whole-line menu passes the line's full quantity,
+  // the split dialog a partial. A source line emptied to zero is dropped.
+  const moveLine = useCallback((fromId: string, pk: string, qty: number, toId: string) => {
+    setDraftGroups((prev) => draftOps.moveLine(prev, fromId, pk, qty, toId));
+  }, []);
+
+  const createDraft = useCallback(() => {
+    const id = `new:${newDraftSeq.current++}`;
+    setDraftGroups((prev) => draftOps.createDraft(prev, id));
+  }, []);
+
+  const mergeDraft = useCallback((fromId: string, intoId: string) => {
+    setDraftGroups((prev) => draftOps.mergeDraft(prev, fromId, intoId));
+  }, []);
+
+  const removeDraft = useCallback((draftId: string) => {
+    setDraftGroups((prev) => draftOps.removeDraft(prev, draftId));
+  }, []);
+
+  // Unit cost overrides, keyed by productKey (#570).
+  const updateUnitCost = useCallback((pk: string, value: number) => {
     setUnitCostOverrides((prev) => {
       const next = new Map(prev);
-      next.set(`${vendor}|${productCode}|${hardwareCategory}`, value);
+      next.set(pk, value);
       return next;
     });
   }, []);
@@ -853,10 +905,6 @@ export default function ImportWizard({
       }
     }
 
-    // Helper: is this item classified as BY_OTHERS (for PO scope filtering)?
-    const isByOthers = (hi: AggregatedHardwareItem) =>
-      byOthersKeys.has(classificationKey(hi));
-
     // Compute excluded items for persistence
     const excludedItems = purpose === 'po'
       ? Array.from(new Map(
@@ -887,11 +935,10 @@ export default function ImportWizard({
       }
     }
     const fullScheduleHardwareItems = Array.from(fullScheduleAggMap.values()).map((hi) => {
-      // Apply any unit-cost overrides from the PO step so the persisted row matches what
-      // the user reviewed at finalize time.
-      const vendor = hi.vendor_no ?? '(No Manufacturer)';
-      const overrideKey = `${vendor}|${hi.product_code}|${hi.hardware_category}`;
-      const overriddenCost = unitCostOverrides.get(overrideKey);
+      // Apply any unit-cost overrides from the PO step so the persisted row matches what the user
+      // reviewed at finalize time. #570: keyed by productKey (`product|category`) - cost is a product
+      // property, the same wherever the product lands.
+      const overriddenCost = unitCostOverrides.get(productKey(hi));
       const item = overriddenCost !== undefined
         ? { ...hi, unit_cost: overriddenCost }
         : hi;
@@ -902,46 +949,10 @@ export default function ImportWizard({
       projectId: project.id,
       openings: parsed.openings.map((o) => snakeToCamel(o as unknown as Record<string, unknown>)),
       hardwareItems: fullScheduleHardwareItems,
-      poDrafts: purpose === 'po'
-        ? Array.from(vendorGroups.entries())
-            .filter(([vendor]) => selectedVendors.has(vendor))
-            .map(([vendor, items]) => {
-              // Filter out BY_OTHERS items from this vendor's PO draft
-              const inScopeItems = items.filter((hi) => !isByOthers(hi));
-              if (inScopeItems.length === 0) return null;
-              const info = vendorPOInfo.get(vendor) ?? { notes: '', preferredDeliveryDate: '', costCode: '' };
-              // Collect aliases for this manufacturer group's aggregated line items
-              const seenKeys = new Set<string>();
-              const lineItemAliases: Array<{ hardwareCategory: string; productCode: string; orderAs: string }> = [];
-              for (const hi of inScopeItems) {
-                const key = `${hi.product_code}|${hi.hardware_category}`;
-                if (!seenKeys.has(key)) {
-                  seenKeys.add(key);
-                  const alias = orderAsValues.get(key);
-                  if (alias) {
-                    lineItemAliases.push({
-                      hardwareCategory: hi.hardware_category,
-                      productCode: hi.product_code,
-                      orderAs: alias,
-                    });
-                  }
-                }
-              }
-              return {
-                poNumber: null,
-                notes: info.notes || null,
-                preferredDeliveryDate: info.preferredDeliveryDate || null,
-                costCode: info.costCode || null,
-                hardwareItemRefs: inScopeItems.map((hi) => ({
-                  openingNumber: hi.opening_number,
-                  productCode: hi.product_code,
-                  hardwareCategory: hi.hardware_category,
-                })),
-                lineItemAliases,
-              };
-            })
-            .filter(Boolean)
-        : null,
+      // #570: build the drafts from the buyer's sliced draftGroups. buildPoDrafts apportions each
+      // draft line's quantity across the selection's opening-level items and emits quantity-aware
+      // refs (partial on a boundary opening shared between drafts).
+      poDrafts: purpose === 'po' ? buildPoDrafts(draftGroups, vendorGroups, orderAsValues) : null,
       excludedItems,
       classifications: purpose === 'assembly'
         // #321: only Site/Shop belong here. Re-imports pre-populate the classifications Map with
@@ -984,7 +995,7 @@ export default function ImportWizard({
       // numbers per line, and already minus the excluded and unallocated ones.
       shopAssemblyItems: purpose === 'assembly' ? requestLines : null,
     };
-  }, [parsed, project.id, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, requestLines, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);
+  }, [parsed, project.id, purpose, vendorGroups, draftGroups, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, requestLines, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -1106,8 +1117,13 @@ export default function ImportWizard({
     return allClassified && allSiteShopClassified;
   }, [classificationRows]);
 
-  // #566: purchase-orders Next gate. The wizard owns the vendor selection, so it owns the gate.
-  const canProceedPurchaseOrders = selectedVendors.size > 0;
+  // #566/#570: purchase-orders Next gate. At least one included draft that actually holds lines - an
+  // included-but-empty draft mints no PO, so it does not satisfy the gate.
+  const includedDraftCount = useMemo(
+    () => draftGroups.filter((g) => g.included && g.lines.size > 0).length,
+    [draftGroups],
+  );
+  const canProceedPurchaseOrders = includedDraftCount > 0;
 
   // #566: the compose step's loading/error flags, computed once so the AppBar Next and the step body
   // read the identical numbers. These exact expressions are what the step is handed as props below.
@@ -1526,15 +1542,19 @@ export default function ImportWizard({
             <PurchaseOrdersStep
               projectId={project.id}
               jobNumber={project.projectId ?? null}
-              vendorGroups={vendorGroups}
-              vendorPOInfo={vendorPOInfo}
-              selectedVendors={selectedVendors}
+              draftGroups={draftGroups}
+              productCatalog={poProductCatalog}
               unitCostOverrides={unitCostOverrides}
               orderAsValues={orderAsValues}
-              onToggleVendor={toggleVendor}
-              onUpdateVendorPO={updateVendorPO}
+              onToggleIncluded={toggleDraftIncluded}
+              onRenameDraft={renameDraft}
+              onUpdateDraftInfo={updateDraftInfo}
               onUpdateUnitCost={updateUnitCost}
               onUpdateOrderAs={updateOrderAs}
+              onMoveLine={moveLine}
+              onCreateDraft={createDraft}
+              onMergeDraft={mergeDraft}
+              onRemoveDraft={removeDraft}
             />
           )}
 
@@ -1608,7 +1628,7 @@ export default function ImportWizard({
                 {purpose === 'po' && (
                   <Box sx={{ mb: 1 }}>
                     <Typography variant="body1">
-                      {selectedVendors.size} Purchase Order(s) across {selectedVendors.size} manufacturer group(s)
+                      {includedDraftCount} Purchase Order draft(s)
                     </Typography>
                   </Box>
                 )}

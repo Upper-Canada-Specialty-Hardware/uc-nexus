@@ -166,6 +166,11 @@ class HardwareItemRef:
     opening_number: str
     product_code: str
     hardware_category: str
+    # #570: how many units of this (opening, product, category) combo this PO draft claims. None keeps
+    # today's behaviour - claim the whole combo. A number below the combo total means the draft takes
+    # only that slice; the finalize splits the boundary leaf and the remainder goes to the next
+    # claiming draft or falls through to AVAILABLE. Sums across drafts must not exceed the combo total.
+    quantity: int | None = None
 
 
 @strawberry.input

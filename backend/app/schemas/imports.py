@@ -156,6 +156,8 @@ def finalize_payload(input: FinalizeImportSessionInput, *, created_by_user_id: s
                         "opening_number": ref.opening_number,
                         "product_code": ref.product_code,
                         "hardware_category": ref.hardware_category,
+                        # #570: None forwarded as-is; the repository reads it as "claim the whole combo".
+                        "quantity": ref.quantity,
                     }
                     for ref in po.hardware_item_refs
                 ],

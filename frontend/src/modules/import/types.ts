@@ -46,6 +46,70 @@ export function itemGroupKey(hi: { hardware_category: string; product_code: stri
   return `${hi.hardware_category}|${hi.product_code}`;
 }
 
+// #570: a line's identity inside a PO draft. Product-first to match the order-as / unit-cost keys the
+// wizard already uses (`${product_code}|${hardware_category}`). Cost and alias are properties of the
+// product, so they are keyed on this and shared across whichever drafts the product lands in.
+export function productKey(hi: { product_code: string; hardware_category: string }) {
+  return `${hi.product_code}|${hi.hardware_category}`;
+}
+
+export interface DraftGroupInfo {
+  notes: string;
+  preferredDeliveryDate: string;
+  costCode: string;
+}
+
+// #570: one PO draft the buyer is composing. Manufacturer slicing is only the seed - lines move
+// between drafts, drafts merge/split/rename, so a draft is no longer tied to a manufacturer. `lines`
+// maps productKey -> quantity; the invariant, held by construction, is that the quantities of a
+// productKey summed across every draft equal that product's total in the aggregated selection.
+export interface DraftGroup {
+  id: string;
+  label: string;
+  included: boolean;
+  info: DraftGroupInfo;
+  lines: Map<string, number>;
+}
+
+// Seed one draft per manufacturer group at full quantity - the starting point the buyer then slices.
+// Unchecked by default (nothing is ordered until the buyer says so), same as the old vendor selection.
+export function seedDraftGroups(vendorGroups: Map<string, AggregatedHardwareItem[]>): DraftGroup[] {
+  const groups: DraftGroup[] = [];
+  for (const [vendor, items] of vendorGroups) {
+    const lines = new Map<string, number>();
+    for (const hi of items) {
+      const pk = productKey(hi);
+      lines.set(pk, (lines.get(pk) ?? 0) + hi.item_quantity);
+    }
+    groups.push({
+      id: `seed:${vendor}`,
+      label: vendor,
+      included: false,
+      info: { notes: '', preferredDeliveryDate: '', costCode: '' },
+      lines,
+    });
+  }
+  return groups;
+}
+
+// A signature of the aggregated selection the drafts are seeded from. Re-seed only when this changes
+// (a different selection, or a reclassification that moved items in or out), so walking Back and
+// forward without changing the selection does not clobber the buyer's slicing - the same guard the
+// request composer uses with its offer signature.
+export function draftSeedSignature(vendorGroups: Map<string, AggregatedHardwareItem[]>): string {
+  const parts: string[] = [];
+  for (const [vendor, items] of vendorGroups) {
+    const byProduct = new Map<string, number>();
+    for (const hi of items) {
+      const pk = productKey(hi);
+      byProduct.set(pk, (byProduct.get(pk) ?? 0) + hi.item_quantity);
+    }
+    const sorted = Array.from(byProduct.entries()).sort(([a], [b]) => a.localeCompare(b));
+    parts.push(`${vendor}::${sorted.map(([k, q]) => `${k}=${q}`).join(',')}`);
+  }
+  return parts.join('||');
+}
+
 export interface ClassificationOption {
   value: string;
   label: string;
