@@ -1,5 +1,5 @@
 import { Box, ButtonBase, Typography } from '@mui/material';
-import { ClipboardPlus, Plus, ChevronRight } from 'lucide-react';
+import { ClipboardPlus, Package, Plus, ChevronRight } from 'lucide-react';
 import Modal from '../../components/Modal';
 
 const ICON = { size: 20, strokeWidth: 1.75 } as const;
@@ -7,8 +7,10 @@ const ICON = { size: 20, strokeWidth: 1.75 } as const;
 interface CreatePOChooserProps {
   open: boolean;
   onClose: () => void;
-  /** Raise the PO off a hardware schedule - the import wizard, purpose "po". */
+  /** Raise the PO off a hardware schedule by opening - the import wizard, purpose "po". */
   onFromSchedule: () => void;
+  /** Raise the PO off the same schedule by product - the import wizard, purpose "po", hardware mode. */
+  onFromHardware: () => void;
   /** Type the lines by hand - the create-mode GP dialog. */
   onManual: () => void;
 }
@@ -69,6 +71,7 @@ export default function CreatePOChooser({
   open,
   onClose,
   onFromSchedule,
+  onFromHardware,
   onManual,
 }: CreatePOChooserProps) {
   return (
@@ -76,9 +79,15 @@ export default function CreatePOChooser({
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, py: 0.5 }}>
         <Option
           icon={<ClipboardPlus {...ICON} />}
-          title="From hardware schedule"
-          subtitle="Order off the schedule, shows what is still owed"
+          title="From schedule - by opening"
+          subtitle="Pick doors, shows what is still owed"
           onClick={onFromSchedule}
+        />
+        <Option
+          icon={<Package {...ICON} />}
+          title="From schedule - by hardware"
+          subtitle="You know which hardware to buy - pick products, not doors"
+          onClick={onFromHardware}
         />
         <Option
           icon={<Plus {...ICON} />}

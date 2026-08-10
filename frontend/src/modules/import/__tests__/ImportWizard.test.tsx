@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import { WizardProvider } from '../../../contexts/WizardContext';
@@ -305,11 +305,13 @@ function renderWizard(
     project = firstImportProject,
     mocks = [],
     initialPurpose,
+    initialSelectionMode,
     autoStartFromLatest,
   }: {
     project?: Project;
     mocks?: MockedResponse[];
     initialPurpose?: 'po' | 'assembly' | 'shipping';
+    initialSelectionMode?: 'openings' | 'hardware';
     autoStartFromLatest?: boolean;
   } = {},
 ) {
@@ -324,6 +326,7 @@ function renderWizard(
               project={project}
               onClose={onClose}
               initialPurpose={initialPurpose}
+              initialSelectionMode={initialSelectionMode}
               autoStartFromLatest={autoStartFromLatest}
             />
           </ToastProvider>
@@ -519,6 +522,74 @@ describe('ImportWizard step transitions', () => {
   });
 });
 
+// #565: the hardware pathway is the PO purpose reached by product rather than by door. The Purpose
+// step is gone (purpose is locked to po) and Select Openings is replaced by Select Hardware; every
+// downstream step is the same as the by-opening PO flow.
+describe('ImportWizard hardware mode', () => {
+  const HARDWARE_FIRST_IMPORT_STEPS = [
+    'Upload File',
+    'Select Hardware',
+    'Classification',
+    'Purchase Orders',
+    'Finalize',
+  ];
+
+  it('hides the Purpose step and swaps Select Openings for Select Hardware', () => {
+    renderWizard({ initialSelectionMode: 'hardware' });
+
+    // No Purpose step, no Select Openings; the product picker takes their place. Classification and
+    // Purchase Orders still follow because the purpose is po.
+    expect(stepLabels()).toEqual(HARDWARE_FIRST_IMPORT_STEPS);
+    expect(screen.queryByText('Select Openings')).not.toBeInTheDocument();
+  });
+
+  it('keeps Reconciliation on a re-import, still with no Purpose step', async () => {
+    renderWizard({
+      project: reimportProject,
+      mocks: reimportMocks,
+      initialSelectionMode: 'hardware',
+    });
+    await flushApollo();
+
+    expect(stepLabels()).toEqual([
+      'Upload File',
+      'Select Hardware',
+      'Reconciliation',
+      'Classification',
+      'Purchase Orders',
+      'Finalize',
+    ]);
+  });
+
+  it('blocks Next on Select Hardware until at least one product is picked', () => {
+    renderWizard({ initialSelectionMode: 'hardware' });
+
+    // Parsed on the upload step, so Next is live; stepping forward lands on the product picker.
+    clickNext();
+
+    expect(screen.getByRole('heading', { name: 'Hardware' })).toBeInTheDocument();
+    // Two products in the fixture (HNG-100 hinges, LCK-200 locks), one row each.
+    expect(screen.getByText('0 of 2 selected')).toBeInTheDocument();
+    expect(nextButton()).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    expect(screen.getByText('2 of 2 selected')).toBeInTheDocument();
+    expect(nextButton()).toBeEnabled();
+  });
+
+  it('carries the product selection through to Classification', () => {
+    renderWizard({ initialSelectionMode: 'hardware' });
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+
+    // No Reconciliation on a first import, so the product pick lands straight on Classification, and
+    // both selected products are there to classify.
+    expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
+    expect(screen.getByText('0 of 2 items classified')).toBeInTheDocument();
+  });
+});
+
 // A reconcile that fails takes the PO purpose's Next button with it: the button is gated on the
 // auto-selected gap rows, and there are none when the query returned nothing. Before this the error
 // was console-only and the step rendered its ordinary "nothing found" notice, so the wizard looked
@@ -605,12 +676,177 @@ describe('ImportWizard reconciliation failure', () => {
     // remaining gap.
     expect(screen.getByText('2 of 2 product(s) selected')).toBeInTheDocument();
 
-    // #483: HNG-100 needs 3 across the project and 1 is already ORDERED. Selecting it carries the
-    // opening's full demand of 3 into PO creation, which would put the project at 4 against a need
-    // of 3 - so Next is refused and the alert names it. LCK-200 has nothing committed and is fine.
+    // #567: HNG-100 would over-order (needs 3, 1 already ORDERED, selecting carries the opening's
+    // full demand of 3). That no longer blocks - Next stays live and the step warns inline; the
+    // per-product detail moves to the confirm modal shown at Next.
+    expect(nextButton()).toBeEnabled();
+    expect(screen.getByText(/would exceed the project need/i)).toBeInTheDocument();
+  });
+});
+
+// #567: over-ordering past the project's hardware-schedule need is a warning now, not a hard block.
+// Leaving reconciliation with a selection that over-orders opens a confirm modal - Go back stays on
+// the step, Proceed anyway advances. Finalize itself does not enforce the limit.
+describe('ImportWizard over-order warning', () => {
+  const RECONCILE_VARIABLES = {
+    projectId: 'proj-1',
+    items: [
+      { openingNumber: 'O-1', hardwareCategory: 'Hinges', productCode: 'HNG-100', quantityNeeded: 3 },
+      { openingNumber: 'O-2', hardwareCategory: 'Locks', productCode: 'LCK-200', quantityNeeded: 1 },
+    ],
+  };
+
+  // HNG-100 needs 3 across the project and 1 is already ORDERED. Selecting it carries the opening's
+  // full demand of 3, which would put the project at 4 against a need of 3 - an over-order. LCK-200
+  // has nothing committed and is fine.
+  const overOrderReconcileMock: MockedResponse = {
+    request: { query: RECONCILE_SCHEDULE, variables: RECONCILE_VARIABLES },
+    result: {
+      data: {
+        reconcileSchedule: [
+          { __typename: 'ReconciliationResult', openingNumber: 'O-1', hardwareCategory: 'Hinges', productCode: 'HNG-100', quantity: 2, status: 'NOT_COVERED' },
+          { __typename: 'ReconciliationResult', openingNumber: 'O-1', hardwareCategory: 'Hinges', productCode: 'HNG-100', quantity: 1, status: 'ORDERED' },
+          { __typename: 'ReconciliationResult', openingNumber: 'O-2', hardwareCategory: 'Locks', productCode: 'LCK-200', quantity: 1, status: 'NOT_COVERED' },
+        ],
+      },
+    },
+  };
+
+  async function walkToReconciliation() {
+    renderWizard({ project: reimportProject, mocks: [...reimportBaseMocks, overOrderReconcileMock] });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+  }
+
+  it('warns inline rather than blocking Next, and opens the confirm modal on Next', async () => {
+    await walkToReconciliation();
+
+    expect(screen.getByRole('heading', { name: 'Reconciliation' })).toBeInTheDocument();
+    // Over-ordering no longer disables Next; the step warns inline.
+    expect(nextButton()).toBeEnabled();
+    expect(screen.getByText(/would exceed the project need/i)).toBeInTheDocument();
+
+    // Next opens the modal instead of advancing. The modal aria-hides the step behind it, so we
+    // assert we did NOT reach Classification rather than re-querying the (now hidden) recon heading.
+    clickNext();
+    expect(screen.getByRole('button', { name: /Proceed anyway/i })).toBeInTheDocument();
+    expect(screen.getByText(/needs 3, this would make it 4 \(\+1 over\)/)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Classification' })).not.toBeInTheDocument();
+  });
+
+  it('Go back keeps the user on reconciliation', async () => {
+    await walkToReconciliation();
+    clickNext();
+
+    fireEvent.click(screen.getByRole('button', { name: /Go back/i }));
+
+    // The dialog closes with an exit transition, so poll until it is gone before reading the step
+    // (which the open dialog had aria-hidden).
+    // 5s timeout: the exit transition loses to CPU contention when suites run in parallel.
+    await waitFor(
+      () => expect(screen.queryByRole('button', { name: /Proceed anyway/i })).not.toBeInTheDocument(),
+      { timeout: 5000 },
+    );
+    expect(screen.getByRole('heading', { name: 'Reconciliation' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Classification' })).not.toBeInTheDocument();
+  });
+
+  it('Proceed anyway advances to Classification', async () => {
+    await walkToReconciliation();
+    clickNext();
+
+    fireEvent.click(screen.getByRole('button', { name: /Proceed anyway/i }));
+
+    expect(await screen.findByRole('heading', { name: 'Classification' })).toBeInTheDocument();
+  });
+});
+
+// #566: forward/back and the step position live in one fixed spot in the AppBar now, not in a
+// bottom row that moved with content height. The gate for each step is computed in the wizard, so
+// these walk the same buttons the earlier tests do - they just now sit in the toolbar.
+describe('ImportWizard AppBar nav', () => {
+  it('shows the step position and disables Back on the first step', () => {
+    renderWizard();
+
+    // First import with no purpose chosen: upload / purpose / openings / finalize.
+    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled();
+    expect(nextButton()).toBeEnabled();
+  });
+
+  it('advances the step counter and enables Back once past the first step', () => {
+    renderWizard();
+    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+
+    clickNext();
+
+    expect(screen.getByRole('heading', { name: 'Select Import Purpose' })).toBeInTheDocument();
+    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled();
+  });
+
+  it('reflects the disabled-Next reason under the AppBar on a compose step with no offer', async () => {
+    // An empty coverage answer: nothing is owed, so Next stays disabled and the AppBar says why
+    // instead of the reason sitting beside a bottom button that no longer exists.
+    const emptyCoverage: MockedResponse = {
+      request: {
+        query: GET_REQUEST_COVERAGE,
+        variables: { projectId: 'proj-1', openingNumbers: ['O-1', 'O-2'] },
+      },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: { data: { requestCoverage: [] } },
+    };
+    renderWizard({
+      project: reimportProject,
+      mocks: [...reimportBaseMocks, shippingReconcileMock, emptyCoverage],
+    });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+    clickNext();
+    await flushApollo();
+
+    expect(screen.getByRole('heading', { name: 'Shipping Out' })).toBeInTheDocument();
     expect(nextButton()).toBeDisabled();
-    expect(screen.getByText(/take the project past what its hardware schedule needs/i)).toBeInTheDocument();
-    expect(screen.getByText(/HNG-100: project needs 3/)).toBeInTheDocument();
+    expect(screen.getByText('There is nothing to request for these openings.')).toBeInTheDocument();
+  });
+
+  it('drops Next and keeps only Back on the finalize step, alongside the in-content CTA', async () => {
+    renderWizard({
+      project: reimportProject,
+      mocks: [...reimportBaseMocks, shippingReconcileMock, requestCoverageMock],
+    });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+    clickNext();
+    await flushApollo();
+
+    // The compose step auto-assigns the one owed line, so Next is live and carries us to finalize.
+    expect(screen.getByRole('heading', { name: 'Shipping Out' })).toBeInTheDocument();
+    expect(nextButton()).toBeEnabled();
+    clickNext();
+    await flushApollo();
+
+    expect(screen.getByRole('heading', { name: 'Review & Finalize' })).toBeInTheDocument();
+    // upload / purpose / openings / reconciliation / shipping-prs / finalize
+    expect(screen.getByText('Step 6 of 6')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Next' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Finish Import Session/i })).toBeInTheDocument();
   });
 });
 

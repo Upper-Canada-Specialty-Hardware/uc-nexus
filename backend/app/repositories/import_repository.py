@@ -516,6 +516,90 @@ def _apply_opening_fields(opening: OpeningModel, opening_input: dict) -> None:
     opening.leaf_count = opening_input.get("leaf_count")
 
 
+def plan_po_claims(
+    hardware_items_input: list[dict],
+    po_drafts: list[dict],
+) -> tuple[list[list[tuple[int, int]]], dict[int, int]]:
+    """Plan how #570 quantity-aware PO drafts claim the schedule's hardware rows.
+
+    Pure and DB-free, so the splitting and cross-draft coordination that are the delicate part of
+    finalize can be unit-tested on their own. Given the flat schedule rows (`hardware_items_input`, in
+    input order) and the PO drafts, returns:
+
+      per_draft_claims: one list per draft, in po_drafts order - a list of (row_index, quantity)
+        naming which hardware_items_input rows the draft claims and how many units of each. A boundary
+        leaf shared between two drafts appears once in each, with the split counts.
+      remaining_by_idx: row_index -> unclaimed units, for the AVAILABLE persist.
+
+    A combo is (opening_number, product_code, hardware_category); its leaf rows are its buckets. A ref
+    with quantity=None claims the whole remaining combo (today's all-or-nothing); a number claims that
+    many units, splitting the boundary leaf. Drafts claim in order, so an earlier draft takes the first
+    units of a combo and a later one continues where it left off. Raises ValidationError when the
+    claims for a combo exceed its total, NotFoundError when a ref names a combo the schedule lacks.
+    """
+    # One mutable pool per combo: each bucket is [row_index, remaining] against hardware_items_input,
+    # in input order.
+    combo_buckets: dict[tuple[str, str, str], list[list]] = defaultdict(list)
+    for idx, hi in enumerate(hardware_items_input):
+        combo = (hi["opening_number"], hi["product_code"], hi["hardware_category"])
+        combo_buckets[combo].append([idx, hi["item_quantity"]])
+    combo_total = {combo: sum(b[1] for b in buckets) for combo, buckets in combo_buckets.items()}
+
+    # Up-front cap check: units claimed of a combo cannot exceed what the schedule holds. None resolves
+    # to the whole combo, so a None plus any other claim on the same combo trips the cap. A combo
+    # absent from the schedule is left to the per-ref NotFoundError below, not reported as an overclaim.
+    claimed_per_combo: dict[tuple[str, str, str], int] = defaultdict(int)
+    for po_draft in po_drafts:
+        for ref in po_draft.get("hardware_item_refs", []):
+            combo = (ref["opening_number"], ref["product_code"], ref["hardware_category"])
+            want = ref.get("quantity")
+            claimed_per_combo[combo] += combo_total.get(combo, 0) if want is None else want
+    for combo, want in claimed_per_combo.items():
+        total = combo_total.get(combo)
+        if total is not None and want > total:
+            raise ValidationError(
+                f"Purchase order drafts claim {want} of {combo[1]} ({combo[2]}) at opening {combo[0]}, "
+                f"but the schedule holds only {total}.",
+                field="po_drafts",
+            )
+
+    per_draft_claims: list[list[tuple[int, int]]] = []
+    for po_draft in po_drafts:
+        claims: list[tuple[int, int]] = []
+        for ref in po_draft.get("hardware_item_refs", []):
+            combo = (ref["opening_number"], ref["product_code"], ref["hardware_category"])
+            buckets = combo_buckets.get(combo)
+            if not buckets:
+                raise NotFoundError(f"Hardware item not found: {combo}")
+
+            want = ref.get("quantity")
+            available = sum(b[1] for b in buckets)
+            need = available if want is None else want
+            if need > available:
+                # A later draft asking for a slice the pool has already handed out.
+                raise ValidationError(
+                    f"Purchase order drafts claim more of {combo[1]} ({combo[2]}) at opening "
+                    f"{combo[0]} than the schedule holds.",
+                    field="po_drafts",
+                )
+
+            # Claim leaf buckets greedily; the boundary leaf splits - its claimed part is recorded here
+            # and its remainder stays in the bucket for the next draft or the AVAILABLE step.
+            for bucket in buckets:
+                if need <= 0:
+                    break
+                if bucket[1] <= 0:
+                    continue
+                take = min(bucket[1], need)
+                bucket[1] -= take
+                need -= take
+                claims.append((bucket[0], take))
+        per_draft_claims.append(claims)
+
+    remaining_by_idx = {bucket[0]: bucket[1] for buckets in combo_buckets.values() for bucket in buckets}
+    return per_draft_claims, remaining_by_idx
+
+
 def finalize_import_session(
     session: Session,
     input_data: dict,
@@ -654,30 +738,24 @@ def finalize_import_session(
 
         session.flush()
 
-    # Collect PO ref keys so the AVAILABLE step below knows which items the PO block will claim.
-    po_ref_keys: set[tuple[str, str, str]] = set()
-    for po_draft in po_drafts:
-        for ref in po_draft.get("hardware_item_refs", []):
-            po_ref_keys.add((ref["opening_number"], ref["product_code"], ref["hardware_category"]))
+    # #570: PO drafts claim combos by quantity now, not all-or-nothing. plan_po_claims works out, per
+    # draft, which schedule rows it takes and how many units of each - a boundary leaf shared between
+    # two drafts is split - plus what quantity of every row is left unclaimed for the AVAILABLE step.
+    # It is pure and DB-free, so the delicate splitting/coordination is unit-tested on its own and the
+    # block below only materializes the plan. Built unconditionally: with no drafts the remainder is
+    # the whole schedule.
+    per_draft_claims, remaining_by_idx = plan_po_claims(hardware_items_input, po_drafts)
 
     # 4. PO creation
     created_pos: list[POModel] = []
     if po_drafts:
-        # Build hardware items lookup: (opening_number, product_code, hardware_category) -> list of
-        # hardware item data. A leaf-agnostic PO ref matches every leaf row for that combo (#311),
-        # so a pair's leaf-1 and leaf-2 rows both attach to the same PO line.
-        hw_items_lookup: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
-        for hi in hardware_items_input:
-            key = (hi["opening_number"], hi["product_code"], hi["hardware_category"])
-            hw_items_lookup[key].append(hi)
-
         # Generate request_number sequence for new POs
         from app.repositories.po_repository import generate_next_request_number
 
         next_request_number = generate_next_request_number(session)
         next_seq = int(next_request_number.replace("PO-REQ-", ""))
 
-        for po_draft in po_drafts:
+        for draft_idx, po_draft in enumerate(po_drafts):
             # Validate PO number uniqueness within project if provided
             po_number = po_draft.get("po_number")
             if po_number and po_number.strip():
@@ -726,56 +804,54 @@ def finalize_import_session(
             # Key: (hardware_category, product_code, unit_cost, classification) -> list of HardwareItem models
             line_item_agg: dict[tuple, list] = defaultdict(list)
 
-            for ref in po_draft.get("hardware_item_refs", []):
-                ref_key = (ref["opening_number"], ref["product_code"], ref["hardware_category"])
-                matched_rows = hw_items_lookup.get(ref_key)
-                if not matched_rows:
-                    raise NotFoundError(f"Hardware item not found: {ref_key}")
+            # Materialize this draft's planned claims. Each (row_index, take) is one HardwareItem the
+            # draft claims - a boundary leaf split by the planner arrives as a smaller `take`. Rows for
+            # the same (category, product, cost, classification) roll into one PO line via the agg key,
+            # so the line's ordered_quantity sums across leaves and across splits.
+            for row_idx, take in per_draft_claims[draft_idx]:
+                hi_data = hardware_items_input[row_idx]
 
-                opening_id = opening_map.get(ref["opening_number"])
+                opening_id = opening_map.get(hi_data["opening_number"])
                 if opening_id is None:
-                    raise NotFoundError(f"Opening {ref['opening_number']} not found in project")
+                    raise NotFoundError(f"Opening {hi_data['opening_number']} not found in project")
 
-                # One HardwareItem per matched leaf row (#311). Every leaf row rolls into the same PO
-                # line via the unchanged agg key, so the line's ordered_quantity sums across leaves.
-                for hi_data in matched_rows:
-                    unit_cost = hi_data.get("unit_cost") or 0.0
-                    class_key = (hi_data["hardware_category"], hi_data["product_code"], unit_cost)
-                    classification = classification_map.get(class_key)
+                unit_cost = hi_data.get("unit_cost") or 0.0
+                class_key = (hi_data["hardware_category"], hi_data["product_code"], unit_cost)
+                classification = classification_map.get(class_key)
 
-                    hw_item = HardwareItemModel(
-                        id=uuid.uuid4(),
-                        project_id=project.id,
-                        opening_id=opening_id,
-                        hardware_category=hi_data["hardware_category"],
-                        product_code=hi_data["product_code"],
-                        leaf=hi_data.get("leaf"),
-                        item_quantity=hi_data["item_quantity"],
-                        unit_cost=Decimal(str(unit_cost)) if unit_cost else None,
-                        unit_price=Decimal(str(hi_data["unit_price"])) if hi_data.get("unit_price") else None,
-                        list_price=Decimal(str(hi_data["list_price"])) if hi_data.get("list_price") else None,
-                        vendor_discount=(
-                            Decimal(str(hi_data["vendor_discount"])) if hi_data.get("vendor_discount") else None
-                        ),
-                        markup_pct=Decimal(str(hi_data["markup_pct"])) if hi_data.get("markup_pct") else None,
-                        vendor_no=hi_data.get("vendor_no"),
-                        manufacturer=hi_data.get("manufacturer"),
-                        phase_code=hi_data.get("phase_code"),
-                        item_category_code=hi_data.get("item_category_code"),
-                        product_group_code=hi_data.get("product_group_code"),
-                        submittal_id=hi_data.get("submittal_id"),
-                        classification=classification,
-                        state=HardwareItemState.IN_PO,
-                    )
-                    session.add(hw_item)
+                hw_item = HardwareItemModel(
+                    id=uuid.uuid4(),
+                    project_id=project.id,
+                    opening_id=opening_id,
+                    hardware_category=hi_data["hardware_category"],
+                    product_code=hi_data["product_code"],
+                    leaf=hi_data.get("leaf"),
+                    item_quantity=take,
+                    unit_cost=Decimal(str(unit_cost)) if unit_cost else None,
+                    unit_price=Decimal(str(hi_data["unit_price"])) if hi_data.get("unit_price") else None,
+                    list_price=Decimal(str(hi_data["list_price"])) if hi_data.get("list_price") else None,
+                    vendor_discount=(
+                        Decimal(str(hi_data["vendor_discount"])) if hi_data.get("vendor_discount") else None
+                    ),
+                    markup_pct=Decimal(str(hi_data["markup_pct"])) if hi_data.get("markup_pct") else None,
+                    vendor_no=hi_data.get("vendor_no"),
+                    manufacturer=hi_data.get("manufacturer"),
+                    phase_code=hi_data.get("phase_code"),
+                    item_category_code=hi_data.get("item_category_code"),
+                    product_group_code=hi_data.get("product_group_code"),
+                    submittal_id=hi_data.get("submittal_id"),
+                    classification=classification,
+                    state=HardwareItemState.IN_PO,
+                )
+                session.add(hw_item)
 
-                    agg_key = (
-                        hi_data["hardware_category"],
-                        hi_data["product_code"],
-                        unit_cost,
-                        classification,
-                    )
-                    line_item_agg[agg_key].append(hw_item)
+                agg_key = (
+                    hi_data["hardware_category"],
+                    hi_data["product_code"],
+                    unit_cost,
+                    classification,
+                )
+                line_item_agg[agg_key].append(hw_item)
 
             session.flush()
 
@@ -808,15 +884,15 @@ def finalize_import_session(
 
             created_pos.append(po)
 
-    # 5. Persist remaining hardware items as AVAILABLE (everything in input not claimed by a PO).
-    #    Skips items whose (opening_id, product, category) tuple already exists as IN_PO from
-    #    a prior session, to avoid duplicating rows.
+    # 5. Persist the unclaimed remainder of every hardware item as AVAILABLE. #570: a combo the PO
+    #    block took in full leaves nothing here; a partially-claimed combo persists what plan_po_claims
+    #    left in remaining_by_idx (item_quantity = the remainder); an unreferenced combo persists in
+    #    full. Skips a row whose (opening_id, product, category, leaf) already exists as IN_PO from a
+    #    prior session, to avoid duplicating rows.
     available_keys_seen: set[tuple[uuid.UUID, str, str, int | None]] = set()
-    for hi in hardware_items_input:
-        # po_ref_keys stays leaf-agnostic (a PO ref names opening/product/category); it claims every
-        # leaf row for that combo, so the AVAILABLE step below skips all of them.
-        ref_key = (hi["opening_number"], hi["product_code"], hi["hardware_category"])
-        if ref_key in po_ref_keys:
+    for idx, hi in enumerate(hardware_items_input):
+        remaining = remaining_by_idx.get(idx, hi["item_quantity"])
+        if remaining <= 0:
             continue
         opening_id = opening_map.get(hi["opening_number"])
         if opening_id is None:
@@ -839,7 +915,7 @@ def finalize_import_session(
                 product_code=hi["product_code"],
                 material_id=hi.get("material_id"),
                 leaf=hi.get("leaf"),
-                item_quantity=hi["item_quantity"],
+                item_quantity=remaining,
                 unit_cost=Decimal(str(unit_cost_val)) if unit_cost_val else None,
                 unit_price=Decimal(str(hi["unit_price"])) if hi.get("unit_price") else None,
                 list_price=Decimal(str(hi["list_price"])) if hi.get("list_price") else None,

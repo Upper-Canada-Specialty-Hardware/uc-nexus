@@ -8,6 +8,11 @@ export function aggregationKey(hi: { opening_number: string; product_code: strin
 
 export type ImportPurpose = 'po' | 'assembly' | 'shipping';
 
+// #565: how a PO import picks what to order. 'openings' walks the door schedule and selects openings;
+// 'hardware' selects products directly and takes quantities from the schedule. Both feed the same PO
+// drafts output - the only difference is which axis of the same opening-level items gets filtered.
+export type SelectionMode = 'openings' | 'hardware';
+
 /**
  * One (hardware_category, product_code) row of `projectInventoryAvailability` (#342):
  * `availableQuantity = onHandQuantity - deficientQuantity - reservedQuantity`, the number the
@@ -46,6 +51,70 @@ export function itemGroupKey(hi: { hardware_category: string; product_code: stri
   return `${hi.hardware_category}|${hi.product_code}`;
 }
 
+// #570: a line's identity inside a PO draft. Product-first to match the order-as / unit-cost keys the
+// wizard already uses (`${product_code}|${hardware_category}`). Cost and alias are properties of the
+// product, so they are keyed on this and shared across whichever drafts the product lands in.
+export function productKey(hi: { product_code: string; hardware_category: string }) {
+  return `${hi.product_code}|${hi.hardware_category}`;
+}
+
+export interface DraftGroupInfo {
+  notes: string;
+  preferredDeliveryDate: string;
+  costCode: string;
+}
+
+// #570: one PO draft the buyer is composing. Manufacturer slicing is only the seed - lines move
+// between drafts, drafts merge/split/rename, so a draft is no longer tied to a manufacturer. `lines`
+// maps productKey -> quantity; the invariant, held by construction, is that the quantities of a
+// productKey summed across every draft equal that product's total in the aggregated selection.
+export interface DraftGroup {
+  id: string;
+  label: string;
+  included: boolean;
+  info: DraftGroupInfo;
+  lines: Map<string, number>;
+}
+
+// Seed one draft per manufacturer group at full quantity - the starting point the buyer then slices.
+// Unchecked by default (nothing is ordered until the buyer says so), same as the old vendor selection.
+export function seedDraftGroups(vendorGroups: Map<string, AggregatedHardwareItem[]>): DraftGroup[] {
+  const groups: DraftGroup[] = [];
+  for (const [vendor, items] of vendorGroups) {
+    const lines = new Map<string, number>();
+    for (const hi of items) {
+      const pk = productKey(hi);
+      lines.set(pk, (lines.get(pk) ?? 0) + hi.item_quantity);
+    }
+    groups.push({
+      id: `seed:${vendor}`,
+      label: vendor,
+      included: false,
+      info: { notes: '', preferredDeliveryDate: '', costCode: '' },
+      lines,
+    });
+  }
+  return groups;
+}
+
+// A signature of the aggregated selection the drafts are seeded from. Re-seed only when this changes
+// (a different selection, or a reclassification that moved items in or out), so walking Back and
+// forward without changing the selection does not clobber the buyer's slicing - the same guard the
+// request composer uses with its offer signature.
+export function draftSeedSignature(vendorGroups: Map<string, AggregatedHardwareItem[]>): string {
+  const parts: string[] = [];
+  for (const [vendor, items] of vendorGroups) {
+    const byProduct = new Map<string, number>();
+    for (const hi of items) {
+      const pk = productKey(hi);
+      byProduct.set(pk, (byProduct.get(pk) ?? 0) + hi.item_quantity);
+    }
+    const sorted = Array.from(byProduct.entries()).sort(([a], [b]) => a.localeCompare(b));
+    parts.push(`${vendor}::${sorted.map(([k, q]) => `${k}=${q}`).join(',')}`);
+  }
+  return parts.join('||');
+}
+
 export interface ClassificationOption {
   value: string;
   label: string;
@@ -68,6 +137,20 @@ export interface ClassificationInputEntry {
   productCode: string;
   unitCost: number;
   classification: string;
+}
+
+// #568: a single definition of "this row is fully classified", shared by the guided flow, the review
+// grid's unclassified filter, and the step's phase choice so the three cannot drift. A row needs its
+// primary axis; a two-axis (PO) row also needs Site/Shop unless its primary is the exempt value
+// (By Others), which is out of scope and carries none.
+export function isRowClassified(
+  row: { classification: string; siteShop?: string },
+  opts: { hasSiteShop: boolean; siteShopExemptValue?: string },
+): boolean {
+  if (row.classification === '') return false;
+  if (!opts.hasSiteShop) return true;
+  if (opts.siteShopExemptValue && row.classification === opts.siteShopExemptValue) return true;
+  return (row.siteShop ?? '') !== '';
 }
 
 // #321: project the shared classifications Map into finalize ClassificationInput entries, keeping

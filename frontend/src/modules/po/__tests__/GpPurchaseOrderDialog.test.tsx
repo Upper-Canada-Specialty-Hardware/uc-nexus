@@ -845,13 +845,14 @@ it('says the relay is down rather than leaving the GP dropdowns silently dead', 
   expect(notices.length).toBeGreaterThan(0);
 });
 
-// --- Order As defaults to the product code (#491) -----------------------------------------------
+// --- Order As is optional; it defaults to the product code (#491, #563) -------------------------
 // The dialog required a non-empty Order As on every line, which was stricter than the system it
 // feeds: build_create_po_payload already sends (order_as or product_code) as GP's item number. A
 // draft raised without Order As values could not be registered at all without retyping the product
-// code into every row.
+// code into every row. #563: the field is no longer pre-filled with the product code - it shows the
+// stored order_as (blank when there is none), and the payload still falls back to product_code.
 
-it('seeds Order As from the product code when the draft line has none', async () => {
+it('leaves Order As empty when the draft line has none, noting it defaults to the product code', async () => {
   const noOrderAs: PurchaseOrder = {
     ...stockDraft,
     lineItems: [{ ...stockDraft.lineItems[0], orderAs: null }],
@@ -859,8 +860,9 @@ it('seeds Order As from the product code when the draft line has none', async ()
   renderDialog({ registerPo: noOrderAs });
   await waitForVendorPreselect();
 
-  // Twice: the Product Code field itself, and Order As now mirroring it.
-  expect(screen.getAllByDisplayValue('HG-100')).toHaveLength(2);
+  // #563: only the Product Code field displays HG-100 - Order As is left blank, not pre-filled.
+  expect(screen.getAllByDisplayValue('HG-100')).toHaveLength(1);
+  expect(screen.getByText('defaults to product code')).toBeInTheDocument();
 });
 
 it('registers with the product code as the item number when Order As is cleared', async () => {

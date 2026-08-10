@@ -43,29 +43,40 @@ import type {
   ImportPurpose,
   InventoryAvailabilityRow,
   ReconciliationRow,
+  SelectionMode,
 } from './types';
 import {
   aggregationKey,
   backfillScopeFromSiteShop,
   classificationKey,
+  draftSeedSignature,
   itemGroupKey,
+  productKey,
+  seedDraftGroups,
   toClassificationInputs,
+  type DraftGroup,
 } from './types';
+import { buildPoDrafts } from './poDrafts';
+import * as draftOps from './draftOps';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
 import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
 import SelectOpeningsStep from './SelectOpeningsStep';
+import SelectHardwareStep from './SelectHardwareStep';
 import ReconciliationStep from './ReconciliationStep';
 import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
 import ComposeRequestStep from './ComposeRequestStep';
-import { buildProductReconRows } from './reconciliation';
+import WizardNav from './WizardNav';
+import OverOrderWarningModal from './OverOrderWarningModal';
+import { buildProductReconRows, type ProductReconRow } from './reconciliation';
 import {
   autoAllocate,
   buildRequestLines,
   composableRows,
+  composeRequestGate,
   lineKey,
   offerSignature,
   type Allocation,
@@ -74,7 +85,7 @@ import {
 
 // ---- Local Types ----
 
-type StepId = 'upload' | 'purpose' | 'openings' | 'reconciliation'
+type StepId = 'upload' | 'purpose' | 'openings' | 'hardware' | 'reconciliation'
   | 'classification' | 'purchase-orders' | 'shop-assembly'
   | 'shipping-prs' | 'finalize';
 
@@ -154,6 +165,10 @@ interface ImportWizardProps {
   /** Preselect the purpose when the wizard was opened from somewhere that already knows it - the
    *  keep-or-ship decision's "Ship out now" being the only such caller today. */
   initialPurpose?: ImportPurpose;
+  /** #565: which PO pathway to run. 'hardware' hides the Purpose step (purpose is locked to po) and
+   *  swaps Select Openings for Select Hardware - the buyer picks products, not doors. Defaults to the
+   *  by-opening pathway. */
+  initialSelectionMode?: SelectionMode;
   /** Skip the upload step by loading the project's last persisted schedule, when there is one. Same
    *  caller: they came from a decision about hardware on an existing project, so the schedule that
    *  hardware was bought against is by definition already imported. */
@@ -165,6 +180,7 @@ export default function ImportWizard({
   project,
   onClose,
   initialPurpose,
+  initialSelectionMode,
   autoStartFromLatest,
 }: ImportWizardProps) {
   const { showToast } = useToast();
@@ -175,26 +191,39 @@ export default function ImportWizard({
   // Step tracking
   const [activeStepId, setActiveStepId] = useState<StepId>('upload');
 
+  // #565: the pathway is fixed for the life of this open - the module remounts the wizard per entry,
+  // so a derived constant is enough and there is no in-wizard control to switch it. 'hardware' hides
+  // the Purpose step and swaps Select Openings for Select Hardware.
+  const selectionMode: SelectionMode = initialSelectionMode ?? 'openings';
+  const isHardwareMode = selectionMode === 'hardware';
+
   // Selected project context (from prop)
   const existingProjectId = project.id;
   const existingProjectName = project.description || project.projectId;
   const isReimport = project.openingCount > 0;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Step 2 state
-  const [purpose, setPurpose] = useState<ImportPurpose | null>(null);
+  // Step 2 state. #565: hardware mode locks the purpose to po (its step is hidden), so it seeds po
+  // rather than null - every downstream `purpose === 'po'` branch then holds without a Purpose step.
+  const [purpose, setPurpose] = useState<ImportPurpose | null>(isHardwareMode ? 'po' : null);
 
-  // Step 3 state
+  // Step 3 state. Openings mode selects by door; hardware mode (#565) selects by product, keyed by
+  // itemGroupKey (`hardware_category|product_code`). Only one is live per pathway.
   const [selectedOpenings, setSelectedOpenings] = useState<Set<string>>(new Set());
+  const [selectedProductKeys, setSelectedProductKeys] = useState<Set<string>>(new Set());
 
   // Action step state
-  const [selectedVendors, setSelectedVendors] = useState<Set<string>>(new Set());
-  // #490: costCode joins notes and the preferred date as a per-manufacturer-card value, so the
-  // buyer can record the GP cost code with the request instead of only at registration.
-  const [vendorPOInfo, setVendorPOInfo] = useState<
-    Map<string, { notes: string; preferredDeliveryDate: string; costCode: string }>
-  >(new Map());
+  // #570: the PO drafts the buyer is composing. Seeded one-per-manufacturer from the aggregated
+  // selection, then freely sliced - lines move between drafts, drafts merge/split/rename. `included`,
+  // the notes/date/cost-code, and the ledger all live on the draft now, not on a manufacturer key.
+  const [draftGroups, setDraftGroups] = useState<DraftGroup[]>([]);
+  // The selection signature the drafts above were seeded from; a change re-seeds (see the effect).
+  const [seededDraftSignature, setSeededDraftSignature] = useState<string | null>(null);
+  // #570: keyed by productKey (`product|category`) now, not `vendor|product|category` - cost is a
+  // property of the product, shared across whichever drafts it lands in.
   const [unitCostOverrides, setUnitCostOverrides] = useState<Map<string, number>>(new Map());
+  // Monotonic id source for buyer-created drafts, so a new draft never collides with a seeded id.
+  const newDraftSeq = useRef(0);
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
   // Issue #216: PO-purpose second axis (SITE_HARDWARE/SHOP_HARDWARE), set by the PM at request
   // creation. Same classificationKey keying as `classifications` (which holds scope for PO purpose).
@@ -215,6 +244,9 @@ export default function ImportWizard({
   // The step says so and shows the rebuilt numbers rather than letting the user resend the stale set.
   const [allocationStale, setAllocationStale] = useState(false);
   const [selectedReconItems, setSelectedReconItems] = useState<Set<string>>(new Set());
+  // #567: over-ordering past the project need no longer blocks Next; it opens a confirm modal when
+  // the user leaves the reconciliation step with a selection that pushes a product past its total.
+  const [overOrderModalOpen, setOverOrderModalOpen] = useState(false);
 
   // Finalize state
   const [finalizeLoading, setFinalizeLoading] = useState(false);
@@ -226,11 +258,15 @@ export default function ImportWizard({
   // ---- Dynamic Steps ----
 
   const steps = useMemo<StepDescriptor[]>(() => {
-    const base: StepDescriptor[] = [
-      { id: 'upload', label: 'Upload File' },
-      { id: 'purpose', label: 'Purpose' },
-      { id: 'openings', label: 'Select Openings' },
-    ];
+    const base: StepDescriptor[] = [{ id: 'upload', label: 'Upload File' }];
+    // #565: hardware mode has no Purpose step (purpose is locked to po) and picks products instead of
+    // openings. The by-opening pathway keeps its Purpose then Select Openings pair.
+    if (isHardwareMode) {
+      base.push({ id: 'hardware', label: 'Select Hardware' });
+    } else {
+      base.push({ id: 'purpose', label: 'Purpose' });
+      base.push({ id: 'openings', label: 'Select Openings' });
+    }
     // Reconciliation compares the incoming schedule against what the project has already committed,
     // so on a project with no persisted openings it has nothing to compare and rendered a single
     // "New project - all items will be ordered fresh" banner over an otherwise empty full-screen
@@ -253,19 +289,21 @@ export default function ImportWizard({
     if (purpose === 'shipping') base.push({ id: 'shipping-prs', label: 'Shipping Out' });
     base.push({ id: 'finalize', label: 'Finalize' });
     return base;
-  }, [purpose]);
+  }, [purpose, isReimport, isHardwareMode]);
 
   // Guard against orphaned step (e.g. user unchecks a purpose while on that step).
   // Derived via useMemo instead of a useEffect+setState to avoid cascading renders.
   const effectiveStepId = useMemo<StepId>(
-    () =>
-      // Falls back to 'openings' rather than 'reconciliation': reconciliation is now conditional, so
-      // naming it here could orphan the orphan-guard itself on a first import. 'openings' is in every
-      // variant of the stepper.
-      activeStepId !== 'upload' && !steps.find((s) => s.id === activeStepId)
-        ? 'openings'
-        : activeStepId,
-    [steps, activeStepId],
+    () => {
+      // Falls back to the pathway's step-2 rather than 'reconciliation': reconciliation is
+      // conditional, so naming it here could orphan the orphan-guard itself on a first import.
+      // #565: in hardware mode 'openings' is not in the stepper at all, so the fallback is 'hardware'.
+      const fallback: StepId = isHardwareMode ? 'hardware' : 'openings';
+      return activeStepId !== 'upload' && !steps.find((s) => s.id === activeStepId)
+        ? fallback
+        : activeStepId;
+    },
+    [steps, activeStepId, isHardwareMode],
   );
 
   const activeStepIndex = useMemo(
@@ -359,17 +397,16 @@ export default function ImportWizard({
   const openings = parsed?.openings ?? [];
   const hardwareItems = parsed?.hardwareItems ?? [];
 
-  const hardwareCountByOpening = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const hi of hardwareItems) {
-      counts.set(hi.opening_number, (counts.get(hi.opening_number) ?? 0) + 1);
-    }
-    return counts;
-  }, [hardwareItems]);
-
+  // #565: the one fork the two pathways share. Openings mode keeps the items whose opening was
+  // picked; hardware mode keeps the items whose product was picked. Everything downstream
+  // (runReconcile, the recon rollup, classification rows, vendorGroups/draftGroups, finalize refs)
+  // derives from this, so filtering by product instead of by opening is the whole of the difference.
   const selectedHardwareItems = useMemo(
-    () => hardwareItems.filter((hi) => selectedOpenings.has(hi.opening_number)),
-    [hardwareItems, selectedOpenings],
+    () =>
+      isHardwareMode
+        ? hardwareItems.filter((hi) => selectedProductKeys.has(itemGroupKey(hi)))
+        : hardwareItems.filter((hi) => selectedOpenings.has(hi.opening_number)),
+    [hardwareItems, selectedOpenings, selectedProductKeys, isHardwareMode],
   );
 
   // Pre-reconciliation aggregated items (for display in combined openings/hardware step)
@@ -564,6 +601,38 @@ export default function ImportWizard({
     return new Map(Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b)));
   }, [aggregatedHardwareItems, purpose, classifications]);
 
+  // #570: the product metadata the PO step's draft ledgers render - the base unit cost, product code
+  // and category per productKey. Drafts carry only productKey -> qty, so the display detail is looked
+  // up from here (the first opening-level item wins; cost is a product property).
+  const poProductCatalog = useMemo(() => {
+    const map = new Map<string, { productCode: string; hardwareCategory: string; unitCost: number }>();
+    for (const items of vendorGroups.values()) {
+      for (const hi of items) {
+        const pk = productKey(hi);
+        if (!map.has(pk)) {
+          map.set(pk, {
+            productCode: hi.product_code,
+            hardwareCategory: hi.hardware_category,
+            unitCost: hi.unit_cost ?? 0,
+          });
+        }
+      }
+    }
+    return map;
+  }, [vendorGroups]);
+
+  // #570: re-seed the PO drafts when, and only when, the aggregated selection changes. Held against a
+  // signature so Back-and-forward through the wizard preserves the buyer's slicing; a real change to
+  // the selection (different openings, a reclassification) re-seeds from the new manufacturer groups.
+  const draftSeedSig = useMemo(() => draftSeedSignature(vendorGroups), [vendorGroups]);
+  useEffect(() => {
+    if (purpose !== 'po') return;
+    if (seededDraftSignature === draftSeedSig) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot re-seed keyed off the selection signature, same pattern as the composer
+    setDraftGroups(seedDraftGroups(vendorGroups));
+    setSeededDraftSignature(draftSeedSig);
+  }, [purpose, draftSeedSig, vendorGroups, seededDraftSignature]);
+
   // ---- Step Navigation ----
 
   const handleFileSelect = useCallback(
@@ -656,10 +725,13 @@ export default function ImportWizard({
   }, [open, autoStartFromLatest, hydratedFromPersisted, purpose, activeStepId]);
 
   const resetDownstreamWizardState = useCallback(() => {
-    setPurpose(null);
+    // #565: hardware mode has no Purpose step to re-answer, so a reset holds the locked po rather
+    // than dropping to null and stranding every `purpose === 'po'` branch downstream.
+    setPurpose(isHardwareMode ? 'po' : null);
     setSelectedOpenings(new Set());
-    setSelectedVendors(new Set());
-    setVendorPOInfo(new Map());
+    setSelectedProductKeys(new Set());
+    setDraftGroups([]);
+    setSeededDraftSignature(null);
     setUnitCostOverrides(new Map());
     setOrderAsValues(new Map());
     setClassifications(new Map());
@@ -672,7 +744,7 @@ export default function ImportWizard({
     setSelectedReconItems(new Set());
     setMutationError(null);
     setFinalizeResult(null);
-  }, []);
+  }, [isHardwareMode]);
 
   const handleResetSource = useCallback(() => {
     parser.reset();
@@ -709,18 +781,52 @@ export default function ImportWizard({
     });
   }, [isReimport, existingProjectId, selectedHardwareItems, reconcileSchedule]);
 
+  // #483/#567: the same rollup the Reconciliation step renders, filtered to the products this
+  // selection would push past the project total. Over-ordering is a warning, not a block, so this
+  // no longer gates Next - it decides whether leaving the reconciliation step opens the confirm
+  // modal. Defined above handleNext because that callback depends on it.
+  const reconOverOrderProducts = useMemo<ProductReconRow[]>(() => {
+    if (purpose !== 'po' || !isReimport) return [];
+    return buildProductReconRows({
+      purpose,
+      reconciliationRows,
+      selectedHardwareItems,
+      allHardwareItems: parsed?.hardwareItems ?? [],
+      selectedReconItems,
+    }).filter((r) => r.overOrdersProject);
+  }, [purpose, isReimport, reconciliationRows, selectedHardwareItems, parsed, selectedReconItems]);
+
+  const advanceToNextStep = useCallback(() => {
+    const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
+    const nextStep = steps[currentIndex + 1];
+    if (nextStep) setActiveStepId(nextStep.id);
+  }, [steps, effectiveStepId]);
+
   const handleNext = useCallback(async () => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
     const nextStep = steps[currentIndex + 1];
     if (!nextStep) return;
 
-    if (effectiveStepId === 'openings') {
+    // #567: leaving reconciliation with a selection that over-orders the project opens the confirm
+    // modal instead of advancing. Proceed anyway (handleOverOrderProceed) does the advance.
+    if (effectiveStepId === 'reconciliation' && reconOverOrderProducts.length > 0) {
+      setOverOrderModalOpen(true);
+      return;
+    }
+
+    // #565: leaving the pathway's step-2 (openings, or hardware) is what kicks off reconciliation.
+    if (effectiveStepId === 'openings' || effectiveStepId === 'hardware') {
       setSelectedReconItems(new Set());
       runReconcile();
     }
 
     setActiveStepId(nextStep.id);
-  }, [effectiveStepId, steps, runReconcile]);
+  }, [effectiveStepId, steps, runReconcile, reconOverOrderProducts]);
+
+  const handleOverOrderProceed = useCallback(() => {
+    setOverOrderModalOpen(false);
+    advanceToNextStep();
+  }, [advanceToNextStep]);
 
   const handleBack = useCallback(() => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
@@ -734,37 +840,47 @@ export default function ImportWizard({
     setSelectedOpenings(newSelected);
   }, []);
 
-  // Vendor selection
-  const toggleVendor = useCallback((vendor: string) => {
-    setSelectedVendors((prev) => {
-      const next = new Set(prev);
-      if (next.has(vendor)) {
-        next.delete(vendor);
-      } else {
-        next.add(vendor);
-      }
-      return next;
-    });
+  // #570: draft organizing, delegating to the pure reducers in draftOps so the conservation invariant
+  // is unit-tested there. Each handler is just a setDraftGroups wrapper.
+  const toggleDraftIncluded = useCallback((draftId: string) => {
+    setDraftGroups((prev) => draftOps.toggleIncluded(prev, draftId));
   }, []);
 
-  // Manufacturer-group PO info
-  const updateVendorPO = useCallback(
-    (manufacturerKey: string, field: 'notes' | 'preferredDeliveryDate' | 'costCode', value: string | null) => {
-      setVendorPOInfo((prev) => {
-        const next = new Map(prev);
-        const existing = next.get(manufacturerKey) ?? { notes: '', preferredDeliveryDate: '', costCode: '' };
-        next.set(manufacturerKey, { ...existing, [field]: value ?? '' });
-        return next;
-      });
+  const renameDraft = useCallback((draftId: string, label: string) => {
+    setDraftGroups((prev) => draftOps.renameDraft(prev, draftId, label));
+  }, []);
+
+  const updateDraftInfo = useCallback(
+    (draftId: string, field: 'notes' | 'preferredDeliveryDate' | 'costCode', value: string) => {
+      setDraftGroups((prev) => draftOps.updateInfo(prev, draftId, field, value));
     },
     [],
   );
 
-  // Unit cost overrides
-  const updateUnitCost = useCallback((vendor: string, productCode: string, hardwareCategory: string, value: number) => {
+  // Move `qty` units of a line to another draft: the whole-line menu passes the line's full quantity,
+  // the split dialog a partial. A source line emptied to zero is dropped.
+  const moveLine = useCallback((fromId: string, pk: string, qty: number, toId: string) => {
+    setDraftGroups((prev) => draftOps.moveLine(prev, fromId, pk, qty, toId));
+  }, []);
+
+  const createDraft = useCallback(() => {
+    const id = `new:${newDraftSeq.current++}`;
+    setDraftGroups((prev) => draftOps.createDraft(prev, id));
+  }, []);
+
+  const mergeDraft = useCallback((fromId: string, intoId: string) => {
+    setDraftGroups((prev) => draftOps.mergeDraft(prev, fromId, intoId));
+  }, []);
+
+  const removeDraft = useCallback((draftId: string) => {
+    setDraftGroups((prev) => draftOps.removeDraft(prev, draftId));
+  }, []);
+
+  // Unit cost overrides, keyed by productKey (#570).
+  const updateUnitCost = useCallback((pk: string, value: number) => {
     setUnitCostOverrides((prev) => {
       const next = new Map(prev);
-      next.set(`${vendor}|${productCode}|${hardwareCategory}`, value);
+      next.set(pk, value);
       return next;
     });
   }, []);
@@ -822,10 +938,6 @@ export default function ImportWizard({
       }
     }
 
-    // Helper: is this item classified as BY_OTHERS (for PO scope filtering)?
-    const isByOthers = (hi: AggregatedHardwareItem) =>
-      byOthersKeys.has(classificationKey(hi));
-
     // Compute excluded items for persistence
     const excludedItems = purpose === 'po'
       ? Array.from(new Map(
@@ -856,11 +968,10 @@ export default function ImportWizard({
       }
     }
     const fullScheduleHardwareItems = Array.from(fullScheduleAggMap.values()).map((hi) => {
-      // Apply any unit-cost overrides from the PO step so the persisted row matches what
-      // the user reviewed at finalize time.
-      const vendor = hi.vendor_no ?? '(No Manufacturer)';
-      const overrideKey = `${vendor}|${hi.product_code}|${hi.hardware_category}`;
-      const overriddenCost = unitCostOverrides.get(overrideKey);
+      // Apply any unit-cost overrides from the PO step so the persisted row matches what the user
+      // reviewed at finalize time. #570: keyed by productKey (`product|category`) - cost is a product
+      // property, the same wherever the product lands.
+      const overriddenCost = unitCostOverrides.get(productKey(hi));
       const item = overriddenCost !== undefined
         ? { ...hi, unit_cost: overriddenCost }
         : hi;
@@ -871,46 +982,10 @@ export default function ImportWizard({
       projectId: project.id,
       openings: parsed.openings.map((o) => snakeToCamel(o as unknown as Record<string, unknown>)),
       hardwareItems: fullScheduleHardwareItems,
-      poDrafts: purpose === 'po'
-        ? Array.from(vendorGroups.entries())
-            .filter(([vendor]) => selectedVendors.has(vendor))
-            .map(([vendor, items]) => {
-              // Filter out BY_OTHERS items from this vendor's PO draft
-              const inScopeItems = items.filter((hi) => !isByOthers(hi));
-              if (inScopeItems.length === 0) return null;
-              const info = vendorPOInfo.get(vendor) ?? { notes: '', preferredDeliveryDate: '', costCode: '' };
-              // Collect aliases for this manufacturer group's aggregated line items
-              const seenKeys = new Set<string>();
-              const lineItemAliases: Array<{ hardwareCategory: string; productCode: string; orderAs: string }> = [];
-              for (const hi of inScopeItems) {
-                const key = `${hi.product_code}|${hi.hardware_category}`;
-                if (!seenKeys.has(key)) {
-                  seenKeys.add(key);
-                  const alias = orderAsValues.get(key);
-                  if (alias) {
-                    lineItemAliases.push({
-                      hardwareCategory: hi.hardware_category,
-                      productCode: hi.product_code,
-                      orderAs: alias,
-                    });
-                  }
-                }
-              }
-              return {
-                poNumber: null,
-                notes: info.notes || null,
-                preferredDeliveryDate: info.preferredDeliveryDate || null,
-                costCode: info.costCode || null,
-                hardwareItemRefs: inScopeItems.map((hi) => ({
-                  openingNumber: hi.opening_number,
-                  productCode: hi.product_code,
-                  hardwareCategory: hi.hardware_category,
-                })),
-                lineItemAliases,
-              };
-            })
-            .filter(Boolean)
-        : null,
+      // #570: build the drafts from the buyer's sliced draftGroups. buildPoDrafts apportions each
+      // draft line's quantity across the selection's opening-level items and emits quantity-aware
+      // refs (partial on a boundary opening shared between drafts).
+      poDrafts: purpose === 'po' ? buildPoDrafts(draftGroups, vendorGroups, orderAsValues) : null,
       excludedItems,
       classifications: purpose === 'assembly'
         // #321: only Site/Shop belong here. Re-imports pre-populate the classifications Map with
@@ -953,7 +1028,7 @@ export default function ImportWizard({
       // numbers per line, and already minus the excluded and unallocated ones.
       shopAssemblyItems: purpose === 'assembly' ? requestLines : null,
     };
-  }, [parsed, project.id, purpose, vendorGroups, vendorPOInfo, selectedVendors, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, requestLines, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);
+  }, [parsed, project.id, purpose, vendorGroups, draftGroups, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, requestLines, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -1036,6 +1111,7 @@ export default function ImportWizard({
     resetDownstreamWizardState();
     setFinalizeLoading(false);
     setConfirmOpen(false);
+    setOverOrderModalOpen(false);
     setPostSuccessOpen(false);
     setHydratedFromPersisted(false);
     parser.reset();
@@ -1047,22 +1123,13 @@ export default function ImportWizard({
   const canProceedStep0 = parser.state === 'done';
   const canProceedStep1 = purpose !== null;
   const canProceedStep2 = selectedOpenings.size > 0;
-  // #483: the same rollup the Reconciliation step renders, so the numbers the user is blocked by are
-  // by construction the numbers they are shown.
-  const reconBlockingProducts = useMemo(() => {
-    if (purpose !== 'po' || !isReimport) return [];
-    return buildProductReconRows({
-      purpose,
-      reconciliationRows,
-      selectedHardwareItems,
-      allHardwareItems: parsed?.hardwareItems ?? [],
-      selectedReconItems,
-    }).filter((r) => r.blocksProceed);
-  }, [purpose, isReimport, reconciliationRows, selectedHardwareItems, parsed, selectedReconItems]);
-
+  // #565: hardware mode's step-2 gate - at least one product picked.
+  const canProceedHardware = selectedProductKeys.size > 0;
+  // #567: over-ordering no longer gates Next - it warns at the modal (see reconOverOrderProducts and
+  // handleNext). The PO purpose only requires a non-empty selection here.
   const canProceedStep3 = useMemo(() => {
     if (!isReimport) return true;
-    if (purpose === 'po') return selectedReconItems.size > 0 && reconBlockingProducts.length === 0;
+    if (purpose === 'po') return selectedReconItems.size > 0;
     if (purpose === 'assembly') {
       return reconciliationRows.some((r) => r.status === 'RECEIVED' && r.quantity > 0);
     }
@@ -1072,7 +1139,95 @@ export default function ImportWizard({
       );
     }
     return true;
-  }, [purpose, isReimport, selectedReconItems, reconciliationRows, reconBlockingProducts]);
+  }, [purpose, isReimport, selectedReconItems, reconciliationRows]);
+
+  // #566: classification Next gate, lifted out of ClassificationStep. `classificationRows` is built
+  // here, so the same rows the grid renders decide whether Next is live. Only the PO purpose reaches
+  // the step, where every in-scope (non-By-Others) line needs both a scope and a Site/Shop pick.
+  const canProceedClassification = useMemo(() => {
+    const allClassified = classificationRows.every((r) => r.classification !== '');
+    const allSiteShopClassified = classificationRows
+      .filter((r) => r.classification !== 'BY_OTHERS')
+      .every((r) => (r.siteShop ?? '') !== '');
+    return allClassified && allSiteShopClassified;
+  }, [classificationRows]);
+
+  // #566/#570: purchase-orders Next gate. At least one included draft that actually holds lines - an
+  // included-but-empty draft mints no PO, so it does not satisfy the gate.
+  const includedDraftCount = useMemo(
+    () => draftGroups.filter((g) => g.included && g.lines.size > 0).length,
+    [draftGroups],
+  );
+  const canProceedPurchaseOrders = includedDraftCount > 0;
+
+  // #566: the compose step's loading/error flags, computed once so the AppBar Next and the step body
+  // read the identical numbers. These exact expressions are what the step is handed as props below.
+  const composeCoverageLoading = coverageLoading && coverageData === undefined;
+  const composeCoverageError = coverageError !== undefined;
+  const composeAvailabilityLoading = availabilityLoading && availabilityData === undefined;
+  const composeAvailabilityError = availabilityError !== undefined;
+
+  const composeGate = useMemo(
+    () =>
+      composeRequestGate({
+        rows: composerRows,
+        allocation,
+        includedKeys,
+        coverageLoading: composeCoverageLoading,
+        coverageError: composeCoverageError,
+        availabilityLoading: composeAvailabilityLoading,
+        availabilityError: composeAvailabilityError,
+      }),
+    [
+      composerRows,
+      allocation,
+      includedKeys,
+      composeCoverageLoading,
+      composeCoverageError,
+      composeAvailabilityLoading,
+      composeAvailabilityError,
+    ],
+  );
+
+  // ---- AppBar nav (#566) ----
+  // One fixed forward/back cluster in the AppBar toolbar, never moving with content height. Every
+  // step's gate is resolved here, so the button and the step content cannot disagree about whether
+  // the user may proceed. Finalize drives itself forward from an in-content CTA, so Next is hidden
+  // there and only Back shows.
+  const isFinalizeStep = effectiveStepId === 'finalize';
+  let canProceedCurrentStep = false;
+  let navHint: string | null = null;
+  switch (effectiveStepId) {
+    case 'upload':
+      canProceedCurrentStep = canProceedStep0;
+      break;
+    case 'purpose':
+      canProceedCurrentStep = canProceedStep1;
+      break;
+    case 'openings':
+      canProceedCurrentStep = canProceedStep2;
+      break;
+    case 'hardware':
+      canProceedCurrentStep = canProceedHardware;
+      break;
+    case 'reconciliation':
+      canProceedCurrentStep = canProceedStep3;
+      break;
+    case 'classification':
+      canProceedCurrentStep = canProceedClassification;
+      break;
+    case 'purchase-orders':
+      canProceedCurrentStep = canProceedPurchaseOrders;
+      break;
+    case 'shop-assembly':
+    case 'shipping-prs':
+      canProceedCurrentStep = composeGate.canProceed;
+      navHint = composeGate.blockedReason;
+      break;
+    case 'finalize':
+      break;
+  }
+  const navBackDisabled = activeStepIndex === 0 || (isFinalizeStep && finalizeLoading);
 
   // ---- Render ----
 
@@ -1080,15 +1235,34 @@ export default function ImportWizard({
     <>
       <Dialog fullScreen open={open} onClose={handleClose}>
         <AppBar sx={{ position: 'relative' }}>
-          <Toolbar>
+          <Toolbar sx={{ gap: 2 }}>
             <IconButton edge="start" color="inherit" onClick={handleClose} aria-label="close">
               <X size={20} strokeWidth={1.75} />
             </IconButton>
-            <Typography sx={{ ml: 2, flex: 1 }} variant="h6" component="div">
+            <Typography noWrap sx={{ flex: 1, minWidth: 0 }} variant="h6" component="div">
               Import Hardware Schedule
             </Typography>
+            <WizardNav
+              currentStep={activeStepIndex + 1}
+              totalSteps={steps.length}
+              onBack={handleBack}
+              onNext={handleNext}
+              backDisabled={navBackDisabled}
+              nextDisabled={!canProceedCurrentStep}
+              showNext={!isFinalizeStep}
+            />
           </Toolbar>
         </AppBar>
+
+        {/* #566: the one place a disabled Next explains itself, sat directly under the button it is
+            about rather than beside a bottom nav that has moved. */}
+        {navHint && (
+          <Box sx={{ px: 3, pt: 1, display: 'flex', justifyContent: 'flex-end' }}>
+            <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'right' }}>
+              {navHint}
+            </Typography>
+          </Box>
+        )}
 
         <Box sx={{ p: 3 }}>
           {/* #425: shown from the first step, not at the finalize button. Everything this wizard does
@@ -1283,12 +1457,6 @@ export default function ImportWizard({
                   <ValidationSummaryDisplay summary={parsed.validationSummary} />
                 </Box>
               )}
-
-              <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
-                <Button variant="contained" disabled={!canProceedStep0} onClick={handleNext}>
-                  Next
-                </Button>
-              </Box>
             </Box>
           )}
 
@@ -1365,13 +1533,6 @@ export default function ImportWizard({
                   This is a re-import. Reconciliation will show existing PO and processing status for selected items.
                 </Alert>
               )}
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
-                <Button onClick={handleBack}>Back</Button>
-                <Button variant="contained" disabled={!canProceedStep1} onClick={handleNext}>
-                  Next
-                </Button>
-              </Box>
             </Box>
           )}
 
@@ -1381,11 +1542,16 @@ export default function ImportWizard({
               openings={openings}
               selectedOpenings={selectedOpenings}
               preReconAggregatedItems={preReconAggregatedItems}
-              hardwareCountByOpening={hardwareCountByOpening}
               onOpeningSelectionChange={handleOpeningSelectionChange}
-              canProceed={canProceedStep2}
-              onNext={handleNext}
-              onBack={handleBack}
+            />
+          )}
+
+          {/* ============ Step: Select Hardware (#565) ============ */}
+          {effectiveStepId === 'hardware' && (
+            <SelectHardwareStep
+              hardwareItems={hardwareItems}
+              selectedProductKeys={selectedProductKeys}
+              onSelectionChange={setSelectedProductKeys}
             />
           )}
 
@@ -1402,9 +1568,6 @@ export default function ImportWizard({
               allHardwareItems={hardwareItems}
               selectedReconItems={selectedReconItems}
               onSelectionChange={setSelectedReconItems}
-              canProceed={canProceedStep3}
-              onNext={handleNext}
-              onBack={handleBack}
             />
           )}
 
@@ -1418,8 +1581,6 @@ export default function ImportWizard({
               itemCount={aggregatedHardwareItems.length}
               openingCount={selectedOpenings.size}
               isReimport={isReimport}
-              onNext={handleNext}
-              onBack={handleBack}
             />
           )}
 
@@ -1428,17 +1589,19 @@ export default function ImportWizard({
             <PurchaseOrdersStep
               projectId={project.id}
               jobNumber={project.projectId ?? null}
-              vendorGroups={vendorGroups}
-              vendorPOInfo={vendorPOInfo}
-              selectedVendors={selectedVendors}
+              draftGroups={draftGroups}
+              productCatalog={poProductCatalog}
               unitCostOverrides={unitCostOverrides}
               orderAsValues={orderAsValues}
-              onToggleVendor={toggleVendor}
-              onUpdateVendorPO={updateVendorPO}
+              onToggleIncluded={toggleDraftIncluded}
+              onRenameDraft={renameDraft}
+              onUpdateDraftInfo={updateDraftInfo}
               onUpdateUnitCost={updateUnitCost}
               onUpdateOrderAs={updateOrderAs}
-              onNext={handleNext}
-              onBack={handleBack}
+              onMoveLine={moveLine}
+              onCreateDraft={createDraft}
+              onMergeDraft={mergeDraft}
+              onRemoveDraft={removeDraft}
             />
           )}
 
@@ -1456,13 +1619,11 @@ export default function ImportWizard({
               onIncludedKeysChange={setIncludedKeys}
               seededSignature={seededSignature}
               onSeeded={setSeededSignature}
-              coverageLoading={coverageLoading && coverageData === undefined}
-              coverageError={coverageError !== undefined}
-              availabilityLoading={availabilityLoading && availabilityData === undefined}
-              availabilityError={availabilityError !== undefined}
+              coverageLoading={composeCoverageLoading}
+              coverageError={composeCoverageError}
+              availabilityLoading={composeAvailabilityLoading}
+              availabilityError={composeAvailabilityError}
               allocationStale={allocationStale}
-              onNext={handleNext}
-              onBack={handleBack}
             />
           )}
 
@@ -1480,13 +1641,11 @@ export default function ImportWizard({
               onIncludedKeysChange={setIncludedKeys}
               seededSignature={seededSignature}
               onSeeded={setSeededSignature}
-              coverageLoading={coverageLoading && coverageData === undefined}
-              coverageError={coverageError !== undefined}
-              availabilityLoading={availabilityLoading && availabilityData === undefined}
-              availabilityError={availabilityError !== undefined}
+              coverageLoading={composeCoverageLoading}
+              coverageError={composeCoverageError}
+              availabilityLoading={composeAvailabilityLoading}
+              availabilityError={composeAvailabilityError}
               allocationStale={allocationStale}
-              onNext={handleNext}
-              onBack={handleBack}
             />
           )}
 
@@ -1508,22 +1667,24 @@ export default function ImportWizard({
                   {existingProjectName}
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: 2 }}>
-                  {selectedOpenings.size} openings | {selectedHardwareItems.length} hardware items
+                  {isHardwareMode
+                    ? `${selectedProductKeys.size} products | ${selectedHardwareItems.length} hardware items`
+                    : `${selectedOpenings.size} openings | ${selectedHardwareItems.length} hardware items`}
                 </Typography>
 
                 <Divider sx={{ my: 2 }} />
 
                 {purpose === 'po' && (
                   <Box sx={{ mb: 1 }}>
-                    <Typography variant="body1">
-                      {selectedVendors.size} Purchase Order(s) across {selectedVendors.size} manufacturer group(s)
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                      {includedDraftCount} Purchase Order draft(s)
                     </Typography>
                   </Box>
                 )}
 
                 {purpose === 'shipping' && (
                   <Box sx={{ mb: 1 }}>
-                    <Typography variant="body1">
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
                       1 Shipping Out Request across {requestLines.length} line(s) (number assigned on
                       finalize)
                     </Typography>
@@ -1532,7 +1693,7 @@ export default function ImportWizard({
 
                 {purpose === 'assembly' && (
                   <Box sx={{ mb: 1 }}>
-                    <Typography variant="body1">
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
                       1 Shop Assembly Request across {requestLines.length} line(s) (number assigned on
                       finalize)
                     </Typography>
@@ -1553,10 +1714,8 @@ export default function ImportWizard({
                 </Box>
               )}
 
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 3 }}>
-                <Button onClick={handleBack} disabled={finalizeLoading}>
-                  Back
-                </Button>
+              {/* #566: Back lives in the AppBar; this step keeps only its own forward CTA. */}
+              <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
                 {/* #425: the server refuses this outright (finalize_import_session ->
                     require_gp_setup_ok), so leaving the button live would only buy the user a red
                     toast after a full wizard run. The banner above says why. */}
@@ -1575,6 +1734,15 @@ export default function ImportWizard({
           </FadeIn>
         </Box>
       </Dialog>
+
+      {/* #567: over-order confirm. Opened from handleNext when leaving reconciliation with a
+          selection that pushes a product past its project total. */}
+      <OverOrderWarningModal
+        open={overOrderModalOpen}
+        products={reconOverOrderProducts}
+        onGoBack={() => setOverOrderModalOpen(false)}
+        onProceed={handleOverOrderProceed}
+      />
 
       {/* Confirm Dialog */}
       <ConfirmDialog
