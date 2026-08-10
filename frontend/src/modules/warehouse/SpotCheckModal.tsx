@@ -13,6 +13,7 @@ interface SpotCheckItem {
   productCode: string;
   hardwareCategory: string;
   quantity: number;
+  deficientQuantity: number;
   aisle: string | null;
   row: string | null;
   bay: string | null;
@@ -39,10 +40,16 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
   const discrepancy = isNaN(physicalNum) ? null : physicalNum - item.quantity;
   const hasDiscrepancy = discrepancy !== null && discrepancy !== 0;
 
+  // The server floors the row at its deficient count: an adjustment cannot take quantity below the
+  // units already flagged deficient, so the smallest a physical count may be is deficientQuantity.
+  const floor = item.deficientQuantity;
+  const belowFloor = !isNaN(physicalNum) && physicalNum < floor;
+
   const isValid = useMemo(() => {
     if (isNaN(physicalNum) || physicalNum < 0) return false;
+    if (physicalNum < floor) return false;
     return true;
-  }, [physicalNum]);
+  }, [physicalNum, floor]);
 
   const [adjustQuantity, { loading }] = useMutation(ADJUST_INVENTORY_QUANTITY, {
     refetchQueries: WAREHOUSE_REFETCH_QUERIES,
@@ -128,18 +135,23 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
           size="small"
           fullWidth
           autoFocus
-          slotProps={{ htmlInput: { min: 0 } }}
+          error={belowFloor}
+          slotProps={{ htmlInput: { min: floor } }}
           helperText={
-            discrepancy === null
-              ? 'Enter the actual quantity counted'
-              : discrepancy === 0
-                ? 'Matches system quantity'
-                : `Discrepancy: ${discrepancy > 0 ? '+' : ''}${discrepancy}`
+            belowFloor
+              ? `Cannot count below the ${floor} deficient units on this row`
+              : discrepancy === null
+                ? floor > 0
+                  ? `Enter the actual quantity counted (min ${floor}, the deficient count)`
+                  : 'Enter the actual quantity counted'
+                : discrepancy === 0
+                  ? 'Matches system quantity'
+                  : `Discrepancy: ${discrepancy > 0 ? '+' : ''}${discrepancy}`
           }
           sx={{ mb: 2 }}
         />
 
-        {hasDiscrepancy && discrepancy !== null && (
+        {hasDiscrepancy && discrepancy !== null && !belowFloor && (
           <Alert severity={discrepancy > 0 ? 'info' : 'warning'} sx={{ mt: 1 }}>
             {discrepancy > 0
               ? `Physical count is ${discrepancy} more than system. Adjustment of +${discrepancy} will be applied.`

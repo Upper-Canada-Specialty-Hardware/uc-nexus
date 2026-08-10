@@ -20,6 +20,7 @@ from .inventory import (
 from .locations import (
     _normalize_and_validate_location_fields,
     assign_inventory_location,
+    clone_origin_fields,
     get_distinct_location_values,
     get_location_audit_history,
     get_location_contents,
@@ -122,6 +123,7 @@ __all__ = [
     "_normalize_and_validate_location_fields",
     "adjust_inventory_quantity",
     "assign_inventory_location",
+    "clone_origin_fields",
     "split_inventory_location",
     "cancel_pull_request",
     "check_inventory_sufficiency",

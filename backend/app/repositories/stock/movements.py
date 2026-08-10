@@ -10,6 +10,7 @@ from app.errors import NotFoundError, ValidationError
 from app.models.enums import AuditAction, AuditEntityType, DestockSource
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.stock_item import StockItem
+from app.repositories.warehouse import clone_origin_fields
 
 from .common import (
     _find_or_create_stock_row,
@@ -42,10 +43,11 @@ def destock_inventory(
     il = session.get(InventoryLocationModel, inventory_location_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inventory_location_id} not found")
-    if quantity > il.quantity:
-        raise ValidationError("Destock quantity exceeds available quantity", field="quantity")
 
-    # If DEFICIENT_SWAP, the units being destocked are the deficient ones: tighten that flag too
+    # DEFICIENT_SWAP destocks the deficient units themselves and tightens that flag; every other
+    # source moves sound units only. Either way the deficient claim must stay on the row, so the row
+    # can never drop below its own deficient_quantity - the deficient<=quantity CHECK would otherwise
+    # reject the write with a raw 500 (e.g. destock 8 as OVERAGE off qty 10 / deficient 4).
     is_deficient_swap = source == DestockSource.DEFICIENT_SWAP
     if is_deficient_swap:
         if quantity > (il.deficient_quantity or 0):
@@ -53,11 +55,24 @@ def destock_inventory(
                 "DEFICIENT_SWAP destock quantity exceeds deficient_quantity on source row",
                 field="quantity",
             )
+    elif quantity > il.quantity - (il.deficient_quantity or 0):
+        raise ValidationError(
+            "Destock quantity exceeds available (non-deficient) quantity on source row",
+            field="quantity",
+        )
 
-    # Pick target location: explicit override or fall back to source location
-    final_aisle = target_aisle if target_aisle is not None else il.aisle
-    final_row = target_row if target_row is not None else il.row
-    final_bay = target_bay if target_bay is not None else il.bay
+    # Target override is all-or-nothing: overriding only some of aisle/row/bay would keep the source
+    # row's other fields and land the stock at a location nobody chose. Provide all three, or none.
+    override = [v for v in (target_aisle, target_row, target_bay) if v is not None]
+    if override and len(override) != 3:
+        raise ValidationError(
+            "target aisle, row, and bay must all be provided together",
+            field="target_location",
+        )
+    if override:
+        final_aisle, final_row, final_bay = target_aisle, target_row, target_bay
+    else:
+        final_aisle, final_row, final_bay = il.aisle, il.row, il.bay
 
     now = datetime.utcnow()
     stock_row = _find_or_create_stock_row(
@@ -291,6 +306,7 @@ def _find_matching_inventory_location(
         (InventoryLocationModel.po_line_item_id, src.po_line_item_id),
         (InventoryLocationModel.receive_line_item_id, src.receive_line_item_id),
         (InventoryLocationModel.stock_item_id, src.stock_item_id),
+        (InventoryLocationModel.shipment_return_item_id, src.shipment_return_item_id),
     ):
         stmt = stmt.where(col.is_(None)) if val is None else stmt.where(col == val)
     return session.scalars(stmt).first()
@@ -353,9 +369,7 @@ def transfer_inventory(
         else:
             target = InventoryLocationModel(
                 project_id=il.project_id,
-                po_line_item_id=il.po_line_item_id,
-                receive_line_item_id=il.receive_line_item_id,
-                stock_item_id=il.stock_item_id,
+                **clone_origin_fields(il),
                 warehouse_id=dest_warehouse_id,
                 hardware_category=il.hardware_category,
                 product_code=il.product_code,

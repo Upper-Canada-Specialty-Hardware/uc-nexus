@@ -880,6 +880,7 @@ class WarehouseQueries:
         entity_type: AuditEntityType | None = None,
         project_id: strawberry.ID | None = None,
         limit: int = 50,
+        offset: int = 0,
     ) -> list[AuditLogEntry]:
         with SessionLocal() as session:
             entries = warehouse_repository.get_audit_log(
@@ -888,6 +889,7 @@ class WarehouseQueries:
                 entity_type=entity_type.value if entity_type else None,
                 project_id=uuid.UUID(str(project_id)) if project_id else None,
                 limit=limit,
+                offset=offset,
             )
             return [
                 AuditLogEntry(
@@ -1496,10 +1498,10 @@ class WarehouseMutations:
         to_row: str,
         to_bay: str,
     ) -> LocationMergeResult:
-        """Admin-gated (#415): rewrites the location of every inventory row, opening item and stock
-        item at the source location. Its audit rows name the admin who ran it (#427) rather than the
-        literal "Admin/Manager" - the gate already proves the role, so the row may as well say which
-        admin, given a merge can touch hundreds of rows at once."""
+        """Admin-gated (#415): rewrites the location of every inventory row and stock item at the
+        source location. Its audit rows name the admin who ran it (#427) rather than the literal
+        "Admin/Manager" - the gate already proves the role, so the row may as well say which admin,
+        given a merge can touch hundreds of rows at once."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:

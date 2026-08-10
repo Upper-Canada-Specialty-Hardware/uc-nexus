@@ -107,8 +107,8 @@ export const GET_WAREHOUSES = gql`
 `;
 
 export const GET_AUDIT_LOG = gql`
-  query GetAuditLog($entityId: ID, $entityType: AuditEntityType, $projectId: ID, $limit: Int) {
-    auditLog(entityId: $entityId, entityType: $entityType, projectId: $projectId, limit: $limit) {
+  query GetAuditLog($entityId: ID, $entityType: AuditEntityType, $projectId: ID, $limit: Int, $offset: Int) {
+    auditLog(entityId: $entityId, entityType: $entityType, projectId: $projectId, limit: $limit, offset: $offset) {
       id
       projectId
       entityType

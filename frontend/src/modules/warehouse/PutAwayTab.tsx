@@ -297,7 +297,7 @@ export default function PutAwayTab() {
                   >
                     <Typography sx={{ fontWeight: 600, flex: 1, minWidth: 0 }}>{category}</Typography>
                     <Typography component="div" sx={{ ...microLabelSx, flexShrink: 0 }}>
-                      {categoryItems.length} item{categoryItems.length !== 1 ? 's' : ''} \u00b7{' '}
+                      {categoryItems.length} item{categoryItems.length !== 1 ? 's' : ''} ·{' '}
                       {totalQty} qty
                     </Typography>
                   </Box>

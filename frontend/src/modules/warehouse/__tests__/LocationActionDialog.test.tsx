@@ -168,7 +168,17 @@ describe('LocationActionDialog', () => {
         },
         result: (vars) => {
           calledVariables = vars as Record<string, unknown>;
-          return { data: { adjustInventoryQuantity: { id: 'inv-1', quantity: 7, __typename: 'InventoryLocation' } } };
+          return {
+            data: {
+              adjustInventoryQuantity: {
+                id: 'inv-1',
+                quantity: 7,
+                deficientQuantity: 0,
+                available: 7,
+                __typename: 'InventoryLocation',
+              },
+            },
+          };
         },
       },
     ];

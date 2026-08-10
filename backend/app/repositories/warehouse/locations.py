@@ -40,6 +40,23 @@ def _normalize_and_validate_location_fields(aisle: str, row: str, bay: str) -> t
     return (a, b, c)
 
 
+def clone_origin_fields(source: InventoryLocationModel) -> dict:
+    """The four origin FKs that make an InventoryLocation traceable, copied verbatim.
+
+    Every row derived from another - a transfer's new bin, an override-increase's added row, a
+    split's remainder - inherits its parent's origin so the ck_inventory_locations_has_origin CHECK
+    holds and its valuation keeps the parent's PO/return provenance. All four travel together:
+    dropping shipment_return_item_id orphans a return-origin row (its other three FKs are null) and
+    the CHECK rejects the write with a raw 500.
+    """
+    return {
+        "po_line_item_id": source.po_line_item_id,
+        "receive_line_item_id": source.receive_line_item_id,
+        "stock_item_id": source.stock_item_id,
+        "shipment_return_item_id": source.shipment_return_item_id,
+    }
+
+
 def get_location_contents(
     session: Session,
     aisle: str,
@@ -189,7 +206,7 @@ def get_location_audit_history(
 
 
 def get_distinct_location_values(session: Session) -> dict[str, list[str]]:
-    """Return distinct aisle/row/bay values across inventory, opening, and stock tables for autocomplete."""
+    """Return distinct aisle/row/bay values across inventory and stock tables for autocomplete."""
     aisles: set[str] = set()
     row_values: set[str] = set()
     bays: set[str] = set()
@@ -452,10 +469,7 @@ def split_inventory_location(
 
     remainder = InventoryLocationModel(
         project_id=il.project_id,
-        po_line_item_id=il.po_line_item_id,
-        receive_line_item_id=il.receive_line_item_id,
-        stock_item_id=il.stock_item_id,
-        shipment_return_item_id=il.shipment_return_item_id,
+        **clone_origin_fields(il),
         warehouse_id=il.warehouse_id,
         hardware_category=il.hardware_category,
         product_code=il.product_code,
