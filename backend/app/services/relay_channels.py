@@ -73,8 +73,15 @@ query PreviewEnvironments($projectId: String!) {
 }
 """
 
+# Floor between ATTEMPTS, as opposed to _CACHE_SECONDS which is the life of a successful answer. Well
+# under the cache life so a recovered API is picked up promptly, well over the relay's reconcile tick
+# so a failing one is not retried on every single one.
+_FAILURE_RETRY_SECONDS = 15.0
+
 _lock = threading.Lock()
 _cache: tuple[float, list[str]] | None = None
+# When the API was last actually called, successfully or not.
+_last_attempt: float = 0.0
 
 
 def channel_url_for(environment_name: str) -> str:
@@ -158,7 +165,7 @@ def discover_preview_channels(*, force: bool = False) -> list[str]:
     Empty - never an exception - when discovery is off or unavailable. `force` skips the cache and is
     for tests; callers on the request path should take the cached answer.
     """
-    global _cache
+    global _cache, _last_attempt
 
     if not RAILWAY_API_TOKEN or not RAILWAY_PROJECT_ID:
         return []
@@ -167,6 +174,16 @@ def discover_preview_channels(*, force: bool = False) -> list[str]:
         now = time.monotonic()
         if not force and _cache is not None and now - _cache[0] < _CACHE_SECONDS:
             return list(_cache[1])
+
+        # A FAILED read has to be throttled on its own, because only a success refreshes the cache
+        # above - so without this, the relay retrying every reconcile tick turns into a Railway API
+        # call every reconcile tick. Watched that happen: a relay presenting a stale secret produced
+        # 42 rejected calls in a few minutes, and each one would have been a Railway request. The rate
+        # limit is hourly and shared with every other use of the token, so a broken relay must not be
+        # able to spend it.
+        if not force and now - _last_attempt < _FAILURE_RETRY_SECONDS:
+            return list(_cache[1]) if _cache is not None else []
+        _last_attempt = now
 
         names = _fetch_environment_names()
         if names is None:
@@ -193,7 +210,8 @@ def discover_preview_channels(*, force: bool = False) -> list[str]:
 
 
 def reset_cache() -> None:
-    """Drop the memoized answer. Tests only."""
-    global _cache
+    """Drop the memoized answer and the attempt floor. Tests only."""
+    global _cache, _last_attempt
     with _lock:
         _cache = None
+        _last_attempt = 0.0
