@@ -769,6 +769,26 @@ def _fetch_discovered_urls(primary: str, secret: str) -> list[str] | None:
     try:
         with urllib.request.urlopen(request, timeout=DISCOVERY_TIMEOUT_SECONDS) as response:  # noqa: S310
             payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            # WARNING, not debug, and worded for the one cause that actually produces it. The channel
+            # can be UP while this fails - a WebSocket authenticates once at connect and then holds,
+            # so a socket opened with a good secret stays open long after the config it came from
+            # stopped matching. This call re-authenticates every time, so it is the first thing to
+            # notice the drift, and reading it as "discovery is broken" sends you to the wrong side.
+            # Usual cause: a second relay process running from a different install dir and config.
+            logger.warning(
+                "the backend rejected this relay's secret on the channel list, while the channel "
+                "itself may still be connected - the socket authenticated once and holds. check for "
+                "a second relay process running from another install dir, or re-enroll this one",
+                extra={"category": "discovery_unauthorized", "url": _discovery_endpoint(primary)},
+            )
+        else:
+            logger.debug(
+                "backend refused the channel list; keeping the channels already known",
+                extra={"category": "discovery_unavailable", "status": e.code},
+            )
+        return None
     except (urllib.error.URLError, TimeoutError, ValueError, OSError) as e:
         logger.debug(
             "could not read discovered channels from the backend; keeping the ones already known",
