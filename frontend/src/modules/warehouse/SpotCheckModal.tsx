@@ -7,9 +7,11 @@ import { useToast } from '../../components/Toast';
 import { ADJUST_INVENTORY_QUANTITY } from '../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { ReservationNotice, useComboReservation } from './reservationNotice';
 
 interface SpotCheckItem {
   id: string;
+  projectId?: string;
   productCode: string;
   hardwareCategory: string;
   quantity: number;
@@ -50,6 +52,15 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
     if (physicalNum < floor) return false;
     return true;
   }, [physicalNum, floor]);
+
+  // A spot count that comes up under what active requests have reserved strands their claim. It
+  // still applies (the count is physical reality) - the notice just makes the shortfall visible.
+  const reservation = useComboReservation({
+    projectId: item.projectId,
+    hardwareCategory: item.hardwareCategory,
+    productCode: item.productCode,
+  });
+  const resultingSound = reservation == null ? null : reservation.soundOnHand + (discrepancy ?? 0);
 
   const [adjustQuantity, { loading }] = useMutation(ADJUST_INVENTORY_QUANTITY, {
     refetchQueries: WAREHOUSE_REFETCH_QUERIES,
@@ -157,6 +168,12 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
               ? `Physical count is ${discrepancy} more than system. Adjustment of +${discrepancy} will be applied.`
               : `Physical count is ${Math.abs(discrepancy)} less than system. Adjustment of ${discrepancy} will be applied.`}
           </Alert>
+        )}
+
+        {reservation != null && resultingSound != null && !belowFloor && (
+          <Box sx={{ mt: 1 }}>
+            <ReservationNotice reserved={reservation.reserved} resulting={resultingSound} />
+          </Box>
         )}
       </Modal>
 

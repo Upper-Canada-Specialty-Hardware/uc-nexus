@@ -2,7 +2,11 @@ import { useState, useMemo, useCallback } from 'react';
 import { Box, Alert, Button, Chip, CircularProgress, Typography } from '@mui/material';
 import { DataGrid, type GridColDef, GridToolbar } from '@mui/x-data-grid';
 import { useQuery, useMutation } from '@apollo/client/react';
-import { GET_INVENTORY_ROWS, REPORT_INVENTORY_DEFICIENCY } from '../../graphql/warehouse';
+import {
+  GET_INVENTORY_ROWS,
+  GET_PROJECT_INVENTORY_AVAILABILITY,
+  REPORT_INVENTORY_DEFICIENCY,
+} from '../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 import { useToast } from '../../components/Toast';
 import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
@@ -11,6 +15,7 @@ import SpotCheckModal from './SpotCheckModal';
 import DestockInventoryModal from './stock/DestockInventoryModal';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
+import type { InventoryAvailabilityRow } from '../import/types';
 
 /** One InventoryLocation as the API returns it. */
 interface InventoryItem {
@@ -91,6 +96,21 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
     { variables: { projectId } },
   );
 
+  // One project-scoped read of the reservation numbers (not one per row), so Flag Deficient can warn
+  // when it pushes a combo's available below what active requests have claimed. The All-Projects view
+  // has no single project to key it by, so it skips the read and flags without the reserved figure.
+  const { data: availData } = useQuery<{ projectInventoryAvailability: InventoryAvailabilityRow[] }>(
+    GET_PROJECT_INVENTORY_AVAILABILITY,
+    { variables: { projectId }, skip: !projectId, fetchPolicy: 'cache-and-network' },
+  );
+  const availByCombo = useMemo(() => {
+    const map = new Map<string, InventoryAvailabilityRow>();
+    for (const r of availData?.projectInventoryAvailability ?? []) {
+      map.set(`${r.hardwareCategory}|${r.productCode}`, r);
+    }
+    return map;
+  }, [availData]);
+
   const [correctionItem, setCorrectionItem] = useState<InventoryItem | null>(null);
   const [auditItem, setAuditItem] = useState<InventoryItem | null>(null);
   const [spotCheckItem, setSpotCheckItem] = useState<InventoryItem | null>(null);
@@ -100,7 +120,6 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
     refetchQueries: WAREHOUSE_REFETCH_QUERIES,
     awaitRefetchQueries: true,
     onCompleted: () => {
-      showToast('Deficient quantity flagged on row', 'success');
       void refetch();
     },
     onError: (err) => showToast(err.message, 'error'),
@@ -242,7 +261,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
               size="small"
               color="warning"
               disabled={available <= 0}
-              onClick={() => {
+              onClick={async () => {
                 if (available <= 0) {
                   showToast('Nothing left to flag - all units already deficient', 'info');
                   return;
@@ -258,9 +277,26 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
                   return;
                 }
                 const reason = window.prompt('Reason (optional)', '') || null;
-                reportDeficient({
-                  variables: { input: { inventoryLocationId: il.id, quantity: q, reasonText: reason } },
-                });
+                // Flagging q deficient nets q out of the combo's sound on-hand. Warn (but still flag)
+                // when that drops below what active requests reserved - reserved comes from the one
+                // project-scoped read above, so this stays a warning without a per-row query.
+                const combo = availByCombo.get(`${il.hardwareCategory}|${il.productCode}`);
+                const reserved = combo?.reservedQuantity ?? 0;
+                const strands =
+                  combo != null && combo.onHandQuantity - combo.deficientQuantity - q < reserved;
+                try {
+                  await reportDeficient({
+                    variables: { input: { inventoryLocationId: il.id, quantity: q, reasonText: reason } },
+                  });
+                  showToast(
+                    strands
+                      ? `Flagged ${q} deficient - now below the ${reserved} unit(s) reserved by active requests`
+                      : 'Deficient quantity flagged on row',
+                    strands ? 'warning' : 'success',
+                  );
+                } catch {
+                  // onError already surfaced the failure as a toast.
+                }
               }}
             >
               Flag Deficient
@@ -274,7 +310,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
     });
 
     return cols;
-  }, [projectId, reportDeficient, showToast]);
+  }, [projectId, reportDeficient, showToast, availByCombo]);
 
   if (loading) {
     return (

@@ -17,9 +17,11 @@ import { useToast } from '../../../components/Toast';
 import { DESTOCK_INVENTORY } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import { microLabelSx, monoSx } from '../../../theme';
+import { ReservationNotice, useComboReservation } from '../reservationNotice';
 
 export interface DestockSource {
   id: string;
+  projectId?: string;
   hardwareCategory: string;
   productCode: string;
   quantity: number;
@@ -74,6 +76,22 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
   const overrideComplete = !!aisle.trim() && !!row.trim() && !!bay.trim();
   const valid =
     Number.isInteger(q) && q >= 1 && q <= maxQty && (!overrideLoc || overrideComplete);
+
+  // A sound-unit destock shrinks the combo's sound on-hand (a DEFICIENT_SWAP nets to zero: it pulls
+  // only already-condemned units). Surface what active requests have reserved, and warn when the
+  // destock would leave fewer than that - the server refuses it, but the picker should see it here.
+  const reservation = useComboReservation({
+    projectId: inventoryLocation.projectId,
+    hardwareCategory: inventoryLocation.hardwareCategory,
+    productCode: inventoryLocation.productCode,
+  });
+  const destockQty = Number.isInteger(q) && q >= 1 ? q : 0;
+  const resultingSound =
+    reservation == null
+      ? null
+      : source === 'DEFICIENT_SWAP'
+        ? reservation.soundOnHand
+        : reservation.soundOnHand - destockQty;
 
   const handleSubmit = () => {
     if (!valid) return;
@@ -144,6 +162,9 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
             ))}
           </Select>
         </FormControl>
+        {reservation != null && resultingSound != null && (
+          <ReservationNotice reserved={reservation.reserved} resulting={resultingSound} />
+        )}
         <TextField
           label="Reason (optional)"
           value={reason}

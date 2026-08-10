@@ -14,10 +14,15 @@ import { useToast } from '../../components/Toast';
 import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED } from '../../graphql/shared';
 import { ADJUST_INVENTORY_QUANTITY, MOVE_STOCK_LOCATION, MARK_STOCK_ITEM_UNLOCATED, ADJUST_STOCK_QUANTITY } from '../../graphql/warehouse';
 import { microLabelSx, monoSx } from '../../theme';
+import { ReservationNotice, useComboReservation } from './reservationNotice';
 
 export type LocationActionTarget = {
   id: string;
   kind: 'inventory' | 'stock';
+  // Present only on inventory targets - the combo a reservation is keyed by. Stock pool rows are
+  // unclaimed, so these stay undefined and the reservation notice is skipped for them.
+  projectId?: string | null;
+  hardwareCategory?: string | null;
   productCode: string;
   quantity: number;
   warehouseId?: string | null;
@@ -103,6 +108,19 @@ export default function LocationActionDialog({
 
   const adjustmentNum = parseInt(adjustment, 10);
   const newQuantity = single && !isNaN(adjustmentNum) ? single.quantity + adjustmentNum : 0;
+
+  // Adjusting an inventory row down can leave the combo's sound on-hand below what active requests
+  // have reserved. Show the reserved count and warn on a stranding result. Stock-pool rows carry no
+  // project/combo, so the hook skips them.
+  const adjustingInventory = mode === 'adjust' && single?.kind === 'inventory';
+  const reservation = useComboReservation({
+    projectId: single?.projectId,
+    hardwareCategory: single?.hardwareCategory,
+    productCode: single?.productCode,
+    skip: !adjustingInventory,
+  });
+  const resultingSound =
+    reservation == null ? null : reservation.soundOnHand + (isNaN(adjustmentNum) ? 0 : adjustmentNum);
 
   const isValid = useMemo(() => {
     if (mode === 'unlocate') return true;
@@ -295,6 +313,9 @@ export default function LocationActionDialog({
             maxRows={4}
             helperText={`${reason.length}/${REASON_MAX_LENGTH}`}
           />
+          {reservation != null && resultingSound != null && (
+            <ReservationNotice reserved={reservation.reserved} resulting={resultingSound} />
+          )}
         </Stack>
       )}
     </Modal>
