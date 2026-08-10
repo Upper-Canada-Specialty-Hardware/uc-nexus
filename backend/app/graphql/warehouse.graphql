@@ -677,7 +677,7 @@ type Query {
   projectInventoryAvailability(projectId: ID!): [InventoryAvailability!]!
   inventoryHierarchy(projectId: ID, warehouseId: ID): [InventoryHierarchyNode!]!
   inventoryItems(projectId: ID, category: String!, productCode: String!): [InventoryItemDetail!]!
-  unlocatedInventory(projectId: ID): [InventoryItemDetail!]!
+  unlocatedInventory(projectId: ID, warehouseId: ID): [InventoryItemDetail!]!
   recentReceiveRecords(limit: Int! = 10): [RecentReceiveRecord!]!
   # Every GP-registered PO with what has landed against it, including the complete ones openPOs and
   # backOrderedItems drop (#447). The reconciliation view, not the what-is-owed view.

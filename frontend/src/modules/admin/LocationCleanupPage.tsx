@@ -15,9 +15,14 @@ import {
   DialogActions,
   TextField,
   Divider,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
 } from '@mui/material';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_LOCATION_DUPLICATES, MERGE_LOCATIONS } from '../../graphql/admin';
+import { GET_WAREHOUSES } from '../../graphql/shared';
 import { useToast } from '../../components/Toast';
 import { FONT_MONO, microLabelSx, monoSx } from '../../theme';
 import { FadeIn, StaggerList, StaggerItem } from '../../motion';
@@ -29,6 +34,8 @@ interface LocationVariant {
 }
 
 interface LocationDuplicateGroup {
+  warehouseId: string | null;
+  warehouseLabel: string | null;
   canonicalAisle: string | null;
   canonicalRow: string | null;
   canonicalBay: string | null;
@@ -37,6 +44,12 @@ interface LocationDuplicateGroup {
 
 interface DuplicatesData {
   locationDuplicates: LocationDuplicateGroup[];
+}
+
+interface WarehouseOption {
+  id: string;
+  name: string;
+  code: string;
 }
 
 function fmt(v: LocationVariant | { aisle: string | null; row: string | null; bay: string | null }): string {
@@ -64,11 +77,31 @@ export default function LocationCleanupPage() {
   const { data, loading, error, refetch } = useQuery<DuplicatesData>(GET_LOCATION_DUPLICATES, {
     fetchPolicy: 'cache-and-network',
   });
+  const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
+    variables: { includeInactive: true },
+  });
 
   const [mergeLocations, { loading: merging }] = useMutation(MERGE_LOCATIONS);
   const [dialog, setDialog] = useState<MergeDialogState | null>(null);
+  const [warehouseFilter, setWarehouseFilter] = useState('');
 
-  const groups = useMemo(() => data?.locationDuplicates ?? [], [data]);
+  const allGroups = useMemo(() => data?.locationDuplicates ?? [], [data]);
+  const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
+  // Only offer the picker when duplicates actually span more than one warehouse - otherwise it is a
+  // control with a single meaningful choice (space-efficiency law).
+  const warehouseIdsWithDupes = useMemo(
+    () => new Set(allGroups.map((g) => g.warehouseId)),
+    [allGroups],
+  );
+  // A collision only exists within one warehouse, so a group carries its own warehouseId; the picker
+  // narrows the list to a single building when several have duplicates. A selection whose last group
+  // was merged away falls back to all warehouses, so the empty state only shows when no dupes remain
+  // anywhere and the Select never holds a value missing from its menu.
+  const activeFilter = warehouseIdsWithDupes.has(warehouseFilter) ? warehouseFilter : '';
+  const groups = useMemo(
+    () => (activeFilter ? allGroups.filter((g) => g.warehouseId === activeFilter) : allGroups),
+    [allGroups, activeFilter],
+  );
 
   const openMerge = useCallback((group: LocationDuplicateGroup, from: LocationVariant) => {
     setDialog({
@@ -85,6 +118,7 @@ export default function LocationCleanupPage() {
     try {
       const result = await mergeLocations({
         variables: {
+          warehouseId: dialog.group.warehouseId,
           fromAisle: dialog.from.aisle ?? '',
           fromRow: dialog.from.row ?? '',
           fromBay: dialog.from.bay ?? '',
@@ -93,9 +127,9 @@ export default function LocationCleanupPage() {
           toBay: dialog.toBay.trim(),
         },
       });
-      const counts = (result.data as { mergeLocations: { inventoryLocations: number; openingItems: number; stockItems: number } } | null | undefined)
+      const counts = (result.data as { mergeLocations: { inventoryLocations: number; stockItems: number } } | null | undefined)
         ?.mergeLocations;
-      const total = counts ? counts.inventoryLocations + counts.openingItems + counts.stockItems : 0;
+      const total = counts ? counts.inventoryLocations + counts.stockItems : 0;
       showToast(`Merged ${total} rows to ${dialog.toAisle}-${dialog.toRow}-${dialog.toBay}`, 'success');
       setDialog(null);
       refetch();
@@ -124,6 +158,27 @@ export default function LocationCleanupPage() {
         </Typography>
       </FadeIn>
 
+      {warehouseIdsWithDupes.size > 1 && (
+        <FormControl size="small" sx={{ minWidth: 220, mb: 2 }}>
+          <InputLabel id="cleanup-wh-filter">Warehouse</InputLabel>
+          <Select
+            labelId="cleanup-wh-filter"
+            label="Warehouse"
+            value={activeFilter}
+            onChange={(e) => setWarehouseFilter(e.target.value)}
+          >
+            <MenuItem value="">All warehouses</MenuItem>
+            {warehouses
+              .filter((w) => warehouseIdsWithDupes.has(w.id))
+              .map((w) => (
+                <MenuItem key={w.id} value={w.id}>
+                  {w.name} ({w.code})
+                </MenuItem>
+              ))}
+          </Select>
+        </FormControl>
+      )}
+
       {groups.length === 0 ? (
         <Alert severity="success">
           No location duplicates found. All location strings are already canonical.
@@ -149,6 +204,14 @@ export default function LocationCleanupPage() {
                       <Typography variant="caption" color="text.secondary">
                         ({g.variants.length} variants found)
                       </Typography>
+                      {g.warehouseLabel && (
+                        <Chip
+                          label={g.warehouseLabel}
+                          size="small"
+                          variant="outlined"
+                          sx={{ ml: 'auto', fontFamily: FONT_MONO }}
+                        />
+                      )}
                     </Box>
                     <Divider sx={{ my: 1 }} />
                     <Stack spacing={0.5}>
@@ -206,10 +269,17 @@ export default function LocationCleanupPage() {
                 Every row at{' '}
                 <Box component="span" sx={{ ...monoSx, fontWeight: 600 }}>
                   {fmt(dialog.from)}
-                </Box>{' '}
-                (across inventory_locations, opening_items, and
-                stock_items) will be rewritten to the destination below. The merge writes a MOVE
-                audit entry per row.
+                </Box>
+                {dialog.group.warehouseLabel && (
+                  <>
+                    {' in '}
+                    <Box component="span" sx={{ ...monoSx, fontWeight: 600 }}>
+                      {dialog.group.warehouseLabel}
+                    </Box>
+                  </>
+                )}{' '}
+                (across inventory_locations and stock_items) will be rewritten to the destination
+                below. The merge writes a MOVE audit entry per row.
               </Alert>
               <TextField
                 label="Destination aisle"

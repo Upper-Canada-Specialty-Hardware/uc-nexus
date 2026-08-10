@@ -21,6 +21,7 @@ import {
   Paper,
   TextField,
   Tooltip,
+  Chip,
 } from '@mui/material';
 import { ChevronDown } from 'lucide-react';
 import { useQuery, useMutation } from '@apollo/client/react';
@@ -28,6 +29,7 @@ import { useToast } from '../../components/Toast';
 import LocationAutocomplete from '../../components/LocationAutocomplete';
 import {
   GET_PROJECTS,
+  GET_WAREHOUSES,
   ASSIGN_INVENTORY_LOCATION,
   SPLIT_INVENTORY_LOCATION,
 } from '../../graphql/shared';
@@ -41,6 +43,7 @@ import { parseServerDate } from '../../utils/serverDate';
 interface InventoryLocation {
   id: string;
   projectId: string;
+  warehouseId: string | null;
   hardwareCategory: string;
   productCode: string;
   quantity: number;
@@ -58,6 +61,12 @@ interface Project {
   id: string;
   projectId: string;
   description: string | null;
+}
+
+interface WarehouseOption {
+  id: string;
+  name: string;
+  code: string;
 }
 
 interface LocationInput {
@@ -98,6 +107,7 @@ function groupByCategory(items: UnlocatedItem[]): Map<string, UnlocatedItem[]> {
 export default function PutAwayTab() {
   const { showToast } = useToast();
   const [projectFilter, setProjectFilter] = useState<string>('');
+  const [warehouseFilter, setWarehouseFilter] = useState<string>('');
   const [locationInputs, setLocationInputs] = useState<Record<string, LocationInput>>({});
   const [assigningId, setAssigningId] = useState<string | null>(null);
   // Per-row "put N of these somewhere else" entry. Empty means the whole row goes to one bin.
@@ -105,6 +115,9 @@ export default function PutAwayTab() {
 
   // Queries
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
+  const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
+    variables: { includeInactive: true },
+  });
   const { data: distinctData } = useQuery<{
     locationDistinctValues: { aisles: string[]; rows: string[]; bays: string[] };
   }>(GET_LOCATION_DISTINCT_VALUES, { fetchPolicy: 'cache-and-network' });
@@ -115,7 +128,7 @@ export default function PutAwayTab() {
     error,
     refetch,
   } = useQuery<{ unlocatedInventory: UnlocatedItem[] }>(GET_UNLOCATED_INVENTORY, {
-    variables: { projectId: projectFilter || undefined },
+    variables: { projectId: projectFilter || undefined, warehouseId: warehouseFilter || undefined },
   });
 
   const aisleOptions = distinctData?.locationDistinctValues.aisles ?? [];
@@ -128,8 +141,20 @@ export default function PutAwayTab() {
 
   // Derived
   const projects = projectsData?.projects ?? [];
-  const items = unlocatedData?.unlocatedInventory ?? [];
+  const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
+  const warehouseCode = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const w of warehouses) m.set(w.id, w.code);
+    return m;
+  }, [warehouses]);
+  const items = useMemo(() => unlocatedData?.unlocatedInventory ?? [], [unlocatedData]);
   const grouped = useMemo(() => groupByCategory(items), [items]);
+  // Per-row warehouse is redundant noise once the list is filtered to one building, or when only one
+  // warehouse holds unlocated stock. Show it only when the queue actually spans warehouses.
+  const showWarehouse = useMemo(() => {
+    if (warehouseFilter) return false;
+    return new Set(items.map((i) => i.inventoryLocation.warehouseId).filter(Boolean)).size > 1;
+  }, [warehouseFilter, items]);
 
   // Handlers
   const getLocationInput = useCallback(
@@ -251,22 +276,42 @@ export default function PutAwayTab() {
         Received hardware with no rack location yet. Give each row an aisle, row and bay.
       </Typography>
 
-      {/* Project filter */}
-      <FormControl size="small" sx={{ minWidth: 250, mb: 3 }}>
-        <InputLabel>Filter by Project</InputLabel>
-        <Select
-          value={projectFilter}
-          label="Filter by Project"
-          onChange={(e) => setProjectFilter(e.target.value)}
-        >
-          <MenuItem value="">All Projects</MenuItem>
-          {projects.map((p) => (
-            <MenuItem key={p.id} value={p.id}>
-              {p.description || p.projectId}
-            </MenuItem>
-          ))}
-        </Select>
-      </FormControl>
+      {/* Filters */}
+      <Box sx={{ display: 'flex', gap: 2, mb: 3, flexWrap: 'wrap' }}>
+        <FormControl size="small" sx={{ minWidth: 250 }}>
+          <InputLabel>Filter by Project</InputLabel>
+          <Select
+            value={projectFilter}
+            label="Filter by Project"
+            onChange={(e) => setProjectFilter(e.target.value)}
+          >
+            <MenuItem value="">All Projects</MenuItem>
+            {projects.map((p) => (
+              <MenuItem key={p.id} value={p.id}>
+                {p.description || p.projectId}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        {warehouses.length > 1 && (
+          <FormControl size="small" sx={{ minWidth: 200 }}>
+            <InputLabel id="putaway-warehouse-filter-label">Warehouse</InputLabel>
+            <Select
+              labelId="putaway-warehouse-filter-label"
+              value={warehouseFilter}
+              label="Warehouse"
+              onChange={(e) => setWarehouseFilter(e.target.value)}
+            >
+              <MenuItem value="">All warehouses</MenuItem>
+              {warehouses.map((w) => (
+                <MenuItem key={w.id} value={w.id}>
+                  {w.name} ({w.code})
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        )}
+      </Box>
 
       {items.length === 0 && (
         <Alert severity="success" sx={{ mt: 2 }}>
@@ -308,6 +353,7 @@ export default function PutAwayTab() {
                       <TableHead>
                         <TableRow>
                           <TableCell>Product Code</TableCell>
+                          {showWarehouse && <TableCell>Warehouse</TableCell>}
                           <TableCell align="right">Qty</TableCell>
                           <TableCell>PO#</TableCell>
                           <TableCell>Received</TableCell>
@@ -333,6 +379,19 @@ export default function PutAwayTab() {
                               <TableCell sx={monoSx}>
                                 {item.inventoryLocation.productCode}
                               </TableCell>
+                              {showWarehouse && (
+                                <TableCell>
+                                  {item.inventoryLocation.warehouseId ? (
+                                    <Chip
+                                      label={warehouseCode.get(item.inventoryLocation.warehouseId) ?? '—'}
+                                      size="small"
+                                      variant="outlined"
+                                    />
+                                  ) : (
+                                    '—'
+                                  )}
+                                </TableCell>
+                              )}
                               <TableCell align="right">
                                 {item.inventoryLocation.quantity}
                               </TableCell>

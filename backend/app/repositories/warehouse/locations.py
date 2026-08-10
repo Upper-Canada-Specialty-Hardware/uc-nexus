@@ -40,6 +40,24 @@ def _normalize_and_validate_location_fields(aisle: str, row: str, bay: str) -> t
     return (a, b, c)
 
 
+def location_detail(aisle: str | None, row: str | None, bay: str | None, warehouse_id: uuid.UUID | None) -> dict:
+    """A location object for an audit-log detail payload, stamped with the warehouse it happened in.
+
+    get_location_audit_history filters by JSONB containment against this exact shape, so a move is
+    only warehouse-filterable when the warehouse is written into its location object here. Every audit
+    write whose detail carries a location (put-away, move, unlocate, merge, transfer, destock,
+    allocate, receive, override) builds it through this helper so the write shape and the read filter
+    cannot drift apart. Rows written before the stamp existed carry no warehouseId and fall out of a
+    warehouse-scoped history query - decided and acceptable; an unscoped query still returns them.
+    """
+    return {
+        "aisle": aisle,
+        "row": row,
+        "bay": bay,
+        "warehouseId": str(warehouse_id) if warehouse_id else None,
+    }
+
+
 def clone_origin_fields(source: InventoryLocationModel) -> dict:
     """The four origin FKs that make an InventoryLocation traceable, copied verbatim.
 
@@ -173,9 +191,19 @@ def get_location_utilization(session: Session, warehouse_id: uuid.UUID | None = 
 
 
 def get_location_audit_history(
-    session: Session, aisle: str, row_name: str | None = None, bay: str | None = None, limit: int = 10
+    session: Session,
+    aisle: str,
+    row_name: str | None = None,
+    bay: str | None = None,
+    limit: int = 10,
+    warehouse_id: uuid.UUID | None = None,
 ) -> list[InventoryAuditLog]:
-    """Recent audit log entries whose detail.fromLocation or detail.toLocation matches the location."""
+    """Recent audit log entries whose detail.fromLocation or detail.toLocation matches the location.
+
+    When warehouse_id is given the match tightens to entries whose location object also carries that
+    warehouse (via location_detail's warehouseId stamp). Entries written before the stamp existed have
+    no warehouseId and so drop out of a scoped query - decided and acceptable; unscoped is unchanged.
+    """
     # Build the matching predicate via JSONB containment. Postgres-only — matches the JSONB column.
     from_match: dict = {"aisle": aisle}
     to_match: dict = {"aisle": aisle}
@@ -185,6 +213,10 @@ def get_location_audit_history(
     if bay is not None:
         from_match["bay"] = bay
         to_match["bay"] = bay
+    if warehouse_id is not None:
+        wid = str(warehouse_id)
+        from_match["warehouseId"] = wid
+        to_match["warehouseId"] = wid
 
     stmt = (
         select(InventoryAuditLog)
@@ -231,51 +263,64 @@ def get_distinct_location_values(session: Session) -> dict[str, list[str]]:
 
 
 def get_location_duplicates(session: Session) -> list[dict]:
-    """Group location triples that collide on case-insensitive equality.
+    """Group location triples that collide on case-insensitive equality, scoped per warehouse.
 
-    Each group lists the distinct stored variants and the canonical (uppercase, trimmed) form.
-    Only groups with 2+ variants are returned.
+    A location string is one physical place only WITHIN a warehouse, so the same (aisle, row, bay)
+    triple stored two ways in two warehouses is two independent groups, not one - grouping across
+    warehouses would offer a merge that rewrites rows in a warehouse the admin never looked at. Each
+    group carries its warehouse (id + code label), lists the distinct stored variants, and the
+    canonical (uppercase, trimmed) form. Only groups with 2+ variants are returned.
     """
-    triples: set[tuple[str, str | None, str | None]] = set()
+    from app.models.warehouse import Warehouse as WarehouseModel
+
+    quads: set[tuple[uuid.UUID | None, str, str | None, str | None]] = set()
     for model in (InventoryLocationModel, StockItemModel):
         records = session.execute(
-            select(model.aisle, model.row, model.bay).where(model.aisle.is_not(None)).distinct()
+            select(model.warehouse_id, model.aisle, model.row, model.bay).where(model.aisle.is_not(None)).distinct()
         ).all()
-        for a, b, c in records:
-            triples.add((a, b, c))
+        for wh, a, b, c in records:
+            quads.add((wh, a, b, c))
 
-    groups: dict[tuple[str | None, str | None, str | None], list[tuple[str, str | None, str | None]]] = defaultdict(
-        list
-    )
-    for triple in triples:
+    groups: dict[tuple, list[tuple[str, str | None, str | None]]] = defaultdict(list)
+    for wh, a, b, c in quads:
         canonical = (
-            normalize_location_value(triple[0]),
-            normalize_location_value(triple[1]),
-            normalize_location_value(triple[2]),
+            normalize_location_value(a),
+            normalize_location_value(b),
+            normalize_location_value(c),
         )
-        groups[canonical].append(triple)
+        groups[(wh, *canonical)].append((a, b, c))
+
+    labels = {wid: code for wid, code in session.execute(select(WarehouseModel.id, WarehouseModel.code)).all()}
 
     result = []
-    for canonical, variants in groups.items():
+    for (wh, canon_aisle, canon_row, canon_bay), variants in groups.items():
         if len(variants) < 2:
             continue
         result.append(
             {
-                "canonical_aisle": canonical[0],
-                "canonical_row": canonical[1],
-                "canonical_bay": canonical[2],
+                "warehouse_id": wh,
+                "warehouse_label": labels.get(wh),
+                "canonical_aisle": canon_aisle,
+                "canonical_row": canon_row,
+                "canonical_bay": canon_bay,
                 "variants": [{"aisle": v[0], "row": v[1], "bay": v[2]} for v in sorted(variants, key=lambda t: str(t))],
             }
         )
     return sorted(
         result,
-        key=lambda g: (g["canonical_aisle"] or "", g["canonical_row"] or "", g["canonical_bay"] or ""),
+        key=lambda g: (
+            g["warehouse_label"] or "",
+            g["canonical_aisle"] or "",
+            g["canonical_row"] or "",
+            g["canonical_bay"] or "",
+        ),
     )
 
 
 def merge_locations(
     session: Session,
     *,
+    warehouse_id: uuid.UUID,
     from_aisle: str,
     from_row: str,
     from_bay: str,
@@ -284,10 +329,12 @@ def merge_locations(
     to_bay: str,
     performed_by: str,
 ) -> dict:
-    """Rewrite every row at (from_aisle, from_row, from_bay) to (to_aisle, to_row, to_bay).
+    """Rewrite every row at (from_aisle, from_row, from_bay) to (to_aisle, to_row, to_bay), in one warehouse.
 
-    Touches inventory_locations and stock_items. Writes a MOVE audit per row
-    so the merge is reconstructable. Returns counts per source table.
+    Scoped to warehouse_id: a location string is one physical place only within a warehouse, so a
+    merge must not touch a row that happens to share the string in another warehouse. Touches
+    inventory_locations and stock_items. Writes a MOVE audit per row so the merge is reconstructable.
+    Returns counts per source table.
     """
     if not performed_by:
         raise ValidationError("performed_by is required", field="performed_by")
@@ -296,10 +343,13 @@ def merge_locations(
     # from_* may already be in canonical form; either way only compare equality, no validation needed.
 
     counts = {"inventory_locations": 0, "stock_items": 0}
+    from_loc = location_detail(from_aisle, from_row, from_bay, warehouse_id)
+    to_loc = location_detail(to_aisle, to_row, to_bay, warehouse_id)
 
     inv_rows = list(
         session.scalars(
             select(InventoryLocationModel).where(
+                InventoryLocationModel.warehouse_id == warehouse_id,
                 InventoryLocationModel.aisle == from_aisle,
                 InventoryLocationModel.row == from_row,
                 InventoryLocationModel.bay == from_bay,
@@ -316,8 +366,8 @@ def merge_locations(
             action=AuditAction.MOVE,
             performed_by=performed_by,
             detail={
-                "fromLocation": {"aisle": from_aisle, "row": from_row, "bay": from_bay},
-                "toLocation": {"aisle": to_aisle, "row": to_row, "bay": to_bay},
+                "fromLocation": from_loc,
+                "toLocation": to_loc,
                 "reason": "location_merge",
             },
         )
@@ -326,6 +376,7 @@ def merge_locations(
     si_rows = list(
         session.scalars(
             select(StockItemModel).where(
+                StockItemModel.warehouse_id == warehouse_id,
                 StockItemModel.aisle == from_aisle,
                 StockItemModel.row == from_row,
                 StockItemModel.bay == from_bay,
@@ -342,8 +393,8 @@ def merge_locations(
             action=AuditAction.MOVE,
             performed_by=performed_by,
             detail={
-                "fromLocation": {"aisle": from_aisle, "row": from_row, "bay": from_bay},
-                "toLocation": {"aisle": to_aisle, "row": to_row, "bay": to_bay},
+                "fromLocation": from_loc,
+                "toLocation": to_loc,
                 "reason": "location_merge",
             },
         )
@@ -379,8 +430,8 @@ def move_inventory_location(
         action=AuditAction.MOVE,
         performed_by=performed_by,
         detail={
-            "fromLocation": {"aisle": old_aisle, "row": old_row, "bay": old_bay},
-            "toLocation": {"aisle": new_aisle, "row": new_row, "bay": new_bay},
+            "fromLocation": location_detail(old_aisle, old_row, old_bay, il.warehouse_id),
+            "toLocation": location_detail(new_aisle, new_row, new_bay, il.warehouse_id),
         },
     )
 
@@ -405,7 +456,7 @@ def mark_inventory_unlocated(session: Session, inv_id: uuid.UUID, *, performed_b
         entity_id=il.id,
         action=AuditAction.UNLOCATE,
         performed_by=performed_by,
-        detail={"fromLocation": {"aisle": old_aisle, "row": old_row, "bay": old_bay}},
+        detail={"fromLocation": location_detail(old_aisle, old_row, old_bay, il.warehouse_id)},
     )
 
     return il
@@ -432,7 +483,7 @@ def assign_inventory_location(
         entity_id=il.id,
         action=AuditAction.PUT_AWAY,
         performed_by=performed_by,
-        detail={"toLocation": {"aisle": aisle, "row": row, "bay": bay}},
+        detail={"toLocation": location_detail(aisle, row, bay, il.warehouse_id)},
     )
 
     return il

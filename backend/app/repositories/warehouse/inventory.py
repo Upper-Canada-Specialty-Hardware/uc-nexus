@@ -15,7 +15,7 @@ from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 
 from .audit import _log_audit_event
-from .locations import _normalize_and_validate_location_fields, clone_origin_fields
+from .locations import _normalize_and_validate_location_fields, clone_origin_fields, location_detail
 
 
 def get_inventory_hierarchy(
@@ -144,10 +144,13 @@ def get_inventory_items(
     ]
 
 
-def get_unlocated_inventory(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
+def get_unlocated_inventory(
+    session: Session, project_id: uuid.UUID | None = None, warehouse_id: uuid.UUID | None = None
+) -> list[dict]:
     """
     Query InventoryLocation rows where aisle, row, and bay are all NULL and quantity > 0.
     Joins to POLineItem for unit_cost/classification and PurchaseOrder for po_number.
+    Optionally scoped to one warehouse so put-away can work one building at a time.
     """
     stmt = (
         select(InventoryLocationModel, POLineItemModel.classification, POModel.po_number, POLineItemModel.unit_cost)
@@ -162,6 +165,8 @@ def get_unlocated_inventory(session: Session, project_id: uuid.UUID | None = Non
     )
     if project_id is not None:
         stmt = stmt.where(InventoryLocationModel.project_id == project_id)
+    if warehouse_id is not None:
+        stmt = stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
     stmt = stmt.order_by(
         InventoryLocationModel.hardware_category,
         InventoryLocationModel.product_code,
@@ -424,7 +429,7 @@ def override_inventory_quantity(
             detail={
                 "createdByOverrideOf": str(il.id),
                 "quantity": new_il.quantity,
-                "location": {"aisle": new_il.aisle, "row": new_il.row, "bay": new_il.bay},
+                "location": location_detail(new_il.aisle, new_il.row, new_il.bay, new_il.warehouse_id),
                 "reason": reason,
             },
         )

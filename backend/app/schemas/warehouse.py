@@ -574,11 +574,16 @@ class WarehouseQueries:
 
     @strawberry.field
     def unlocated_inventory(
-        self, info: strawberry.Info, project_id: strawberry.ID | None = None
+        self,
+        info: strawberry.Info,
+        project_id: strawberry.ID | None = None,
+        warehouse_id: strawberry.ID | None = None,
     ) -> list[InventoryItemDetail]:
         with SessionLocal() as session:
             items = warehouse_repository.get_unlocated_inventory(
-                session, uuid.UUID(str(project_id)) if project_id else None
+                session,
+                uuid.UUID(str(project_id)) if project_id else None,
+                uuid.UUID(str(warehouse_id)) if warehouse_id else None,
             )
             return [
                 InventoryItemDetail(
@@ -809,9 +814,17 @@ class WarehouseQueries:
         row: str | None = None,
         bay: str | None = None,
         limit: int = 10,
+        warehouse_id: strawberry.ID | None = None,
     ) -> list[AuditLogEntry]:
         with SessionLocal() as session:
-            entries = warehouse_repository.get_location_audit_history(session, aisle, row, bay, limit=limit)
+            entries = warehouse_repository.get_location_audit_history(
+                session,
+                aisle,
+                row,
+                bay,
+                limit=limit,
+                warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
+            )
             return [
                 AuditLogEntry(
                     id=strawberry.ID(str(e.id)),
@@ -844,6 +857,8 @@ class WarehouseQueries:
             groups = warehouse_repository.get_location_duplicates(session)
             return [
                 LocationDuplicateGroup(
+                    warehouse_id=strawberry.ID(str(g["warehouse_id"])) if g["warehouse_id"] else None,
+                    warehouse_label=g["warehouse_label"],
                     canonical_aisle=g["canonical_aisle"],
                     canonical_row=g["canonical_row"],
                     canonical_bay=g["canonical_bay"],
@@ -1491,6 +1506,7 @@ class WarehouseMutations:
     def merge_locations(
         self,
         info: strawberry.Info,
+        warehouse_id: strawberry.ID,
         from_aisle: str,
         from_row: str,
         from_bay: str,
@@ -1499,14 +1515,17 @@ class WarehouseMutations:
         to_bay: str,
     ) -> LocationMergeResult:
         """Admin-gated (#415): rewrites the location of every inventory row and stock item at the
-        source location. Its audit rows name the admin who ran it (#427) rather than the literal
-        "Admin/Manager" - the gate already proves the role, so the row may as well say which admin,
-        given a merge can touch hundreds of rows at once."""
+        source location, within one warehouse. warehouse_id is required - a location string is one
+        physical place only within a warehouse, so an unscoped merge would rewrite rows that share the
+        string in a warehouse the admin never looked at. Its audit rows name the admin who ran it
+        (#427) rather than the literal "Admin/Manager" - the gate already proves the role, so the row
+        may as well say which admin, given a merge can touch hundreds of rows at once."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             counts = warehouse_repository.merge_locations(
                 session,
+                warehouse_id=uuid.UUID(str(warehouse_id)),
                 from_aisle=from_aisle,
                 from_row=from_row,
                 from_bay=from_bay,
