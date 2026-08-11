@@ -103,6 +103,25 @@ describe('NotificationBell', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/app/warehouse/receiving?view=drafts');
   });
 
+  it('marks every unread notification read from one action', async () => {
+    // The popover only lists the latest few, and the badge counts every unread, so before this the
+    // tail of the pile could neither be seen nor cleared. One action has to reach all of them.
+    const seen: string[] = [];
+    renderBell(
+      [
+        notification({ id: 'n-a', type: 'PULL_REQUEST_COMPLETED', message: 'Pull A fulfilled.' }),
+        notification({ id: 'n-b', type: 'PULL_REQUEST_COMPLETED', message: 'Pull B fulfilled.' }),
+        notification({ id: 'n-c', type: 'PULL_REQUEST_COMPLETED', message: 'Pull C fulfilled.' }),
+      ],
+      seen,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Mark all read/ }, SLOW));
+
+    await vi.waitFor(() => expect([...seen].sort()).toEqual(['n-a', 'n-b', 'n-c']), SLOW);
+  });
+
   it('still only marks an audience-wide notification read, without navigating', async () => {
     // The pre-existing types are read by several people from several places, so there is no one
     // screen a click should take them to.
