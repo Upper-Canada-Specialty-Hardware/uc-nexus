@@ -191,9 +191,11 @@ export default function HomeDashboard() {
 
   return (
     // Capped to a content column rather than stretched edge-to-edge: the gauges and feed are dense,
-    // finite things, and a full-bleed dashboard spends the extra width on gaps. The margin past this
-    // is deliberate room, the same call the Shop Assembly landing makes.
-    <Box sx={{ maxWidth: 1180 }}>
+    // finite things, and a full-bleed dashboard spends the extra width on gaps. 680 (feed) + 20 (gap)
+    // + 360 (launcher) = 1060, so the row fills with no internal slack and the feed cannot balloon
+    // wide enough to strand its timestamps. The margin past this is deliberate room, the same call the
+    // Shop Assembly landing makes.
+    <Box sx={{ maxWidth: 1060 }}>
       {/* Orchestrated entrance: the greeting lands, the gauges stagger in under it, the feed rises
           last. Everything is on screen inside ~0.55s - instrumentation warming up, not a page
           animating for its own sake. */}
@@ -273,7 +275,7 @@ export default function HomeDashboard() {
       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2.5, alignItems: 'flex-start' }}>
         {/* Bounded: a full-bleed feed strands every timestamp a screen away from the line it belongs
             to. At this width the "when" sits next to the "what". */}
-        <FadeIn delay={0.18} style={{ flex: '1 1 440px', minWidth: 0 }}>
+        <FadeIn delay={0.18} style={{ flex: '1 1 440px', minWidth: 0, maxWidth: 680 }}>
           <Card variant="outlined" sx={{ p: 2 }}>
             <Typography component="div" sx={{ ...microLabelSx, mb: 1.5 }}>
               Recent Activity
@@ -348,7 +350,7 @@ export default function HomeDashboard() {
         {accessibleModules.length > 0 && (
           <FadeIn delay={0.26} style={{ flex: '1 1 300px', minWidth: 260, maxWidth: 360 }}>
             <Card variant="outlined" sx={{ p: 2 }}>
-              <Typography component="div" sx={{ ...microLabelSx, mb: 0.5 }}>
+              <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
                 Jump back in
               </Typography>
               <Box sx={{ display: 'flex', flexDirection: 'column' }}>
@@ -356,7 +358,6 @@ export default function HomeDashboard() {
                   <ButtonBase
                     key={m.path}
                     onClick={() => navigate(m.path)}
-                    aria-label={`Go to ${m.label}`}
                     sx={{
                       display: 'flex',
                       alignItems: 'center',
@@ -367,7 +368,16 @@ export default function HomeDashboard() {
                       textAlign: 'left',
                       borderBottom: i === accessibleModules.length - 1 ? 0 : 1,
                       borderColor: 'divider',
-                      '&:hover .home-launch-chevron': {
+                      // ButtonBase zeroes its own outline, so the app's amber focus ring is not
+                      // guaranteed to win the cascade here the way it does on MuiButton. Spell it out,
+                      // inset so it sits inside the card edge, and drive the same chevron nudge hover
+                      // gives - keyboard reaches these nav targets and must see where it landed.
+                      '&.Mui-focusVisible': {
+                        outline: '2px solid',
+                        outlineColor: 'secondary.main',
+                        outlineOffset: '-2px',
+                      },
+                      '&:hover .home-launch-chevron, &.Mui-focusVisible .home-launch-chevron': {
                         color: 'text.primary',
                         transform: 'translateX(2px)',
                       },
@@ -377,7 +387,11 @@ export default function HomeDashboard() {
                       {m.icon}
                     </Box>
                     <Box sx={{ minWidth: 0, flexGrow: 1 }}>
-                      <Typography sx={{ fontWeight: 600, lineHeight: 1.3 }}>{m.label}</Typography>
+                      {/* body2 (not the MUI body1 default) so the label sits one deliberate step above
+                          its caption rather than reading oversized next to the feed's body2 prose. */}
+                      <Typography variant="body2" sx={{ fontWeight: 600, lineHeight: 1.3 }}>
+                        {m.label}
+                      </Typography>
                       <Typography
                         variant="caption"
                         color="text.secondary"
