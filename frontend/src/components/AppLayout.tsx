@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Outlet, useNavigate, useLocation, Link as RouterLink } from 'react-router-dom';
+import { Outlet, useLocation, Link as RouterLink } from 'react-router-dom';
 import {
   AppBar,
   Toolbar,
@@ -42,7 +42,6 @@ const RAIL_COLLAPSED_KEY = 'uc-nexus-rail-collapsed';
 export default function AppLayout() {
   const { mode, setMode } = useColorScheme();
   const { isAdmin } = useIdentity();
-  const navigate = useNavigate();
   const location = useLocation();
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -124,10 +123,22 @@ export default function AppLayout() {
               )}
             </IconButton>
           </Tooltip>
+          {/* A real link, not a heading with an onClick: the home shortcut now answers the keyboard
+              and the middle-click/new-tab a person expects of a wordmark. color inherit keeps it in
+              the app bar's paper text rather than defaulting to link blue. */}
           <Typography
+            component={RouterLink}
+            to="/app"
             variant="h6"
-            sx={{ mr: 3, cursor: 'pointer', letterSpacing: '0.01em' }}
-            onClick={() => navigate('/app')}
+            sx={{
+              mr: 3,
+              letterSpacing: '0.01em',
+              color: 'inherit',
+              textDecoration: 'none',
+              borderRadius: 1,
+              '&:hover': { opacity: 0.85 },
+              '&:focus-visible': { outline: '2px solid currentColor', outlineOffset: 4 },
+            }}
           >
             UC Nexus
           </Typography>
