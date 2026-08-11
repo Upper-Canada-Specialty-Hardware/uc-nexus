@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Box, Typography, Card, CardActionArea, Grid } from '@mui/material';
 import {
   ClipboardList,
-  Eye,
+  PackageSearch,
   Warehouse,
   Folder,
   Users,
@@ -72,7 +72,7 @@ interface SubRoute {
 
 const SUB_ROUTES: SubRoute[] = [
   { label: 'Project Purchasing Progress', path: '/app/admin/project-purchasing-progress', icon: <ClipboardList {...CARD_ICON} /> },
-  { label: 'Opening Status', path: '/app/admin/opening-status', icon: <Eye {...CARD_ICON} />, countKey: 'openingCount' },
+  { label: 'Hardware Status by Project', path: '/app/admin/hardware-status', icon: <PackageSearch {...CARD_ICON} />, countKey: 'hardwareItemCount' },
   { label: 'Warehouses', path: '/app/admin/warehouses', icon: <Warehouse {...CARD_ICON} /> },
   { label: 'Projects', path: '/app/admin/projects', icon: <Folder {...CARD_ICON} /> },
   { label: 'User Management', path: '/app/admin/users', icon: <Users {...CARD_ICON} />, countKey: 'userCount' },
