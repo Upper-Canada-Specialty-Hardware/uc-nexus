@@ -42,3 +42,27 @@ export function formatGroupKey(field: GroupByField, value: unknown): string {
 export function distinctProductCodes(rows: { productCode: string }[]): string[] {
   return Array.from(new Set(rows.map((r) => r.productCode))).sort((a, b) => a.localeCompare(b));
 }
+
+export interface RowGroup<T> {
+  key: string;
+  label: string;
+  rows: T[];
+}
+
+// One leaf group per distinct combination of the group-by field values, its label the values joined
+// with ' › '. The key reads only the grouping fields (never the classification), so it is stable
+// while the user classifies - the guided card list and the review screen hold their position and
+// group the same rows the same way. Sorted by key for a deterministic order.
+export function groupRowsByFields<T extends Record<GroupByField, unknown>>(
+  rows: T[],
+  fields: GroupByField[],
+): RowGroup<T>[] {
+  const map = new Map<string, RowGroup<T>>();
+  for (const row of rows) {
+    const key = fields.map((f) => formatGroupKey(f, row[f])).join(' › ');
+    const existing = map.get(key);
+    if (existing) existing.rows.push(row);
+    else map.set(key, { key, label: key, rows: [row] });
+  }
+  return Array.from(map.values()).sort((a, b) => a.key.localeCompare(b.key));
+}
