@@ -308,18 +308,74 @@ export default function GuidedClassification({
       </Box>
 
       <Paper variant="outlined" sx={{ p: 2, minWidth: 0 }}>
-        <Typography sx={{ ...monoSx, fontWeight: 700, fontSize: '0.875rem', wordBreak: 'break-word' }}>
-          {currentCard.label}
-        </Typography>
-        {productCodes.length > 0 && (
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            sx={{ ...monoSx, fontSize: '0.6875rem', wordBreak: 'break-word' }}
-          >
-            {productCodes.join(', ')}
+        {/* #584: the group identity and the classify actions ride a sticky header pinned to the top of
+            the card, so a long group never buries the buttons below the fold - the user classifies off
+            the first rows without scrolling to the bottom. The row table below scrolls under this bar.
+            Pulled out to the card edges (negative margins) so the bar background and its divider span
+            the full width and nothing shows above the bar once it pins. */}
+        <Box
+          sx={{
+            position: 'sticky',
+            top: 0,
+            zIndex: 2,
+            bgcolor: 'background.paper',
+            mx: -2,
+            mt: -2,
+            px: 2,
+            pt: 2,
+            pb: 1.5,
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+          }}
+        >
+          <Typography sx={{ ...monoSx, fontWeight: 700, fontSize: '0.875rem', wordBreak: 'break-word' }}>
+            {currentCard.label}
           </Typography>
-        )}
+          {productCodes.length > 0 && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ ...monoSx, fontSize: '0.6875rem', wordBreak: 'break-word' }}
+            >
+              {productCodes.join(', ')}
+            </Typography>
+          )}
+
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 1.5 }}>
+            {options.map((opt) => (
+              <Button
+                key={opt.value}
+                size="small"
+                variant="contained"
+                color={opt.color}
+                onClick={() => classifyPrimary(opt.value)}
+              >
+                {opt.label} ({KEY_FOR_VALUE[opt.value] ?? '·'})
+              </Button>
+            ))}
+            {siteShopOptions?.map((opt) => (
+              <Button
+                key={opt.value}
+                size="small"
+                variant="outlined"
+                color={opt.color}
+                onClick={() => classifySiteShop(opt.value)}
+              >
+                {opt.label} ({(KEY_FOR_VALUE[opt.value] ?? '·').toUpperCase()})
+              </Button>
+            ))}
+            {canSplit && (
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<Split size={16} strokeWidth={1.75} />}
+                onClick={splitCurrent}
+              >
+                Split (X)
+              </Button>
+            )}
+          </Box>
+        </Box>
 
         <Box sx={{ overflowX: 'auto', mt: 1.5 }}>
           <Table size="small" sx={{ '& td, & th': { px: 1 } }}>
@@ -367,41 +423,6 @@ export default function GuidedClassification({
               })}
             </TableBody>
           </Table>
-        </Box>
-
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 2 }}>
-          {options.map((opt) => (
-            <Button
-              key={opt.value}
-              size="small"
-              variant="contained"
-              color={opt.color}
-              onClick={() => classifyPrimary(opt.value)}
-            >
-              {opt.label} ({KEY_FOR_VALUE[opt.value] ?? '·'})
-            </Button>
-          ))}
-          {siteShopOptions?.map((opt) => (
-            <Button
-              key={opt.value}
-              size="small"
-              variant="outlined"
-              color={opt.color}
-              onClick={() => classifySiteShop(opt.value)}
-            >
-              {opt.label} ({(KEY_FOR_VALUE[opt.value] ?? '·').toUpperCase()})
-            </Button>
-          ))}
-          {canSplit && (
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<Split size={16} strokeWidth={1.75} />}
-              onClick={splitCurrent}
-            >
-              Split (X)
-            </Button>
-          )}
         </Box>
       </Paper>
 
