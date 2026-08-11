@@ -1,6 +1,18 @@
 import { gql } from '@apollo/client/core';
 import { DELIVERY_REQUEST_FIELDS } from '../types/deliveryRequestFields';
 
+// The Shipping landing's pipeline gauges (#589): one rollup for the whole home page.
+export const GET_SHIPPING_STATS = gql`
+  query GetShippingStats {
+    shippingStats {
+      pendingRequestCount
+      stagingContainerCount
+      scheduledShipmentCount
+      inTransitShipmentCount
+    }
+  }
+`;
+
 export const GET_SHIP_READY_ITEMS = gql`
   query GetShipReadyItems($projectId: ID) {
     shipReadyItems(projectId: $projectId) {

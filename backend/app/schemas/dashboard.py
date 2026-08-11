@@ -6,7 +6,7 @@ from app.auth import user_roster
 from app.database import SessionLocal
 from app.repositories import dashboard_repository
 
-from .types import AdminStats, HomeDashboardStats, ShopAssemblyStats
+from .types import AdminStats, HomeDashboardStats, ShippingStats, ShopAssemblyStats
 
 
 @strawberry.type
@@ -28,6 +28,17 @@ class DashboardQueries:
             d = dashboard_repository.get_shop_assembly_stats(session)
             return ShopAssemblyStats(
                 active_pull_request_count=d["active_pull_request_count"],
+            )
+
+    @strawberry.field
+    def shipping_stats(self, info: strawberry.Info) -> ShippingStats:
+        with SessionLocal() as session:
+            d = dashboard_repository.get_shipping_stats(session)
+            return ShippingStats(
+                pending_request_count=d["pending_request_count"],
+                staging_container_count=d["staging_container_count"],
+                scheduled_shipment_count=d["scheduled_shipment_count"],
+                in_transit_shipment_count=d["in_transit_shipment_count"],
             )
 
     @strawberry.field

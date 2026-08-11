@@ -11,11 +11,16 @@ from app.models.enums import (
     POStatus,
     PullRequestSource,
     PullRequestStatus,
+    ShipmentStatus,
+    ShippingOutRequestStatus,
 )
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.pull_request import PullRequest
 from app.models.purchase_order import POLineItem, PurchaseOrder
+from app.models.shipment_container import ShipmentContainer
+from app.models.shipping import PackingSlip
+from app.models.shipping_out_request import ShippingOutRequest
 
 OPEN_PO_STATUSES = (
     POStatus.GP_REGISTERED,
@@ -91,6 +96,48 @@ def get_shop_assembly_stats(session: Session) -> dict:
 
     return {
         "active_pull_request_count": int(active_shop_pulls),
+    }
+
+
+def get_shipping_stats(session: Session) -> dict:
+    """Pipeline gauges for the Shipping landing (#589). Every figure is a scalar count with no
+    relationship load, per the project's N+1 rules."""
+    pending_requests = (
+        session.scalar(
+            select(func.count())
+            .select_from(ShippingOutRequest)
+            .where(ShippingOutRequest.status == ShippingOutRequestStatus.PENDING)
+        )
+        or 0
+    )
+
+    # Open containers: still being built, so no slip stamped on them yet (see ShipmentContainer).
+    staging_containers = (
+        session.scalar(
+            select(func.count()).select_from(ShipmentContainer).where(ShipmentContainer.packing_slip_id.is_(None))
+        )
+        or 0
+    )
+
+    scheduled_shipments = (
+        session.scalar(
+            select(func.count()).select_from(PackingSlip).where(PackingSlip.status == ShipmentStatus.SCHEDULED)
+        )
+        or 0
+    )
+
+    in_transit_shipments = (
+        session.scalar(
+            select(func.count()).select_from(PackingSlip).where(PackingSlip.status == ShipmentStatus.PICKED_UP)
+        )
+        or 0
+    )
+
+    return {
+        "pending_request_count": int(pending_requests),
+        "staging_container_count": int(staging_containers),
+        "scheduled_shipment_count": int(scheduled_shipments),
+        "in_transit_shipment_count": int(in_transit_shipments),
     }
 
 
