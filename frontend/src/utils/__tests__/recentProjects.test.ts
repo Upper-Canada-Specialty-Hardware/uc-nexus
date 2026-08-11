@@ -1,28 +1,25 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getRecentProjectIds, pushRecentProject } from '../recentProjects';
 
 // jsdom on this runner ships without the web Storage API, so stand up a minimal in-memory one that
-// the util can drive exactly as a browser's would.
-function installMemoryStorage() {
+// the util can drive exactly as a browser's would. Installed via vi.stubGlobal and torn down in
+// afterEach so the stub never leaks onto a later test file that shares this worker (an escaped stub
+// would let ProjectLandingPage render a "Recent" strip in tests that expect none).
+beforeEach(() => {
   const store = new Map<string, string>();
-  const storage: Storage = {
+  vi.stubGlobal('localStorage', {
     get length() {
       return store.size;
     },
     clear: () => store.clear(),
-    getItem: (k) => (store.has(k) ? store.get(k)! : null),
-    key: (i) => Array.from(store.keys())[i] ?? null,
-    removeItem: (k) => void store.delete(k),
-    setItem: (k, v) => void store.set(k, String(v)),
-  };
-  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
-}
-
-beforeEach(() => {
-  installMemoryStorage();
+    getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+    key: (i: number) => Array.from(store.keys())[i] ?? null,
+    removeItem: (k: string) => void store.delete(k),
+    setItem: (k: string, v: string) => void store.set(k, String(v)),
+  } satisfies Storage);
 });
 afterEach(() => {
-  localStorage.clear();
+  vi.unstubAllGlobals();
 });
 
 describe('recentProjects', () => {
