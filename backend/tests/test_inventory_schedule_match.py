@@ -126,7 +126,7 @@ def _borrow(monkeypatch, db_session):
     """Hand the resolver the test's transaction-bound session instead of a fresh SessionLocal.
 
     Without this the resolver opens its own connection and cannot see the fixture's uncommitted
-    rows, so every assertion reads an empty hierarchy. Same pattern as test_warehouse_dashboard.
+    rows, so every assertion reads an empty table. Same pattern as test_warehouse_dashboard.
     """
     from app.schemas import warehouse as warehouse_schema_module
 
@@ -140,8 +140,10 @@ def _borrow(monkeypatch, db_session):
     monkeypatch.setattr(warehouse_schema_module, "SessionLocal", _BorrowedSession)
 
 
-def _flat(nodes):
-    return {(n.hardware_category, pc.product_code): pc.matches_schedule for n in nodes for pc in n.product_codes}
+def _flat(rows):
+    return {
+        (r.inventory_location.hardware_category, r.inventory_location.product_code): r.matches_schedule for r in rows
+    }
 
 
 def test_resolver_flags_a_pair_absent_from_the_schedule(db_session, monkeypatch):
@@ -152,7 +154,7 @@ def test_resolver_flags_a_pair_absent_from_the_schedule(db_session, monkeypatch)
     _add_inventory(db_session, project, category="Washroom", code="GRAB-BAR-42")
     _borrow(monkeypatch, db_session)
 
-    flat = _flat(WarehouseQueries().inventory_hierarchy(None, project_id=str(project.id)))
+    flat = _flat(WarehouseQueries().inventory_rows(None, project_id=str(project.id)))
     assert flat[("Washroom", "GRAB-BAR-42")] is False
 
 
@@ -164,11 +166,11 @@ def test_resolver_does_not_flag_a_pair_the_schedule_names(db_session, monkeypatc
     _add_inventory(db_session, project, category="Hinge", code="BB1279")
     _borrow(monkeypatch, db_session)
 
-    flat = _flat(WarehouseQueries().inventory_hierarchy(None, project_id=str(project.id)))
+    flat = _flat(WarehouseQueries().inventory_rows(None, project_id=str(project.id)))
     assert flat[("Hinge", "BB1279")] is True
 
 
-def test_unscoped_hierarchy_never_flags(db_session, monkeypatch):
+def test_unscoped_rows_never_flag(db_session, monkeypatch):
     """No project, no single schedule to compare against - so the answer is unknown, not False."""
     from app.schemas.warehouse import WarehouseQueries
 
@@ -176,25 +178,9 @@ def test_unscoped_hierarchy_never_flags(db_session, monkeypatch):
     _add_inventory(db_session, project, category="Washroom", code="GRAB-BAR-42")
     _borrow(monkeypatch, db_session)
 
-    nodes = WarehouseQueries().inventory_hierarchy(None, project_id=None)
-    assert nodes
-    assert all(pc.matches_schedule for n in nodes for pc in n.product_codes)
-
-
-def test_by_vendor_hierarchy_builds_and_never_flags(db_session, monkeypatch):
-    """Also regressions the omitted-required-argument crash: this raised TypeError on every call."""
-    from app.schemas.warehouse import WarehouseQueries
-
-    project = _make_project(db_session)
-    _add_inventory(db_session, project, category="Washroom", code="GRAB-BAR-42")
-    _borrow(monkeypatch, db_session)
-
-    nodes = WarehouseQueries().inventory_by_vendor(None, project_id=str(project.id))
-    assert nodes
-    for n in nodes:
-        for pc in n.product_codes:
-            assert pc.matches_schedule is True
-            assert pc.total_available_quantity == 0
+    rows = WarehouseQueries().inventory_rows(None, project_id=None)
+    assert rows
+    assert all(r.matches_schedule for r in rows)
 
 
 def test_non_schedule_type_codes_are_never_flagged(db_session, monkeypatch):
@@ -213,7 +199,7 @@ def test_non_schedule_type_codes_are_never_flagged(db_session, monkeypatch):
     _add_inventory(db_session, project, category="Washroom", code="GRAB-42")
     _borrow(monkeypatch, db_session)
 
-    flat = _flat(WarehouseQueries().inventory_hierarchy(None, project_id=str(project.id)))
+    flat = _flat(WarehouseQueries().inventory_rows(None, project_id=str(project.id)))
     assert flat[(item_type.code, "FR-101")] is True
     # An ordinary category still off the schedule is still flagged - the rule narrowed, not vanished.
     assert flat[("Washroom", "GRAB-42")] is False
