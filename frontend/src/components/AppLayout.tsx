@@ -29,6 +29,7 @@ import ConfirmDialog from './ConfirmDialog';
 import Sidebar, { NavRail } from './Sidebar';
 import { PageTransition } from '../motion';
 import { readAuthBridge } from '../authBridge';
+import { useIdentity } from '../hooks/useIdentity';
 
 /** Breadcrumb segments that the auto-capitalizer gets wrong. */
 const CRUMB_LABELS: Record<string, string> = {
@@ -40,6 +41,7 @@ const RAIL_COLLAPSED_KEY = 'uc-nexus-rail-collapsed';
 
 export default function AppLayout() {
   const { mode, setMode } = useColorScheme();
+  const { isAdmin } = useIdentity();
   const navigate = useNavigate();
   const location = useLocation();
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
@@ -132,23 +134,28 @@ export default function AppLayout() {
 
           <Box sx={{ flexGrow: 1 }} />
 
-          <Button
-            variant="outlined"
-            color="inherit"
-            size="small"
-            disabled={resetting}
-            onClick={() => setResetConfirmOpen(true)}
-            sx={{
-              mr: 1.5,
-              textTransform: 'none',
-              fontSize: '0.75rem',
-              borderColor: alpha('#f6f3ec', 0.35),
-              color: alpha('#f6f3ec', 0.85),
-              '&:hover': { borderColor: '#f6f3ec', backgroundColor: alpha('#f6f3ec', 0.08) },
-            }}
-          >
-            {resetting ? 'Resetting…' : 'DevAction: drop and rebuild schema'}
-          </Button>
+          {/* A dev-only teardown gated behind require_admin_request server-side. Non-admins could
+              never fire it, so showing it to them was a scary, dead control in the toolbar - it now
+              renders only for the accounts that can actually use it. */}
+          {isAdmin && (
+            <Button
+              variant="outlined"
+              color="inherit"
+              size="small"
+              disabled={resetting}
+              onClick={() => setResetConfirmOpen(true)}
+              sx={{
+                mr: 1.5,
+                textTransform: 'none',
+                fontSize: '0.75rem',
+                borderColor: alpha('#f6f3ec', 0.35),
+                color: alpha('#f6f3ec', 0.85),
+                '&:hover': { borderColor: '#f6f3ec', backgroundColor: alpha('#f6f3ec', 0.08) },
+              }}
+            >
+              {resetting ? 'Resetting…' : 'DevAction: drop and rebuild schema'}
+            </Button>
+          )}
 
           {/* #353 PR E: only renders when the GP write queue is non-empty, so the bar is unchanged
               in the normal case. */}
