@@ -25,12 +25,12 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { MoreVertical } from 'lucide-react';
+import { FileText, MoreVertical, Paperclip, X } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
-import type { DraftGroup } from './types';
+import type { DraftAttachmentType, DraftGroup } from './types';
 
 export interface GpCostCode {
   costCode: string;
@@ -196,6 +196,10 @@ export interface DraftCardProps {
   onMergeDraft: (fromId: string, intoId: string) => void;
   onRemoveDraft: (id: string) => void;
   onOpenSplit: (ctx: SplitContext) => void;
+  // #588: pre-attach documents that land on the PO this draft creates.
+  onAddAttachments: (id: string, files: File[]) => void;
+  onSetAttachmentType: (id: string, attachmentId: string, documentType: DraftAttachmentType) => void;
+  onRemoveAttachment: (id: string, attachmentId: string) => void;
 }
 
 export function DraftCard({
@@ -215,11 +219,15 @@ export function DraftCard({
   onMergeDraft,
   onRemoveDraft,
   onOpenSplit,
+  onAddAttachments,
+  onSetAttachmentType,
+  onRemoveAttachment,
 }: DraftCardProps) {
   const lines = useMemo(
     () => buildLines(draft, productCatalog, unitCostOverrides),
     [draft, productCatalog, unitCostOverrides],
   );
+  const attachments = draft.attachments ?? [];
   const productCodes = useMemo(() => Array.from(new Set(lines.map((l) => l.productCode))), [lines]);
 
   const { data: priorData } = useQuery<PriorOrderAsQueryData>(GET_PRIOR_ORDER_AS_VALUES, {
@@ -343,6 +351,70 @@ export function DraftCard({
           sx={{ flex: 1, minWidth: 200 }}
           placeholder="Optional notes for this PO"
         />
+      </Box>
+
+      {/* #588: documents the buyer already has, pre-attached here and uploaded onto the PO this draft
+          creates. Only PO Document / Miscellaneous - the other types are produced downstream. */}
+      <Box sx={{ mb: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0, mb: attachments.length > 0 ? 1 : 0 }}>
+          <Typography sx={microLabelSx}>Documents</Typography>
+          {attachments.length === 0 && (
+            <Typography variant="caption" color="text.secondary" noWrap sx={{ minWidth: 0, flex: 1 }}>
+              Optional - the PO document or misc files, carried onto the created request
+            </Typography>
+          )}
+          <Button
+            size="small"
+            variant="outlined"
+            component="label"
+            startIcon={<Paperclip size={15} strokeWidth={1.75} />}
+            sx={{ ml: 'auto', flexShrink: 0 }}
+          >
+            Attach
+            <input
+              type="file"
+              hidden
+              multiple
+              onChange={(e) => {
+                const files = Array.from(e.target.files ?? []);
+                if (files.length > 0) onAddAttachments(draft.id, files);
+                // Clear so re-selecting the same file re-fires onChange.
+                e.target.value = '';
+              }}
+            />
+          </Button>
+        </Box>
+        {attachments.length > 0 && (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.75 }}>
+            {attachments.map((a) => (
+              <Box key={a.id} sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+                <FileText size={16} strokeWidth={1.75} style={{ flexShrink: 0, opacity: 0.6 }} />
+                <Typography variant="body2" noWrap title={a.file.name} sx={{ ...monoSx, flex: 1, minWidth: 0 }}>
+                  {a.file.name}
+                </Typography>
+                <TextField
+                  select
+                  size="small"
+                  value={a.documentType}
+                  onChange={(e) => onSetAttachmentType(draft.id, a.id, e.target.value as DraftAttachmentType)}
+                  slotProps={{ htmlInput: { 'aria-label': `Document type for ${a.file.name}` } }}
+                  sx={{ width: 168, flexShrink: 0 }}
+                >
+                  <MenuItem value="PO_DOCUMENT">PO Document</MenuItem>
+                  <MenuItem value="MISCELLANEOUS">Miscellaneous</MenuItem>
+                </TextField>
+                <IconButton
+                  size="small"
+                  aria-label={`Remove ${a.file.name}`}
+                  onClick={() => onRemoveAttachment(draft.id, a.id)}
+                  sx={{ flexShrink: 0 }}
+                >
+                  <X size={16} strokeWidth={1.75} />
+                </IconButton>
+              </Box>
+            ))}
+          </Box>
+        )}
       </Box>
 
       <Typography sx={{ ...microLabelSx, mb: 1 }}>Line items ({lines.length})</Typography>

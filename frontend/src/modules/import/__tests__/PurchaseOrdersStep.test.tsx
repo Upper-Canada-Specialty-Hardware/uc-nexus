@@ -51,6 +51,17 @@ function Harness({ initial }: { initial: DraftGroup[] }) {
         onCreateDraft={() => setGroups((g) => draftOps.createDraft(g, `new:${seq.current++}`))}
         onMergeDraft={(f, t) => setGroups((g) => draftOps.mergeDraft(g, f, t))}
         onRemoveDraft={(id) => setGroups((g) => draftOps.removeDraft(g, id))}
+        onAddAttachments={(id, files) =>
+          setGroups((g) =>
+            draftOps.addAttachments(
+              g,
+              id,
+              files.map((f, i) => ({ id: `${id}:${seq.current++}:${i}`, file: f })),
+            ),
+          )
+        }
+        onSetAttachmentType={(id, aid, t) => setGroups((g) => draftOps.setAttachmentType(g, id, aid, t))}
+        onRemoveAttachment={(id, aid) => setGroups((g) => draftOps.removeAttachment(g, id, aid))}
       />
     </MockedProvider>
   );
@@ -62,6 +73,29 @@ describe('PurchaseOrdersStep organizing', () => {
     const input = screen.getByDisplayValue('ACME') as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'ACME Doors' } });
     expect(screen.getByDisplayValue('ACME Doors')).toBeInTheDocument();
+  });
+
+  it('attaches a document to a draft, retypes it, and removes it (#588)', () => {
+    const { container } = render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 2 })]} />);
+
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, {
+      target: { files: [new File(['x'], 'quote.pdf', { type: 'application/pdf' })] },
+    });
+
+    // The file shows, defaulting to PO Document.
+    expect(screen.getByText('quote.pdf')).toBeInTheDocument();
+    expect(screen.getByText('PO Document')).toBeInTheDocument();
+
+    // Retype it to Miscellaneous through the per-file select.
+    fireEvent.mouseDown(screen.getByLabelText('Document type for quote.pdf'));
+    fireEvent.click(screen.getByRole('option', { name: 'Miscellaneous' }));
+    expect(screen.getByLabelText('Document type for quote.pdf')).toHaveTextContent('Miscellaneous');
+
+    // Remove it; the row is gone and the empty-state helper returns.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove quote.pdf' }));
+    expect(screen.queryByText('quote.pdf')).not.toBeInTheDocument();
+    expect(screen.getByText(/carried onto the created request/i)).toBeInTheDocument();
   });
 
   it('moves a whole line to another draft via the row menu', () => {

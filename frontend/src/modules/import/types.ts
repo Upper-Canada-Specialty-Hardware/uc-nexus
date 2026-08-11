@@ -64,6 +64,20 @@ export interface DraftGroupInfo {
   costCode: string;
 }
 
+// #588: the document types the buyer can attach while still composing the draft. Only the two that
+// can exist before the PO does - vendor acknowledgement / generated PO / packing slip are produced
+// downstream and stay PO-detail-only.
+export type DraftAttachmentType = 'PO_DOCUMENT' | 'MISCELLANEOUS';
+
+// #588: a file the buyer attached to a draft before the PO exists. Held client-side with the raw
+// File; uploaded onto the created PO after finalize mints it. `id` is a local key for the list, not
+// a server id.
+export interface DraftAttachment {
+  id: string;
+  file: File;
+  documentType: DraftAttachmentType;
+}
+
 // #570: one PO draft the buyer is composing. Manufacturer slicing is only the seed - lines move
 // between drafts, drafts merge/split/rename, so a draft is no longer tied to a manufacturer. `lines`
 // maps productKey -> quantity; the invariant, held by construction, is that the quantities of a
@@ -74,6 +88,9 @@ export interface DraftGroup {
   included: boolean;
   info: DraftGroupInfo;
   lines: Map<string, number>;
+  // #588: documents the buyer pre-attached; land on the PO this draft creates. Optional so the pure
+  // reducers and their tests can build a draft without them.
+  attachments?: DraftAttachment[];
 }
 
 // Seed one draft per manufacturer group at full quantity - the starting point the buyer then slices.
