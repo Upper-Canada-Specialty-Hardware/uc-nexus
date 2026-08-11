@@ -37,10 +37,12 @@ import { UPLOAD_PO_DOCUMENT } from '../../graphql/po';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { GET_PROJECT_INVENTORY_AVAILABILITY } from '../../graphql/warehouse';
 import { GET_REQUEST_COVERAGE } from '../../graphql/shipping';
+import { GET_HARDWARE_STATUS_BY_PRODUCT } from '../../graphql/admin';
 import { RESERVATION_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import type {
   AggregatedHardwareItem,
   ClassificationRow,
+  HardwareStatusRow,
   ImportPurpose,
   InventoryAvailabilityRow,
   ReconciliationRow,
@@ -450,6 +452,28 @@ export default function ImportWizard({
     return raw.map((r, i) => ({ ...r, id: `recon-${i}` }));
   }, [reconcileData]);
 
+  // Project-wide lifecycle state per product, read from the same query the admin Hardware Status page
+  // uses (#597). The reconciliation step renders its Lifecycle Breakdown from this, so the two screens
+  // can never disagree. Runs for every re-import purpose (PO, shop assembly, shipping) - the breakdown
+  // is informational everywhere; the purpose-specific gates (over-order for PO, available-to-pull for
+  // the requests) live in other columns.
+  const { data: hardwareStatusData } = useQuery<{ hardwareStatusByProduct: HardwareStatusRow[] }>(
+    GET_HARDWARE_STATUS_BY_PRODUCT,
+    {
+      variables: { projectIds: existingProjectId ? [existingProjectId] : [] },
+      skip: !isReimport || !existingProjectId,
+      fetchPolicy: 'cache-and-network',
+    },
+  );
+
+  const hardwareStatusByProduct = useMemo(() => {
+    const map = new Map<string, HardwareStatusRow>();
+    for (const row of hardwareStatusData?.hardwareStatusByProduct ?? []) {
+      map.set(itemGroupKey({ hardware_category: row.hardwareCategory, product_code: row.productCode }), row);
+    }
+    return map;
+  }, [hardwareStatusData]);
+
   // Received-and-unpulled quantity per aggregation key. Both request purposes pull from it, and the
   // shipping loose list also clamps its requested quantity to it, so it is indexed once.
   // reconcile_schedule has already moved anything sitting on an open pull into its own bucket, so a
@@ -812,8 +836,9 @@ export default function ImportWizard({
       selectedHardwareItems,
       allHardwareItems: parsed?.hardwareItems ?? [],
       selectedReconItems,
+      hardwareStatusByProduct,
     }).filter((r) => r.overOrdersProject);
-  }, [purpose, isReimport, reconciliationRows, selectedHardwareItems, parsed, selectedReconItems]);
+  }, [purpose, isReimport, reconciliationRows, selectedHardwareItems, parsed, selectedReconItems, hardwareStatusByProduct]);
 
   const advanceToNextStep = useCallback(() => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
@@ -1652,6 +1677,7 @@ export default function ImportWizard({
               selectedHardwareItems={selectedHardwareItems}
               allHardwareItems={hardwareItems}
               selectedReconItems={selectedReconItems}
+              hardwareStatusByProduct={hardwareStatusByProduct}
               onSelectionChange={setSelectedReconItems}
             />
           )}
