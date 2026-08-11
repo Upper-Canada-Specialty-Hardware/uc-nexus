@@ -115,6 +115,28 @@ export function draftSeedSignature(vendorGroups: Map<string, AggregatedHardwareI
   return parts.join('||');
 }
 
+// One aggregated hardware line the classification step works on. Keyed by classificationKey
+// (category|product|cost) - the grain both classification axes are set at - and carrying the opening
+// attributes (#486) so the classifier sees the door each item belongs to.
+export interface ClassificationRow {
+  id: string;
+  openingNumber: string;
+  hand: string;
+  doorQuantity: number | null;
+  doorMaterial: string;
+  productCode: string;
+  hardwareCategory: string;
+  vendorNo: string;
+  listPrice: number | null;
+  vendorDiscount: number | null;
+  unitCost: number;
+  itemQuantity: number;
+  classificationKey: string;
+  classification: string;
+  // Issue #216: second axis (Site/Shop) for PO-purpose imports; '' = not yet classified.
+  siteShop?: string;
+}
+
 export interface ClassificationOption {
   value: string;
   label: string;

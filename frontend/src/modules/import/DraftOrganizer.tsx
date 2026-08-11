@@ -98,7 +98,9 @@ interface SplitLineDialogProps {
 }
 
 export function SplitLineDialog({ ctx, targets, onClose, onConfirm }: SplitLineDialogProps) {
-  const [qty, setQty] = useState(1);
+  // Held as raw text, not a number, so the buyer can clear the field and retype freely.
+  // Nothing is clamped or flagged mid-keystroke - validation waits for blur or the Move click.
+  const [qtyText, setQtyText] = useState('1');
   const [toId, setToId] = useState('');
 
   // Reset the fields whenever a fresh split is opened.
@@ -106,12 +108,14 @@ export function SplitLineDialog({ ctx, targets, onClose, onConfirm }: SplitLineD
   const [seenKey, setSeenKey] = useState<string | null>(null);
   if (ctx && ctxKey !== seenKey) {
     setSeenKey(ctxKey);
-    setQty(1);
+    setQtyText('1');
     setToId(targets[0]?.id ?? '');
   }
 
   const max = ctx?.maxQty ?? 1;
-  const valid = ctx != null && toId !== '' && qty >= 1 && qty <= max;
+  const qty = parseInt(qtyText, 10);
+  const qtyValid = !Number.isNaN(qty) && qty >= 1 && qty <= max;
+  const valid = ctx != null && toId !== '' && qtyValid;
 
   return (
     <Dialog open={ctx != null} onClose={onClose} maxWidth="xs" fullWidth>
@@ -129,10 +133,12 @@ export function SplitLineDialog({ ctx, targets, onClose, onConfirm }: SplitLineD
           label="Quantity to move"
           type="number"
           size="small"
-          value={qty}
-          onChange={(e) => {
-            const v = parseInt(e.target.value, 10);
-            if (!Number.isNaN(v)) setQty(Math.max(1, Math.min(max, v)));
+          value={qtyText}
+          onChange={(e) => setQtyText(e.target.value)}
+          onBlur={() => {
+            // Settle the raw text into the valid range once the buyer is done typing.
+            const v = parseInt(qtyText, 10);
+            setQtyText(Number.isNaN(v) ? '1' : String(Math.max(1, Math.min(max, v))));
           }}
           slotProps={{ htmlInput: { min: 1, max, step: 1, sx: tabularSx } }}
           sx={{ width: 180 }}
@@ -164,7 +170,7 @@ export function SplitLineDialog({ ctx, targets, onClose, onConfirm }: SplitLineD
             }
           }}
         >
-          Move {qty}
+          Move{qtyValid ? ` ${qty}` : ''}
         </Button>
       </DialogActions>
     </Dialog>

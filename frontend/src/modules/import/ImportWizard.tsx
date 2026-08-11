@@ -37,9 +37,9 @@ import { GET_PROJECTS } from '../../graphql/shared';
 import { GET_PROJECT_INVENTORY_AVAILABILITY } from '../../graphql/warehouse';
 import { GET_REQUEST_COVERAGE } from '../../graphql/shipping';
 import { RESERVATION_STALE_ROOT_FIELDS } from '../../graphql/refetch';
-import type { ClassificationRow } from './ClassificationGrid';
 import type {
   AggregatedHardwareItem,
+  ClassificationRow,
   ImportPurpose,
   InventoryAvailabilityRow,
   ReconciliationRow,
@@ -1579,7 +1579,6 @@ export default function ImportWizard({
               onClassifySiteShop={classifySiteShopBatch}
               purpose={purpose!}
               itemCount={aggregatedHardwareItems.length}
-              openingCount={selectedOpenings.size}
               isReimport={isReimport}
             />
           )}
