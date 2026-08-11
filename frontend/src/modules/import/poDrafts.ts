@@ -36,6 +36,27 @@ export interface PODraftPayload {
   costCode: string | null;
   hardwareItemRefs: HardwareItemRefPayload[];
   lineItemAliases: POLineItemAliasPayload[];
+  // #588: the DraftGroup this payload came from. Not part of the graphql input - toPoDraftInput
+  // strips it before sending - but kept so finalize can map its returned PO (same order) back to the
+  // draft's pre-attached documents. buildPoDrafts emits included, non-empty drafts in draftGroups
+  // order, and the backend creates POs in that same order, so purchaseOrders[i] is this[i]'s draft.
+  sourceDraftId: string;
+}
+
+// #588: the graphql PODraftInput shape - the payload minus the client-only sourceDraftId.
+export type PODraftInputPayload = Omit<PODraftPayload, 'sourceDraftId'>;
+
+/** Drop the client-only sourceDraftId so the object matches PODraftInput exactly. Written field-by-
+ *  field (not a rest-omit) so an added PODraftInput field is a compile error here, not a silent drop. */
+export function toPoDraftInput(d: PODraftPayload): PODraftInputPayload {
+  return {
+    poNumber: d.poNumber,
+    notes: d.notes,
+    preferredDeliveryDate: d.preferredDeliveryDate,
+    costCode: d.costCode,
+    hardwareItemRefs: d.hardwareItemRefs,
+    lineItemAliases: d.lineItemAliases,
+  };
 }
 
 export function buildPoDrafts(
@@ -115,6 +136,7 @@ export function buildPoDrafts(
       costCode: group.info.costCode || null,
       hardwareItemRefs: refs,
       lineItemAliases: aliases,
+      sourceDraftId: group.id,
     });
   }
 
