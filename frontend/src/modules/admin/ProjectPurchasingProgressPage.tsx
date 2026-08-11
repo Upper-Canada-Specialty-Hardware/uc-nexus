@@ -6,14 +6,13 @@ import {
   CircularProgress,
   Autocomplete,
   TextField,
-  Tooltip,
 } from '@mui/material';
-import { Info } from 'lucide-react';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
 import { GET_PROJECT_PROGRESS_BY_PRODUCT } from '../../graphql/admin';
 import { GET_PROJECTS } from '../../graphql/shared';
-import { microLabelSx, monoSx } from '../../theme';
+import { infoHeader } from '../../components/InfoColumnHeader';
+import { monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import type { Project } from '../../types/project';
 
@@ -26,28 +25,6 @@ interface ProgressRow {
   receivedQuantity: number;
   backOrdered: number;
   shippedOut: number;
-}
-
-// Each numeric column counts a different thing and they routinely disagree (e.g. Received
-// is PO receipts, NOT current inventory). Surface the exact rule on hover so the numbers
-// aren't misread cold. renderHeader keeps the column's right alignment via headerAlign.
-function infoHeader(label: string, tooltip: string): GridColDef['renderHeader'] {
-  return () => (
-    <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
-      <Box component="span" sx={microLabelSx}>
-        {label}
-      </Box>
-      <Tooltip arrow enterTouchDelay={0} title={tooltip}>
-        <Box
-          component="span"
-          sx={{ display: 'inline-flex', alignItems: 'center', cursor: 'help', color: 'text.secondary' }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <Info size={14} strokeWidth={1.75} />
-        </Box>
-      </Tooltip>
-    </Box>
-  );
 }
 
 const columns: GridColDef[] = [

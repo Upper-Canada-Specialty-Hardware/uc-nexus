@@ -33,6 +33,7 @@ from .locations import (
 )
 from .progress import (
     PLACED_PO_STATUSES,
+    get_hardware_status_by_product,
     get_project_progress_by_product,
     get_warehouse_dashboard,
 )
@@ -155,6 +156,7 @@ __all__ = [
     "get_pending_decisions_for_user",
     "get_pick_sheet",
     "outstanding_needs",
+    "get_hardware_status_by_product",
     "get_po_receiving_details",
     "get_project_availability",
     "get_project_progress_by_product",

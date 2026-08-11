@@ -663,6 +663,24 @@ type ProjectProgressByProduct {
   shipped_out: Int!
 }
 
+# Admin Hardware Status by Project: one row per product, quantities summed across the selected
+# projects. sent_to_shop is an exit (shop assembly is outside the Nexus pipeline), and
+# staged_for_shipping nets completed shipping pulls against packing slips on the same key the
+# shipping workspace uses.
+type HardwareStatusByProduct {
+  hardware_category: String!
+  product_code: String!
+  required_quantity: Int!
+  not_purchased: Int!
+  po_drafted: Int!
+  on_order: Int!
+  received_quantity: Int!
+  on_hand: Int!
+  sent_to_shop: Int!
+  staged_for_shipping: Int!
+  shipped_out: Int!
+}
+
 type Query {
   openPOs(projectId: ID): [PurchaseOrder!]!
   poReceivingDetails(poId: ID!): PurchaseOrder!
@@ -694,6 +712,7 @@ type Query {
   pullPickSheet(pullRequestId: ID!): PickSheet!
   shipReadyItems(projectId: ID): ShipReadyItems!
   projectProgressByProduct(projectId: ID!): [ProjectProgressByProduct!]!
+  hardwareStatusByProduct(projectIds: [ID!]!): [HardwareStatusByProduct!]!
   packingSlips(projectId: ID): [PackingSlip!]!
   returnableLines(packingSlipId: ID!): [ReturnableLine!]!
   # recipientRole defaults to "" and that default is load-bearing: empty means "every audience",
