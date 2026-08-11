@@ -9,8 +9,9 @@ import {
   Box,
   Chip,
   Divider,
+  Button,
 } from '@mui/material';
-import { Bell, BellOff } from 'lucide-react';
+import { Bell, BellOff, CheckCheck } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_NOTIFICATIONS, MARK_NOTIFICATION_AS_READ } from '../graphql/shared';
@@ -60,9 +61,10 @@ function formatTimeAgo(dateString: string): string {
 
 export default function NotificationBell() {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  const [markingAll, setMarkingAll] = useState(false);
   const navigate = useNavigate();
 
-  const { data } = useQuery<{ notifications: Notification[] }>(
+  const { data, refetch: refetchRecent } = useQuery<{ notifications: Notification[] }>(
     GET_NOTIFICATIONS,
     {
       variables: { limit: 5 },
@@ -70,7 +72,7 @@ export default function NotificationBell() {
     },
   );
 
-  const { data: unreadData } = useQuery<{ notifications: Notification[] }>(
+  const { data: unreadData, refetch: refetchUnread } = useQuery<{ notifications: Notification[] }>(
     GET_NOTIFICATIONS,
     {
       variables: { unreadOnly: true, limit: 99 },
@@ -115,6 +117,27 @@ export default function NotificationBell() {
     }
   };
 
+  const handleMarkAllRead = async () => {
+    const unread = unreadData?.notifications ?? [];
+    if (unread.length === 0 || markingAll) return;
+    setMarkingAll(true);
+    try {
+      // Clear each off the existing single mutation, then reconcile both lists once at the end. The
+      // unreadOnly query is a filtered list Apollo will not re-derive from cache when a row's isRead
+      // flips, so it needs an explicit refetch to drop what we cleared and reset the badge - doing it
+      // per row (as the single-click path does) would refetch dozens of times.
+      await Promise.all(unread.map((n) => markAsRead({ variables: { id: n.id } })));
+      await Promise.all([refetchRecent(), refetchUnread()]);
+    } catch {
+      // A read that fails, or a refetch the browser aborts because this unmounted or a poll
+      // superseded it, is not worth surfacing: the reads that landed stay landed and the next poll
+      // reconciles the badge. Swallowing it also keeps an aborted refetch from bubbling out of this
+      // un-awaited click handler as an unhandled rejection.
+    } finally {
+      setMarkingAll(false);
+    }
+  };
+
   return (
     <>
       <IconButton
@@ -138,15 +161,30 @@ export default function NotificationBell() {
         <Box
           sx={{
             px: 2,
-            py: 1.25,
+            py: 1,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
             gap: 1,
           }}
         >
-          <Typography sx={{ ...microLabelSx, color: 'text.primary' }}>Notifications</Typography>
-          {unreadCount > 0 && <Chip size="small" color="secondary" label={`${unreadCount} new`} />}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+            <Typography sx={{ ...microLabelSx, color: 'text.primary' }}>Notifications</Typography>
+            {unreadCount > 0 && <Chip size="small" color="secondary" label={`${unreadCount} new`} />}
+          </Box>
+          {/* No bulk-clear meant the badge only came down one click at a time, and the popover shows
+              just the latest few - so any unread past that were invisible and stuck lit. */}
+          {unreadCount > 0 && (
+            <Button
+              size="small"
+              onClick={handleMarkAllRead}
+              disabled={markingAll}
+              startIcon={<CheckCheck size={15} strokeWidth={1.75} />}
+              sx={{ flexShrink: 0, fontSize: '0.75rem', px: 1 }}
+            >
+              {markingAll ? 'Marking…' : 'Mark all read'}
+            </Button>
+          )}
         </Box>
         <Divider />
 
