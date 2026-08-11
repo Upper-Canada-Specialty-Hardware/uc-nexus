@@ -105,7 +105,8 @@ describe('NotificationBell', () => {
 
   it('marks every unread notification read from one action', async () => {
     // The popover only lists the latest few, and the badge counts every unread, so before this the
-    // tail of the pile could neither be seen nor cleared. One action has to reach all of them.
+    // tail of the pile could neither be seen nor cleared. One action has to reach all of them - the
+    // full unread set, not just the handful the popover shows.
     const seen: string[] = [];
     renderBell(
       [

@@ -128,6 +128,11 @@ export default function NotificationBell() {
       // per row (as the single-click path does) would refetch dozens of times.
       await Promise.all(unread.map((n) => markAsRead({ variables: { id: n.id } })));
       await Promise.all([refetchRecent(), refetchUnread()]);
+    } catch {
+      // A read that fails, or a refetch the browser aborts because this unmounted or a poll
+      // superseded it, is not worth surfacing: the reads that landed stay landed and the next poll
+      // reconciles the badge. Swallowing it also keeps an aborted refetch from bubbling out of this
+      // un-awaited click handler as an unhandled rejection.
     } finally {
       setMarkingAll(false);
     }
