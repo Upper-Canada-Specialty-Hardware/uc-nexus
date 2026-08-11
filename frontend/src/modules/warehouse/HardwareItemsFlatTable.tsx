@@ -1,8 +1,10 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Box, Alert, Button, Chip, CircularProgress, Typography } from '@mui/material';
+import { Box, Alert, Button, Chip, CircularProgress, Tooltip, Typography } from '@mui/material';
 import { DataGrid, type GridColDef, GridToolbar } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
+import { TriangleAlert } from 'lucide-react';
 import { GET_INVENTORY_ROWS } from '../../graphql/warehouse';
+import { useCustomInventoryItems, catalogKey } from '../../hooks/useCustomItems';
 import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
 import AuditHistoryDrawer from './AuditHistoryDrawer';
 import SpotCheckModal from './SpotCheckModal';
@@ -56,6 +58,7 @@ interface InventoryRow {
   warehouseName: string;
   projectNumber: string;
   projectName: string;
+  matchesSchedule: boolean;
 }
 
 /** Row shape the grid sees: the server row, flattened enough for sorting and CSV export. */
@@ -67,6 +70,7 @@ interface GridRow extends InventoryRow {
   deficient: number;
   location: string;
   receivedAt: string | null;
+  notOnSchedule: boolean;
 }
 
 function formatLocation(aisle: string | null, row: string | null, bay: string | null): string {
@@ -89,6 +93,11 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
     GET_INVENTORY_ROWS,
     { variables: { projectId } },
   );
+
+  // Catalogued non-schedule stock - frames, specialties, consumables (#454) - is absent from every
+  // hardware schedule by design, so flagging it would fire on all of it forever. Degrades to an
+  // empty map, which flags exactly what the server said to flag.
+  const { byKey: catalogByKey } = useCustomInventoryItems();
 
   const [correctionItem, setCorrectionItem] = useState<InventoryItem | null>(null);
   const [auditItem, setAuditItem] = useState<InventoryItem | null>(null);
@@ -116,8 +125,13 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
           r.inventoryLocation.bay,
         ),
         receivedAt: r.inventoryLocation.receivedAt,
+        notOnSchedule:
+          !r.matchesSchedule &&
+          !catalogByKey.has(
+            catalogKey(r.inventoryLocation.hardwareCategory, r.inventoryLocation.productCode),
+          ),
       })),
-    [data],
+    [data, catalogByKey],
   );
 
   // Totals for the filtered set are deliberately over the loaded rows: the grid filters client-side,
@@ -139,9 +153,23 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
         flex: 1,
         minWidth: 140,
         renderCell: (params) => (
-          <Typography component="span" sx={monoSx}>
-            {params.value as string}
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
+            <Typography component="span" sx={{ ...monoSx, minWidth: 0 }} noWrap>
+              {params.value as string}
+            </Typography>
+            {params.row.notOnSchedule && (
+              <Tooltip title="This category and product code pair is not on the project's hardware schedule, so no shop assembly or shipping out request can claim it.">
+                <Chip
+                  size="small"
+                  color="warning"
+                  variant="outlined"
+                  icon={<TriangleAlert size={14} strokeWidth={1.75} />}
+                  label="Not on schedule"
+                  sx={{ flexShrink: 0 }}
+                />
+              </Tooltip>
+            )}
+          </Box>
         ),
       },
       { field: 'warehouseCode', headerName: 'Warehouse', width: 120 },

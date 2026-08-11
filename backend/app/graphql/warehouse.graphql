@@ -52,6 +52,26 @@ type InventoryLocation {
   updated_at: DateTime!
 }
 
+# The Hardware Items flat table (#506): one row per stocked location, every sortable value on the
+# row itself.
+type InventoryRow {
+  inventory_location: InventoryLocation!
+  unit_cost: Float!
+  line_value: Float!
+  po_number: String
+  vendor_name: String
+  warehouse_code: String!
+  warehouse_name: String!
+  project_number: String!
+  project_name: String!
+  # False when this row's (category, code) is absent from the project's imported hardware schedule,
+  # so no shop-assembly or shipping-out request can ever claim it - both builders start from the
+  # schedule and match the exact pair. True whenever the answer is unknown: the unscoped view spans
+  # projects and has no single schedule to compare against. A category that names a known item type
+  # (#454 non-schedule inventory) is always true.
+  matches_schedule: Boolean!
+}
+
 type InventoryItemDetail {
   inventory_location: InventoryLocation!
   # Both null for a row with no originating PO line (see InventoryLocation.po_line_item_id).

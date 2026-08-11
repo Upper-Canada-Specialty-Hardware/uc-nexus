@@ -1,0 +1,72 @@
+# One-time migration of the legacy SharePoint inventory list (UCH-Operations site) into Nexus.
+# Both fields are ADMIN_ROLE in auth_policy.py: the query spends the company's Graph credentials
+# against another system, and the mutation writes inventory in bulk with no per-row undo.
+
+# One row of the SharePoint list, as read - deliberately un-interpreted. `locations` is the raw
+# free-text string ("A-62R", "F-37, F-58", "Warehouse Overflow"), and the three quantity columns are
+# the source columns rather than a Nexus destination. All the interpretation lives in the wizard,
+# because every part of it is a decision a human makes once and the backend cannot make alone.
+type SharepointInventoryItem {
+  sp_item_id: String!
+  part_number: String!
+  # The TITAN-schedule equivalent of part_number. This is what becomes product_code when present,
+  # because it is the identity a hardware schedule uses; part_number is Nexus's "order as".
+  scheduled_part_number: String!
+  part_category: String!
+  inventory_type: String!
+  locations: String!
+  stock_qty: Int!
+  non_stock_qty: Int!
+  project_inventory_qty: Int!
+  project_number: String!
+  project_name: String!
+}
+
+type SharepointInventorySnapshot {
+  items: [SharepointInventoryItem!]!
+  # True when Nexus already holds inventory. The migration has no idempotency marker, so a second
+  # run doubles every row the first wrote - the wizard's first step warns on this.
+  already_has_inventory: Boolean!
+}
+
+type MigrationResult {
+  stock_items: Int!
+  project_locations: Int!
+  total_units: Int!
+}
+
+# PROJECT is a project's own inventory (SharePoint "Project Inventory Qty"); STOCK is the company
+# shelf pool ("Stock Qty" + "Non Stock Qty"). Nothing persists this - it routes one entry down one
+# of two existing write paths.
+enum MigrationDestination {
+  PROJECT
+  STOCK
+}
+
+# One fully resolved row: category and code chosen, location parsed or hand-mapped, project matched.
+# The backend validates and writes, it never re-derives any of it.
+input MigrationEntryInput {
+  destination: MigrationDestination!
+  warehouse_id: ID!
+  hardware_category: String!
+  product_code: String!
+  quantity: Int!
+  project_id: ID
+  aisle: String
+  row: String
+  bay: String
+}
+
+input MigrateSharepointInventoryInput {
+  entries: [MigrationEntryInput!]!
+}
+
+extend type Query {
+  sharepointInventorySnapshot: SharepointInventorySnapshot!
+}
+
+extend type Mutation {
+  # All-or-nothing. A partial migration is worse than none: there is no resume state, so re-running
+  # after a half-failure would double whatever did land.
+  migrateSharepointInventory(input: MigrateSharepointInventoryInput!): MigrationResult!
+}

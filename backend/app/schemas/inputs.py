@@ -6,6 +6,7 @@ from .enums import (
     Classification,
     DeficiencyResolution,
     DestockSource,
+    MigrationDestination,
     ReceiveDecisionChoice,
     ReturnDisposition,
     TransferSourceType,
@@ -793,3 +794,47 @@ class ResolveDeficiencyInput:
     reason_text: str | None = None
     rma_reference: str | None = None
     destock_source: DestockSource | None = None
+
+
+@strawberry.input
+class MigrationEntryInput:
+    """One resolved row of the SharePoint migration.
+
+    Already fully decided by the wizard: category and code chosen, location parsed or hand-mapped,
+    project matched. The backend validates and writes, it does not re-derive any of it.
+    """
+
+    destination: MigrationDestination
+    warehouse_id: strawberry.ID
+    hardware_category: str
+    product_code: str
+    quantity: int
+    project_id: strawberry.ID | None = None
+    aisle: str | None = None
+    row: str | None = None
+    bay: str | None = None
+
+
+@strawberry.input
+class MigrationCatalogValueInput:
+    # By NAME, not id: the seeded types start with no attributes, and which of the source's
+    # descriptive columns carry data is not knowable before the list is read.
+    attribute_name: str
+    value: str
+
+
+@strawberry.input
+class MigrationCatalogItemInput:
+    """One non-schedule product to catalog alongside its quantities (#454)."""
+
+    type_id: strawberry.ID
+    product_code: str
+    description: str | None = None
+    values: list[MigrationCatalogValueInput] | None = None
+
+
+@strawberry.input
+class MigrateSharepointInventoryInput:
+    entries: list[MigrationEntryInput]
+    # Deduplicated by the wizard to one per (type, product code); quantities live on `entries`.
+    catalog_items: list[MigrationCatalogItemInput] | None = None

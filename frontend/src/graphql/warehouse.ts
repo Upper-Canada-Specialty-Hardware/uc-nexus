@@ -41,6 +41,7 @@ export const GET_INVENTORY_ROWS = gql`
       warehouseName
       projectNumber
       projectName
+      matchesSchedule
     }
   }
 `;

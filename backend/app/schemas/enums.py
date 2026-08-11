@@ -160,3 +160,16 @@ class GpOutboxStatus(enum.Enum):
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+
+
+@strawberry.enum
+class MigrationDestination(enum.Enum):
+    """Where a migrated SharePoint row lands.
+
+    PROJECT is a project's own inventory (SharePoint's "Project Inventory Qty"); STOCK is the
+    company shelf pool ("Stock Qty" + "Non Stock Qty"). GraphQL-only - nothing persists this, it
+    just routes one entry down one of two existing write paths.
+    """
+
+    PROJECT = "PROJECT"
+    STOCK = "STOCK"

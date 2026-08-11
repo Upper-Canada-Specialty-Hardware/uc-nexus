@@ -176,6 +176,11 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "disarmRelayAdopt": ADMIN_ROLE,
     "provisionRelayInstall": ADMIN_ROLE,
     # `enrollRelayInstall` is in OPEN_OPERATIONS above, not here.
+    # --- sharepoint_migration.py ----------------------------------------------------------
+    # Admin-only on both counts: the query reads another system entirely over the company's Graph
+    # credentials, and the mutation writes inventory in bulk with no per-row undo.
+    "sharepointInventorySnapshot": ADMIN_ROLE,
+    "migrateSharepointInventory": ADMIN_ROLE,
     # --- shipping.py ----------------------------------------------------------------------
     "packingSlips": SIGNED_IN,
     "returnableLines": SIGNED_IN,

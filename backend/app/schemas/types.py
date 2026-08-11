@@ -1143,6 +1143,14 @@ class InventoryRow:
     warehouse_name: str
     project_number: str
     project_name: str
+    # False when this row's (category, code) appears nowhere in the project's imported hardware
+    # schedule, so no pull request can ever claim it: both request builders start from the schedule,
+    # and they match on the exact pair. Stock that entered outside an import - the SharePoint
+    # migration, a stock allocation, a reclassify - can carry a spelling the schedule does not use,
+    # and until someone reconciles the two the units are invisible to the people who need them.
+    # Defaults True so the unscoped view, which spans projects and has no single schedule to compare
+    # against, does not assert an absence it never checked.
+    matches_schedule: bool = True
 
 
 @strawberry.type
@@ -1601,3 +1609,53 @@ class ApproveReceiveDraftResult:
     draft: ReceiveDraft
     receive_record: ReceiveRecord | None = None
     outbox_entry_id: strawberry.ID | None = None
+
+
+@strawberry.type
+class SharepointInventoryItem:
+    """One row of the legacy SharePoint inventory list, as read.
+
+    Deliberately un-interpreted: quantities are the source columns, not a Nexus destination, and
+    `locations` is the raw free-text string ("A-62R", "F-37, F-58", "Warehouse Overflow"). The
+    wizard parses and maps; keeping the raw values here is what lets the first step report source
+    totals that reconcile against SharePoint itself.
+    """
+
+    sp_item_id: str
+    part_number: str
+    scheduled_part_number: str
+    part_category: str
+    inventory_type: str
+    locations: str
+    stock_qty: int
+    non_stock_qty: int
+    project_inventory_qty: int
+    project_number: str
+    project_name: str
+    # What describes a non-schedule product, since no hardware schedule does (#454).
+    part_description: str
+    finish: str
+    rating: str
+    mounting: str
+    height_inches: str
+    width_inches: str
+
+
+@strawberry.type
+class SharepointInventorySnapshot:
+    items: list[SharepointInventoryItem]
+    # True when Nexus already holds inventory. The migration has no idempotency marker, so a second
+    # run would double every row it wrote - the wizard warns on this before letting the user proceed.
+    already_has_inventory: bool
+
+
+@strawberry.type
+class MigrationResult:
+    stock_items: int
+    project_locations: int
+    total_units: int
+    # Non-schedule products catalogued (#454). `skipped` is codes already in the catalog, which is
+    # a normal outcome rather than a failure.
+    catalog_items_created: int = 0
+    catalog_items_skipped: int = 0
+    catalog_attributes_created: int = 0

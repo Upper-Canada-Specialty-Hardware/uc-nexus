@@ -22,6 +22,7 @@ from .notification import NotificationQueries
 from .po import POQueries
 from .project import ProjectQueries
 from .relay import RelayQueries
+from .sharepoint_migration import SharepointMigrationQueries
 from .shipping import ShippingQueries
 from .shop_assembly import ShopAssemblyQueries
 from .stock import StockQueries
@@ -40,6 +41,7 @@ class Query(
     POQueries,
     ProjectQueries,
     RelayQueries,
+    SharepointMigrationQueries,
     ShippingQueries,
     ShopAssemblyQueries,
     StockQueries,

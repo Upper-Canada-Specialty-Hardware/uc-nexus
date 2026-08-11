@@ -8,6 +8,7 @@ import {
   Users,
   SprayCan,
   Router,
+  DatabaseZap,
   IdCard,
   Boxes,
   DoorOpen,
@@ -78,6 +79,7 @@ const SUB_ROUTES: SubRoute[] = [
   { label: 'Buyers', path: '/app/admin/buyers', icon: <IdCard {...CARD_ICON} /> },
   { label: 'Relay Installs', path: '/app/admin/relay-installs', icon: <Router {...CARD_ICON} /> },
   { label: 'Location Cleanup', path: '/app/admin/location-cleanup', icon: <SprayCan {...CARD_ICON} /> },
+  { label: 'SharePoint Migration', path: '/app/admin/sharepoint-migration', icon: <DatabaseZap {...CARD_ICON} /> },
 ];
 
 export default function AdminLanding() {

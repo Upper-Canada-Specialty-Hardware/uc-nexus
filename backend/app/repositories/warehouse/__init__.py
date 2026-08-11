@@ -11,6 +11,7 @@ from .audit import (
 from .inventory import (
     adjust_inventory_quantity,
     get_inventory_rows,
+    get_scheduled_pairs,
     get_unlocated_inventory,
     override_inventory_quantity,
 )
@@ -166,6 +167,7 @@ __all__ = [
     "get_receiving_history_pos",
     "get_reserved_quantities",
     "get_reserved_total",
+    "get_scheduled_pairs",
     "get_unlocated_inventory",
     "get_warehouse_dashboard",
     "location_detail",

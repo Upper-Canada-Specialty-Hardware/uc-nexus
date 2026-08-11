@@ -15,7 +15,7 @@ from app.auth import (
 )
 from app.database import SessionLocal
 from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
-from app.repositories import user_repository, warehouse_admin_repository
+from app.repositories import custom_items_repository, user_repository, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
 from app.services import gp_idempotency, gp_outbox_enqueue, gp_po
 from app.services.relay_gateway import gateway as relay_gateway
@@ -495,6 +495,24 @@ class WarehouseQueries:
         """Flat inventory, one row per stocked location (#506). Replaces the accordion the Hardware
         Items tab used to render; one query, no per-row lazy loads."""
         with SessionLocal() as session:
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            # One extra query for the whole response, only when the view is scoped to a project.
+            # Unscoped, "on the schedule" has no meaning - the rows span projects - so every row
+            # keeps the permissive default rather than being flagged against a schedule it was
+            # never compared to.
+            scheduled = warehouse_repository.get_scheduled_pairs(session, pid) if pid else None
+            # Non-schedule inventory (#454): frames, specialties and consumables carry their TYPE
+            # CODE in hardware_category and are absent from every hardware schedule by design, so
+            # measuring them against one would flag all of it forever. One small query, and it is
+            # what makes the flag mean "should be on a schedule and is not" rather than "is not on
+            # a schedule".
+            non_schedule_codes = {t.code for t in custom_items_repository.get_item_types(session, active_only=True)}
+
+            def _matches(category: str, code: str) -> bool:
+                if category in non_schedule_codes:
+                    return True
+                return True if scheduled is None else (category, code) in scheduled
+
             return [
                 InventoryRow(
                     inventory_location=inventory_location_to_type(r["inventory_location"]),
@@ -506,10 +524,13 @@ class WarehouseQueries:
                     warehouse_name=r["warehouse_name"],
                     project_number=r["project_number"],
                     project_name=r["project_name"],
+                    matches_schedule=_matches(
+                        r["inventory_location"].hardware_category, r["inventory_location"].product_code
+                    ),
                 )
                 for r in warehouse_repository.get_inventory_rows(
                     session,
-                    uuid.UUID(str(project_id)) if project_id else None,
+                    pid,
                     uuid.UUID(str(warehouse_id)) if warehouse_id else None,
                 )
             ]

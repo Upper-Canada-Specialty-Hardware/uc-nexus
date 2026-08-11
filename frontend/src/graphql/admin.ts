@@ -398,3 +398,45 @@ export const SYNC_GP_JOBS = gql`
     }
   }
 `;
+
+// The legacy SharePoint inventory list, read live over Graph for the one-time migration wizard.
+// Returns every row un-interpreted; the wizard decides which carry migratable quantity.
+export const GET_SHAREPOINT_INVENTORY_SNAPSHOT = gql`
+  query GetSharepointInventorySnapshot {
+    sharepointInventorySnapshot {
+      alreadyHasInventory
+      items {
+        spItemId
+        partNumber
+        scheduledPartNumber
+        partCategory
+        inventoryType
+        locations
+        stockQty
+        nonStockQty
+        projectInventoryQty
+        projectNumber
+        projectName
+        partDescription
+        finish
+        rating
+        mounting
+        heightInches
+        widthInches
+      }
+    }
+  }
+`;
+
+export const MIGRATE_SHAREPOINT_INVENTORY = gql`
+  mutation MigrateSharepointInventory($input: MigrateSharepointInventoryInput!) {
+    migrateSharepointInventory(input: $input) {
+      stockItems
+      projectLocations
+      totalUnits
+      catalogItemsCreated
+      catalogItemsSkipped
+      catalogAttributesCreated
+    }
+  }
+`;
