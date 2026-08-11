@@ -1,6 +1,18 @@
-import { Alert, Box, Typography, Card, Skeleton } from '@mui/material';
-import { ReceiptText, ClipboardList, PackageCheck, FolderOpen } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { Alert, Box, Typography, Card, Skeleton, ButtonBase } from '@mui/material';
+import {
+  ReceiptText,
+  ClipboardList,
+  PackageCheck,
+  FolderOpen,
+  Warehouse,
+  Wrench,
+  Truck,
+  ShieldCheck,
+  ChevronRight,
+} from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
+import { useNavigate } from 'react-router-dom';
 import { useIdentity } from '../../hooks/useIdentity';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
 import { GET_HOME_DASHBOARD_STATS } from '../../graphql/home';
@@ -103,8 +115,67 @@ function formatActionLabel(action: string, entityType: string): string {
   return `${a} ${e}`;
 }
 
+const ICON = { size: 18, strokeWidth: 1.75 } as const;
+
+/**
+ * The modules a person can open, for the "Jump back in" launcher. The nav rail carries the same
+ * destinations; this repeats them with a line of what each is for, so the home screen answers "where
+ * do I go" for someone who does not yet know the rail by its icons. Home itself is omitted - you are
+ * already on it. Role gating mirrors the rail (an Admin/Manager sees everything).
+ */
+interface LauncherItem {
+  label: string;
+  path: string;
+  caption: string;
+  icon: ReactNode;
+  requiredRoles: string[];
+}
+
+const LAUNCHER_ITEMS: LauncherItem[] = [
+  {
+    label: 'Purchase Orders',
+    path: '/app/po',
+    caption: 'Raise, register and receive POs',
+    icon: <ReceiptText {...ICON} />,
+    requiredRoles: ['PO User'],
+  },
+  {
+    label: 'Warehouse',
+    path: '/app/warehouse',
+    caption: 'Receiving, put-away, picks and stock',
+    icon: <Warehouse {...ICON} />,
+    requiredRoles: ['Warehouse Staff', 'Warehouse Manager'],
+  },
+  {
+    label: 'Shop Assembly',
+    path: '/app/shop-assembly',
+    caption: 'Hardware requests for the bench',
+    icon: <Wrench {...ICON} />,
+    requiredRoles: ['Shop Assembly User', 'Shop Assembly Manager'],
+  },
+  {
+    label: 'Shipping',
+    path: '/app/shipping',
+    caption: 'Stage and ship project hardware',
+    icon: <Truck {...ICON} />,
+    requiredRoles: ['Shipping Out'],
+  },
+  {
+    label: 'Admin',
+    path: '/app/admin',
+    caption: 'Projects, users, buyers and setup',
+    icon: <ShieldCheck {...ICON} />,
+    requiredRoles: ['Admin/Manager'],
+  },
+];
+
 export default function HomeDashboard() {
-  const { displayName } = useIdentity();
+  const { displayName, hasRole, isAdmin } = useIdentity();
+  const navigate = useNavigate();
+
+  const accessibleModules = LAUNCHER_ITEMS.filter(
+    (m) => isAdmin || m.requiredRoles.some((role) => hasRole(role)),
+  );
 
   const { data: statsData, loading: statsLoading, error: statsError } = useQuery<HomeStatsData>(
     GET_HOME_DASHBOARD_STATS,
@@ -119,7 +190,10 @@ export default function HomeDashboard() {
   const activity = activityData?.auditLog ?? [];
 
   return (
-    <Box>
+    // Capped to a content column rather than stretched edge-to-edge: the gauges and feed are dense,
+    // finite things, and a full-bleed dashboard spends the extra width on gaps. The margin past this
+    // is deliberate room, the same call the Shop Assembly landing makes.
+    <Box sx={{ maxWidth: 1180 }}>
       {/* Orchestrated entrance: the greeting lands, the gauges stagger in under it, the feed rises
           last. Everything is on screen inside ~0.55s - instrumentation warming up, not a page
           animating for its own sake. */}
@@ -194,13 +268,16 @@ export default function HomeDashboard() {
         </StaggerList>
       )}
 
-      {/* Bounded: a full-bleed feed strands every timestamp a screen away from the line it belongs
-          to. At this width the "when" sits next to the "what". */}
-      <FadeIn delay={0.18} style={{ maxWidth: 720 }}>
-        <Card variant="outlined" sx={{ p: 2 }}>
-          <Typography component="div" sx={{ ...microLabelSx, mb: 1.5 }}>
-            Recent Activity
-          </Typography>
+      {/* The feed sits beside a quick launcher so the room to the right of a bounded feed carries
+          navigation rather than sitting empty. Both collapse to one column when the width runs out. */}
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2.5, alignItems: 'flex-start' }}>
+        {/* Bounded: a full-bleed feed strands every timestamp a screen away from the line it belongs
+            to. At this width the "when" sits next to the "what". */}
+        <FadeIn delay={0.18} style={{ flex: '1 1 440px', minWidth: 0 }}>
+          <Card variant="outlined" sx={{ p: 2 }}>
+            <Typography component="div" sx={{ ...microLabelSx, mb: 1.5 }}>
+              Recent Activity
+            </Typography>
           {activityError && activity.length === 0 ? (
             <Alert severity="error">Error loading recent activity: {activityError.message}</Alert>
           ) : activityLoading && activity.length === 0 ? (
@@ -267,6 +344,66 @@ export default function HomeDashboard() {
           )}
         </Card>
       </FadeIn>
+
+        {accessibleModules.length > 0 && (
+          <FadeIn delay={0.26} style={{ flex: '1 1 300px', minWidth: 260, maxWidth: 360 }}>
+            <Card variant="outlined" sx={{ p: 2 }}>
+              <Typography component="div" sx={{ ...microLabelSx, mb: 0.5 }}>
+                Jump back in
+              </Typography>
+              <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+                {accessibleModules.map((m, i) => (
+                  <ButtonBase
+                    key={m.path}
+                    onClick={() => navigate(m.path)}
+                    aria-label={`Go to ${m.label}`}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 1.5,
+                      py: 1.25,
+                      px: 0.5,
+                      justifyContent: 'flex-start',
+                      textAlign: 'left',
+                      borderBottom: i === accessibleModules.length - 1 ? 0 : 1,
+                      borderColor: 'divider',
+                      '&:hover .home-launch-chevron': {
+                        color: 'text.primary',
+                        transform: 'translateX(2px)',
+                      },
+                    }}
+                  >
+                    <Box sx={{ color: 'text.secondary', display: 'flex', flexShrink: 0 }}>
+                      {m.icon}
+                    </Box>
+                    <Box sx={{ minWidth: 0, flexGrow: 1 }}>
+                      <Typography sx={{ fontWeight: 600, lineHeight: 1.3 }}>{m.label}</Typography>
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ display: 'block' }}
+                      >
+                        {m.caption}
+                      </Typography>
+                    </Box>
+                    <Box
+                      className="home-launch-chevron"
+                      sx={{
+                        color: 'text.disabled',
+                        display: 'flex',
+                        flexShrink: 0,
+                        transition: 'color 0.15s ease, transform 0.15s ease',
+                      }}
+                    >
+                      <ChevronRight size={18} strokeWidth={1.75} />
+                    </Box>
+                  </ButtonBase>
+                ))}
+              </Box>
+            </Card>
+          </FadeIn>
+        )}
+      </Box>
     </Box>
   );
 }
