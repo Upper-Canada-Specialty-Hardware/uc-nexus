@@ -165,6 +165,58 @@ describe('GuidedClassification keybinds', () => {
   });
 });
 
+describe('GuidedClassification focused layers (#585)', () => {
+  it('shows only the scope layer on a fresh group', () => {
+    render(<Harness baseRows={TWO_VENDORS} />);
+    start();
+
+    expect(screen.getByRole('button', { name: /By UCH/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /By Others/ })).toBeInTheDocument();
+    // Site/Shop stays hidden until scope is decided.
+    expect(screen.queryByRole('button', { name: /Site/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Shop/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Change scope' })).not.toBeInTheDocument();
+  });
+
+  it('reveals the Site/Shop layer only after By UCH, with a Change scope link', () => {
+    render(<Harness baseRows={TWO_VENDORS} />);
+    start();
+
+    fireEvent.click(screen.getByRole('button', { name: /By UCH/ }));
+
+    // Scope buttons give way to Site/Shop; the card stays put (PO still needs the second axis).
+    expect(screen.queryByRole('button', { name: /By UCH/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Site/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Shop/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Change scope' })).toBeInTheDocument();
+    expect(screen.getByText('Group 1 of 2')).toBeInTheDocument();
+  });
+
+  it('ignores the Site/Shop keys until By UCH is chosen', () => {
+    const siteShopSpy = vi.fn();
+    render(<Harness baseRows={TWO_VENDORS} siteShopSpy={siteShopSpy} />);
+    start();
+
+    fireEvent.keyDown(document.body, { key: 's' });
+
+    expect(siteShopSpy).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /By UCH/ })).toBeInTheDocument();
+    expect(screen.getByText('Group 1 of 2')).toBeInTheDocument();
+  });
+
+  it('Change scope returns a By UCH card to the scope layer', () => {
+    render(<Harness baseRows={TWO_VENDORS} />);
+    start();
+
+    fireEvent.click(screen.getByRole('button', { name: /By UCH/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Change scope' }));
+
+    expect(screen.getByRole('button', { name: /By UCH/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /By Others/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Site/ })).not.toBeInTheDocument();
+  });
+});
+
 describe('GuidedClassification auto-advance', () => {
   it('advances to the next group once both axes are answered', () => {
     render(<Harness baseRows={TWO_VENDORS} />);

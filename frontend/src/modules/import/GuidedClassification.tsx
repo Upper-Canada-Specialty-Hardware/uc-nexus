@@ -90,6 +90,9 @@ export default function GuidedClassification({
   const [started, setStarted] = useState(false);
   const [index, setIndex] = useState(0);
   const [splitGroupKeys, setSplitGroupKeys] = useState<Set<string>>(new Set());
+  // #585: which card the user has manually reverted to the scope layer (via "Change scope"),
+  // overriding the derived layer so an already-scoped card shows By UCH / By Others again.
+  const [scopeOverrideId, setScopeOverrideId] = useState<string | null>(null);
 
   const labelMap = useMemo(() => {
     const m: Record<string, { label: string; color: ClassificationOption['color'] }> = {};
@@ -121,16 +124,39 @@ export default function GuidedClassification({
     [rows, classifyOpts],
   );
 
-  const goPrev = useCallback(() => setIndex((i) => Math.max(0, i - 1)), []);
+  const goPrev = useCallback(() => {
+    setScopeOverrideId(null);
+    setIndex((i) => Math.max(0, i - 1));
+  }, []);
 
   const goNext = useCallback(() => {
+    setScopeOverrideId(null);
     if (safeIndex + 1 >= cards.length) onComplete();
     else setIndex(safeIndex + 1);
   }, [safeIndex, cards.length, onComplete]);
 
   const splitCurrent = useCallback(() => {
     if (!currentCard || currentCard.isSplit || currentCard.rows.length <= 1) return;
+    setScopeOverrideId(null);
     setSplitGroupKeys((prev) => new Set(prev).add(currentCard.groupKey));
+  }, [currentCard]);
+
+  // #585: the guided card focuses one classification layer at a time. The scope layer (By UCH /
+  // By Others) shows until the card is scoped; a By UCH pick reveals the Site/Shop layer, while
+  // By Others completes the card outright. "Change scope" reverts an already-scoped card here.
+  const layer: 'scope' | 'siteShop' = useMemo(() => {
+    if (!currentCard) return 'scope';
+    if (scopeOverrideId === currentCard.id) return 'scope';
+    if (!currentCard.rows.every((r) => r.classification !== '')) return 'scope';
+    if (!hasSiteShop) return 'scope';
+    const anyEligible = currentCard.rows.some(
+      (r) => !siteShopExemptValue || r.classification !== siteShopExemptValue,
+    );
+    return anyEligible ? 'siteShop' : 'scope';
+  }, [currentCard, scopeOverrideId, hasSiteShop, siteShopExemptValue]);
+
+  const changeScope = useCallback(() => {
+    if (currentCard) setScopeOverrideId(currentCard.id);
   }, [currentCard]);
 
   // Whether every row on the card would be fully classified once `value` is applied to the given
@@ -139,6 +165,7 @@ export default function GuidedClassification({
   const classifyPrimary = useCallback(
     (value: string) => {
       if (!currentCard) return;
+      setScopeOverrideId(null);
       onClassify(uniqueKeys(currentCard.rows), value);
       const completes = currentCard.rows.every((r) =>
         isRowClassified({ classification: value, siteShop: r.siteShop }, classifyOpts),
@@ -177,16 +204,16 @@ export default function GuidedClassification({
       if (e.key === 'ArrowRight') { e.preventDefault(); goNext(); return; }
       const k = e.key.toLowerCase();
       if (k === 'x') { e.preventDefault(); splitCurrent(); return; }
-      for (const opt of options) {
-        if (KEY_FOR_VALUE[opt.value] === k) { e.preventDefault(); classifyPrimary(opt.value); return; }
-      }
-      for (const opt of siteShopOptions ?? []) {
-        if (KEY_FOR_VALUE[opt.value] === k) { e.preventDefault(); classifySiteShop(opt.value); return; }
+      // Only the visible layer's keys answer, so 1/2 and S/H never both fire at once (#585).
+      const active = layer === 'scope' ? options : (siteShopOptions ?? []);
+      const classify = layer === 'scope' ? classifyPrimary : classifySiteShop;
+      for (const opt of active) {
+        if (KEY_FOR_VALUE[opt.value] === k) { e.preventDefault(); classify(opt.value); return; }
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [started, options, siteShopOptions, goPrev, goNext, splitCurrent, classifyPrimary, classifySiteShop]);
+  }, [started, layer, options, siteShopOptions, goPrev, goNext, splitCurrent, classifyPrimary, classifySiteShop]);
 
   // ---- Grouping prompt ----
 
@@ -328,42 +355,58 @@ export default function GuidedClassification({
             borderColor: 'divider',
           }}
         >
-          <Typography sx={{ ...monoSx, fontWeight: 700, fontSize: '0.875rem', wordBreak: 'break-word' }}>
-            {currentCard.label}
-          </Typography>
-          {productCodes.length > 0 && (
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ ...monoSx, fontSize: '0.6875rem', wordBreak: 'break-word' }}
-            >
-              {productCodes.join(', ')}
-            </Typography>
-          )}
+          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
+            <Box sx={{ minWidth: 0, flex: 1 }}>
+              <Typography sx={{ ...monoSx, fontWeight: 700, fontSize: '0.875rem', wordBreak: 'break-word' }}>
+                {currentCard.label}
+              </Typography>
+              {productCodes.length > 0 && (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ ...monoSx, display: 'block', fontSize: '0.6875rem', wordBreak: 'break-word' }}
+                >
+                  {productCodes.join(', ')}
+                </Typography>
+              )}
+            </Box>
+            {hasSiteShop && layer === 'siteShop' && (
+              <Button
+                size="small"
+                variant="text"
+                startIcon={<ArrowLeft size={16} strokeWidth={1.75} />}
+                onClick={changeScope}
+                sx={{ flexShrink: 0 }}
+              >
+                Change scope
+              </Button>
+            )}
+          </Box>
 
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 1.5 }}>
-            {options.map((opt) => (
-              <Button
-                key={opt.value}
-                size="small"
-                variant="contained"
-                color={opt.color}
-                onClick={() => classifyPrimary(opt.value)}
-              >
-                {opt.label} ({KEY_FOR_VALUE[opt.value] ?? '·'})
-              </Button>
-            ))}
-            {siteShopOptions?.map((opt) => (
-              <Button
-                key={opt.value}
-                size="small"
-                variant="outlined"
-                color={opt.color}
-                onClick={() => classifySiteShop(opt.value)}
-              >
-                {opt.label} ({(KEY_FOR_VALUE[opt.value] ?? '·').toUpperCase()})
-              </Button>
-            ))}
+            {layer === 'scope'
+              ? options.map((opt) => (
+                  <Button
+                    key={opt.value}
+                    size="small"
+                    variant="contained"
+                    color={opt.color}
+                    onClick={() => classifyPrimary(opt.value)}
+                  >
+                    {opt.label} ({KEY_FOR_VALUE[opt.value] ?? '·'})
+                  </Button>
+                ))
+              : siteShopOptions?.map((opt) => (
+                  <Button
+                    key={opt.value}
+                    size="small"
+                    variant="contained"
+                    color={opt.color}
+                    onClick={() => classifySiteShop(opt.value)}
+                  >
+                    {opt.label} ({(KEY_FOR_VALUE[opt.value] ?? '·').toUpperCase()})
+                  </Button>
+                ))}
             {canSplit && (
               <Button
                 size="small"
