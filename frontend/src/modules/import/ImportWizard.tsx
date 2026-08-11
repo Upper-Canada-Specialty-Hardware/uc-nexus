@@ -571,6 +571,7 @@ export default function ImportWizard({
         // missing count to 1, so the only null here is an item whose opening is not in the parse.
         doorQuantity: opening ? opening.leaf_count : null,
         doorMaterial: opening?.door_type ?? '',
+        frameType: opening?.frame_type ?? '',
         productCode: hi.product_code,
         hardwareCategory: hi.hardware_category,
         vendorNo: hi.vendor_no ?? '(No Manufacturer)',

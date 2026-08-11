@@ -124,6 +124,7 @@ export interface ClassificationRow {
   hand: string;
   doorQuantity: number | null;
   doorMaterial: string;
+  frameType: string;
   productCode: string;
   hardwareCategory: string;
   vendorNo: string;

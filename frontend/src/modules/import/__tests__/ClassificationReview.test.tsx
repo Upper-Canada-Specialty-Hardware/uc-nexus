@@ -19,6 +19,7 @@ function makeRow(o: {
     hand: '',
     doorQuantity: null,
     doorMaterial: '',
+    frameType: '',
     productCode: o.productCode,
     hardwareCategory: o.hardwareCategory,
     vendorNo: o.vendorNo,
