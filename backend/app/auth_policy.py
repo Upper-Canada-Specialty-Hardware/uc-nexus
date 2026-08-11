@@ -258,6 +258,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # the warehouse's own count correction, not an admin tool.
     "auditLog": SIGNED_IN,
     "backOrderedItems": SIGNED_IN,
+    "hardwareStatusByProduct": SIGNED_IN,
     "receives": SIGNED_IN,
     "inventoryRows": SIGNED_IN,
     "locationAuditHistory": SIGNED_IN,
