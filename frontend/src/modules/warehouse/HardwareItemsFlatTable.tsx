@@ -158,15 +158,16 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
               {params.value as string}
             </Typography>
             {params.row.notOnSchedule && (
-              <Tooltip title="This category and product code pair is not on the project's hardware schedule, so no shop assembly or shipping out request can claim it.">
-                <Chip
-                  size="small"
-                  color="warning"
-                  variant="outlined"
-                  icon={<TriangleAlert size={14} strokeWidth={1.75} />}
-                  label="Not on schedule"
-                  sx={{ flexShrink: 0 }}
-                />
+              // An icon, not a labelled chip: the cell belongs to the product code, and a chip wide
+              // enough to say "Not on schedule" pushes the code itself out of a compact grid cell.
+              <Tooltip title="Not on schedule: this category and product code pair is not on the project's hardware schedule, so no shop assembly or shipping out request can claim it.">
+                <Box
+                  component="span"
+                  aria-label="Not on schedule"
+                  sx={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0, color: 'warning.main' }}
+                >
+                  <TriangleAlert size={15} strokeWidth={2} />
+                </Box>
               </Tooltip>
             )}
           </Box>
