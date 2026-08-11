@@ -135,6 +135,26 @@ export const GET_PROJECT_PROGRESS_BY_PRODUCT = gql`
   }
 `;
 
+// Hardware Status by Project: one row per (category, product code), quantities summed across the
+// selected projects. sentToShop is a lifecycle exit - shop assembly is outside the Nexus pipeline.
+export const GET_HARDWARE_STATUS_BY_PRODUCT = gql`
+  query GetHardwareStatusByProduct($projectIds: [ID!]!) {
+    hardwareStatusByProduct(projectIds: $projectIds) {
+      hardwareCategory
+      productCode
+      requiredQuantity
+      notPurchased
+      poDrafted
+      onOrder
+      receivedQuantity
+      onHand
+      sentToShop
+      stagedForShipping
+      shippedOut
+    }
+  }
+`;
+
 export const GET_ADMIN_STATS = gql`
   query GetAdminStats {
     adminStats {
