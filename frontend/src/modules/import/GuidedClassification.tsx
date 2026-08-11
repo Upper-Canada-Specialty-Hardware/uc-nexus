@@ -15,14 +15,13 @@ import {
   Typography,
 } from '@mui/material';
 import { ArrowLeft, ArrowRight, Plus, Split, X } from 'lucide-react';
-import { type ClassificationRow } from './ClassificationGrid';
 import {
   GROUP_BY_OPTIONS,
-  formatGroupKey,
   distinctProductCodes,
+  groupRowsByFields,
   type GroupByField,
 } from './classificationGrouping';
-import { type ClassificationOption, isRowClassified } from './types';
+import { type ClassificationOption, type ClassificationRow, isRowClassified } from './types';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 
 // #568: which key answers each axis value. Numbers for the scope axis, letters for Site/Shop, so a
@@ -49,27 +48,6 @@ interface GuidedClassificationProps {
   /** Fired after the last group is answered - the step moves to review. */
   onComplete: () => void;
   onSkipToReview: () => void;
-}
-
-interface LeafGroup {
-  key: string;
-  label: string;
-  rows: ClassificationRow[];
-}
-
-// One card per deepest-level group: rows sharing every group-by field value. The composite key is
-// stable across classifications (it reads the grouping fields, not the answer), so the card list and
-// the user's position hold while they classify.
-function buildLeafGroups(rows: ClassificationRow[], fields: GroupByField[]): LeafGroup[] {
-  const map = new Map<string, LeafGroup>();
-  for (const row of rows) {
-    const parts = fields.map((f) => formatGroupKey(f, row[f]));
-    const key = parts.join(' › ');
-    const existing = map.get(key);
-    if (existing) existing.rows.push(row);
-    else map.set(key, { key, label: key, rows: [row] });
-  }
-  return Array.from(map.values()).sort((a, b) => a.key.localeCompare(b.key));
 }
 
 interface Card {
@@ -119,7 +97,7 @@ export default function GuidedClassification({
     return m;
   }, [options, siteShopOptions]);
 
-  const groups = useMemo(() => buildLeafGroups(rows, groupByFields), [rows, groupByFields]);
+  const groups = useMemo(() => groupRowsByFields(rows, groupByFields), [rows, groupByFields]);
 
   const cards = useMemo<Card[]>(() => {
     const out: Card[] = [];

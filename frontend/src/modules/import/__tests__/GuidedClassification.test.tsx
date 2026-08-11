@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import GuidedClassification from '../GuidedClassification';
-import type { ClassificationRow, GroupByField } from '../ClassificationGrid';
+import type { GroupByField } from '../classificationGrouping';
+import type { ClassificationRow } from '../types';
 import { SCOPE_OPTIONS, ASSEMBLY_OPTIONS } from '../types';
 
 // ---- Fixtures ----

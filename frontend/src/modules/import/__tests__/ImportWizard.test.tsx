@@ -504,7 +504,8 @@ describe('ImportWizard step transitions', () => {
 
     expect(screen.queryByRole('heading', { name: 'Reconciliation' })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
-    expect(screen.getByText('0 of 2 items classified')).toBeInTheDocument();
+    // Nothing classified yet, so the step opens on the guided walk-through and Next stays gated.
+    expect(screen.getByRole('button', { name: 'Start classifying' })).toBeInTheDocument();
     expect(nextButton()).toBeDisabled();
   });
 
@@ -584,9 +585,10 @@ describe('ImportWizard hardware mode', () => {
     clickNext();
 
     // No Reconciliation on a first import, so the product pick lands straight on Classification, and
-    // both selected products are there to classify.
+    // both selected products carry through - the guided walk-through counts two to classify.
     expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
-    expect(screen.getByText('0 of 2 items classified')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Start classifying' }));
+    expect(screen.getByText('0 of 2 classified')).toBeInTheDocument();
   });
 });
 
