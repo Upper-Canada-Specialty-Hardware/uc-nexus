@@ -549,7 +549,18 @@ export function unresolvedItemTypes(
     .map(({ spType, rowCount }) => ({ spType, rowCount }));
 }
 
-/** The type mapping the wizard proposes on its own: the non-schedule types it can auto-match. */
+/**
+ * The SharePoint types excluded by default: door and frame units stopped being managed when doors
+ * became labels rather than objects (#554), so their rows are out of scope for this migration
+ * unless the admin deliberately maps them - the FRAME entity type still exists for shelf stock,
+ * and the dropdown still offers it.
+ */
+export const DEFAULT_EXCLUDED_SP_TYPES = ['Door', 'Frame'] as const;
+
+/**
+ * The type mapping the wizard proposes on its own: door/frame stock pre-excluded, every other
+ * non-schedule type auto-matched where a Nexus type fits.
+ */
 export function autoItemTypeResolutions(
   spTypes: ReturnType<typeof distinctItemTypes>,
   types: InventoryItemTypeOption[],
@@ -557,6 +568,10 @@ export function autoItemTypeResolutions(
   const out: ItemTypeResolutions = new Map();
   for (const t of spTypes) {
     if (!t.isNonSchedule) continue;
+    if ((DEFAULT_EXCLUDED_SP_TYPES as readonly string[]).includes(t.spType)) {
+      out.set(t.spType, EXCLUDE_ITEM_TYPE);
+      continue;
+    }
     const match = autoMatchItemType(t.spType, types);
     if (match) out.set(t.spType, match);
   }

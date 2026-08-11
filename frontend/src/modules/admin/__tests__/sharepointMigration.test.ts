@@ -391,8 +391,20 @@ describe('autoItemTypeResolutions', () => {
       item({ inventoryType: 'Door Hardware', projectInventoryQty: 1 }),
     ]);
     const auto = autoItemTypeResolutions(distinctItemTypes(candidates), TYPES);
-    expect(auto.get('Specialties')?.code).toBe('SPECIALTY');
+    expect(auto.get('Specialties')).toMatchObject({ code: 'SPECIALTY' });
     expect(auto.has('Door Hardware')).toBe(false);
+  });
+
+  it('pre-excludes door and frame stock rather than auto-matching it', () => {
+    const candidates = toCandidates([
+      item({ inventoryType: 'Frame', stockQty: 1 }),
+      item({ inventoryType: 'Door', stockQty: 1 }),
+    ]);
+    const auto = autoItemTypeResolutions(distinctItemTypes(candidates), TYPES);
+    // FRAME exists and would match, but door and frame units are out of scope since doors became
+    // labels rather than tracked objects (#554) - mapping is a deliberate override, not a default.
+    expect(auto.get('Frame')).toBe(EXCLUDE_ITEM_TYPE);
+    expect(auto.get('Door')).toBe(EXCLUDE_ITEM_TYPE);
   });
 });
 

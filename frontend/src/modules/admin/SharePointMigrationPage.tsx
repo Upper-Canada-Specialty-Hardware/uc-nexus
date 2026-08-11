@@ -525,9 +525,12 @@ export default function SharePointMigrationPage() {
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
                   SharePoint records what kind of stock each row is, and Nexus has entity types for
                   the non-schedule kinds. A mapped type replaces the part category with the type
-                  code, which is how frames, specialties and consumables are recognised downstream -
-                  and their descriptions are catalogued rather than lost. Door Hardware belongs to a
-                  hardware schedule and is left alone.
+                  code, which is how specialties and consumables are recognised downstream - and
+                  their descriptions are catalogued rather than lost. Door Hardware belongs to a
+                  hardware schedule and is left alone. Door and Frame rows start excluded: Nexus
+                  stopped managing door and frame units when doors became labels rather than
+                  tracked objects, so migrating them would file stock nothing can claim - map one
+                  to an entity type only if its rows are really shelf stock.
                 </Typography>
                 {undecidedTypes.length > 0 && (
                   <Alert severity="warning" sx={{ mb: 2 }}>
