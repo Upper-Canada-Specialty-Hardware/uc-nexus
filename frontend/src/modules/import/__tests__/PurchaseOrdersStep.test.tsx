@@ -100,6 +100,35 @@ describe('PurchaseOrdersStep organizing', () => {
     expect(screen.getByText('1')).toBeInTheDocument();
   });
 
+  it('lets the buyer clear and retype the split quantity without mid-keystroke clamping', () => {
+    render(
+      <Harness
+        initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 }), makeDraft('b', 'BOLT', {})]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Line actions for HG-100/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Split/i }));
+
+    const dialog = screen.getByRole('dialog');
+    const input = within(dialog).getByLabelText('Quantity to move') as HTMLInputElement;
+
+    // The field can be emptied entirely - the old number state snapped it back to a value.
+    // With nothing typed, Move carries no count and is disabled.
+    fireEvent.change(input, { target: { value: '' } });
+    expect(input.value).toBe('');
+    expect(within(dialog).getByRole('button', { name: 'Move' })).toBeDisabled();
+
+    // An over-max value is left alone while typing (max is 4) - no clamp as the user goes.
+    fireEvent.change(input, { target: { value: '9' } });
+    expect(input.value).toBe('9');
+    expect(within(dialog).getByRole('button', { name: 'Move' })).toBeDisabled();
+
+    // Blur settles it into range: 9 -> 4, and Move now offers the clamped count.
+    fireEvent.blur(input);
+    expect(input.value).toBe('4');
+    expect(within(dialog).getByRole('button', { name: 'Move 4' })).toBeEnabled();
+  });
+
   it('merges a draft into another via the card menu', () => {
     render(
       <Harness
