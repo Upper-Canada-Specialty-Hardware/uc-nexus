@@ -402,6 +402,9 @@ export default function ClassificationReview({
                     <TableHead>
                       <TableRow>
                         <TableCell sx={microLabelSx}>Opening</TableCell>
+                        <TableCell sx={microLabelSx}>Hand</TableCell>
+                        <TableCell sx={microLabelSx}>Door Material</TableCell>
+                        <TableCell sx={microLabelSx}>Frame Type</TableCell>
                         <TableCell sx={microLabelSx}>Product Code</TableCell>
                         <TableCell sx={microLabelSx}>Category</TableCell>
                         <TableCell sx={microLabelSx} align="right">Qty</TableCell>
@@ -415,6 +418,9 @@ export default function ClassificationReview({
                         return (
                           <TableRow key={r.id}>
                             <TableCell sx={monoSx}>{r.openingNumber}</TableCell>
+                            <TableCell>{r.hand || '—'}</TableCell>
+                            <TableCell>{r.doorMaterial || '—'}</TableCell>
+                            <TableCell>{r.frameType || '—'}</TableCell>
                             <TableCell sx={monoSx}>{r.productCode}</TableCell>
                             <TableCell>{r.hardwareCategory}</TableCell>
                             <TableCell align="right" sx={tabularSx}>{r.itemQuantity}</TableCell>
