@@ -33,6 +33,7 @@ import { isGpSetupBroken } from '../../types/project';
 import { useHardwareScheduleParser } from '../../hooks/useHardwareScheduleParser';
 import { useNavigate } from 'react-router-dom';
 import { GET_PROJECT_EXCLUDED_ITEMS, GET_PROJECT_HARDWARE_SCHEDULE, RECONCILE_SCHEDULE, FINALIZE_IMPORT_SESSION } from '../../graphql/import';
+import { UPLOAD_PO_DOCUMENT } from '../../graphql/po';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { GET_PROJECT_INVENTORY_AVAILABILITY } from '../../graphql/warehouse';
 import { GET_REQUEST_COVERAGE } from '../../graphql/shipping';
@@ -54,9 +55,10 @@ import {
   productKey,
   seedDraftGroups,
   toClassificationInputs,
+  type DraftAttachmentType,
   type DraftGroup,
 } from './types';
-import { buildPoDrafts } from './poDrafts';
+import { buildPoDrafts, toPoDraftInput } from './poDrafts';
 import * as draftOps from './draftOps';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
@@ -175,6 +177,16 @@ interface ImportWizardProps {
   autoStartFromLatest?: boolean;
 }
 
+/** #588: uploadPoDocument takes raw base64, so drop the data: URL prefix the reader adds. */
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '');
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function ImportWizard({
   open,
   project,
@@ -224,6 +236,8 @@ export default function ImportWizard({
   const [unitCostOverrides, setUnitCostOverrides] = useState<Map<string, number>>(new Map());
   // Monotonic id source for buyer-created drafts, so a new draft never collides with a seeded id.
   const newDraftSeq = useRef(0);
+  // #588: monotonic local id source for draft document attachments, unique within the session.
+  const attachmentSeq = useRef(0);
   const [classifications, setClassifications] = useState<Map<string, string>>(new Map());
   // Issue #216: PO-purpose second axis (SITE_HARDWARE/SHOP_HARDWARE), set by the PM at request
   // creation. Same classificationKey keying as `classifications` (which holds scope for PO purpose).
@@ -366,6 +380,10 @@ export default function ImportWizard({
     },
     refetchQueries: [{ query: GET_PROJECTS }],
   });
+
+  // #588: uploads the buyer's pre-attached documents onto the POs finalize just minted. Separate call
+  // per doc, same as the PO detail modal - the PO exists by then, so this is the ordinary upload path.
+  const [uploadPoDocument] = useMutation<{ uploadPoDocument: { id: string } }>(UPLOAD_PO_DOCUMENT);
 
   // Pre-populate BY_OTHERS classifications from this project's exclusion table once XML is parsed
   const parsedHardwareItems = parser.parseResult?.hardwareItems;
@@ -876,6 +894,24 @@ export default function ImportWizard({
     setDraftGroups((prev) => draftOps.removeDraft(prev, draftId));
   }, []);
 
+  // #588: draft-level document attachments. Ids are minted here (the card passes raw Files) so they
+  // stay unique across the session even as drafts merge.
+  const addDraftAttachments = useCallback((draftId: string, files: File[]) => {
+    const withIds = files.map((file) => ({ id: `att:${attachmentSeq.current++}`, file }));
+    setDraftGroups((prev) => draftOps.addAttachments(prev, draftId, withIds));
+  }, []);
+
+  const setDraftAttachmentType = useCallback(
+    (draftId: string, attachmentId: string, documentType: DraftAttachmentType) => {
+      setDraftGroups((prev) => draftOps.setAttachmentType(prev, draftId, attachmentId, documentType));
+    },
+    [],
+  );
+
+  const removeDraftAttachment = useCallback((draftId: string, attachmentId: string) => {
+    setDraftGroups((prev) => draftOps.removeAttachment(prev, draftId, attachmentId));
+  }, []);
+
   // Unit cost overrides, keyed by productKey (#570).
   const updateUnitCost = useCallback((pk: string, value: number) => {
     setUnitCostOverrides((prev) => {
@@ -926,6 +962,14 @@ export default function ImportWizard({
     shippingOutRequests: Array<{ id: string; requestNumber: string; status: string }>;
     shopAssemblyRequest: { id: string; requestNumber: string; status: string } | null;
   }
+
+  // #570/#588: the PO drafts to create, built once. Carries sourceDraftId (stripped before the
+  // mutation) so #588 can map each returned PO back to its draft's pre-attached documents - the
+  // backend creates POs in this exact order.
+  const poDraftBuild = useMemo(
+    () => (purpose === 'po' ? buildPoDrafts(draftGroups, vendorGroups, orderAsValues) : null),
+    [purpose, draftGroups, vendorGroups, orderAsValues],
+  );
 
   const buildFinalizeInput = useCallback(() => {
     if (!parsed) return null;
@@ -984,8 +1028,9 @@ export default function ImportWizard({
       hardwareItems: fullScheduleHardwareItems,
       // #570: build the drafts from the buyer's sliced draftGroups. buildPoDrafts apportions each
       // draft line's quantity across the selection's opening-level items and emits quantity-aware
-      // refs (partial on a boundary opening shared between drafts).
-      poDrafts: purpose === 'po' ? buildPoDrafts(draftGroups, vendorGroups, orderAsValues) : null,
+      // refs (partial on a boundary opening shared between drafts). #588: toPoDraftInput strips the
+      // client-only sourceDraftId mapping key before the mutation sees the input.
+      poDrafts: poDraftBuild ? poDraftBuild.map(toPoDraftInput) : null,
       excludedItems,
       classifications: purpose === 'assembly'
         // #321: only Site/Shop belong here. Re-imports pre-populate the classifications Map with
@@ -1028,7 +1073,7 @@ export default function ImportWizard({
       // numbers per line, and already minus the excluded and unallocated ones.
       shopAssemblyItems: purpose === 'assembly' ? requestLines : null,
     };
-  }, [parsed, project.id, purpose, vendorGroups, draftGroups, unitCostOverrides, orderAsValues, classifications, siteShopClassifications, requestLines, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);
+  }, [parsed, project.id, purpose, poDraftBuild, unitCostOverrides, classifications, siteShopClassifications, requestLines, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -1041,11 +1086,50 @@ export default function ImportWizard({
     try {
       const result = await finalizeImport({ variables: { input } });
       const data = result.data?.finalizeImportSession as FinalizeResultData;
-      setFinalizeResult(data);
-      setFinalizeLoading(false);
       setAllocationStale(false);
 
-      showToast('Import session finalized successfully!', 'success');
+      // #588: the request(s) are created; now land each draft's pre-attached documents on its PO.
+      // Positional map: data.purchaseOrders[i] is poDraftBuild[i]'s PO (both in included-draft
+      // order), and sourceDraftId ties that back to the draft holding the files. The PO already
+      // exists, so a failed upload does not undo the finalize - it just leaves that doc off, which
+      // the user re-uploads on the PO. Collect the names that failed rather than throwing.
+      const attachFailures: string[] = [];
+      if (poDraftBuild && data.purchaseOrders.length > 0) {
+        const jobs = data.purchaseOrders.flatMap((po, i) => {
+          const draft = draftGroups.find((g) => g.id === poDraftBuild[i]?.sourceDraftId);
+          return (draft?.attachments ?? []).map((att) =>
+            (async () => {
+              try {
+                await uploadPoDocument({
+                  variables: {
+                    poId: po.id,
+                    fileName: att.file.name,
+                    contentType: att.file.type || 'application/octet-stream',
+                    documentType: att.documentType,
+                    fileDataBase64: await fileToBase64(att.file),
+                  },
+                });
+              } catch {
+                attachFailures.push(att.file.name);
+              }
+            })(),
+          );
+        });
+        await Promise.all(jobs);
+      }
+
+      setFinalizeResult(data);
+      setFinalizeLoading(false);
+
+      if (attachFailures.length > 0) {
+        const noun = attachFailures.length === 1 ? 'document' : 'documents';
+        showToast(
+          `Request created, but ${attachFailures.length} ${noun} could not be attached (${attachFailures.join(', ')}). Re-upload on the PO.`,
+          'warning',
+        );
+      } else {
+        showToast('Import session finalized successfully!', 'success');
+      }
       setPostSuccessOpen(true);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'An unknown error occurred';
@@ -1087,7 +1171,7 @@ export default function ImportWizard({
         setSeededSignature(offerSignature(composerRows));
       }
     }
-  }, [buildFinalizeInput, finalizeImport, showToast, purpose, requestPurpose, refetchAvailability, composerRows]);
+  }, [buildFinalizeInput, finalizeImport, showToast, purpose, requestPurpose, refetchAvailability, composerRows, poDraftBuild, draftGroups, uploadPoDocument]);
 
   const handlePostAction = useCallback(
     (action: 'po' | 'inventory' | 'home') => {
@@ -1601,6 +1685,9 @@ export default function ImportWizard({
               onCreateDraft={createDraft}
               onMergeDraft={mergeDraft}
               onRemoveDraft={removeDraft}
+              onAddAttachments={addDraftAttachments}
+              onSetAttachmentType={setDraftAttachmentType}
+              onRemoveAttachment={removeDraftAttachment}
             />
           )}
 

@@ -6,7 +6,7 @@ import { GET_GP_COST_CODES } from '../../graphql/po';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
-import type { DraftGroup } from './types';
+import type { DraftAttachmentType, DraftGroup } from './types';
 import { DraftCard, SplitLineDialog, type GpCostCode, type ProductMeta, type SplitContext } from './DraftOrganizer';
 
 // ---- Props ----
@@ -31,6 +31,10 @@ interface PurchaseOrdersStepProps {
   onCreateDraft: () => void;
   onMergeDraft: (fromId: string, intoId: string) => void;
   onRemoveDraft: (id: string) => void;
+  // #588: draft-level document pre-attach.
+  onAddAttachments: (id: string, files: File[]) => void;
+  onSetAttachmentType: (id: string, attachmentId: string, documentType: DraftAttachmentType) => void;
+  onRemoveAttachment: (id: string, attachmentId: string) => void;
 }
 
 // ---- Component ----
@@ -51,6 +55,9 @@ export default function PurchaseOrdersStep({
   onCreateDraft,
   onMergeDraft,
   onRemoveDraft,
+  onAddAttachments,
+  onSetAttachmentType,
+  onRemoveAttachment,
 }: PurchaseOrdersStepProps) {
   // #490: one job, so one cost-code read for the whole step rather than one per card. Relay down or
   // job absent -> empty list -> the cards render no cost-code field, and the code is picked at GP
@@ -114,6 +121,9 @@ export default function PurchaseOrdersStep({
               onMergeDraft={onMergeDraft}
               onRemoveDraft={onRemoveDraft}
               onOpenSplit={setSplitCtx}
+              onAddAttachments={onAddAttachments}
+              onSetAttachmentType={onSetAttachmentType}
+              onRemoveAttachment={onRemoveAttachment}
             />
           </StaggerItem>
         ))}

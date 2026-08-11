@@ -114,6 +114,18 @@ describe('buildPoDrafts', () => {
     ]);
   });
 
+  it('carries the source draft id on every emitted payload, in draftGroups order (#588)', () => {
+    const vendorGroups = new Map([['VEND-A', [hw('O-1', 'HG-100', 2), hw('O-2', 'HG-100', 2)]]]);
+    const drafts = buildPoDrafts(
+      [draft('a', { 'HG-100|HINGE': 2 }), draft('skip', {}, true), draft('b', { 'HG-100|HINGE': 2 })],
+      vendorGroups,
+      new Map(),
+    );
+    // The empty 'skip' draft is dropped, so the emitted order is a, b - the same order finalize
+    // returns the created POs in, which is what the doc-upload mapping relies on.
+    expect(drafts.map((d) => d.sourceDraftId)).toEqual(['a', 'b']);
+  });
+
   it('conserves each product total across the refs of every included draft', () => {
     const vendorGroups = new Map([
       ['VEND-A', [hw('O-1', 'HG-100', 2), hw('O-2', 'HG-100', 3), hw('O-3', 'HG-100', 1)]],

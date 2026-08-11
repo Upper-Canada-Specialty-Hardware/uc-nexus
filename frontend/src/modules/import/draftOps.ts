@@ -6,7 +6,7 @@
  * split, and a draft that still holds lines can never be removed - is unit-testable without rendering.
  * Every reducer returns a new array; the untouched groups keep their identity.
  */
-import type { DraftGroup } from './types';
+import type { DraftAttachment, DraftAttachmentType, DraftGroup } from './types';
 
 /** Move `qty` units of a product line from one draft to another. The whole-line move passes the
  *  line's full quantity; a split passes a partial. A source line emptied to zero is dropped, so the
@@ -41,7 +41,8 @@ export function moveLine(
 }
 
 /** Fold one draft's lines into another and drop it - the way to clear a non-empty draft. The target
- *  keeps its own label and info; quantities sum per productKey, so nothing is lost. */
+ *  keeps its own label and info; quantities sum per productKey and #588 attachments concatenate, so
+ *  nothing is lost. */
 export function mergeDraft(groups: DraftGroup[], fromId: string, intoId: string): DraftGroup[] {
   if (fromId === intoId) return groups;
   const from = groups.find((g) => g.id === fromId);
@@ -51,7 +52,8 @@ export function mergeDraft(groups: DraftGroup[], fromId: string, intoId: string)
       if (g.id === intoId) {
         const lines = new Map(g.lines);
         for (const [pk, qty] of from.lines) lines.set(pk, (lines.get(pk) ?? 0) + qty);
-        return { ...g, lines };
+        const attachments = [...(g.attachments ?? []), ...(from.attachments ?? [])];
+        return { ...g, lines, attachments };
       }
       return g;
     })
@@ -88,4 +90,39 @@ export function updateInfo(
   value: string,
 ): DraftGroup[] {
   return groups.map((g) => (g.id === id ? { ...g, info: { ...g.info, [field]: value } } : g));
+}
+
+// ---- #588: draft-level document attachments ----
+
+/** Append files to a draft as PO_DOCUMENT attachments (the common case; the buyer can re-type any to
+ *  Miscellaneous after). Each carries a caller-supplied local id, unique within the wizard session. */
+export function addAttachments(
+  groups: DraftGroup[],
+  id: string,
+  files: Array<{ id: string; file: File }>,
+): DraftGroup[] {
+  if (files.length === 0) return groups;
+  const added: DraftAttachment[] = files.map((f) => ({ id: f.id, file: f.file, documentType: 'PO_DOCUMENT' }));
+  return groups.map((g) => (g.id === id ? { ...g, attachments: [...(g.attachments ?? []), ...added] } : g));
+}
+
+/** Re-type one attachment (PO Document <-> Miscellaneous). */
+export function setAttachmentType(
+  groups: DraftGroup[],
+  id: string,
+  attachmentId: string,
+  documentType: DraftAttachmentType,
+): DraftGroup[] {
+  return groups.map((g) =>
+    g.id === id
+      ? { ...g, attachments: (g.attachments ?? []).map((a) => (a.id === attachmentId ? { ...a, documentType } : a)) }
+      : g,
+  );
+}
+
+/** Drop one attachment from a draft. */
+export function removeAttachment(groups: DraftGroup[], id: string, attachmentId: string): DraftGroup[] {
+  return groups.map((g) =>
+    g.id === id ? { ...g, attachments: (g.attachments ?? []).filter((a) => a.id !== attachmentId) } : g,
+  );
 }
