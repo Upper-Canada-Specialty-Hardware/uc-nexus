@@ -9,7 +9,6 @@ import {
   MapPin,
   Tag,
   TriangleAlert,
-  Undo2,
   Warehouse,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -120,12 +119,8 @@ function buildDestinations(d: WarehouseDashboard | undefined, canReview: boolean
         ? { value: d.deficientCount, noun: 'deficient', attention: d.deficientCount > 0 }
         : undefined,
     },
-    {
-      label: 'Shipments',
-      path: '/app/warehouse/shipments',
-      icon: <Undo2 size={18} strokeWidth={1.75} />,
-      caption: 'Shipment history and returns',
-    },
+    // Shipment history and returns moved to the Shipping module's home (#589): it is an all-projects
+    // shipping screen, not a warehouse destination.
     {
       label: 'Custom Items',
       path: '/app/warehouse/custom-items',

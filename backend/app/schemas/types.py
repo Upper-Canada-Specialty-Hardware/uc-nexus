@@ -1543,6 +1543,22 @@ class ShopAssemblyStats:
 
 
 @strawberry.type
+class ShippingStats:
+    """The Shipping landing's pipeline gauges (#589), read left to right as the work flows: a request
+    waits to be accepted, its pull is staged into containers, the shipment is booked, then it is on
+    the road. Delivered is the resting state and carries no gauge."""
+
+    # PENDING ShippingOutRequests waiting on someone to accept them.
+    pending_request_count: int
+    # Open ShipmentContainers (no packing slip yet) - the loads still being built on the floor.
+    staging_container_count: int
+    # Confirmed shipments still SCHEDULED: booked, editable, waiting for the carrier.
+    scheduled_shipment_count: int
+    # Shipments PICKED_UP but not yet delivered - in transit.
+    in_transit_shipment_count: int
+
+
+@strawberry.type
 class AdminStats:
     user_count: int
     hardware_item_count: int

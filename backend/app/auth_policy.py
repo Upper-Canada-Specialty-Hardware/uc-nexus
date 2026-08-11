@@ -101,6 +101,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "adminStats": ADMIN_ROLE,
     "homeDashboardStats": SIGNED_IN,
     "shopAssemblyStats": SIGNED_IN,
+    "shippingStats": SIGNED_IN,
     # --- gp_outbox.py ---------------------------------------------------------------------
     # The two reads feed pending chips on the PO and receiving lists, so any signed-in user. The two
     # writes are admin: retrying an `ambiguous` queued write can duplicate a GP posting, and

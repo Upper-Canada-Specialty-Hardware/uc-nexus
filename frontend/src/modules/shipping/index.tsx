@@ -1,13 +1,13 @@
 import { useState } from 'react';
-import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
-import { Box, Typography, IconButton, Button, ToggleButton, ToggleButtonGroup } from '@mui/material';
-import { ArrowLeft, ClipboardPlus, Truck } from 'lucide-react';
+import { Routes, Route, Navigate } from 'react-router-dom';
+import { Box, Button, Typography } from '@mui/material';
+import { Settings2 } from 'lucide-react';
 import ShipmentsList from './ShipmentsList';
 import ShippingRequestsPage from './ShippingRequestsPage';
 import ShipmentMethodsDialog from './ShipmentMethodsDialog';
 import StagingWorkspace from './StagingWorkspace';
-import ProjectLandingPage from '../../components/ProjectLandingPage';
-import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
+import ShippingLanding from './ShippingLanding';
+import ProjectPicker from '../../components/ProjectPicker';
 import type { Project } from '../../types/project';
 
 /**
@@ -15,112 +15,88 @@ import type { Project } from '../../types/project';
  * pulls it onto the staging floor, the floor is arranged into containers, and the containers go on a
  * truck.
  *
- * Staging replaced a session cart. The cart held a shipment in one browser tab for as long as nobody
- * refreshed, which is not how a skid gets loaded - that takes hours or days, and more than one
- * person. Containers are rows in the database, so the arrangement survives both.
+ * The module used to open on a project picker, which no other module does (#589). It now opens on a
+ * proper home (ShippingLanding) and is project-agnostic; the two screens that genuinely need one job
+ * chosen - staging a load, and raising a request off a project's inventory - carry their own picker.
  */
 export default function ShippingModule() {
-  const [selectedProject, setSelectedProject] = useState<Project | 'all' | null>(null);
+  return (
+    <Routes>
+      <Route index element={<ShippingLanding />} />
+      <Route path="requests" element={<RequestsRoute />} />
+      <Route path="staging" element={<StagingRoute />} />
+      {/* The all-projects shipment history, with returns coming off each row. This is the screen the
+          warehouse module used to carry as "Shipments" (#589). */}
+      <Route path="shipments" element={<ShipmentsList heading="Shipments" />} />
+      {/* Returns was the project-scoped face of the same list; it folded into one Shipments screen. */}
+      <Route path="returns" element={<Navigate to="../shipments" replace />} />
+      {/* `browse` was the ship-ready browser feeding the cart that staging replaced. Anyone holding
+          that link lands on the workspace rather than on a blank route. */}
+      <Route path="browse" element={<Navigate to="../staging" replace />} />
+      <Route path="*" element={<Navigate to="" replace />} />
+    </Routes>
+  );
+}
+
+/**
+ * Staging is per-project - the pool it loads is one job's ship-ready hardware. The picker chosen here
+ * is handed to the workspace, and the same #425 GP-setup verdict rides along so the Ship button can
+ * gate on it. Shipment methods sit beside the picker too (#589): the person loading a skid is the one
+ * choosing how it travels.
+ */
+function StagingRoute() {
+  const [project, setProject] = useState<Project | null>(null);
   const [methodsOpen, setMethodsOpen] = useState(false);
-  const navigate = useNavigate();
-  const location = useLocation();
-  const view = location.pathname.endsWith('/returns')
-    ? 'returns'
-    : location.pathname.endsWith('/requests')
-      ? 'requests'
-      : 'staging';
-
-  if (selectedProject === null) {
-    return (
-      <ProjectLandingPage
-        title="Shipping"
-        onSelect={(p) => setSelectedProject(p === null ? 'all' : p)}
-      />
-    );
-  }
-
-  const projectId = selectedProject !== 'all' ? selectedProject.id : undefined;
-  const projectName =
-    selectedProject === 'all' ? 'All Projects' : (selectedProject.description || selectedProject.projectId);
-  // #425: only meaningful for a single project. The All Projects view spans every job, so there is no
-  // one verdict to show and no single action to block.
-  const gpSetupProject = selectedProject !== 'all' ? selectedProject : null;
-
   return (
     <Box>
       <Box
         sx={{
           display: 'flex',
-          justifyContent: 'space-between',
           alignItems: 'center',
+          justifyContent: 'space-between',
           flexWrap: 'wrap',
           gap: 1,
           mb: 2,
         }}
       >
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <Button
-            size="small"
-            startIcon={<ArrowLeft size={18} strokeWidth={1.75} />}
-            onClick={() => setSelectedProject(null)}
-          >
-            Projects
-          </Button>
-          <Typography variant="h5">Shipping — {projectName}</Typography>
-        </Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <ToggleButtonGroup
-            size="small"
-            exclusive
-            value={view}
-            onChange={(_, v) => {
-              if (v) navigate(`/app/shipping/${v}`);
-            }}
-          >
-            <ToggleButton value="requests">Requests</ToggleButton>
-            <ToggleButton value="staging">Staging</ToggleButton>
-            <ToggleButton value="returns">Returns</ToggleButton>
-          </ToggleButtonGroup>
-          {/* #471. The builder on the Requests board raises a request off project inventory; this
-              one goes off the hardware schedule, which is what knows an opening is still owed a
-              closer nobody has received yet. A project is already chosen here, so it is handed over
-              and the wizard opens on it - except under All Projects, where there is no one job to
-              open on and the user picks. */}
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<ClipboardPlus size={18} strokeWidth={1.75} />}
-            onClick={() =>
-              navigate(
-                projectId
-                  ? `/app/import?projectId=${projectId}&purpose=shipping`
-                  : '/app/import?purpose=shipping',
-              )
-            }
-          >
-            Start a Request
-          </Button>
-          {/* The method list is maintained by the same people who pick from it on the Delivery
-              Request (#451), so it lives here rather than behind Admin. */}
-          <IconButton onClick={() => setMethodsOpen(true)} aria-label="Manage shipment methods">
-            <Truck size={18} strokeWidth={1.75} />
-          </IconButton>
-        </Box>
-      </Box>
-      <GpSetupQuarantineBanner project={gpSetupProject} action="shipping from it" />
-      <Routes>
-        <Route path="requests" element={<ShippingRequestsPage projectId={projectId} />} />
-        <Route
-          path="staging"
-          element={<StagingWorkspace projectId={projectId} project={gpSetupProject} />}
+        <ProjectPicker
+          value={project}
+          onChange={setProject}
+          sx={{ flex: 1, minWidth: 240, maxWidth: 420 }}
         />
-        <Route path="returns" element={<ShipmentsList projectId={projectId} />} />
-        {/* `browse` was the ship-ready browser feeding the cart. Anyone holding that link lands on
-            the workspace that replaced it rather than on a blank route. */}
-        <Route path="browse" element={<Navigate to="../staging" replace />} />
-        <Route index element={<Navigate to="staging" replace />} />
-      </Routes>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<Settings2 size={18} strokeWidth={1.75} />}
+          onClick={() => setMethodsOpen(true)}
+        >
+          Shipment methods
+        </Button>
+      </Box>
+      <StagingWorkspace projectId={project?.id} project={project} />
       <ShipmentMethodsDialog open={methodsOpen} onClose={() => setMethodsOpen(false)} />
+    </Box>
+  );
+}
+
+/**
+ * Requests default to every project's board - reviewing and accepting them needs no one job. Picking
+ * a project scopes the list to it and unlocks raising a request off that project's inventory and
+ * editing a pending one (both need a pool to compose against), which is the only thing here that
+ * genuinely requires a project (#589).
+ */
+function RequestsRoute() {
+  const [project, setProject] = useState<Project | null>(null);
+  return (
+    <Box>
+      <Box sx={{ mb: 2 }}>
+        <ProjectPicker value={project} onChange={setProject} sx={{ maxWidth: 420 }} />
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+          Leave blank to review every project&rsquo;s requests. Pick one to raise or edit a request off
+          its inventory.
+        </Typography>
+      </Box>
+      <ShippingRequestsPage projectId={project?.id} />
     </Box>
   );
 }

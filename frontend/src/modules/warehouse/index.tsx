@@ -10,7 +10,6 @@ import PickPage from './PickPage';
 import PutAwayTab from './PutAwayTab';
 import StockPoolView from './StockPoolView';
 import DeficientItemsReview from './DeficientItemsReview';
-import ShipmentsPage from './ShipmentsPage';
 import CustomItemsPage from './CustomItemsPage';
 
 // No per-page "back to Warehouse" affordance: the app shell's breadcrumbs and the persistent nav
@@ -41,7 +40,8 @@ export default function WarehouseModule() {
           fire rating are the people receiving it. */}
       <Route path="custom-items" element={<CustomItemsPage />} />
       <Route path="deficient-items" element={<DeficientItemsReview />} />
-      <Route path="shipments" element={<ShipmentsPage />} />
+      {/* Shipment history moved to the Shipping module (#589); keep old links working. */}
+      <Route path="shipments" element={<Navigate to="/app/shipping/shipments" replace />} />
       <Route path="*" element={<Navigate to="" replace />} />
     </Routes>
   );
