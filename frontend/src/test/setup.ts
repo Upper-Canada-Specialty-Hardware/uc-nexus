@@ -1,5 +1,22 @@
 import '@testing-library/jest-dom';
+import { afterEach } from 'vitest';
 import { ApolloClient, ApolloLink, InMemoryCache } from '@apollo/client/core';
+
+/**
+ * Start every test with empty web storage. Components persist small bits of UI state there - the
+ * recently-opened projects the project picker offers, the nav rail's collapsed flag - and without
+ * this a value one test writes survives into the next in the same file. That is how selecting a
+ * project in one ImportModule case made the picker render it in both the Recent strip and the grid
+ * in the next, and getByText then matched two elements. Guarded because a bare runner may expose no
+ * storage at all.
+ */
+afterEach(() => {
+  try {
+    localStorage.clear();
+  } catch {
+    /* no Storage on this runner - nothing to reset */
+  }
+});
 
 /**
  * Defuse Apollo's "install the Apollo DevTools" suggestion timer.

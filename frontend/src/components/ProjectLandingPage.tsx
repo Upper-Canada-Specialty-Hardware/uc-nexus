@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { type ReactNode, useMemo, useState } from 'react';
 import {
   Box,
   Typography,
@@ -7,8 +7,11 @@ import {
   Grid,
   Skeleton,
   Alert,
+  TextField,
+  InputAdornment,
+  ButtonBase,
 } from '@mui/material';
-import { Folder, LayoutGrid } from 'lucide-react';
+import { Folder, LayoutGrid, Search, History } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import { GET_PROJECTS } from '../graphql/shared';
 import type { Project } from '../types/project';
@@ -16,6 +19,7 @@ import { isGpSetupBroken } from '../types/project';
 import { GpSetupBadge } from './GpSetupQuarantineBanner';
 import { monoSx, microLabelSx } from '../theme';
 import { StaggerList, StaggerItem } from '../motion';
+import { getRecentProjectIds, pushRecentProject } from '../utils/recentProjects';
 
 interface ProjectLandingPageProps {
   title: string;
@@ -32,6 +36,14 @@ const CARD_SX = {
   '&:hover': { transform: 'translateY(-1px)' },
 } as const;
 
+/** Everything the search box matches on, lower-cased once per project. */
+function haystack(p: Project): string {
+  return [p.projectId, p.description, p.client, p.jobSiteName]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
 export default function ProjectLandingPage({
   title,
   onSelect,
@@ -40,7 +52,38 @@ export default function ProjectLandingPage({
   emptyStateText,
 }: ProjectLandingPageProps) {
   const { data, loading, error } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
-  const projects = data?.projects ?? [];
+  const projects = useMemo(() => data?.projects ?? [], [data?.projects]);
+  const [query, setQuery] = useState('');
+
+  // Record the pick, then hand it up. Only real projects are remembered; "All Projects" is a view,
+  // not a job.
+  const handleSelect = (project: Project | null) => {
+    if (project) pushRecentProject(project.id);
+    onSelect(project);
+  };
+
+  // AND across whitespace-separated terms, so "royal hosp" narrows to the Royal hospital jobs rather
+  // than every project matching either word on its own.
+  const normalizedQuery = query.trim().toLowerCase();
+  const searching = normalizedQuery.length > 0;
+  const filtered = useMemo(() => {
+    const terms = normalizedQuery.split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return projects;
+    return projects.filter((p) => {
+      const hay = haystack(p);
+      return terms.every((t) => hay.includes(t));
+    });
+  }, [projects, normalizedQuery]);
+
+  // Recent jobs, resolved against the live list so a deleted one drops out. Hidden while searching -
+  // the query IS the shortcut then.
+  const recent = useMemo(() => {
+    if (searching) return [];
+    const byId = new Map(projects.map((p) => [p.id, p]));
+    return getRecentProjectIds()
+      .map((id) => byId.get(id))
+      .filter((p): p is Project => Boolean(p));
+  }, [projects, searching]);
 
   const subtitle = showAllProjects
     ? 'Select a project to continue, or view data across all projects.'
@@ -95,9 +138,87 @@ export default function ProjectLandingPage({
     <Box>
       {header}
 
-      <StaggerList count={projects.length + (showAllProjects ? 1 : 0)}>
+      {/* One box turns a 22-card scroll into a keystroke. Only earns its space once there is enough
+          to hunt through - a handful of jobs is faster to eyeball than to filter. */}
+      {projects.length > 8 && (
+        <TextField
+          size="small"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search projects by name, number, client or job site"
+          autoComplete="off"
+          sx={{ mb: 2.5, width: '100%', maxWidth: 460 }}
+          slotProps={{
+            input: {
+              'aria-label': 'Search projects',
+              startAdornment: (
+                <InputAdornment position="start">
+                  <Search size={16} strokeWidth={1.75} />
+                </InputAdornment>
+              ),
+            },
+          }}
+        />
+      )}
+
+      {/* Recent jobs, for the common case of working the same project across visits. */}
+      {recent.length > 0 && (
+        <Box sx={{ mb: 2.5 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 1 }}>
+            <History size={14} strokeWidth={1.75} />
+            <Typography component="span" sx={microLabelSx}>
+              Recent
+            </Typography>
+          </Box>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+            {recent.map((p) => (
+              <ButtonBase
+                key={p.id}
+                onClick={() => handleSelect(p)}
+                sx={{
+                  borderRadius: 1.5,
+                  border: '1px solid',
+                  borderColor: isGpSetupBroken(p) ? 'error.main' : 'divider',
+                  px: 1.5,
+                  py: 0.875,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1,
+                  maxWidth: 260,
+                  textAlign: 'left',
+                  transition: 'border-color 0.15s ease, transform 0.15s ease',
+                  '&:hover': { borderColor: 'text.primary', transform: 'translateY(-1px)' },
+                }}
+              >
+                <Folder size={16} strokeWidth={1.75} style={{ flexShrink: 0, opacity: 0.7 }} />
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography
+                    sx={{
+                      fontWeight: 600,
+                      fontSize: '0.8125rem',
+                      lineHeight: 1.2,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {p.description || p.projectId}
+                  </Typography>
+                  {p.projectId && (
+                    <Typography component="div" sx={{ ...monoSx, fontSize: '0.75rem', color: 'text.secondary' }}>
+                      #{p.projectId}
+                    </Typography>
+                  )}
+                </Box>
+              </ButtonBase>
+            ))}
+          </Box>
+        </Box>
+      )}
+
+      <StaggerList count={filtered.length + (showAllProjects && !searching ? 1 : 0)}>
         <Grid container spacing={1.5}>
-          {showAllProjects && (
+          {showAllProjects && !searching && (
             <Grid size={CELL}>
               <StaggerItem style={{ height: '100%' }}>
                 {/* Same onSelect(null) contract the old button had, promoted to the lead card so the
@@ -110,7 +231,7 @@ export default function ProjectLandingPage({
                     borderLeftColor: 'secondary.main',
                   }}
                 >
-                  <CardActionArea onClick={() => onSelect(null)} sx={{ height: '100%' }}>
+                  <CardActionArea onClick={() => handleSelect(null)} sx={{ height: '100%' }}>
                     <Box sx={{ px: 2, py: 1.75, display: 'flex', gap: 1.5, alignItems: 'center' }}>
                       <Box sx={{ display: 'flex' }}>
                         <LayoutGrid size={18} strokeWidth={1.75} />
@@ -130,7 +251,7 @@ export default function ProjectLandingPage({
             </Grid>
           )}
 
-          {projects.map((p) => (
+          {filtered.map((p) => (
             <Grid key={p.id} size={CELL}>
               <StaggerItem style={{ height: '100%' }}>
                 {/* #425: a quarantined project is still selectable - the module screen explains why
@@ -145,7 +266,7 @@ export default function ProjectLandingPage({
                       : CARD_SX
                   }
                 >
-                  <CardActionArea onClick={() => onSelect(p)} sx={{ height: '100%' }}>
+                  <CardActionArea onClick={() => handleSelect(p)} sx={{ height: '100%' }}>
                     <Box
                       sx={{ px: 2, py: 1.75, display: 'flex', gap: 1.5, alignItems: 'flex-start' }}
                     >
@@ -200,6 +321,12 @@ export default function ProjectLandingPage({
       {projects.length === 0 && (
         <Alert severity="info" sx={{ mt: 2 }}>
           {emptyStateText ?? 'No projects found.'}
+        </Alert>
+      )}
+
+      {projects.length > 0 && searching && filtered.length === 0 && (
+        <Alert severity="info" sx={{ mt: 2 }}>
+          No projects match &ldquo;{query.trim()}&rdquo;.
         </Alert>
       )}
     </Box>
