@@ -1043,12 +1043,14 @@ rather than being silently dropped.
 
 **Sub-routes**:
 - Project Purchasing Progress (`/app/admin/project-purchasing-progress`)
-- Opening Status (`/app/admin/opening-status`) - project-scoped and loads nothing until a project is
-  picked. One row per opening (stage chip + procured fraction + per-leaf chips); expanding a row
-  fires `adminOpeningDeepDive` for that opening alone and shows every hardware line partitioned
-  across not purchased / drafted / on order / pulled for assembly / assembled / staged / pulled for
-  shipping / shipped. There is no "received" bucket by design - inventory is fungible on receipt, so
-  the PO line's received/ordered fill is shown as context instead.
+- Hardware Status by Project (`/app/admin/hardware-status`) - loads nothing until at least one
+  project is picked; the Projects Autocomplete is multi-select and quantities SUM across the
+  selection (one row per (category, product code), not per project). Columns: Required /
+  Not Purchased / PO Drafted / On Order / Received / On Hand / Sent to Shop / Staged / Shipped Out,
+  each with an info-tooltip header stating its exact rule. "Sent to Shop" is a lifecycle EXIT
+  (completed shop pulls - shop assembly is outside the Nexus pipeline), and "Staged" is completed
+  shipping pulls not yet on a packing slip. Zero counts render dimmed. A "Filter products…" box
+  appears once a project is selected and matches product code or category.
 - Warehouses (`/app/admin/warehouses`) — warehouse CRUD (PR #158, issue #88); see below
 - Projects (`/app/admin/projects`) — edit project details + OSSA flag (see below)
 - User Management (`/app/admin/users`) — assign Clerk roles

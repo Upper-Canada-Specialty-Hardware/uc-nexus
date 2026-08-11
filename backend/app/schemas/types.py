@@ -1416,6 +1416,27 @@ class ProjectProgressByProduct:
 
 
 @strawberry.type
+class HardwareStatusByProduct:
+    """One product's lifecycle counts, summed across the projects the admin selected.
+
+    `sent_to_shop` is an exit, not a stage: shop assembly is outside the Nexus pipeline, so a
+    completed shop pull leaves the system the same way a packing slip does.
+    """
+
+    hardware_category: str
+    product_code: str
+    required_quantity: int
+    not_purchased: int
+    po_drafted: int
+    on_order: int
+    received_quantity: int
+    on_hand: int
+    sent_to_shop: int
+    staged_for_shipping: int
+    shipped_out: int
+
+
+@strawberry.type
 class AuditLogEntry:
     id: strawberry.ID
     project_id: strawberry.ID | None

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as draftOps from '../draftOps';
-import type { DraftGroup } from '../types';
+import type { DraftAttachment, DraftGroup } from '../types';
 
 function draft(id: string, lines: Record<string, number>, included = false): DraftGroup {
   return {
@@ -10,6 +10,10 @@ function draft(id: string, lines: Record<string, number>, included = false): Dra
     info: { notes: '', preferredDeliveryDate: '', costCode: '' },
     lines: new Map(Object.entries(lines)),
   };
+}
+
+function att(id: string, name = `${id}.pdf`): { id: string; file: File } {
+  return { id, file: new File(['x'], name, { type: 'application/pdf' }) };
 }
 
 /** Total of a productKey across every draft - the quantity the conservation invariant preserves. */
@@ -54,6 +58,46 @@ describe('draftOps.mergeDraft', () => {
     expect(after[0].id).toBe('b');
     expect(after[0].lines.get('HG')).toBe(3);
     expect(after[0].lines.get('LK')).toBe(1);
+  });
+
+  it('concatenates attachments from both drafts, target first (#588)', () => {
+    let groups = [draft('a', { HG: 1 }), draft('b', { HG: 1 })];
+    groups = draftOps.addAttachments(groups, 'a', [att('fa')]);
+    groups = draftOps.addAttachments(groups, 'b', [att('fb')]);
+    const after = draftOps.mergeDraft(groups, 'a', 'b');
+    expect(after).toHaveLength(1);
+    expect((after[0].attachments ?? []).map((x) => x.id)).toEqual(['fb', 'fa']);
+  });
+});
+
+describe('draftOps attachments (#588)', () => {
+  it('adds files as PO_DOCUMENT attachments, appending to any existing', () => {
+    let groups = [draft('a', { HG: 1 })];
+    groups = draftOps.addAttachments(groups, 'a', [att('f1'), att('f2')]);
+    const atts = groups[0].attachments as DraftAttachment[];
+    expect(atts.map((x) => x.id)).toEqual(['f1', 'f2']);
+    expect(atts.every((x) => x.documentType === 'PO_DOCUMENT')).toBe(true);
+    groups = draftOps.addAttachments(groups, 'a', [att('f3')]);
+    expect((groups[0].attachments ?? []).map((x) => x.id)).toEqual(['f1', 'f2', 'f3']);
+  });
+
+  it('adding no files is a no-op', () => {
+    const groups = [draft('a', { HG: 1 })];
+    expect(draftOps.addAttachments(groups, 'a', [])).toBe(groups);
+  });
+
+  it('re-types one attachment, leaving the rest', () => {
+    let groups = draftOps.addAttachments([draft('a', { HG: 1 })], 'a', [att('f1'), att('f2')]);
+    groups = draftOps.setAttachmentType(groups, 'a', 'f2', 'MISCELLANEOUS');
+    const byId = new Map((groups[0].attachments ?? []).map((x) => [x.id, x.documentType]));
+    expect(byId.get('f1')).toBe('PO_DOCUMENT');
+    expect(byId.get('f2')).toBe('MISCELLANEOUS');
+  });
+
+  it('removes one attachment by id', () => {
+    let groups = draftOps.addAttachments([draft('a', { HG: 1 })], 'a', [att('f1'), att('f2')]);
+    groups = draftOps.removeAttachment(groups, 'a', 'f1');
+    expect((groups[0].attachments ?? []).map((x) => x.id)).toEqual(['f2']);
   });
 });
 

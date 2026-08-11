@@ -57,6 +57,7 @@ from .types import (
     BackOrderedItem,
     CancelPullRequestResult,
     ConfirmPickResult,
+    HardwareStatusByProduct,
     InventoryAvailability,
     InventoryItemDetail,
     InventoryLocation,
@@ -714,6 +715,34 @@ class WarehouseQueries:
                     ordered_quantity=row["ordered_quantity"],
                     received_quantity=row["received_quantity"],
                     back_ordered=row["back_ordered"],
+                    shipped_out=row["shipped_out"],
+                )
+                for row in rows
+            ]
+
+    @strawberry.field
+    def hardware_status_by_product(
+        self, info: strawberry.Info, project_ids: list[strawberry.ID]
+    ) -> list[HardwareStatusByProduct]:
+        """The admin Hardware Status by Project rollup: one row per product, quantities summed
+        across the selected projects. All nine grouped queries run in one session here rather than
+        per-row (CLAUDE.md perf rules)."""
+        with SessionLocal() as session:
+            rows = warehouse_repository.get_hardware_status_by_product(
+                session, [uuid.UUID(str(pid)) for pid in project_ids]
+            )
+            return [
+                HardwareStatusByProduct(
+                    hardware_category=row["hardware_category"],
+                    product_code=row["product_code"],
+                    required_quantity=row["required_quantity"],
+                    not_purchased=row["not_purchased"],
+                    po_drafted=row["po_drafted"],
+                    on_order=row["on_order"],
+                    received_quantity=row["received_quantity"],
+                    on_hand=row["on_hand"],
+                    sent_to_shop=row["sent_to_shop"],
+                    staged_for_shipping=row["staged_for_shipping"],
                     shipped_out=row["shipped_out"],
                 )
                 for row in rows
