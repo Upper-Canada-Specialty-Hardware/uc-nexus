@@ -1,5 +1,3 @@
-import type { ParsedOpening } from '../../types/hardwareSchedule';
-
 // ---- Faceted opening filters (#564) ----
 //
 // A row of multi-select dropdowns above the openings grid. Each facet narrows the visible openings
@@ -17,6 +15,11 @@ export type FacetField =
   | 'frame_type'
   | 'hand'
   | 'interior_exterior';
+
+/** The only shape faceting needs: the facet fields, each optional. Both the wizard's full
+ *  ParsedOpening and the workspace's thin projectOpenings row satisfy it, so the opening picker is
+ *  reusable across both without dragging the whole ParsedOpening surface into either caller. */
+export type FacetableOpening = { [K in FacetField]?: string | null };
 
 export interface FacetDef {
   field: FacetField;
@@ -41,13 +44,13 @@ export const BLANK = '(Blank)';
 export type FacetSelections = Map<FacetField, Set<string>>;
 
 /** The value used both as an option key and for matching - null/empty folds into the BLANK bucket. */
-export function facetValueOf(opening: ParsedOpening, field: FacetField): string {
+export function facetValueOf(opening: FacetableOpening, field: FacetField): string {
   const raw = opening[field];
   return raw == null || raw === '' ? BLANK : String(raw);
 }
 
 /** AND across facets, OR within a facet. An unconstrained facet (missing or empty) is skipped. */
-export function matchesFacets(opening: ParsedOpening, selections: FacetSelections): boolean {
+export function matchesFacets(opening: FacetableOpening, selections: FacetSelections): boolean {
   for (const { field } of FACETS) {
     const picked = selections.get(field);
     if (!picked || picked.size === 0) continue;
@@ -70,7 +73,7 @@ export interface FacetOption {
 
 /** Distinct values of one facet across `openings`, each with how many openings carry it, sorted
  *  naturally (so floors read 1, 2, 10 not 1, 10, 2). Counts are over the full opening set. */
-export function buildFacetOptions(openings: ParsedOpening[], field: FacetField): FacetOption[] {
+export function buildFacetOptions(openings: FacetableOpening[], field: FacetField): FacetOption[] {
   const counts = new Map<string, number>();
   for (const opening of openings) {
     const value = facetValueOf(opening, field);

@@ -1,12 +1,35 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
-import { MemoryRouter, Routes, Route } from 'react-router-dom';
-import { beforeEach, describe, it, expect } from 'vitest';
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
+import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
 import { ToastProvider } from '../../../../components/Toast';
 import RequestWorkspace from '../RequestWorkspace';
 import { GET_PROJECTS } from '../../../../graphql/shared';
 import { GET_PROJECT_INVENTORY_AVAILABILITY } from '../../../../graphql/warehouse';
-import { GET_PROJECT_OPENINGS, GET_SHIPPING_OUT_REQUEST } from '../../../../graphql/shipping';
+import {
+  GET_PROJECT_OPENINGS,
+  GET_REQUEST_COVERAGE,
+  GET_SHIPPING_OUT_REQUEST,
+} from '../../../../graphql/shipping';
+
+// MUI X DataGrid (the opening picker, once past the source gate) observes container size; jsdom has
+// no ResizeObserver.
+beforeAll(() => {
+  if (!('ResizeObserver' in globalThis)) {
+    // @ts-expect-error minimal stub for jsdom
+    globalThis.ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  }
+});
+
+/** Renders the current URL so a test can assert where the "upload a newer schedule" hand-off went. */
+function LocationProbe() {
+  const loc = useLocation();
+  return <div data-testid="loc">{loc.pathname + loc.search}</div>;
+}
 
 // The seed rules the design pins: a create-mode draft persists per project in sessionStorage and
 // survives navigation, while an edit seeds from the server once and is NEVER persisted - which is
@@ -64,7 +87,7 @@ function openingsMock(): MockedResponse {
   return {
     request: { query: GET_PROJECT_OPENINGS, variables: { projectId: 'proj-1' } },
     maxUsageCount: Number.POSITIVE_INFINITY,
-    result: { data: { projectHardwareSchedule: { openings: [] } } },
+    result: { data: { projectOpenings: { openingCount: 0, hardwareItemCount: 0, openings: [] } } },
   };
 }
 
@@ -107,6 +130,7 @@ function renderAt(entry: string, mocks: MockedResponse[]) {
           <Routes>
             <Route path="/app/shipping/requests/new" element={<RequestWorkspace mode="create" />} />
             <Route path="/app/shipping/requests/:id/edit" element={<RequestWorkspace mode="edit" />} />
+            <Route path="/app/import" element={<LocationProbe />} />
           </Routes>
         </ToastProvider>
       </MemoryRouter>
@@ -163,5 +187,95 @@ describe('RequestWorkspace draft persistence', () => {
     fireEvent.change(qty, { target: { value: '3' } });
     await waitFor(() => expect(qty).toHaveValue(3));
     expect(sessionStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+});
+
+// The from-schedule tab opens on a source gate mirroring the import wizard's upload step (#608): use
+// the schedule on file, or hand off to the import wizard to replace it.
+
+function scheduleOpeningsMock(): MockedResponse {
+  return {
+    request: { query: GET_PROJECT_OPENINGS, variables: { projectId: 'proj-1' } },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+    result: {
+      data: {
+        projectOpenings: {
+          openingCount: 2,
+          hardwareItemCount: 7,
+          openings: [
+            { openingNumber: '101', building: 'A', floor: '1', location: 'Lobby', hand: 'LH', doorType: 'HM', frameType: 'HM', interiorExterior: 'Interior', keying: 'K1', leafCount: 1 },
+            { openingNumber: '102', building: 'B', floor: '2', location: 'Stair', hand: 'RH', doorType: 'WD', frameType: 'HM', interiorExterior: 'Exterior', keying: 'K2', leafCount: 2 },
+          ],
+        },
+      },
+    },
+  };
+}
+
+function coverageMock(): MockedResponse {
+  return {
+    request: { query: GET_REQUEST_COVERAGE, variables: { projectId: 'proj-1', openingNumbers: ['101'] } },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+    result: {
+      data: {
+        requestCoverage: [
+          {
+            openingNumber: '101',
+            hardwareCategory: 'HINGE',
+            productCode: 'HG-100',
+            classification: null,
+            owedQuantity: 4,
+            sentQuantity: 0,
+            claimedQuantity: 0,
+            suggestedQuantity: 4,
+            onOrderQuantity: 0,
+          },
+        ],
+      },
+    },
+  };
+}
+
+describe('from-schedule source gate', () => {
+  it('opens on the two source cards, showing the persisted counts', async () => {
+    renderAt('/app/shipping/requests/new?projectId=proj-1', [projectsMock(), availabilityMock(), scheduleOpeningsMock()]);
+    expect(await screen.findByText(/2 openings.*7 hardware items/i, {}, SLOW)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /use current schedule/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /upload a newer schedule/i })).toBeInTheDocument();
+  });
+
+  it('"use current schedule" reaches the opening grid', async () => {
+    renderAt('/app/shipping/requests/new?projectId=proj-1', [projectsMock(), availabilityMock(), scheduleOpeningsMock()]);
+    // The card is disabled until the counts load, so wait for them before clicking.
+    await screen.findByText(/2 openings/i, {}, SLOW);
+    fireEvent.click(screen.getByRole('button', { name: /use current schedule/i }));
+    expect(await screen.findByPlaceholderText('Paste opening numbers, one per line...', {}, SLOW)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Select All' })).toBeInTheDocument();
+  });
+
+  it('"upload a newer schedule" hands off to the import wizard, carrying purpose and returnTo', async () => {
+    renderAt('/app/shipping/requests/new?projectId=proj-1', [projectsMock(), availabilityMock(), scheduleOpeningsMock()]);
+    fireEvent.click(await screen.findByRole('button', { name: /upload a newer schedule/i }, SLOW));
+    const loc = await screen.findByTestId('loc', {}, SLOW);
+    expect(loc.textContent).toContain('/app/import');
+    expect(loc.textContent).toContain('projectId=proj-1');
+    expect(loc.textContent).toContain('purpose=schedule');
+    expect(loc.textContent).toContain(`returnTo=${encodeURIComponent('/app/shipping/requests/new?projectId=proj-1')}`);
+  });
+
+  it('opening selection drives the coverage table', async () => {
+    renderAt('/app/shipping/requests/new?projectId=proj-1', [
+      projectsMock(),
+      availabilityMock(),
+      scheduleOpeningsMock(),
+      coverageMock(),
+    ]);
+    await screen.findByText(/2 openings/i, {}, SLOW);
+    fireEvent.click(screen.getByRole('button', { name: /use current schedule/i }));
+    const paste = await screen.findByPlaceholderText('Paste opening numbers, one per line...', {}, SLOW);
+    // Selecting via the paste filter drives requestCoverage, whose product row then renders.
+    fireEvent.change(paste, { target: { value: '101' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Filter' }));
+    expect(await screen.findByText('HG-100', {}, SLOW)).toBeInTheDocument();
   });
 });
