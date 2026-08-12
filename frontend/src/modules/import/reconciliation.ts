@@ -6,7 +6,7 @@
  * user is blocked by has to be what they are shown. Nothing here touches React.
  */
 
-import type { ImportPurpose, ReconciliationRow } from './types';
+import type { HardwareStatusRow, ImportPurpose, ReconciliationRow } from './types';
 import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 import { aggregationKey, itemGroupKey } from './types';
 
@@ -17,7 +17,12 @@ export interface ProductReconRow {
   quantityNeeded: number; // sum of HS qty across selected openings
   quantityRequiredByProject: number; // sum of HS qty across ALL openings in schedule
   qtyAvailable: number; // for assembly/shipping eligibility
-  statusBreakdown: Map<string, number>; // bucket totals across openings
+  statusBreakdown: Map<string, number>; // bucket totals across openings (recon PO-chain; drives qtyAvailable)
+  // What the Lifecycle Breakdown chips render. Project-wide, sourced from `hardwareStatusByProduct`
+  // so it matches the admin Hardware Status dashboard exactly. Falls back to `statusBreakdown` when
+  // no dashboard row is available (still loading, an excluded By-Others product, or a product the
+  // persisted schedule has never seen).
+  lifecycleBreakdown: Map<string, number>;
   underlyingOpeningKeys: string[]; // (opening, product, category) keys
   existingCommitted: number; // sum of all non-NOT_COVERED, non-BY_OTHERS bucket qty
   selectedNewPOQty: number; // HS qty for selected (opening, product, category) keys
@@ -41,16 +46,27 @@ export interface ProductReconRow {
   overOrdersProject: boolean;
 }
 
+// Chip/row ordering, read left-to-right as the hardware pipeline (schedule -> shipped), so the
+// reconciliation chips line up with the admin Hardware Status columns. The dashboard-sourced keys and
+// the legacy recon keys are never mixed in one row, so sharing a scale is only about consistent
+// ordering, not about the two vocabularies coexisting.
 export const STATUS_PRIORITY: Record<string, number> = {
-  RECEIVED: 0,
-  ASSEMBLED: 1,
-  SHIPPED_OUT: 2,
-  SHIPPING_OUT: 3,
+  // Dashboard-sourced (the default now).
+  NOT_PURCHASED: 0,
+  PO_DRAFTED: 1,
+  ON_ORDER: 2,
+  IN_INVENTORY: 3,
+  SENT_TO_SHOP: 4,
+  STAGED: 5,
+  SHIPPED_OUT: 6,
+  // Legacy recon fallback keys, aligned to the same pipeline positions.
+  NOT_COVERED: 0,
+  ORDERED: 2,
+  RECEIVED: 3,
   ASSEMBLING: 4,
-  ORDERED: 5,
-  PO_DRAFTED: 6,
-  NOT_COVERED: 7,
-  BY_OTHERS: 8,
+  ASSEMBLED: 5,
+  SHIPPING_OUT: 5,
+  BY_OTHERS: 7,
 };
 
 // Placed on a PO, in every sense that counts against the project's need. PO_DRAFTED is in here
@@ -82,6 +98,25 @@ function computeAvailableQty(purpose: ImportPurpose, breakdown: Map<string, numb
   return 0;
 }
 
+// The chips, from the project-wide dashboard row. receivedQuantity is deliberately absent - it is the
+// cumulative PO-receipt count and would double-count against onHand + sentToShop + staged + shipped,
+// which is where those received units actually are now. A pull that has not been picked yet is still
+// on the shelf, so it sits in onHand until it completes - the same rule the dashboard uses.
+function buildLifecycleBreakdown(ds: HardwareStatusRow): Map<string, number> {
+  const m = new Map<string, number>();
+  const put = (key: string, qty: number) => {
+    if (qty > 0) m.set(key, qty);
+  };
+  put('NOT_PURCHASED', ds.notPurchased);
+  put('PO_DRAFTED', ds.poDrafted);
+  put('ON_ORDER', ds.onOrder);
+  put('IN_INVENTORY', ds.onHand);
+  put('SENT_TO_SHOP', ds.sentToShop);
+  put('STAGED', ds.stagedForShipping);
+  put('SHIPPED_OUT', ds.shippedOut);
+  return m;
+}
+
 /**
  * The per-product reconciliation rollup (#483).
  *
@@ -95,8 +130,26 @@ export function buildProductReconRows(args: {
   selectedHardwareItems: ParsedHardwareItem[];
   allHardwareItems: ParsedHardwareItem[];
   selectedReconItems: Set<string>;
+  // Project-wide lifecycle state keyed by `${hardware_category}|${product_code}`. Optional: when it
+  // is not supplied (unit tests, or a render before the query resolves) the row falls back to the
+  // recon PO-chain breakdown, which is exactly the pre-dashboard behaviour.
+  hardwareStatusByProduct?: Map<string, HardwareStatusRow>;
+  // Real reservation-aware availability per `${hardware_category}|${product_code}` (on_hand -
+  // deficient - reserved), from projectInventoryAvailability - the same number the request creation
+  // gate applies. When supplied it drives qtyAvailable for the assembly/shipping eligibility, instead
+  // of the recon RECEIVED bucket, which is blind to inventory that arrived off-PO. Absent for the PO
+  // purpose (qtyAvailable is unused there) and in unit tests.
+  availableByProduct?: Map<string, number>;
 }): ProductReconRow[] {
-  const { purpose, reconciliationRows, selectedHardwareItems, allHardwareItems, selectedReconItems } = args;
+  const {
+    purpose,
+    reconciliationRows,
+    selectedHardwareItems,
+    allHardwareItems,
+    selectedReconItems,
+    hardwareStatusByProduct,
+    availableByProduct,
+  } = args;
 
   const qtyNeededByProduct = new Map<string, number>();
   const hsQtyByOpeningKey = new Map<string, number>();
@@ -131,6 +184,7 @@ export function buildProductReconRows(args: {
         quantityRequiredByProject: qtyRequiredByProjectByProduct.get(productKey) ?? 0,
         qtyAvailable: 0,
         statusBreakdown: new Map(),
+        lifecycleBreakdown: new Map(),
         underlyingOpeningKeys: [],
         existingCommitted: 0,
         selectedNewPOQty: 0,
@@ -149,16 +203,38 @@ export function buildProductReconRows(args: {
   const rows = Array.from(map.values());
   for (const row of rows) {
     row.underlyingOpeningKeys = Array.from(openingKeysByProduct.get(row.id) ?? []);
-    row.qtyAvailable = computeAvailableQty(purpose, row.statusBreakdown);
-    row.existingCommitted = COMMITTED_STATUSES.reduce(
-      (sum, s) => sum + (row.statusBreakdown.get(s) ?? 0),
-      0,
-    );
-    row.projectTotalOrdered = ORDERED_STATUSES.reduce((sum, s) => sum + (row.statusBreakdown.get(s) ?? 0), 0);
-    row.projectTotalReceived = RECEIVED_STATUSES.reduce((sum, s) => sum + (row.statusBreakdown.get(s) ?? 0), 0);
+    // qtyAvailable is the assembly/shipping "available to pull" number, a genuinely different
+    // question from the lifecycle chips. It reads real reservation-aware inventory when supplied -
+    // what is physically on the shelf and unclaimed - and only falls back to the recon RECEIVED
+    // bucket (loading, or the PO purpose where it is unused) when it is not.
+    row.qtyAvailable = availableByProduct
+      ? (availableByProduct.get(row.id) ?? 0)
+      : computeAvailableQty(purpose, row.statusBreakdown);
     row.selectedNewPOQty = row.underlyingOpeningKeys
       .filter((k) => selectedReconItems.has(k))
       .reduce((sum, k) => sum + (hsQtyByOpeningKey.get(k) ?? 0), 0);
+
+    // An excluded (By Others) product is short-circuited by reconcile to a single BY_OTHERS bucket;
+    // it is not UC Hardware's to order or track, so it keeps that chip rather than borrowing the
+    // dashboard's real lifecycle.
+    const isExcluded = row.statusBreakdown.has('BY_OTHERS');
+    const ds = isExcluded ? undefined : hardwareStatusByProduct?.get(row.id);
+
+    if (ds) {
+      // received = ordered - onOrder, so onOrder + received is everything placed on a PO, and
+      // poDrafted + that is everything committed toward the project's need.
+      row.lifecycleBreakdown = buildLifecycleBreakdown(ds);
+      row.projectTotalOrdered = ds.onOrder + ds.receivedQuantity;
+      row.projectTotalReceived = ds.receivedQuantity;
+      row.existingCommitted = ds.poDrafted + ds.onOrder + ds.receivedQuantity;
+    } else {
+      // Fallback (no dashboard row yet, or an excluded product): the pre-dashboard recon numbers.
+      row.lifecycleBreakdown = row.statusBreakdown;
+      row.existingCommitted = COMMITTED_STATUSES.reduce((sum, s) => sum + (row.statusBreakdown.get(s) ?? 0), 0);
+      row.projectTotalOrdered = ORDERED_STATUSES.reduce((sum, s) => sum + (row.statusBreakdown.get(s) ?? 0), 0);
+      row.projectTotalReceived = RECEIVED_STATUSES.reduce((sum, s) => sum + (row.statusBreakdown.get(s) ?? 0), 0);
+    }
+
     const futureCommitted = row.existingCommitted + row.selectedNewPOQty;
     row.overCommitAmount = Math.max(0, futureCommitted - row.quantityRequiredByProject);
     // A re-uploaded schedule with reduced scope can push existing commitments past the new project
@@ -167,8 +243,8 @@ export function buildProductReconRows(args: {
     row.overOrdersProject = row.selectedNewPOQty > 0 && futureCommitted > row.quantityRequiredByProject;
   }
   rows.sort((a, b) => {
-    const bestA = Math.min(...Array.from(a.statusBreakdown.keys()).map((s) => STATUS_PRIORITY[s] ?? 99));
-    const bestB = Math.min(...Array.from(b.statusBreakdown.keys()).map((s) => STATUS_PRIORITY[s] ?? 99));
+    const bestA = Math.min(...Array.from(a.lifecycleBreakdown.keys()).map((s) => STATUS_PRIORITY[s] ?? 99));
+    const bestB = Math.min(...Array.from(b.lifecycleBreakdown.keys()).map((s) => STATUS_PRIORITY[s] ?? 99));
     return bestA - bestB;
   });
   return rows;

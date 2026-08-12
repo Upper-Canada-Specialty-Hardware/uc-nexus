@@ -37,10 +37,12 @@ import { UPLOAD_PO_DOCUMENT } from '../../graphql/po';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { GET_PROJECT_INVENTORY_AVAILABILITY } from '../../graphql/warehouse';
 import { GET_REQUEST_COVERAGE } from '../../graphql/shipping';
+import { GET_HARDWARE_STATUS_BY_PRODUCT } from '../../graphql/admin';
 import { RESERVATION_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import type {
   AggregatedHardwareItem,
   ClassificationRow,
+  HardwareStatusRow,
   ImportPurpose,
   InventoryAvailabilityRow,
   ReconciliationRow,
@@ -450,6 +452,28 @@ export default function ImportWizard({
     return raw.map((r, i) => ({ ...r, id: `recon-${i}` }));
   }, [reconcileData]);
 
+  // Project-wide lifecycle state per product, read from the same query the admin Hardware Status page
+  // uses (#597). The reconciliation step renders its Lifecycle Breakdown from this, so the two screens
+  // can never disagree. Runs for every re-import purpose (PO, shop assembly, shipping) - the breakdown
+  // is informational everywhere; the purpose-specific gates (over-order for PO, available-to-pull for
+  // the requests) live in other columns.
+  const { data: hardwareStatusData } = useQuery<{ hardwareStatusByProduct: HardwareStatusRow[] }>(
+    GET_HARDWARE_STATUS_BY_PRODUCT,
+    {
+      variables: { projectIds: existingProjectId ? [existingProjectId] : [] },
+      skip: !isReimport || !existingProjectId,
+      fetchPolicy: 'cache-and-network',
+    },
+  );
+
+  const hardwareStatusByProduct = useMemo(() => {
+    const map = new Map<string, HardwareStatusRow>();
+    for (const row of hardwareStatusData?.hardwareStatusByProduct ?? []) {
+      map.set(itemGroupKey({ hardware_category: row.hardwareCategory, product_code: row.productCode }), row);
+    }
+    return map;
+  }, [hardwareStatusData]);
+
   // Received-and-unpulled quantity per aggregation key. Both request purposes pull from it, and the
   // shipping loose list also clamps its requested quantity to it, so it is indexed once.
   // reconcile_schedule has already moved anything sitting on an open pull into its own bucket, so a
@@ -556,6 +580,18 @@ export default function ImportWizard({
     }
     return map;
   }, [availabilityData]);
+
+  // Just the reservation-aware available number per product, for the reconciliation step's
+  // assembly/shipping eligibility. This is the real "what is on the shelf and unclaimed" figure the
+  // compose step and the server creation gate apply - not the recon RECEIVED bucket, which never saw
+  // inventory that arrived off-PO.
+  const availableByProduct = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const [key, row] of availabilityByCombo) {
+      map.set(key, row.availableQuantity);
+    }
+    return map;
+  }, [availabilityByCombo]);
 
   // #492: with no Classification step for this purpose, an item nobody ever classified has no
   // SITE/SHOP answer anywhere - it is silently not shop work. Counting them here lets the step say
@@ -812,8 +848,9 @@ export default function ImportWizard({
       selectedHardwareItems,
       allHardwareItems: parsed?.hardwareItems ?? [],
       selectedReconItems,
+      hardwareStatusByProduct,
     }).filter((r) => r.overOrdersProject);
-  }, [purpose, isReimport, reconciliationRows, selectedHardwareItems, parsed, selectedReconItems]);
+  }, [purpose, isReimport, reconciliationRows, selectedHardwareItems, parsed, selectedReconItems, hardwareStatusByProduct]);
 
   const advanceToNextStep = useCallback(() => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
@@ -1215,16 +1252,19 @@ export default function ImportWizard({
   const canProceedStep3 = useMemo(() => {
     if (!isReimport) return true;
     if (purpose === 'po') return selectedReconItems.size > 0;
-    if (purpose === 'assembly') {
-      return reconciliationRows.some((r) => r.status === 'RECEIVED' && r.quantity > 0);
-    }
-    if (purpose === 'shipping') {
+    // Assembly and shipping both pull existing stock, so both gate on real reservation-aware
+    // availability (on-hand - deficient - reserved) - the same number the compose step and the server
+    // creation gate apply. The recon RECEIVED bucket this used to read is derived from the PO chain
+    // and never saw inventory that arrived off-PO, so a project with received stock but no matching PO
+    // receipt was wrongly told nothing was available. Product-level here; the compose step does the
+    // exact per-opening netting.
+    if (purpose === 'assembly' || purpose === 'shipping') {
       return reconciliationRows.some(
-        (r) => (r.status === 'RECEIVED' || r.status === 'ASSEMBLED') && r.quantity > 0,
+        (r) => (availableByProduct.get(`${r.hardwareCategory}|${r.productCode}`) ?? 0) > 0,
       );
     }
     return true;
-  }, [purpose, isReimport, selectedReconItems, reconciliationRows]);
+  }, [purpose, isReimport, selectedReconItems, reconciliationRows, availableByProduct]);
 
   // #566: classification Next gate, lifted out of ClassificationStep. `classificationRows` is built
   // here, so the same rows the grid renders decide whether Next is live. Only the PO purpose reaches
@@ -1652,6 +1692,10 @@ export default function ImportWizard({
               selectedHardwareItems={selectedHardwareItems}
               allHardwareItems={hardwareItems}
               selectedReconItems={selectedReconItems}
+              hardwareStatusByProduct={hardwareStatusByProduct}
+              availableByProduct={availableByProduct}
+              availabilityLoading={availabilityLoading && availabilityData === undefined}
+              availabilityError={availabilityError !== undefined}
               onSelectionChange={setSelectedReconItems}
             />
           )}

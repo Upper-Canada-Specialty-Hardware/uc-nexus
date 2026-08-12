@@ -2,7 +2,7 @@ import { useMemo, useCallback, useEffect, useRef } from 'react';
 import { Alert, Box, Button, Chip, CircularProgress, Tooltip, Typography } from '@mui/material';
 import { AlertTriangle, Info } from 'lucide-react';
 import { DataGrid, type GridColDef, type GridRowSelectionModel } from '@mui/x-data-grid';
-import type { ImportPurpose, ReconciliationRow } from './types';
+import type { HardwareStatusRow, ImportPurpose, ReconciliationRow } from './types';
 import { buildProductReconRows, STATUS_PRIORITY } from './reconciliation';
 import type { ProductReconRow } from './reconciliation';
 import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
@@ -22,6 +22,17 @@ interface ReconciliationStepProps {
   selectedHardwareItems: ParsedHardwareItem[];
   allHardwareItems: ParsedHardwareItem[];
   selectedReconItems: Set<string>;
+  /** Project-wide lifecycle state per `${category}|${product}`, from the same query the admin
+   *  Hardware Status page reads. Drives the Lifecycle Breakdown chips. */
+  hardwareStatusByProduct: Map<string, HardwareStatusRow>;
+  /** Real reservation-aware availability per `${category}|${product}` (on-hand - deficient -
+   *  reserved), for assembly/shipping eligibility. Empty for the PO purpose. */
+  availableByProduct: Map<string, number>;
+  /** projectInventoryAvailability still loading (assembly/shipping), so an eligibility of zero is
+   *  "not known yet", not "nothing to pull". */
+  availabilityLoading: boolean;
+  /** projectInventoryAvailability read failed, so eligibility is unknown rather than zero. */
+  availabilityError: boolean;
   onSelectionChange: (selected: Set<string>) => void;
 }
 
@@ -30,25 +41,39 @@ interface ReconciliationStepProps {
 // ---- Helpers ----
 
 const STATUS_COLOR_MAP: Record<string, 'success' | 'warning' | 'error' | 'info' | 'default'> = {
+  // Dashboard-sourced states (what the chips normally show).
+  NOT_PURCHASED: 'default',
   PO_DRAFTED: 'info',
+  ON_ORDER: 'info',
+  IN_INVENTORY: 'success',
+  SENT_TO_SHOP: 'success',
+  STAGED: 'info',
+  SHIPPED_OUT: 'success',
+  // Legacy recon fallback states.
   ORDERED: 'info',
   RECEIVED: 'success',
   ASSEMBLING: 'warning',
   ASSEMBLED: 'success',
   SHIPPING_OUT: 'warning',
-  SHIPPED_OUT: 'success',
   NOT_COVERED: 'error',
   BY_OTHERS: 'default',
 };
 
 const STATUS_LABEL_MAP: Record<string, string> = {
+  // Dashboard-sourced states (mirror the admin Hardware Status column names).
+  NOT_PURCHASED: 'Not Purchased',
   PO_DRAFTED: 'PO Drafted',
+  ON_ORDER: 'On Order',
+  IN_INVENTORY: 'In Inventory',
+  SENT_TO_SHOP: 'Sent to Shop',
+  STAGED: 'Staged',
+  SHIPPED_OUT: 'Shipped Out',
+  // Legacy recon fallback states.
   ORDERED: 'Ordered',
   RECEIVED: 'In Inventory',
   ASSEMBLING: 'Pulled for Assembly',
   ASSEMBLED: 'Built onto Opening',
   SHIPPING_OUT: 'Pulled for Shipping',
-  SHIPPED_OUT: 'Shipped Out',
   NOT_COVERED: 'Gap Remaining',
   BY_OTHERS: 'By Others',
 };
@@ -74,6 +99,10 @@ export default function ReconciliationStep({
   selectedHardwareItems,
   allHardwareItems,
   selectedReconItems,
+  hardwareStatusByProduct,
+  availableByProduct,
+  availabilityLoading,
+  availabilityError,
   onSelectionChange,
 }: ReconciliationStepProps) {
   const hasAutoSelected = useRef(false);
@@ -86,8 +115,18 @@ export default function ReconciliationStep({
         selectedHardwareItems,
         allHardwareItems,
         selectedReconItems,
+        hardwareStatusByProduct,
+        availableByProduct,
       }),
-    [purpose, reconciliationRows, selectedHardwareItems, allHardwareItems, selectedReconItems],
+    [
+      purpose,
+      reconciliationRows,
+      selectedHardwareItems,
+      allHardwareItems,
+      selectedReconItems,
+      hardwareStatusByProduct,
+      availableByProduct,
+    ],
   );
 
   // #483/#567: the products this selection pushes past the project total. Named in the inline
@@ -242,13 +281,13 @@ export default function ReconciliationStep({
     }
 
     cols.push({
-      field: 'statusBreakdown',
+      field: 'lifecycleBreakdown',
       headerName: 'Lifecycle Breakdown',
       flex: 2.2,
       sortable: false,
       renderCell: (params) => {
-        const breakdown = params.value as Map<string, number>;
         const row = params.row as ProductReconRow;
+        const breakdown = row.lifecycleBreakdown;
         return (
           <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center', py: 0.5 }}>
             {Array.from(breakdown.entries())
@@ -371,18 +410,32 @@ export default function ReconciliationStep({
           )}
 
           {purpose === 'assembly' && (
-            <Alert severity={hasEligibleItems ? 'info' : 'error'} sx={{ mb: 2 }}>
-              {hasEligibleItems
-                ? 'Items with In Inventory status are available for shop assembly. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
-                : 'No items have In Inventory status. There is nothing available to assemble.'}
+            <Alert
+              severity={availabilityError || (!availabilityLoading && !hasEligibleItems) ? 'error' : 'info'}
+              sx={{ mb: 2 }}
+            >
+              {availabilityError
+                ? "Couldn't read this project's available inventory, so eligibility is unknown. Go back and retry."
+                : availabilityLoading
+                  ? 'Checking what is available in the warehouse…'
+                  : hasEligibleItems
+                    ? 'Items available in the warehouse can be pulled for shop assembly. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
+                    : 'Nothing is available in the warehouse to assemble for this project yet.'}
             </Alert>
           )}
 
           {purpose === 'shipping' && (
-            <Alert severity={hasEligibleItems ? 'info' : 'error'} sx={{ mb: 2 }}>
-              {hasEligibleItems
-                ? 'Items that are In Inventory or Built onto Opening can be included in shipping pull requests. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
-                : 'No items are in a shippable state. There is nothing available to ship.'}
+            <Alert
+              severity={availabilityError || (!availabilityLoading && !hasEligibleItems) ? 'error' : 'info'}
+              sx={{ mb: 2 }}
+            >
+              {availabilityError
+                ? "Couldn't read this project's available inventory, so eligibility is unknown. Go back and retry."
+                : availabilityLoading
+                  ? 'Checking what is available in the warehouse…'
+                  : hasEligibleItems
+                    ? 'Items available in the warehouse can be included in shipping pull requests. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
+                    : 'Nothing is available in the warehouse to ship for this project yet.'}
             </Alert>
           )}
 

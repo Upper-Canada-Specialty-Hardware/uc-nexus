@@ -1,5 +1,5 @@
 import { buildProductReconRows } from '../reconciliation';
-import type { ReconciliationRow } from '../types';
+import type { HardwareStatusRow, ReconciliationRow } from '../types';
 import type { ParsedHardwareItem } from '../../../types/hardwareSchedule';
 
 // #483: over-commit used to be measured against the demand of the SELECTED openings. It is measured
@@ -39,11 +39,32 @@ function recon(openingNumber: string, status: string, quantity: number): Reconci
 
 const openingKey = (n: string) => `${n}|LCK-200|Locks`;
 
+// The dashboard row (`hardwareStatusByProduct`) for the single product these tests use. Every field
+// defaults to 0 so a test only states the numbers it cares about.
+function status(overrides: Partial<HardwareStatusRow>): Map<string, HardwareStatusRow> {
+  const row: HardwareStatusRow = {
+    hardwareCategory: 'Locks',
+    productCode: 'LCK-200',
+    requiredQuantity: 0,
+    notPurchased: 0,
+    poDrafted: 0,
+    onOrder: 0,
+    receivedQuantity: 0,
+    onHand: 0,
+    sentToShop: 0,
+    stagedForShipping: 0,
+    shippedOut: 0,
+    ...overrides,
+  };
+  return new Map([['Locks|LCK-200', row]]);
+}
+
 function build(args: {
   all: ParsedHardwareItem[];
   selected: ParsedHardwareItem[];
   rows: ReconciliationRow[];
   selectedKeys: string[];
+  status?: Map<string, HardwareStatusRow>;
 }) {
   return buildProductReconRows({
     purpose: 'po',
@@ -51,6 +72,7 @@ function build(args: {
     selectedHardwareItems: args.selected,
     allHardwareItems: args.all,
     selectedReconItems: new Set(args.selectedKeys),
+    hardwareStatusByProduct: args.status,
   });
 }
 
@@ -143,4 +165,129 @@ it('rolls up project totals ordered and received', () => {
   expect(row.projectTotalReceived).toBeLessThanOrEqual(row.projectTotalOrdered);
   // The block counts drafts too - a draft becomes an order.
   expect(row.existingCommitted).toBe(8);
+});
+
+// The bug that motivated dashboard-sourcing: reconcile bucketed a whole PO line as ORDERED even when
+// most of it had been received. The dashboard splits ordered-vs-received, so the chips now do too.
+it('renders the lifecycle chips from the dashboard row, not the recon PO chain', () => {
+  const all = [hi({ opening_number: '101', item_quantity: 56 })];
+
+  const [row] = build({
+    all,
+    selected: [],
+    // Recon still sees it as one big ORDERED bucket; the dashboard knows 50 arrived.
+    rows: [recon('101', 'ORDERED', 56)],
+    selectedKeys: [],
+    status: status({ requiredQuantity: 56, onOrder: 6, receivedQuantity: 50, onHand: 50 }),
+  });
+
+  // The chips are the real split: 6 still on order, 50 on the shelf. No 56-wide ORDERED chip.
+  expect(row.lifecycleBreakdown.get('ON_ORDER')).toBe(6);
+  expect(row.lifecycleBreakdown.get('IN_INVENTORY')).toBe(50);
+  expect(row.lifecycleBreakdown.has('ORDERED')).toBe(false);
+  expect(row.lifecycleBreakdown.has('RECEIVED')).toBe(false);
+
+  // The project-total columns and the over-order block read from the same dashboard row.
+  expect(row.projectTotalOrdered).toBe(56); // onOrder + received
+  expect(row.projectTotalReceived).toBe(50);
+  expect(row.existingCommitted).toBe(56); // poDrafted + onOrder + received
+});
+
+// receivedQuantity is not its own chip: it overlaps onHand/sentToShop/staged/shipped, which is where
+// those units actually are now. Showing it would double-count.
+it('spreads received units across where-they-are-now chips and omits a Received chip', () => {
+  const all = [hi({ opening_number: '101', item_quantity: 10 })];
+
+  const [row] = build({
+    all,
+    selected: [],
+    rows: [recon('101', 'ORDERED', 10)],
+    selectedKeys: [],
+    status: status({
+      requiredQuantity: 10,
+      receivedQuantity: 10,
+      onHand: 4,
+      sentToShop: 3,
+      stagedForShipping: 1,
+      shippedOut: 2,
+    }),
+  });
+
+  expect(row.lifecycleBreakdown.get('IN_INVENTORY')).toBe(4);
+  expect(row.lifecycleBreakdown.get('SENT_TO_SHOP')).toBe(3);
+  expect(row.lifecycleBreakdown.get('STAGED')).toBe(1);
+  expect(row.lifecycleBreakdown.get('SHIPPED_OUT')).toBe(2);
+  expect(row.lifecycleBreakdown.has('RECEIVED')).toBe(false);
+  expect(row.projectTotalReceived).toBe(10);
+});
+
+// Over-order protection is what the PO buyer must keep: it now measures committed project-wide from
+// the dashboard rather than from the selected openings' PO chain.
+it('measures over-commit from the dashboard committed total', () => {
+  // Project needs 40; the dashboard says all 40 are already on a PO. Selecting 10 more over-orders.
+  const all = [hi({ opening_number: '101', item_quantity: 40 })];
+  const selected = [hi({ opening_number: '101', item_quantity: 10 })];
+
+  const [row] = build({
+    all,
+    selected,
+    rows: [recon('101', 'ORDERED', 40)],
+    selectedKeys: [openingKey('101')],
+    status: status({ requiredQuantity: 40, onOrder: 40 }),
+  });
+
+  expect(row.existingCommitted).toBe(40);
+  expect(row.overCommitAmount).toBe(10);
+  expect(row.overOrdersProject).toBe(true);
+});
+
+// A By Others product is excluded from purchasing, so it keeps its single chip and never borrows the
+// dashboard lifecycle - even if a dashboard row exists for it.
+it('keeps By Others products on their own chip', () => {
+  const all = [hi({ opening_number: '101', item_quantity: 5 })];
+
+  const [row] = build({
+    all,
+    selected: [],
+    rows: [recon('101', 'BY_OTHERS', 5)],
+    selectedKeys: [],
+    status: status({ requiredQuantity: 5, onOrder: 5 }),
+  });
+
+  expect(row.lifecycleBreakdown.get('BY_OTHERS')).toBe(5);
+  expect(row.lifecycleBreakdown.has('ON_ORDER')).toBe(false);
+  expect(row.existingCommitted).toBe(0);
+});
+
+// The shipping bug: qtyAvailable gated the request on the recon RECEIVED bucket, which is blind to
+// inventory that arrived off-PO. It now reads real reservation-aware availability instead.
+it('sources shipping/assembly qtyAvailable from real availability, not the recon buckets', () => {
+  const all = [hi({ opening_number: '101', item_quantity: 10 })];
+
+  const [row] = buildProductReconRows({
+    purpose: 'shipping',
+    // Recon sees the product only as on-order; its RECEIVED bucket is empty.
+    reconciliationRows: [recon('101', 'ORDERED', 10)],
+    selectedHardwareItems: [],
+    allHardwareItems: all,
+    selectedReconItems: new Set(),
+    availableByProduct: new Map([['Locks|LCK-200', 7]]),
+  });
+
+  // 7 units are physically on the shelf and unclaimed, so that is what is shippable.
+  expect(row.qtyAvailable).toBe(7);
+});
+
+it('falls back to the recon received bucket when no availability map is given', () => {
+  const all = [hi({ opening_number: '101', item_quantity: 10 })];
+
+  const [row] = buildProductReconRows({
+    purpose: 'shipping',
+    reconciliationRows: [recon('101', 'RECEIVED', 4)],
+    selectedHardwareItems: [],
+    allHardwareItems: all,
+    selectedReconItems: new Set(),
+  });
+
+  expect(row.qtyAvailable).toBe(4);
 });

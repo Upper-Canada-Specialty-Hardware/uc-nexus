@@ -43,6 +43,26 @@ export interface ReconciliationRow {
   status: string;
 }
 
+// One (category, product) row of `hardwareStatusByProduct`, project-wide. The reconciliation step
+// reads it so its Lifecycle Breakdown is the SAME computation the admin Hardware Status page renders
+// (see backend get_hardware_status_by_product) - the two can never disagree because there is one
+// source. onHand is current inventory with completed pulls already deducted; receivedQuantity is the
+// cumulative PO receipt count, which is not shown as its own chip since it overlaps onHand +
+// sentToShop + stagedForShipping + shippedOut.
+export interface HardwareStatusRow {
+  hardwareCategory: string;
+  productCode: string;
+  requiredQuantity: number;
+  notPurchased: number;
+  poDrafted: number;
+  onOrder: number;
+  receivedQuantity: number;
+  onHand: number;
+  sentToShop: number;
+  stagedForShipping: number;
+  shippedOut: number;
+}
+
 export function classificationKey(hi: { hardware_category: string; product_code: string; unit_cost: number | null }) {
   return `${hi.hardware_category}|${hi.product_code}|${hi.unit_cost ?? 0}`;
 }
