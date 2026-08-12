@@ -102,7 +102,12 @@ export default function ReceiveDecisionsPage() {
     try {
       await decide({ variables: { input: { decisionId: decision.id, decision: choice } } });
       if (choice === 'KEEP_IN_INVENTORY') {
-        showToast('Recorded - the shipment stays in the project inventory.', 'success');
+        showToast(
+          decision.receiveRecordId
+            ? 'Recorded - the shipment stays in the project inventory.'
+            : 'Recorded - the warehouse manager can now book this into the project inventory.',
+          'success',
+        );
         await refetch();
         return;
       }
@@ -142,8 +147,9 @@ export default function ReceiveDecisionsPage() {
     <Box>
       <Typography variant="h5">Shipment Decisions</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2.5 }}>
-        Hardware you ordered has arrived and is in the project's inventory. Decide whether each
-        shipment stays there or ships out to site now.
+        Hardware you ordered has been counted at the warehouse and is waiting on your call: keep it in
+        the project's inventory, or ship it straight out to site. A receive can't be booked into
+        inventory until you choose.
       </Typography>
 
       {loading && decisions.length === 0 && (

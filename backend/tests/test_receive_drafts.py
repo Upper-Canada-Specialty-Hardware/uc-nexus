@@ -430,12 +430,35 @@ def committed(_migrate_database):
     def _build(*, with_project=True, ordered=10, quantity=4):
         from sqlalchemy import select
 
+        from app.models.enums import ReceiveDecisionChoice
+        from app.models.receive_decision import ReceiveDecision as ReceiveDecisionModel
         from app.models.stock_item import StockItem
 
         with SessionLocal() as session:
             project = _make_project(session) if with_project else None
             po, li = _make_po(session, project.id if project else None, ordered=ordered)
             draft = _draft(session, po, li, quantity)
+            if with_project:
+                # Decision-first gate: a project receive can only be approved once its keep-or-ship
+                # question is answered. These tests exercise the approval mechanics, not the gate, so
+                # the fixture answers KEEP - the state a real receive reaches before a manager books
+                # it. The gate itself is pinned in test_receive_decisions.py.
+                dec = session.scalars(
+                    select(ReceiveDecisionModel).where(ReceiveDecisionModel.receive_draft_id == draft.id)
+                ).first()
+                if dec is not None:
+                    warehouse_repository.decide_receive_decision(
+                        session,
+                        dec.id,
+                        ReceiveDecisionChoice.KEEP_IN_INVENTORY,
+                        AUTHOR,
+                        AUTHOR_NAME,
+                        # Called with no args on the untargeted-decision arm (this PO has no
+                        # created_by, so the decision has no target). actor_is_admin bypasses the
+                        # is-target check regardless, so it just needs to be callable.
+                        lambda: None,
+                        actor_is_admin=True,
+                    )
             fixture = _CommittedFixture(
                 project.id if project else None,
                 po.id,

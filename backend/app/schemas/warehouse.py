@@ -252,43 +252,63 @@ def _load_draft_type(draft_id: uuid.UUID) -> ReceiveDraft:
 
 
 def _may_book_draft(decision, user_id: str, *, is_manager: bool) -> bool:
-    """Whether this caller may book the draft the decision belongs to (#499).
+    """Whether this caller may book (approve) the draft the decision belongs to.
 
-    A Warehouse Manager or an admin, as before. Plus exactly one more: the PO creator who answered
-    SHIP_OUT on this very draft. Their answer means the hardware is not staying, so making them wait
-    on a queue whose purpose is to decide where in the warehouse it goes is a step that no longer
-    means anything. KEEP does not qualify - that answer says it IS staying, which is the case the
-    manager's approval is for.
+    Decision-first: the PO creator's keep-or-ship answer gates the booking, and the Warehouse
+    Manager no longer books past it.
+      - No decision at all (a stock PO, which has no project whose inventory to keep it in): there
+        is no keep-or-ship question, so the manager's approval is the whole gate, as before.
+      - Undecided: nobody books yet - the manager included. The creator has to answer first, which
+        is the whole point of the gate: a receive is not routed into inventory before its owner has
+        said that is where it belongs.
+      - KEEP_IN_INVENTORY: it is staying, so the manager's approval is exactly the step that applies.
+      - SHIP_OUT: it is leaving again, so only the person who chose that books it (from Shipment
+        Decisions). The manager does not route a ship-out into inventory.
 
     Pure so it can be pinned directly. The decision is read from the database by the caller below,
     never from anything the client sends.
     """
     from app.models.enums import ReceiveDecisionChoice
 
-    if is_manager:
-        return True
-    return (
-        decision is not None
-        and decision.decision == ReceiveDecisionChoice.SHIP_OUT
-        and decision.decided_by_user_id == user_id
-    )
+    if decision is None:
+        return is_manager
+    if decision.decision is None:
+        return False
+    if decision.decision == ReceiveDecisionChoice.KEEP_IN_INVENTORY:
+        return is_manager
+    # SHIP_OUT: only the creator who chose it, whether or not they are a manager.
+    return decision.decided_by_user_id == user_id
 
 
 def _authorize_draft_approval(info, user_id: str, draft_id: uuid.UUID) -> None:
-    """Refuse a draft approval this caller is not entitled to (#499)."""
+    """Refuse a draft approval this caller is not entitled to.
+
+    The manager no longer short-circuits: booking a project receive is gated on the PO creator's
+    keep-or-ship answer, so the decision is loaded and checked for everyone. A stock PO has no
+    decision and falls back to the manager-only gate."""
     from sqlalchemy import select
 
+    from app.models.enums import ReceiveDecisionChoice
     from app.models.receive_decision import ReceiveDecision as ReceiveDecisionModel
 
     is_manager = bool(set(caller_roles(info.context)) & {ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE})
-    if is_manager:
-        return
     with SessionLocal() as session:
         decision = session.scalars(
             select(ReceiveDecisionModel).where(ReceiveDecisionModel.receive_draft_id == draft_id)
         ).first()
-    if not _may_book_draft(decision, user_id, is_manager=False):
-        raise ForbiddenError("Only a Warehouse Manager can approve this receive.")
+    if _may_book_draft(decision, user_id, is_manager=is_manager):
+        return
+    # Name the actual blocker rather than the generic role message, so the approvals queue is not a
+    # dead end the manager cannot explain.
+    if decision is not None and decision.decision is None:
+        raise ForbiddenError(
+            "This receive is waiting on the PO creator's decision to keep it in inventory or ship it out."
+        )
+    if decision is not None and decision.decision == ReceiveDecisionChoice.SHIP_OUT:
+        raise ForbiddenError(
+            "The PO creator chose to ship this out - they book it from Shipment Decisions, not the approvals queue."
+        )
+    raise ForbiddenError("Only a Warehouse Manager can approve this receive.")
 
 
 def _load_decision(session, decision_id: uuid.UUID):

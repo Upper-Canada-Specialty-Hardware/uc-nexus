@@ -320,6 +320,13 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
 
   if (!draft) return null;
 
+  // Decision-first gate (mirrors the backend): a project receive is only the manager's to approve
+  // into inventory once the PO creator has chosen KEEP. Undecided or SHIP_OUT is not booked here, so
+  // the Approve button is disabled with the reason spelled out below.
+  const decisionUndecided = draft.decisionPending;
+  const decisionShipOut = draft.keepOrShipDecision === 'SHIP_OUT';
+  const approvalBlockedByDecision = decisionUndecided || decisionShipOut;
+
   const actions = succeeded ? (
     <>
       {!queued && <Button onClick={() => navigate('/app/warehouse/put-away')}>Put Away Items</Button>}
@@ -338,7 +345,9 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
           drain into the same eConnect rejection. */}
       <Button
         variant="contained"
-        disabled={totalUnits === 0 || hasQuantityErrors || quarantined || submitting}
+        disabled={
+          totalUnits === 0 || hasQuantityErrors || quarantined || submitting || approvalBlockedByDecision
+        }
         onClick={() => setConfirmOpen(true)}
       >
         {submitting ? <CircularProgress size={24} /> : 'Approve & Post to GP'}
@@ -384,6 +393,14 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
             </Typography>
           )}
         </Box>
+
+        {approvalBlockedByDecision && (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            {decisionShipOut
+              ? 'The PO creator chose to ship this out, so it is booked from Shipment Decisions rather than approved into inventory here. You can still reject the count if it is wrong.'
+              : 'This receive is waiting on the PO creator to choose keep-in-inventory or ship-out. It can be approved into inventory once they choose to keep it.'}
+          </Alert>
+        )}
 
         {queued && (
           <Alert severity="warning" sx={{ mb: 2 }}>
