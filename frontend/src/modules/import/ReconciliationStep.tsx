@@ -220,23 +220,31 @@ export default function ReconciliationStep({
       },
       // Quantities are figures to compare down a column, not status - they read as tabular numerals
       // rather than as tags, which the theme reserves for real lifecycle state.
-      {
-        field: 'quantityNeeded',
-        headerName: 'Qty Needed (Selected Openings)',
-        flex: 0.9,
-        type: 'number',
-        cellClassName: 'figure-cell',
-      },
+      //
+      // Reconciliation is scoped to the unique product code, not the openings that were ticked: the
+      // hardware lands in fungible project inventory, so opening identity is not a thing at this step
+      // (#483). For a PO that means "Qty Needed" is the product's project-wide schedule total, which is
+      // the number the buyer reasons against. Assembly/shipping keep the selected pull scope, since
+      // there the figure is what this request is pulling.
+      purpose === 'po'
+        ? {
+            field: 'quantityRequiredByProject',
+            headerName: 'Qty Needed',
+            description: "Total quantity this product needs across the project's whole hardware schedule.",
+            flex: 0.9,
+            type: 'number',
+            cellClassName: 'figure-cell',
+          }
+        : {
+            field: 'quantityNeeded',
+            headerName: 'Qty Needed',
+            flex: 0.9,
+            type: 'number',
+            cellClassName: 'figure-cell',
+          },
     ];
 
     if (purpose === 'po') {
-      cols.push({
-        field: 'quantityRequiredByProject',
-        headerName: 'Qty Needed by Project',
-        flex: 0.9,
-        type: 'number',
-        cellClassName: 'figure-cell',
-      });
       // #483: the two numbers the buyer is actually reasoning about. Both are project totals, not
       // per-opening: the hardware lands in fungible project inventory, so what the selected openings
       // happen to be is irrelevant to whether the project has bought enough.
