@@ -13,6 +13,15 @@ export const GET_PO_STATISTICS = gql`
   }
 `;
 
+// Presigned S3 URL for a single PO document (packing slip, vendor ack, etc.), minted on demand so the
+// link is never stale. Auth-gated server-side (#415). Used to view a receive's packing slip without
+// carrying the whole document collection on every draft row.
+export const GET_PO_DOCUMENT_DOWNLOAD_URL = gql`
+  query PoDocumentDownloadUrl($documentId: ID!) {
+    poDocumentDownloadUrl(documentId: $documentId)
+  }
+`;
+
 export const GET_PURCHASE_ORDERS = gql`
   query GetPurchaseOrders($projectId: ID, $status: POStatus) {
     purchaseOrders(projectId: $projectId, status: $status) {

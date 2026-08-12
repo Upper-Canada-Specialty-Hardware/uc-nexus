@@ -26,6 +26,8 @@ import {
   UPDATE_RECEIVE_DRAFT,
   REJECT_RECEIVE_DRAFT,
 } from '../../graphql/warehouse';
+import { GET_PO_DOCUMENT_DOWNLOAD_URL } from '../../graphql/po';
+import { FileText } from 'lucide-react';
 import { RECEIVE_APPROVE_REFETCH_QUERIES, RECEIVE_DRAFT_REFETCH_QUERIES } from '../../graphql/refetch';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import GpErrorAlert from '../../components/GpErrorAlert';
@@ -86,6 +88,7 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
   const [submitting, setSubmitting] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [gpError, setGpError] = useState<GpError | null>(null);
+  const [slipLoading, setSlipLoading] = useState(false);
 
   // Outcome state, mirroring what ReceiveModal used to show at this moment.
   const [posted, setPosted] = useState<PostedReceipt | null>(null);
@@ -294,6 +297,27 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
     }
   }, [draft, rejectReason, rejectDraft, showToast, client, onClose]);
 
+  // #504: view the packing slip this count was made against. The presigned URL is minted on click
+  // rather than carried on every draft row, so the queue stays a single cheap query.
+  const handleViewPackingSlip = useCallback(async () => {
+    if (!draft?.packingSlipDocumentId) return;
+    setSlipLoading(true);
+    try {
+      const res = await client.query<{ poDocumentDownloadUrl: string }>({
+        query: GET_PO_DOCUMENT_DOWNLOAD_URL,
+        variables: { documentId: draft.packingSlipDocumentId },
+        fetchPolicy: 'network-only',
+      });
+      const url = res.data?.poDocumentDownloadUrl;
+      if (url) window.open(url, '_blank', 'noopener,noreferrer');
+      else showToast('Could not open the packing slip.', 'error');
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Could not open the packing slip.', 'error');
+    } finally {
+      setSlipLoading(false);
+    }
+  }, [draft, client, showToast]);
+
   if (!draft) return null;
 
   const actions = succeeded ? (
@@ -332,10 +356,34 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
         maxWidth="lg"
         disableEscapeKeyDown={isDirty && !succeeded}
       >
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
           Counted by <strong>{draft.createdBy}</strong> on {parseServerDate(draft.createdAt).toLocaleString()}
           {draft.totalQuantity > 0 && ` · ${draft.totalQuantity} units submitted`}
         </Typography>
+
+        {/* #504: the packing slip behind the count, so the reviewer can check the paper against the
+            numbers without leaving the modal. */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, mb: 2 }}>
+          <Box component="span" sx={{ display: 'inline-flex', color: 'text.secondary', flexShrink: 0 }}>
+            <FileText size={15} strokeWidth={1.75} />
+          </Box>
+          {draft.packingSlipDocumentId ? (
+            <Button
+              size="small"
+              variant="text"
+              onClick={handleViewPackingSlip}
+              disabled={slipLoading}
+              startIcon={slipLoading ? <CircularProgress size={13} /> : undefined}
+              sx={{ minWidth: 0, px: 0.5 }}
+            >
+              View packing slip
+            </Button>
+          ) : (
+            <Typography variant="caption" color="text.secondary">
+              No packing slip (counted before it was required)
+            </Typography>
+          )}
+        </Box>
 
         {queued && (
           <Alert severity="warning" sx={{ mb: 2 }}>

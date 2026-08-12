@@ -123,6 +123,7 @@ export default function PutAwayTab() {
   const { showToast } = useToast();
   const [projectFilter, setProjectFilter] = useState<string>('');
   const [warehouseFilter, setWarehouseFilter] = useState<string>('');
+  const [poFilter, setPoFilter] = useState<string>('');
   const [locationInputs, setLocationInputs] = useState<Record<string, LocationInput>>({});
   const [assigningId, setAssigningId] = useState<string | null>(null);
   // Per-row "put N of these somewhere else" entry. Empty means the whole row goes to one bin.
@@ -176,14 +177,33 @@ export default function PutAwayTab() {
     return m;
   }, [warehouses]);
   const items = useMemo(() => unlocatedData?.unlocatedInventory ?? [], [unlocatedData]);
-  const grouped = useMemo(() => groupByCategory(items), [items]);
+  // Distinct PO numbers present in the queue, so the filter offers only POs that actually have
+  // something to put away. Rows with no PO (off-PO stock that landed in project inventory) are grouped
+  // under a sentinel so they stay reachable.
+  const NO_PO = '__no_po__';
+  const poOptions = useMemo(() => {
+    const set = new Set<string>();
+    let hasNoPo = false;
+    for (const i of items) {
+      if (i.poNumber) set.add(i.poNumber);
+      else hasNoPo = true;
+    }
+    const sorted = Array.from(set).sort((a, b) => a.localeCompare(b));
+    return { sorted, hasNoPo };
+  }, [items]);
+  const filteredItems = useMemo(() => {
+    if (!poFilter) return items;
+    if (poFilter === NO_PO) return items.filter((i) => !i.poNumber);
+    return items.filter((i) => i.poNumber === poFilter);
+  }, [items, poFilter, NO_PO]);
+  const grouped = useMemo(() => groupByCategory(filteredItems), [filteredItems]);
   const stockRows = useMemo(() => stockData?.stockItems ?? [], [stockData]);
   // Per-row warehouse is redundant noise once the list is filtered to one building, or when only one
   // warehouse holds unlocated stock. Show it only when the queue actually spans warehouses.
   const showWarehouse = useMemo(() => {
     if (warehouseFilter) return false;
-    return new Set(items.map((i) => i.inventoryLocation.warehouseId).filter(Boolean)).size > 1;
-  }, [warehouseFilter, items]);
+    return new Set(filteredItems.map((i) => i.inventoryLocation.warehouseId).filter(Boolean)).size > 1;
+  }, [warehouseFilter, filteredItems]);
   const showStockWarehouse = useMemo(() => {
     if (warehouseFilter) return false;
     return new Set(stockRows.map((s) => s.warehouseId).filter(Boolean)).size > 1;
@@ -369,11 +389,32 @@ export default function PutAwayTab() {
             </Select>
           </FormControl>
         )}
+        {(poOptions.sorted.length > 0 || poOptions.hasNoPo) && (
+          <FormControl size="small" sx={{ minWidth: 200 }}>
+            <InputLabel id="putaway-po-filter-label">Filter by PO</InputLabel>
+            <Select
+              labelId="putaway-po-filter-label"
+              value={poFilter}
+              label="Filter by PO"
+              onChange={(e) => setPoFilter(e.target.value)}
+            >
+              <MenuItem value="">All POs</MenuItem>
+              {poOptions.sorted.map((po) => (
+                <MenuItem key={po} value={po} sx={monoSx}>
+                  {po}
+                </MenuItem>
+              ))}
+              {poOptions.hasNoPo && <MenuItem value={NO_PO}>(No PO)</MenuItem>}
+            </Select>
+          </FormControl>
+        )}
       </Box>
 
-      {items.length === 0 && (
-        <Alert severity="success" sx={{ mt: 2 }}>
-          All project inventory has been assigned locations.
+      {filteredItems.length === 0 && (
+        <Alert severity={items.length === 0 ? 'success' : 'info'} sx={{ mt: 2 }}>
+          {items.length === 0
+            ? 'All project inventory has been assigned locations.'
+            : 'No unlocated inventory matches the current filters.'}
         </Alert>
       )}
 
@@ -531,8 +572,9 @@ export default function PutAwayTab() {
       </StaggerList>
 
       {/* Stock pool: project-less, so it honors only the warehouse filter and is hidden under a
-          project filter. assignStockItemLocation gives each unlocated row its aisle/row/bay. */}
-      {!projectFilter && stockRows.length > 0 && (
+          project or PO filter (stock carries neither). assignStockItemLocation gives each unlocated
+          row its aisle/row/bay. */}
+      {!projectFilter && !poFilter && stockRows.length > 0 && (
         <Box sx={{ mt: 4 }}>
           <Typography variant="h6" sx={{ mb: 0.5 }}>
             Stock Pool

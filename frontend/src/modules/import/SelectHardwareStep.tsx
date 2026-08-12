@@ -33,6 +33,11 @@ interface SelectHardwareStepProps {
 
 const NO_MANUFACTURER = '(No Manufacturer)';
 
+// Currency with thousands separators - extended cost (unit x qty) runs into six figures, where
+// `$111690.00` is hard to read at a glance.
+const formatUsd = (value: number) =>
+  `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
 // ---- Main Component ----
 
 export default function SelectHardwareStep({
@@ -121,9 +126,20 @@ export default function SelectHardwareStep({
         headerName: 'Unit Cost',
         width: 110,
         type: 'number',
-        valueFormatter: (value: number) => `$${value.toFixed(2)}`,
+        valueFormatter: (value: number) => formatUsd(value),
       },
       { field: 'totalQuantity', headerName: 'Total Qty', width: 100, type: 'number' },
+      {
+        field: 'extendedCost',
+        headerName: 'Ext. Cost',
+        description: 'Unit cost × total quantity',
+        width: 130,
+        type: 'number',
+        // Derived, not stored on the row: unit cost is a product property and total quantity the
+        // schedule roll-up, so the product of the two is computed here rather than duplicated upstream.
+        valueGetter: (_value, row: HardwareProductRow) => row.unitCost * row.totalQuantity,
+        valueFormatter: (value: number) => formatUsd(value),
+      },
       { field: 'openingCount', headerName: 'Openings', width: 100, type: 'number' },
     ],
     [],
