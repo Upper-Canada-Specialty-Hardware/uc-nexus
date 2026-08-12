@@ -581,6 +581,18 @@ export default function ImportWizard({
     return map;
   }, [availabilityData]);
 
+  // Just the reservation-aware available number per product, for the reconciliation step's
+  // assembly/shipping eligibility. This is the real "what is on the shelf and unclaimed" figure the
+  // compose step and the server creation gate apply - not the recon RECEIVED bucket, which never saw
+  // inventory that arrived off-PO.
+  const availableByProduct = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const [key, row] of availabilityByCombo) {
+      map.set(key, row.availableQuantity);
+    }
+    return map;
+  }, [availabilityByCombo]);
+
   // #492: with no Classification step for this purpose, an item nobody ever classified has no
   // SITE/SHOP answer anywhere - it is silently not shop work. Counting them here lets the step say
   // so rather than leaving the user to wonder why an opening they picked produced nothing.
@@ -1240,16 +1252,19 @@ export default function ImportWizard({
   const canProceedStep3 = useMemo(() => {
     if (!isReimport) return true;
     if (purpose === 'po') return selectedReconItems.size > 0;
-    if (purpose === 'assembly') {
-      return reconciliationRows.some((r) => r.status === 'RECEIVED' && r.quantity > 0);
-    }
-    if (purpose === 'shipping') {
+    // Assembly and shipping both pull existing stock, so both gate on real reservation-aware
+    // availability (on-hand - deficient - reserved) - the same number the compose step and the server
+    // creation gate apply. The recon RECEIVED bucket this used to read is derived from the PO chain
+    // and never saw inventory that arrived off-PO, so a project with received stock but no matching PO
+    // receipt was wrongly told nothing was available. Product-level here; the compose step does the
+    // exact per-opening netting.
+    if (purpose === 'assembly' || purpose === 'shipping') {
       return reconciliationRows.some(
-        (r) => (r.status === 'RECEIVED' || r.status === 'ASSEMBLED') && r.quantity > 0,
+        (r) => (availableByProduct.get(`${r.hardwareCategory}|${r.productCode}`) ?? 0) > 0,
       );
     }
     return true;
-  }, [purpose, isReimport, selectedReconItems, reconciliationRows]);
+  }, [purpose, isReimport, selectedReconItems, reconciliationRows, availableByProduct]);
 
   // #566: classification Next gate, lifted out of ClassificationStep. `classificationRows` is built
   // here, so the same rows the grid renders decide whether Next is live. Only the PO purpose reaches
@@ -1678,6 +1693,9 @@ export default function ImportWizard({
               allHardwareItems={hardwareItems}
               selectedReconItems={selectedReconItems}
               hardwareStatusByProduct={hardwareStatusByProduct}
+              availableByProduct={availableByProduct}
+              availabilityLoading={availabilityLoading && availabilityData === undefined}
+              availabilityError={availabilityError !== undefined}
               onSelectionChange={setSelectedReconItems}
             />
           )}

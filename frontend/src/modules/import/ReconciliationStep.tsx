@@ -25,6 +25,14 @@ interface ReconciliationStepProps {
   /** Project-wide lifecycle state per `${category}|${product}`, from the same query the admin
    *  Hardware Status page reads. Drives the Lifecycle Breakdown chips. */
   hardwareStatusByProduct: Map<string, HardwareStatusRow>;
+  /** Real reservation-aware availability per `${category}|${product}` (on-hand - deficient -
+   *  reserved), for assembly/shipping eligibility. Empty for the PO purpose. */
+  availableByProduct: Map<string, number>;
+  /** projectInventoryAvailability still loading (assembly/shipping), so an eligibility of zero is
+   *  "not known yet", not "nothing to pull". */
+  availabilityLoading: boolean;
+  /** projectInventoryAvailability read failed, so eligibility is unknown rather than zero. */
+  availabilityError: boolean;
   onSelectionChange: (selected: Set<string>) => void;
 }
 
@@ -92,6 +100,9 @@ export default function ReconciliationStep({
   allHardwareItems,
   selectedReconItems,
   hardwareStatusByProduct,
+  availableByProduct,
+  availabilityLoading,
+  availabilityError,
   onSelectionChange,
 }: ReconciliationStepProps) {
   const hasAutoSelected = useRef(false);
@@ -105,6 +116,7 @@ export default function ReconciliationStep({
         allHardwareItems,
         selectedReconItems,
         hardwareStatusByProduct,
+        availableByProduct,
       }),
     [
       purpose,
@@ -113,6 +125,7 @@ export default function ReconciliationStep({
       allHardwareItems,
       selectedReconItems,
       hardwareStatusByProduct,
+      availableByProduct,
     ],
   );
 
@@ -397,18 +410,32 @@ export default function ReconciliationStep({
           )}
 
           {purpose === 'assembly' && (
-            <Alert severity={hasEligibleItems ? 'info' : 'error'} sx={{ mb: 2 }}>
-              {hasEligibleItems
-                ? 'Items with In Inventory status are available for shop assembly. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
-                : 'No items have In Inventory status. There is nothing available to assemble.'}
+            <Alert
+              severity={availabilityError || (!availabilityLoading && !hasEligibleItems) ? 'error' : 'info'}
+              sx={{ mb: 2 }}
+            >
+              {availabilityError
+                ? "Couldn't read this project's available inventory, so eligibility is unknown. Go back and retry."
+                : availabilityLoading
+                  ? 'Checking what is available in the warehouse…'
+                  : hasEligibleItems
+                    ? 'Items available in the warehouse can be pulled for shop assembly. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
+                    : 'Nothing is available in the warehouse to assemble for this project yet.'}
             </Alert>
           )}
 
           {purpose === 'shipping' && (
-            <Alert severity={hasEligibleItems ? 'info' : 'error'} sx={{ mb: 2 }}>
-              {hasEligibleItems
-                ? 'Items that are In Inventory or Built onto Opening can be included in shipping pull requests. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
-                : 'No items are in a shippable state. There is nothing available to ship.'}
+            <Alert
+              severity={availabilityError || (!availabilityLoading && !hasEligibleItems) ? 'error' : 'info'}
+              sx={{ mb: 2 }}
+            >
+              {availabilityError
+                ? "Couldn't read this project's available inventory, so eligibility is unknown. Go back and retry."
+                : availabilityLoading
+                  ? 'Checking what is available in the warehouse…'
+                  : hasEligibleItems
+                    ? 'Items available in the warehouse can be included in shipping pull requests. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
+                    : 'Nothing is available in the warehouse to ship for this project yet.'}
             </Alert>
           )}
 

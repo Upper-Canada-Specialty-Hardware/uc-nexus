@@ -134,6 +134,12 @@ export function buildProductReconRows(args: {
   // is not supplied (unit tests, or a render before the query resolves) the row falls back to the
   // recon PO-chain breakdown, which is exactly the pre-dashboard behaviour.
   hardwareStatusByProduct?: Map<string, HardwareStatusRow>;
+  // Real reservation-aware availability per `${hardware_category}|${product_code}` (on_hand -
+  // deficient - reserved), from projectInventoryAvailability - the same number the request creation
+  // gate applies. When supplied it drives qtyAvailable for the assembly/shipping eligibility, instead
+  // of the recon RECEIVED bucket, which is blind to inventory that arrived off-PO. Absent for the PO
+  // purpose (qtyAvailable is unused there) and in unit tests.
+  availableByProduct?: Map<string, number>;
 }): ProductReconRow[] {
   const {
     purpose,
@@ -142,6 +148,7 @@ export function buildProductReconRows(args: {
     allHardwareItems,
     selectedReconItems,
     hardwareStatusByProduct,
+    availableByProduct,
   } = args;
 
   const qtyNeededByProduct = new Map<string, number>();
@@ -197,8 +204,12 @@ export function buildProductReconRows(args: {
   for (const row of rows) {
     row.underlyingOpeningKeys = Array.from(openingKeysByProduct.get(row.id) ?? []);
     // qtyAvailable is the assembly/shipping "available to pull" number, a genuinely different
-    // question from the lifecycle chips - it stays on the recon PO-chain buckets untouched.
-    row.qtyAvailable = computeAvailableQty(purpose, row.statusBreakdown);
+    // question from the lifecycle chips. It reads real reservation-aware inventory when supplied -
+    // what is physically on the shelf and unclaimed - and only falls back to the recon RECEIVED
+    // bucket (loading, or the PO purpose where it is unused) when it is not.
+    row.qtyAvailable = availableByProduct
+      ? (availableByProduct.get(row.id) ?? 0)
+      : computeAvailableQty(purpose, row.statusBreakdown);
     row.selectedNewPOQty = row.underlyingOpeningKeys
       .filter((k) => selectedReconItems.has(k))
       .reduce((sum, k) => sum + (hsQtyByOpeningKey.get(k) ?? 0), 0);

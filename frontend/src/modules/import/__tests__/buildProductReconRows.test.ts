@@ -258,3 +258,36 @@ it('keeps By Others products on their own chip', () => {
   expect(row.lifecycleBreakdown.has('ON_ORDER')).toBe(false);
   expect(row.existingCommitted).toBe(0);
 });
+
+// The shipping bug: qtyAvailable gated the request on the recon RECEIVED bucket, which is blind to
+// inventory that arrived off-PO. It now reads real reservation-aware availability instead.
+it('sources shipping/assembly qtyAvailable from real availability, not the recon buckets', () => {
+  const all = [hi({ opening_number: '101', item_quantity: 10 })];
+
+  const [row] = buildProductReconRows({
+    purpose: 'shipping',
+    // Recon sees the product only as on-order; its RECEIVED bucket is empty.
+    reconciliationRows: [recon('101', 'ORDERED', 10)],
+    selectedHardwareItems: [],
+    allHardwareItems: all,
+    selectedReconItems: new Set(),
+    availableByProduct: new Map([['Locks|LCK-200', 7]]),
+  });
+
+  // 7 units are physically on the shelf and unclaimed, so that is what is shippable.
+  expect(row.qtyAvailable).toBe(7);
+});
+
+it('falls back to the recon received bucket when no availability map is given', () => {
+  const all = [hi({ opening_number: '101', item_quantity: 10 })];
+
+  const [row] = buildProductReconRows({
+    purpose: 'shipping',
+    reconciliationRows: [recon('101', 'RECEIVED', 4)],
+    selectedHardwareItems: [],
+    allHardwareItems: all,
+    selectedReconItems: new Set(),
+  });
+
+  expect(row.qtyAvailable).toBe(4);
+});
