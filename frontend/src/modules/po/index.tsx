@@ -25,6 +25,7 @@ import {
   Tooltip,
   Autocomplete,
   createFilterOptions,
+  Badge,
 } from '@mui/material';
 import {
   Plus,
@@ -32,6 +33,7 @@ import {
   ChevronsUpDown,
   ChevronsDownUp,
   Settings,
+  ClipboardCheck,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useQuery } from '@apollo/client/react';
@@ -901,6 +903,20 @@ function POListPage() {
           Purchase Orders
         </Typography>
         <RelayStatusChip connected={relayConnected} />
+        {/* Always here, so a buyer can review shipments awaiting their keep-or-ship call without
+            waiting for the nudge below. The badge counts the ones that are: since the manager can no
+            longer book a project receive until it is answered, an unanswered one is holding up a
+            delivery. */}
+        <Badge badgeContent={pendingDecisionCount} color="warning" overlap="rectangular">
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<ClipboardCheck {...ICON} />}
+            onClick={() => navigate('/app/po/decisions')}
+          >
+            Shipment Decisions
+          </Button>
+        </Badge>
         {isAdmin && (
           <Button
             variant="outlined"

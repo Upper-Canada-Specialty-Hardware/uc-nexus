@@ -542,6 +542,7 @@ def project_schedule_hardware_item_to_type(hi: dict) -> ProjectScheduleHardwareI
         item_category_code=hi["item_category_code"],
         product_group_code=hi["product_group_code"],
         submittal_id=hi["submittal_id"],
+        classification=hi.get("classification"),
     )
 
 
