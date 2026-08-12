@@ -679,6 +679,9 @@ class ProjectScheduleHardwareItem:
     item_category_code: str | None
     product_group_code: str | None
     submittal_id: str | None
+    # Persisted SITE_HARDWARE / SHOP_HARDWARE, or null for an item never classified (#492). The
+    # wizard reads it to restore Site/Shop when a re-import resumes from the last uploaded schedule.
+    classification: Classification | None
 
 
 @strawberry.type

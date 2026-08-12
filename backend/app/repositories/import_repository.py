@@ -86,6 +86,7 @@ def get_project_hardware_schedule(
                 "item_category_code": hi.item_category_code,
                 "product_group_code": hi.product_group_code,
                 "submittal_id": hi.submittal_id,
+                "classification": hi.classification,
             }
             for hi in hardware_items
         ],
