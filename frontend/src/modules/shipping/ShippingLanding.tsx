@@ -135,13 +135,13 @@ export default function ShippingLanding() {
             >
               Shipment methods
             </Button>
-            {/* #471: a request off the hardware schedule, which is what knows an opening is still owed
-                a closer nobody has shipped. The wizard picks the project. */}
+            {/* The request workspace (#493 successor): schedule-driven and loose lines composed in
+                one cart. It carries its own project picker. */}
             <Button
               variant="outlined"
               size="small"
               startIcon={<ClipboardPlus size={18} strokeWidth={1.75} />}
-              onClick={() => navigate('/app/import?purpose=shipping')}
+              onClick={() => navigate('/app/shipping/requests/new')}
             >
               Start a Request
             </Button>

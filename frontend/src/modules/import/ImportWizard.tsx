@@ -90,8 +90,7 @@ import {
 // ---- Local Types ----
 
 type StepId = 'upload' | 'purpose' | 'openings' | 'hardware' | 'reconciliation'
-  | 'classification' | 'purchase-orders' | 'shop-assembly'
-  | 'shipping-prs' | 'finalize';
+  | 'classification' | 'purchase-orders' | 'shop-assembly' | 'finalize';
 
 interface StepDescriptor {
   id: StepId;
@@ -125,14 +124,6 @@ const PURPOSE_OPTIONS: {
     subtitle: 'Build door leaves in the shop',
     tooltip:
       'What can I pull from the warehouse to assemble? Creates a shop-assembly pull request. Only items with Received status can be included.',
-    needsExisting: true,
-  },
-  {
-    value: 'shipping',
-    label: 'Pull Request for Shipping Out',
-    subtitle: 'Stage assembled leaves for shipment',
-    tooltip:
-      'What can I ship out? Creates a shipping-out pull request. Only items that are Received or Assembled can be included.',
     needsExisting: true,
   },
 ];
@@ -302,7 +293,6 @@ export default function ImportWizard({
     }
     if (purpose === 'po') base.push({ id: 'purchase-orders', label: 'Purchase Orders' });
     if (purpose === 'assembly') base.push({ id: 'shop-assembly', label: 'Shop Assembly' });
-    if (purpose === 'shipping') base.push({ id: 'shipping-prs', label: 'Shipping Out' });
     base.push({ id: 'finalize', label: 'Finalize' });
     return base;
   }, [purpose, isReimport, isHardwareMode]);
@@ -496,11 +486,8 @@ export default function ImportWizard({
       return selectedHardwareItems.filter((hi) => selectedReconItems.has(aggregationKey(hi)));
     }
 
-    // SAR, and SOR loose lines: received stock only. For shipping (#335) that means ASSEMBLED
-    // quantity is excluded - it was tagged onto a door leaf at shop assembly and now ships as that
-    // leaf, from assembledLeafCandidates below. Offering it here too is what made the pull request
-    // ask the warehouse for hardware that had already left inventory.
-    if (purpose === 'assembly' || purpose === 'shipping') {
+    // Shop assembly composes off received stock only, keyed on what a completed PO receipt landed.
+    if (purpose === 'assembly') {
       return selectedHardwareItems.filter((hi) => receivedQtyByKey.has(aggregationKey(hi)));
     }
 
@@ -525,10 +512,10 @@ export default function ImportWizard({
 
   // ---- What the selected openings still have coming ----
 
-  // `max(owed - sent - claimed, 0)` per (opening, category, product). The one question both
-  // composers ask, answered server-side so the two cannot drift - see
-  // `app/repositories/request_composer.py`.
-  const requestPurpose = purpose === 'assembly' || purpose === 'shipping';
+  // `max(owed - sent - claimed, 0)` per (opening, category, product), answered server-side - see
+  // `app/repositories/request_composer.py`. Only shop assembly composes here now; shipping-out
+  // composition moved to the shipping request workspace.
+  const requestPurpose = purpose === 'assembly';
   const coverageActive = open && requestPurpose && !!existingProjectId && selectedOpenings.size > 0;
   const {
     data: coverageData,
@@ -540,16 +527,14 @@ export default function ImportWizard({
     fetchPolicy: 'cache-and-network',
   });
 
-  // Shop assembly composes the SHOP hardware; shipping out composes everything else - site hardware
-  // and the lines the schedule never classified, which go to site loose by default rather than being
-  // silently dropped. Unclassified is deliberately NOT offered to shop assembly: putting hardware on
-  // a bench because nobody said otherwise is the guess this split exists to avoid.
+  // Shop assembly composes the SHOP hardware only. Unclassified is deliberately NOT offered to the
+  // bench: putting hardware on a bench because nobody said otherwise is the guess this split exists
+  // to avoid. (Shipping out, which used to compose everything else here, is the request workspace's
+  // job now - and it offers shop hardware too, because a completed bench pull is a terminal exit and
+  // nothing tells it which exit a unit takes.)
   const composerRows = useMemo(() => {
     const rows = coverageData?.requestCoverage ?? [];
     if (purpose === 'assembly') return composableRows(rows, 'SHOP');
-    if (purpose === 'shipping') {
-      return composableRows(rows).filter((row) => row.classification !== 'SHOP_HARDWARE');
-    }
     return [];
   }, [purpose, coverageData]);
 
@@ -558,7 +543,7 @@ export default function ImportWizard({
   // Creating a request RESERVES the hardware it needs, and the server gates creation on
   // `on-hand - deficient - other requests' reservations`. Read the same numbers here so the wizard
   // can refuse an over-selection with per-combo detail instead of letting the whole finalize bounce.
-  const requestPurposeActive = open && (purpose === 'assembly' || purpose === 'shipping');
+  const requestPurposeActive = open && purpose === 'assembly';
   const {
     data: availabilityData,
     loading: availabilityLoading,
@@ -581,9 +566,9 @@ export default function ImportWizard({
     return map;
   }, [availabilityData]);
 
-  // Just the reservation-aware available number per product, for the reconciliation step's
-  // assembly/shipping eligibility. This is the real "what is on the shelf and unclaimed" figure the
-  // compose step and the server creation gate apply - not the recon RECEIVED bucket, which never saw
+  // Just the reservation-aware available number per product, for the reconciliation step's shop
+  // assembly eligibility. This is the real "what is on the shelf and unclaimed" figure the compose
+  // step and the server creation gate apply - not the recon RECEIVED bucket, which never saw
   // inventory that arrived off-PO.
   const availableByProduct = useMemo(() => {
     const map = new Map<string, number>();
@@ -1085,21 +1070,8 @@ export default function ImportWizard({
                 return { hardwareCategory, productCode, unitCost: parseFloat(unitCost), classification: cls };
               })
           : null,
-      shippingOutPrDrafts: purpose === 'shipping'
-        ? [
-            {
-              // #493: deprecated and ignored - the server mints the number from the project's
-              // counter. Sent because the input still carries the field.
-              requestNumber: '',
-              items: requestLines.map((line) => ({
-                openingNumber: line.openingNumber,
-                hardwareCategory: line.hardwareCategory,
-                productCode: line.productCode,
-                requestedQuantity: line.allocatedQuantity,
-              })),
-            },
-          ]
-        : null,
+      // The wizard no longer composes shipping-out requests - that moved to the request workspace, so
+      // shippingOutPrDrafts is left unset (the input still accepts it, deprecated, for stale tabs).
       includeShopAssemblyRequest: purpose === 'assembly',
       // #493: deprecated and ignored by the server, which mints the number itself.
       shopAssemblyRequestNumber: null,
@@ -1179,7 +1151,7 @@ export default function ImportWizard({
       // user back to review - resending the stale allocation would just bounce again.
       if (requestPurpose && isInventoryShortfall(err)) {
         setAllocationStale(true);
-        setActiveStepId(purpose === 'assembly' ? 'shop-assembly' : 'shipping-prs');
+        setActiveStepId('shop-assembly');
         const refreshed = await refetchAvailability().catch(() => null);
         const rows = refreshed?.data?.projectInventoryAvailability;
         // A failed refetch means the numbers are unknown, not zero. Rebuilding from an empty map
@@ -1252,13 +1224,13 @@ export default function ImportWizard({
   const canProceedStep3 = useMemo(() => {
     if (!isReimport) return true;
     if (purpose === 'po') return selectedReconItems.size > 0;
-    // Assembly and shipping both pull existing stock, so both gate on real reservation-aware
-    // availability (on-hand - deficient - reserved) - the same number the compose step and the server
-    // creation gate apply. The recon RECEIVED bucket this used to read is derived from the PO chain
-    // and never saw inventory that arrived off-PO, so a project with received stock but no matching PO
-    // receipt was wrongly told nothing was available. Product-level here; the compose step does the
-    // exact per-opening netting.
-    if (purpose === 'assembly' || purpose === 'shipping') {
+    // Shop assembly pulls existing stock, so it gates on real reservation-aware availability
+    // (on-hand - deficient - reserved) - the same number the compose step and the server creation
+    // gate apply. The recon RECEIVED bucket this used to read is derived from the PO chain and never
+    // saw inventory that arrived off-PO, so a project with received stock but no matching PO receipt
+    // was wrongly told nothing was available. Product-level here; the compose step does the exact
+    // per-opening netting.
+    if (purpose === 'assembly') {
       return reconciliationRows.some(
         (r) => (availableByProduct.get(`${r.hardwareCategory}|${r.productCode}`) ?? 0) > 0,
       );
@@ -1345,7 +1317,6 @@ export default function ImportWizard({
       canProceedCurrentStep = canProceedPurchaseOrders;
       break;
     case 'shop-assembly':
-    case 'shipping-prs':
       canProceedCurrentStep = composeGate.canProceed;
       navHint = composeGate.blockedReason;
       break;
@@ -1649,7 +1620,7 @@ export default function ImportWizard({
 
               {!isReimport && (
                 <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-                  Shop assembly and shipping-out pull requests require an existing project with received inventory.
+                  Shop assembly pull requests require an existing project with received inventory.
                 </Typography>
               )}
 
@@ -1758,28 +1729,6 @@ export default function ImportWizard({
             />
           )}
 
-          {/* ============ Step: Shipping PRs ============ */}
-          {effectiveStepId === 'shipping-prs' && (
-            <ComposeRequestStep
-              title="Shipping Out"
-              description="What the selected openings still have coming to site: what the schedule owes, minus what has already shipped, minus what another live request is holding. Shop Hardware is left out - it goes to the bench, not on a truck. Creating the request reserves what you assign here."
-              emptyMessage="None of the selected openings has hardware still owed to site. Either it has all shipped, another live request is holding it, or all of it is Shop Hardware."
-              rows={composerRows}
-              availabilityByCombo={availabilityByCombo}
-              allocation={allocation}
-              onAllocationChange={setAllocation}
-              includedKeys={includedKeys}
-              onIncludedKeysChange={setIncludedKeys}
-              seededSignature={seededSignature}
-              onSeeded={setSeededSignature}
-              coverageLoading={composeCoverageLoading}
-              coverageError={composeCoverageError}
-              availabilityLoading={composeAvailabilityLoading}
-              availabilityError={composeAvailabilityError}
-              allocationStale={allocationStale}
-            />
-          )}
-
           {/* ============ Step: Finalize ============ */}
           {effectiveStepId === 'finalize' && (
             <Box>
@@ -1809,15 +1758,6 @@ export default function ImportWizard({
                   <Box sx={{ mb: 1 }}>
                     <Typography variant="body2" sx={{ fontWeight: 600 }}>
                       {includedDraftCount} Purchase Order draft(s)
-                    </Typography>
-                  </Box>
-                )}
-
-                {purpose === 'shipping' && (
-                  <Box sx={{ mb: 1 }}>
-                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                      1 Shipping Out Request across {requestLines.length} line(s) (number assigned on
-                      finalize)
                     </Typography>
                   </Box>
                 )}
@@ -1882,7 +1822,7 @@ export default function ImportWizard({
         message={
           canStartFromLatest && !hydratedFromPersisted
             ? "You're uploading a NEW hardware schedule that will REPLACE the previously stored one. Existing purchase orders, receiving records, shop assembly requests, and warehouse inventory will be preserved, but the per-opening source trail of prior POs will be lost. Openings absent from the new schedule will be removed. Continue?"
-            : 'This will create the selected purchase orders, assembly requests, and shipping pull requests. Continue?'
+            : 'This will create the selected purchase orders and assembly requests. Continue?'
         }
         confirmLabel={canStartFromLatest && !hydratedFromPersisted ? 'Replace Schedule' : 'Finalize'}
         onConfirm={handleFinalize}
@@ -1914,13 +1854,6 @@ export default function ImportWizard({
                   <StaggerItem>
                     <Typography variant="body2" sx={tabularSx}>
                       {finalizeResult.purchaseOrders.length} PO(s) created
-                    </Typography>
-                  </StaggerItem>
-                )}
-                {finalizeResult.shippingOutRequests.length > 0 && (
-                  <StaggerItem>
-                    <Typography variant="body2" sx={tabularSx}>
-                      {finalizeResult.shippingOutRequests.length} Shipping request(s) created
                     </Typography>
                   </StaggerItem>
                 )}

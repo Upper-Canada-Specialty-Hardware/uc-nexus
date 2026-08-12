@@ -128,6 +128,33 @@ export const EDIT_SHIPPING_OUT_REQUEST = gql`
   }
 `;
 
+// One request by id, for seeding the request workspace's edit mode. The workspace is its own
+// full-page route (/shipping/requests/:id/edit), so it reads the request it is editing directly
+// rather than relying on the accept-queue list having been mounted first - a cold deep-link or a
+// refresh has no such list in the cache. Null when the id matches nothing (already deleted).
+export const GET_SHIPPING_OUT_REQUEST = gql`
+  query GetShippingOutRequest($id: ID!) {
+    shippingOutRequest(id: $id) {
+      ${SHIPPING_OUT_REQUEST_FIELDS}
+    }
+  }
+`;
+
+// The project's openings, for the request workspace's from-schedule opening picker. A deliberately
+// thin projection of projectHardwareSchedule - just the opening list with the fields the picker
+// filters on - so it caches apart from the import wizard's full schedule read.
+export const GET_PROJECT_OPENINGS = gql`
+  query GetProjectOpenings($projectId: ID!) {
+    projectHardwareSchedule(projectId: $projectId) {
+      openings {
+        openingNumber
+        building
+        floor
+      }
+    }
+  }
+`;
+
 // What the selected openings still have coming: `max(owed - sent - claimed, 0)` per product. The
 // one answer both composers read - shop assembly and shipping out ask the same question. Availability
 // is deliberately NOT here; it comes from projectInventoryAvailability, the single number the

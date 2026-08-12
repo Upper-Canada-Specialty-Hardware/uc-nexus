@@ -204,6 +204,8 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # Start-a-Request wizard, which every module's users reach.
     "requestCoverage": SIGNED_IN,
     "shippingOutRequests": SIGNED_IN,
+    # One request by id, read by the request workspace's edit mode. SIGNED_IN like its list sibling.
+    "shippingOutRequest": SIGNED_IN,
     "acceptShippingOutRequest": SIGNED_IN,
     "confirmShipment": SIGNED_IN,
     "createShipmentReturn": SIGNED_IN,

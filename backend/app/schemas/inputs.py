@@ -253,7 +253,13 @@ class CreateShippingOutRequestInput:
     """
 
     project_id: strawberry.ID
-    request_number: str
+    # #493: deprecated and ignored - the server mints the number from the project's shared counter.
+    # Optional with a default so the request workspace can stop sending it; still accepted so a tab
+    # loaded against the previous deploy does not fail schema validation.
+    request_number: str | None = strawberry.field(
+        default=None,
+        deprecation_reason="Ignored since #493; the server mints the number from the project counter.",
+    )
     items: list[ShippingOutPRDraftItemInput] = strawberry.field(default_factory=list)
 
 
@@ -301,7 +307,13 @@ class FinalizeImportSessionInput:
     po_drafts: list[PODraftInput] | None = None
     classifications: list[ClassificationInput] | None = None
     excluded_items: list[ExcludedItemInput] | None = None
-    shipping_out_pr_drafts: list[ShippingOutPRDraftInput] | None = None
+    # Deprecated: the import wizard no longer composes shipping requests - that moved to the shipping
+    # request workspace. Still accepted (and still mapped by finalize_payload) so a tab loaded against
+    # the previous deploy keeps working; delete once no deployed frontend sends it.
+    shipping_out_pr_drafts: list[ShippingOutPRDraftInput] | None = strawberry.field(
+        default=None,
+        deprecation_reason="The import wizard no longer composes shipping requests; use the request workspace.",
+    )
     include_shop_assembly_request: bool = False
     shop_assembly_request_number: str | None = None
     shop_assembly_items: list[SARItemInput] | None = None

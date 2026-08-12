@@ -7,6 +7,7 @@ import ShippingRequestsPage from './ShippingRequestsPage';
 import ShipmentMethodsDialog from './ShipmentMethodsDialog';
 import StagingWorkspace from './StagingWorkspace';
 import ShippingLanding from './ShippingLanding';
+import RequestWorkspace from './request-workspace/RequestWorkspace';
 import ProjectPicker from '../../components/ProjectPicker';
 import type { Project } from '../../types/project';
 
@@ -24,6 +25,10 @@ export default function ShippingModule() {
     <Routes>
       <Route index element={<ShippingLanding />} />
       <Route path="requests" element={<RequestsRoute />} />
+      {/* The one composer (#493 successor): schedule-driven and loose lines in one cart, full-page.
+          `new` carries its own project picker; `:id/edit` seeds from the request it names. */}
+      <Route path="requests/new" element={<RequestWorkspace mode="create" />} />
+      <Route path="requests/:id/edit" element={<RequestWorkspace mode="edit" />} />
       <Route path="staging" element={<StagingRoute />} />
       {/* The all-projects shipment history, with returns coming off each row. This is the screen the
           warehouse module used to carry as "Shipments" (#589). */}
@@ -81,9 +86,9 @@ function StagingRoute() {
 
 /**
  * Requests default to every project's board - reviewing and accepting them needs no one job. Picking
- * a project scopes the list to it and unlocks raising a request off that project's inventory and
- * editing a pending one (both need a pool to compose against), which is the only thing here that
- * genuinely requires a project (#589).
+ * a project scopes the list to it; raising a new request and editing a pending one now happen on the
+ * request workspace, which carries its own picker, so a picked project here only rides along to
+ * preselect that job when starting a new one.
  */
 function RequestsRoute() {
   const [project, setProject] = useState<Project | null>(null);
@@ -92,8 +97,7 @@ function RequestsRoute() {
       <Box sx={{ mb: 2 }}>
         <ProjectPicker value={project} onChange={setProject} sx={{ maxWidth: 420 }} />
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-          Leave blank to review every project&rsquo;s requests. Pick one to raise or edit a request off
-          its inventory.
+          Leave blank to review every project&rsquo;s requests, or pick one to scope the list.
         </Typography>
       </Box>
       <ShippingRequestsPage projectId={project?.id} />

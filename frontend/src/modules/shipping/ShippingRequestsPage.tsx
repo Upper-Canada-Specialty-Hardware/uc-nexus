@@ -15,7 +15,7 @@ import {
   Typography,
 } from '@mui/material';
 import { Pencil, Plus } from 'lucide-react';
-import { Link as RouterLink } from 'react-router-dom';
+import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import {
   GET_SHIPPING_OUT_REQUESTS,
@@ -24,7 +24,6 @@ import {
   REOPEN_SHIPPING_OUT_REQUEST,
 } from '../../graphql/shipping';
 import RequestsReviewPage from '../../components/RequestsReviewPage';
-import RequestBuilderDialog from './RequestBuilderDialog';
 import { monoSx } from '../../theme';
 
 interface ShippingRequestItem {
@@ -54,9 +53,8 @@ interface Props {
 }
 
 export default function ShippingRequestsPage({ projectId }: Props) {
+  const navigate = useNavigate();
   const [view, setView] = useState<'PENDING' | 'APPROVED'>('PENDING');
-  // `null` = the builder is composing a new request; a request = editing that one; undefined = shut.
-  const [builder, setBuilder] = useState<ShippingOutRequest | null | undefined>(undefined);
   const { data, loading, refetch } = useQuery<{ shippingOutRequests: ShippingOutRequest[] }>(
     GET_SHIPPING_OUT_REQUESTS,
     {
@@ -95,26 +93,29 @@ export default function ShippingRequestsPage({ projectId }: Props) {
         mode={view === 'APPROVED' ? 'approved' : 'pending'}
         onChanged={refetch}
         headerAction={
-          // Only where there is a project to read inventory from: the all-projects view has no one
-          // pool to compose against.
-          projectId ? (
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<Plus size={16} strokeWidth={1.75} />}
-              onClick={() => setBuilder(null)}
-            >
-              New request
-            </Button>
-          ) : undefined
+          // Always available now: the workspace carries its own project picker, so this no longer
+          // needs a project chosen here. A picked project rides along to preselect it.
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<Plus size={16} strokeWidth={1.75} />}
+            onClick={() =>
+              navigate(`/app/shipping/requests/new${projectId ? `?projectId=${projectId}` : ''}`)
+            }
+          >
+            New request
+          </Button>
         }
         renderExtraActions={(req) =>
-          projectId ? (
+          // Editing is only meaningful while the request is still pending; the workspace itself
+          // refuses an accepted one. It reads the request's own project, so no picked project is
+          // needed here either.
+          view === 'PENDING' ? (
             <Button
               variant="outlined"
               color="primary"
               startIcon={<Pencil size={18} strokeWidth={1.75} />}
-              onClick={() => setBuilder(req)}
+              onClick={() => navigate(`/app/shipping/requests/${req.id}/edit`)}
             >
               Edit
             </Button>
@@ -163,20 +164,6 @@ export default function ShippingRequestsPage({ projectId }: Props) {
           )
         }
       />
-
-      {projectId && builder !== undefined && (
-        // Keyed on what it is composing, and mounted only while open, so its draft state is seeded
-        // once at mount. Re-seeding a live dialog from props would let a background refetch of the
-        // list underneath overwrite edits the user is halfway through.
-        <RequestBuilderDialog
-          key={builder?.id ?? 'new'}
-          open
-          onClose={() => setBuilder(undefined)}
-          projectId={projectId}
-          request={builder ?? undefined}
-          onSaved={refetch}
-        />
-      )}
     </Box>
   );
 }

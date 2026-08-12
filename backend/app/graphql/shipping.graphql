@@ -340,6 +340,8 @@ type Query {
   # Accept UI (#293): shipping-out requests, PENDING by default.
   # reopenableOnly (#325): keep only requests whose minted PR is still PENDING (the Approved/reopen view).
   shippingOutRequests(projectId: ID, status: ShippingOutRequestStatus, reopenableOnly: Boolean! = false): [ShippingOutRequest!]!
+  # One request by id, for seeding the request workspace's edit mode. Null when the id matches nothing.
+  shippingOutRequest(id: ID!): ShippingOutRequest
 }
 
 # --- Raising and correcting a request from the Shipping module (#451) ---------------------------
@@ -359,7 +361,7 @@ input ShippingOutPRDraftItemInput {
 
 input CreateShippingOutRequestInput {
   projectId: ID!
-  requestNumber: String!
+  requestNumber: String @deprecated(reason: "Ignored since #493; the server mints the number from the project counter.")
   items: [ShippingOutPRDraftItemInput!]!
   # The caller has seen the "this leaf is short" warning and wants it on the request anyway (#341).
   acknowledgeIncompleteLeaves: Boolean! = false
