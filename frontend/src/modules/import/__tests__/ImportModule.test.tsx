@@ -116,12 +116,28 @@ describe('ImportModule deep links', () => {
   });
 
   it('opens straight onto the project when the link names one', async () => {
-    renderModule('/app/import?projectId=proj-2&purpose=shipping&source=latest');
+    renderModule('/app/import?projectId=proj-2&purpose=po&source=latest');
 
     expect(await screen.findByTestId('wizard', undefined, SLOW)).toHaveTextContent(
-      'project=proj-2 purpose=shipping latest=true',
+      'project=proj-2 purpose=po latest=true',
     );
     await expectParamsCleared();
+  });
+
+  // Shipping-out composition left the wizard for the request workspace, so an old
+  // `?purpose=shipping` link (a bookmark, the receive-decision "Ship out now") redirects there
+  // rather than opening the wizard. The project rides along; source=latest is dropped.
+  it('redirects an old shipping link to the request workspace, carrying the project', async () => {
+    renderModule('/app/import?projectId=proj-2&purpose=shipping&source=latest');
+
+    await vi.waitFor(
+      () =>
+        expect(screen.getByTestId('location')).toHaveTextContent(
+          '/app/shipping/requests/new?projectId=proj-2',
+        ),
+      { timeout: 5000 },
+    );
+    expect(screen.queryByTestId('wizard')).not.toBeInTheDocument();
   });
 
   // #565: the "by hardware" chooser card links `?purpose=po&mode=hardware` with no project. The mode

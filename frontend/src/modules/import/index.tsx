@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@mui/material';
 import { Plus } from 'lucide-react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import CreateGpJobDialog from './CreateGpJobDialog';
@@ -20,7 +20,7 @@ interface DeepLinkIntent {
   fromLatest: boolean;
 }
 
-const PURPOSES: ImportPurpose[] = ['po', 'assembly', 'shipping'];
+const PURPOSES: ImportPurpose[] = ['po', 'assembly'];
 
 export default function ImportModule() {
   const { isAdmin } = useIdentity();
@@ -34,9 +34,10 @@ export default function ImportModule() {
   // #565: the selection mode that rode in with a projectless purpose link, held alongside it.
   const [pendingMode, setPendingMode] = useState<SelectionMode>('openings');
 
-  // `?projectId=&purpose=shipping&source=latest` - what "Ship out now" on a keep-or-ship decision
-  // navigates to. `?purpose=` on its own is a module's "Start a Request" button (#471). The params
-  // are consumed and cleared, so closing the wizard does not re-open it.
+  // `?purpose=` on its own is a module's "Start a Request" button (#471). The params are consumed and
+  // cleared, so closing the wizard does not re-open it. A `purpose=shipping` link is a fossil - that
+  // composer moved to the shipping request workspace - and is redirected below rather than opened here.
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const consumedRef = useRef(false);
@@ -55,6 +56,16 @@ export default function ImportModule() {
 
   useEffect(() => {
     if (consumedRef.current) return;
+    // Old shipping links (the receive-decision "Ship out now", any bookmark) now land on the request
+    // workspace, which composes off the schedule AND off loose inventory in one cart. source=latest is
+    // dropped - the workspace computes coverage server-side, so there is nothing to hydrate.
+    if (purposeParam === 'shipping') {
+      consumedRef.current = true;
+      navigate(`/app/shipping/requests/new${projectIdParam ? `?projectId=${projectIdParam}` : ''}`, {
+        replace: true,
+      });
+      return;
+    }
     if (!projectIdParam && !linkedPurpose) return;
     // Resolving a project id needs the project list; a purpose on its own does not, so a
     // purpose-only link is honoured immediately rather than waiting on the query.
@@ -74,7 +85,7 @@ export default function ImportModule() {
       setPendingMode(linkedMode);
     }
     setSearchParams({}, { replace: true });
-  }, [projectIdParam, linkedPurpose, linkedMode, sourceParam, projects, setSearchParams]);
+  }, [projectIdParam, purposeParam, linkedPurpose, linkedMode, sourceParam, projects, setSearchParams, navigate]);
 
   const handleSelect = (project: Project | null) => {
     if (!project) return;

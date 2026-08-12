@@ -218,10 +218,10 @@ const reimportBaseMocks: MockedResponse[] = [
 
 const reimportMocks: MockedResponse[] = [...reimportBaseMocks];
 
-// --- Shipping-path fixtures (#335) ---
+// --- Compose-step fixtures ---
 
 // O-1's hinges were consumed into two assembled door leaves; O-2's lock is still loose stock.
-const shippingReconcileMock: MockedResponse = {
+const reconcileMock: MockedResponse = {
   request: {
     query: RECONCILE_SCHEDULE,
     variables: {
@@ -273,8 +273,9 @@ function coverageLine(overrides: Record<string, unknown> = {}) {
   };
 }
 
-// What the two selected openings still have coming: O-1's hinges have all gone to the bench and
-// are owed nothing further, O-2's lock is site hardware still to send.
+// What the two selected openings still have coming, as the Shop Assembly composer sees it: O-1's
+// hinges are shop hardware still owed to the bench, O-2's lock is site hardware the bench never
+// touches - so only the hinge is offered here (the compose step filters to SHOP).
 const requestCoverageMock: MockedResponse = {
   request: {
     query: GET_REQUEST_COVERAGE,
@@ -284,7 +285,7 @@ const requestCoverageMock: MockedResponse = {
   result: {
     data: {
       requestCoverage: [
-        coverageLine({ openingNumber: 'O-1', suggestedQuantity: 0, sentQuantity: 6 }),
+        coverageLine({ openingNumber: 'O-1', suggestedQuantity: 6 }),
         coverageLine({
           openingNumber: 'O-2',
           hardwareCategory: 'Locks',
@@ -310,7 +311,7 @@ function renderWizard(
   }: {
     project?: Project;
     mocks?: MockedResponse[];
-    initialPurpose?: 'po' | 'assembly' | 'shipping';
+    initialPurpose?: 'po' | 'assembly';
     initialSelectionMode?: 'openings' | 'hardware';
     autoStartFromLatest?: boolean;
   } = {},
@@ -395,9 +396,8 @@ describe('ImportWizard step transitions', () => {
     expect(screen.getByRole('heading', { name: 'Select Import Purpose' })).toBeInTheDocument();
     expect(nextButton()).toBeDisabled();
 
-    // first import: pull-request purposes need existing received inventory
+    // first import: the pull-request purpose needs existing received inventory
     expect(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i })).toBeDisabled();
-    expect(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i })).toBeDisabled();
 
     fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
     expect(nextButton()).toBeEnabled();
@@ -426,28 +426,18 @@ describe('ImportWizard step transitions', () => {
     expect(stepLabels()).toEqual([...REIMPORT_STEPS, 'Shop Assembly', 'Finalize']);
   });
 
-  it('shipping purpose (re-import) inserts only the Shipping Out step', async () => {
-    renderWizard({ project: reimportProject, mocks: reimportMocks });
-    await flushApollo();
-    clickNext();
-
-    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
-
-    expect(stepLabels()).toEqual([...REIMPORT_STEPS, 'Shipping Out', 'Finalize']);
-  });
-
-  // The composer is the whole of both request steps now, so what is worth walking is that the offer
-  // reaches the screen: an opening whose hardware has all gone out is not offered again, and the one
-  // that is still owed something is.
-  it('offers only what the selected openings still have coming', async () => {
+  // The composer is the whole of the shop-assembly step now, so what is worth walking is that the
+  // offer reaches the screen and that its SHOP filter holds: the shop hardware is offered, the site
+  // lock the bench never touches is not.
+  it('offers only the shop hardware the selected openings still have coming', async () => {
     renderWizard({
       project: reimportProject,
-      mocks: [...reimportBaseMocks, shippingReconcileMock, requestCoverageMock],
+      mocks: [...reimportBaseMocks, reconcileMock, requestCoverageMock],
     });
     await flushApollo();
     clickNext();
 
-    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
+    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i }));
     clickNext();
     fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
     clickNext();
@@ -455,12 +445,11 @@ describe('ImportWizard step transitions', () => {
     clickNext();
     await flushApollo();
 
-    expect(screen.getByRole('heading', { name: 'Shipping Out' })).toBeInTheDocument();
-    // O-2's lock is still owed; O-1's hinges are shop hardware that has already gone to the bench,
-    // so neither the zero-suggestion row nor the shop classification reaches this step.
-    // Twice: once in the reserve summary, once on the line itself.
-    expect(screen.getAllByText('LCK-200')).toHaveLength(2);
-    expect(screen.queryByText('HNG-100')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Shop Assembly' })).toBeInTheDocument();
+    // O-1's hinge is shop hardware still owed to the bench; O-2's lock is site hardware, which the
+    // shop-assembly composer never offers. Twice: once in the reserve summary, once on the line.
+    expect(screen.getAllByText('HNG-100')).toHaveLength(2);
+    expect(screen.queryByText('LCK-200')).not.toBeInTheDocument();
   });
 
   it('blocks Next on Select Openings until at least one opening is selected', () => {
@@ -805,11 +794,11 @@ describe('ImportWizard AppBar nav', () => {
     };
     renderWizard({
       project: reimportProject,
-      mocks: [...reimportBaseMocks, shippingReconcileMock, emptyCoverage],
+      mocks: [...reimportBaseMocks, reconcileMock, emptyCoverage],
     });
     await flushApollo();
     clickNext();
-    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
+    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i }));
     clickNext();
     fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
     clickNext();
@@ -817,7 +806,7 @@ describe('ImportWizard AppBar nav', () => {
     clickNext();
     await flushApollo();
 
-    expect(screen.getByRole('heading', { name: 'Shipping Out' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Shop Assembly' })).toBeInTheDocument();
     expect(nextButton()).toBeDisabled();
     expect(screen.getByText('There is nothing to request for these openings.')).toBeInTheDocument();
   });
@@ -825,11 +814,11 @@ describe('ImportWizard AppBar nav', () => {
   it('drops Next and keeps only Back on the finalize step, alongside the in-content CTA', async () => {
     renderWizard({
       project: reimportProject,
-      mocks: [...reimportBaseMocks, shippingReconcileMock, requestCoverageMock],
+      mocks: [...reimportBaseMocks, reconcileMock, requestCoverageMock],
     });
     await flushApollo();
     clickNext();
-    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i }));
+    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i }));
     clickNext();
     fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
     clickNext();
@@ -838,13 +827,13 @@ describe('ImportWizard AppBar nav', () => {
     await flushApollo();
 
     // The compose step auto-assigns the one owed line, so Next is live and carries us to finalize.
-    expect(screen.getByRole('heading', { name: 'Shipping Out' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Shop Assembly' })).toBeInTheDocument();
     expect(nextButton()).toBeEnabled();
     clickNext();
     await flushApollo();
 
     expect(screen.getByRole('heading', { name: 'Review & Finalize' })).toBeInTheDocument();
-    // upload / purpose / openings / reconciliation / shipping-prs / finalize
+    // upload / purpose / openings / reconciliation / shop-assembly / finalize
     expect(screen.getByText('Step 6 of 6')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Next' })).not.toBeInTheDocument();
@@ -852,9 +841,9 @@ describe('ImportWizard AppBar nav', () => {
   });
 });
 
-// The keep-or-ship decision's "Ship out now" lands here: the project is chosen, the purpose is
-// shipping, and the schedule the hardware was bought against is already imported - so the two steps
-// in front of the openings are answers the user has already given somewhere else.
+// A module's "Start a Request" link into shop assembly lands here: the project is chosen and its
+// purpose is preselected, so the wizard opens with the purpose already answered. (Shipping-out
+// composition has left the wizard entirely - it lives on the request workspace now.)
 describe('ImportWizard deep link', () => {
   // Enough of a persisted schedule for the hydrate to be legal: hardwareItems non-empty is what
   // makes `canStartFromLatest` true, and the project block is what the mapper reads first.
@@ -908,25 +897,25 @@ describe('ImportWizard deep link', () => {
     },
   };
 
-  it('preselects the shipping purpose on a re-import project', async () => {
+  it('preselects the assembly purpose on a re-import project', async () => {
     renderWizard({
       project: reimportProject,
       mocks: [...reimportMocks],
-      initialPurpose: 'shipping',
+      initialPurpose: 'assembly',
     });
     await flushApollo();
     clickNext();
 
-    expect(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i })).toBeChecked();
   });
 
   it('leaves the purpose unset on a project with no schedule, rather than checking a disabled option', async () => {
-    // Shipping needs an existing schedule. Silently checking it on a first import would land the
+    // Shop assembly needs an existing schedule. Silently checking it on a first import would land the
     // user on a radio they cannot use with nothing saying why.
-    renderWizard({ project: firstImportProject, initialPurpose: 'shipping' });
+    renderWizard({ project: firstImportProject, initialPurpose: 'assembly' });
     clickNext();
 
-    expect(screen.getByRole('radio', { name: /Pull Request for Shipping Out/i })).not.toBeChecked();
+    expect(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i })).not.toBeChecked();
     expect(nextButton()).toBeDisabled();
   });
 
@@ -938,7 +927,7 @@ describe('ImportWizard deep link', () => {
     renderWizard({
       project: reimportProject,
       mocks: [availabilityMock, scheduleWithItems],
-      initialPurpose: 'shipping',
+      initialPurpose: 'assembly',
       autoStartFromLatest: true,
     });
     await flushApollo();
@@ -954,7 +943,7 @@ describe('ImportWizard deep link', () => {
     renderWizard({
       project: reimportProject,
       mocks: reimportMocks, // projectHardwareSchedule: null
-      initialPurpose: 'shipping',
+      initialPurpose: 'assembly',
       autoStartFromLatest: true,
     });
     await flushApollo();

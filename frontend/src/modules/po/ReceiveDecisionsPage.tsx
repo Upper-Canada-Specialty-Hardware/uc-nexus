@@ -130,7 +130,7 @@ export default function ReceiveDecisionsPage() {
       // Only on success. Navigating away from a failed record would leave the user building a
       // shipment against a question that is still open.
       showToast('Recorded. Pick the openings this hardware is going to.', 'success');
-      navigate(`/app/import?projectId=${decision.projectId}&purpose=shipping&source=latest`);
+      navigate(`/app/shipping/requests/new?projectId=${decision.projectId}`);
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Recording this decision failed', 'error');
     } finally {

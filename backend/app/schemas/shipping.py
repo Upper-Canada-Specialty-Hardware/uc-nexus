@@ -121,6 +121,19 @@ class ShippingQueries:
             return [shipping_out_request_to_type(r) for r in reqs]
 
     @strawberry.field
+    def shipping_out_request(self, info: strawberry.Info, id: strawberry.ID) -> ShippingOutRequest | None:
+        """One shipping-out request by id, for seeding the request workspace's edit mode.
+
+        The workspace opens `/shipping/requests/:id/edit` as its own full-page route, so it reads the
+        request it is editing directly rather than depending on the accept-queue list query having been
+        mounted first (a cold deep-link or a refresh has no such list in the cache). Null when the id
+        matches nothing.
+        """
+        with SessionLocal() as session:
+            req = shipping_repository.get_shipping_out_request(session, uuid.UUID(str(id)))
+            return shipping_out_request_to_type(req) if req else None
+
+    @strawberry.field
     def request_coverage(
         self,
         info: strawberry.Info,

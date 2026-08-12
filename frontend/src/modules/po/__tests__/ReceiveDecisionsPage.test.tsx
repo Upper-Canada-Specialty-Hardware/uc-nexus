@@ -84,7 +84,7 @@ function renderPage(extraMocks: MockedResponse[] = [], decisions = [decision()])
         <ToastProvider>
           <Routes>
             <Route path="/app/po/decisions" element={<ReceiveDecisionsPage />} />
-            <Route path="/app/import" element={<div>Start a Request</div>} />
+            <Route path="/app/shipping/requests/new" element={<div>Start a Request</div>} />
           </Routes>
           <LocationProbe />
         </ToastProvider>
@@ -148,7 +148,7 @@ describe('ReceiveDecisionsPage', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/app/po/decisions');
   });
 
-  it('records "ship out" and then hands over to Start a Request, scoped to the project', async () => {
+  it('records "ship out" and then hands over to the request workspace, scoped to the project', async () => {
     const decideMock: MockedResponse<Record<string, unknown>, DecideVars> = {
       request: { query: DECIDE_RECEIVE_DECISION, variables: () => true },
       result: {
@@ -170,7 +170,7 @@ describe('ReceiveDecisionsPage', () => {
 
     await screen.findByText('Start a Request', undefined, SLOW);
     expect(screen.getByTestId('location')).toHaveTextContent(
-      '/app/import?projectId=proj-1&purpose=shipping&source=latest',
+      '/app/shipping/requests/new?projectId=proj-1',
     );
   });
 
