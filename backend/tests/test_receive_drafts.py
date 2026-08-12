@@ -453,7 +453,10 @@ def committed(_migrate_database):
                         ReceiveDecisionChoice.KEEP_IN_INVENTORY,
                         AUTHOR,
                         AUTHOR_NAME,
-                        lambda _uid: None,
+                        # Called with no args on the untargeted-decision arm (this PO has no
+                        # created_by, so the decision has no target). actor_is_admin bypasses the
+                        # is-target check regardless, so it just needs to be callable.
+                        lambda: None,
                         actor_is_admin=True,
                     )
             fixture = _CommittedFixture(
