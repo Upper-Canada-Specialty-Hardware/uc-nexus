@@ -692,6 +692,35 @@ class ProjectHardwareSchedule:
 
 
 @strawberry.type
+class ProjectOpeningRow:
+    """One opening, trimmed to just what an opening picker filters and displays on. Deliberately
+    thinner than `Opening` - the from-schedule request composer selects doors and never needs the
+    dimensional/keying detail, so this avoids materializing it."""
+
+    opening_number: str
+    building: str | None
+    floor: str | None
+    location: str | None
+    hand: str | None
+    door_type: str | None
+    frame_type: str | None
+    interior_exterior: str | None
+    keying: str | None
+    leaf_count: int | None
+
+
+@strawberry.type
+class ProjectOpenings:
+    """A project's openings for an opening picker, plus the two counts a source card shows. Answers
+    a three-field selection without loading every HardwareItem the way `projectHardwareSchedule`
+    does - `hardwareItemCount` is a grouped COUNT, not a materialized list."""
+
+    openings: list[ProjectOpeningRow]
+    opening_count: int
+    hardware_item_count: int
+
+
+@strawberry.type
 class InventoryLocation:
     id: strawberry.ID
     project_id: strawberry.ID
