@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Alert, Box, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { tabularSx } from '../../theme';
 import type { GroupByField } from './classificationGrouping';
 import ClassificationReview from './ClassificationReview';
@@ -30,8 +30,9 @@ export default function ClassificationStep({
   itemCount,
   isReimport,
 }: ClassificationStepProps) {
-  const isReadOnly = purpose !== 'po' && purpose !== 'assembly';
-
+  // po carries a two-axis scope + Site/Shop classification; assembly and schedule (#608) carry a
+  // single Site/Shop axis. Both are editable - there is no read-only purpose left now that the
+  // shipping composer has moved to the request workspace.
   const options = purpose === 'po' ? SCOPE_OPTIONS : ASSEMBLY_OPTIONS;
   // The two-axis (PO) case carries a Site/Shop second axis; a one-axis (assembly) case does not.
   const hasSiteShop = purpose === 'po';
@@ -53,10 +54,9 @@ export default function ClassificationStep({
   // Default manufacturer - the user's ask: group by maker so a whole vendor's parts get one answer.
   const [groupByFields, setGroupByFields] = useState<GroupByField[]>(['vendorNo']);
 
-  const [phase, setPhase] = useState<Phase>(() => {
-    if (isReadOnly) return 'review';
-    return classificationRows.some((r) => !isRowClassified(r, classifyOpts)) ? 'guided' : 'review';
-  });
+  const [phase, setPhase] = useState<Phase>(() =>
+    classificationRows.some((r) => !isRowClassified(r, classifyOpts)) ? 'guided' : 'review',
+  );
   // #586: whether review was reached by finishing the guided walk-through (vs. landing straight on it
   // when nothing needed guiding). Drives the one-time hand-off confirmation so the two phases read as
   // one flow. Cleared on any hop back into guided.
@@ -76,13 +76,7 @@ export default function ClassificationStep({
             `${itemCount} hardware lines across ${openingCount} ${openingCount === 1 ? 'opening' : 'openings'}.`}
       </Typography>
 
-      {isReadOnly && (
-        <Alert severity="info" sx={{ mb: 2 }}>
-          Shipping-only import: classifications shown for reference only.
-        </Alert>
-      )}
-
-      {!isReadOnly && phase === 'guided' ? (
+      {phase === 'guided' ? (
         <>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
             {purpose === 'po'
@@ -113,20 +107,16 @@ export default function ClassificationStep({
           rows={classificationRows}
           options={options}
           onClassify={onClassify}
-          readOnly={isReadOnly}
+          readOnly={false}
           siteShopOptions={siteShopOptions}
           onClassifySiteShop={hasSiteShop ? onClassifySiteShop : undefined}
           siteShopExemptValue={siteShopExemptValue}
           groupByFields={groupByFields}
           justCompletedGuided={completedGuided}
-          onBackToGuided={
-            isReadOnly
-              ? undefined
-              : () => {
-                  setCompletedGuided(false);
-                  setPhase('guided');
-                }
-          }
+          onBackToGuided={() => {
+            setCompletedGuided(false);
+            setPhase('guided');
+          }}
         />
       )}
     </Box>

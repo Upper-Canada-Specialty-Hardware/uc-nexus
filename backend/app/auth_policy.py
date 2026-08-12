@@ -113,6 +113,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # --- imports.py -----------------------------------------------------------------------
     "projectExcludedItems": SIGNED_IN,
     "projectHardwareSchedule": SIGNED_IN,
+    "projectOpenings": SIGNED_IN,
     "reconcileSchedule": SIGNED_IN,
     "finalizeImportSession": SIGNED_IN,
     # --- notification.py ------------------------------------------------------------------

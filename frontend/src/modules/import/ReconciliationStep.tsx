@@ -26,9 +26,9 @@ interface ReconciliationStepProps {
    *  Hardware Status page reads. Drives the Lifecycle Breakdown chips. */
   hardwareStatusByProduct: Map<string, HardwareStatusRow>;
   /** Real reservation-aware availability per `${category}|${product}` (on-hand - deficient -
-   *  reserved), for assembly/shipping eligibility. Empty for the PO purpose. */
+   *  reserved), for assembly eligibility. Empty for the PO purpose. */
   availableByProduct: Map<string, number>;
-  /** projectInventoryAvailability still loading (assembly/shipping), so an eligibility of zero is
+  /** projectInventoryAvailability still loading (assembly), so an eligibility of zero is
    *  "not known yet", not "nothing to pull". */
   availabilityLoading: boolean;
   /** projectInventoryAvailability read failed, so eligibility is unknown rather than zero. */
@@ -78,13 +78,12 @@ const STATUS_LABEL_MAP: Record<string, string> = {
   BY_OTHERS: 'By Others',
 };
 
-// Buckets that count as "already committed" toward the project need
-const HEADER_TOOLTIPS: Record<ImportPurpose, string> = {
+// Buckets that count as "already committed" toward the project need. Only po and assembly reach this
+// step; the schedule replace path (#608) has no reconciliation, so it needs no tooltip here.
+const HEADER_TOOLTIPS: Record<'po' | 'assembly', string> = {
   po: 'Reconciliation compares the hardware schedule against existing purchase orders. Items already drafted, ordered, or received are shown so you can decide which remaining items to create new POs for.',
   assembly:
     'Reconciliation shows the lifecycle state of each item. Only items that have been received into the warehouse can be pulled for shop assembly. Items still on order or already assembled are not eligible.',
-  shipping:
-    'Reconciliation shows the lifecycle state of each item. Only items that are received or assembled can be included in shipping pull requests. Items still on order or being assembled are not eligible.',
 };
 
 // ---- Component ----
@@ -206,7 +205,7 @@ export default function ReconciliationStep({
 
   // Columns
   const showCheckboxes = isReimport && purpose === 'po';
-  const showQtyAvailable = purpose === 'assembly' || purpose === 'shipping';
+  const showQtyAvailable = purpose === 'assembly';
 
   const columns = useMemo<GridColDef[]>(() => {
     const cols: GridColDef[] = [
@@ -224,8 +223,8 @@ export default function ReconciliationStep({
       // Reconciliation is scoped to the unique product code, not the openings that were ticked: the
       // hardware lands in fungible project inventory, so opening identity is not a thing at this step
       // (#483). For a PO that means "Qty Needed" is the product's project-wide schedule total, which is
-      // the number the buyer reasons against. Assembly/shipping keep the selected pull scope, since
-      // there the figure is what this request is pulling.
+      // the number the buyer reasons against. Assembly keeps the selected pull scope, since there the
+      // figure is what this request is pulling.
       purpose === 'po'
         ? {
             field: 'quantityRequiredByProject',
@@ -344,7 +343,7 @@ export default function ReconciliationStep({
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
         <Typography variant="h6">Reconciliation</Typography>
         {isReimport && (
-          <Tooltip arrow title={HEADER_TOOLTIPS[purpose]}>
+          <Tooltip arrow title={purpose === 'assembly' ? HEADER_TOOLTIPS.assembly : HEADER_TOOLTIPS.po}>
             <Box component="span" sx={{ display: 'inline-flex', color: 'text.secondary' }}>
               <Info size={16} strokeWidth={1.75} />
             </Box>
@@ -429,21 +428,6 @@ export default function ReconciliationStep({
                   : hasEligibleItems
                     ? 'Items available in the warehouse can be pulled for shop assembly. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
                     : 'Nothing is available in the warehouse to assemble for this project yet.'}
-            </Alert>
-          )}
-
-          {purpose === 'shipping' && (
-            <Alert
-              severity={availabilityError || (!availabilityLoading && !hasEligibleItems) ? 'error' : 'info'}
-              sx={{ mb: 2 }}
-            >
-              {availabilityError
-                ? "Couldn't read this project's available inventory, so eligibility is unknown. Go back and retry."
-                : availabilityLoading
-                  ? 'Checking what is available in the warehouse…'
-                  : hasEligibleItems
-                    ? 'Items available in the warehouse can be included in shipping pull requests. Items with zero availability are excluded. You may proceed with partial quantities if needed.'
-                    : 'Nothing is available in the warehouse to ship for this project yet.'}
             </Alert>
           )}
 

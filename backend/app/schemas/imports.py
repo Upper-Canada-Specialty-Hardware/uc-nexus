@@ -29,6 +29,8 @@ from .types import (
     FinalizeImportResult,
     ProjectExcludedItem,
     ProjectHardwareSchedule,
+    ProjectOpeningRow,
+    ProjectOpenings,
     ReconciliationResult,
 )
 
@@ -44,6 +46,19 @@ class ImportQueries:
             if data is None:
                 return None
             return project_hardware_schedule_to_type(data)
+
+    @strawberry.field
+    def project_openings(self, info: strawberry.Info, project_id: strawberry.ID) -> ProjectOpenings:
+        """A project's openings for the request workspace's from-schedule picker, plus the two counts
+        its source card shows. The thin counterpart to `project_hardware_schedule` above (#608 review):
+        it never materializes the HardwareItem rows a three-field selection does not read."""
+        with SessionLocal() as session:
+            data = import_repository.get_project_openings(session, uuid.UUID(str(project_id)))
+            return ProjectOpenings(
+                openings=[ProjectOpeningRow(**row) for row in data["openings"]],
+                opening_count=data["opening_count"],
+                hardware_item_count=data["hardware_item_count"],
+            )
 
     @strawberry.field
     def reconcile_schedule(

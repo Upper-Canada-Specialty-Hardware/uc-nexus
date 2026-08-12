@@ -140,16 +140,26 @@ export const GET_SHIPPING_OUT_REQUEST = gql`
   }
 `;
 
-// The project's openings, for the request workspace's from-schedule opening picker. A deliberately
-// thin projection of projectHardwareSchedule - just the opening list with the fields the picker
-// filters on - so it caches apart from the import wizard's full schedule read.
+// The project's openings, for the request workspace's from-schedule opening picker (#608 review).
+// Its own thin resolver, not a slice of projectHardwareSchedule: that query materializes every
+// HardwareItem row server-side to answer a three-field selection. This returns the opening fields the
+// picker filters/displays on plus the two counts the source card shows.
 export const GET_PROJECT_OPENINGS = gql`
   query GetProjectOpenings($projectId: ID!) {
-    projectHardwareSchedule(projectId: $projectId) {
+    projectOpenings(projectId: $projectId) {
+      openingCount
+      hardwareItemCount
       openings {
         openingNumber
         building
         floor
+        location
+        hand
+        doorType
+        frameType
+        interiorExterior
+        keying
+        leafCount
       }
     }
   }
