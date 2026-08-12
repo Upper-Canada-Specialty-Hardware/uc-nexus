@@ -459,10 +459,10 @@ def test_the_pending_read_returns_draft_stage_questions_too(db_session):
     assert sum(li.quantity_received for li in returned_draft.line_items) == 4
 
 
-def test_only_a_manager_or_the_ship_out_decider_may_book_a_draft(db_session):
-    """The approve gate moved out of ROOT_FIELD_POLICY because it is no longer a property of the
-    field alone (#499): a Warehouse Manager may book any draft, and the PO creator who answered
-    SHIP_OUT may book that one. The check is against the decision row, never against the client."""
+def test_the_creators_answer_gates_who_may_book_a_draft(db_session):
+    """Decision-first: the manager no longer short-circuits. An undecided receive blocks everyone,
+    the manager included; a SHIP_OUT is the deciding creator's to book and no one else's - not even
+    a manager on their behalf. The check is against the decision row, never against the client."""
     from app.schemas.warehouse import _may_book_draft
 
     project = _make_project(db_session)
@@ -471,8 +471,9 @@ def test_only_a_manager_or_the_ship_out_decider_may_book_a_draft(db_session):
     db_session.flush()
     decision = _decision_for_draft(db_session, draft)
 
-    # Undecided: the creator has said nothing, so the manager's queue is still the only way in.
+    # Undecided blocks everyone - the creator has to answer before anything is booked.
     assert not _may_book_draft(decision, CREATOR, is_manager=False)
+    assert not _may_book_draft(decision, "u_manager", is_manager=True)
 
     warehouse_repository.decide_receive_decision(
         db_session,
@@ -485,18 +486,18 @@ def test_only_a_manager_or_the_ship_out_decider_may_book_a_draft(db_session):
     )
     db_session.flush()
 
-    # The decider may now book it, and nobody else may on their behalf.
+    # Ship-out is the decider's to book, and nobody else's - a manager does not route it into inventory.
     assert _may_book_draft(decision, CREATOR, is_manager=False)
     assert not _may_book_draft(decision, "u_someone_else", is_manager=False)
+    assert not _may_book_draft(decision, "u_manager", is_manager=True)
 
-    # A manager always may, whatever the answer is - and even with no decision at all.
-    assert _may_book_draft(decision, "u_someone_else", is_manager=True)
+    # A stock PO has no decision at all, so the manager's approval is still the whole gate.
     assert _may_book_draft(None, "u_someone_else", is_manager=True)
 
 
-def test_keeping_it_does_not_let_the_decider_book_it(db_session):
+def test_keeping_it_is_the_managers_to_book_not_the_deciders(db_session):
     """KEEP says this belongs in the warehouse's care, so the manager's approval is exactly the step
-    that still applies."""
+    that applies - and the creator who answered KEEP does not get to book it themselves."""
     from app.schemas.warehouse import _may_book_draft
 
     project = _make_project(db_session)
@@ -516,4 +517,6 @@ def test_keeping_it_does_not_let_the_decider_book_it(db_session):
     )
     db_session.flush()
 
+    # The creator's KEEP does not let them book it; a manager's approval is what applies.
     assert not _may_book_draft(decision, CREATOR, is_manager=False)
+    assert _may_book_draft(decision, "u_manager", is_manager=True)
