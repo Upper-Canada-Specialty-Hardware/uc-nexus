@@ -122,7 +122,7 @@ export default function ShippingRequestsPage({ projectId }: Props) {
           </ToggleButtonGroup>
 
           {view === 'APPROVED' && (
-            <Stack direction="row" spacing={0.75} alignItems="center">
+            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
               {STAGE_ORDER.filter((stage) => stage !== 'REQUESTED').map((stage) => {
                 const count = stageCounts.get(stage) ?? 0;
                 // An empty rung still shows - it is the ladder, not a result - but it carries no state,
