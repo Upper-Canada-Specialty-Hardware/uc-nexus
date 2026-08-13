@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Box, Typography, Card, CardActionArea, Grid } from '@mui/material';
+import { useMemo } from 'react';
 import {
   ClipboardList,
   PackageSearch,
@@ -9,6 +10,7 @@ import {
   SprayCan,
   Router,
   DatabaseZap,
+  Database,
   IdCard,
   Boxes,
   DoorOpen,
@@ -17,6 +19,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
 import { GET_ADMIN_STATS } from '../../graphql/admin';
+import { useIdentity } from '../../hooks/useIdentity';
 import { microLabelSx, tabularSx } from '../../theme';
 import { AnimatedNumber, StaggerList, StaggerItem, FadeIn } from '../../motion';
 
@@ -25,8 +28,12 @@ interface AdminStatsData {
     userCount: number;
     hardwareItemCount: number;
     openingCount: number;
+    // db-admin-postgres-access: whether the Database Access feature is live in this environment.
+    dbAccessEnabled: boolean;
   };
 }
+
+type CountKey = 'userCount' | 'hardwareItemCount' | 'openingCount';
 
 const CARD_ICON = { size: 26, strokeWidth: 1.5 } as const;
 const TILE_ICON = { size: 18, strokeWidth: 1.75 } as const;
@@ -66,9 +73,18 @@ interface SubRoute {
   label: string;
   path: string;
   icon: ReactNode;
-  /** Which adminStats field, if any, belongs on this card. */
-  countKey?: keyof AdminStatsData['adminStats'];
+  /** Which adminStats count, if any, belongs on this card. */
+  countKey?: CountKey;
 }
+
+// db-admin-postgres-access: prepended only for a DB Admin, and only where the feature is enabled. The
+// explicit isDbAdmin check deliberately bypasses the app's "admin sees everything" shorthand - this
+// card mints internet-reachable read-write credentials, so a plain Admin/Manager must not see it.
+const DB_ACCESS_ROUTE: SubRoute = {
+  label: 'Database Access',
+  path: '/app/admin/db-access',
+  icon: <Database {...CARD_ICON} />,
+};
 
 const SUB_ROUTES: SubRoute[] = [
   { label: 'Project Purchasing Progress', path: '/app/admin/project-purchasing-progress', icon: <ClipboardList {...CARD_ICON} /> },
@@ -84,10 +100,16 @@ const SUB_ROUTES: SubRoute[] = [
 
 export default function AdminLanding() {
   const navigate = useNavigate();
+  const { isDbAdmin } = useIdentity();
   const { data, loading } = useQuery<AdminStatsData>(GET_ADMIN_STATS, {
     fetchPolicy: 'cache-and-network',
   });
   const s = data?.adminStats;
+
+  const cards = useMemo(
+    () => (isDbAdmin && s?.dbAccessEnabled ? [DB_ACCESS_ROUTE, ...SUB_ROUTES] : SUB_ROUTES),
+    [isDbAdmin, s?.dbAccessEnabled],
+  );
 
   return (
     <Box>
@@ -125,8 +147,8 @@ export default function AdminLanding() {
         Go to
       </Typography>
       <Grid container spacing={2}>
-        <StaggerList count={SUB_ROUTES.length}>
-          {SUB_ROUTES.map((card) => (
+        <StaggerList count={cards.length}>
+          {cards.map((card) => (
             <Grid key={card.path} size={{ xs: 12, sm: 6, md: 4, lg: 3 }}>
               <StaggerItem style={{ height: '100%' }}>
                 <ShortcutCard

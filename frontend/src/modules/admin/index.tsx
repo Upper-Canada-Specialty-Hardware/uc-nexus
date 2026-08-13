@@ -8,6 +8,7 @@ import ProjectsPage from './ProjectsPage';
 import LocationCleanupPage from './LocationCleanupPage';
 import RelayInstallsPage from './RelayInstallsPage';
 import SharePointMigrationPage from './SharePointMigrationPage';
+import DbAccessPage from './DbAccessPage';
 import AdminLanding from './AdminLanding';
 
 // Navigation back out of a sub-page is carried by the persistent rail and the app-bar breadcrumbs,
@@ -25,6 +26,7 @@ export default function AdminModule() {
       <Route path="relay-installs" element={<RelayInstallsPage />} />
       <Route path="location-cleanup" element={<LocationCleanupPage />} />
       <Route path="sharepoint-migration" element={<SharePointMigrationPage />} />
+      <Route path="db-access" element={<DbAccessPage />} />
       <Route path="*" element={<Navigate to="/app/admin" replace />} />
     </Routes>
   );

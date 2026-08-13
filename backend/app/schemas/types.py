@@ -1616,6 +1616,10 @@ class AdminStats:
     user_count: int
     hardware_item_count: int
     opening_count: int
+    # Whether the Database Access page is live in this environment (db-admin-postgres-access). AdminLanding
+    # already fetches adminStats, so carrying the flag here lets the DB-access card and route hide with no
+    # extra query - off in local dev, CI and every PR preview, on only where the proxy is configured.
+    db_access_enabled: bool
 
 
 # --- GP write outbox (#353 PR E) ----------------------------------------------------------------------

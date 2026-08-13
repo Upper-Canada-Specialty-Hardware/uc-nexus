@@ -161,6 +161,7 @@ export const GET_ADMIN_STATS = gql`
       userCount
       hardwareItemCount
       openingCount
+      dbAccessEnabled
     }
   }
 `;
@@ -458,5 +459,69 @@ export const MIGRATE_SHAREPOINT_INVENTORY = gql`
       catalogItemsSkipped
       catalogAttributesCreated
     }
+  }
+`;
+
+// ---------------------------------------------------------------------------
+// Direct database access (db-admin-postgres-access). DB-Admin gated on the backend, and every field
+// refuses when the feature is disabled (no proxy / a preview env). The mint/rotate credential is
+// returned once and lives only in that response - the page reads it no-cache so it never sits in Apollo.
+// ---------------------------------------------------------------------------
+
+export const POSTGRES_ADMINS = gql`
+  query PostgresAdmins {
+    postgresAdmins {
+      dbRole
+      clerkUserId
+      displayName
+      email
+      clerkMissing
+      active
+      createdAt
+      lastRotatedAt
+    }
+  }
+`;
+
+export const POSTGRES_ACCESS_AUDIT = gql`
+  query PostgresAccessAudit {
+    postgresAccessAudit {
+      id
+      action
+      dbRole
+      actorClerkId
+      actorName
+      targetClerkId
+      targetName
+      createdAt
+    }
+  }
+`;
+
+export const MINT_POSTGRES_ADMIN = gql`
+  mutation MintPostgresAdmin($clerkUserId: String!) {
+    mintPostgresAdmin(clerkUserId: $clerkUserId) {
+      dbRole
+      clerkUserId
+      adodbConnectionString
+      accessConnectionString
+    }
+  }
+`;
+
+export const ROTATE_POSTGRES_ADMIN = gql`
+  mutation RotatePostgresAdmin($dbRole: String!) {
+    rotatePostgresAdmin(dbRole: $dbRole) {
+      dbRole
+      clerkUserId
+      adodbConnectionString
+      accessConnectionString
+    }
+  }
+`;
+
+export const REVOKE_POSTGRES_ADMIN = gql`
+  mutation RevokePostgresAdmin($dbRole: String!) {
+    revokePostgresAdmin(dbRole: $dbRole)
   }
 `;
