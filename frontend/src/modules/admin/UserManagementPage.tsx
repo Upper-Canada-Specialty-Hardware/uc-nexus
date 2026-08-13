@@ -159,9 +159,19 @@ export default function UserManagementPage() {
   }, []);
 
   const handleToggleRole = useCallback((role: string) => {
-    setEditRoles((prev) =>
-      prev.includes(role) ? prev.filter((r) => r !== role) : [...prev, role],
-    );
+    setEditRoles((prev) => {
+      const next = prev.includes(role) ? prev.filter((r) => r !== role) : [...prev, role];
+      // Keep the DB Admin stacking invariant the backend enforces, so the dialog can never build the
+      // always-rejected combo (DB Admin without Admin/Manager): checking DB Admin pulls Admin/Manager
+      // in, and unchecking Admin/Manager drops DB Admin with it.
+      if (role === DB_ADMIN_ROLE && next.includes(DB_ADMIN_ROLE) && !next.includes('Admin/Manager')) {
+        next.push('Admin/Manager');
+      }
+      if (role === 'Admin/Manager' && !next.includes('Admin/Manager')) {
+        return next.filter((r) => r !== DB_ADMIN_ROLE);
+      }
+      return next;
+    });
   }, []);
 
   const handleSave = useCallback(async () => {

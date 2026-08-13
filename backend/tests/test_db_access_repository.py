@@ -11,6 +11,7 @@ import hashlib
 import hmac
 
 import pytest
+from sqlalchemy import text as sa_text
 
 from app import config
 from app.errors import AppError, ValidationError
@@ -55,6 +56,27 @@ def test_scram_verifier_keys_are_derived_correctly():
 
 def test_scram_verifier_is_salted_per_call():
     assert repo._scram_sha256_verifier("same") != repo._scram_sha256_verifier("same")
+
+
+def test_scram_verifier_storedkey_ends_in_base64_padding():
+    """The StoredKey is 32 bytes, so its base64 always ends in "=" padding. That "=" is exactly why the
+    ":" before ServerKey is a SQLAlchemy text() bind hazard - the negative lookbehind before a bind
+    passes on a non-word char - and why the role DDL interpolates the verifier via exec_driver_sql."""
+    for _ in range(20):
+        v = repo._scram_sha256_verifier("pw")
+        stored_b64 = v.split("$")[2].split(":")[0]
+        assert stored_b64.endswith("=")
+
+
+def test_text_misparses_a_verifier_shaped_password_literal():
+    """Regression for the mint/rotate ship-blocker: a PASSWORD statement carrying a SCRAM verifier must
+    NOT go through text(), which reads the "=" -terminated StoredKey's trailing ":" as a required bind
+    and raises before the statement reaches Postgres. Uses the exact hazardous shape so it is
+    deterministic (a real verifier hits it ~97% of the time). If someone reverts to text(), the
+    reasoning is here."""
+    hazardous = "SCRAM-SHA-256$4096:c2FsdHNhbHRzYWx0c2E=$c3RvcmVka2V5c3RvcmVka2V5c3RvcmVka2V5MDA=:U2VydmVyS2V5"
+    parsed = sa_text(f"ALTER ROLE \"user_x\" PASSWORD '{hazardous}'")
+    assert parsed._bindparams, "text() should have misparsed the verifier's ':' as a bind param"
 
 
 def test_generated_password_and_its_verifier_carry_no_quote():

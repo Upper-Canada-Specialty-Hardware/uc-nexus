@@ -185,8 +185,10 @@ def _sweep_role(conn, role: str) -> None:
     if not _role_exists(conn, role):
         return
     conn.execute(text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = :r"), {"r": role})
-    conn.execute(text(f"DROP OWNED BY {_q(role)}"))
-    conn.execute(text(f"DROP ROLE IF EXISTS {_q(role)}"))
+    # exec_driver_sql, not text(): these are interpolated DDL with no bind params, and text() would try
+    # to parse any ":" in them as a bind. Same reason the PASSWORD statements below use it.
+    conn.exec_driver_sql(f"DROP OWNED BY {_q(role)}")
+    conn.exec_driver_sql(f"DROP ROLE IF EXISTS {_q(role)}")
 
 
 # --- group setup ---------------------------------------------------------------------------------
@@ -203,34 +205,31 @@ def _ensure_group() -> None:
     app_role = _q(_APP_ROLE)
     grp = _q(_GROUP_ROLE)
     with SessionLocal() as session:
+        # exec_driver_sql throughout: interpolated DDL with no bind params, so text()'s ":" bind parsing
+        # must not run over it. The CREATE is wrapped in an EXCEPTION handler rather than a bare
+        # IF NOT EXISTS - the check-then-create is not atomic, so two first-ever mints racing could both
+        # see the role absent and both CREATE; catching duplicate_object makes the loser a no-op.
         conn = session.connection()
-        conn.execute(
-            text(
-                f"""
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{_GROUP_ROLE}') THEN
-                        CREATE ROLE {_GROUP_ROLE} NOLOGIN;
-                    END IF;
-                END
-                $$
-                """
-            )
+        conn.exec_driver_sql(
+            f"""
+            DO $$
+            BEGIN
+                CREATE ROLE {_GROUP_ROLE} NOLOGIN;
+            EXCEPTION WHEN duplicate_object THEN
+                NULL;
+            END
+            $$
+            """
         )
-        conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {grp}"))
-        conn.execute(text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {grp}"))
-        conn.execute(text(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {grp}"))
-        conn.execute(
-            text(
-                f"ALTER DEFAULT PRIVILEGES FOR ROLE {app_role} IN SCHEMA public "
-                f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {grp}"
-            )
+        conn.exec_driver_sql(f"GRANT USAGE ON SCHEMA public TO {grp}")
+        conn.exec_driver_sql(f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {grp}")
+        conn.exec_driver_sql(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {grp}")
+        conn.exec_driver_sql(
+            f"ALTER DEFAULT PRIVILEGES FOR ROLE {app_role} IN SCHEMA public "
+            f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {grp}"
         )
-        conn.execute(
-            text(
-                f"ALTER DEFAULT PRIVILEGES FOR ROLE {app_role} IN SCHEMA public "
-                f"GRANT USAGE, SELECT ON SEQUENCES TO {grp}"
-            )
+        conn.exec_driver_sql(
+            f"ALTER DEFAULT PRIVILEGES FOR ROLE {app_role} IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO {grp}"
         )
         session.commit()
 
@@ -288,6 +287,20 @@ def mint(clerk_user_id: str, *, actor_clerk_id: str) -> dict:
         if existing:
             raise ConflictError("This user already has a live database login. Rotate it instead.")
 
+        # Two distinct Clerk ids can only derive the same role name if they differ solely in letter
+        # case (unreachable with today's alphanumeric ids), but refuse cleanly if it ever happens
+        # rather than letting the sweep below drop the other user's live role and then roll back on the
+        # db_role partial-unique with an opaque IntegrityError.
+        role_taken = session.scalar(
+            select(PgDirectAccess).where(
+                PgDirectAccess.db_role == role,
+                PgDirectAccess.clerk_user_id != clerk_user_id,
+                PgDirectAccess.revoked_at.is_(None),
+            )
+        )
+        if role_taken:
+            raise ConflictError("That database role name is already in use by another user.")
+
         conn = session.connection()
         _assert_not_superuser(conn, role)
         # The deterministic name may land on an orphan a prior imperfect revoke left behind (its DROP
@@ -295,10 +308,13 @@ def mint(clerk_user_id: str, *, actor_clerk_id: str) -> dict:
         # error no UI action can clear.
         _sweep_role(conn, role)
 
-        conn.execute(text(f"CREATE ROLE {_q(role)} LOGIN CONNECTION LIMIT {_CONNECTION_LIMIT} PASSWORD '{verifier}'"))
-        conn.execute(text(f"ALTER ROLE {_q(role)} SET statement_timeout = '{_STATEMENT_TIMEOUT}'"))
-        conn.execute(text(f"ALTER ROLE {_q(role)} SET idle_in_transaction_session_timeout = '{_IDLE_TX_TIMEOUT}'"))
-        conn.execute(text(f"GRANT {_q(_GROUP_ROLE)} TO {_q(role)}"))
+        # exec_driver_sql, not text(): the SCRAM verifier's StoredKey base64 ends in "=", so the ":"
+        # before its ServerKey would be read by text() as a phantom required bind and raise before the
+        # statement reached Postgres. exec_driver_sql skips bind parsing, and the verifier carries no "%".
+        conn.exec_driver_sql(f"CREATE ROLE {_q(role)} LOGIN CONNECTION LIMIT {_CONNECTION_LIMIT} PASSWORD '{verifier}'")
+        conn.exec_driver_sql(f"ALTER ROLE {_q(role)} SET statement_timeout = '{_STATEMENT_TIMEOUT}'")
+        conn.exec_driver_sql(f"ALTER ROLE {_q(role)} SET idle_in_transaction_session_timeout = '{_IDLE_TX_TIMEOUT}'")
+        conn.exec_driver_sql(f"GRANT {_q(_GROUP_ROLE)} TO {_q(role)}")
 
         session.add(PgDirectAccess(db_role=role, clerk_user_id=clerk_user_id, created_by=actor_clerk_id))
         session.add(
@@ -363,7 +379,8 @@ def rotate(db_role: str, *, actor_clerk_id: str) -> dict:
 
         password = _generate_password()
         verifier = _scram_sha256_verifier(password)
-        conn.execute(text(f"ALTER ROLE {_q(db_role)} PASSWORD '{verifier}'"))
+        # exec_driver_sql, not text(): the verifier's ":" separators would be misread as binds. See mint.
+        conn.exec_driver_sql(f"ALTER ROLE {_q(db_role)} PASSWORD '{verifier}'")
 
         row.last_rotated_at = datetime.utcnow()
         session.add(

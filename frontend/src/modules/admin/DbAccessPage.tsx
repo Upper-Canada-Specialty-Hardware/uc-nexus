@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import {
   Box,
   Button,
@@ -114,6 +114,8 @@ export default function DbAccessPage() {
   const [credential, setCredential] = useState<Credential | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<PostgresLogin | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
+  // Which row's rotate is in flight, so only that row's button greys out - not every row's.
+  const [rotatingRole, setRotatingRole] = useState<string | null>(null);
 
   const { data, loading, error } = useQuery<{ postgresAdmins: PostgresLogin[] }>(POSTGRES_ADMINS, {
     skip: !isDbAdmin,
@@ -122,11 +124,25 @@ export default function DbAccessPage() {
   const admins = useMemo(() => data?.postgresAdmins ?? [], [data]);
 
   // The audit history under the grid; only fetched once the panel is opened.
-  const { data: auditData } = useQuery<{ postgresAccessAudit: AuditEntry[] }>(POSTGRES_ACCESS_AUDIT, {
-    skip: !isDbAdmin || !auditOpen,
-    fetchPolicy: 'cache-and-network',
-  });
+  const { data: auditData, refetch: refetchAudit } = useQuery<{ postgresAccessAudit: AuditEntry[] }>(
+    POSTGRES_ACCESS_AUDIT,
+    {
+      skip: !isDbAdmin || !auditOpen,
+      fetchPolicy: 'cache-and-network',
+    },
+  );
   const audit = useMemo(() => auditData?.postgresAccessAudit ?? [], [auditData]);
+
+  // A mint/rotate/revoke should refresh the audit list only when the panel is open - otherwise the
+  // query is skipped and forcing it via refetchQueries would fetch history nobody is looking at. The
+  // ref keeps the mutation callbacks reading the live open-state without re-creating them.
+  const auditOpenRef = useRef(auditOpen);
+  useEffect(() => {
+    auditOpenRef.current = auditOpen;
+  }, [auditOpen]);
+  const refreshAuditIfOpen = useCallback(() => {
+    if (auditOpenRef.current) refetchAudit();
+  }, [refetchAudit]);
 
   // The mint picker's roster, only pulled while the dialog is open.
   const { data: usersData } = useQuery<{ users: RosterUser[] }>(GET_USERS, { skip: !mintOpen });
@@ -144,30 +160,45 @@ export default function DbAccessPage() {
   const [mint, { loading: minting }] = useMutation<{ mintPostgresAdmin: Credential }>(MINT_POSTGRES_ADMIN, {
     // no-cache so the returned strings never sit in the Apollo in-memory cache after the panel closes.
     fetchPolicy: 'no-cache',
-    refetchQueries: [{ query: POSTGRES_ADMINS }, { query: POSTGRES_ACCESS_AUDIT }],
+    refetchQueries: [{ query: POSTGRES_ADMINS }],
     onCompleted: (d) => {
       setCredential(d.mintPostgresAdmin);
       setMintOpen(false);
       setMintUserId('');
+      refreshAuditIfOpen();
       showToast('Database login minted', 'success');
     },
     onError: (err) => showToast(err.message, 'error'),
   });
 
-  const [rotate, { loading: rotating }] = useMutation<{ rotatePostgresAdmin: Credential }>(ROTATE_POSTGRES_ADMIN, {
+  const [rotate] = useMutation<{ rotatePostgresAdmin: Credential }>(ROTATE_POSTGRES_ADMIN, {
     fetchPolicy: 'no-cache',
-    refetchQueries: [{ query: POSTGRES_ADMINS }, { query: POSTGRES_ACCESS_AUDIT }],
+    refetchQueries: [{ query: POSTGRES_ADMINS }],
     onCompleted: (d) => {
+      setRotatingRole(null);
       setCredential(d.rotatePostgresAdmin);
+      refreshAuditIfOpen();
       showToast('Password rotated', 'success');
     },
-    onError: (err) => showToast(err.message, 'error'),
+    onError: (err) => {
+      setRotatingRole(null);
+      showToast(err.message, 'error');
+    },
   });
 
+  const handleRotate = useCallback(
+    (dbRole: string) => {
+      setRotatingRole(dbRole);
+      rotate({ variables: { dbRole } });
+    },
+    [rotate],
+  );
+
   const [revoke, { loading: revoking }] = useMutation<{ revokePostgresAdmin: boolean }>(REVOKE_POSTGRES_ADMIN, {
-    refetchQueries: [{ query: POSTGRES_ADMINS }, { query: POSTGRES_ACCESS_AUDIT }],
+    refetchQueries: [{ query: POSTGRES_ADMINS }],
     onCompleted: () => {
       setRevokeTarget(null);
+      refreshAuditIfOpen();
       showToast('Database login revoked', 'success');
     },
     onError: (err) => {
@@ -266,15 +297,16 @@ export default function DbAccessPage() {
         filterable: false,
         renderCell: (p) => {
           const row = p.row as PostgresLogin;
+          const isRotating = rotatingRole === row.dbRole;
           return (
             <Stack direction="row" spacing={1} sx={{ height: '100%' }} alignItems="center">
               <Button
                 size="small"
                 variant="outlined"
-                disabled={rotating}
-                onClick={() => rotate({ variables: { dbRole: row.dbRole } })}
+                disabled={isRotating}
+                onClick={() => handleRotate(row.dbRole)}
               >
-                Rotate
+                {isRotating ? 'Rotating…' : 'Rotate'}
               </Button>
               <Button size="small" variant="outlined" color="error" onClick={() => setRevokeTarget(row)}>
                 Revoke
@@ -284,7 +316,7 @@ export default function DbAccessPage() {
         },
       },
     ],
-    [rotate, rotating],
+    [handleRotate, rotatingRole],
   );
 
   if (!isDbAdmin) {
