@@ -16,6 +16,9 @@ type ShopAssemblyRequest {
   # Something happened to this request after it was created that the acceptor must know about
   # (#342): a schedule re-upload landed under it, or the reservations backfill could not cover it.
   integrity_note: String
+  # A PENDING request whose minted pull was cancelled was returned by that cancellation (#613).
+  # Human-readable explanation of the reappearance, else null. Derived, never stored.
+  return_note: String
   openings: [ShopAssemblyOpening!]!
 }
 

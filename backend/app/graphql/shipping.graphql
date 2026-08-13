@@ -42,6 +42,11 @@ type ShippingOutRequest {
   integrityNote: String
   pullRequestId: ID
   items: [ShippingOutRequestItem!]!
+  # Where the request sits on the ladder the requests list draws as columns. Derived, never stored.
+  stage: RequestStage!
+  # A PENDING request whose minted pull was cancelled was returned by that cancellation (#613).
+  # Human-readable explanation of the reappearance, else null. Derived, never stored.
+  returnNote: String
 }
 
 # --- Delivery Request (#447) ---

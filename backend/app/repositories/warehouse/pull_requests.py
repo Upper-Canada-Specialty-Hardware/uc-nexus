@@ -50,12 +50,17 @@ def get_pull_requests(
     project_id: uuid.UUID | None = None,
     source=None,
     status=None,
+    statuses=None,
 ) -> list[PullRequestModel]:
     """
     Query PullRequest WHERE deleted_at IS NULL, optionally filtered by project_id.
     Optional source filter, optional status filter.
     Order by created_at ASC (FIFO — oldest first).
     Eagerly load items (PullRequestItem).
+
+    `status` filters to one status; `statuses` filters to any of a set - the active queue passes
+    [PENDING, IN_PROGRESS] so completed and cancelled pulls leave it the moment they land, and the
+    history page passes [COMPLETED, CANCELLED]. The two are additive when both are given.
     """
     stmt = (
         select(PullRequestModel)
@@ -68,6 +73,8 @@ def get_pull_requests(
         stmt = stmt.where(PullRequestModel.source == source)
     if status is not None:
         stmt = stmt.where(PullRequestModel.status == status)
+    if statuses:
+        stmt = stmt.where(PullRequestModel.status.in_(statuses))
     stmt = stmt.order_by(PullRequestModel.created_at.asc())
     return list(session.scalars(stmt).unique().all())
 
@@ -1676,10 +1683,13 @@ def _return_source_request_to_pending(session: Session, pr: PullRequestModel, so
         source_request.status = ShippingOutRequestStatus.PENDING
     source_request.approved_by = None
     source_request.approved_at = None
-    # A request's only link to its pull is this column, and the pull it points at is dead. Clearing
-    # it is what lets a re-accept mint a fresh one (and keeps `reopenable_only` and the re-upload
-    # liveness queries from resolving through a cancelled pull).
-    source_request.pull_request_id = None
+    # Deliberately kept pointing at the now-CANCELLED pull, not nulled. That pointer is the only
+    # durable record that this PENDING request reappeared on the accept board because a cancel put it
+    # there (#613) - the accept queue reads it to draw the "returned to Pending" note that tells the
+    # acceptor where the request came from. It is not a false "live pull": every liveness query that
+    # inspects the pull's status keys off PullRequestStatus, which is CANCELLED here, and a PENDING
+    # request is "live" on its own status regardless. A re-accept overwrites this column with the
+    # fresh pull it mints (clearing the note); reopen is only reachable from APPROVED and nulls it.
     return True
 
 

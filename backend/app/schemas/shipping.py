@@ -79,6 +79,18 @@ def _delivery_details(input) -> dict:
     return {field: getattr(input, field) for field in shipping_repository.DELIVERY_REQUEST_FIELDS}
 
 
+def _requests_to_types(session, reqs) -> list[ShippingOutRequest]:
+    """Requests with their derived stage and return-note, in one extra query each for the whole list.
+
+    Resolved here rather than as field resolvers so the list page pays two grouped reads, not a
+    per-row lookup over Railway's network hop (CLAUDE.md perf rules) - mirrors the shop-assembly twin
+    in `app/schemas/shop_assembly.py`.
+    """
+    stages = shipping_repository.get_request_stages(session, reqs)
+    notes = shipping_repository.get_return_notes(session, reqs)
+    return [shipping_out_request_to_type(r, stage=stages.get(r.id), return_note=notes.get(r.id)) for r in reqs]
+
+
 @strawberry.type
 class ShippingQueries:
     @strawberry.field
@@ -118,7 +130,7 @@ class ShippingQueries:
             reqs = shipping_repository.get_shipping_out_requests(
                 session, uuid.UUID(str(project_id)) if project_id else None, status, reopenable_only
             )
-            return [shipping_out_request_to_type(r) for r in reqs]
+            return _requests_to_types(session, reqs)
 
     @strawberry.field
     def shipping_out_request(self, info: strawberry.Info, id: strawberry.ID) -> ShippingOutRequest | None:
@@ -188,9 +200,7 @@ class ShippingQueries:
                         placed_quantity=counts["placed"],
                         unplaced_quantity=max(0, counts["staged"] - counts["placed"]),
                     )
-                    for key, counts in sorted(
-                        pool["loose"].items(), key=lambda pair: tuple(str(part) for part in pair[0])
-                    )
+                    for key, counts in sorted(pool.items(), key=lambda pair: tuple(str(part) for part in pair[0]))
                 ],
                 containers=[container_to_type(c) for c in containers],
             )

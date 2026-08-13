@@ -26,6 +26,7 @@ from app.models.enums import (
 from app.models.pull_request import PullRequest as PullRequestModel
 from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.shop_assembly import ShopAssemblyRequest, ShopAssemblyRequestItem
+from app.repositories import request_return_notes
 
 # Where one request sits on the ladder the requests list draws as columns. Derived from the request's
 # own status and the state of the pull it minted - never stored, because a stored copy is a fifth
@@ -296,6 +297,15 @@ def _stage_for(request: ShopAssemblyRequest, pull_status: PullRequestStatus | No
     if pull_status == PullRequestStatus.CANCELLED or pull_status is None:
         return STAGE_REQUESTED
     return STAGE_ACCEPTED
+
+
+def get_return_notes(session: Session, requests: list[ShopAssemblyRequest]) -> dict[uuid.UUID, str | None]:
+    """The "returned to Pending" note per request (#613), one query for the whole list. A PENDING
+    request still pointing at a CANCELLED pull was put back on the accept board by that cancel. See
+    `app.repositories.request_return_notes`."""
+    pending = [r for r in requests if r.status == ShopAssemblyRequestStatus.PENDING]
+    derived = request_return_notes.return_notes_for(session, pending)
+    return {r.id: derived.get(r.id) for r in requests}
 
 
 def get_request_line_counts(session: Session, request_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
