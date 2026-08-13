@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Alert,
   Box,
   Button,
   Chip,
   Link,
+  Stack,
   Table,
   TableHead,
   TableBody,
@@ -24,7 +25,17 @@ import {
   REOPEN_SHIPPING_OUT_REQUEST,
 } from '../../graphql/shipping';
 import RequestsReviewPage from '../../components/RequestsReviewPage';
-import { monoSx } from '../../theme';
+import { monoSx, tabularSx } from '../../theme';
+import { FadeIn } from '../../motion';
+// The stage ladder is identical to shop assembly's, so its labels, colours and reopen rule are the
+// same module rather than a second copy that can drift (#613).
+import {
+  STAGE_COLOR,
+  STAGE_LABEL,
+  STAGE_ORDER,
+  reopenBlockedReason,
+  type RequestStage,
+} from '../shop-assembly/requestStages';
 
 interface ShippingRequestItem {
   id: string;
@@ -40,10 +51,13 @@ interface ShippingOutRequest {
   requestNumber: string;
   projectId: string;
   status: string;
+  stage: RequestStage;
   createdBy: string;
   createdAt: string;
   /** Set when a schedule re-upload landed under this request, or it holds no reservation (#342). */
   integrityNote: string | null;
+  /** Set when a warehouse cancel returned this request to Pending (#613). */
+  returnNote: string | null;
   items: ShippingRequestItem[];
 }
 
@@ -52,49 +66,101 @@ interface Props {
   projectId?: string;
 }
 
+type View = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+const VIEW_COPY: Record<View, { description: string; empty: string }> = {
+  PENDING: {
+    description:
+      'Pending requests, from Start a Request or raised here off project inventory. Loose hardware was reserved when the request was created, so accepting is purely your approval: it creates the warehouse pull request. Rejecting releases the reservation, and a pending request can still be edited.',
+    empty: 'No pending shipping requests.',
+  },
+  APPROVED: {
+    description:
+      'Accepted requests and where their pull has got to. Reopen undoes an accept and sends the request back to Pending, which only works while the warehouse has not started the pull.',
+    empty: 'No accepted shipping requests.',
+  },
+  REJECTED: {
+    description: 'Requests that were turned down. Their claim on inventory was released at rejection.',
+    empty: 'No rejected shipping requests.',
+  },
+};
+
 export default function ShippingRequestsPage({ projectId }: Props) {
   const navigate = useNavigate();
-  const [view, setView] = useState<'PENDING' | 'APPROVED'>('PENDING');
+  const [view, setView] = useState<View>('PENDING');
   const { data, loading, refetch } = useQuery<{ shippingOutRequests: ShippingOutRequest[] }>(
     GET_SHIPPING_OUT_REQUESTS,
     {
-      variables: { projectId: projectId ?? null, status: view, reopenableOnly: view === 'APPROVED' },
+      variables: { projectId: projectId ?? null, status: view },
       fetchPolicy: 'cache-and-network',
     },
   );
 
+  const requests = useMemo(() => data?.shippingOutRequests ?? [], [data]);
+
+  // One count per rung over the accepted requests already in hand - the stage is on every row, so the
+  // ladder is a reduction over the list, not a second query.
+  const stageCounts = useMemo(() => {
+    const counts = new Map<RequestStage, number>();
+    for (const req of requests) counts.set(req.stage, (counts.get(req.stage) ?? 0) + 1);
+    return counts;
+  }, [requests]);
+
   return (
     <Box>
-      <ToggleButtonGroup
-        size="small"
-        exclusive
-        value={view}
-        onChange={(_e, next) => next && setView(next)}
-        sx={{ mb: 2 }}
-      >
-        <ToggleButton value="PENDING">Pending</ToggleButton>
-        <ToggleButton value="APPROVED">Approved</ToggleButton>
-      </ToggleButtonGroup>
+      <FadeIn>
+        <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" sx={{ mb: 2 }}>
+          <ToggleButtonGroup
+            size="small"
+            exclusive
+            value={view}
+            onChange={(_e, next) => next && setView(next)}
+          >
+            <ToggleButton value="PENDING">Pending</ToggleButton>
+            <ToggleButton value="APPROVED">Accepted</ToggleButton>
+            <ToggleButton value="REJECTED">Rejected</ToggleButton>
+          </ToggleButtonGroup>
+
+          {view === 'APPROVED' && (
+            <Stack direction="row" spacing={0.75} alignItems="center">
+              {STAGE_ORDER.filter((stage) => stage !== 'REQUESTED').map((stage) => {
+                const count = stageCounts.get(stage) ?? 0;
+                // An empty rung still shows - it is the ladder, not a result - but it carries no state,
+                // so it drops its hue rather than colouring a zero.
+                return (
+                  <Chip
+                    key={stage}
+                    size="small"
+                    variant="outlined"
+                    color={count > 0 ? STAGE_COLOR[stage] : 'default'}
+                    label={`${STAGE_LABEL[stage]} ${count}`}
+                    sx={{ ...tabularSx, ...(count === 0 && { color: 'text.disabled' }) }}
+                  />
+                );
+              })}
+            </Stack>
+          )}
+        </Stack>
+      </FadeIn>
 
       <RequestsReviewPage<ShippingOutRequest>
         title="Shipping Requests"
-        description={
-          view === 'PENDING'
-            ? 'Pending requests, from Start a Request or raised here off project inventory. Loose hardware was reserved when the request was created, so accepting is purely your approval: it creates the warehouse pull request. Rejecting releases the reservation, and a pending request can still be edited.'
-            : 'Accepted requests whose warehouse pull has not started yet. Reopen one to undo the accept and send it back to Pending.'
-        }
-        emptyMessage={view === 'PENDING' ? 'No pending shipping requests.' : 'No shipping requests can be reopened.'}
+        description={VIEW_COPY[view].description}
+        emptyMessage={VIEW_COPY[view].empty}
         loading={loading}
         loaded={data !== undefined}
-        requests={data?.shippingOutRequests ?? []}
+        requests={requests}
         acceptMutation={ACCEPT_SHIPPING_OUT_REQUEST}
         rejectMutation={REJECT_SHIPPING_OUT_REQUEST}
         reopenMutation={REOPEN_SHIPPING_OUT_REQUEST}
-        mode={view === 'APPROVED' ? 'approved' : 'pending'}
+        mode={view === 'PENDING' ? 'pending' : 'approved'}
+        reopenDisabledReason={(req) =>
+          view === 'REJECTED' ? 'This request was rejected.' : reopenBlockedReason(req.stage)
+        }
         onChanged={refetch}
         headerAction={
-          // Always available now: the workspace carries its own project picker, so this no longer
-          // needs a project chosen here. A picked project rides along to preselect it.
+          // Always available: the workspace carries its own project picker, so this no longer needs a
+          // project chosen here. A picked project rides along to preselect it.
           <Button
             size="small"
             variant="outlined"
@@ -107,9 +173,8 @@ export default function ShippingRequestsPage({ projectId }: Props) {
           </Button>
         }
         renderExtraActions={(req) =>
-          // Editing is only meaningful while the request is still pending; the workspace itself
-          // refuses an accepted one. It reads the request's own project, so no picked project is
-          // needed here either.
+          // Editing is only meaningful while the request is still pending; the workspace itself refuses
+          // an accepted one. It reads the request's own project, so no picked project is needed here.
           view === 'PENDING' ? (
             <Button
               variant="outlined"
@@ -126,14 +191,22 @@ export default function ShippingRequestsPage({ projectId }: Props) {
             <Alert severity="info">
               Accepting a request creates a warehouse pull request. Process it under{' '}
               <Link component={RouterLink} to="/app/warehouse/pull-requests">
-                Warehouse → Pull Requests → Shipping Out
+                Warehouse → Pull Requests
               </Link>{' '}
-              (Approve and Start, then Mark as Pulled) to move items to ship-ready.
+              (Confirm Pick, then Mark as Pulled) to move items to ship-ready.
             </Alert>
           ) : undefined
         }
         renderSummary={(req) => (
-          <Chip label={`${req.items.length} item(s)`} size="small" variant="outlined" />
+          <Stack direction="row" spacing={1}>
+            <Chip
+              size="small"
+              variant="outlined"
+              color={STAGE_COLOR[req.stage]}
+              label={STAGE_LABEL[req.stage]}
+            />
+            <Chip label={`${req.items.length} item(s)`} size="small" variant="outlined" sx={tabularSx} />
+          </Stack>
         )}
         renderDetails={(req) =>
           req.items.length > 0 ? (

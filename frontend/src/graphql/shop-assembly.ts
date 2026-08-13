@@ -27,6 +27,7 @@ export const GET_SHOP_ASSEMBLY_REQUESTS = gql`
       rejectedAt
       rejectionReason
       integrityNote
+      returnNote
       pullRequestId
       items {
         id

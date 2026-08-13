@@ -30,6 +30,11 @@ interface ReviewableRequest {
    * healthy request, which is the overwhelming majority, so it renders nothing at all.
    */
   integrityNote?: string | null;
+  /**
+   * This request reappeared on the accept board because a warehouse cancel sent it back (#613). The
+   * human-readable explanation of that, or null when it was not returned by a cancel.
+   */
+  returnNote?: string | null;
 }
 
 interface RequestsReviewPageProps<TRequest extends ReviewableRequest> {
@@ -223,6 +228,10 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
                           colour and sits above the detail rather than in a tooltip - it changes what
                           accepting means. */}
                       {req.integrityNote && <Alert severity="warning">{req.integrityNote}</Alert>}
+                      {/* Why this request is back on the board: a warehouse cancel returned it
+                          (#613). Same warning weight as an integrity note - it changes what the
+                          reviewer is looking at - and both can show at once. */}
+                      {req.returnNote && <Alert severity="warning">{req.returnNote}</Alert>}
                       {renderDetails(req)}
 
                       {mode === 'approved' ? (
