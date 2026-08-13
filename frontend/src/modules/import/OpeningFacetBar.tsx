@@ -12,9 +12,9 @@ import {
   Typography,
 } from '@mui/material';
 import { Filter } from 'lucide-react';
-import type { ParsedOpening } from '../../types/hardwareSchedule';
 import {
   buildFacetOptions,
+  type FacetableOpening,
   FACETS,
   type FacetField,
   type FacetOption,
@@ -27,7 +27,7 @@ import { tabularSx } from '../../theme';
 const ALL = '__all__';
 
 interface OpeningFacetBarProps {
-  openings: ParsedOpening[];
+  openings: FacetableOpening[];
   selections: FacetSelections;
   onChange: (field: FacetField, values: string[]) => void;
   onClearAll: () => void;

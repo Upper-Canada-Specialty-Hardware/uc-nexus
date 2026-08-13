@@ -16,7 +16,7 @@ export interface ProductReconRow {
   productCode: string;
   quantityNeeded: number; // sum of HS qty across selected openings
   quantityRequiredByProject: number; // sum of HS qty across ALL openings in schedule
-  qtyAvailable: number; // for assembly/shipping eligibility
+  qtyAvailable: number; // for assembly eligibility
   statusBreakdown: Map<string, number>; // bucket totals across openings (recon PO-chain; drives qtyAvailable)
   // What the Lifecycle Breakdown chips render. Project-wide, sourced from `hardwareStatusByProduct`
   // so it matches the admin Hardware Status dashboard exactly. Falls back to `statusBreakdown` when
@@ -92,9 +92,6 @@ function computeAvailableQty(purpose: ImportPurpose, breakdown: Map<string, numb
   if (purpose === 'assembly') {
     return breakdown.get('RECEIVED') ?? 0;
   }
-  if (purpose === 'shipping') {
-    return (breakdown.get('RECEIVED') ?? 0) + (breakdown.get('ASSEMBLED') ?? 0);
-  }
   return 0;
 }
 
@@ -136,7 +133,7 @@ export function buildProductReconRows(args: {
   hardwareStatusByProduct?: Map<string, HardwareStatusRow>;
   // Real reservation-aware availability per `${hardware_category}|${product_code}` (on_hand -
   // deficient - reserved), from projectInventoryAvailability - the same number the request creation
-  // gate applies. When supplied it drives qtyAvailable for the assembly/shipping eligibility, instead
+  // gate applies. When supplied it drives qtyAvailable for the assembly eligibility, instead
   // of the recon RECEIVED bucket, which is blind to inventory that arrived off-PO. Absent for the PO
   // purpose (qtyAvailable is unused there) and in unit tests.
   availableByProduct?: Map<string, number>;
@@ -203,7 +200,7 @@ export function buildProductReconRows(args: {
   const rows = Array.from(map.values());
   for (const row of rows) {
     row.underlyingOpeningKeys = Array.from(openingKeysByProduct.get(row.id) ?? []);
-    // qtyAvailable is the assembly/shipping "available to pull" number, a genuinely different
+    // qtyAvailable is the assembly "available to pull" number, a genuinely different
     // question from the lifecycle chips. It reads real reservation-aware inventory when supplied -
     // what is physically on the shelf and unclaimed - and only falls back to the recon RECEIVED
     // bucket (loading, or the PO purpose where it is unused) when it is not.

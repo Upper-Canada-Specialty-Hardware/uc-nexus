@@ -18,9 +18,12 @@ interface DeepLinkIntent {
   // pick-a-project fall-through so the chooser's "by hardware" card survives when no project was named.
   selectionMode: SelectionMode;
   fromLatest: boolean;
+  // #608: where to return when the wizard closes, carried from the request workspace's "upload a
+  // newer schedule" hand-off.
+  returnTo?: string | null;
 }
 
-const PURPOSES: ImportPurpose[] = ['po', 'assembly'];
+const PURPOSES: ImportPurpose[] = ['po', 'assembly', 'schedule'];
 
 export default function ImportModule() {
   const { isAdmin } = useIdentity();
@@ -46,6 +49,7 @@ export default function ImportModule() {
   const purposeParam = searchParams.get('purpose');
   const sourceParam = searchParams.get('source');
   const modeParam = searchParams.get('mode');
+  const returnToParam = searchParams.get('returnTo');
   const projects = projectsData?.projects;
   const linkedPurpose = PURPOSES.includes(purposeParam as ImportPurpose)
     ? (purposeParam as ImportPurpose)
@@ -75,7 +79,12 @@ export default function ImportModule() {
     if (project) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot open from the URL
       setSelectedProject(project);
-      setIntent({ purpose: linkedPurpose ?? undefined, selectionMode: linkedMode, fromLatest: sourceParam === 'latest' });
+      setIntent({
+        purpose: linkedPurpose ?? undefined,
+        selectionMode: linkedMode,
+        fromLatest: sourceParam === 'latest',
+        returnTo: returnToParam,
+      });
       setWizardOpen(true);
     } else {
       // No project to open on: either none was named, or the id is stale and matches nothing. Both
@@ -85,7 +94,7 @@ export default function ImportModule() {
       setPendingMode(linkedMode);
     }
     setSearchParams({}, { replace: true });
-  }, [projectIdParam, purposeParam, linkedPurpose, linkedMode, sourceParam, projects, setSearchParams, navigate]);
+  }, [projectIdParam, purposeParam, linkedPurpose, linkedMode, sourceParam, returnToParam, projects, setSearchParams, navigate]);
 
   const handleSelect = (project: Project | null) => {
     if (!project) return;
@@ -136,6 +145,7 @@ export default function ImportModule() {
           initialPurpose={intent?.purpose}
           initialSelectionMode={intent?.selectionMode}
           autoStartFromLatest={intent?.fromLatest}
+          returnTo={intent?.returnTo}
         />
       )}
     </>

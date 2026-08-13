@@ -187,9 +187,31 @@ type VendorSuggestion {
   candidates: [VendorCandidate!]!
 }
 
+# The thin openings projection the from-schedule request composer reads (#608 review). Unlike
+# ProjectHardwareSchedule it never materializes the HardwareItem rows a three-field selection ignores.
+type ProjectOpeningRow {
+  opening_number: String!
+  building: String
+  floor: String
+  location: String
+  hand: String
+  door_type: String
+  frame_type: String
+  interior_exterior: String
+  keying: String
+  leaf_count: Int
+}
+
+type ProjectOpenings {
+  openings: [ProjectOpeningRow!]!
+  opening_count: Int!
+  hardware_item_count: Int!
+}
+
 type Query {
   projects: [Project!]!
   projectByScheduleId(projectId: String!): Project
+  projectOpenings(projectId: ID!): ProjectOpenings!
   reconcileSchedule(projectId: ID!, items: [ReconciliationItemInput!]!): [ReconciliationResult!]!
   suggestVendorForManufacturer(gpCompany: String!, manufacturer: String!): VendorSuggestion!
 }

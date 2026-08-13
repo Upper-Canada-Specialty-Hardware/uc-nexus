@@ -398,6 +398,64 @@ def test_get_project_hardware_schedule_returns_all_items(db_session):
     assert product_codes == {"HG-100", "HG-200", "HG-300"}
 
 
+def test_get_project_openings_returns_trimmed_rows_and_counts(db_session):
+    """get_project_openings returns just the picker's opening fields plus the opening and hardware-item
+    counts (#608 review) - a grouped COUNT for the items, never the materialized rows the full schedule
+    read builds."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [
+                _opening_input("A01", building="B1", floor="F1", door_type="HM", frame_type="HM", keying="K1"),
+                _opening_input("A02", building="B2", floor="F2"),
+            ],
+            "hardware_items": [
+                _hardware_item_input("A01", "HG-100"),
+                _hardware_item_input("A01", "HG-200"),
+                _hardware_item_input("A02", "HG-100"),
+            ],
+        },
+    )
+    db_session.flush()
+
+    data = import_repository.get_project_openings(db_session, project.id)
+    assert data["opening_count"] == 2
+    assert data["hardware_item_count"] == 3
+
+    rows = {r["opening_number"]: r for r in data["openings"]}
+    assert set(rows) == {"A01", "A02"}
+    a01 = rows["A01"]
+    assert a01["building"] == "B1"
+    assert a01["floor"] == "F1"
+    assert a01["door_type"] == "HM"
+    assert a01["frame_type"] == "HM"
+    assert a01["keying"] == "K1"
+    # Only the picker's fields - none of the dimensional/heading detail the full Opening carries.
+    assert set(a01) == {
+        "opening_number",
+        "building",
+        "floor",
+        "location",
+        "hand",
+        "door_type",
+        "frame_type",
+        "interior_exterior",
+        "keying",
+        "leaf_count",
+    }
+
+
+def test_get_project_openings_empty_for_project_without_schedule(db_session):
+    project = _make_project(db_session)
+    db_session.commit()
+    data = import_repository.get_project_openings(db_session, project.id)
+    assert data == {"openings": [], "opening_count": 0, "hardware_item_count": 0}
+
+
 def test_manufacturer_persists_and_round_trips(db_session):
     """Manufacturer flows finalize input -> HardwareItem row -> schedule query, and a null
     manufacturer round-trips as None (blank) rather than erroring."""

@@ -30,16 +30,18 @@ vi.mock('../ImportWizard', () => ({
     initialPurpose,
     initialSelectionMode,
     autoStartFromLatest,
+    returnTo,
   }: {
     open: boolean;
     project: { id: string };
     initialPurpose?: string;
     initialSelectionMode?: string;
     autoStartFromLatest?: boolean;
+    returnTo?: string | null;
   }) =>
     open ? (
       <div data-testid="wizard">
-        {`project=${project.id} purpose=${initialPurpose ?? 'none'} latest=${String(!!autoStartFromLatest)} mode=${initialSelectionMode ?? 'openings'}`}
+        {`project=${project.id} purpose=${initialPurpose ?? 'none'} latest=${String(!!autoStartFromLatest)} mode=${initialSelectionMode ?? 'openings'} returnTo=${returnTo ?? 'none'}`}
       </div>
     ) : null,
 }));
@@ -138,6 +140,20 @@ describe('ImportModule deep links', () => {
       { timeout: 5000 },
     );
     expect(screen.queryByTestId('wizard')).not.toBeInTheDocument();
+  });
+
+  // #608: the request workspace's "upload a newer schedule" hand-off links purpose=schedule with a
+  // returnTo. The module recognises the purpose and threads returnTo (URL-decoded) to the wizard,
+  // which navigates back to it on close/finalize.
+  it('opens the schedule replace purpose and threads returnTo to the wizard', async () => {
+    renderModule(
+      '/app/import?projectId=proj-2&purpose=schedule&returnTo=%2Fapp%2Fshipping%2Frequests%2Fnew%3FprojectId%3Dproj-2',
+    );
+
+    expect(await screen.findByTestId('wizard', undefined, SLOW)).toHaveTextContent(
+      'project=proj-2 purpose=schedule latest=false mode=openings returnTo=/app/shipping/requests/new?projectId=proj-2',
+    );
+    await expectParamsCleared();
   });
 
   // #565: the "by hardware" chooser card links `?purpose=po&mode=hardware` with no project. The mode

@@ -93,6 +93,43 @@ def get_project_hardware_schedule(
     }
 
 
+def get_project_openings(session: Session, project_id: uuid.UUID) -> dict:
+    """A project's openings for an opening picker, plus the opening and hardware-item counts.
+
+    Trimmed on purpose: `get_project_hardware_schedule` above materializes every HardwareItem row
+    to answer wizard hydration, and reusing it to fill a three-field opening picker made the shipping
+    request composer pay that cost for nothing (#608 review). This selects only the opening columns
+    the picker filters/displays on, and answers the item count with a grouped COUNT.
+    """
+    rows = session.execute(
+        select(
+            OpeningModel.opening_number,
+            OpeningModel.building,
+            OpeningModel.floor,
+            OpeningModel.location,
+            OpeningModel.hand,
+            OpeningModel.door_type,
+            OpeningModel.frame_type,
+            OpeningModel.interior_exterior,
+            OpeningModel.keying,
+            OpeningModel.leaf_count,
+        )
+        .where(OpeningModel.project_id == project_id)
+        .order_by(OpeningModel.opening_number)
+    ).all()
+    hardware_item_count = (
+        session.scalar(
+            select(func.count()).select_from(HardwareItemModel).where(HardwareItemModel.project_id == project_id)
+        )
+        or 0
+    )
+    return {
+        "openings": [dict(row._mapping) for row in rows],
+        "opening_count": len(rows),
+        "hardware_item_count": hardware_item_count,
+    }
+
+
 def reconcile_schedule(
     session: Session,
     project_id: uuid.UUID,

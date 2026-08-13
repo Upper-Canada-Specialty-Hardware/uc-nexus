@@ -6,7 +6,11 @@ export function aggregationKey(hi: { opening_number: string; product_code: strin
   return `${hi.opening_number}|${hi.product_code}|${hi.hardware_category}`;
 }
 
-export type ImportPurpose = 'po' | 'assembly' | 'shipping';
+// 'schedule' (#608 follow-up) replaces a project's persisted hardware schedule from a newer XML -
+// replace-only, no PO drafting and no request composition. 'shipping' is gone: that composer moved
+// to the request workspace, and the fossil /app/import?purpose=shipping redirect matches the raw URL
+// param, not this type.
+export type ImportPurpose = 'po' | 'assembly' | 'schedule';
 
 // #565: how a PO import picks what to order. 'openings' walks the door schedule and selects openings;
 // 'hardware' selects products directly and takes quantities from the schedule. Both feed the same PO

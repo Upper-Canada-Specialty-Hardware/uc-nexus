@@ -126,6 +126,14 @@ const PURPOSE_OPTIONS: {
       'What can I pull from the warehouse to assemble? Creates a shop-assembly pull request. Only items with Received status can be included.',
     needsExisting: true,
   },
+  {
+    value: 'schedule',
+    label: 'Update Hardware Schedule',
+    subtitle: 'Replace the schedule with a newer file',
+    tooltip:
+      "Swap this project's hardware schedule for a newer TITAN export. Replace-only: no purchase orders and no requests. Existing orders, receiving, and inventory are kept; openings absent from the new file are removed.",
+    needsExisting: true,
+  },
 ];
 
 /**
@@ -168,6 +176,10 @@ interface ImportWizardProps {
    *  caller: they came from a decision about hardware on an existing project, so the schedule that
    *  hardware was bought against is by definition already imported. */
   autoStartFromLatest?: boolean;
+  /** #608: where to return when the wizard closes (finalized or cancelled). Set by the request
+   *  workspace's "upload a newer schedule" hand-off so a schedule replace lands the user back on the
+   *  composer it came from, not on the generic post-success menu. */
+  returnTo?: string | null;
 }
 
 /** #588: uploadPoDocument takes raw base64, so drop the data: URL prefix the reader adds. */
@@ -187,6 +199,7 @@ export default function ImportWizard({
   initialPurpose,
   initialSelectionMode,
   autoStartFromLatest,
+  returnTo,
 }: ImportWizardProps) {
   const { showToast } = useToast();
   const { setTotalSteps, reset: resetWizardContext } = useWizard();
@@ -272,7 +285,9 @@ export default function ImportWizard({
       base.push({ id: 'hardware', label: 'Select Hardware' });
     } else {
       base.push({ id: 'purpose', label: 'Purpose' });
-      base.push({ id: 'openings', label: 'Select Openings' });
+      // #608: the schedule replace persists the whole file, so selecting openings would scope
+      // nothing - there is no Select Openings step. Every other by-opening purpose picks openings.
+      if (purpose !== 'schedule') base.push({ id: 'openings', label: 'Select Openings' });
     }
     // Reconciliation compares the incoming schedule against what the project has already committed,
     // so on a project with no persisted openings it has nothing to compare and rendered a single
@@ -281,14 +296,17 @@ export default function ImportWizard({
     // `isReimport` is `openingCount > 0`, which is exactly the condition for having something to
     // reconcile against - and a first import can only be the PO purpose anyway, since the other two
     // require a project with received inventory.
-    if (isReimport) {
+    // #608: a schedule replace wipes and re-persists the whole file, so there is nothing to
+    // reconcile against - it skips the step even though it is a re-import.
+    if (isReimport && purpose !== 'schedule') {
       base.push({ id: 'reconciliation', label: 'Reconciliation' });
     }
-    // #492: only the PO purpose asks. A shop-assembly request runs against a project whose schedule
-    // is already classified, so re-asking forced the user to re-answer a question the system knows -
-    // and answering it differently than the original import is exactly the drift. The assembly
-    // purpose seeds its classifications from the persisted items instead (see below).
-    if (purpose === 'po') {
+    // #492: the PO purpose asks so it can order in/out of scope. A shop-assembly request runs against
+    // a project whose schedule is already classified, so re-asking forces the user to re-answer a
+    // question the system knows - it seeds Site/Shop off the persisted items instead. #608: a schedule
+    // replace does need the step - the fresh XML carries no Site/Shop marks, and the persisted ones
+    // are restored into it as a starting point.
+    if (purpose === 'po' || purpose === 'schedule') {
       base.push({ id: 'classification', label: 'Classification' });
     }
     if (purpose === 'po') base.push({ id: 'purchase-orders', label: 'Purchase Orders' });
@@ -399,6 +417,37 @@ export default function ImportWizard({
       }
     });
   }, [isReimport, parsedHardwareItems, existingProjectId, fetchExcludedItems]);
+
+  // #608/#492: on a schedule replace, seed each fresh item's Site/Shop mark from the schedule already
+  // on file, matched by product, so the user is not made to re-answer a classification the previous
+  // schedule already carried. Fills blanks only - a manual pick this session wins - and matches by
+  // (category, product) rather than the full classification key, since a fresh XML's unit cost may
+  // differ from what is persisted.
+  useEffect(() => {
+    if (purpose !== 'schedule') return;
+    const persisted = scheduleData?.projectHardwareSchedule?.hardwareItems;
+    if (!persisted || !parsedHardwareItems || parsedHardwareItems.length === 0) return;
+    const persistedByProduct = new Map<string, string>();
+    for (const hi of persisted) {
+      const key = `${hi.hardwareCategory}|${hi.productCode}`;
+      if (hi.classification && !persistedByProduct.has(key)) persistedByProduct.set(key, hi.classification);
+    }
+    if (persistedByProduct.size === 0) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- seeding local classification state from the persisted schedule once it loads; fills blanks only, so a re-run cannot clobber a manual pick
+    setClassifications((prev) => {
+      const next = new Map(prev);
+      let changed = false;
+      for (const hi of parsedHardwareItems) {
+        const ck = `${hi.hardware_category}|${hi.product_code}|${hi.unit_cost ?? 0}`;
+        const cls = persistedByProduct.get(`${hi.hardware_category}|${hi.product_code}`);
+        if (cls && !next.has(ck)) {
+          next.set(ck, cls);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [purpose, scheduleData, parsedHardwareItems]);
 
 
   // ---- Derived Data ----
@@ -731,7 +780,7 @@ export default function ImportWizard({
       return;
     }
     if (seededPurposeRef.current || !initialPurpose) return;
-    // 'shipping' and 'assembly' both need an existing schedule. Silently setting one on a project
+    // 'schedule' and 'assembly' both need an existing schedule. Silently setting one on a project
     // that has none would land the user on a disabled radio with no explanation, so leave the step
     // to explain itself instead.
     if (initialPurpose !== 'po' && !isReimport) return;
@@ -1055,10 +1104,11 @@ export default function ImportWizard({
       // client-only sourceDraftId mapping key before the mutation sees the input.
       poDrafts: poDraftBuild ? poDraftBuild.map(toPoDraftInput) : null,
       excludedItems,
-      classifications: purpose === 'assembly'
-        // #321: only Site/Shop belong here. Re-imports pre-populate the classifications Map with
-        // BY_OTHERS (ownership) from the exclusion table; those items are out of scope for shop
-        // assembly and BY_OTHERS is not in the Classification enum, so toClassificationInputs drops them.
+      classifications: purpose === 'assembly' || purpose === 'schedule'
+        // #321/#608: only Site/Shop belong here. Re-imports pre-populate the classifications Map with
+        // BY_OTHERS (ownership) from the exclusion table; those items are out of scope and BY_OTHERS is
+        // not in the Classification enum, so toClassificationInputs drops them. The schedule replace
+        // sends the same Site/Shop shape - it seeded them from the persisted schedule (see above).
         ? toClassificationInputs(classifications)
         : purpose === 'po'
           // Issue #216: the PM's Site/Shop picks from the Classification step's second axis.
@@ -1140,6 +1190,13 @@ export default function ImportWizard({
       } else {
         showToast('Import session finalized successfully!', 'success');
       }
+      // #608: a schedule replace came from the request workspace. Drop the user straight back there to
+      // compose off the fresh schedule rather than onto the generic PO/warehouse post-success menu.
+      if (returnTo) {
+        onClose();
+        navigate(returnTo);
+        return;
+      }
       setPostSuccessOpen(true);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'An unknown error occurred';
@@ -1181,7 +1238,7 @@ export default function ImportWizard({
         setSeededSignature(offerSignature(composerRows));
       }
     }
-  }, [buildFinalizeInput, finalizeImport, showToast, purpose, requestPurpose, refetchAvailability, composerRows, poDraftBuild, draftGroups, uploadPoDocument]);
+  }, [buildFinalizeInput, finalizeImport, showToast, purpose, requestPurpose, refetchAvailability, composerRows, poDraftBuild, draftGroups, uploadPoDocument, returnTo, onClose, navigate]);
 
   const handlePostAction = useCallback(
     (action: 'po' | 'inventory' | 'home') => {
@@ -1210,7 +1267,10 @@ export default function ImportWizard({
     setHydratedFromPersisted(false);
     parser.reset();
     onClose();
-  }, [onClose, parser, resetDownstreamWizardState]);
+    // #608: honour returnTo on close as well as finalize, so cancelling a schedule replace still
+    // lands the user back on the composer it came from.
+    if (returnTo) navigate(returnTo);
+  }, [onClose, parser, resetDownstreamWizardState, returnTo, navigate]);
 
   // ---- Step validations ----
 
@@ -1239,15 +1299,17 @@ export default function ImportWizard({
   }, [purpose, isReimport, selectedReconItems, reconciliationRows, availableByProduct]);
 
   // #566: classification Next gate, lifted out of ClassificationStep. `classificationRows` is built
-  // here, so the same rows the grid renders decide whether Next is live. Only the PO purpose reaches
-  // the step, where every in-scope (non-By-Others) line needs both a scope and a Site/Shop pick.
+  // here, so the same rows the grid renders decide whether Next is live. The PO purpose needs both a
+  // scope and a Site/Shop pick per in-scope (non-By-Others) line; the schedule replace (#608) is
+  // single-axis, so the one Site/Shop pick lands in `classification` and there is no second axis.
   const canProceedClassification = useMemo(() => {
     const allClassified = classificationRows.every((r) => r.classification !== '');
+    if (purpose !== 'po') return allClassified;
     const allSiteShopClassified = classificationRows
       .filter((r) => r.classification !== 'BY_OTHERS')
       .every((r) => (r.siteShop ?? '') !== '');
     return allClassified && allSiteShopClassified;
-  }, [classificationRows]);
+  }, [classificationRows, purpose]);
 
   // #566/#570: purchase-orders Next gate. At least one included draft that actually holds lines - an
   // included-but-empty draft mints no PO, so it does not satisfy the gate.
@@ -1747,12 +1809,23 @@ export default function ImportWizard({
                   {existingProjectName}
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: 2 }}>
-                  {isHardwareMode
-                    ? `${selectedProductKeys.size} products | ${selectedHardwareItems.length} hardware items`
-                    : `${selectedOpenings.size} openings | ${selectedHardwareItems.length} hardware items`}
+                  {purpose === 'schedule'
+                    ? // The whole file is persisted on a replace, not a selection of it.
+                      `${openings.length} openings | ${hardwareItems.length} hardware items`
+                    : isHardwareMode
+                      ? `${selectedProductKeys.size} products | ${selectedHardwareItems.length} hardware items`
+                      : `${selectedOpenings.size} openings | ${selectedHardwareItems.length} hardware items`}
                 </Typography>
 
                 <Divider sx={{ my: 2 }} />
+
+                {purpose === 'schedule' && (
+                  <Box sx={{ mb: 1 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                      Replaces the project&rsquo;s hardware schedule
+                    </Typography>
+                  </Box>
+                )}
 
                 {purpose === 'po' && (
                   <Box sx={{ mb: 1 }}>
