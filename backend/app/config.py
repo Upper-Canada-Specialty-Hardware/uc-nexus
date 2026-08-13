@@ -1,4 +1,5 @@
 import os
+import re
 
 from dotenv import load_dotenv
 
@@ -64,6 +65,41 @@ def is_production_environment() -> bool:
     "not production" - correct for a local checkout.
     """
     return RAILWAY_ENVIRONMENT_NAME.strip().lower() == "production"
+
+
+# Direct Postgres access (db-admin-postgres-access). The public-proxy coordinates the backend needs to
+# emit a working connection string for a login it mints. They live on the Postgres service today, not
+# the backend, so they are copied here once from the Railway proxy (e.g. host switchback.proxy.rlwy.net,
+# port 28233, db "railway"). A blank host disables the whole feature - which is the state in local dev
+# and CI, where the variable is simply never set.
+PG_DIRECT_HOST = os.getenv("PG_DIRECT_HOST", "")
+PG_DIRECT_PORT = os.getenv("PG_DIRECT_PORT", "5432")
+PG_DIRECT_DBNAME = os.getenv("PG_DIRECT_DBNAME", "railway")
+PG_DIRECT_SSLMODE = os.getenv("PG_DIRECT_SSLMODE", "require")
+
+# Railway names a per-PR preview environment "uc-nexus-pr-<N>". Anchored so a name that merely contains
+# the prefix does not match - the same shape relay_channels' PREVIEW_ENVIRONMENT_RE uses, kept local
+# here to avoid importing that module (and its httpx/threading weight) from config.
+_PREVIEW_ENVIRONMENT_RE = re.compile(r"^uc-nexus-pr-(\d+)$")
+
+
+def is_preview_environment() -> bool:
+    """Whether this deployment is a Railway per-PR preview environment. Empty name off Railway -> not
+    a preview, correct for local dev and CI."""
+    return bool(_PREVIEW_ENVIRONMENT_RE.match(RAILWAY_ENVIRONMENT_NAME.strip()))
+
+
+def db_direct_access_enabled() -> bool:
+    """Whether the Database Access page and its five root fields are live in this environment.
+
+    Enabled only when the proxy coordinates are configured AND this is not a preview environment. The
+    preview-name check is the load-bearing half: a preview inherits the base env's variables, so
+    PG_DIRECT_HOST would otherwise be present on a throwaway PR deploy and let it mint real,
+    internet-reachable read-write credentials against the shared cluster. Local dev and CI are covered
+    for free - they never set the variable.
+
+    Read off the module constants (not os.getenv) so a test can flip either one with monkeypatch."""
+    return bool(PG_DIRECT_HOST.strip()) and not is_preview_environment()
 
 
 def testing_sign_in_secret_hash() -> str:

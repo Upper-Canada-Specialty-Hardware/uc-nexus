@@ -15,6 +15,7 @@ import strawberry
 
 from .buyer import BuyerMutations
 from .custom_items import CustomItemMutations
+from .db_access import DbAccessMutations
 from .gp_outbox import GpOutboxMutations
 from .imports import ImportMutations
 from .notification import NotificationMutations
@@ -33,6 +34,7 @@ from .warehouse import WarehouseMutations
 class Mutation(
     BuyerMutations,
     CustomItemMutations,
+    DbAccessMutations,
     GpOutboxMutations,
     ImportMutations,
     NotificationMutations,

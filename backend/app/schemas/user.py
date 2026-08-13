@@ -8,15 +8,49 @@ roles and GP buyer id. The three writes are only ever issued by the admin User M
 
 The requirement itself lives in ROOT_FIELD_POLICY (app/auth_policy.py) since #423, not in these
 bodies - which is why nothing below opens with a gate call.
+
+The one exception is `updateUserRoles`' own DB-Admin guard (`_enforce_db_admin_grant_rules`): the
+Admin/Manager gate in the policy table makes the field admin-only, but "DB Admin" is a tier ABOVE
+Admin/Manager, so who may grant it is a property of the ARGUMENTS (which roles are changing) and the
+CALLER, not of the field - the exact case ROOT_FIELD_POLICY cannot express and a body check must.
 """
 
 import strawberry
 
-from app.auth import invalidate_display_name, user_roster
+from app.auth import ADMIN_ROLE, DB_ADMIN_ROLE, ForbiddenError, caller_roles, invalidate_display_name, user_roster
 from app.repositories import user_repository
 
 from .converters import clerk_user_to_type
 from .types import ClerkUser
+
+
+def _enforce_db_admin_grant_rules(info: strawberry.Info, *, target_user_id: str, new_roles: list[str]) -> None:
+    """Keep the "DB Admin" tier exclusive and stacked, for every caller of `updateUserRoles`.
+
+    Two invariants, enforced in the backend rather than left to the User Management UI:
+
+    1. STACKING: a roles list carrying "DB Admin" without "Admin/Manager" is refused for everyone.
+       The db-access page lives inside the Admin/Manager-gated admin shell, so a standalone DB Admin
+       could reach neither the page nor the roster its mint dialog reads. This also stops an admin
+       from stripping Admin/Manager off a DB Admin and stranding them.
+    2. GRANT: only a DB Admin may add or remove "DB Admin". `updateUserRoles` is Admin/Manager-gated,
+       so without this any admin could hand themselves the tier and walk in - exclusive in name only.
+
+    The caller's roles come from the per-request memo the gate already filled (Admin/Manager-gated,
+    so it resolved them), meaning a DB-Admin caller costs no extra Clerk call. Detecting an add or
+    remove needs the TARGET's current roles, so that one read happens only when the caller is not a
+    DB Admin - the only case where the change is not already permitted.
+    """
+    new = set(new_roles)
+    if DB_ADMIN_ROLE in new and ADMIN_ROLE not in new:
+        raise ForbiddenError(f"{DB_ADMIN_ROLE} requires {ADMIN_ROLE}; it cannot be held on its own")
+
+    if DB_ADMIN_ROLE in caller_roles(info.context):
+        return  # a DB Admin may add or remove the tier freely (the stacking check above still bound them)
+
+    current = set(user_repository.get_user_roles(target_user_id))
+    if (DB_ADMIN_ROLE in new) != (DB_ADMIN_ROLE in current):
+        raise ForbiddenError(f"only a {DB_ADMIN_ROLE} may grant or remove {DB_ADMIN_ROLE}")
 
 
 @strawberry.type
@@ -37,7 +71,12 @@ class UserMutations:
     def update_user_roles(self, info: strawberry.Info, user_id: str, roles: list[str]) -> ClerkUser:
         """Set a user's roles outright, including granting Admin/Manager. Admin-gated: this is the
         privilege-escalation path, so the gate is the whole protection - nothing downstream re-checks
-        who asked."""
+        who asked.
+
+        The one thing the gate cannot decide is the "DB Admin" tier, which sits above Admin/Manager:
+        `_enforce_db_admin_grant_rules` restricts granting/removing it to a DB Admin and refuses a
+        standalone one, for every caller."""
+        _enforce_db_admin_grant_rules(info, target_user_id=user_id, new_roles=roles)
         return clerk_user_to_type(user_repository.update_user_roles(user_id, roles))
 
     @strawberry.mutation

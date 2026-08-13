@@ -2,6 +2,7 @@
 
 import strawberry
 
+from app import config
 from app.auth import user_roster
 from app.database import SessionLocal
 from app.repositories import dashboard_repository
@@ -58,4 +59,5 @@ class DashboardQueries:
                 user_count=d["user_count"],
                 hardware_item_count=d["hardware_item_count"],
                 opening_count=d["opening_count"],
+                db_access_enabled=config.db_direct_access_enabled(),
             )

@@ -22,6 +22,7 @@ from .inventory_item_type import (  # noqa: E402, F401
 from .inventory_reservation import InventoryReservation  # noqa: E402, F401
 from .manufacturer_vendor_map import ManufacturerVendorMap  # noqa: E402, F401
 from .notification import Notification  # noqa: E402, F401
+from .pg_direct_access import PgDirectAccess, PgDirectAccessAudit  # noqa: E402, F401
 from .po_document_settings import PODocumentSettings  # noqa: E402, F401
 from .project import Opening, Project  # noqa: E402, F401
 from .project_excluded_item import ProjectExcludedItem  # noqa: E402, F401

@@ -29,6 +29,7 @@ import logging
 
 from app.auth import (
     ADMIN_ROLE,
+    DB_ADMIN_ROLE,
     WAREHOUSE_MANAGER_ROLE,
     ForbiddenError,
     authenticated_user_id,
@@ -52,7 +53,7 @@ SIGNED_IN = "@signed-in"
 # This is a performance hint, NOT an authorization input. The decision of what a field requires is
 # ROOT_FIELD_POLICY and only ROOT_FIELD_POLICY; this only picks which Clerk call answers it. Adding a
 # field here that does not enumerate users makes it slower, never more permissive.
-ROSTER_BACKED = frozenset({"adminStats", "users"})
+ROSTER_BACKED = frozenset({"adminStats", "users", "postgresAdmins", "postgresAccessAudit"})
 
 # Operations reachable without a Clerk session, each with the reason it is safe. This is the whole
 # allowlist: everything else is gated, and anything in neither table is refused outright.
@@ -102,6 +103,16 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "homeDashboardStats": SIGNED_IN,
     "shopAssemblyStats": SIGNED_IN,
     "shippingStats": SIGNED_IN,
+    # --- db_access.py ---------------------------------------------------------------------
+    # The tier ABOVE Admin/Manager (db-admin-postgres-access). Every field here mints, lists, rotates
+    # or revokes internet-reachable read-write Postgres logins, so unlike the rest of the admin module
+    # these name DB_ADMIN_ROLE and admit no plain admin - there is no admin bypass in this table. The
+    # repository refuses all five again when the feature is disabled (no proxy / a preview env).
+    "postgresAdmins": DB_ADMIN_ROLE,
+    "postgresAccessAudit": DB_ADMIN_ROLE,
+    "mintPostgresAdmin": DB_ADMIN_ROLE,
+    "rotatePostgresAdmin": DB_ADMIN_ROLE,
+    "revokePostgresAdmin": DB_ADMIN_ROLE,
     # --- gp_outbox.py ---------------------------------------------------------------------
     # The two reads feed pending chips on the PO and receiving lists, so any signed-in user. The two
     # writes are admin: retrying an `ambiguous` queued write can duplicate a GP posting, and

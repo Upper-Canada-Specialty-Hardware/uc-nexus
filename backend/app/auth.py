@@ -47,6 +47,13 @@ SHOP_ASSEMBLY_MANAGER_ROLE = "Shop Assembly Manager"
 # truck and a posted GP receipt. Admin/Manager satisfies the same fields, which is why those entries
 # in ROOT_FIELD_POLICY are a frozenset of both rather than this name alone.
 WAREHOUSE_MANAGER_ROLE = "Warehouse Manager"
+# The tier that may mint direct Postgres logins (the Database Access page). It sits ABOVE Admin/Manager
+# and is exclusive: unlike every other field, an admin does not get in on the "isAdmin => all-access"
+# shorthand the frontend uses - the five db-access root fields name this role and nothing else. It is
+# also STACKED, never standalone: a DB Admin always also holds Admin/Manager, because the page lives
+# inside the Admin/Manager-gated admin shell. `updateUserRoles` enforces both halves - only a DB Admin
+# may grant or remove it, and a roles list carrying it without Admin/Manager is refused.
+DB_ADMIN_ROLE = "DB Admin"
 
 _CLERK_JWKS_URL = "https://api.clerk.com/v1/jwks"
 _JWKS_TTL_SECONDS = 3600.0
