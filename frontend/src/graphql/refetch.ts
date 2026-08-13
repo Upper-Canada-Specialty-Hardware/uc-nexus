@@ -64,12 +64,18 @@ export const SHIPPING_REFETCH_QUERIES = ['GetPackingSlips'];
 // that self-corrects).
 export const SHIPPING_STALE_ROOT_FIELDS = ['stagingPool', 'shipReadyItems', 'requestCoverage'];
 
-// What starting or completing a pull invalidates, beyond the queue the caller already refetches.
+// What starting or completing a pull invalidates. Eviction-only, including the queue itself.
 //
-// A completed pull is a terminal exit, and everything that notices lives in another module: the
-// staging pool a completed shipping pull feeds, the composer's `sent` term, and the derived stage
-// the requests list draws as columns - which this is what advances.
+// pullRequests is evicted, not refetched, because completing happens from the pick page - where the
+// active queue (it lists PENDING + IN_PROGRESS only) is not mounted, so a refetchQueries by name is
+// skipped and the queue would next mount cache-first on a list still holding the completed pull: the
+// "forced to refresh" symptom #613 set out to kill. Eviction reaches that unmounted-then-mounted
+// queue, and the mounted case (completing from the modal on the queue) repairs itself the same way.
+//
+// The rest is a terminal exit's fallout in other modules: the staging pool a completed shipping pull
+// feeds, the composer's `sent` term, and the derived stage the requests list draws as columns.
 export const PULL_LIFECYCLE_STALE_ROOT_FIELDS = [
+  'pullRequests',
   'shipReadyItems',
   'requestCoverage',
   'shopAssemblyRequests',

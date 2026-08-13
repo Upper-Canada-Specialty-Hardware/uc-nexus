@@ -26,6 +26,7 @@ from app.models.enums import (
 from app.models.pull_request import PullRequest as PullRequestModel
 from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.shop_assembly import ShopAssemblyRequest, ShopAssemblyRequestItem
+from app.repositories import request_return_notes
 
 # Where one request sits on the ladder the requests list draws as columns. Derived from the request's
 # own status and the state of the pull it minted - never stored, because a stored copy is a fifth
@@ -298,6 +299,15 @@ def _stage_for(request: ShopAssemblyRequest, pull_status: PullRequestStatus | No
     return STAGE_ACCEPTED
 
 
+def get_return_notes(session: Session, requests: list[ShopAssemblyRequest]) -> dict[uuid.UUID, str | None]:
+    """The "returned to Pending" note per request (#613), one query for the whole list. A PENDING
+    request still pointing at a CANCELLED pull was put back on the accept board by that cancel. See
+    `app.repositories.request_return_notes`."""
+    pending = [r for r in requests if r.status == ShopAssemblyRequestStatus.PENDING]
+    derived = request_return_notes.return_notes_for(session, pending)
+    return {r.id: derived.get(r.id) for r in requests}
+
+
 def get_request_line_counts(session: Session, request_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
     """Line count per request, as one grouped read rather than a `len()` over a loaded collection."""
     if not request_ids:
@@ -447,22 +457,3 @@ def reopen_shop_assembly_request(
 
     warehouse_repository.discard_pending_pull_request(session, pull_id)
     return request
-
-
-def detach_cancelled_pull(session: Session, pull_request_id: uuid.UUID) -> None:
-    """Send a request whose pull was cancelled back for re-acceptance (#343).
-
-    Cancellation returns the hardware to the shelf, so the request stops being accepted and goes back
-    to PENDING - still holding its reservations, exactly as a reopen leaves it.
-    """
-    request = session.scalars(
-        select(ShopAssemblyRequest).where(ShopAssemblyRequest.pull_request_id == pull_request_id)
-    ).first()
-    if request is None:
-        return
-    request.pull_request_id = None
-    if request.status == ShopAssemblyRequestStatus.APPROVED:
-        request.status = ShopAssemblyRequestStatus.PENDING
-        request.approved_by = None
-        request.approved_at = None
-    session.flush()

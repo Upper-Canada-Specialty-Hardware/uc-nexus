@@ -98,7 +98,7 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
   const [shipOpen, setShipOpen] = useState(false);
   const [dragging, setDragging] = useState<string | null>(null);
 
-  const { data, loading, refetch } = useQuery<{ stagingPool: StagingPool }>(GET_STAGING_POOL, {
+  const { data, loading, error, refetch } = useQuery<{ stagingPool: StagingPool }>(GET_STAGING_POOL, {
     variables: { projectId },
     skip: !projectId,
     fetchPolicy: 'cache-and-network',
@@ -293,6 +293,16 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
         {/* Beside the button it blocks, not only at the top of the module: the ship button going
             grey with the explanation a screen away is how #425 gets read as a bug. */}
         <GpSetupQuarantineBanner project={project} action="shipping from it" dense />
+        {/* A read that threw must say so, loudly. The pool resolver KeyError'd for months (#613) and
+            this component swallowed it - the floor rendered empty and the warehouse concluded the
+            pull never arrived. A failed read is a different state from an empty floor and must never
+            look like one. */}
+        {error && (
+          <Alert severity="error" sx={{ mb: 2 }}>
+            The staging pool could not be loaded, so this is not an empty floor - it is a failed read.
+            Retry, and if it persists report it. {error.message}
+          </Alert>
+        )}
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, mb: 2 }}>
           <Typography variant="body2" color="text.secondary">
             Everything pulled for shipping and not yet sent. Put it into the skids, carts and boxes

@@ -6,6 +6,7 @@ performance rules in CLAUDE.md before adding a field that walks a new relationsh
 
 import strawberry
 
+from app.models.enums import ShippingOutRequestStatus as ShippingOutRequestStatusDB
 from app.models.enums import ShopAssemblyRequestStatus as ShopAssemblyRequestStatusDB
 from app.models.project import Project as ProjectModel
 from app.repositories import project_repository, shipping_repository
@@ -591,8 +592,11 @@ def shop_assembly_request_item_to_type(item) -> ShopAssemblyRequestItem:
     )
 
 
-def shop_assembly_request_to_type(sar, *, stage: str | None = None) -> ShopAssemblyRequest:
-    """Model -> type. `stage` is resolved by the *caller* in one query for the whole list.
+def shop_assembly_request_to_type(
+    sar, *, stage: str | None = None, return_note: str | None = None
+) -> ShopAssemblyRequest:
+    """Model -> type. `stage` and `return_note` are resolved by the *caller* in one query for the
+    whole list.
 
     Passed in rather than derived here for the same reason `pull_request_to_type` takes its
     staging counts: a converter that queries is an N+1 waiting to happen on a list page
@@ -614,6 +618,7 @@ def shop_assembly_request_to_type(sar, *, stage: str | None = None) -> ShopAssem
         pull_request_id=strawberry.ID(str(sar.pull_request_id)) if sar.pull_request_id else None,
         items=[shop_assembly_request_item_to_type(i) for i in sar.items],
         stage=RequestStage(stage or _fallback_stage(sar)),
+        return_note=return_note,
     )
 
 
@@ -638,7 +643,11 @@ def shipping_out_request_item_to_type(item) -> ShippingOutRequestItem:
     )
 
 
-def shipping_out_request_to_type(req) -> ShippingOutRequest:
+def shipping_out_request_to_type(
+    req, *, stage: str | None = None, return_note: str | None = None
+) -> ShippingOutRequest:
+    """Model -> type. `stage` and `return_note` are resolved by the *caller* in one query for the
+    whole list, mirroring `shop_assembly_request_to_type` (CLAUDE.md perf rules)."""
     return ShippingOutRequest(
         id=strawberry.ID(str(req.id)),
         request_number=req.request_number,
@@ -654,7 +663,19 @@ def shipping_out_request_to_type(req) -> ShippingOutRequest:
         integrity_note=req.integrity_note,
         pull_request_id=strawberry.ID(str(req.pull_request_id)) if req.pull_request_id else None,
         items=[shipping_out_request_item_to_type(i) for i in req.items],
+        stage=RequestStage(stage or _fallback_shipping_stage(req)),
+        return_note=return_note,
     )
+
+
+def _fallback_shipping_stage(req) -> str:
+    """The stage a caller that did not resolve one would have got - never past ACCEPTED, since
+    without the pull's status there is no evidence it has been started or finished."""
+    if req.status == ShippingOutRequestStatusDB.REJECTED:
+        return "REJECTED"
+    if req.status == ShippingOutRequestStatusDB.PENDING or req.pull_request_id is None:
+        return "REQUESTED"
+    return "ACCEPTED"
 
 
 def pull_request_item_to_type(item) -> PullRequestItem:

@@ -15,7 +15,7 @@ import {
   TextField,
   Divider,
 } from '@mui/material';
-import { useMutation } from '@apollo/client/react';
+import { useApolloClient, useMutation } from '@apollo/client/react';
 import {
   CANCEL_PULL_REQUEST,
   COMPLETE_PULL_REQUEST,
@@ -135,14 +135,16 @@ export default function PullRequestDetailModal({
   const { displayName } = useIdentity();
   const { showToast } = useToast();
   const navigate = useNavigate();
+  const client = useApolloClient();
 
   // Confirm dialog state
   const [confirmCompleteOpen, setConfirmCompleteOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
-  // #343: a cancel refused because assembly has already started. The server names every blocker in
-  // one message, so it is shown verbatim and the dialog stays open - the user is being told what to
-  // go and finish, not just that it failed.
+  // A cancel the server refused for a real reason (a lock, a conflict). The message is shown
+  // verbatim and the dialog stays open so the user can read it and retry. An "already cancelled"
+  // refusal is handled apart in onError - it closes on a warning, since the pull is already in the
+  // state the user was trying to reach.
   const [cancelBlockedMessage, setCancelBlockedMessage] = useState<string | null>(null);
   const closeCancelDialog = useCallback(() => {
     setCancelOpen(false);
@@ -156,10 +158,11 @@ export default function PullRequestDetailModal({
 
   // --- Mutations ---
 
-  // Eviction only, disjoint from the queue refetch the parent does in onRefetch (see refetch.ts).
-  // #343 re-keyed workability from "the pull is COMPLETED" to "this opening is PULLED", so approving
-  // and completing both change what the assembly floor can see - and the assembly floor is a
-  // different module, never mounted while a warehouse user is working the pull.
+  // Eviction only (see refetch.ts). The set evicts pullRequests too, so completing drops the pull off
+  // the active queue directly - the parent's onRefetch only closes the modal. #343 re-keyed
+  // workability from "the pull is COMPLETED" to "this opening is PULLED", so starting and completing
+  // both change what the assembly floor can see - a different module, never mounted while a warehouse
+  // user is working the pull.
   const evictPullLifecycleFields = (cache: { evict: (o: { id: string; fieldName: string }) => void; gc: () => void }) => {
     for (const fieldName of PULL_LIFECYCLE_STALE_ROOT_FIELDS) {
       cache.evict({ id: 'ROOT_QUERY', fieldName });
@@ -227,6 +230,17 @@ export default function PullRequestDetailModal({
       onRefetch();
     },
     onError: (error) => {
+      // The cancel can commit on the server even when the HTTP response fails (a #554 regression,
+      // #613), so refresh the queue on every failure path - a cancelled pull must never keep
+      // showing "In Progress" until someone reloads.
+      void client.refetchQueries({ include: ['GetPullRequests'] });
+      if (/already cancelled/i.test(error.message)) {
+        // The pull is already in the state the user wanted, so this is not a failure to dwell on:
+        // close on a warning and let the refreshed queue show the Cancelled row.
+        closeCancelDialog();
+        showToast('This pull was already cancelled.', 'warning');
+        return;
+      }
       setCancelBlockedMessage(error.message);
     },
   });
@@ -497,9 +511,8 @@ export default function PullRequestDetailModal({
         }
       >
         <Alert severity="warning" sx={{ mb: 2 }}>
-          Every unit this pull took will go back into project inventory, its openings return to the
-          not-pulled state, and the request that raised it goes back to Pending for re-acceptance.
-          Openings whose assembly has already started will block the cancellation.
+          Every unit this pull took goes back to project inventory on the rows it came off, and the
+          source request that raised it returns to Pending for re-acceptance.
         </Alert>
         {cancelBlockedMessage && (
           <Alert severity="error" sx={{ mb: 2 }} data-testid="cancel-blocked">

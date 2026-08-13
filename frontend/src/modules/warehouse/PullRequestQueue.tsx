@@ -1,11 +1,11 @@
 import { useMemo, useState } from 'react';
-import { Alert, Box, Typography, Chip, Stack } from '@mui/material';
-import { ChevronRight } from 'lucide-react';
+import { Alert, Box, Button, Typography, Chip, Stack } from '@mui/material';
+import { Link as RouterLink } from 'react-router-dom';
+import { ChevronRight, History } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import { GET_PULL_REQUESTS } from '../../graphql/warehouse';
 import DataTable from '../../components/DataTable';
-import Tabs from '../../components/Tabs';
 import PullRequestDetailModal from './PullRequestDetailModal';
 import { pullPhase } from './pullPhase';
 import { monoSx, tabularSx } from '../../theme';
@@ -75,12 +75,14 @@ function formatDate(dateStr: string | null | undefined): string {
 
 // --- Columns ---
 
+// Trimmed to the five that keep each half dense once the queues sit side by side: the created date
+// no longer earns its own column and rides in the phase detail line instead (see below).
 const columns: GridColDef[] = [
   {
     field: 'requestNumber',
     headerName: 'Request #',
     flex: 1,
-    minWidth: 140,
+    minWidth: 120,
     renderCell: (params) => (
       <Typography component="span" sx={{ ...monoSx, fontWeight: 600 }}>
         {params.value as string}
@@ -88,31 +90,24 @@ const columns: GridColDef[] = [
     ),
   },
   {
-    field: 'createdAt',
-    headerName: 'Created Date',
-    flex: 1,
-    minWidth: 140,
-    valueGetter: (_value: unknown, row: PullRequest) => formatDate(row.createdAt),
-  },
-  {
     field: 'requestedBy',
     headerName: 'Requested By',
     flex: 1,
-    minWidth: 140,
+    minWidth: 120,
   },
   {
     field: 'itemsCount',
     headerName: 'Items',
-    flex: 0.8,
-    minWidth: 120,
+    flex: 0.6,
+    minWidth: 80,
     type: 'number',
     valueGetter: (_value: unknown, row: PullRequest) => row.items?.length ?? 0,
   },
   {
     field: 'status',
     headerName: 'Status',
-    flex: 1,
-    minWidth: 130,
+    flex: 0.9,
+    minWidth: 110,
     renderCell: (params) => (
       <Chip
         label={formatStatus(params.value as string)}
@@ -127,22 +122,24 @@ const columns: GridColDef[] = [
     // "picked, staging carts", which mean completely different things to whoever takes the row next.
     field: 'phase',
     headerName: 'Phase',
-    flex: 1.2,
+    flex: 1.4,
     minWidth: 180,
     sortable: false,
     valueGetter: (_value: unknown, row: PullRequest) => pullPhase(row).label,
     renderCell: (params) => {
-      const phase = pullPhase(params.row as PullRequest);
+      const row = params.row as PullRequest;
+      const phase = pullPhase(row);
+      // The created date rode in its own column before the queue went side by side; folded into the
+      // phase detail it keeps the half dense without losing "how long has this sat".
+      const detail = [phase.detail, `Created ${formatDate(row.createdAt)}`].filter(Boolean).join(' · ');
       return (
         <Stack spacing={0.25} sx={{ py: 0.5 }}>
           <Box>
             <Chip label={phase.label} color={phase.color} size="small" />
           </Box>
-          {phase.detail && (
-            <Typography variant="caption" color="text.secondary" sx={tabularSx}>
-              {phase.detail}
-            </Typography>
-          )}
+          <Typography variant="caption" color="text.secondary" sx={tabularSx}>
+            {detail}
+          </Typography>
         </Stack>
       );
     },
@@ -163,20 +160,23 @@ const columns: GridColDef[] = [
   },
 ];
 
-// --- Tab content component ---
+// --- Queue column component ---
 
-interface PullRequestTabProps {
+interface PullRequestColumnProps {
   source: string;
+  heading: string;
 }
 
-function PullRequestTab({ source }: PullRequestTabProps) {
+function PullRequestColumn({ source, heading }: PullRequestColumnProps) {
   // The id, not the row (#343). The modal stages openings and cancels the pull, both of which
   // refetch this list; holding the object would pin the modal's staging chip to the pre-staging
   // snapshot - the same trap #340 fixed in the assembly views.
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
+  // Only the two live statuses stay on this board: completed and cancelled pulls leave the active
+  // queue the moment they land, and live on under the history page instead.
   const { data, loading, error } = useQuery<{ pullRequests: PullRequest[] }>(GET_PULL_REQUESTS, {
-    variables: { source },
+    variables: { source, statuses: ['PENDING', 'IN_PROGRESS'] },
   });
 
   const requests = useMemo(() => data?.pullRequests ?? [], [data]);
@@ -186,8 +186,13 @@ function PullRequestTab({ source }: PullRequestTabProps) {
     setSelectedId(params.row.id);
   };
 
+  // minWidth:0 lets the grid column shrink instead of forcing the page sideways; the DataGrid
+  // scrolls its own body when the half gets narrower than the columns.
   return (
-    <>
+    <Box sx={{ minWidth: 0 }}>
+      <Typography variant="h6" sx={{ mb: 1 }}>
+        {heading}
+      </Typography>
       {/* Without this, a failed load reads as an empty queue - the one thing this screen must
           never claim wrongly. */}
       {error && (
@@ -218,29 +223,56 @@ function PullRequestTab({ source }: PullRequestTabProps) {
           onRefetch={() => setSelectedId(null)}
         />
       )}
-    </>
+    </Box>
   );
 }
 
 // --- Main component ---
 
 export default function PullRequestQueue() {
-  const tabs = [
-    { label: 'Shop Assembly', content: <PullRequestTab source="SHOP_ASSEMBLY" /> },
-    { label: 'Shipping Out', content: <PullRequestTab source="SHIPPING_OUT" /> },
-  ];
-
   return (
     <Box>
-      <Typography variant="h5" sx={{ mb: 0.5 }}>
-        Pull Request Queue
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Every request to take hardware out of inventory. Open a row to start its pick, stage the
-        carts and complete it.
-      </Typography>
+      <Stack
+        direction="row"
+        spacing={2}
+        alignItems="flex-start"
+        justifyContent="space-between"
+        sx={{ mb: 1.5 }}
+      >
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="h5" sx={{ mb: 0.5 }}>
+            Pull Request Queue
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Every request to take hardware out of inventory. Open a row to start its pick, stage the
+            carts and complete it.
+          </Typography>
+        </Box>
+        {/* Completed and cancelled pulls drop off the active board; history is where they still
+            live. */}
+        <Button
+          component={RouterLink}
+          to="/app/warehouse/pull-requests/history"
+          size="small"
+          startIcon={<History size={16} strokeWidth={1.75} />}
+          sx={{ flexShrink: 0 }}
+        >
+          Pull request history
+        </Button>
+      </Stack>
 
-      <Tabs tabs={tabs} defaultTab={0} />
+      {/* Both queues, side by side above lg and stacked below it. minWidth:0 rides on each column so
+          the pair fills the row without ever widening the page. */}
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr' },
+          gap: 2,
+        }}
+      >
+        <PullRequestColumn source="SHOP_ASSEMBLY" heading="Shop Assembly" />
+        <PullRequestColumn source="SHIPPING_OUT" heading="Shipping Out" />
+      </Box>
     </Box>
   );
 }

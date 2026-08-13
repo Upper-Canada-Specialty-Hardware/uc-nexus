@@ -79,6 +79,13 @@ it('invalidates the composer whenever a claim moves', () => {
   expect(refetch.SHIPPING_STALE_ROOT_FIELDS).toContain('requestCoverage');
 });
 
+it('drops a completed pull off the active queue by eviction, not a refetch it would miss', () => {
+  // Completing runs from the pick page, where the PENDING+IN_PROGRESS queue is not mounted, so a
+  // refetchQueries by name is skipped and the queue would mount cache-first still holding the
+  // completed pull (#613). Evicting the field is what reaches that unmounted-then-mounted queue.
+  expect(refetch.PULL_LIFECYCLE_STALE_ROOT_FIELDS).toContain('pullRequests');
+});
+
 it('has no bench-era lists left', () => {
   // Every one of these named a screen the door pipeline owned. Leaving a constant behind would let a
   // call site keep evicting a root field the schema no longer has, which fails silently.

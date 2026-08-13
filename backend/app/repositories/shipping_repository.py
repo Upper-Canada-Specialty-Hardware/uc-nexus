@@ -37,7 +37,7 @@ from app.models.shipping_out_request import (
     ShippingOutRequest,
 )
 from app.models.warehouse import Warehouse
-from app.repositories import project_repository
+from app.repositories import project_repository, request_return_notes
 from app.repositories.stock import _find_or_create_stock_row, _log_audit_event
 from app.services import notification_service
 from app.services.locking import lock_rows
@@ -706,6 +706,48 @@ def get_shipping_out_requests(
             PullRequestModel.status == PullRequestStatus.PENDING
         )
     return list(session.scalars(stmt).unique().all())
+
+
+def get_request_stages(session: Session, requests: list[ShippingOutRequest]) -> dict[uuid.UUID, str]:
+    """Where each shipping-out request sits on the ladder, in ONE query for the whole list (CLAUDE.md
+    perf rules). The twin of `shop_assembly_repository.get_request_stages`: a cancelled pull reads as
+    REQUESTED because cancellation returns its request to PENDING for re-acceptance (#343)."""
+    if not requests:
+        return {}
+
+    pull_ids = [r.pull_request_id for r in requests if r.pull_request_id is not None]
+    pull_status_by_id: dict[uuid.UUID, PullRequestStatus] = {}
+    if pull_ids:
+        pull_status_by_id = {
+            pull_id: status
+            for pull_id, status in session.execute(
+                select(PullRequestModel.id, PullRequestModel.status).where(PullRequestModel.id.in_(pull_ids))
+            ).all()
+        }
+    return {r.id: _shipping_stage_for(r, pull_status_by_id.get(r.pull_request_id)) for r in requests}
+
+
+def _shipping_stage_for(request: ShippingOutRequest, pull_status: PullRequestStatus | None) -> str:
+    if request.status == ShippingOutRequestStatus.REJECTED:
+        return "REJECTED"
+    if request.status == ShippingOutRequestStatus.PENDING:
+        return "REQUESTED"
+    if pull_status == PullRequestStatus.COMPLETED:
+        return "DONE"
+    if pull_status == PullRequestStatus.IN_PROGRESS:
+        return "PULLING"
+    if pull_status == PullRequestStatus.CANCELLED or pull_status is None:
+        return "REQUESTED"
+    return "ACCEPTED"
+
+
+def get_return_notes(session: Session, requests: list[ShippingOutRequest]) -> dict[uuid.UUID, str | None]:
+    """The "returned to Pending" note per request (#613), one query for the whole list. A PENDING
+    request still pointing at a CANCELLED pull was put back on the accept board by that cancel. See
+    `app.repositories.request_return_notes`."""
+    pending = [r for r in requests if r.status == ShippingOutRequestStatus.PENDING]
+    derived = request_return_notes.return_notes_for(session, pending)
+    return {r.id: derived.get(r.id) for r in requests}
 
 
 def accept_shipping_out_request(
