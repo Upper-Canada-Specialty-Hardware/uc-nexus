@@ -1078,8 +1078,13 @@ export default function ImportWizard({
       if (existing) {
         existing.item_quantity += hi.item_quantity;
       } else {
-        const { material_id, ...rest } = hi;
+        // classification is a frontend-only field (#492 hydration): a re-import seeds it on every
+        // parsed item from the persisted schedule. It is NOT part of HardwareItemInput - the backend
+        // derives each HardwareItem's classification from the separate `classifications` list - so it
+        // must be stripped here alongside material_id, else finalize sends a field the schema rejects.
+        const { material_id, classification, ...rest } = hi;
         void material_id;
+        void classification;
         fullScheduleAggMap.set(aggKey, { ...rest });
       }
     }
