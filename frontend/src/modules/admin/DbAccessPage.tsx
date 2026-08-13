@@ -37,8 +37,9 @@ import { FadeIn } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
 
 // The one local prerequisite the page cannot do for the admin: the psqlODBC driver, installed once per
-// machine. Official Windows MSI builds.
-const PSQLODBC_DOWNLOAD_URL = 'https://www.postgresql.org/ftp/odbc/versions/msi/';
+// machine. The official release listing (odbc.postgresql.org points here); open the newest REL-* build
+// and run the x64 .msi. The older /versions/msi/ path 404s now.
+const PSQLODBC_DOWNLOAD_URL = 'https://www.postgresql.org/ftp/odbc/releases/';
 
 interface PostgresLogin {
   dbRole: string;
@@ -391,8 +392,8 @@ export default function DbAccessPage() {
           </Box>
 
           <Typography variant="body2">
-            First install the psqlODBC driver on this machine (one-time), then paste the string into
-            Access. Download:{' '}
+            First install the psqlODBC driver on this machine (one-time) - open the newest release and
+            run the x64 .msi - then paste the string into Access. Downloads:{' '}
             <Link href={PSQLODBC_DOWNLOAD_URL} target="_blank" rel="noopener noreferrer">
               psqlODBC (PostgreSQL Unicode)
               <ExternalLink size={13} strokeWidth={1.75} style={{ verticalAlign: '-2px', marginLeft: 3 }} />
