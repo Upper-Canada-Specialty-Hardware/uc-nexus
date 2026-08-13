@@ -8,8 +8,6 @@ import {
   Drawer,
   Skeleton,
   Stack,
-  Tab,
-  Tabs,
   Typography,
   useMediaQuery,
   useTheme,
@@ -189,8 +187,10 @@ function Composer({
   const navigate = useNavigate();
   const { showToast } = useToast();
 
-  const [tab, setTab] = useState<'schedule' | 'inventory'>('schedule');
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // Which products the picked openings still owe, lifted from the catalog so the extras lane below can
+  // nudge a loose add toward the door it is scheduled for (#610).
+  const [scheduledByProduct, setScheduledByProduct] = useState<Map<string, string[]>>(() => new Map());
 
   // Seeded once at mount: create from the project's saved draft, edit from the server's request.
   const [cart, setCart] = useState<CartLine[]>(() => {
@@ -336,30 +336,28 @@ function Composer({
     />
   );
 
+  // Openings-first (#610): the schedule catalog is the spine, every ship-out line tagged to an opening
+  // by default. The extras lane renders under it in every view - source gate included - so a request
+  // that is only unscheduled stock never has to pass the gate or pick an opening.
   const catalog = (
-    <Box sx={{ minWidth: 0 }}>
-      <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
-        <Tab value="schedule" label="From schedule" />
-        <Tab value="inventory" label="From inventory" />
-      </Tabs>
-      {tab === 'schedule' ? (
-        <RequestWorkspaceScheduleTab
-          projectId={project.id}
-          cart={cart}
-          headroom={headroom}
-          onCartChange={setCart}
-        />
-      ) : (
-        <RequestWorkspaceInventoryTab
-          cart={cart}
-          headroom={headroom}
-          onCartChange={setCart}
-          rows={availabilityRows}
-          loading={availabilityLoading}
-          error={availabilityRows.length === 0 && !!availabilityError}
-        />
-      )}
-    </Box>
+    <Stack spacing={3} sx={{ minWidth: 0 }}>
+      <RequestWorkspaceScheduleTab
+        projectId={project.id}
+        cart={cart}
+        headroom={headroom}
+        onCartChange={setCart}
+        onScheduledProductsChange={setScheduledByProduct}
+      />
+      <RequestWorkspaceInventoryTab
+        cart={cart}
+        headroom={headroom}
+        onCartChange={setCart}
+        rows={availabilityRows}
+        loading={availabilityLoading}
+        error={availabilityRows.length === 0 && !!availabilityError}
+        scheduledByProduct={scheduledByProduct}
+      />
+    </Stack>
   );
 
   if (wide) {

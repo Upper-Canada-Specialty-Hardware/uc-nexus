@@ -3,11 +3,11 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
-from app.models.enums import AuditAction, AuditEntityType
+from app.models.enums import AuditAction, AuditEntityType, Classification
 from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.project import Project as ProjectModel
@@ -252,6 +252,49 @@ def get_scheduled_pairs(session: Session, project_id: uuid.UUID) -> set[tuple[st
         .distinct()
     ).all()
     return {(cat, code) for cat, code in rows}
+
+
+def get_scheduled_classifications(
+    session: Session, project_id: uuid.UUID
+) -> dict[tuple[str, str], Classification | None]:
+    """The dominant SITE/SHOP classification of each product on the project's schedule, project-wide.
+
+    The same rule `request_composer._dominant_classification` applies per (opening, product), lifted
+    to the whole project so a loose extras line - which carries no opening - can still show the chip
+    and framing the opening-tagged catalog rows carry. Whichever classification covers the most units
+    of a product wins; a tie breaks on the enum name so the answer never depends on row order, and an
+    unclassified majority answers None rather than guessing site or shop on the user's behalf.
+
+    One grouped query down to (category, product, classification); the winner is picked in Python
+    against the handful of rows a single product has. Only products the schedule names appear - a
+    stock combo the schedule never mentions is absent from the map, and the caller reads that as None.
+    """
+    rows = session.execute(
+        select(
+            HardwareItemModel.hardware_category,
+            HardwareItemModel.product_code,
+            HardwareItemModel.classification,
+            func.sum(HardwareItemModel.item_quantity),
+        )
+        .where(HardwareItemModel.project_id == project_id)
+        .group_by(
+            HardwareItemModel.hardware_category,
+            HardwareItemModel.product_code,
+            HardwareItemModel.classification,
+        )
+    ).all()
+
+    by_product: dict[tuple[str, str], dict[Classification | None, int]] = {}
+    for category, code, classification, quantity in rows:
+        by_product.setdefault((category, code), {})
+        tally = by_product[(category, code)]
+        tally[classification] = tally.get(classification, 0) + int(quantity or 0)
+
+    dominant: dict[tuple[str, str], Classification | None] = {}
+    for combo, tally in by_product.items():
+        winner = sorted(tally.items(), key=lambda item: (-item[1], item[0].value if item[0] else ""))[0][0]
+        dominant[combo] = winner
+    return dominant
 
 
 def get_inventory_rows(

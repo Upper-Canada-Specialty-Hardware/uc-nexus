@@ -18,6 +18,7 @@ export const GET_PROJECT_INVENTORY_AVAILABILITY = gql`
       deficientQuantity
       reservedQuantity
       availableQuantity
+      classification
     }
   }
 `;

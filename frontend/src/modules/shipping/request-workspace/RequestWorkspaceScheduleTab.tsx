@@ -1,9 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
   Button,
-  Chip,
   Paper,
   Skeleton,
   Stack,
@@ -33,6 +32,7 @@ import {
   type CartLine,
   type Headroom,
 } from './requestCart';
+import { classificationChip, isShopClassified, SHOP_FRAMING, shopRowTintSx } from './classificationChip';
 import { monoSx, microLabelSx, tabularSx } from '../../../theme';
 
 /** The thin projectOpenings row the picker reads (#608 review): opening fields + the two source-card
@@ -63,6 +63,9 @@ interface Props {
   cart: CartLine[];
   headroom: Headroom;
   onCartChange: (next: CartLine[]) => void;
+  /** Reports, per productKey, the selected openings that still owe it (#610). The extras lane reads
+   *  this to nudge a loose add toward the door it is actually scheduled for. */
+  onScheduledProductsChange?: (scheduled: Map<string, string[]>) => void;
 }
 
 const numCol = { ...tabularSx, width: 1, whiteSpace: 'nowrap' } as const;
@@ -84,16 +87,8 @@ const OPENING_COLUMNS: GridColDef<PanelRow>[] = [
 
 const OPENING_COLUMN_VISIBILITY = { interior_exterior: false, keying: false };
 
-function classificationChip(classification: CoverageRow['classification']) {
-  if (classification === 'SITE_HARDWARE')
-    return <Chip label="SITE" size="small" color="success" variant="outlined" sx={{ height: 20 }} />;
-  if (classification === 'SHOP_HARDWARE')
-    return <Chip label="SHOP" size="small" color="info" variant="outlined" sx={{ height: 20 }} />;
-  return null;
-}
-
 /**
- * The from-schedule catalog: pick openings, and the schedule says what each still has coming.
+ * The openings-first catalog: pick openings, and the schedule says what each still has coming.
  *
  * It opens on a source gate mirroring the import wizard's upload step (#608 follow-up): use the
  * schedule already on file, or hand off to the import wizard to replace it with a newer XML. The
@@ -105,10 +100,21 @@ function classificationChip(classification: CoverageRow['classification']) {
  * with no classification gate - shop hardware is offered here too, because a completed shop-assembly
  * pull is a terminal exit and nothing tells this screen which exit a unit takes. A suggested-zero row
  * stays, muted: a schedule lowered below what already shipped still has a story to tell.
+ *
+ * Each row also carries the live Free remainder (#610): the product's ceiling less what the rest of
+ * the cart already holds of it, so two selected openings competing for one short pool show it drain
+ * as you add. A suggested that Free cannot cover flags amber - the line still goes, claiming what
+ * stock can, which the microcopy under the tables says out loud.
  */
-export default function RequestWorkspaceScheduleTab({ projectId, cart, headroom, onCartChange }: Props) {
-  // The gate renders every time the tab mounts (switching tabs unmounts it), independent of the draft
-  // cart, which persists across the round trip to the import wizard on the same sessionStorage key.
+export default function RequestWorkspaceScheduleTab({
+  projectId,
+  cart,
+  headroom,
+  onCartChange,
+  onScheduledProductsChange,
+}: Props) {
+  // The gate renders every time the catalog mounts, independent of the draft cart, which persists
+  // across the round trip to the import wizard on the same sessionStorage key.
   const [view, setView] = useState<'source' | 'select'>('source');
   const [selectedOpenings, setSelectedOpenings] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
@@ -178,6 +184,29 @@ export default function RequestWorkspaceScheduleTab({ projectId, cart, headroom,
     const next = rows.reduce((acc, row) => addScheduleRowAtSuggested(acc, row, headroom), cart);
     onCartChange(next);
   };
+
+  // Which products the selected openings still owe, and to which openings, so the extras lane can
+  // nudge a loose add toward the tagged path. Only rows with something left to send (suggested > 0)
+  // count - an opening whose demand is already met is no reason to steer a loose add.
+  const scheduledByProduct = useMemo(() => {
+    const map = new Map<string, string[]>();
+    if (selected.length === 0) return map;
+    for (const row of coverageData?.requestCoverage ?? []) {
+      if (row.suggestedQuantity <= 0) continue;
+      const key = productKey(row);
+      const openings = map.get(key);
+      if (openings) {
+        if (!openings.includes(row.openingNumber)) openings.push(row.openingNumber);
+      } else {
+        map.set(key, [row.openingNumber]);
+      }
+    }
+    return map;
+  }, [coverageData, selected]);
+
+  useEffect(() => {
+    onScheduledProductsChange?.(scheduledByProduct);
+  }, [scheduledByProduct, onScheduledProductsChange]);
 
   // ---- Source gate ----
 
@@ -320,6 +349,7 @@ export default function RequestWorkspaceScheduleTab({ projectId, cart, headroom,
                           <TableCell align="right">Owed</TableCell>
                           <TableCell align="right">Sent</TableCell>
                           <TableCell align="right">Claimed</TableCell>
+                          <TableCell align="right">Free</TableCell>
                           <TableCell align="right">Suggested</TableCell>
                           <TableCell align="right">On order</TableCell>
                           <TableCell align="right">Add</TableCell>
@@ -330,8 +360,8 @@ export default function RequestWorkspaceScheduleTab({ projectId, cart, headroom,
                           const inCart = lineQuantity(cart, row);
                           const muted = row.suggestedQuantity === 0 && inCart === 0;
                           // The live remaining pool for this product, excluding this line's own hold, so
-                          // the Add button matches the inventory tab: disabled when nothing is free, not
-                          // enabled to silently no-op after the clamp.
+                          // the Add button matches the extras lane (disabled when nothing is free) and
+                          // the Free column shows a competing opening draining the pool as you add.
                           const remaining = remainingForProduct(
                             cart,
                             productKey(row),
@@ -342,11 +372,15 @@ export default function RequestWorkspaceScheduleTab({ projectId, cart, headroom,
                               productCode: row.productCode,
                             }),
                           );
+                          // A suggestion the free pool cannot cover in full: the line still goes and
+                          // claims what stock can, so this is a flag, not a block.
+                          const short = row.suggestedQuantity > 0 && remaining < row.suggestedQuantity;
+                          const shop = isShopClassified(row.classification);
                           return (
                             <TableRow
                               key={`${row.hardwareCategory}|${row.productCode}`}
                               hover
-                              sx={{ opacity: muted ? 0.5 : 1 }}
+                              sx={{ opacity: muted ? 0.5 : 1, ...(shop ? shopRowTintSx : null) }}
                             >
                               <TableCell sx={monoSx}>{row.productCode}</TableCell>
                               <TableCell>{row.hardwareCategory}</TableCell>
@@ -361,6 +395,12 @@ export default function RequestWorkspaceScheduleTab({ projectId, cart, headroom,
                                 {row.claimedQuantity}
                               </TableCell>
                               <TableCell align="right" sx={numCol}>
+                                {remaining}
+                              </TableCell>
+                              <TableCell
+                                align="right"
+                                sx={short ? { ...numCol, color: 'warning.main' } : numCol}
+                              >
                                 {row.suggestedQuantity}
                               </TableCell>
                               <TableCell align="right" sx={contextCol}>
@@ -406,6 +446,11 @@ export default function RequestWorkspaceScheduleTab({ projectId, cart, headroom,
             <Typography component="div" sx={microLabelSx}>
               A short line still goes - it claims what stock can cover.
             </Typography>
+            {grouped.some((g) => g.rows.some((r) => isShopClassified(r.classification))) && (
+              <Typography variant="caption" color="text.secondary">
+                {SHOP_FRAMING}
+              </Typography>
+            )}
           </Stack>
         )}
       </Box>
