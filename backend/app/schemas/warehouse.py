@@ -449,9 +449,15 @@ class WarehouseQueries:
         over-selection with per-combo detail *before* submission rather than bouncing the whole
         finalize. Deliberately distinct from `inventoryHierarchy`'s availability, which is on-hand
         minus deficient: that answers "what is physically unspoken-for in the building", this
-        answers "what may I claim". Two grouped scalar aggregates, no per-row work."""
+        answers "what may I claim". Two grouped scalar aggregates, no per-row work.
+
+        The per-product SITE/SHOP classification (#610) is a third grouped read joined by combo key,
+        so a loose extras line carries the same chip and shop framing as the opening-tagged catalog
+        rows; a product the schedule never named reads null."""
         with SessionLocal() as session:
-            rows = warehouse_repository.get_project_availability(session, uuid.UUID(str(project_id)))
+            pid = uuid.UUID(str(project_id))
+            rows = warehouse_repository.get_project_availability(session, pid)
+            classifications = warehouse_repository.get_scheduled_classifications(session, pid)
             return [
                 InventoryAvailability(
                     hardware_category=row["hardware_category"],
@@ -460,6 +466,7 @@ class WarehouseQueries:
                     deficient_quantity=row["deficient_quantity"],
                     reserved_quantity=row["reserved_quantity"],
                     available_quantity=row["available_quantity"],
+                    classification=classifications.get((row["hardware_category"], row["product_code"])),
                 )
                 for row in rows
             ]

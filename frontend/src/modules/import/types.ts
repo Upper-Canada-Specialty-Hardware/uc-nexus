@@ -29,6 +29,9 @@ export interface InventoryAvailabilityRow {
   deficientQuantity: number;
   reservedQuantity: number;
   availableQuantity: number;
+  /** The dominant SITE/SHOP classification of this product on the schedule (#610), or null when the
+   *  schedule never named it - lets a loose extras line carry the same chip/framing as catalog rows. */
+  classification: HardwareClassification | null;
 }
 
 /** How the schedule says a product gets fitted, or null when it was never classified. */

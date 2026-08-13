@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
@@ -62,7 +62,9 @@ function projectsMock(): MockedResponse {
   };
 }
 
-function availabilityMock(): MockedResponse {
+function availabilityMock(overrides?: Partial<{ available: number; onHand: number; classification: string | null }>): MockedResponse {
+  const onHand = overrides?.onHand ?? overrides?.available ?? 10;
+  const available = overrides?.available ?? 10;
   return {
     request: { query: GET_PROJECT_INVENTORY_AVAILABILITY, variables: { projectId: 'proj-1' } },
     maxUsageCount: Number.POSITIVE_INFINITY,
@@ -72,10 +74,11 @@ function availabilityMock(): MockedResponse {
           {
             hardwareCategory: 'HINGE',
             productCode: 'HG-100',
-            onHandQuantity: 10,
+            onHandQuantity: onHand,
             deficientQuantity: 0,
-            reservedQuantity: 0,
-            availableQuantity: 10,
+            reservedQuantity: onHand - available,
+            availableQuantity: available,
+            classification: overrides?.classification ?? null,
           },
         ],
       },
@@ -156,8 +159,8 @@ describe('RequestWorkspace draft persistence', () => {
       openingsMock(),
     ]);
 
-    fireEvent.click(await screen.findByRole('tab', { name: 'From inventory' }, SLOW));
-    // The seeded quantity reaches the inventory row, which is only true if the draft was loaded.
+    // The extras lane opens on its own because the draft already carries a loose line, so the seeded
+    // quantity is reachable without a tab or a click - which is only true if the draft was loaded.
     const qty = await screen.findByRole('spinbutton', { name: /Quantity of HG-100 to send loose/i }, SLOW);
     expect(qty).toHaveValue(2);
 
@@ -179,7 +182,6 @@ describe('RequestWorkspace draft persistence', () => {
       requestMock(),
     ]);
 
-    fireEvent.click(await screen.findByRole('tab', { name: 'From inventory' }, SLOW));
     const qty = await screen.findByRole('spinbutton', { name: /Quantity of HG-100 to send loose/i }, SLOW);
     expect(qty).toHaveValue(2);
 
@@ -190,8 +192,8 @@ describe('RequestWorkspace draft persistence', () => {
   });
 });
 
-// The from-schedule tab opens on a source gate mirroring the import wizard's upload step (#608): use
-// the schedule on file, or hand off to the import wizard to replace it.
+// The openings-first catalog opens on a source gate mirroring the import wizard's upload step (#608):
+// use the schedule on file, or hand off to the import wizard to replace it.
 
 function scheduleOpeningsMock(): MockedResponse {
   return {
@@ -212,7 +214,7 @@ function scheduleOpeningsMock(): MockedResponse {
   };
 }
 
-function coverageMock(): MockedResponse {
+function coverageMock(suggested = 4, owed = 4): MockedResponse {
   return {
     request: { query: GET_REQUEST_COVERAGE, variables: { projectId: 'proj-1', openingNumbers: ['101'] } },
     maxUsageCount: Number.POSITIVE_INFINITY,
@@ -224,10 +226,10 @@ function coverageMock(): MockedResponse {
             hardwareCategory: 'HINGE',
             productCode: 'HG-100',
             classification: null,
-            owedQuantity: 4,
+            owedQuantity: owed,
             sentQuantity: 0,
             claimedQuantity: 0,
-            suggestedQuantity: 4,
+            suggestedQuantity: suggested,
             onOrderQuantity: 0,
           },
         ],
@@ -263,7 +265,7 @@ describe('from-schedule source gate', () => {
     expect(loc.textContent).toContain(`returnTo=${encodeURIComponent('/app/shipping/requests/new?projectId=proj-1')}`);
   });
 
-  it('opening selection drives the coverage table', async () => {
+  it('opening selection drives the coverage table, which carries a live Free column', async () => {
     renderAt('/app/shipping/requests/new?projectId=proj-1', [
       projectsMock(),
       availabilityMock(),
@@ -276,6 +278,64 @@ describe('from-schedule source gate', () => {
     // Selecting via the paste filter drives requestCoverage, whose product row then renders.
     fireEvent.change(paste, { target: { value: '101' } });
     fireEvent.click(screen.getByRole('button', { name: 'Filter' }));
-    expect(await screen.findByText('HG-100', {}, SLOW)).toBeInTheDocument();
+    const productCell = await screen.findByText('HG-100', {}, SLOW);
+    // Free is the openings-first addition (#610): the live pool remainder for the product.
+    expect(screen.getByText('Free')).toBeInTheDocument();
+    const cells = within(productCell.closest('tr') as HTMLElement).getAllByRole('cell');
+    // Product / Category / chip / Owed / Sent / Claimed / Free / Suggested / On order / Add
+    expect(cells[6]).toHaveTextContent('10'); // Free = availability (10), nothing in the cart yet
+    expect(cells[7]).toHaveTextContent('4'); // Suggested
+  });
+
+  it('flags a suggestion the free pool cannot cover, but still offers the add', async () => {
+    renderAt('/app/shipping/requests/new?projectId=proj-1', [
+      projectsMock(),
+      availabilityMock({ available: 2 }),
+      scheduleOpeningsMock(),
+      coverageMock(4, 4),
+    ]);
+    await screen.findByText(/2 openings/i, {}, SLOW);
+    fireEvent.click(screen.getByRole('button', { name: /use current schedule/i }));
+    const paste = await screen.findByPlaceholderText('Paste opening numbers, one per line...', {}, SLOW);
+    fireEvent.change(paste, { target: { value: '101' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Filter' }));
+    const productCell = await screen.findByText('HG-100', {}, SLOW);
+    const cells = within(productCell.closest('tr') as HTMLElement).getAllByRole('cell');
+    expect(cells[6]).toHaveTextContent('2'); // Free clamped to what stock can cover
+    expect(cells[7]).toHaveTextContent('4'); // Suggested still the full owed figure
+    // A shortfall does not block the add - the line goes and claims what stock can cover.
+    expect(within(cells[9]).getByRole('button', { name: 'Add' })).toBeEnabled();
+  });
+});
+
+// The extras lane (#610): loose stock demoted to a bottom accordion, opening on its own only when
+// the cart already carries loose lines.
+
+describe('extras lane', () => {
+  it('stays collapsed on a fresh request and opens on demand', async () => {
+    renderAt('/app/shipping/requests/new?projectId=proj-1', [projectsMock(), availabilityMock(), scheduleOpeningsMock()]);
+    const summary = await screen.findByText('Extras - not owed to any opening', {}, SLOW);
+    // Collapsed: the loose list is unmounted until the lane is opened.
+    expect(screen.queryByRole('button', { name: 'Take all free' })).not.toBeInTheDocument();
+    fireEvent.click(summary);
+    expect(await screen.findByRole('button', { name: 'Take all free' }, SLOW)).toBeInTheDocument();
+  });
+
+  it('nudges a loose row toward the opening its product is scheduled for', async () => {
+    renderAt('/app/shipping/requests/new?projectId=proj-1', [
+      projectsMock(),
+      availabilityMock(),
+      scheduleOpeningsMock(),
+      coverageMock(),
+    ]);
+    await screen.findByText(/2 openings/i, {}, SLOW);
+    fireEvent.click(screen.getByRole('button', { name: /use current schedule/i }));
+    const paste = await screen.findByPlaceholderText('Paste opening numbers, one per line...', {}, SLOW);
+    fireEvent.change(paste, { target: { value: '101' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Filter' }));
+    await screen.findByText('HG-100', {}, SLOW);
+    // Opening the extras lane, its HG-100 row shows the hint because 101 still owes that product.
+    fireEvent.click(screen.getByText('Extras - not owed to any opening'));
+    expect(await screen.findByText(/on schedule for 101/i, {}, SLOW)).toBeInTheDocument();
   });
 });

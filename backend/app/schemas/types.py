@@ -1232,6 +1232,10 @@ class InventoryAvailability:
     deficient_quantity: int
     reserved_quantity: int
     available_quantity: int
+    # The dominant SITE/SHOP classification of this product on the schedule, project-wide (#610), or
+    # null when the schedule never named it or never classified it. Lets a loose extras line carry the
+    # same chip and shop framing as the opening-tagged catalog rows above it.
+    classification: Classification | None
 
 
 @strawberry.type

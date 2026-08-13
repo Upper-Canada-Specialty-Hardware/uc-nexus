@@ -9,7 +9,7 @@ units are unclaimable until someone reconciles the two. This flag is what surfac
 import uuid
 from datetime import datetime
 
-from app.models.enums import HardwareItemState
+from app.models.enums import Classification, HardwareItemState
 from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
 from app.models.project import Opening, Project
@@ -25,7 +25,7 @@ def _make_project(session) -> Project:
     return p
 
 
-def _add_schedule_item(session, project, *, category, code):
+def _add_schedule_item(session, project, *, category, code, classification=None, quantity=1):
     opening = Opening(
         id=uuid.uuid4(),
         project_id=project.id,
@@ -40,7 +40,8 @@ def _add_schedule_item(session, project, *, category, code):
             opening_id=opening.id,
             hardware_category=category,
             product_code=code,
-            item_quantity=1,
+            item_quantity=quantity,
+            classification=classification,
             state=HardwareItemState.AVAILABLE,
         )
     )
@@ -203,3 +204,80 @@ def test_non_schedule_type_codes_are_never_flagged(db_session, monkeypatch):
     assert flat[(item_type.code, "FR-101")] is True
     # An ordinary category still off the schedule is still flagged - the rule narrowed, not vanished.
     assert flat[("Washroom", "GRAB-42")] is False
+
+
+# --- the per-product dominant classification the extras lane reads (#610) -----------------------
+
+
+def test_scheduled_classifications_returns_the_dominant_value_per_product(db_session):
+    project = _make_project(db_session)
+    _add_schedule_item(
+        db_session, project, category="Hinge", code="BB1279", classification=Classification.SITE_HARDWARE
+    )
+    _add_schedule_item(db_session, project, category="Lock", code="L9080", classification=Classification.SHOP_HARDWARE)
+
+    result = warehouse_repository.get_scheduled_classifications(db_session, project.id)
+
+    assert result[("Hinge", "BB1279")] == Classification.SITE_HARDWARE
+    assert result[("Lock", "L9080")] == Classification.SHOP_HARDWARE
+
+
+def test_the_majority_of_units_wins_not_the_number_of_rows(db_session):
+    """Two rows disagreeing on one product resolve by unit count, the same rule the catalog uses."""
+    project = _make_project(db_session)
+    _add_schedule_item(
+        db_session, project, category="Hinge", code="BB1279", classification=Classification.SITE_HARDWARE, quantity=2
+    )
+    _add_schedule_item(
+        db_session, project, category="Hinge", code="BB1279", classification=Classification.SHOP_HARDWARE, quantity=5
+    )
+
+    result = warehouse_repository.get_scheduled_classifications(db_session, project.id)
+
+    assert result[("Hinge", "BB1279")] == Classification.SHOP_HARDWARE
+
+
+def test_an_unclassified_majority_answers_none(db_session):
+    project = _make_project(db_session)
+    _add_schedule_item(db_session, project, category="Hinge", code="BB1279", classification=None, quantity=5)
+    _add_schedule_item(
+        db_session, project, category="Hinge", code="BB1279", classification=Classification.SITE_HARDWARE, quantity=2
+    )
+
+    result = warehouse_repository.get_scheduled_classifications(db_session, project.id)
+
+    assert result[("Hinge", "BB1279")] is None
+
+
+def test_a_product_absent_from_the_schedule_is_absent_from_the_map(db_session):
+    project = _make_project(db_session)
+    _add_schedule_item(
+        db_session, project, category="Hinge", code="BB1279", classification=Classification.SITE_HARDWARE
+    )
+
+    result = warehouse_repository.get_scheduled_classifications(db_session, project.id)
+
+    assert ("Washroom", "GRAB-BAR-42") not in result
+
+
+def test_classifications_are_scoped_to_one_project(db_session):
+    a, b = _make_project(db_session), _make_project(db_session)
+    _add_schedule_item(db_session, a, category="Hinge", code="BB1279", classification=Classification.SITE_HARDWARE)
+
+    assert warehouse_repository.get_scheduled_classifications(db_session, b.id) == {}
+
+
+def test_availability_resolver_carries_the_classification(db_session, monkeypatch):
+    """The end-to-end wiring the extras lane depends on: a stocked product shows its schedule chip."""
+    from app.schemas.warehouse import WarehouseQueries
+
+    project = _make_project(db_session)
+    _add_schedule_item(
+        db_session, project, category="Hinge", code="BB1279", classification=Classification.SHOP_HARDWARE
+    )
+    _add_inventory(db_session, project, category="Hinge", code="BB1279")
+    _borrow(monkeypatch, db_session)
+
+    rows = WarehouseQueries().project_inventory_availability(None, project_id=str(project.id))
+    by_combo = {(r.hardware_category, r.product_code): r.classification for r in rows}
+    assert by_combo[("Hinge", "BB1279")] == Classification.SHOP_HARDWARE
