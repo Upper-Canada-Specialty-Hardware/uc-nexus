@@ -158,10 +158,11 @@ export default function PullRequestDetailModal({
 
   // --- Mutations ---
 
-  // Eviction only, disjoint from the queue refetch the parent does in onRefetch (see refetch.ts).
-  // #343 re-keyed workability from "the pull is COMPLETED" to "this opening is PULLED", so approving
-  // and completing both change what the assembly floor can see - and the assembly floor is a
-  // different module, never mounted while a warehouse user is working the pull.
+  // Eviction only (see refetch.ts). The set evicts pullRequests too, so completing drops the pull off
+  // the active queue directly - the parent's onRefetch only closes the modal. #343 re-keyed
+  // workability from "the pull is COMPLETED" to "this opening is PULLED", so starting and completing
+  // both change what the assembly floor can see - a different module, never mounted while a warehouse
+  // user is working the pull.
   const evictPullLifecycleFields = (cache: { evict: (o: { id: string; fieldName: string }) => void; gc: () => void }) => {
     for (const fieldName of PULL_LIFECYCLE_STALE_ROOT_FIELDS) {
       cache.evict({ id: 'ROOT_QUERY', fieldName });

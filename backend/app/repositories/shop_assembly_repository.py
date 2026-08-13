@@ -457,22 +457,3 @@ def reopen_shop_assembly_request(
 
     warehouse_repository.discard_pending_pull_request(session, pull_id)
     return request
-
-
-def detach_cancelled_pull(session: Session, pull_request_id: uuid.UUID) -> None:
-    """Send a request whose pull was cancelled back for re-acceptance (#343).
-
-    Cancellation returns the hardware to the shelf, so the request stops being accepted and goes back
-    to PENDING - still holding its reservations, exactly as a reopen leaves it.
-    """
-    request = session.scalars(
-        select(ShopAssemblyRequest).where(ShopAssemblyRequest.pull_request_id == pull_request_id)
-    ).first()
-    if request is None:
-        return
-    request.pull_request_id = None
-    if request.status == ShopAssemblyRequestStatus.APPROVED:
-        request.status = ShopAssemblyRequestStatus.PENDING
-        request.approved_by = None
-        request.approved_at = None
-    session.flush()

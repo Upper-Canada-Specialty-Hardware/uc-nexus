@@ -142,13 +142,12 @@ export default function PickPage() {
   });
 
   // #613: the terminal handover, offered inline the moment a full pick lands so a rushing picker can
-  // confirm-then-complete without leaving the sheet. Same cache work the queue's detail modal does to
-  // complete a pull: evict the lifecycle fields (read by modules not mounted here - the staging pool
-  // this feeds, the assembly floor, the composer's offer) and refetch GetPullRequests, the queue this
-  // returns to. Disjoint by design - GetPullRequests is not one of the evicted fields, so nothing runs
-  // twice (see refetch.ts).
+  // confirm-then-complete without leaving the sheet. Same cache work the detail modal does to complete
+  // a pull - evict the lifecycle fields (see refetch.ts). No refetchQueries here: the queue this
+  // returns to is not mounted while we are on the pick page, so a refetch by name would be skipped;
+  // the pullRequests eviction in that set is what drops the completed pull off the queue on its next
+  // mount, and off the mounted queue behind the modal alike.
   const [completePull, { loading: completing }] = useMutation(COMPLETE_PULL_REQUEST, {
-    refetchQueries: ['GetPullRequests'],
     update(cache) {
       for (const field of PULL_LIFECYCLE_STALE_ROOT_FIELDS) {
         cache.evict({ id: 'ROOT_QUERY', fieldName: field });
@@ -156,7 +155,12 @@ export default function PickPage() {
       cache.gc();
     },
     onCompleted: () => {
-      showToast('Pulled. The hardware is staged for shipping.', 'success');
+      showToast(
+        pr?.source === 'SHIPPING_OUT'
+          ? 'Pulled. The hardware is staged for shipping.'
+          : 'Pulled. The hardware is on its way to the shop.',
+        'success',
+      );
       navigate('/app/warehouse/pull-requests');
     },
     onError: (e) => showToast(e.message, 'error'),
@@ -315,8 +319,10 @@ export default function PickPage() {
               ? `Picked by ${pr.pickedBy} on ${parseServerDate(pr.pickedAt as string).toLocaleString()}. `
               : ''}
             {pr.status === 'IN_PROGRESS'
-              ? 'Hand it over now to feed the shipping staging pool, or go back to the queue to stage the carts.'
-              : 'Go back to the queue to stage the carts.'}
+              ? pr.source === 'SHIPPING_OUT'
+                ? 'Mark it as pulled to feed the shipping staging pool, or go back to the queue.'
+                : 'Mark it as pulled to send it to the shop, or go back to the queue.'
+              : 'Go back to the queue.'}
           </Typography>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
             <Button
