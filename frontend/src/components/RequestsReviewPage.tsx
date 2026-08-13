@@ -197,7 +197,8 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
                   transition: 'border-color 0.2s ease',
                   '&:hover': { borderColor: 'text.secondary' },
                   '& .MuiAccordionSummary-root': { minHeight: 52 },
-                  '&.Mui-expanded': { borderLeft: '3px solid', borderLeftColor: 'secondary.main' },
+                  // Expanded reads through a full-border emphasis rather than a coloured side bar.
+                  '&.Mui-expanded': { borderColor: 'secondary.main' },
                 }}
               >
                 <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>

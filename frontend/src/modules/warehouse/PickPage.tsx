@@ -5,6 +5,7 @@ import { ClipboardList, Package, Printer, Save } from 'lucide-react';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { pdf } from '@react-pdf/renderer';
 import {
+  COMPLETE_PULL_REQUEST,
   CONFIRM_PICK,
   GET_PULL_PICK_SHEET,
   SAVE_PICK_DRAFT,
@@ -13,6 +14,7 @@ import { GET_PROJECTS } from '../../graphql/shared';
 import {
   PICK_CONFIRM_REFETCH_QUERIES,
   PICK_CONFIRM_STALE_ROOT_FIELDS,
+  PULL_LIFECYCLE_STALE_ROOT_FIELDS,
 } from '../../graphql/refetch';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
@@ -128,13 +130,36 @@ export default function PickPage() {
         return;
       }
       setShortfalls([]);
+      // #613: a full confirm keeps the picker on the sheet instead of bouncing to the queue. The
+      // refetch above flips this page into its picked state, where a Mark as Pulled button offers the
+      // terminal handover inline - so the rush case is confirm-then-complete, two clicks, no navigation.
       showToast(`Pick confirmed. ${payload?.appliedQuantity ?? 0} unit(s) came off the shelf.`, 'success');
-      navigate('/app/warehouse/pull-requests');
     },
     onError: (e) => {
       setConfirmOpen(false);
       showToast(e.message, 'error');
     },
+  });
+
+  // #613: the terminal handover, offered inline the moment a full pick lands so a rushing picker can
+  // confirm-then-complete without leaving the sheet. Same cache work the queue's detail modal does to
+  // complete a pull: evict the lifecycle fields (read by modules not mounted here - the staging pool
+  // this feeds, the assembly floor, the composer's offer) and refetch GetPullRequests, the queue this
+  // returns to. Disjoint by design - GetPullRequests is not one of the evicted fields, so nothing runs
+  // twice (see refetch.ts).
+  const [completePull, { loading: completing }] = useMutation(COMPLETE_PULL_REQUEST, {
+    refetchQueries: ['GetPullRequests'],
+    update(cache) {
+      for (const field of PULL_LIFECYCLE_STALE_ROOT_FIELDS) {
+        cache.evict({ id: 'ROOT_QUERY', fieldName: field });
+      }
+      cache.gc();
+    },
+    onCompleted: () => {
+      showToast('Pulled. The hardware is staged for shipping.', 'success');
+      navigate('/app/warehouse/pull-requests');
+    },
+    onError: (e) => showToast(e.message, 'error'),
   });
 
   const handleEntryChange = useCallback((key: string, value: string) => {
@@ -152,6 +177,10 @@ export default function PickPage() {
       variables: { pullRequestId: id, lines: toPickLines(sections, entries) },
     });
   }, [confirmPick, id, sections, entries]);
+
+  const handleMarkAsPulled = useCallback(() => {
+    completePull({ variables: { id } });
+  }, [completePull, id]);
 
   const handlePrint = useCallback(async () => {
     if (!pr) return;
@@ -280,8 +309,38 @@ export default function PickPage() {
 
       {isPicked && (
         <Alert severity="success" sx={{ mb: 2 }}>
-          This pull was picked by {pr.pickedBy} on {parseServerDate(pr.pickedAt as string).toLocaleString()}.
-          Its hardware is off the shelf; go back to the queue to stage the carts.
+          <Typography variant="body2" gutterBottom>
+            Picked - stock is off the shelf.{' '}
+            {pr.pickedBy
+              ? `Picked by ${pr.pickedBy} on ${parseServerDate(pr.pickedAt as string).toLocaleString()}. `
+              : ''}
+            {pr.status === 'IN_PROGRESS'
+              ? 'Hand it over now to feed the shipping staging pool, or go back to the queue to stage the carts.'
+              : 'Go back to the queue to stage the carts.'}
+          </Typography>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            <Button
+              variant="outlined"
+              color="inherit"
+              size="small"
+              onClick={() => navigate('/app/warehouse/pull-requests')}
+            >
+              Back to queue
+            </Button>
+            {/* The handover is terminal, so it is only offered while the pull is still open - a
+                completed pull is already handed over and this page is a read-only record of it. */}
+            {pr.status === 'IN_PROGRESS' && (
+              <Button
+                variant="contained"
+                color="secondary"
+                size="small"
+                onClick={handleMarkAsPulled}
+                disabled={completing}
+              >
+                {completing ? 'Marking as pulled...' : 'Mark as Pulled'}
+              </Button>
+            )}
+          </Stack>
         </Alert>
       )}
 
