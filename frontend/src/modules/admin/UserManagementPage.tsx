@@ -39,6 +39,11 @@ const ALL_ROLES = [
   'Admin/Manager',
 ] as const;
 
+// The elevated Database Access tier. Held only alongside Admin/Manager (the backend refuses a
+// standalone one), and only a DB Admin may grant or remove it - so the toggle is shown only to a DB
+// Admin and lives apart from the flat role list. Backed by DB_ADMIN_ROLE in backend/app/auth.py.
+const DB_ADMIN_ROLE = 'DB Admin';
+
 interface ClerkUser {
   id: string;
   firstName: string;
@@ -122,7 +127,7 @@ const columns: GridColDef[] = [
 ];
 
 export default function UserManagementPage() {
-  const { isAdmin } = useIdentity();
+  const { isAdmin, isDbAdmin } = useIdentity();
   const { showToast } = useToast();
   const [selectedUser, setSelectedUser] = useState<ClerkUser | null>(null);
   const [editRoles, setEditRoles] = useState<string[]>([]);
@@ -293,6 +298,32 @@ export default function UserManagementPage() {
               />
             ))}
           </FormGroup>
+          {/* The elevated Database Access tier, shown only to a DB Admin (the backend enforces the same
+              grant rule regardless). Set apart from the flat list so it reads as what it is - access
+              above Admin/Manager - and captioned with the stacking rule it depends on. */}
+          {isDbAdmin && (
+            <Box sx={{ mt: 1.5, pt: 1.5, borderTop: 1, borderColor: 'divider' }}>
+              <Typography component="div" sx={{ ...microLabelSx, mb: 0.5 }}>
+                Database access
+              </Typography>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={editRoles.includes(DB_ADMIN_ROLE)}
+                    onChange={() => handleToggleRole(DB_ADMIN_ROLE)}
+                  />
+                }
+                label={
+                  <Box>
+                    <Typography variant="body2">DB Admin</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Mints direct Postgres logins. Requires Admin/Manager; only a DB Admin can grant it.
+                    </Typography>
+                  </Box>
+                }
+              />
+            </Box>
+          )}
           <Typography component="div" sx={{ ...microLabelSx, mt: 2, mb: 1 }}>
             GP identity
           </Typography>

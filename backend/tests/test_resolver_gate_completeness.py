@@ -27,13 +27,13 @@ from pathlib import Path
 
 import pytest
 
-from app.auth import ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE, WAREHOUSE_MANAGER_ROLE
+from app.auth import ADMIN_ROLE, DB_ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE, WAREHOUSE_MANAGER_ROLE
 from app.auth_policy import OPEN_OPERATIONS, ROOT_FIELD_POLICY, ROSTER_BACKED, SIGNED_IN
 from main import schema
 
 # The requirements a policy entry may name. A typo'd role - "Admin/Manger" - would otherwise be a
 # field nobody can call, since the check is a membership test against what Clerk returns.
-_VALID_REQUIREMENTS = {SIGNED_IN, ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE, WAREHOUSE_MANAGER_ROLE}
+_VALID_REQUIREMENTS = {SIGNED_IN, ADMIN_ROLE, DB_ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE, WAREHOUSE_MANAGER_ROLE}
 _VALID_ROLES = _VALID_REQUIREMENTS - {SIGNED_IN}
 
 _graphql_schema = schema._schema
