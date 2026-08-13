@@ -635,10 +635,19 @@ class WarehouseQueries:
         project_id: strawberry.ID | None = None,
         source: PullRequestSource | None = None,
         status: PullRequestStatus | None = None,
+        statuses: list[PullRequestStatus] | None = None,
     ) -> list[PullRequest]:
+        """The warehouse pull queue and its history read this. `statuses` filters to a set - the
+        active queue passes [PENDING, IN_PROGRESS] so a pull leaves the moment it completes or is
+        cancelled, the history page passes [COMPLETED, CANCELLED]. `status` (single) stays for
+        compat."""
         with SessionLocal() as session:
             prs = warehouse_repository.get_pull_requests(
-                session, uuid.UUID(str(project_id)) if project_id else None, source, status
+                session,
+                uuid.UUID(str(project_id)) if project_id else None,
+                source,
+                status,
+                statuses,
             )
             # One grouped read for the whole page, never one query per row (#367 / CLAUDE.md perf
             # rules): the queue draws a phase cell on every row. Narrowed to un-picked pulls, which
@@ -1330,12 +1339,10 @@ class WarehouseMutations:
         """Cancel an approved pull, return its hardware to inventory, and hand the source request
         back for re-acceptance (#343).
 
-        All-or-nothing: any opening whose assembly has started or finished refuses the whole
-        cancellation with a CONFLICT naming the blockers, because there is nowhere honest to park a
-        half-cancelled pull. Everything short of that comes back, staged openings included - their
-        hardware is on a cart in the shop, not on a leaf. The source request returns to PENDING and
-        its claim is re-created from the returned quantities if availability still allows; if it does
-        not, the request is left unreserved and flagged rather than half-claimed.
+        Every unit the pull took comes back to the project inventory rows it was picked from. The
+        source request returns to PENDING and its claim is re-created from the returned quantities if
+        availability still allows; if it does not, the request is left unreserved and flagged rather
+        than half-claimed.
 
         Open to any signed-in user - it writes inventory, so it must not be reachable anonymously.
         The cancellation and every restock audit row it writes name the Clerk-authenticated caller
@@ -1361,7 +1368,6 @@ class WarehouseMutations:
                     )
                     for r in result.restocked
                 ],
-                released_opening_ids=[strawberry.ID(str(oid)) for oid in result.released_opening_ids],
                 source_request_returned_to_pending=result.source_request_returned_to_pending,
                 reservations_recreated=result.reservations_recreated,
                 integrity_note=result.integrity_note,

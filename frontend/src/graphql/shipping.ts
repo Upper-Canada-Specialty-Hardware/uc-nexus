@@ -327,15 +327,23 @@ export const MARK_SHIPMENT_DELIVERED = gql`
 `;
 
 export const GET_SHIPPING_OUT_REQUESTS = gql`
-  query GetShippingOutRequests($projectId: ID, $status: ShippingOutRequestStatus, $reopenableOnly: Boolean) {
-    shippingOutRequests(projectId: $projectId, status: $status, reopenableOnly: $reopenableOnly) {
+  query GetShippingOutRequests($projectId: ID, $status: ShippingOutRequestStatus) {
+    shippingOutRequests(projectId: $projectId, status: $status) {
       id
       requestNumber
       projectId
       status
+      stage
       createdBy
       createdAt
+      approvedBy
+      approvedAt
+      rejectedBy
+      rejectedAt
+      rejectionReason
       integrityNote
+      returnNote
+      pullRequestId
       items {
         id
         openingNumber

@@ -188,8 +188,13 @@ export const GET_PO_RECEIVING_DETAILS = gql`
 `;
 
 export const GET_PULL_REQUESTS = gql`
-  query GetPullRequests($projectId: ID, $source: PullRequestSource, $status: PullRequestStatus) {
-    pullRequests(projectId: $projectId, source: $source, status: $status) {
+  query GetPullRequests(
+    $projectId: ID
+    $source: PullRequestSource
+    $status: PullRequestStatus
+    $statuses: [PullRequestStatus!]
+  ) {
+    pullRequests(projectId: $projectId, source: $source, status: $status, statuses: $statuses) {
       id
       requestNumber
       projectId

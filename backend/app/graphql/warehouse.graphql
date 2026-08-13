@@ -304,7 +304,6 @@ type CancelPullRequestResult {
   pull_request: PullRequest!
   # The inverse inventory write, per combo. Empty for a pull with no LOOSE lines.
   restocked: [RestockedLine!]!
-  released_opening_ids: [ID!]!
   # False for a PR-REPL replacement pull or a legacy pull, which have no source request at all.
   source_request_returned_to_pending: Boolean!
   # False when the request holds no claim - no source request, or the availability re-check came up
@@ -700,7 +699,7 @@ type Query {
   myReceiveDecisions: [ReceiveDecision!]!
   openingItems(projectId: ID): [OpeningItem!]!
   openingItemDetails(id: ID!): OpeningItemDetail!
-  pullRequests(projectId: ID, source: PullRequestSource, status: PullRequestStatus): [PullRequest!]!
+  pullRequests(projectId: ID, source: PullRequestSource, status: PullRequestStatus, statuses: [PullRequestStatus!]): [PullRequest!]!
   pullRequestDetails(id: ID!): PullRequest!
   # The shop-assembly openings a pull covers, with their hardware lines, for the warehouse's
   # per-opening staging checklist (#343). Deliberately a separate query rather than a field on

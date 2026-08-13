@@ -1,6 +1,7 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import { ApolloClient } from '@apollo/client';
 import { GraphQLError } from 'graphql';
 import { ToastProvider } from '../../../components/Toast';
 import PullRequestDetailModal from '../PullRequestDetailModal';
@@ -8,13 +9,18 @@ import type { PullRequest } from '../PullRequestQueue';
 import { CANCEL_PULL_REQUEST } from '../../../graphql/warehouse';
 
 /**
- * Cancelling an approved pull (#343). It returns real hardware to the shelf and sends the source
- * request back for re-acceptance, so it is behind a confirm that states exactly that. It is
- * all-or-nothing: the server refuses whole when assembly has started, naming every blocker, and the
- * dialog stays open showing that list rather than closing on a toast.
+ * Cancelling an approved pull (#343, hardened in #613). It returns real hardware to the shelf and
+ * sends the source request back for re-acceptance, so it is behind a confirm that states exactly
+ * that. A genuine server refusal stays inline in the dialog; a re-cancel of an already-cancelled
+ * pull closes on a warning instead; and every failure path refetches the queue so a pull whose
+ * cancel committed under a failed response can never keep showing "In Progress".
  */
 
 vi.setConfig({ testTimeout: 30_000 });
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
@@ -75,18 +81,23 @@ function cancelSuccessMock(integrityNote: string | null = null): MockedResponse 
   };
 }
 
-function cancelBlockedMock(): MockedResponse {
+// A genuine server refusal (a lock, a conflict). It is shown verbatim inline and the dialog stays
+// open so the user can read it and retry.
+function cancelErrorMock(
+  message = 'This pull is locked by another warehouse action. Try again in a moment.',
+): MockedResponse {
   return {
     request: { query: CANCEL_PULL_REQUEST, variables: cancelVariables(null) },
-    result: {
-      errors: [
-        new GraphQLError(
-          'Cannot cancel this pull - assembly has already started on 1 of its openings: ' +
-            '0019-EX leaf 1 (in progress, Ada). Finish or unwind that work first; cancelling is ' +
-            'all-or-nothing.',
-        ),
-      ],
-    },
+    result: { errors: [new GraphQLError(message)] },
+  };
+}
+
+// The server's re-cancel refusal, verbatim (backend InvalidStateTransitionError). The client
+// recognises it and closes on a warning rather than showing the red blocker.
+function cancelAlreadyCancelledMock(): MockedResponse {
+  return {
+    request: { query: CANCEL_PULL_REQUEST, variables: cancelVariables(null) },
+    result: { errors: [new GraphQLError('Pull request is already cancelled')] },
   };
 }
 
@@ -141,9 +152,10 @@ it('states what cancelling will do before it happens', async () => {
 
   expect(await screen.findByText(/Cancel PR-SA-0001/)).toBeInTheDocument();
   expect(
-    screen.getByText(/go back into project inventory.*back to Pending for re-acceptance/s),
+    screen.getByText(/goes back to project inventory.*returns to Pending for re-acceptance/s),
   ).toBeInTheDocument();
-  expect(screen.getByText(/assembly has already started will block the cancellation/)).toBeInTheDocument();
+  // The door-management blocker copy is gone since #554 - there is no assembly-started refusal.
+  expect(screen.queryByText(/assembly has already started/)).not.toBeInTheDocument();
 });
 
 it('reports what came back and that the claim was re-created', async () => {
@@ -165,17 +177,52 @@ it('warns rather than celebrates when the hardware came back but could not be re
   expect(await screen.findByText(/could not be re-reserved/)).toBeInTheDocument();
 });
 
-it('keeps the dialog open and names the blockers when the cancel is refused', async () => {
-  const { onRefetch } = renderModal([cancelBlockedMock()]);
+it('keeps the dialog open and shows the error inline when a cancel is refused', async () => {
+  const { onRefetch } = renderModal([cancelErrorMock()]);
   fireEvent.click(await screen.findByRole('button', { name: 'Cancel Pull' }));
   fireEvent.click(await screen.findByRole('button', { name: /Cancel pull and restock/ }));
 
   const blocked = await screen.findByTestId('cancel-blocked');
-  expect(blocked).toHaveTextContent('0019-EX leaf 1 (in progress, Ada)');
-  expect(blocked).toHaveTextContent('all-or-nothing');
-  // Still open, so the user can read the list and act on it.
+  expect(blocked).toHaveTextContent('locked by another warehouse action');
+  // Still open, so the user can read the reason and retry.
   expect(screen.getByRole('button', { name: /Cancel pull and restock/ })).toBeInTheDocument();
+  // The parent queue refetch belongs to the success path; a refused cancel does not fire it.
   expect(onRefetch).not.toHaveBeenCalled();
+});
+
+it('closes on a warning and refetches the queue when the pull is already cancelled', async () => {
+  const refetchSpy = vi.spyOn(ApolloClient.prototype, 'refetchQueries');
+  renderModal([cancelAlreadyCancelledMock()]);
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel Pull' }));
+  fireEvent.click(await screen.findByRole('button', { name: /Cancel pull and restock/ }));
+
+  // A warning toast, not the red inline blocker.
+  expect(await screen.findByText(/already cancelled/i)).toBeInTheDocument();
+  expect(screen.queryByTestId('cancel-blocked')).not.toBeInTheDocument();
+  // The dialog is dismissed rather than left showing an error.
+  await waitFor(() =>
+    expect(screen.queryByRole('button', { name: /Cancel pull and restock/ })).not.toBeInTheDocument(),
+  );
+  // The queue is refreshed off the failed response so it can never keep showing In Progress.
+  expect(refetchSpy).toHaveBeenCalledWith(
+    expect.objectContaining({ include: expect.arrayContaining(['GetPullRequests']) }),
+  );
+});
+
+it('refetches the queue even when a generic cancel error keeps the dialog open', async () => {
+  const refetchSpy = vi.spyOn(ApolloClient.prototype, 'refetchQueries');
+  renderModal([cancelErrorMock()]);
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel Pull' }));
+  fireEvent.click(await screen.findByRole('button', { name: /Cancel pull and restock/ }));
+
+  // The inline blocker still shows (the dialog stays open)...
+  expect(await screen.findByTestId('cancel-blocked')).toBeInTheDocument();
+  // ...but the queue is refreshed regardless, in case the cancel actually committed server-side.
+  await waitFor(() =>
+    expect(refetchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ include: expect.arrayContaining(['GetPullRequests']) }),
+    ),
+  );
 });
 
 it('explains a cancelled pull after the fact', async () => {

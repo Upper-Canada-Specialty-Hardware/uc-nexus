@@ -6,6 +6,7 @@ import ReceivingPage from './ReceivingPage';
 import ReceiveApprovalsPage from './ReceiveApprovalsPage';
 import ReceivesPage from './ReceivesPage';
 import PullRequestQueue from './PullRequestQueue';
+import PullRequestHistoryPage from './PullRequestHistoryPage';
 import PickPage from './PickPage';
 import PutAwayTab from './PutAwayTab';
 import StockPoolView from './StockPoolView';
@@ -31,6 +32,9 @@ export default function WarehouseModule() {
       <Route path="deliveries" element={<Navigate to="/app/warehouse/receiving" replace />} />
       <Route path="put-away" element={<PutAwayTab />} />
       <Route path="pull-requests" element={<PullRequestQueue />} />
+      {/* The finished pulls the queue drops the moment they complete or cancel (#613). A distinct
+          static route, ranked above the :id/pick param route so "history" never reads as an id. */}
+      <Route path="pull-requests/history" element={<PullRequestHistoryPage />} />
       {/* A page, not a modal (#367): the pick is the longest single piece of data entry in the app,
           it is done against a printed sheet, and it has to survive a reload. */}
       <Route path="pull-requests/:id/pick" element={<PickPage />} />

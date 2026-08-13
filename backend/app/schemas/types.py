@@ -820,6 +820,10 @@ class ShopAssemblyRequest:
     # Where the request sits on the ladder the requests list draws as columns. Derived from the
     # request's status and its pull's, never stored.
     stage: RequestStage
+    # A PENDING request whose minted pull was cancelled was returned by that cancellation (#343):
+    # the hardware went back and the request came back for re-acceptance. Human-readable explanation
+    # of that reappearance in the queue, else null. Derived, never stored.
+    return_note: str | None
 
 
 @strawberry.type
@@ -850,6 +854,11 @@ class ShippingOutRequest:
     integrity_note: str | None
     pull_request_id: strawberry.ID | None
     items: list[ShippingOutRequestItem]
+    # Where the request sits on the ladder the requests list draws as columns (mirrors
+    # ShopAssemblyRequest.stage). Derived from the request's status and its pull's, never stored.
+    stage: RequestStage
+    # See ShopAssemblyRequest.return_note (#343).
+    return_note: str | None
 
 
 @strawberry.type

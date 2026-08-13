@@ -21,7 +21,8 @@ def _requests_to_types(session, reqs) -> list[ShopAssemblyRequest]:
     paying for (CLAUDE.md perf rules).
     """
     stages = shop_assembly_repository.get_request_stages(session, reqs)
-    return [shop_assembly_request_to_type(r, stage=stages.get(r.id)) for r in reqs]
+    notes = shop_assembly_repository.get_return_notes(session, reqs)
+    return [shop_assembly_request_to_type(r, stage=stages.get(r.id), return_note=notes.get(r.id)) for r in reqs]
 
 
 @strawberry.type
