@@ -18,7 +18,7 @@ import { useToast } from '../../components/Toast';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { GET_LOCATION_DISTINCT_VALUES, TRANSFER_INVENTORY } from '../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
-import { microLabelSx, monoSx } from '../../theme';
+import { microLabelSx, monoSx, tabularSx } from '../../theme';
 
 export interface TransferSource {
   type: 'INVENTORY_LOCATION' | 'STOCK_ITEM';
@@ -38,13 +38,25 @@ interface WarehouseOption {
 }
 
 interface TransferDialogProps {
-  source: TransferSource;
+  /**
+   * One or more rows to move to a shared destination. A single source keeps the original UX (a
+   * quantity field defaulting to full available); multiple sources each move their full available
+   * quantity, entered once against one destination.
+   */
+  sources: TransferSource[];
   onClose: () => void;
   onSuccess?: () => void;
 }
 
-export default function TransferDialog({ source, onClose, onSuccess }: TransferDialogProps) {
+function sourceLocation(s: TransferSource): string {
+  const parts = [s.aisle, s.row, s.bay].filter(Boolean);
+  return parts.length > 0 ? parts.join('-') : 'Unlocated';
+}
+
+export default function TransferDialog({ sources, onClose, onSuccess }: TransferDialogProps) {
   const { showToast } = useToast();
+  const single = sources.length === 1 ? sources[0] : null;
+  const multi = sources.length > 1;
 
   const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
     variables: { includeInactive: false },
@@ -58,16 +70,25 @@ export default function TransferDialog({ source, onClose, onSuccess }: TransferD
   const rowOptions = distinctData?.locationDistinctValues.rows ?? [];
   const bayOptions = distinctData?.locationDistinctValues.bays ?? [];
 
-  const [destWarehouseId, setDestWarehouseId] = useState<string>(source.warehouseId ?? '');
+  // Destination warehouse preselects when every source already shares one; otherwise it starts empty
+  // and the user has to pick where the consolidation lands.
+  const commonWarehouseId = useMemo(() => {
+    if (sources.length === 0) return '';
+    const first = sources[0].warehouseId;
+    return sources.every((s) => s.warehouseId === first) ? (first ?? '') : '';
+  }, [sources]);
+
+  const [destWarehouseId, setDestWarehouseId] = useState<string>(commonWarehouseId);
   const [aisle, setAisle] = useState('');
   const [row, setRow] = useState('');
   const [bay, setBay] = useState('');
-  const [quantity, setQuantity] = useState<string>(String(source.available));
+  const [quantity, setQuantity] = useState<string>(single ? String(single.available) : '');
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const [transfer, { loading, error }] = useMutation(TRANSFER_INVENTORY, {
-    // A transfer moves quantity between locations, so the Locations panel reads (utilization,
-    // contents, per-location audit strip) and the flat inventory table go stale alongside the
-    // warehouse summaries. Awaited so the panel is fresh by the time onSuccess/onClose fire.
+  // Each mutation refetches the warehouse + location + inventory queries so a partially-completed
+  // batch still leaves the grids honest about what actually moved.
+  const [transfer] = useMutation(TRANSFER_INVENTORY, {
     refetchQueries: [
       ...WAREHOUSE_REFETCH_QUERIES,
       'GetLocationUtilization',
@@ -76,87 +97,144 @@ export default function TransferDialog({ source, onClose, onSuccess }: TransferD
       'GetInventoryRows',
     ],
     awaitRefetchQueries: true,
-    onCompleted: () => {
-      showToast(`Transferred ${quantity} ${source.productCode}`, 'success');
-      onSuccess?.();
-      onClose();
-    },
-    onError: (err) => showToast(err.message, 'error'),
   });
 
-  const q = Number(quantity);
-  const sameLocation =
-    destWarehouseId === source.warehouseId &&
-    (source.aisle ?? '') === aisle.trim() &&
-    (source.row ?? '') === row.trim() &&
-    (source.bay ?? '') === bay.trim();
-  const valid =
-    !!destWarehouseId &&
-    !!aisle.trim() &&
-    !!row.trim() &&
-    !!bay.trim() &&
-    Number.isInteger(q) &&
-    q >= 1 &&
-    q <= source.available &&
-    !sameLocation;
+  const totalAvailable = useMemo(
+    () => sources.reduce((sum, s) => sum + s.available, 0),
+    [sources],
+  );
 
-  const handleSubmit = () => {
-    if (!valid) return;
-    transfer({
-      variables: {
-        input: {
-          sourceType: source.type,
-          sourceId: source.id,
-          quantity: q,
-          destWarehouseId,
-          destAisle: aisle.trim(),
-          destRow: row.trim(),
-          destBay: bay.trim(),
-        },
-      },
-    });
+  const q = Number(quantity);
+  const sameLocationSingle =
+    !!single &&
+    destWarehouseId === single.warehouseId &&
+    (single.aisle ?? '') === aisle.trim() &&
+    (single.row ?? '') === row.trim() &&
+    (single.bay ?? '') === bay.trim();
+
+  const destComplete = !!destWarehouseId && !!aisle.trim() && !!row.trim() && !!bay.trim();
+  const singleQtyValid = single
+    ? Number.isInteger(q) && q >= 1 && q <= single.available && !sameLocationSingle
+    : true;
+  const valid = destComplete && (single ? singleQtyValid : sources.length > 0);
+
+  const handleSubmit = async () => {
+    if (!valid || submitting) return;
+    setSubmitting(true);
+    setErrorMsg(null);
+    let completed = 0;
+    try {
+      // Sequential so a mid-loop failure stops cleanly (the mutate promise rejects on error) and we
+      // can report exactly how many landed.
+      for (const s of sources) {
+        const qtyForSource = single ? q : s.available;
+        await transfer({
+          variables: {
+            input: {
+              sourceType: s.type,
+              sourceId: s.id,
+              quantity: qtyForSource,
+              destWarehouseId,
+              destAisle: aisle.trim(),
+              destRow: row.trim(),
+              destBay: bay.trim(),
+            },
+          },
+        });
+        completed += 1;
+      }
+      showToast(
+        multi
+          ? `Transferred ${completed} item${completed === 1 ? '' : 's'}`
+          : `Transferred ${q} ${single!.productCode}`,
+        'success',
+      );
+      onSuccess?.();
+      onClose();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Transfer failed';
+      setErrorMsg(
+        multi ? `${message} — ${completed} of ${sources.length} transferred` : message,
+      );
+      showToast(
+        multi ? `${message} — ${completed} of ${sources.length} transferred` : message,
+        'error',
+      );
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   // A part-typed destination is real work; Escape must not throw it away. Once the row is blank
   // again the dialog goes back to dismissing on Escape like every other one.
   const hasTypedDestination = Boolean(aisle.trim() || row.trim() || bay.trim());
 
+  const title = multi ? `Transfer ${sources.length} items` : `Transfer ${single?.productCode ?? ''}`;
+
   return (
     <Modal
       open
       onClose={onClose}
-      title={`Transfer ${source.productCode}`}
+      title={title}
       disableEscapeKeyDown={hasTypedDestination}
       actions={
         <>
-          <Button onClick={onClose} disabled={loading}>
+          <Button onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button variant="contained" onClick={handleSubmit} disabled={!valid || loading}>
-            {loading ? 'Transferring...' : 'Transfer'}
+          <Button variant="contained" onClick={handleSubmit} disabled={!valid || submitting}>
+            {submitting ? 'Transferring...' : 'Transfer'}
           </Button>
         </>
       }
     >
       <Stack spacing={2} sx={{ pt: 1 }}>
-        {error && <Alert severity="error">{error.message}</Alert>}
-        <Box
-          sx={{
-            display: 'flex',
-            alignItems: 'baseline',
-            gap: 1,
-            pb: 1,
-            borderBottom: '1px solid',
-            borderColor: 'divider',
-          }}
-        >
-          <Typography component="span" sx={monoSx}>
-            {source.productCode}
-          </Typography>
-          <Typography component="span" sx={microLabelSx}>
-            {source.available} available to transfer
-          </Typography>
-        </Box>
+        {errorMsg && <Alert severity="error">{errorMsg}</Alert>}
+
+        {single ? (
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'baseline',
+              gap: 1,
+              pb: 1,
+              borderBottom: '1px solid',
+              borderColor: 'divider',
+            }}
+          >
+            <Typography component="span" sx={monoSx}>
+              {single.productCode}
+            </Typography>
+            <Typography component="span" sx={microLabelSx}>
+              {single.available} available to transfer
+            </Typography>
+          </Box>
+        ) : (
+          <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
+            <Typography component="div" sx={{ ...microLabelSx, mb: 0.75 }}>
+              {sources.length} sources · {totalAvailable} total to transfer
+            </Typography>
+            <Stack spacing={0.5}>
+              {sources.map((s) => (
+                <Box
+                  key={s.id}
+                  sx={{ display: 'flex', alignItems: 'baseline', gap: 1, minWidth: 0 }}
+                >
+                  <Typography noWrap sx={{ ...monoSx, flex: 1, minWidth: 0 }}>
+                    {s.productCode}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={monoSx}>
+                    {sourceLocation(s)}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={tabularSx}>
+                    qty {s.available}
+                  </Typography>
+                </Box>
+              ))}
+            </Stack>
+          </Box>
+        )}
+
         <FormControl size="small" fullWidth>
           <InputLabel id="transfer-dest-warehouse">Destination warehouse</InputLabel>
           <Select
@@ -177,18 +255,22 @@ export default function TransferDialog({ source, onClose, onSuccess }: TransferD
           <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} />
           <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} />
         </Stack>
-        <TextField
-          label="Quantity"
-          type="number"
-          size="small"
-          value={quantity}
-          onChange={(e) => setQuantity(e.target.value)}
-          error={q > source.available || q < 1}
-          helperText={q > source.available ? `Max ${source.available}` : undefined}
-          slotProps={{ htmlInput: { min: 1, max: source.available } }}
-          sx={{ width: 160 }}
-        />
-        {sameLocation && (
+
+        {single && (
+          <TextField
+            label="Quantity"
+            type="number"
+            size="small"
+            value={quantity}
+            onChange={(e) => setQuantity(e.target.value)}
+            error={q > single.available || q < 1}
+            helperText={q > single.available ? `Max ${single.available}` : undefined}
+            slotProps={{ htmlInput: { min: 1, max: single.available } }}
+            sx={{ width: 160 }}
+          />
+        )}
+
+        {sameLocationSingle && (
           <Alert severity="warning">Destination is the same as the source location.</Alert>
         )}
       </Stack>
