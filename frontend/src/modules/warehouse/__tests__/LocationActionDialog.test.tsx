@@ -6,7 +6,27 @@ import {
   MOVE_INVENTORY_LOCATION,
   MARK_INVENTORY_UNLOCATED,
 } from '../../../graphql/shared';
-import { ADJUST_INVENTORY_QUANTITY, MOVE_STOCK_LOCATION } from '../../../graphql/warehouse';
+import {
+  ADJUST_INVENTORY_QUANTITY,
+  GET_LOCATION_DISTINCT_VALUES,
+  MOVE_STOCK_LOCATION,
+} from '../../../graphql/warehouse';
+
+// Move mode now owns the distinct-values read (the aisle/row/bay option props are gone). Supplied to
+// every render; adjust/unlocate skip the query so the mock simply goes unused there.
+const distinctMock: MockedResponse = {
+  request: { query: GET_LOCATION_DISTINCT_VALUES },
+  result: {
+    data: {
+      locationDistinctValues: {
+        aisles: ['A1', 'A2'],
+        rows: ['C1'],
+        bays: ['B1'],
+        __typename: 'LocationDistinctValues',
+      },
+    },
+  },
+};
 
 // DataGrid-heavy dialogs render slowly under jsdom, slower still when the whole suite runs in
 // parallel - lift both the per-test budget and testing-library's 1s async-util default.
@@ -41,7 +61,7 @@ function renderDialog(
   const onClose = vi.fn();
   const onSuccess = vi.fn();
   render(
-    <MockedProvider mocks={mocks}>
+    <MockedProvider mocks={[distinctMock, ...mocks]}>
       <ToastProvider>
         <LocationActionDialog
           open
@@ -49,9 +69,6 @@ function renderDialog(
           onSuccess={onSuccess}
           mode="move"
           targets={[invTarget]}
-          aisleOptions={['A1', 'A2']}
-          rowOptions={['C1']}
-          bayOptions={['B1']}
           {...props}
         />
       </ToastProvider>

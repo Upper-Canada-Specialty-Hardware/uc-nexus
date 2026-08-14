@@ -27,7 +27,6 @@ import { GET_WAREHOUSES } from '../../graphql/shared';
 import {
   GET_LOCATION_UTILIZATION,
   GET_LOCATION_CONTENTS,
-  GET_LOCATION_DISTINCT_VALUES,
   GET_INVENTORY_ROWS,
   GET_STOCK_ITEMS,
 } from '../../graphql/warehouse';
@@ -91,14 +90,6 @@ interface LocationContentsData {
   locationContents: {
     inventoryItems: ContentsInventoryItem[];
     stockItems: ContentsStockItem[];
-  };
-}
-
-interface DistinctValuesData {
-  locationDistinctValues: {
-    aisles: string[];
-    rows: string[];
-    bays: string[];
   };
 }
 
@@ -214,9 +205,6 @@ interface ContentsPanelProps {
   selected: LocationEntry;
   warehouseLabel?: string;
   onClose: () => void;
-  aisleOptions: string[];
-  rowOptions: string[];
-  bayOptions: string[];
 }
 
 function RowActionMenu({
@@ -282,14 +270,7 @@ function RowActionMenu({
   );
 }
 
-function ContentsPanel({
-  selected,
-  warehouseLabel,
-  onClose,
-  aisleOptions,
-  rowOptions,
-  bayOptions,
-}: ContentsPanelProps) {
+function ContentsPanel({ selected, warehouseLabel, onClose }: ContentsPanelProps) {
   const { data, loading, error } = useQuery<LocationContentsData>(GET_LOCATION_CONTENTS, {
     variables: {
       aisle: selected.aisle,
@@ -574,14 +555,11 @@ function ContentsPanel({
           onSuccess={handleSuccess}
           mode={dialog.mode}
           targets={dialog.targets}
-          aisleOptions={aisleOptions}
-          rowOptions={rowOptions}
-          bayOptions={bayOptions}
         />
       )}
       {transferSource && (
         <TransferDialog
-          source={transferSource}
+          sources={[transferSource]}
           onClose={() => setTransferSource(null)}
           onSuccess={handleSuccess}
         />
@@ -611,10 +589,6 @@ export default function LocationsTab() {
     locationUtilization: LocationEntry[];
   }>(GET_LOCATION_UTILIZATION, {
     variables: { warehouseId: warehouseFilter || null },
-    fetchPolicy: 'cache-and-network',
-  });
-
-  const { data: distinctData } = useQuery<DistinctValuesData>(GET_LOCATION_DISTINCT_VALUES, {
     fetchPolicy: 'cache-and-network',
   });
 
@@ -658,10 +632,6 @@ export default function LocationsTab() {
     }
     return keys;
   }, [search, invRowsData, stockItemsData]);
-
-  const aisles = distinctData?.locationDistinctValues.aisles ?? [];
-  const rowValues = distinctData?.locationDistinctValues.rows ?? [];
-  const bays = distinctData?.locationDistinctValues.bays ?? [];
 
   const rows = useMemo(() => {
     const all = utilData?.locationUtilization ?? [];
@@ -815,9 +785,6 @@ export default function LocationsTab() {
                 selected={selected}
                 warehouseLabel={selected.warehouseId ? warehouseCode.get(selected.warehouseId) : undefined}
                 onClose={() => setSelected(null)}
-                aisleOptions={aisles}
-                rowOptions={rowValues}
-                bayOptions={bays}
               />
             </motion.div>
           )}
