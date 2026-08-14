@@ -7,12 +7,12 @@ import {
   Stack,
   Alert,
 } from '@mui/material';
-import { useMutation } from '@apollo/client/react';
+import { useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import LocationAutocomplete from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
 import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED } from '../../graphql/shared';
-import { ADJUST_INVENTORY_QUANTITY, MOVE_STOCK_LOCATION, MARK_STOCK_ITEM_UNLOCATED, ADJUST_STOCK_QUANTITY } from '../../graphql/warehouse';
+import { ADJUST_INVENTORY_QUANTITY, GET_LOCATION_DISTINCT_VALUES, MOVE_STOCK_LOCATION, MARK_STOCK_ITEM_UNLOCATED, ADJUST_STOCK_QUANTITY } from '../../graphql/warehouse';
 import { microLabelSx, monoSx } from '../../theme';
 import { ReservationNotice, useComboReservation } from './reservationNotice';
 
@@ -39,9 +39,6 @@ interface Props {
   onSuccess: () => void;
   mode: LocationActionMode;
   targets: LocationActionTarget[];
-  aisleOptions: string[];
-  rowOptions: string[];
-  bayOptions: string[];
 }
 
 const REASON_MAX_LENGTH = 500;
@@ -57,12 +54,18 @@ export default function LocationActionDialog({
   onSuccess,
   mode,
   targets,
-  aisleOptions,
-  rowOptions,
-  bayOptions,
 }: Props) {
   const { showToast } = useToast();
   const single = targets.length === 1 ? targets[0] : null;
+
+  // Location suggestions are the same distinct-values read TransferDialog does; owning it here lets
+  // every call site drop the aisle/row/bay option props. Skipped unless a move is being composed.
+  const { data: distinctData } = useQuery<{
+    locationDistinctValues: { aisles: string[]; rows: string[]; bays: string[] };
+  }>(GET_LOCATION_DISTINCT_VALUES, { fetchPolicy: 'cache-and-network', skip: mode !== 'move' });
+  const aisleOptions = distinctData?.locationDistinctValues.aisles ?? [];
+  const rowOptions = distinctData?.locationDistinctValues.rows ?? [];
+  const bayOptions = distinctData?.locationDistinctValues.bays ?? [];
 
   // Move state
   const [aisle, setAisle] = useState('');

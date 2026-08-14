@@ -1,6 +1,11 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Box, Alert, Button, Chip, CircularProgress, Tooltip, Typography } from '@mui/material';
-import { DataGrid, type GridColDef, GridToolbar } from '@mui/x-data-grid';
+import { Box, Alert, Chip, CircularProgress, Tooltip, Typography } from '@mui/material';
+import {
+  DataGrid,
+  type GridColDef,
+  type GridRowSelectionModel,
+  GridToolbar,
+} from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
 import { TriangleAlert } from 'lucide-react';
 import { GET_INVENTORY_ROWS } from '../../graphql/warehouse';
@@ -11,6 +16,12 @@ import SpotCheckModal from './SpotCheckModal';
 import DestockInventoryModal from './stock/DestockInventoryModal';
 import FlagDeficientModal from './FlagDeficientModal';
 import TransferDialog, { type TransferSource } from './TransferDialog';
+import LocationActionDialog, {
+  type LocationActionMode,
+  type LocationActionTarget,
+} from './LocationActionDialog';
+import SelectionActionBar, { BarButton, BarMoreMenu } from '../../components/SelectionActionBar';
+import { computeSelectionActions, type SelectionRow } from './selectionActions';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
 
@@ -44,8 +55,11 @@ interface InventoryItem {
  * products. One row per inventory line answers both: a product-level rollup is one sort away, and
  * the whole thing exports to CSV.
  *
- * Every row action the accordion carried is kept - history, spot check, destock, transfer, flag
- * deficient, correction - because they were the only place those operations were reachable.
+ * Row actions moved off a per-row column onto a floating selection bar (#inventory-stockpool-
+ * selection-bar): the same six buttons on every row were pure redundancy and the main driver of the
+ * grid's horizontal scroll. Checking one or more rows raises the bar; the operations it carries -
+ * history, adjust, move, transfer, destock, spot check, flag deficient, unlocate, correction - are
+ * the same ones the accordion had, now reachable in bulk where the operation supports it.
  */
 
 interface InventoryRow {
@@ -83,6 +97,40 @@ function formatCurrency(value: number | null | undefined): string {
   return `$${value.toFixed(2)}`;
 }
 
+function inventoryAvailable(il: InventoryItem): number {
+  return il.available ?? il.quantity - (il.deficientQuantity ?? 0);
+}
+
+function toTarget(r: GridRow): LocationActionTarget {
+  const il = r.inventoryLocation;
+  return {
+    id: il.id,
+    kind: 'inventory',
+    projectId: il.projectId,
+    hardwareCategory: il.hardwareCategory,
+    productCode: il.productCode,
+    quantity: il.quantity,
+    warehouseId: il.warehouseId,
+    aisle: il.aisle,
+    row: il.row,
+    bay: il.bay,
+  };
+}
+
+function toTransferSource(r: GridRow): TransferSource {
+  const il = r.inventoryLocation;
+  return {
+    type: 'INVENTORY_LOCATION',
+    id: il.id,
+    productCode: il.productCode,
+    available: inventoryAvailable(il),
+    warehouseId: il.warehouseId,
+    aisle: il.aisle,
+    row: il.row,
+    bay: il.bay,
+  };
+}
+
 interface HardwareItemsFlatTableProps {
   /** Undefined means the All Projects view, which gains a Project column. */
   projectId?: string;
@@ -99,16 +147,32 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
   // empty map, which flags exactly what the server said to flag.
   const { byKey: catalogByKey } = useCustomInventoryItems();
 
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
   const [correctionItem, setCorrectionItem] = useState<InventoryItem | null>(null);
   const [auditItem, setAuditItem] = useState<InventoryItem | null>(null);
   const [spotCheckItem, setSpotCheckItem] = useState<InventoryItem | null>(null);
   const [destockItem, setDestockItem] = useState<InventoryItem | null>(null);
   const [flagItem, setFlagItem] = useState<InventoryItem | null>(null);
-  const [transferSource, setTransferSource] = useState<TransferSource | null>(null);
+  const [transferSources, setTransferSources] = useState<TransferSource[] | null>(null);
+  const [locationDialog, setLocationDialog] = useState<{
+    mode: LocationActionMode;
+    targets: LocationActionTarget[];
+  } | null>(null);
+
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
 
   const onChanged = useCallback(() => {
     void refetch();
   }, [refetch]);
+
+  // Any mutation both refreshes the grid and drops the selection: the rows that vanished (fully
+  // destocked, transferred away) fall out of the refetch, and a cleared model avoids acting on ids
+  // that no longer exist.
+  const afterMutation = useCallback(() => {
+    onChanged();
+    clearSelection();
+  }, [onChanged, clearSelection]);
 
   const rows = useMemo<GridRow[]>(
     () =>
@@ -132,6 +196,33 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
           ),
       })),
     [data, catalogByKey],
+  );
+
+  const rowSelectionModel = useMemo<GridRowSelectionModel>(
+    () => ({ type: 'include' as const, ids: selectedIds }),
+    [selectedIds],
+  );
+
+  const selectedRows = useMemo(() => rows.filter((r) => selectedIds.has(r.id)), [rows, selectedIds]);
+  const selectionRows = useMemo<SelectionRow[]>(
+    () =>
+      selectedRows.map((r) => ({
+        available: inventoryAvailable(r.inventoryLocation),
+        quantity: r.inventoryLocation.quantity,
+        warehouseId: r.inventoryLocation.warehouseId,
+      })),
+    [selectedRows],
+  );
+  const actionStates = useMemo(() => computeSelectionActions(selectionRows), [selectionRows]);
+
+  const first = selectedRows[0]?.inventoryLocation ?? null;
+
+  const openLocationDialog = useCallback(
+    (mode: LocationActionMode) => {
+      if (selectedRows.length === 0) return;
+      setLocationDialog({ mode, targets: selectedRows.map(toTarget) });
+    },
+    [selectedRows],
   );
 
   // Totals for the filtered set are deliberately over the loaded rows: the grid filters client-side,
@@ -236,62 +327,6 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
       cols.splice(2, 0, { field: 'projectName', headerName: 'Project', flex: 1, minWidth: 150 });
     }
 
-    cols.push({
-      field: 'actions',
-      headerName: 'Actions',
-      width: 470,
-      sortable: false,
-      filterable: false,
-      // Excluded from CSV: these are buttons, not data.
-      disableExport: true,
-      renderCell: (params) => {
-        const il = params.row.inventoryLocation;
-        const available = il.available ?? il.quantity - (il.deficientQuantity ?? 0);
-        return (
-          <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
-            <Button size="small" onClick={() => setAuditItem(il)}>
-              History
-            </Button>
-            <Button size="small" color="warning" onClick={() => setSpotCheckItem(il)}>
-              Spot Check
-            </Button>
-            <Button size="small" onClick={() => setDestockItem(il)} disabled={il.quantity <= 0}>
-              Destock
-            </Button>
-            <Button
-              size="small"
-              onClick={() =>
-                setTransferSource({
-                  type: 'INVENTORY_LOCATION',
-                  id: il.id,
-                  productCode: il.productCode,
-                  available,
-                  warehouseId: il.warehouseId,
-                  aisle: il.aisle,
-                  row: il.row,
-                  bay: il.bay,
-                })
-              }
-              disabled={available <= 0}
-            >
-              Transfer
-            </Button>
-            <Button
-              size="small"
-              color="warning"
-              disabled={available <= 0}
-              onClick={() => setFlagItem(il)}
-            >
-              Flag Deficient
-            </Button>
-            <Button size="small" variant="outlined" onClick={() => setCorrectionItem(il)}>
-              Correction
-            </Button>
-          </Box>
-        );
-      },
-    });
-
     return cols;
   }, [projectId]);
 
@@ -311,18 +346,84 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
 
   return (
     <>
-      <DataGrid
-        rows={rows}
-        columns={columns}
-        density="compact"
-        disableRowSelectionOnClick
-        showToolbar
-        slots={{ toolbar: GridToolbar }}
-        slotProps={{ toolbar: { showQuickFilter: true, csvOptions: { fileName: 'inventory' } } }}
-        initialState={{ pagination: { paginationModel: { pageSize: 50 } } }}
-        pageSizeOptions={[25, 50, 100]}
-        sx={{ '& .MuiDataGrid-cell:focus': { outline: 'none' } }}
-      />
+      <Box sx={{ position: 'relative', height: 'calc(100vh - 320px)', minHeight: 360 }}>
+        <DataGrid
+          rows={rows}
+          columns={columns}
+          density="compact"
+          checkboxSelection
+          disableRowSelectionOnClick
+          rowSelectionModel={rowSelectionModel}
+          onRowSelectionModelChange={(model) => setSelectedIds(new Set(model.ids as Set<string>))}
+          showToolbar
+          slots={{ toolbar: GridToolbar }}
+          slotProps={{ toolbar: { showQuickFilter: true, csvOptions: { fileName: 'inventory' } } }}
+          initialState={{ pagination: { paginationModel: { pageSize: 50 } } }}
+          pageSizeOptions={[25, 50, 100]}
+          sx={{ '& .MuiDataGrid-cell:focus': { outline: 'none' } }}
+        />
+
+        <SelectionActionBar count={selectedRows.length} onClear={clearSelection}>
+          <BarButton
+            label="History"
+            onClick={() => first && setAuditItem(first)}
+            disabled={!actionStates.history.enabled}
+            reason={actionStates.history.reason}
+          />
+          <BarButton
+            label="Adjust"
+            onClick={() => openLocationDialog('adjust')}
+            disabled={!actionStates.adjust.enabled}
+            reason={actionStates.adjust.reason}
+          />
+          <BarButton
+            label="Move"
+            onClick={() => openLocationDialog('move')}
+            disabled={!actionStates.move.enabled}
+            reason={actionStates.move.reason}
+          />
+          <BarButton
+            label="Transfer"
+            onClick={() => setTransferSources(selectedRows.map(toTransferSource))}
+            disabled={!actionStates.transfer.enabled}
+            reason={actionStates.transfer.reason}
+          />
+          <BarButton
+            label="Destock"
+            onClick={() => first && setDestockItem(first)}
+            disabled={!actionStates.destock.enabled}
+            reason={actionStates.destock.reason}
+          />
+          <BarMoreMenu
+            items={[
+              {
+                label: 'Spot Check',
+                onClick: () => first && setSpotCheckItem(first),
+                disabled: !actionStates.spotCheck.enabled,
+                reason: actionStates.spotCheck.reason,
+              },
+              {
+                label: 'Flag Deficient',
+                onClick: () => first && setFlagItem(first),
+                disabled: !actionStates.flagDeficient.enabled,
+                reason: actionStates.flagDeficient.reason,
+              },
+              {
+                label: 'Unlocate',
+                onClick: () => openLocationDialog('unlocate'),
+                disabled: !actionStates.unlocate.enabled,
+                reason: actionStates.unlocate.reason,
+              },
+              {
+                label: 'Correction',
+                onClick: () => first && setCorrectionItem(first),
+                disabled: !actionStates.correction.enabled,
+                reason: actionStates.correction.reason,
+              },
+            ]}
+          />
+        </SelectionActionBar>
+      </Box>
 
       <Box sx={{ display: 'flex', gap: 4, mt: 1.5, px: 1 }}>
         <Box>
@@ -344,7 +445,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
           item={correctionItem}
           onSuccess={() => {
             setCorrectionItem(null);
-            onChanged();
+            afterMutation();
           }}
         />
       )}
@@ -366,7 +467,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
           item={spotCheckItem}
           onSuccess={() => {
             setSpotCheckItem(null);
-            onChanged();
+            afterMutation();
           }}
         />
       )}
@@ -377,7 +478,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
           onClose={() => setDestockItem(null)}
           onSuccess={() => {
             setDestockItem(null);
-            onChanged();
+            afterMutation();
           }}
         />
       )}
@@ -388,19 +489,32 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
           onClose={() => setFlagItem(null)}
           onSuccess={() => {
             setFlagItem(null);
-            onChanged();
+            afterMutation();
           }}
         />
       )}
 
-      {transferSource && (
+      {transferSources && (
         <TransferDialog
-          source={transferSource}
-          onClose={() => setTransferSource(null)}
+          sources={transferSources}
+          onClose={() => setTransferSources(null)}
           onSuccess={() => {
-            setTransferSource(null);
-            onChanged();
+            setTransferSources(null);
+            afterMutation();
           }}
+        />
+      )}
+
+      {locationDialog && (
+        <LocationActionDialog
+          open
+          onClose={() => setLocationDialog(null)}
+          onSuccess={() => {
+            setLocationDialog(null);
+            afterMutation();
+          }}
+          mode={locationDialog.mode}
+          targets={locationDialog.targets}
         />
       )}
     </>

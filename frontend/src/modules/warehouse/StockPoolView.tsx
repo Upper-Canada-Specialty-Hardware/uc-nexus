@@ -1,11 +1,9 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import {
   Box,
   Typography,
   TextField,
   Chip,
-  IconButton,
-  Tooltip,
   Stack,
   Button,
   Alert,
@@ -16,23 +14,19 @@ import {
   Select,
   MenuItem,
 } from '@mui/material';
-import { DataGrid, type GridColDef } from '@mui/x-data-grid';
+import { DataGrid, type GridColDef, type GridRowSelectionModel } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
-import {
-  ArrowLeftRight,
-  History,
-  Maximize2,
-  MapPin,
-  Pencil,
-  Split,
-  TriangleAlert,
-} from 'lucide-react';
-import TransferDialog from './TransferDialog';
+import { TriangleAlert } from 'lucide-react';
+import TransferDialog, { type TransferSource } from './TransferDialog';
 import AuditHistoryDrawer from './AuditHistoryDrawer';
+import LocationActionDialog, {
+  type LocationActionMode,
+  type LocationActionTarget,
+} from './LocationActionDialog';
+import SelectionActionBar, { BarButton, BarMoreMenu } from '../../components/SelectionActionBar';
+import { computeSelectionActions, type SelectionRow } from './selectionActions';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { GET_STOCK_ITEMS } from '../../graphql/warehouse';
-import AdjustStockModal from './stock/AdjustStockModal';
-import MoveStockLocationModal from './stock/MoveStockLocationModal';
 import ReclassifyStockModal from './stock/ReclassifyStockModal';
 import AllocateStockModal from './stock/AllocateStockModal';
 import ReportStockDeficiencyModal from './stock/ReportStockDeficiencyModal';
@@ -61,15 +55,49 @@ export interface StockItem {
   updatedAt: string;
 }
 
+/** A single-target stock modal reached from the selection bar. */
+type StockSingleModal = 'reclassify' | 'allocate' | 'report-deficient' | 'history';
+
+function toTarget(s: StockItem): LocationActionTarget {
+  return {
+    id: s.id,
+    kind: 'stock',
+    productCode: s.productCode,
+    quantity: s.quantity,
+    warehouseId: s.warehouseId,
+    aisle: s.aisle,
+    row: s.row,
+    bay: s.bay,
+  };
+}
+
+function toTransferSource(s: StockItem): TransferSource {
+  return {
+    type: 'STOCK_ITEM',
+    id: s.id,
+    productCode: s.productCode,
+    available: s.available,
+    warehouseId: s.warehouseId,
+    aisle: s.aisle,
+    row: s.row,
+    bay: s.bay,
+  };
+}
+
 export default function StockPoolView() {
   const [productCodeFilter, setProductCodeFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [onlyDeficient, setOnlyDeficient] = useState(false);
   const [warehouseFilter, setWarehouseFilter] = useState('');
+
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<StockItem | null>(null);
-  const [modal, setModal] = useState<
-    'adjust' | 'move' | 'reclassify' | 'allocate' | 'report-deficient' | 'transfer' | 'history' | null
-  >(null);
+  const [modal, setModal] = useState<StockSingleModal | null>(null);
+  const [locationDialog, setLocationDialog] = useState<{
+    mode: LocationActionMode;
+    targets: LocationActionTarget[];
+  } | null>(null);
+  const [transferSources, setTransferSources] = useState<TransferSource[] | null>(null);
 
   const { data, loading, error, refetch } = useQuery<{ stockItems: StockItem[] }>(
     GET_STOCK_ITEMS,
@@ -99,15 +127,54 @@ export default function StockPoolView() {
 
   const rows = useMemo(() => data?.stockItems ?? [], [data]);
 
-  const closeModal = () => {
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  const closeModal = useCallback(() => {
     setModal(null);
     setSelected(null);
-  };
+  }, []);
 
-  const onSuccess = () => {
+  // A read-only view (History) leaves the selection in place; anything that mutates clears it so the
+  // refetched grid never carries an id for a row that just vanished.
+  const afterMutation = useCallback(() => {
     closeModal();
-    refetch();
-  };
+    clearSelection();
+    void refetch();
+  }, [closeModal, clearSelection, refetch]);
+
+  const rowSelectionModel = useMemo<GridRowSelectionModel>(
+    () => ({ type: 'include' as const, ids: selectedIds }),
+    [selectedIds],
+  );
+  const selectedRows = useMemo(() => rows.filter((r) => selectedIds.has(r.id)), [rows, selectedIds]);
+  const selectionRows = useMemo<SelectionRow[]>(
+    () =>
+      selectedRows.map((s) => ({
+        available: s.available,
+        quantity: s.quantity,
+        warehouseId: s.warehouseId,
+      })),
+    [selectedRows],
+  );
+  const actionStates = useMemo(() => computeSelectionActions(selectionRows), [selectionRows]);
+  const first = selectedRows[0] ?? null;
+
+  const openSingleModal = useCallback(
+    (m: StockSingleModal) => {
+      if (!first) return;
+      setSelected(first);
+      setModal(m);
+    },
+    [first],
+  );
+
+  const openLocationDialog = useCallback(
+    (mode: LocationActionMode) => {
+      if (selectedRows.length === 0) return;
+      setLocationDialog({ mode, targets: selectedRows.map(toTarget) });
+    },
+    [selectedRows],
+  );
 
   const columns: GridColDef<StockItem>[] = [
     {
@@ -187,97 +254,6 @@ export default function StockPoolView() {
         <Typography component="span" sx={monoSx}>
           {value as string}
         </Typography>
-      ),
-    },
-    {
-      field: 'actions',
-      headerName: 'Actions',
-      width: 320,
-      sortable: false,
-      filterable: false,
-      renderCell: ({ row }) => (
-        <Stack direction="row" spacing={0.5}>
-          <Tooltip title="History">
-            <IconButton
-              size="small"
-              onClick={() => {
-                setSelected(row);
-                setModal('history');
-              }}
-            >
-              <History size={18} strokeWidth={1.75} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Allocate to project">
-            <IconButton
-              size="small"
-              onClick={() => {
-                setSelected(row);
-                setModal('allocate');
-              }}
-              disabled={row.available <= 0}
-            >
-              <Maximize2 size={18} strokeWidth={1.75} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Adjust quantity">
-            <IconButton
-              size="small"
-              onClick={() => {
-                setSelected(row);
-                setModal('adjust');
-              }}
-            >
-              <Pencil size={18} strokeWidth={1.75} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Move location">
-            <IconButton
-              size="small"
-              onClick={() => {
-                setSelected(row);
-                setModal('move');
-              }}
-            >
-              <MapPin size={18} strokeWidth={1.75} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Transfer (same or other warehouse)">
-            <IconButton
-              size="small"
-              onClick={() => {
-                setSelected(row);
-                setModal('transfer');
-              }}
-              disabled={row.available <= 0}
-            >
-              <ArrowLeftRight size={18} strokeWidth={1.75} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Reclassify (split-capable)">
-            <IconButton
-              size="small"
-              onClick={() => {
-                setSelected(row);
-                setModal('reclassify');
-              }}
-            >
-              <Split size={18} strokeWidth={1.75} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title="Report deficient">
-            <IconButton
-              size="small"
-              onClick={() => {
-                setSelected(row);
-                setModal('report-deficient');
-              }}
-              disabled={row.available <= 0}
-            >
-              <TriangleAlert size={18} strokeWidth={1.75} />
-            </IconButton>
-          </Tooltip>
-        </Stack>
       ),
     },
   ];
@@ -365,49 +341,85 @@ export default function StockPoolView() {
           </CardContent>
         </Card>
       ) : (
-        <Box sx={{ height: 'calc(100vh - 320px)' }}>
+        <Box sx={{ position: 'relative', height: 'calc(100vh - 320px)' }}>
           <DataGrid
             rows={rows}
             columns={columns}
             getRowId={(r) => r.id}
             loading={loading}
+            checkboxSelection
             disableRowSelectionOnClick
+            rowSelectionModel={rowSelectionModel}
+            onRowSelectionModelChange={(model) => setSelectedIds(new Set(model.ids as Set<string>))}
             pageSizeOptions={[25, 50, 100]}
             initialState={{ pagination: { paginationModel: { pageSize: 50 } } }}
           />
+
+          <SelectionActionBar count={selectedRows.length} onClear={clearSelection}>
+            <BarButton
+              label="History"
+              onClick={() => openSingleModal('history')}
+              disabled={!actionStates.history.enabled}
+              reason={actionStates.history.reason}
+            />
+            <BarButton
+              label="Adjust"
+              onClick={() => openLocationDialog('adjust')}
+              disabled={!actionStates.adjust.enabled}
+              reason={actionStates.adjust.reason}
+            />
+            <BarButton
+              label="Move"
+              onClick={() => openLocationDialog('move')}
+              disabled={!actionStates.move.enabled}
+              reason={actionStates.move.reason}
+            />
+            <BarButton
+              label="Transfer"
+              onClick={() => setTransferSources(selectedRows.map(toTransferSource))}
+              disabled={!actionStates.transfer.enabled}
+              reason={actionStates.transfer.reason}
+            />
+            <BarButton
+              label="Allocate"
+              onClick={() => openSingleModal('allocate')}
+              disabled={!actionStates.allocate.enabled}
+              reason={actionStates.allocate.reason}
+            />
+            <BarMoreMenu
+              items={[
+                {
+                  label: 'Reclassify',
+                  onClick: () => openSingleModal('reclassify'),
+                  disabled: !actionStates.reclassify.enabled,
+                  reason: actionStates.reclassify.reason,
+                },
+                {
+                  label: 'Report Deficient',
+                  onClick: () => openSingleModal('report-deficient'),
+                  disabled: !actionStates.reportDeficient.enabled,
+                  reason: actionStates.reportDeficient.reason,
+                },
+                {
+                  label: 'Unlocate',
+                  onClick: () => openLocationDialog('unlocate'),
+                  disabled: !actionStates.unlocate.enabled,
+                  reason: actionStates.unlocate.reason,
+                },
+              ]}
+            />
+          </SelectionActionBar>
         </Box>
       )}
 
-      {selected && modal === 'adjust' && (
-        <AdjustStockModal item={selected} onClose={closeModal} onSuccess={onSuccess} />
-      )}
-      {selected && modal === 'move' && (
-        <MoveStockLocationModal item={selected} onClose={closeModal} onSuccess={onSuccess} />
-      )}
       {selected && modal === 'reclassify' && (
-        <ReclassifyStockModal item={selected} onClose={closeModal} onSuccess={onSuccess} />
+        <ReclassifyStockModal item={selected} onClose={closeModal} onSuccess={afterMutation} />
       )}
       {selected && modal === 'allocate' && (
-        <AllocateStockModal item={selected} onClose={closeModal} onSuccess={onSuccess} />
+        <AllocateStockModal item={selected} onClose={closeModal} onSuccess={afterMutation} />
       )}
       {selected && modal === 'report-deficient' && (
-        <ReportStockDeficiencyModal item={selected} onClose={closeModal} onSuccess={onSuccess} />
-      )}
-      {selected && modal === 'transfer' && (
-        <TransferDialog
-          source={{
-            type: 'STOCK_ITEM',
-            id: selected.id,
-            productCode: selected.productCode,
-            available: selected.available,
-            warehouseId: selected.warehouseId,
-            aisle: selected.aisle,
-            row: selected.row,
-            bay: selected.bay,
-          }}
-          onClose={closeModal}
-          onSuccess={onSuccess}
-        />
+        <ReportStockDeficiencyModal item={selected} onClose={closeModal} onSuccess={afterMutation} />
       )}
       {selected && modal === 'history' && (
         <AuditHistoryDrawer
@@ -418,7 +430,30 @@ export default function StockPoolView() {
           label={`${selected.productCode} (${selected.hardwareCategory})`}
         />
       )}
+
+      {transferSources && (
+        <TransferDialog
+          sources={transferSources}
+          onClose={() => setTransferSources(null)}
+          onSuccess={() => {
+            setTransferSources(null);
+            afterMutation();
+          }}
+        />
+      )}
+
+      {locationDialog && (
+        <LocationActionDialog
+          open
+          onClose={() => setLocationDialog(null)}
+          onSuccess={() => {
+            setLocationDialog(null);
+            afterMutation();
+          }}
+          mode={locationDialog.mode}
+          targets={locationDialog.targets}
+        />
+      )}
     </Box>
   );
 }
-
