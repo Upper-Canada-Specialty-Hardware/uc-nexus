@@ -7,6 +7,9 @@
  * rendering and collecting answers.
  */
 
+/** How the schedule says a product gets fitted, or null when it was never classified. */
+export type MigrationClassification = 'SITE_HARDWARE' | 'SHOP_HARDWARE';
+
 export interface SharepointInventoryItem {
   spItemId: string;
   partNumber: string;
@@ -20,6 +23,8 @@ export interface SharepointInventoryItem {
   projectInventoryQty: number;
   projectNumber: string;
   projectName: string;
+  /** Cost per unit off the source list. Written onto the inventory rows since there is no PO line. */
+  unitCost: number;
   // Descriptive columns. Meaningless for schedule hardware (the schedule describes that), but for a
   // frame or a specialty they are the whole description - and #454's attribute values are where
   // they belong. Optional so a caller that does not select them still type-checks.
@@ -225,10 +230,45 @@ export interface MigrationEntry {
   hardwareCategory: string;
   productCode: string;
   quantity: number;
+  /** Off-PO cost per unit, or null when the source list records none. */
+  unitCost: number | null;
   projectId: string | null;
   aisle: string | null;
   row: string | null;
   bay: string | null;
+}
+
+/** One schedule product of a mapped project, keyed by product code for the wizard's snap + step. */
+export interface ScheduleProductInfo {
+  hardwareCategory: string;
+  classification: MigrationClassification | null;
+}
+
+/** Nexus project id -> product code -> the schedule's category + dominant classification for it. */
+export type ScheduleProductsByProject = Map<string, Map<string, ScheduleProductInfo>>;
+
+/** Index the flat projectScheduleProducts rows by (project, product code). */
+export function buildScheduleProductsByProject(
+  rows: {
+    projectId: string;
+    hardwareCategory: string;
+    productCode: string;
+    classification: MigrationClassification | null;
+  }[],
+): ScheduleProductsByProject {
+  const byProject: ScheduleProductsByProject = new Map();
+  for (const r of rows) {
+    let byCode = byProject.get(r.projectId);
+    if (!byCode) {
+      byCode = new Map();
+      byProject.set(r.projectId, byCode);
+    }
+    byCode.set(r.productCode.trim(), {
+      hardwareCategory: r.hardwareCategory,
+      classification: r.classification,
+    });
+  }
+  return byProject;
 }
 
 /** Chosen against a SharePoint type whose rows should not migrate at all. */
@@ -292,6 +332,9 @@ export interface BuildEntriesArgs {
   defaultWarehouseId: string;
   /** Absent is the same as "nothing mapped": every row keeps its Part Category 1. */
   itemTypeResolutions?: ItemTypeResolutions;
+  /** The mapped projects' schedule products, so a matched PROJECT row snaps to the schedule's
+   *  category. Absent (still loading) leaves every row on its Part Category 1. */
+  scheduleProductsByProject?: ScheduleProductsByProject;
 }
 
 export interface BuildEntriesResult {
@@ -316,6 +359,7 @@ export function buildEntries({
   emptyCategoryLabel,
   defaultWarehouseId,
   itemTypeResolutions = new Map(),
+  scheduleProductsByProject = new Map(),
 }: BuildEntriesArgs): BuildEntriesResult {
   const entries: MigrationEntry[] = [];
   const kept: CandidateRow[] = [];
@@ -336,12 +380,6 @@ export function buildEntries({
     }
     if (isNonScheduleSpType(spType) && !isMappedType(typeResolution)) {
       drop(`${spType}: awaiting a Nexus type`);
-      continue;
-    }
-
-    const category = categoryFor(c.item, itemTypeResolutions, emptyCategoryLabel);
-    if (!category) {
-      drop('No part category');
       continue;
     }
 
@@ -372,12 +410,29 @@ export function buildEntries({
       }
     }
 
+    // Category snap: a PROJECT row whose product code the project's schedule names takes the
+    // schedule's category, because claimability matches on the exact (category, code) pair and
+    // SharePoint's free-text Part Category rarely matches the schedule's wording - a mismatch leaves
+    // the units invisible to coverage forever. A mapped non-schedule type keeps its type code (that
+    // is how #454 recognises it downstream) and never snaps; everything else falls back to Part
+    // Category 1 only when the schedule does not name the code.
+    let category = categoryFor(c.item, itemTypeResolutions, emptyCategoryLabel);
+    if (!isMappedType(typeResolution) && c.destination === 'PROJECT' && projectId) {
+      const scheduleCategory = scheduleProductsByProject.get(projectId)?.get(productCode)?.hardwareCategory;
+      if (scheduleCategory) category = scheduleCategory;
+    }
+    if (!category) {
+      drop('No part category');
+      continue;
+    }
+
     entries.push({
       destination: c.destination,
       warehouseId: resolution.warehouseId || defaultWarehouseId,
       hardwareCategory: category,
       productCode,
       quantity: c.quantity,
+      unitCost: c.item.unitCost > 0 ? c.item.unitCost : null,
       projectId,
       aisle: resolution.aisle,
       row: resolution.row,
@@ -391,6 +446,92 @@ export function buildEntries({
     excluded: [...excludedCounts.entries()].map(([reason, count]) => ({ reason, count })),
     kept,
   };
+}
+
+/** One row of the classification step: a (project, product) the migration matched to the schedule. */
+export interface ClassificationStepRow {
+  projectId: string;
+  hardwareCategory: string;
+  productCode: string;
+  /** The schedule's dominant classification, shown inherited (read-only). Null means the schedule
+   *  never classified it, so the step requires a Site/Shop pick before commit. */
+  inherited: MigrationClassification | null;
+}
+
+/** Stable key for a classification-step row and its user pick. */
+export function classificationStepKey(projectId: string, productCode: string): string {
+  return `${projectId}|${productCode}`;
+}
+
+/**
+ * The classification step's rows: one per (project, product) the migration matched to the schedule.
+ *
+ * Only PROJECT entries whose product code the mapped project's schedule names appear - a STOCK row or
+ * an unmatched product has no schedule row to classify. Deduplicated by (project, product) since a
+ * product can land on several locations. The category is the snapped schedule category the entry
+ * already carries, so the decision keys to exactly the rows the backend classifies and marks.
+ */
+export function buildClassificationRows(
+  entries: MigrationEntry[],
+  scheduleProductsByProject: ScheduleProductsByProject,
+): ClassificationStepRow[] {
+  const byKey = new Map<string, ClassificationStepRow>();
+  for (const e of entries) {
+    if (e.destination !== 'PROJECT' || !e.projectId) continue;
+    const info = scheduleProductsByProject.get(e.projectId)?.get(e.productCode);
+    if (!info) continue;
+    const key = classificationStepKey(e.projectId, e.productCode);
+    if (!byKey.has(key)) {
+      byKey.set(key, {
+        projectId: e.projectId,
+        hardwareCategory: e.hardwareCategory,
+        productCode: e.productCode,
+        inherited: info.classification,
+      });
+    }
+  }
+  return [...byKey.values()];
+}
+
+/** The matched-but-unclassified rows still missing a pick - the set that blocks commit. */
+export function unclassifiedRequiredRows(
+  rows: ClassificationStepRow[],
+  picks: Map<string, MigrationClassification>,
+): ClassificationStepRow[] {
+  return rows.filter((r) => r.inherited === null && !picks.get(classificationStepKey(r.projectId, r.productCode)));
+}
+
+export interface ClassificationDecision {
+  projectId: string;
+  hardwareCategory: string;
+  productCode: string;
+  classification: MigrationClassification;
+}
+
+/**
+ * The classification-step decisions the mutation sends.
+ *
+ * Only the matched-but-unclassified rows the user picked - an inherited row is never sent, since the
+ * backend writes only where classification is still null and would ignore it anyway.
+ */
+export function buildClassificationPayload(
+  rows: ClassificationStepRow[],
+  picks: Map<string, MigrationClassification>,
+): ClassificationDecision[] {
+  const out: ClassificationDecision[] = [];
+  for (const r of rows) {
+    if (r.inherited !== null) continue;
+    const pick = picks.get(classificationStepKey(r.projectId, r.productCode));
+    if (pick === 'SITE_HARDWARE' || pick === 'SHOP_HARDWARE') {
+      out.push({
+        projectId: r.projectId,
+        hardwareCategory: r.hardwareCategory,
+        productCode: r.productCode,
+        classification: pick,
+      });
+    }
+  }
+  return out;
 }
 
 /**

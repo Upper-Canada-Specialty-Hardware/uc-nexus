@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -114,6 +115,10 @@ def destock_inventory(
     if is_deficient_swap:
         il.deficient_quantity = max(0, (il.deficient_quantity or 0) - quantity)
     stock_row.quantity += quantity
+    # Carry an off-PO cost back to the pool row so a destocked migrated unit keeps its value. Only
+    # fills a null cost - never clobbers one the pool row already holds.
+    if il.unit_cost is not None and stock_row.unit_cost is None:
+        stock_row.unit_cost = il.unit_cost
 
     session.flush()
 
@@ -202,6 +207,9 @@ def allocate_stock_to_project(
         aisle=target_aisle,
         row=target_row,
         bay=target_bay,
+        # A stock-origin project row has no PO line, so it carries the stock row's own off-PO cost;
+        # null when the stock came from a PO (the cost stays on that line).
+        unit_cost=si.unit_cost,
         received_at=now,
     )
     session.add(new_il)
@@ -259,8 +267,14 @@ def receive_into_stock(
     received_at: datetime,
     received_by: str,
     po_number: str | None,
+    unit_cost: Decimal | None = None,
 ) -> StockItem:
-    """Receive vendor PO directly into the stock pool. Used when PO has no project_id."""
+    """Receive vendor PO directly into the stock pool. Used when PO has no project_id.
+
+    `unit_cost` is the off-PO cost for units with no PO line to hang it on (the SharePoint migration).
+    It is written onto the row only when the row has no cost yet, so a later off-PO receipt never
+    clobbers an established cost, and a PO-origin receipt (which passes None) never blanks one.
+    """
     if quantity < 1:
         raise ValidationError("quantity must be >= 1", field="quantity")
     if deficient_quantity < 0 or deficient_quantity > quantity:
@@ -286,6 +300,8 @@ def receive_into_stock(
     )
     stock_row.quantity += quantity
     stock_row.deficient_quantity += deficient_quantity
+    if unit_cost is not None and stock_row.unit_cost is None:
+        stock_row.unit_cost = unit_cost
 
     _log_audit_event(
         session,
@@ -448,6 +464,9 @@ def transfer_inventory(
             received_at=now,
         )
         target.quantity += quantity
+        # Carry an off-PO cost onto the destination pool row (fills a null only).
+        if si.unit_cost is not None and target.unit_cost is None:
+            target.unit_cost = si.unit_cost
         session.flush()
         _log_audit_event(
             session,

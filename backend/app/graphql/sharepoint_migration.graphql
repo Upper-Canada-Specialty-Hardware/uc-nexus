@@ -20,13 +20,26 @@ type SharepointInventoryItem {
   project_inventory_qty: Int!
   project_number: String!
   project_name: String!
+  # Cost per unit off the source list. Migrated stock has no PO line in Nexus, so this is the only
+  # cost the units can carry; the migration writes it onto the inventory rows.
+  unit_cost: Float!
 }
 
 type SharepointInventorySnapshot {
   items: [SharepointInventoryItem!]!
-  # True when Nexus already holds inventory. The migration has no idempotency marker, so a second
-  # run doubles every row the first wrote - the wizard's first step warns on this.
-  already_has_inventory: Boolean!
+  # True when the migration has already run (a run marker exists). Definitive, unlike the old
+  # has-any-inventory check - re-running doubles every row it wrote, so the wizard's first step warns.
+  already_migrated: Boolean!
+}
+
+# One schedule product of a project, for the wizard's category snap + classification step. The
+# category is the schedule's dominant category for this code (what a matched migrated row snaps to);
+# the classification is the dominant Site/Shop value, or null where the schedule never classified it.
+type ProjectScheduleProduct {
+  project_id: ID!
+  hardware_category: String!
+  product_code: String!
+  classification: Classification
 }
 
 type MigrationResult {
@@ -51,18 +64,33 @@ input MigrationEntryInput {
   hardware_category: String!
   product_code: String!
   quantity: Int!
+  # Off-PO cost per unit, written onto the inventory rows. 0/absent reads as no cost.
+  unit_cost: Float
   project_id: ID
   aisle: String
   row: String
   bay: String
 }
 
+# One Site/Shop decision from the classification step. (project, category, code) names the schedule
+# rows to classify; the backend writes it only where they are still unclassified (inherit never
+# overwrites). Category is the schedule's own, since the wizard snaps a matched row before sending.
+input MigrationClassificationInput {
+  project_id: ID!
+  hardware_category: String!
+  product_code: String!
+  classification: Classification!
+}
+
 input MigrateSharepointInventoryInput {
   entries: [MigrationEntryInput!]!
+  classifications: [MigrationClassificationInput!]
 }
 
 extend type Query {
   sharepointInventorySnapshot: SharepointInventorySnapshot!
+  # Each project's schedule products, for the wizard's category snap + classification step.
+  projectScheduleProducts(project_ids: [ID!]!): [ProjectScheduleProduct!]!
 }
 
 extend type Mutation {

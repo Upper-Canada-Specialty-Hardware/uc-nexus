@@ -12,6 +12,11 @@ import {
   buildCatalogItems,
   categoryFor,
   buildEntries,
+  buildScheduleProductsByProject,
+  buildClassificationRows,
+  unclassifiedRequiredRows,
+  buildClassificationPayload,
+  classificationStepKey,
   distinctLocations,
   distinctProjects,
   emptyCategoryCount,
@@ -21,6 +26,8 @@ import {
   type LocationResolution,
   type InventoryItemTypeOption,
   type ItemTypeResolutions,
+  type MigrationEntry,
+  type MigrationClassification,
 } from '../sharepointMigration';
 
 function item(overrides: Partial<SharepointInventoryItem> = {}): SharepointInventoryItem {
@@ -36,6 +43,7 @@ function item(overrides: Partial<SharepointInventoryItem> = {}): SharepointInven
     projectInventoryQty: 0,
     projectNumber: '22713',
     projectName: 'Cowichan IPU',
+    unitCost: 0,
     ...overrides,
   };
 }
@@ -199,6 +207,7 @@ describe('buildEntries', () => {
         hardwareCategory: 'Surface Closer',
         productCode: '1431 CPS TB EN',
         quantity: 4,
+        unitCost: null,
         projectId: 'p1',
         aisle: 'A',
         row: '62',
@@ -597,5 +606,136 @@ describe('unresolvedItemTypes', () => {
       toCandidates([item({ inventoryType: 'Door Hardware', stockQty: 1 })]),
     );
     expect(unresolvedItemTypes(onlySchedule, new Map())).toEqual([]);
+  });
+});
+
+// The migration-compatibility work: a matched project row snaps to the schedule's category so the
+// units are claimable, carries the unit cost, and drives the classification step.
+describe('category snap', () => {
+  const NEXUS = 'p1';
+  const snapBase = {
+    locationResolutions: new Map([['A-62R', { excluded: false, warehouseId: 'wh1', aisle: 'A', row: '62', bay: 'R' }]]),
+    projectResolutions: new Map([['22713|Cowichan IPU', NEXUS]]),
+    emptyCategoryLabel: 'Uncategorized',
+    defaultWarehouseId: 'wh1',
+    itemTypeResolutions: new Map<string, never>(),
+  };
+  const schedule = (classification: MigrationClassification | null = 'SITE_HARDWARE') =>
+    buildScheduleProductsByProject([
+      { projectId: NEXUS, hardwareCategory: 'Hinge', productCode: '1431 CPS TB EN', classification },
+    ]);
+
+  it("takes the schedule's category when the schedule names the code", () => {
+    // SharePoint says "Surface Closer"; the schedule says "Hinge". Claimability matches on the exact
+    // pair, so the migrated row must carry the schedule's wording or it is invisible to coverage.
+    const { entries } = buildEntries({
+      ...snapBase,
+      candidates: toCandidates([item({ projectInventoryQty: 4 })]),
+      scheduleProductsByProject: schedule(),
+    });
+    expect(entries[0].hardwareCategory).toBe('Hinge');
+  });
+
+  it("keeps SharePoint's part category when the schedule does not name the code", () => {
+    const { entries } = buildEntries({
+      ...snapBase,
+      candidates: toCandidates([item({ projectInventoryQty: 4 })]),
+      scheduleProductsByProject: buildScheduleProductsByProject([]),
+    });
+    expect(entries[0].hardwareCategory).toBe('Surface Closer');
+  });
+
+  it('does not snap a STOCK row, which has no project schedule to match', () => {
+    const { entries } = buildEntries({
+      ...snapBase,
+      projectResolutions: new Map(),
+      candidates: toCandidates([item({ stockQty: 5 })]),
+      scheduleProductsByProject: schedule(),
+    });
+    expect(entries[0].destination).toBe('STOCK');
+    expect(entries[0].hardwareCategory).toBe('Surface Closer');
+  });
+
+  it('plumbs the unit cost onto the entry, and treats 0 as no cost', () => {
+    const withCost = buildEntries({
+      ...snapBase,
+      candidates: toCandidates([item({ projectInventoryQty: 4, unitCost: 12 })]),
+      scheduleProductsByProject: schedule(),
+    });
+    expect(withCost.entries[0].unitCost).toBe(12);
+    const noCost = buildEntries({
+      ...snapBase,
+      candidates: toCandidates([item({ projectInventoryQty: 4, unitCost: 0 })]),
+      scheduleProductsByProject: schedule(),
+    });
+    expect(noCost.entries[0].unitCost).toBeNull();
+  });
+});
+
+describe('classification step', () => {
+  const NEXUS = 'p1';
+  function entry(overrides: Partial<MigrationEntry> = {}): MigrationEntry {
+    return {
+      destination: 'PROJECT',
+      warehouseId: 'wh1',
+      hardwareCategory: 'Hinge',
+      productCode: 'BB1279',
+      quantity: 4,
+      unitCost: 12,
+      projectId: NEXUS,
+      aisle: 'A',
+      row: '62',
+      bay: 'R',
+      ...overrides,
+    };
+  }
+  const schedule = (classification: MigrationClassification | null) =>
+    buildScheduleProductsByProject([
+      { projectId: NEXUS, hardwareCategory: 'Hinge', productCode: 'BB1279', classification },
+    ]);
+
+  it('shows an inherited row for a product the schedule already classified', () => {
+    const rows = buildClassificationRows([entry()], schedule('SHOP_HARDWARE'));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].inherited).toBe('SHOP_HARDWARE');
+  });
+
+  it('marks a matched-but-unclassified product as needing a pick', () => {
+    expect(buildClassificationRows([entry()], schedule(null))[0].inherited).toBeNull();
+  });
+
+  it('excludes STOCK and unmatched entries - only matched project products appear', () => {
+    const rows = buildClassificationRows(
+      [entry(), entry({ destination: 'STOCK', projectId: null }), entry({ productCode: 'NOT-ON-SCHEDULE' })],
+      schedule(null),
+    );
+    expect(rows.map((r) => r.productCode)).toEqual(['BB1279']);
+  });
+
+  it('dedupes a product that landed on several locations', () => {
+    expect(buildClassificationRows([entry({ bay: 'R' }), entry({ bay: 'L' })], schedule(null))).toHaveLength(1);
+  });
+
+  it('inherited rows are never required; an unclassified row needs a pick', () => {
+    expect(unclassifiedRequiredRows(buildClassificationRows([entry()], schedule('SITE_HARDWARE')), new Map())).toHaveLength(0);
+
+    const rows = buildClassificationRows([entry()], schedule(null));
+    expect(unclassifiedRequiredRows(rows, new Map())).toHaveLength(1);
+    const picks = new Map([[classificationStepKey(NEXUS, 'BB1279'), 'SITE_HARDWARE' as MigrationClassification]]);
+    expect(unclassifiedRequiredRows(rows, picks)).toHaveLength(0);
+  });
+
+  it('builds a payload of only the unclassified picks, never the inherited rows', () => {
+    const rows = buildClassificationRows(
+      [entry(), entry({ productCode: 'BB2000' })],
+      buildScheduleProductsByProject([
+        { projectId: NEXUS, hardwareCategory: 'Hinge', productCode: 'BB1279', classification: 'SHOP_HARDWARE' },
+        { projectId: NEXUS, hardwareCategory: 'Hinge', productCode: 'BB2000', classification: null },
+      ]),
+    );
+    const picks = new Map([[classificationStepKey(NEXUS, 'BB2000'), 'SITE_HARDWARE' as MigrationClassification]]);
+    expect(buildClassificationPayload(rows, picks)).toEqual([
+      { projectId: NEXUS, hardwareCategory: 'Hinge', productCode: 'BB2000', classification: 'SITE_HARDWARE' },
+    ]);
   });
 });

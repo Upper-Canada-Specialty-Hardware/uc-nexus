@@ -59,19 +59,24 @@ def location_detail(aisle: str | None, row: str | None, bay: str | None, warehou
 
 
 def clone_origin_fields(source: InventoryLocationModel) -> dict:
-    """The four origin FKs that make an InventoryLocation traceable, copied verbatim.
+    """The four origin FKs (plus off-PO unit cost) that make an InventoryLocation traceable, copied verbatim.
 
     Every row derived from another - a transfer's new bin, an override-increase's added row, a
     split's remainder - inherits its parent's origin so the ck_inventory_locations_has_origin CHECK
-    holds and its valuation keeps the parent's PO/return provenance. All four travel together:
+    holds and its valuation keeps the parent's PO/return provenance. All four FKs travel together:
     dropping shipment_return_item_id orphans a return-origin row (its other three FKs are null) and
     the CHECK rejects the write with a raw 500.
+
+    `unit_cost` rides alongside them: a PO-origin row carries null here (its cost is on the PO line),
+    but a migrated off-PO row's cost lives only on this column, so a derived row that dropped it would
+    silently value at zero.
     """
     return {
         "po_line_item_id": source.po_line_item_id,
         "receive_line_item_id": source.receive_line_item_id,
         "stock_item_id": source.stock_item_id,
         "shipment_return_item_id": source.shipment_return_item_id,
+        "unit_cost": source.unit_cost,
     }
 
 
@@ -111,11 +116,17 @@ def get_location_contents(
         si_stmt = si_stmt.where(StockItemModel.warehouse_id == warehouse_id)
     stock_items = list(session.scalars(si_stmt).all())
 
+    def _unit_cost(il, po_unit_cost):
+        # PO line cost, then the row's own off-PO cost (the migration), then None.
+        if po_unit_cost is not None:
+            return float(po_unit_cost)
+        return float(il.unit_cost) if il.unit_cost is not None else None
+
     return {
         "inventory_items": [
             {
                 "inventory_location": row[0],
-                "unit_cost": float(row[1]) if row[1] is not None else None,
+                "unit_cost": _unit_cost(row[0], row[1]),
                 "po_number": row[2],
             }
             for row in inv_rows

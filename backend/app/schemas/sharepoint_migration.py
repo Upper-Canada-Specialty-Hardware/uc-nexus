@@ -13,10 +13,16 @@ import strawberry
 from app.auth import current_user, resolve_display_name
 from app.database import SessionLocal
 from app.repositories import sharepoint_migration_repository
+from app.repositories import warehouse as warehouse_repository
 from app.services import sharepoint_inventory
 
 from .inputs import MigrateSharepointInventoryInput
-from .types import MigrationResult, SharepointInventoryItem, SharepointInventorySnapshot
+from .types import (
+    MigrationResult,
+    ProjectScheduleProduct,
+    SharepointInventoryItem,
+    SharepointInventorySnapshot,
+)
 
 
 def _to_int(value) -> int:
@@ -27,6 +33,16 @@ def _to_int(value) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return 0
+
+
+def _to_float(value) -> float:
+    """SharePoint currency columns come back as floats or strings. Absent / unparseable reads as 0."""
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _to_str(value) -> str:
@@ -54,6 +70,7 @@ class SharepointMigrationQueries:
                 project_inventory_qty=_to_int(r.get("Project_x0020_Inventory_x0020_Qt")),
                 project_number=_to_str(r.get("Project_x0020_Number_x0020_Temp")),
                 project_name=_to_str(r.get("Project_x0020_Name_x0020_Temp")),
+                unit_cost=_to_float(r.get("Unit_x0020_Cost")),
                 part_description=_to_str(r.get("Part_x0020_Description")),
                 finish=_to_str(r.get("Finish")),
                 rating=_to_str(r.get("Rating")),
@@ -64,8 +81,29 @@ class SharepointMigrationQueries:
             for r in rows
         ]
         with SessionLocal() as session:
-            already_has_inventory = sharepoint_migration_repository.has_any_inventory(session)
-        return SharepointInventorySnapshot(items=items, already_has_inventory=already_has_inventory)
+            already_migrated = sharepoint_migration_repository.has_migration_run(session)
+        return SharepointInventorySnapshot(items=items, already_migrated=already_migrated)
+
+    @strawberry.field
+    def project_schedule_products(
+        self, info: strawberry.Info, project_ids: list[strawberry.ID]
+    ) -> list[ProjectScheduleProduct]:
+        """Each project's schedule products (category, code, dominant classification) for the wizard.
+
+        Read once the projects are mapped so the wizard can snap a matched migrated row's category to
+        the schedule and drive the classification step. One grouped query per call, no per-row work."""
+        ids = [uuid.UUID(str(pid)) for pid in project_ids]
+        with SessionLocal() as session:
+            rows = warehouse_repository.get_project_schedule_products(session, ids)
+        return [
+            ProjectScheduleProduct(
+                project_id=strawberry.ID(str(row["project_id"])),
+                hardware_category=row["hardware_category"],
+                product_code=row["product_code"],
+                classification=row["classification"],
+            )
+            for row in rows
+        ]
 
 
 @strawberry.type
@@ -84,11 +122,21 @@ class SharepointMigrationMutations:
                 "hardware_category": e.hardware_category,
                 "product_code": e.product_code,
                 "quantity": e.quantity,
+                "unit_cost": e.unit_cost,
                 "aisle": e.aisle,
                 "row": e.row,
                 "bay": e.bay,
             }
             for e in input.entries
+        ]
+        classifications = [
+            {
+                "project_id": uuid.UUID(str(c.project_id)),
+                "hardware_category": c.hardware_category,
+                "product_code": c.product_code,
+                "classification": c.classification,
+            }
+            for c in (input.classifications or [])
         ]
         catalog_items = [
             {
@@ -103,7 +151,7 @@ class SharepointMigrationMutations:
             # Catalog first: it is the description of what the quantities below are, and doing it in
             # the same transaction means a failure either way leaves neither behind.
             catalog = sharepoint_migration_repository.migrate_catalog_items(session, catalog_items)
-            result = sharepoint_migration_repository.migrate_inventory(session, entries, actor)
+            result = sharepoint_migration_repository.migrate_inventory(session, entries, actor, classifications)
             session.commit()
             return MigrationResult(
                 stock_items=result["stock_items"],

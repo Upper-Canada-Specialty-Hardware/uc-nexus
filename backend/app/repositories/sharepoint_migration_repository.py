@@ -16,15 +16,18 @@ and the drained-stock-row bookkeeping come for free.
 import logging
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
-from app.models.inventory import InventoryLocation
+from app.models.enums import Classification, HardwareItemState
+from app.models.hardware import HardwareItem
 from app.models.inventory_item_type import CustomInventoryItem
+from app.models.project import Opening
 from app.models.project import Project as ProjectModel
-from app.models.stock_item import StockItem
+from app.models.sharepoint_migration_run import SharepointMigrationRun
 from app.models.warehouse import Warehouse
 from app.repositories import custom_items_repository
 from app.repositories import stock as stock_repository
@@ -120,11 +123,19 @@ def _catalog_item_exists(session: Session, type_id: uuid.UUID, product_code: str
     )
 
 
-def migrate_inventory(session: Session, entries: list[dict], performed_by: str) -> dict:
-    """Write every resolved entry, in one transaction.
+def migrate_inventory(
+    session: Session, entries: list[dict], performed_by: str, classifications: list[dict] | None = None
+) -> dict:
+    """Write every resolved entry, in one transaction, and make the units behave like PO'd hardware.
 
     Each entry: destination, warehouse_id, hardware_category, product_code, quantity, optional
-    aisle/row/bay, and project_id when destination is PROJECT.
+    unit_cost, optional aisle/row/bay, and project_id when destination is PROJECT.
+
+    Beyond writing inventory the migration also (a) carries the SharePoint unit cost onto the rows,
+    since there is no PO line to hang it on; (b) writes the wizard's Site/Shop decisions onto the
+    matching schedule rows that are still unclassified; and (c) flips the covered schedule rows to
+    IN_PO so every lifecycle rollup counts the units as bought - see `_mark_purchased`. All of it is
+    one transaction with the inventory writes.
 
     All-or-nothing on purpose. A partial migration is worse than none: the wizard has no resume
     state, so re-running after a half-failure would double the rows that did land.
@@ -143,6 +154,9 @@ def migrate_inventory(session: Session, entries: list[dict], performed_by: str) 
     stock_row_ids: set[uuid.UUID] = set()
     project_locations = 0
     total_units = 0
+    # Project inventory landed per (project, category, code) - the N the purchased marking spends
+    # against the schedule. Only PROJECT-destination units; company stock covers no project's need.
+    project_qty: dict[tuple[uuid.UUID, str, str], int] = {}
 
     for index, entry in enumerate(entries):
         # Written stripped, not just validated stripped: a trailing space makes a distinct identity
@@ -152,6 +166,7 @@ def migrate_inventory(session: Session, entries: list[dict], performed_by: str) 
         code = entry["product_code"].strip()
         quantity = entry["quantity"]
         warehouse_id = entry["warehouse_id"]
+        unit_cost = _clean_unit_cost(entry.get("unit_cost"))
         aisle = _clean_location(entry.get("aisle"))
         row = _clean_location(entry.get("row"))
         bay = _clean_location(entry.get("bay"))
@@ -170,6 +185,7 @@ def migrate_inventory(session: Session, entries: list[dict], performed_by: str) 
                 received_at=now,
                 received_by=performed_by,
                 po_number=None,
+                unit_cost=unit_cost,
             )
 
             if entry["destination"] == DESTINATION_PROJECT:
@@ -186,6 +202,8 @@ def migrate_inventory(session: Session, entries: list[dict], performed_by: str) 
                     performed_by=performed_by,
                 )
                 project_locations += 1
+                key = (entry["project_id"], category, code)
+                project_qty[key] = project_qty.get(key, 0) + quantity
             else:
                 stock_row_ids.add(stock_row.id)
 
@@ -198,18 +216,118 @@ def migrate_inventory(session: Session, entries: list[dict], performed_by: str) 
                 field=e.field,
             ) from e
 
+    classified = _apply_classifications(session, classifications or [])
+    marked = _mark_purchased(session, project_qty)
+
+    session.add(
+        SharepointMigrationRun(
+            run_at=now,
+            performed_by=performed_by,
+            entry_count=len(entries),
+            unit_count=total_units,
+        )
+    )
+    session.flush()
+
     logger.info(
-        "SharePoint migration by %s: %d stock rows, %d project locations, %d units",
+        "SharePoint migration by %s: %d stock rows, %d project locations, %d units, "
+        "%d schedule rows classified, %d schedule rows marked IN_PO",
         performed_by,
         len(stock_row_ids),
         project_locations,
         total_units,
+        classified,
+        marked,
     )
     return {
         "stock_items": len(stock_row_ids),
         "project_locations": project_locations,
         "total_units": total_units,
     }
+
+
+def _apply_classifications(session: Session, classifications: list[dict]) -> int:
+    """Write the wizard's Site/Shop decisions onto matching schedule rows that are still unclassified.
+
+    Each decision: project_id, hardware_category, product_code, classification. Inherit means never
+    overwrite - a row the schedule already classified keeps its value, so only rows where
+    classification IS NULL are touched. Categories are the schedule's own (the wizard snaps a matched
+    row's category to the schedule before it gets here), so the (project, category, code) match lands
+    on exactly the rows the extras-lane chip and the marking below read.
+    """
+    total = 0
+    for decision in classifications:
+        classification = decision.get("classification")
+        if classification is None:
+            continue
+        result = session.execute(
+            update(HardwareItem)
+            .where(
+                HardwareItem.project_id == decision["project_id"],
+                HardwareItem.hardware_category == decision["hardware_category"].strip(),
+                HardwareItem.product_code == decision["product_code"].strip(),
+                HardwareItem.classification.is_(None),
+            )
+            .values(classification=Classification(classification))
+        )
+        total += result.rowcount or 0
+    return total
+
+
+def _mark_purchased(session: Session, project_qty: dict[tuple[uuid.UUID, str, str], int]) -> int:
+    """Flip covered AVAILABLE schedule rows to IN_PO, leaving po_line_item_id null.
+
+    The real POs exist in GP under UBC - registered and received years ago - so the marking is
+    semantically true: these items ARE in POs, just not POs Nexus holds. Left null-linked, the rows
+    drop out of not_purchased, survive re-imports (finalize preserves IN_PO and its dedup skips
+    regenerating them), and are never re-bought by a later PO draft.
+
+    Greedy floor in deterministic (opening_number, id) order: mark rows while the cumulative
+    item_quantity still fits within the migrated project quantity N, and stop at the first row that
+    would overflow it - a row that does not fully fit stays AVAILABLE, because SharePoint only knows
+    what remains on the shelf, not what was originally bought.
+    """
+    marked = 0
+    for (project_id, category, code), n in project_qty.items():
+        rows = (
+            session.execute(
+                select(HardwareItem)
+                .join(Opening, HardwareItem.opening_id == Opening.id)
+                .where(
+                    HardwareItem.project_id == project_id,
+                    HardwareItem.hardware_category == category,
+                    HardwareItem.product_code == code,
+                    HardwareItem.state == HardwareItemState.AVAILABLE,
+                )
+                .order_by(Opening.opening_number, HardwareItem.id)
+            )
+            .scalars()
+            .all()
+        )
+        cumulative = 0
+        for hi in rows:
+            if cumulative + hi.item_quantity > n:
+                break
+            hi.state = HardwareItemState.IN_PO
+            cumulative += hi.item_quantity
+            marked += 1
+    if marked:
+        session.flush()
+    return marked
+
+
+def _clean_unit_cost(value) -> Decimal | None:
+    """A non-negative Decimal cost, or None. Blank / zero / negative / unparseable all read as None,
+    so a row with no cost on the source list simply carries no cost rather than a spurious 0.0000."""
+    if value is None:
+        return None
+    try:
+        dec = Decimal(str(value))
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    if dec <= 0:
+        return None
+    return dec
 
 
 # stock_items / inventory_locations store aisle, row and bay as String(20).
@@ -285,17 +403,12 @@ def _validate_entries(session: Session, entries: list[dict]) -> None:
             )
 
 
-def has_any_inventory(session: Session) -> bool:
-    """Whether Nexus already holds inventory, for the wizard's re-run warning.
+def has_migration_run(session: Session) -> bool:
+    """Whether the SharePoint migration has already run, for the wizard's re-run warning.
 
-    The migration has no idempotency marker, so running it twice doubles everything it wrote. This
-    is what the first step warns on.
-
-    Deliberately broad, and it will be true on any environment that has ever received a PO - this
-    answers "is this database empty", not "has this migration run". It is a prompt to check, not a
-    verdict; the honest version of the latter needs a persisted marker, which nothing writes yet.
+    Definitive, unlike the old has-any-inventory check it replaces: that answered "is this database
+    empty" and was true on any environment that had ever received a PO. This reads the run marker the
+    migration writes, so it means what it says. A full data reset clears the table (it is not
+    preserved), which is what lets the cutover run the migration again after resetting.
     """
-    has_locations = session.scalar(select(InventoryLocation.id).limit(1)) is not None
-    if has_locations:
-        return True
-    return session.scalar(select(StockItem.id).where(StockItem.quantity > 0).limit(1)) is not None
+    return session.scalar(select(SharepointMigrationRun.id).limit(1)) is not None

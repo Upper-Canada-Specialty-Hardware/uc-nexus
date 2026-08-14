@@ -28,6 +28,7 @@ import { useQuery, useMutation } from '@apollo/client/react';
 import { useNavigate } from 'react-router-dom';
 import {
   GET_SHAREPOINT_INVENTORY_SNAPSHOT,
+  GET_PROJECT_SCHEDULE_PRODUCTS,
   MIGRATE_SHAREPOINT_INVENTORY,
 } from '../../graphql/admin';
 import { GET_PROJECTS, GET_WAREHOUSES } from '../../graphql/shared';
@@ -47,6 +48,11 @@ import {
   mergeResolutions,
   buildEntries,
   buildCatalogItems,
+  buildScheduleProductsByProject,
+  buildClassificationRows,
+  unclassifiedRequiredRows,
+  buildClassificationPayload,
+  classificationStepKey,
   unresolvedItemTypes,
   isMappedType,
   EXCLUDE_ITEM_TYPE,
@@ -55,11 +61,19 @@ import {
   type NexusProject,
   type InventoryItemTypeOption,
   type ItemTypeResolutions,
+  type MigrationClassification,
 } from './sharepointMigration';
+
+interface ScheduleProductRow {
+  projectId: string;
+  hardwareCategory: string;
+  productCode: string;
+  classification: MigrationClassification | null;
+}
 
 interface SnapshotData {
   sharepointInventorySnapshot: {
-    alreadyHasInventory: boolean;
+    alreadyMigrated: boolean;
     items: SharepointInventoryItem[];
   };
 }
@@ -72,7 +86,7 @@ interface Warehouse {
   isActive: boolean;
 }
 
-const STEPS = ['Fetch', 'Locations', 'Projects', 'Types', 'Categories', 'Review'] as const;
+const STEPS = ['Fetch', 'Locations', 'Projects', 'Types', 'Categories', 'Classification', 'Review'] as const;
 
 const UNCATEGORIZED = 'Uncategorized';
 
@@ -143,6 +157,26 @@ export default function SharePointMigrationPage() {
     () => mergeResolutions(autoProjectResolutions(spProjects, projects), projectOverrides),
     [spProjects, projects, projectOverrides],
   );
+
+  // The Nexus projects the PROJECT rows resolve to. Their schedules drive the category snap (so a
+  // matched row becomes claimable) and the classification step. Read once the mapping is set.
+  const mappedProjectIds = useMemo(
+    () => [...new Set([...projectResolutions.values()].filter((v): v is string => !!v))],
+    [projectResolutions],
+  );
+  const { data: scheduleData } = useQuery<{ projectScheduleProducts: ScheduleProductRow[] }>(
+    GET_PROJECT_SCHEDULE_PRODUCTS,
+    {
+      variables: { projectIds: mappedProjectIds },
+      skip: mappedProjectIds.length === 0,
+      fetchPolicy: 'cache-and-network',
+    },
+  );
+  const scheduleProductsByProject = useMemo(
+    () => buildScheduleProductsByProject(scheduleData?.projectScheduleProducts ?? []),
+    [scheduleData],
+  );
+
   const typeOptions: InventoryItemTypeOption[] = useMemo(
     () => itemTypes.map((t) => ({ id: t.id, code: t.code, name: t.name })),
     [itemTypes],
@@ -161,6 +195,7 @@ export default function SharePointMigrationPage() {
         emptyCategoryLabel,
         defaultWarehouseId,
         itemTypeResolutions,
+        scheduleProductsByProject,
       }),
     [
       candidates,
@@ -169,6 +204,7 @@ export default function SharePointMigrationPage() {
       emptyCategoryLabel,
       defaultWarehouseId,
       itemTypeResolutions,
+      scheduleProductsByProject,
     ],
   );
 
@@ -176,6 +212,20 @@ export default function SharePointMigrationPage() {
   const catalogItems = useMemo(
     () => buildCatalogItems(built.kept, itemTypeResolutions),
     [built.kept, itemTypeResolutions],
+  );
+
+  // The classification step: one row per (project, product) matched to a schedule. An inherited row
+  // is read-only; a matched-but-unclassified row needs a Site/Shop pick before commit.
+  const [classificationPicks, setClassificationPicks] = useState<Map<string, MigrationClassification>>(
+    new Map(),
+  );
+  const classificationRows = useMemo(
+    () => buildClassificationRows(built.entries, scheduleProductsByProject),
+    [built.entries, scheduleProductsByProject],
+  );
+  const unclassifiedRequired = useMemo(
+    () => unclassifiedRequiredRows(classificationRows, classificationPicks),
+    [classificationRows, classificationPicks],
   );
 
   const setLocation = useCallback(
@@ -205,6 +255,7 @@ export default function SharePointMigrationPage() {
               hardwareCategory: e.hardwareCategory,
               productCode: e.productCode,
               quantity: e.quantity,
+              unitCost: e.unitCost,
               projectId: e.projectId,
               aisle: e.aisle,
               row: e.row,
@@ -215,6 +266,12 @@ export default function SharePointMigrationPage() {
               productCode: c.productCode,
               description: c.description,
               values: c.values.map((v) => ({ attributeName: v.attributeName, value: v.value })),
+            })),
+            classifications: buildClassificationPayload(classificationRows, classificationPicks).map((d) => ({
+              projectId: d.projectId,
+              hardwareCategory: d.hardwareCategory,
+              productCode: d.productCode,
+              classification: d.classification,
             })),
           },
         },
@@ -228,7 +285,7 @@ export default function SharePointMigrationPage() {
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Migration failed', 'error');
     }
-  }, [built.entries, catalogItems, migrate, showToast]);
+  }, [built.entries, catalogItems, classificationRows, classificationPicks, migrate, showToast]);
 
   if (loading && !data) {
     return (
@@ -314,12 +371,12 @@ export default function SharePointMigrationPage() {
           {step === 0 && (
             <Card variant="outlined">
               <CardContent>
-                {data?.sharepointInventorySnapshot.alreadyHasInventory && (
+                {data?.sharepointInventorySnapshot.alreadyMigrated && (
                   <Alert severity="warning" sx={{ mb: 2 }}>
-                    <AlertTitle>Nexus already holds inventory</AlertTitle>
-                    This migration has no idempotency marker - running it a second time adds every
-                    row again rather than reconciling. Only continue if you are certain this has not
-                    already been run.
+                    <AlertTitle>This migration has already been run</AlertTitle>
+                    Running it a second time adds every row again rather than reconciling. Only
+                    continue if you are certain the previous run should be duplicated - reset the
+                    data first if you mean to start over.
                   </Alert>
                 )}
                 <Typography variant="subtitle2" sx={{ ...microLabelSx, mb: 1 }}>
@@ -672,6 +729,90 @@ export default function SharePointMigrationPage() {
           {step === 5 && (
             <Card variant="outlined">
               <CardContent>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  Migrated project stock is composable into shop assembly only once it carries a Site
+                  or Shop classification. Products the schedule already classified are shown inherited
+                  and left as they are; the rest need a decision here, or they stay off the bench.
+                </Typography>
+                {classificationRows.length === 0 ? (
+                  <Alert severity="info">
+                    No migrated product matched a project&apos;s hardware schedule, so there is
+                    nothing to classify. Stock that is not on any schedule ships through the extras
+                    lane and is never composed into shop assembly.
+                  </Alert>
+                ) : (
+                  <>
+                    <Box sx={{ maxHeight: 480, overflow: 'auto' }}>
+                      <Table size="small" stickyHeader>
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Project</TableCell>
+                            <TableCell>Category</TableCell>
+                            <TableCell>Product code</TableCell>
+                            <TableCell>Classification</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {classificationRows.map((row) => {
+                            const key = classificationStepKey(row.projectId, row.productCode);
+                            const project = projects.find((p) => p.id === row.projectId);
+                            const pick = classificationPicks.get(key);
+                            return (
+                              <TableRow key={key} hover>
+                                <TableCell sx={monoSx}>{project?.projectId ?? '—'}</TableCell>
+                                <TableCell>{row.hardwareCategory}</TableCell>
+                                <TableCell sx={monoSx}>{row.productCode}</TableCell>
+                                <TableCell>
+                                  {row.inherited ? (
+                                    <Chip
+                                      size="small"
+                                      variant="outlined"
+                                      color={row.inherited === 'SITE_HARDWARE' ? 'success' : 'info'}
+                                      label={`${row.inherited === 'SITE_HARDWARE' ? 'Site' : 'Shop'} · inherited`}
+                                    />
+                                  ) : (
+                                    <Select
+                                      size="small"
+                                      displayEmpty
+                                      error={!pick}
+                                      value={pick ?? ''}
+                                      onChange={(e) =>
+                                        setClassificationPicks((prev) =>
+                                          new Map(prev).set(key, e.target.value as MigrationClassification),
+                                        )
+                                      }
+                                      sx={{ minWidth: 160 }}
+                                    >
+                                      <MenuItem value="">
+                                        <em>Choose Site or Shop…</em>
+                                      </MenuItem>
+                                      <MenuItem value="SITE_HARDWARE">Site</MenuItem>
+                                      <MenuItem value="SHOP_HARDWARE">Shop</MenuItem>
+                                    </Select>
+                                  )}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </Box>
+                    {unclassifiedRequired.length > 0 && (
+                      <Alert severity="warning" sx={{ mt: 2 }}>
+                        {unclassifiedRequired.length} matched product
+                        {unclassifiedRequired.length === 1 ? '' : 's'} still need a Site or Shop
+                        decision before the migration can run.
+                      </Alert>
+                    )}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {step === 6 && (
+            <Card variant="outlined">
+              <CardContent>
                 <Stack direction="row" spacing={3} sx={{ mb: 2, flexWrap: 'wrap' }}>
                   <Stat label="Entries to write" value={built.entries.length} />
                   <Stat label="Project inventory" value={projectEntries.length} />
@@ -745,13 +886,24 @@ export default function SharePointMigrationPage() {
               Back
             </Button>
             {step < STEPS.length - 1 ? (
-              <Button variant="contained" onClick={() => setStep((s) => s + 1)}>
+              <Button
+                variant="contained"
+                // The classification step must be answered before moving on: an unclassified matched
+                // product stays locked out of shop assembly, so leaving it is a silent data loss.
+                disabled={step === 5 && unclassifiedRequired.length > 0}
+                onClick={() => setStep((s) => s + 1)}
+              >
                 Next
               </Button>
             ) : (
               <Button
                 variant="contained"
-                disabled={built.entries.length === 0 || migrating || undecidedTypes.length > 0}
+                disabled={
+                  built.entries.length === 0 ||
+                  migrating ||
+                  undecidedTypes.length > 0 ||
+                  unclassifiedRequired.length > 0
+                }
                 onClick={handleCommit}
               >
                 Migrate {built.entries.length} entries

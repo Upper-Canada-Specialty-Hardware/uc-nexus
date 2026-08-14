@@ -26,12 +26,17 @@ def get_warehouse_dashboard(session: Session) -> dict:
     now = datetime.utcnow()
     seven_days_ago = now - timedelta(days=7)
 
-    # Total inventory value and item count — LEFT JOIN since stock-allocated rows have no PO line
+    # Total inventory value and item count — LEFT JOIN since stock-allocated rows have no PO line.
+    # Cost falls back to the row's own off-PO unit_cost (the SharePoint migration), so migrated stock
+    # values correctly instead of at zero; a PO row still reads its line cost.
     inv_stats = session.execute(
         select(
             func.coalesce(func.sum(InventoryLocationModel.quantity), 0),
             func.coalesce(
-                func.sum(InventoryLocationModel.quantity * func.coalesce(POLineItemModel.unit_cost, 0)),
+                func.sum(
+                    InventoryLocationModel.quantity
+                    * func.coalesce(POLineItemModel.unit_cost, InventoryLocationModel.unit_cost, 0)
+                ),
                 0,
             ),
         ).outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)

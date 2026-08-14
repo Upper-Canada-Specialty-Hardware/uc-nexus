@@ -425,7 +425,7 @@ export const SYNC_GP_JOBS = gql`
 export const GET_SHAREPOINT_INVENTORY_SNAPSHOT = gql`
   query GetSharepointInventorySnapshot {
     sharepointInventorySnapshot {
-      alreadyHasInventory
+      alreadyMigrated
       items {
         spItemId
         partNumber
@@ -438,6 +438,7 @@ export const GET_SHAREPOINT_INVENTORY_SNAPSHOT = gql`
         projectInventoryQty
         projectNumber
         projectName
+        unitCost
         partDescription
         finish
         rating
@@ -445,6 +446,19 @@ export const GET_SHAREPOINT_INVENTORY_SNAPSHOT = gql`
         heightInches
         widthInches
       }
+    }
+  }
+`;
+
+// Each mapped project's schedule products, for the migration wizard's category snap + classification
+// step. Fired once the projects are mapped, with the Nexus project ids the PROJECT rows resolve to.
+export const GET_PROJECT_SCHEDULE_PRODUCTS = gql`
+  query GetProjectScheduleProducts($projectIds: [ID!]!) {
+    projectScheduleProducts(projectIds: $projectIds) {
+      projectId
+      hardwareCategory
+      productCode
+      classification
     }
   }
 `;
