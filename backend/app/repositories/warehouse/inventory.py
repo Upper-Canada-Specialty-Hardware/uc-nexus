@@ -48,15 +48,33 @@ def get_unlocated_inventory(
     )
     rows = session.execute(stmt).all()
 
-    return [
-        {
-            "inventory_location": row[0],
-            "classification": row[1],
-            "po_number": row[2],
-            "unit_cost": float(row[3]) if row[3] is not None else 0.0,
-        }
-        for row in rows
-    ]
+    # A stock-origin migrated row has no PO line, so its classification and cost are null on the join.
+    # Fall back the classification to the schedule's dominant value for (category, code) - the same
+    # read the extras-lane chip uses - and the cost to the row's own off-PO unit_cost, so put-away
+    # shows a Site/Shop chip and a value for migrated stock instead of a blank. One schedule read per
+    # distinct project, cached; a PO row never triggers it.
+    schedule_class_cache: dict[uuid.UUID, dict[tuple[str, str], Classification | None]] = {}
+
+    def _scheduled(pid: uuid.UUID) -> dict[tuple[str, str], Classification | None]:
+        if pid not in schedule_class_cache:
+            schedule_class_cache[pid] = get_scheduled_classifications(session, pid)
+        return schedule_class_cache[pid]
+
+    result = []
+    for il, po_classification, po_number, po_unit_cost in rows:
+        classification = po_classification
+        if classification is None:
+            classification = _scheduled(il.project_id).get((il.hardware_category, il.product_code))
+        cost = float(po_unit_cost) if po_unit_cost is not None else float(il.unit_cost or 0)
+        result.append(
+            {
+                "inventory_location": il,
+                "classification": classification,
+                "po_number": po_number,
+                "unit_cost": cost,
+            }
+        )
+    return result
 
 
 def adjust_inventory_quantity(
@@ -297,6 +315,67 @@ def get_scheduled_classifications(
     return dominant
 
 
+def get_project_schedule_products(session: Session, project_ids: list[uuid.UUID]) -> list[dict]:
+    """Per project, each schedule product as (hardware_category, product_code, classification).
+
+    Feeds the SharePoint migration wizard's category snap and classification step. A migrated row is
+    made claimable only by an exact (hardware_category, product_code) match against the schedule, but
+    SharePoint's part category is free text that rarely matches the schedule's wording, so the wizard
+    snaps a matched row to the schedule's category - and this is where it reads it from. The
+    classification is the same dominant value the extras-lane chip shows, so the step can present it
+    inherited (read-only) or ask for a Site/Shop pick where the schedule left it null.
+
+    Keyed by product_code within a project: the dominant category is the one covering the most units
+    of that code (tie broken on the category name), and the classification is the dominant value among
+    the rows under that dominant category - so the answer lines up with the (category, code) pair the
+    backend classifies and marks against. One grouped query; the winners are picked in Python.
+    """
+    if not project_ids:
+        return []
+
+    rows = session.execute(
+        select(
+            HardwareItemModel.project_id,
+            HardwareItemModel.hardware_category,
+            HardwareItemModel.product_code,
+            HardwareItemModel.classification,
+            func.sum(HardwareItemModel.item_quantity),
+        )
+        .where(HardwareItemModel.project_id.in_(project_ids))
+        .group_by(
+            HardwareItemModel.project_id,
+            HardwareItemModel.hardware_category,
+            HardwareItemModel.product_code,
+            HardwareItemModel.classification,
+        )
+    ).all()
+
+    # (project, code) -> category -> {classification: units}
+    grouped: dict[tuple[uuid.UUID, str], dict[str, dict[Classification | None, int]]] = {}
+    for project_id, category, code, classification, quantity in rows:
+        by_category = grouped.setdefault((project_id, code), {})
+        by_class = by_category.setdefault(category, {})
+        by_class[classification] = by_class.get(classification, 0) + int(quantity or 0)
+
+    out: list[dict] = []
+    for (project_id, code), by_category in grouped.items():
+        category_units = {cat: sum(tally.values()) for cat, tally in by_category.items()}
+        dominant_category = sorted(category_units.items(), key=lambda item: (-item[1], item[0]))[0][0]
+        class_tally = by_category[dominant_category]
+        dominant_class = sorted(class_tally.items(), key=lambda item: (-item[1], item[0].value if item[0] else ""))[0][
+            0
+        ]
+        out.append(
+            {
+                "project_id": project_id,
+                "hardware_category": dominant_category,
+                "product_code": code,
+                "classification": dominant_class,
+            }
+        )
+    return out
+
+
 def get_inventory_rows(
     session: Session, project_id: uuid.UUID | None = None, warehouse_id: uuid.UUID | None = None
 ) -> list[dict]:
@@ -344,7 +423,8 @@ def get_inventory_rows(
 
     rows = []
     for il, unit_cost, po_number, vendor_name, wh_code, wh_name, proj_number, proj_desc in session.execute(stmt).all():
-        cost = float(unit_cost or 0)
+        # PO line cost first, then the row's own off-PO cost (the SharePoint migration), then 0.
+        cost = float(unit_cost if unit_cost is not None else (il.unit_cost or 0))
         rows.append(
             {
                 "inventory_location": il,

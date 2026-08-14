@@ -193,6 +193,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # Admin-only on both counts: the query reads another system entirely over the company's Graph
     # credentials, and the mutation writes inventory in bulk with no per-row undo.
     "sharepointInventorySnapshot": ADMIN_ROLE,
+    "projectScheduleProducts": ADMIN_ROLE,
     "migrateSharepointInventory": ADMIN_ROLE,
     # --- shipping.py ----------------------------------------------------------------------
     "packingSlips": SIGNED_IN,

@@ -513,19 +513,46 @@ export default function ImportWizard({
     return map;
   }, [hardwareStatusData]);
 
-  // Received-and-unpulled quantity per aggregation key. Both request purposes pull from it, and the
-  // shipping loose list also clamps its requested quantity to it, so it is indexed once.
-  // reconcile_schedule has already moved anything sitting on an open pull into its own bucket, so a
-  // RECEIVED row is genuinely available loose stock.
-  const receivedQtyByKey = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const row of reconciliationRows) {
-      if (row.status !== 'RECEIVED' || row.quantity <= 0) continue;
-      const key = `${row.openingNumber}|${row.productCode}|${row.hardwareCategory}`;
-      map.set(key, (map.get(key) ?? 0) + row.quantity);
+  // ---- Reservation-aware availability (#342) ----
+
+  // Creating a request RESERVES the hardware it needs, and the server gates creation on
+  // `on-hand - deficient - other requests' reservations`. Read the same numbers here so the wizard
+  // can refuse an over-selection with per-combo detail instead of letting the whole finalize bounce.
+  // Defined above the shop-assembly re-import filter because that filter now reads it.
+  const requestPurposeActive = open && purpose === 'assembly';
+  const {
+    data: availabilityData,
+    loading: availabilityLoading,
+    error: availabilityError,
+    refetch: refetchAvailability,
+  } = useQuery<{ projectInventoryAvailability: InventoryAvailabilityRow[] }>(
+    GET_PROJECT_INVENTORY_AVAILABILITY,
+    {
+      variables: { projectId: existingProjectId },
+      skip: !requestPurposeActive,
+      fetchPolicy: 'cache-and-network',
+    },
+  );
+
+  const availabilityByCombo = useMemo(() => {
+    const map = new Map<string, InventoryAvailabilityRow>();
+    for (const row of availabilityData?.projectInventoryAvailability ?? []) {
+      map.set(itemGroupKey({ hardware_category: row.hardwareCategory, product_code: row.productCode }), row);
     }
     return map;
-  }, [reconciliationRows]);
+  }, [availabilityData]);
+
+  // Just the reservation-aware available number per product, for the shop assembly re-import filter
+  // and the reconciliation step's eligibility. This is the real "what is on the shelf and unclaimed"
+  // figure the compose step and the server creation gate apply - not the recon RECEIVED bucket, which
+  // never saw inventory that arrived off-PO (the SharePoint migration, destock, shipment returns).
+  const availableByProduct = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const [key, row] of availabilityByCombo) {
+      map.set(key, row.availableQuantity);
+    }
+    return map;
+  }, [availabilityByCombo]);
 
   // Filter items based on reconciliation data per purpose
   const reconFilteredHardwareItems = useMemo(() => {
@@ -535,13 +562,15 @@ export default function ImportWizard({
       return selectedHardwareItems.filter((hi) => selectedReconItems.has(aggregationKey(hi)));
     }
 
-    // Shop assembly composes off received stock only, keyed on what a completed PO receipt landed.
+    // Shop assembly composes off real reservation-aware availability, product-level - the same source
+    // the step's eligibility gate uses. The recon RECEIVED bucket this used to read is PO-chain only
+    // and never saw off-PO inventory (migrated stock), so it wrongly filtered those items out.
     if (purpose === 'assembly') {
-      return selectedHardwareItems.filter((hi) => receivedQtyByKey.has(aggregationKey(hi)));
+      return selectedHardwareItems.filter((hi) => (availableByProduct.get(itemGroupKey(hi)) ?? 0) > 0);
     }
 
     return selectedHardwareItems;
-  }, [selectedHardwareItems, selectedReconItems, purpose, isReimport, receivedQtyByKey]);
+  }, [selectedHardwareItems, selectedReconItems, purpose, isReimport, availableByProduct]);
 
   const aggregatedHardwareItems = useMemo<AggregatedHardwareItem[]>(() => {
     const map = new Map<string, AggregatedHardwareItem>();
@@ -586,46 +615,6 @@ export default function ImportWizard({
     if (purpose === 'assembly') return composableRows(rows, 'SHOP');
     return [];
   }, [purpose, coverageData]);
-
-  // ---- Reservation-aware availability (#342) ----
-
-  // Creating a request RESERVES the hardware it needs, and the server gates creation on
-  // `on-hand - deficient - other requests' reservations`. Read the same numbers here so the wizard
-  // can refuse an over-selection with per-combo detail instead of letting the whole finalize bounce.
-  const requestPurposeActive = open && purpose === 'assembly';
-  const {
-    data: availabilityData,
-    loading: availabilityLoading,
-    error: availabilityError,
-    refetch: refetchAvailability,
-  } = useQuery<{ projectInventoryAvailability: InventoryAvailabilityRow[] }>(
-    GET_PROJECT_INVENTORY_AVAILABILITY,
-    {
-      variables: { projectId: existingProjectId },
-      skip: !requestPurposeActive,
-      fetchPolicy: 'cache-and-network',
-    },
-  );
-
-  const availabilityByCombo = useMemo(() => {
-    const map = new Map<string, InventoryAvailabilityRow>();
-    for (const row of availabilityData?.projectInventoryAvailability ?? []) {
-      map.set(itemGroupKey({ hardware_category: row.hardwareCategory, product_code: row.productCode }), row);
-    }
-    return map;
-  }, [availabilityData]);
-
-  // Just the reservation-aware available number per product, for the reconciliation step's shop
-  // assembly eligibility. This is the real "what is on the shelf and unclaimed" figure the compose
-  // step and the server creation gate apply - not the recon RECEIVED bucket, which never saw
-  // inventory that arrived off-PO.
-  const availableByProduct = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const [key, row] of availabilityByCombo) {
-      map.set(key, row.availableQuantity);
-    }
-    return map;
-  }, [availabilityByCombo]);
 
   // #492: with no Classification step for this purpose, an item nobody ever classified has no
   // SITE/SHOP answer anywhere - it is silently not shop work. Counting them here lets the step say

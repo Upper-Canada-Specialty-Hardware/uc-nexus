@@ -1718,6 +1718,9 @@ class SharepointInventoryItem:
     project_inventory_qty: int
     project_number: str
     project_name: str
+    # Cost per unit off the source list. There is no PO line in Nexus for migrated stock, so this is
+    # the only cost the units can carry; the migration writes it onto the inventory rows.
+    unit_cost: float
     # What describes a non-schedule product, since no hardware schedule does (#454).
     part_description: str
     finish: str
@@ -1730,9 +1733,23 @@ class SharepointInventoryItem:
 @strawberry.type
 class SharepointInventorySnapshot:
     items: list[SharepointInventoryItem]
-    # True when Nexus already holds inventory. The migration has no idempotency marker, so a second
-    # run would double every row it wrote - the wizard warns on this before letting the user proceed.
-    already_has_inventory: bool
+    # True when the migration has already run (a run marker exists). Definitive, unlike the old
+    # has-any-inventory check: running it twice doubles every row it wrote, so the wizard warns first.
+    already_migrated: bool
+
+
+@strawberry.type
+class ProjectScheduleProduct:
+    """One schedule product of a project, for the migration wizard's category snap + classification step.
+
+    `hardware_category` is the schedule's dominant category for this product code - what a matched
+    migrated row snaps to so it becomes claimable. `classification` is the dominant Site/Shop value,
+    or null where the schedule never classified it (the step asks for a pick there)."""
+
+    project_id: strawberry.ID
+    hardware_category: str
+    product_code: str
+    classification: Classification | None
 
 
 @strawberry.type

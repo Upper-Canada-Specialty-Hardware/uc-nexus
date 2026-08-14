@@ -223,7 +223,17 @@ export function buildProductReconRows(args: {
       row.lifecycleBreakdown = buildLifecycleBreakdown(ds);
       row.projectTotalOrdered = ds.onOrder + ds.receivedQuantity;
       row.projectTotalReceived = ds.receivedQuantity;
-      row.existingCommitted = ds.poDrafted + ds.onOrder + ds.receivedQuantity;
+      // Count units that EXIST, whatever their origin, not just PO receipts. receivedQuantity is the
+      // cumulative PO-receipt count and misses off-PO stock (the SharePoint migration, shipment
+      // returns, stock allocations); onHand + sentToShop + staged + shipped is where units actually
+      // are now and picks that up. For pure-PO stock the two are equal, so max() leaves it unchanged;
+      // for migrated stock the max is the real figure, which is what stops the buyer re-buying units
+      // that already exist. projectTotalReceived above stays PO receipts - that column is about receipts.
+      const existingReceived = Math.max(
+        ds.receivedQuantity,
+        ds.onHand + ds.sentToShop + ds.stagedForShipping + ds.shippedOut,
+      );
+      row.existingCommitted = ds.poDrafted + ds.onOrder + existingReceived;
     } else {
       // Fallback (no dashboard row yet, or an excluded product): the pre-dashboard recon numbers.
       row.lifecycleBreakdown = row.statusBreakdown;

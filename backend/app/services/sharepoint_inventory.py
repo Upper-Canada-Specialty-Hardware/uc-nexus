@@ -41,6 +41,11 @@ _FIELDS = (
     "Project_x0020_Inventory_x0020_Qt",
     "Project_x0020_Number_x0020_Temp",
     "Project_x0020_Name_x0020_Temp",
+    # Unit cost of the part. No PO line exists in Nexus for migrated stock (it was bought years ago in
+    # the system being retired), so this is the only place the cost can come from. Internal name for
+    # display "Unit Cost"; a wrong guess here just reads as no cost (valuation falls back to 0), never
+    # an error. Confirm against the list's columnDefinitions if cost comes through empty.
+    "Unit_x0020_Cost",
     # Descriptive columns. Only meaningful for non-schedule stock - a frame or a specialty is
     # described by these and by nothing else, since no hardware schedule describes it (#454).
     "Part_x0020_Description",

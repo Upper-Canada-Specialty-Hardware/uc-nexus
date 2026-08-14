@@ -11,6 +11,7 @@ from .audit import (
 from .inventory import (
     adjust_inventory_quantity,
     get_inventory_rows,
+    get_project_schedule_products,
     get_scheduled_classifications,
     get_scheduled_pairs,
     get_unlocated_inventory,
@@ -154,6 +155,7 @@ __all__ = [
     "get_location_duplicates",
     "get_location_utilization",
     "get_partially_picked_pull_ids",
+    "get_project_schedule_products",
     "get_pending_decisions_for_user",
     "get_pick_sheet",
     "outstanding_needs",

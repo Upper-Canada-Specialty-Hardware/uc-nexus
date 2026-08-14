@@ -259,6 +259,68 @@ it('keeps By Others products on their own chip', () => {
   expect(row.existingCommitted).toBe(0);
 });
 
+// The migration-compatibility fix: committed counts units that EXIST, not just PO receipts, so a
+// re-buy of off-PO stock (the SharePoint migration, returns, allocations) is caught.
+it('counts off-PO on-hand stock as committed so a re-buy over-orders', () => {
+  // Project needs 40; all 40 sit on hand as migrated stock and none went through a PO
+  // (receivedQuantity, onOrder, poDrafted all 0). Selecting 10 more would re-buy units that exist.
+  const all = [hi({ opening_number: '101', item_quantity: 40 })];
+  const selected = [hi({ opening_number: '101', item_quantity: 10 })];
+
+  const [row] = build({
+    all,
+    selected,
+    rows: [recon('101', 'NOT_COVERED', 40)],
+    selectedKeys: [openingKey('101')],
+    status: status({ requiredQuantity: 40, onHand: 40 }),
+  });
+
+  expect(row.existingCommitted).toBe(40);
+  expect(row.overCommitAmount).toBe(10);
+  expect(row.overOrdersProject).toBe(true);
+});
+
+it('leaves a normal PO project unchanged: received equals where-the-units-are-now', () => {
+  // 40 ordered and received; those 40 are now split across onHand/sentToShop/staged/shipped and sum
+  // back to 40, so max(received, sum) == received and committed is the same 40 as the old formula.
+  const all = [hi({ opening_number: '101', item_quantity: 40 })];
+
+  const [row] = build({
+    all,
+    selected: [],
+    rows: [recon('101', 'RECEIVED', 40)],
+    selectedKeys: [],
+    status: status({
+      requiredQuantity: 40,
+      receivedQuantity: 40,
+      onHand: 20,
+      sentToShop: 10,
+      stagedForShipping: 5,
+      shippedOut: 5,
+    }),
+  });
+
+  expect(row.existingCommitted).toBe(40);
+});
+
+it('a destock that moves units off the project lowers committed', () => {
+  // 10 of the 40 migrated units were destocked back to the pool, so onHand is 30 and nothing else
+  // holds them - committed drops to 30, freeing exactly the 10 the selection buys.
+  const all = [hi({ opening_number: '101', item_quantity: 40 })];
+  const selected = [hi({ opening_number: '101', item_quantity: 10 })];
+
+  const [row] = build({
+    all,
+    selected,
+    rows: [recon('101', 'NOT_COVERED', 40)],
+    selectedKeys: [openingKey('101')],
+    status: status({ requiredQuantity: 40, onHand: 30 }),
+  });
+
+  expect(row.existingCommitted).toBe(30);
+  expect(row.overOrdersProject).toBe(false);
+});
+
 // The eligibility bug: qtyAvailable gated the request on the recon RECEIVED bucket, which is blind to
 // inventory that arrived off-PO. It now reads real reservation-aware availability instead.
 it('sources assembly qtyAvailable from real availability, not the recon buckets', () => {

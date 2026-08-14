@@ -821,6 +821,8 @@ class MigrationEntryInput:
     hardware_category: str
     product_code: str
     quantity: int
+    # Off-PO cost per unit, written onto the inventory rows. Optional: 0/absent reads as no cost.
+    unit_cost: float | None = None
     project_id: strawberry.ID | None = None
     aisle: str | None = None
     row: str | None = None
@@ -846,7 +848,23 @@ class MigrationCatalogItemInput:
 
 
 @strawberry.input
+class MigrationClassificationInput:
+    """One Site/Shop decision from the wizard's classification step.
+
+    (project, category, code) names the schedule rows to classify; the backend writes it only where
+    they are still unclassified, so an inherited (already-classified) product is never overwritten.
+    Category is the schedule's own, since the wizard snaps a matched row's category before sending."""
+
+    project_id: strawberry.ID
+    hardware_category: str
+    product_code: str
+    classification: Classification
+
+
+@strawberry.input
 class MigrateSharepointInventoryInput:
     entries: list[MigrationEntryInput]
     # Deduplicated by the wizard to one per (type, product code); quantities live on `entries`.
     catalog_items: list[MigrationCatalogItemInput] | None = None
+    # The classification step's decisions, one per matched-but-unclassified (project, product).
+    classifications: list[MigrationClassificationInput] | None = None
