@@ -477,6 +477,19 @@ export default function PutAwayTab() {
                             <TableRow key={id} hover>
                               <TableCell sx={monoSx}>
                                 {item.inventoryLocation.productCode}
+                                {/* Site/Shop off the PO line, else the schedule's dominant value
+                                    (migrated stock has no PO line). Inline with the code rather
+                                    than a column: most rows have one, and a dedicated column would
+                                    spread a small chip across empty width. */}
+                                {item.classification && (
+                                  <Chip
+                                    size="small"
+                                    variant="outlined"
+                                    color={item.classification === 'SITE_HARDWARE' ? 'success' : 'info'}
+                                    label={item.classification === 'SITE_HARDWARE' ? 'Site' : 'Shop'}
+                                    sx={{ ml: 1 }}
+                                  />
+                                )}
                               </TableCell>
                               {showWarehouse && (
                                 <TableCell>
