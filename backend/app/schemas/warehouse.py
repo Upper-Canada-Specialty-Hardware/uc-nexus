@@ -727,6 +727,7 @@ class WarehouseQueries:
                 total_value=d["total_value"],
                 unlocated_count=d["unlocated_count"],
                 stock_item_count=d["stock_item_count"],
+                stock_value=d["stock_value"],
                 stock_unlocated_count=d["stock_unlocated_count"],
                 pending_pull_shop=d["pending_pull_shop"],
                 pending_pull_shipping=d["pending_pull_shipping"],
@@ -780,6 +781,7 @@ class WarehouseQueries:
                     sent_to_shop=row["sent_to_shop"],
                     staged_for_shipping=row["staged_for_shipping"],
                     shipped_out=row["shipped_out"],
+                    returned_to_project=row["returned_to_project"],
                 )
                 for row in rows
             ]

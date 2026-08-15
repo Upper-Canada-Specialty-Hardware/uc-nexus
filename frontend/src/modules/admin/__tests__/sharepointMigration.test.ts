@@ -622,7 +622,13 @@ describe('category snap', () => {
   };
   const schedule = (classification: MigrationClassification | null = 'SITE_HARDWARE') =>
     buildScheduleProductsByProject([
-      { projectId: NEXUS, hardwareCategory: 'Hinge', productCode: '1431 CPS TB EN', classification },
+      {
+        projectId: NEXUS,
+        hardwareCategory: 'Hinge',
+        productCode: '1431 CPS TB EN',
+        classification,
+        requiredQuantity: 6,
+      },
     ]);
 
   it("takes the schedule's category when the schedule names the code", () => {
@@ -670,6 +676,62 @@ describe('category snap', () => {
     });
     expect(noCost.entries[0].unitCost).toBeNull();
   });
+
+  it('splits the quantity across category pairs by required units, remainder to the largest', () => {
+    // The schedule carries the code as Hinge (6 required) AND Lock (2 required). One dominant
+    // category left the Lock rows unmatched forever; the split covers both.
+    const split = buildScheduleProductsByProject([
+      {
+        projectId: NEXUS,
+        hardwareCategory: 'Hinge',
+        productCode: '1431 CPS TB EN',
+        classification: 'SITE_HARDWARE',
+        requiredQuantity: 6,
+      },
+      {
+        projectId: NEXUS,
+        hardwareCategory: 'Lock',
+        productCode: '1431 CPS TB EN',
+        classification: null,
+        requiredQuantity: 2,
+      },
+    ]);
+    const { entries } = buildEntries({
+      ...snapBase,
+      candidates: toCandidates([item({ projectInventoryQty: 10 })]),
+      scheduleProductsByProject: split,
+    });
+    // 6 fill Hinge, 2 fill Lock, the 2 excess ride the largest pair.
+    expect(entries.map((e) => [e.hardwareCategory, e.quantity])).toEqual([
+      ['Hinge', 8],
+      ['Lock', 2],
+    ]);
+  });
+
+  it('a short quantity fills the largest pair first and never emits a zero line', () => {
+    const split = buildScheduleProductsByProject([
+      {
+        projectId: NEXUS,
+        hardwareCategory: 'Hinge',
+        productCode: '1431 CPS TB EN',
+        classification: null,
+        requiredQuantity: 6,
+      },
+      {
+        projectId: NEXUS,
+        hardwareCategory: 'Lock',
+        productCode: '1431 CPS TB EN',
+        classification: null,
+        requiredQuantity: 2,
+      },
+    ]);
+    const { entries } = buildEntries({
+      ...snapBase,
+      candidates: toCandidates([item({ projectInventoryQty: 4 })]),
+      scheduleProductsByProject: split,
+    });
+    expect(entries.map((e) => [e.hardwareCategory, e.quantity])).toEqual([['Hinge', 4]]);
+  });
 });
 
 describe('classification step', () => {
@@ -691,7 +753,7 @@ describe('classification step', () => {
   }
   const schedule = (classification: MigrationClassification | null) =>
     buildScheduleProductsByProject([
-      { projectId: NEXUS, hardwareCategory: 'Hinge', productCode: 'BB1279', classification },
+      { projectId: NEXUS, hardwareCategory: 'Hinge', productCode: 'BB1279', classification, requiredQuantity: 4 },
     ]);
 
   it('shows an inherited row for a product the schedule already classified', () => {
@@ -721,21 +783,61 @@ describe('classification step', () => {
 
     const rows = buildClassificationRows([entry()], schedule(null));
     expect(unclassifiedRequiredRows(rows, new Map())).toHaveLength(1);
-    const picks = new Map([[classificationStepKey(NEXUS, 'BB1279'), 'SITE_HARDWARE' as MigrationClassification]]);
+    const picks = new Map([
+      [classificationStepKey(NEXUS, 'Hinge', 'BB1279'), 'SITE_HARDWARE' as MigrationClassification],
+    ]);
     expect(unclassifiedRequiredRows(rows, picks)).toHaveLength(0);
   });
 
-  it('builds a payload of only the unclassified picks, never the inherited rows', () => {
+  it('builds a payload of the picks AND the inherited values', () => {
+    // Inherited rows go too: the backend writes only where classification is still null, so
+    // re-sending an inherited value is what classifies the NULL minority rows of a
+    // partially-classified pair. Dropping them left those rows off the bench forever.
     const rows = buildClassificationRows(
       [entry(), entry({ productCode: 'BB2000' })],
       buildScheduleProductsByProject([
-        { projectId: NEXUS, hardwareCategory: 'Hinge', productCode: 'BB1279', classification: 'SHOP_HARDWARE' },
-        { projectId: NEXUS, hardwareCategory: 'Hinge', productCode: 'BB2000', classification: null },
+        {
+          projectId: NEXUS,
+          hardwareCategory: 'Hinge',
+          productCode: 'BB1279',
+          classification: 'SHOP_HARDWARE',
+          requiredQuantity: 4,
+        },
+        {
+          projectId: NEXUS,
+          hardwareCategory: 'Hinge',
+          productCode: 'BB2000',
+          classification: null,
+          requiredQuantity: 4,
+        },
       ]),
     );
-    const picks = new Map([[classificationStepKey(NEXUS, 'BB2000'), 'SITE_HARDWARE' as MigrationClassification]]);
+    const picks = new Map([
+      [classificationStepKey(NEXUS, 'Hinge', 'BB2000'), 'SITE_HARDWARE' as MigrationClassification],
+    ]);
     expect(buildClassificationPayload(rows, picks)).toEqual([
+      { projectId: NEXUS, hardwareCategory: 'Hinge', productCode: 'BB1279', classification: 'SHOP_HARDWARE' },
       { projectId: NEXUS, hardwareCategory: 'Hinge', productCode: 'BB2000', classification: 'SITE_HARDWARE' },
     ]);
+  });
+
+  it('a code split across categories classifies each pair independently', () => {
+    const split = buildScheduleProductsByProject([
+      {
+        projectId: NEXUS,
+        hardwareCategory: 'Hinge',
+        productCode: 'BB1279',
+        classification: 'SITE_HARDWARE',
+        requiredQuantity: 6,
+      },
+      { projectId: NEXUS, hardwareCategory: 'Lock', productCode: 'BB1279', classification: null, requiredQuantity: 2 },
+    ]);
+    const rows = buildClassificationRows([entry(), entry({ hardwareCategory: 'Lock' })], split);
+    expect(rows.map((r) => [r.hardwareCategory, r.inherited])).toEqual([
+      ['Hinge', 'SITE_HARDWARE'],
+      ['Lock', null],
+    ]);
+    // The Lock half needs its own pick; the Hinge half is inherited.
+    expect(unclassifiedRequiredRows(rows, new Map()).map((r) => r.hardwareCategory)).toEqual(['Lock']);
   });
 });

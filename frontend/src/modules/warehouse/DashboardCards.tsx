@@ -13,8 +13,10 @@ export interface WarehouseDashboard {
   totalItemCount: number;
   totalValue: number;
   unlocatedCount: number;
-  /** Stock-pool units on hand. No matching value tile - StockItem carries no unit cost by decision. */
+  /** Stock-pool units on hand and their off-PO value (migrated stock carries its own unit cost;
+   *  PO-received pool stock counts 0). */
   stockItemCount: number;
+  stockValue: number;
   /** Stock-pool rows with no rack location yet. */
   stockUnlocatedCount: number;
   pendingPullShop: number;
@@ -104,7 +106,7 @@ export default function DashboardCards({ dashboard, loading }: DashboardCardsPro
   if (!dashboard) return null;
 
   return (
-    <StaggerList count={4}>
+    <StaggerList count={5}>
       <Box sx={{ display: 'flex', gap: 1.5, mb: 3, flexWrap: 'wrap' }}>
         <StaggerItem>
           <Gauge
@@ -128,6 +130,14 @@ export default function DashboardCards({ dashboard, loading }: DashboardCardsPro
             icon={<Warehouse size={18} strokeWidth={1.75} />}
             value={dashboard.stockItemCount}
             format={(n) => n.toLocaleString()}
+          />
+        </StaggerItem>
+        <StaggerItem>
+          <Gauge
+            label="Stock Value"
+            icon={<DollarSign size={18} strokeWidth={1.75} />}
+            value={dashboard.stockValue}
+            format={formatCurrency}
           />
         </StaggerItem>
         <StaggerItem>

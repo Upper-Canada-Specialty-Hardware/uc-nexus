@@ -13,9 +13,11 @@ from .inventory import (
     get_inventory_rows,
     get_project_schedule_products,
     get_scheduled_classifications,
+    get_scheduled_classifications_for_projects,
     get_scheduled_pairs,
     get_unlocated_inventory,
     override_inventory_quantity,
+    resolve_project_combo_cost,
 )
 from .locations import (
     _normalize_and_validate_location_fields,
@@ -173,6 +175,8 @@ __all__ = [
     "get_reserved_quantities",
     "get_reserved_total",
     "get_scheduled_classifications",
+    "get_scheduled_classifications_for_projects",
+    "resolve_project_combo_cost",
     "get_scheduled_pairs",
     "get_unlocated_inventory",
     "get_warehouse_dashboard",

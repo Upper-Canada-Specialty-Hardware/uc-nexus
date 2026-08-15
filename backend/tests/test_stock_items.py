@@ -170,3 +170,22 @@ def test_adjust_stock_quantity_requires_a_reason(db_session):
         stock_repository.adjust_stock_quantity(
             db_session, stock_item_id=si.id, new_quantity=7, reason_text="", performed_by="warehouse"
         )
+
+
+def test_reclassify_split_carries_the_unit_cost(db_session):
+    """The split used to drop the off-PO cost the full in-place reclassify kept."""
+    from decimal import Decimal
+
+    si = make_stock_item(db_session, quantity=10, category="HINGE", code="HG-100", unit_cost=Decimal("6"))
+
+    new_row, _ = stock_repository.reclassify_stock_item(
+        db_session,
+        stock_item_id=si.id,
+        new_hardware_category="STRIKE",
+        new_product_code="ST-200",
+        quantity=4,
+        reason_text="partial mislabel",
+        performed_by="warehouse",
+    )
+
+    assert new_row.unit_cost == Decimal("6")

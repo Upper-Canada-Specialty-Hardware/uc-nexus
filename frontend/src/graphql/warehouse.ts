@@ -301,6 +301,7 @@ export const GET_WAREHOUSE_DASHBOARD = gql`
       totalValue
       unlocatedCount
       stockItemCount
+      stockValue
       stockUnlocatedCount
       pendingPullShop
       pendingPullShipping
@@ -335,6 +336,7 @@ export const GET_STOCK_ITEMS = gql`
       quantity
       deficientQuantity
       available
+      unitCost
       aisle
       row
       bay

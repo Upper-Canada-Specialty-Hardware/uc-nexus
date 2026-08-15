@@ -166,12 +166,18 @@ def allocate_stock_to_project(
     target_row: str | None,
     target_bay: str | None,
     performed_by: str,
+    unit_cost_override: Decimal | None = None,
 ) -> InventoryLocationModel:
     """Transfer `quantity` units from a stock row into a project's inventory.
 
     Creates an InventoryLocation whose origin is the stock_items row (stock_item_id set,
     po_line_item_id / receive_line_item_id NULL). The CHECK constraint ck_inventory_locations_has_origin
     enforces that every row has either a PO origin or a stock origin.
+
+    `unit_cost_override` prices the allocated units directly, for callers that know the units' own
+    cost better than the pool row does - the SharePoint migration, whose same-shelf entries merge
+    into one pool row that keeps only the first cost it saw. Warehouse allocations leave it unset
+    and inherit the pool row's cost as before.
     """
     from app.models.project import Project as ProjectModel
 
@@ -207,9 +213,10 @@ def allocate_stock_to_project(
         aisle=target_aisle,
         row=target_row,
         bay=target_bay,
-        # A stock-origin project row has no PO line, so it carries the stock row's own off-PO cost;
-        # null when the stock came from a PO (the cost stays on that line).
-        unit_cost=si.unit_cost,
+        # A stock-origin project row has no PO line, so it carries the caller's own cost when given,
+        # else the stock row's off-PO cost; null when the stock came from a PO (the cost stays on
+        # that line).
+        unit_cost=unit_cost_override if unit_cost_override is not None else si.unit_cost,
         received_at=now,
     )
     session.add(new_il)
@@ -272,8 +279,11 @@ def receive_into_stock(
     """Receive vendor PO directly into the stock pool. Used when PO has no project_id.
 
     `unit_cost` is the off-PO cost for units with no PO line to hang it on (the SharePoint migration).
-    It is written onto the row only when the row has no cost yet, so a later off-PO receipt never
-    clobbers an established cost, and a PO-origin receipt (which passes None) never blanks one.
+    A receipt into an EMPTY row (fresh, or drained by allocation) replaces the row's cost outright -
+    an empty row's cost describes units that are gone, and letting it linger stamps a stale price
+    onto whatever arrives next. A receipt merging into a row that still holds units only fills a
+    null, so a later off-PO receipt never clobbers an established cost and a PO-origin receipt
+    (which passes None) never blanks one.
     """
     if quantity < 1:
         raise ValidationError("quantity must be >= 1", field="quantity")
@@ -298,9 +308,12 @@ def receive_into_stock(
         bay=bay,
         received_at=received_at,
     )
+    was_empty = stock_row.quantity == 0 and (stock_row.deficient_quantity or 0) == 0
     stock_row.quantity += quantity
     stock_row.deficient_quantity += deficient_quantity
-    if unit_cost is not None and stock_row.unit_cost is None:
+    if was_empty:
+        stock_row.unit_cost = unit_cost
+    elif unit_cost is not None and stock_row.unit_cost is None:
         stock_row.unit_cost = unit_cost
 
     _log_audit_event(
@@ -406,6 +419,10 @@ def transfer_inventory(
         target = _find_matching_inventory_location(session, il, dest_warehouse_id, dest_aisle, dest_row, dest_bay)
         if target is not None:
             target.quantity += quantity
+            # Same origin, so normally the same cost - but a merge target that predates the cost
+            # column would silently zero the moved units' value. Fills a null only.
+            if il.unit_cost is not None and target.unit_cost is None:
+                target.unit_cost = il.unit_cost
         else:
             target = InventoryLocationModel(
                 project_id=il.project_id,

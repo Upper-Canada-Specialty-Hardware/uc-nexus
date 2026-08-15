@@ -51,20 +51,18 @@ def get_unlocated_inventory(
     # A stock-origin migrated row has no PO line, so its classification and cost are null on the join.
     # Fall back the classification to the schedule's dominant value for (category, code) - the same
     # read the extras-lane chip uses - and the cost to the row's own off-PO unit_cost, so put-away
-    # shows a Site/Shop chip and a value for migrated stock instead of a blank. One schedule read per
-    # distinct project, cached; a PO row never triggers it.
-    schedule_class_cache: dict[uuid.UUID, dict[tuple[str, str], Classification | None]] = {}
-
-    def _scheduled(pid: uuid.UUID) -> dict[tuple[str, str], Classification | None]:
-        if pid not in schedule_class_cache:
-            schedule_class_cache[pid] = get_scheduled_classifications(session, pid)
-        return schedule_class_cache[pid]
+    # shows a Site/Shop chip and a value for migrated stock instead of a blank. One BATCHED schedule
+    # read across every project that needs it (this backs the put-away tab and is refetched after
+    # each assign, so a per-project aggregate here is exactly the N+1 the perf rules ban); null
+    # classification is not migration-only - returns and unclassified PO lines join null too.
+    fallback_pids = {il.project_id for il, po_classification, _, _ in rows if po_classification is None}
+    scheduled = get_scheduled_classifications_for_projects(session, sorted(fallback_pids, key=str))
 
     result = []
     for il, po_classification, po_number, po_unit_cost in rows:
         classification = po_classification
         if classification is None:
-            classification = _scheduled(il.project_id).get((il.hardware_category, il.product_code))
+            classification = scheduled.get(il.project_id, {}).get((il.hardware_category, il.product_code))
         cost = float(po_unit_cost) if po_unit_cost is not None else float(il.unit_cost or 0)
         result.append(
             {
@@ -287,48 +285,65 @@ def get_scheduled_classifications(
     against the handful of rows a single product has. Only products the schedule names appear - a
     stock combo the schedule never mentions is absent from the map, and the caller reads that as None.
     """
+    return get_scheduled_classifications_for_projects(session, [project_id]).get(project_id, {})
+
+
+def get_scheduled_classifications_for_projects(
+    session: Session, project_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, dict[tuple[str, str], Classification | None]]:
+    """`get_scheduled_classifications` across many projects in ONE grouped query.
+
+    Same dominance rule per (project, category, code); a project with no schedule is simply absent.
+    Exists so multi-project readers (put-away's classification fallback) stay one query at any queue
+    size instead of one aggregate per project.
+    """
+    if not project_ids:
+        return {}
+
     rows = session.execute(
         select(
+            HardwareItemModel.project_id,
             HardwareItemModel.hardware_category,
             HardwareItemModel.product_code,
             HardwareItemModel.classification,
             func.sum(HardwareItemModel.item_quantity),
         )
-        .where(HardwareItemModel.project_id == project_id)
+        .where(HardwareItemModel.project_id.in_(project_ids))
         .group_by(
+            HardwareItemModel.project_id,
             HardwareItemModel.hardware_category,
             HardwareItemModel.product_code,
             HardwareItemModel.classification,
         )
     ).all()
 
-    by_product: dict[tuple[str, str], dict[Classification | None, int]] = {}
-    for category, code, classification, quantity in rows:
-        by_product.setdefault((category, code), {})
-        tally = by_product[(category, code)]
+    by_product: dict[tuple[uuid.UUID, str, str], dict[Classification | None, int]] = {}
+    for project_id, category, code, classification, quantity in rows:
+        tally = by_product.setdefault((project_id, category, code), {})
         tally[classification] = tally.get(classification, 0) + int(quantity or 0)
 
-    dominant: dict[tuple[str, str], Classification | None] = {}
-    for combo, tally in by_product.items():
+    out: dict[uuid.UUID, dict[tuple[str, str], Classification | None]] = {}
+    for (project_id, category, code), tally in by_product.items():
         winner = sorted(tally.items(), key=lambda item: (-item[1], item[0].value if item[0] else ""))[0][0]
-        dominant[combo] = winner
-    return dominant
+        out.setdefault(project_id, {})[(category, code)] = winner
+    return out
 
 
 def get_project_schedule_products(session: Session, project_ids: list[uuid.UUID]) -> list[dict]:
-    """Per project, each schedule product as (hardware_category, product_code, classification).
+    """Per project, EVERY schedule (hardware_category, product_code) pair, with its required units.
 
     Feeds the SharePoint migration wizard's category snap and classification step. A migrated row is
     made claimable only by an exact (hardware_category, product_code) match against the schedule, but
     SharePoint's part category is free text that rarely matches the schedule's wording, so the wizard
-    snaps a matched row to the schedule's category - and this is where it reads it from. The
-    classification is the same dominant value the extras-lane chip shows, so the step can present it
-    inherited (read-only) or ask for a Site/Shop pick where the schedule left it null.
+    snaps a matched row to the schedule's category - and this is where it reads it from.
 
-    Keyed by product_code within a project: the dominant category is the one covering the most units
-    of that code (tie broken on the category name), and the classification is the dominant value among
-    the rows under that dominant category - so the answer lines up with the (category, code) pair the
-    backend classifies and marks against. One grouped query; the winners are picked in Python.
+    One row per (project, category, code) pair - NOT collapsed to a dominant category per code. A code
+    split across two categories (the same product scheduled as Hinge on one opening and Lock on
+    another) is two pairs, and the wizard splits the migrated quantity across them by
+    `required_quantity`; collapsing here left the minority pair's rows unmarked and unclassified with
+    nothing on screen saying so. `classification` is the dominant value within the pair (most units
+    wins, ties on the enum name), or null where the schedule never classified it - the step presents
+    that inherited or asks for a pick. One grouped query; winners picked in Python.
     """
     if not project_ids:
         return []
@@ -350,30 +365,70 @@ def get_project_schedule_products(session: Session, project_ids: list[uuid.UUID]
         )
     ).all()
 
-    # (project, code) -> category -> {classification: units}
-    grouped: dict[tuple[uuid.UUID, str], dict[str, dict[Classification | None, int]]] = {}
+    # (project, category, code) -> {classification: units}
+    grouped: dict[tuple[uuid.UUID, str, str], dict[Classification | None, int]] = {}
     for project_id, category, code, classification, quantity in rows:
-        by_category = grouped.setdefault((project_id, code), {})
-        by_class = by_category.setdefault(category, {})
-        by_class[classification] = by_class.get(classification, 0) + int(quantity or 0)
+        tally = grouped.setdefault((project_id, category, code), {})
+        tally[classification] = tally.get(classification, 0) + int(quantity or 0)
 
     out: list[dict] = []
-    for (project_id, code), by_category in grouped.items():
-        category_units = {cat: sum(tally.values()) for cat, tally in by_category.items()}
-        dominant_category = sorted(category_units.items(), key=lambda item: (-item[1], item[0]))[0][0]
-        class_tally = by_category[dominant_category]
-        dominant_class = sorted(class_tally.items(), key=lambda item: (-item[1], item[0].value if item[0] else ""))[0][
-            0
-        ]
+    for (project_id, category, code), tally in grouped.items():
+        required = sum(tally.values())
+        dominant_class = sorted(tally.items(), key=lambda item: (-item[1], item[0].value if item[0] else ""))[0][0]
         out.append(
             {
                 "project_id": project_id,
-                "hardware_category": dominant_category,
+                "hardware_category": category,
                 "product_code": code,
                 "classification": dominant_class,
+                "required_quantity": required,
             }
         )
+    # Largest pair first within a code, so the wizard's split order is already the read order.
+    out.sort(key=lambda r: (str(r["project_id"]), r["product_code"], -r["required_quantity"], r["hardware_category"]))
     return out
+
+
+def resolve_project_combo_cost(session: Session, project_id: uuid.UUID, hardware_category: str, product_code: str):
+    """The best-known per-unit cost of one (category, code) in a project, or None.
+
+    For write paths that re-materialize inventory with no PO line to hang a cost on - a shipment
+    return, a pull-cancel restock after the original row was deleted. Newest project row's effective
+    cost first (PO line cost, else the row's own off-PO cost - the same coalesce every value view
+    applies), then the schedule's dominant unit_cost for the combo. None when nothing knows a price;
+    inventing 0 here would just be the silent-zero valuation bug with extra steps.
+    """
+    row_cost = session.execute(
+        select(func.coalesce(POLineItemModel.unit_cost, InventoryLocationModel.unit_cost))
+        .select_from(InventoryLocationModel)
+        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .where(
+            InventoryLocationModel.project_id == project_id,
+            InventoryLocationModel.hardware_category == hardware_category,
+            InventoryLocationModel.product_code == product_code,
+            func.coalesce(POLineItemModel.unit_cost, InventoryLocationModel.unit_cost).is_not(None),
+        )
+        .order_by(InventoryLocationModel.received_at.desc())
+        .limit(1)
+    ).scalar()
+    if row_cost is not None:
+        return row_cost
+
+    # Schedule fallback: the cost covering the most units wins, ties on the higher cost so the
+    # answer never depends on row order.
+    schedule_rows = session.execute(
+        select(HardwareItemModel.unit_cost, func.sum(HardwareItemModel.item_quantity))
+        .where(
+            HardwareItemModel.project_id == project_id,
+            HardwareItemModel.hardware_category == hardware_category,
+            HardwareItemModel.product_code == product_code,
+            HardwareItemModel.unit_cost.is_not(None),
+        )
+        .group_by(HardwareItemModel.unit_cost)
+    ).all()
+    if not schedule_rows:
+        return None
+    return sorted(schedule_rows, key=lambda r: (-int(r[1] or 0), -r[0]))[0][0]
 
 
 def get_inventory_rows(

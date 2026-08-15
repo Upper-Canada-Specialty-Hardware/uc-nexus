@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
-from app.models.enums import HardwareItemState, POStatus, PullRequestSource, PullRequestStatus
+from app.models.enums import HardwareItemState, POStatus, PullRequestSource, PullRequestStatus, ReturnDisposition
 from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.pull_request import PullRequest as PullRequestModel
@@ -16,6 +16,8 @@ from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.receiving import ReceiveLineItem as ReceiveLineItemModel
 from app.models.shipping import PackingSlip as PackingSlipModel
 from app.models.shipping import PackingSlipItem as PackingSlipItemModel
+from app.models.shipping import ShipmentReturn as ShipmentReturnModel
+from app.models.shipping import ShipmentReturnItem as ShipmentReturnItemModel
 from app.models.stock_item import StockItem as StockItemModel
 
 
@@ -55,10 +57,18 @@ def get_warehouse_dashboard(session: Session) -> dict:
         or 0
     )
 
-    # Stock-pool tiles. No valuation - StockItem carries no unit cost by decision. stock_item_count is
-    # units on hand (the same sense as total_item_count above); stock_unlocated_count is the row count
-    # with no aisle, mirroring unlocated_count on the project side.
+    # Stock-pool tiles. stock_item_count is units on hand (the same sense as total_item_count above);
+    # stock_unlocated_count is the row count with no aisle, mirroring unlocated_count on the project
+    # side. stock_value prices the pool off the rows' own off-PO unit_cost (the SharePoint migration
+    # writes it; PO-received pool stock carries none and counts 0) - without it a migration landing
+    # mostly STOCK entries changed total inventory value by nothing.
     stock_item_count = session.scalar(select(func.coalesce(func.sum(StockItemModel.quantity), 0))) or 0
+    stock_value = (
+        session.scalar(
+            select(func.coalesce(func.sum(StockItemModel.quantity * func.coalesce(StockItemModel.unit_cost, 0)), 0))
+        )
+        or 0
+    )
     stock_unlocated_count = (
         session.scalar(
             select(func.count())
@@ -150,6 +160,7 @@ def get_warehouse_dashboard(session: Session) -> dict:
         "total_value": float(inv_stats[1]),
         "unlocated_count": int(unlocated_count),
         "stock_item_count": int(stock_item_count),
+        "stock_value": float(stock_value),
         "stock_unlocated_count": int(stock_unlocated_count),
         "pending_pull_shop": int(pending_shop),
         "pending_pull_shipping": int(pending_shipping),
@@ -313,7 +324,11 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
     - staged_for_shipping: the staging pool - completed SHIPPING_OUT pulls minus what packing slips
       carried out, positive part per (project, opening, category, product) to mirror
       shipping_repository.get_ship_ready_items, then summed per product.
-    - shipped_out: sum of packing_slip_items.quantity
+    - shipped_out: sum of packing_slip_items.quantity - GROSS, returns never decrement it
+    - returned_to_project: RETURN_TO_PROJECT shipment-return units. These are simultaneously back in
+      on_hand AND still inside the gross shipped_out, so any reader summing "where the units are"
+      across those columns must subtract this or count every returned unit twice (the re-import
+      over-order guard does exactly that).
 
     Rows are the union of every key any source produced, so stock-allocated products that never
     appeared on a schedule still show (required 0) instead of vanishing with units on hand.
@@ -331,6 +346,7 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
         "sent_to_shop",
         "staged_for_shipping",
         "shipped_out",
+        "returned_to_project",
     )
     rows: dict[tuple[str, str], dict] = {}
 
@@ -478,6 +494,25 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
         if staged > 0:
             b = bucket(row.hardware_category, row.product_code)
             b["staged_for_shipping"] += staged
+
+    # Units that came back from site into project inventory. RETURN_TO_PROJECT only: a return routed
+    # to the stock pool left the project, so it neither sits in on_hand nor needs netting.
+    returned_stmt = (
+        select(
+            ShipmentReturnItemModel.hardware_category,
+            ShipmentReturnItemModel.product_code,
+            func.sum(ShipmentReturnItemModel.quantity).label("returned"),
+        )
+        .join(ShipmentReturnModel, ShipmentReturnItemModel.shipment_return_id == ShipmentReturnModel.id)
+        .join(PackingSlipModel, ShipmentReturnModel.packing_slip_id == PackingSlipModel.id)
+        .where(
+            PackingSlipModel.project_id.in_(project_ids),
+            ShipmentReturnItemModel.disposition == ReturnDisposition.RETURN_TO_PROJECT,
+        )
+        .group_by(ShipmentReturnItemModel.hardware_category, ShipmentReturnItemModel.product_code)
+    )
+    for row in session.execute(returned_stmt):
+        bucket(row.hardware_category, row.product_code)["returned_to_project"] = int(row.returned)
 
     return [
         {"hardware_category": category, "product_code": code, **values}

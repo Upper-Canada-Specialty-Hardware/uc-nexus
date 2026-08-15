@@ -390,3 +390,48 @@ def test_product_without_schedule_row_still_appears(db_session):
     assert r["required_quantity"] == 0
     assert r["not_purchased"] == 0
     assert r["on_hand"] == 5
+
+
+def test_returned_to_project_units_are_reported_and_shipped_out_stays_gross(db_session):
+    """A RETURN_TO_PROJECT unit is back in on_hand while still inside the gross shipped_out sum, so
+    the rollup carries the returned count separately for readers that sum "where the units are"."""
+    from sqlalchemy import select
+
+    from app.models.enums import ReturnDisposition
+    from app.models.shipping import PackingSlipItem as PSI
+    from app.models.shipping import ShipmentReturn, ShipmentReturnItem
+
+    project = _make_project(db_session)
+    slip = _make_slip(db_session, project_id=project.id, lines=[("A01", "HG-100", 40)])
+    psi = db_session.scalars(select(PSI).where(PSI.packing_slip_id == slip.id)).one()
+    warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+
+    ret = ShipmentReturn(
+        id=uuid.uuid4(),
+        packing_slip_id=slip.id,
+        warehouse_id=warehouse_id,
+        returned_by="tester",
+        returned_at=datetime.utcnow(),
+    )
+    db_session.add(ret)
+    db_session.flush()
+    db_session.add(
+        ShipmentReturnItem(
+            id=uuid.uuid4(),
+            shipment_return_id=ret.id,
+            packing_slip_item_id=psi.id,
+            disposition=ReturnDisposition.RETURN_TO_PROJECT,
+            quantity=10,
+            hardware_category=CAT,
+            product_code="HG-100",
+            opening_number="A01",
+        )
+    )
+    db_session.flush()
+    _make_inventory(db_session, project_id=project.id, product_code="HG-100", quantity=10)
+
+    rows = warehouse_repository.get_hardware_status_by_product(db_session, [project.id])
+    row = next(r for r in rows if r["product_code"] == "HG-100")
+    assert row["shipped_out"] == 40
+    assert row["returned_to_project"] == 10
+    assert row["on_hand"] == 10

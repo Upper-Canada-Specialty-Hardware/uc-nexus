@@ -101,6 +101,7 @@ class SharepointMigrationQueries:
                 hardware_category=row["hardware_category"],
                 product_code=row["product_code"],
                 classification=row["classification"],
+                required_quantity=row["required_quantity"],
             )
             for row in rows
         ]

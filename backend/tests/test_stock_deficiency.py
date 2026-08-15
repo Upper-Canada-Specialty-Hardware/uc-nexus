@@ -363,3 +363,26 @@ def test_resolve_requires_a_reviewer(db_session):
             destock_source=None,
             reviewed_by="",
         )
+
+
+def test_resolve_project_send_to_stock_carries_the_unit_cost(db_session):
+    """Same carry destock_inventory applies - without it a migrated unit resolved here values at 0."""
+    from decimal import Decimal
+
+    project = make_project(db_session)
+    il = make_il(db_session, project, quantity=10, deficient=4, aisle="A", row="1", bay="1", unit_cost=Decimal("6"))
+
+    review = stock_repository.resolve_deficiency(
+        db_session,
+        inventory_location_id=il.id,
+        stock_item_id=None,
+        resolution=DeficiencyResolution.SEND_TO_STOCK,
+        quantity=4,
+        reason_text="send to shelf",
+        rma_reference=None,
+        destock_source=None,
+        reviewed_by="manager",
+    )
+
+    stock_row = db_session.get(StockItem, review.resulting_stock_item_id)
+    assert stock_row.unit_cost == Decimal("6")

@@ -166,6 +166,10 @@ def resolve_deficiency(
             )
             stock_row.quantity += quantity
             stock_row.deficient_quantity += quantity
+            # Carry an off-PO cost back to the pool row, exactly as destock_inventory does - without
+            # it a migrated unit resolved through here values at zero forever. Fills a null only.
+            if il.unit_cost is not None and stock_row.unit_cost is None:
+                stock_row.unit_cost = il.unit_cost
             resulting_stock_item_id = stock_row.id
         elif resolution == DeficiencyResolution.SCRAP:
             il.quantity -= quantity

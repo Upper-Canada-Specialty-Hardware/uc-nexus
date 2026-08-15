@@ -69,6 +69,7 @@ interface ScheduleProductRow {
   hardwareCategory: string;
   productCode: string;
   classification: MigrationClassification | null;
+  requiredQuantity: number;
 }
 
 interface SnapshotData {
@@ -164,18 +165,27 @@ export default function SharePointMigrationPage() {
     () => [...new Set([...projectResolutions.values()].filter((v): v is string => !!v))],
     [projectResolutions],
   );
-  const { data: scheduleData } = useQuery<{ projectScheduleProducts: ScheduleProductRow[] }>(
-    GET_PROJECT_SCHEDULE_PRODUCTS,
-    {
-      variables: { projectIds: mappedProjectIds },
-      skip: mappedProjectIds.length === 0,
-      fetchPolicy: 'cache-and-network',
-    },
-  );
+  const {
+    data: scheduleData,
+    loading: scheduleLoading,
+    error: scheduleError,
+    refetch: refetchSchedule,
+  } = useQuery<{ projectScheduleProducts: ScheduleProductRow[] }>(GET_PROJECT_SCHEDULE_PRODUCTS, {
+    variables: { projectIds: mappedProjectIds },
+    skip: mappedProjectIds.length === 0,
+    fetchPolicy: 'cache-and-network',
+    notifyOnNetworkStatusChange: true,
+  });
   const scheduleProductsByProject = useMemo(
     () => buildScheduleProductsByProject(scheduleData?.projectScheduleProducts ?? []),
     [scheduleData],
   );
+  // The schedules are what the category snap, the classification step and the purchased marking all
+  // key off. Committing without them writes every PROJECT row under SharePoint's free-text category -
+  // permanently unclaimable - so an unresolved or failed read BLOCKS the wizard rather than walking
+  // it silently through an empty classification step to an enabled Migrate button.
+  const scheduleProductsBlocked =
+    mappedProjectIds.length > 0 && (scheduleError !== undefined || (scheduleLoading && !scheduleData));
 
   const typeOptions: InventoryItemTypeOption[] = useMemo(
     () => itemTypes.map((t) => ({ id: t.id, code: t.code, name: t.name })),
@@ -212,6 +222,17 @@ export default function SharePointMigrationPage() {
   const catalogItems = useMemo(
     () => buildCatalogItems(built.kept, itemTypeResolutions),
     [built.kept, itemTypeResolutions],
+  );
+
+  // The review step's money check. A wrong Unit Cost column guess upstream reads as "no cost, no
+  // error", and this is the one moment it is still correctable - after commit there is no second run.
+  const totalValue = useMemo(
+    () => built.entries.reduce((sum, e) => sum + (e.unitCost ?? 0) * e.quantity, 0),
+    [built.entries],
+  );
+  const costlessCount = useMemo(
+    () => built.entries.filter((e) => e.unitCost === null).length,
+    [built.entries],
   );
 
   // The classification step: one row per (project, product) matched to a schedule. An inherited row
@@ -718,9 +739,10 @@ export default function SharePointMigrationPage() {
                   </Button>
                 </Stack>
                 <Alert severity="info" sx={{ mt: 2 }}>
-                  Categories are migrated exactly as SharePoint spells them. Anything that does not
-                  match the project&apos;s hardware schedule is flagged in the warehouse inventory
-                  view rather than being corrected here.
+                  A project row whose product code the mapped project&apos;s schedule names takes the
+                  schedule&apos;s category automatically, so it stays claimable. Everything else is
+                  migrated exactly as SharePoint spells it and flagged in the warehouse inventory
+                  view if it never matches.
                 </Alert>
               </CardContent>
             </Card>
@@ -754,7 +776,7 @@ export default function SharePointMigrationPage() {
                         </TableHead>
                         <TableBody>
                           {classificationRows.map((row) => {
-                            const key = classificationStepKey(row.projectId, row.productCode);
+                            const key = classificationStepKey(row.projectId, row.hardwareCategory, row.productCode);
                             const project = projects.find((p) => p.id === row.projectId);
                             const pick = classificationPicks.get(key);
                             return (
@@ -821,7 +843,27 @@ export default function SharePointMigrationPage() {
                     label="Units"
                     value={built.entries.reduce((sum, e) => sum + e.quantity, 0)}
                   />
+                  <Stat
+                    label="Total value"
+                    value={totalValue}
+                    format={(v) =>
+                      v.toLocaleString('en-US', {
+                        style: 'currency',
+                        currency: 'USD',
+                        maximumFractionDigits: 0,
+                      })
+                    }
+                  />
                 </Stack>
+                {costlessCount === built.entries.length && built.entries.length > 0 && (
+                  <Alert severity="warning" sx={{ mb: 2 }}>
+                    <AlertTitle>No entry carries a unit cost</AlertTitle>
+                    Every migrated row would be valued at $0 on the warehouse dashboard and the
+                    inventory value views. If SharePoint&apos;s Unit Cost column holds data, the
+                    snapshot is not reading it - stop and fix that before running a one-shot
+                    migration, because there is no second run to correct it.
+                  </Alert>
+                )}
                 {built.excluded.length > 0 && (
                   <>
                     <Typography variant="subtitle2" sx={{ ...microLabelSx, mb: 1 }}>
@@ -846,6 +888,7 @@ export default function SharePointMigrationPage() {
                         <TableCell>Category</TableCell>
                         <TableCell>Product code</TableCell>
                         <TableCell align="right">Qty</TableCell>
+                        <TableCell align="right">Unit cost</TableCell>
                         <TableCell>Location</TableCell>
                       </TableRow>
                     </TableHead>
@@ -857,6 +900,9 @@ export default function SharePointMigrationPage() {
                           <TableCell sx={monoSx}>{e.productCode}</TableCell>
                           <TableCell align="right" sx={tabularSx}>
                             {e.quantity}
+                          </TableCell>
+                          <TableCell align="right" sx={tabularSx}>
+                            {e.unitCost !== null ? `$${e.unitCost.toFixed(2)}` : '—'}
                           </TableCell>
                           <TableCell sx={monoSx}>
                             {[e.aisle, e.row, e.bay].filter(Boolean).join('-') || '—'}
@@ -881,6 +927,29 @@ export default function SharePointMigrationPage() {
             </Card>
           )}
 
+          {scheduleProductsBlocked && step >= 2 && (
+            <Alert
+              severity={scheduleError ? 'error' : 'info'}
+              sx={{ mt: 2 }}
+              action={
+                scheduleError ? (
+                  <Button size="small" onClick={() => refetchSchedule()}>
+                    Retry
+                  </Button>
+                ) : undefined
+              }
+            >
+              <AlertTitle>
+                {scheduleError
+                  ? 'Could not read the mapped projects’ schedules'
+                  : 'Reading the mapped projects’ schedules…'}
+              </AlertTitle>
+              Category snapping, classification and purchased-marking all depend on them, so the
+              wizard cannot continue until this read succeeds.
+              {scheduleError ? ` ${scheduleError.message}` : ''}
+            </Alert>
+          )}
+
           <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
             <Button disabled={step === 0 || migrating} onClick={() => setStep((s) => s - 1)}>
               Back
@@ -890,7 +959,11 @@ export default function SharePointMigrationPage() {
                 variant="contained"
                 // The classification step must be answered before moving on: an unclassified matched
                 // product stays locked out of shop assembly, so leaving it is a silent data loss.
-                disabled={step === 5 && unclassifiedRequired.length > 0}
+                // Everything past the project mapping also waits on the schedule-products read - the
+                // snap, the classification rows and the marking are all built from it.
+                disabled={
+                  (step === 5 && unclassifiedRequired.length > 0) || (step >= 2 && scheduleProductsBlocked)
+                }
                 onClick={() => setStep((s) => s + 1)}
               >
                 Next
@@ -902,7 +975,8 @@ export default function SharePointMigrationPage() {
                   built.entries.length === 0 ||
                   migrating ||
                   undecidedTypes.length > 0 ||
-                  unclassifiedRequired.length > 0
+                  unclassifiedRequired.length > 0 ||
+                  scheduleProductsBlocked
                 }
                 onClick={handleCommit}
               >
@@ -916,13 +990,23 @@ export default function SharePointMigrationPage() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: number }) {
+function Stat({
+  label,
+  value,
+  format,
+}: {
+  label: string;
+  value: number;
+  format?: (value: number) => string;
+}) {
   return (
     <Box>
       <Typography sx={{ ...microLabelSx }} color="text.secondary">
         {label}
       </Typography>
-      <Typography sx={{ ...tabularSx, fontSize: '1.5rem', fontWeight: 700 }}>{value}</Typography>
+      <Typography sx={{ ...tabularSx, fontSize: '1.5rem', fontWeight: 700 }}>
+        {format ? format(value) : value}
+      </Typography>
     </Box>
   );
 }
