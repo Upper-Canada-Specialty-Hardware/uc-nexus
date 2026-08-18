@@ -9,7 +9,7 @@ from typing import Any
 import strawberry
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from graphql import GraphQLError, GraphQLResolveInfo
 from strawberry.extensions import SchemaExtension
 from strawberry.fastapi import GraphQLRouter
@@ -514,3 +514,83 @@ def get_clerk_sign_in_token(request: Request, email: str = "jayp@ucsh.com"):
     token_resp.raise_for_status()
     data = token_resp.json()
     return {"token": data["token"], "url": data.get("url", ""), "user_id": user_id}
+
+
+@app.get("/testing/session")
+def get_testing_session(request: Request, key: str = ""):
+    """The hands-off preview sign-in link (preview-env autonomy plan). Mint a session for the dedicated
+    e2e account and 302 to THIS preview's frontend, already authenticated - the one link a PR's "test
+    environment ready" comment hands an agent, safe to sit in that comment.
+
+    Gated, in order, so a failing gate never leaks how the next one would have answered:
+      1. TESTING_ENABLED - off any deployment that is not a test target.
+      2. is_preview_environment() - a uc-nexus-pr-<N> environment ONLY. Production and local never
+         mint here however their variables are set, and the frontend origin below is only derivable
+         for that name shape.
+      3. sha256(key) == TESTING_SESSION_KEY_HASH, constant-time. The per-env key K that the workflow
+         generated and placed on this backend; the backend stores only the hash, and K itself lives
+         nowhere but the PR comment.
+
+    Then mints a Clerk sign-in ticket for E2E_CLERK_USER_ID and NOTHING else - no email parameter,
+    nothing else selectable here - and redirects with ?__clerk_ticket=<token>. Every visit mints
+    fresh, so the link never goes stale, is never consumed, and survives DevAction resets and
+    redeploys for the environment's whole life. What keeps a leaked link cheap is not this route but
+    the production deny on the account it mints (app/auth._reject_e2e_account_in_production): the worst
+    a leak opens is a disposable preview whose only GP reach is the TUBC sandbox.
+
+    Deliberately NOT the /testing/clerk-sign-in path: that one mints a REAL staff session for an
+    arbitrary email and stays the human fallback, gated on an admin bearer or X-Testing-Secret. No
+    agent flow touches it any more."""
+    import hashlib
+    import hmac
+    import time
+
+    import httpx
+
+    from app.config import (
+        CLERK_SECRET_KEY,
+        E2E_CLERK_USER_ID,
+        TESTING_ENABLED,
+        TESTING_SESSION_KEY_HASH,
+        is_preview_environment,
+        preview_frontend_origin,
+    )
+
+    if not TESTING_ENABLED:
+        return JSONResponse(status_code=403, content={"error": "Testing is not enabled"})
+    if not is_preview_environment():
+        return JSONResponse(
+            status_code=403,
+            content={"error": "This route is available only on a preview environment"},
+        )
+
+    expected_hash = (TESTING_SESSION_KEY_HASH or "").strip().lower()
+    presented = (key or "").strip()
+    key_ok = bool(expected_hash) and bool(presented)
+    if key_ok:
+        digest = hashlib.sha256(presented.encode("utf-8")).hexdigest()
+        key_ok = hmac.compare_digest(digest, expected_hash)
+    if not key_ok:
+        return JSONResponse(status_code=401, content={"error": "Invalid or missing key", "code": "UNAUTHENTICATED"})
+
+    e2e_user_id = (E2E_CLERK_USER_ID or "").strip()
+    if not e2e_user_id:
+        # The key checked out but the environment has no e2e account to mint - a provisioning gap on
+        # this backend, not a caller error. Say so rather than 401-ing, which would read as a bad key.
+        return JSONResponse(
+            status_code=500,
+            content={"error": "E2E_CLERK_USER_ID is not configured on this environment"},
+        )
+
+    # Short expiry: a stale ticket is one navigation away from a fresh one, so nothing is gained by a
+    # long-lived mint sitting in a URL.
+    token_resp = httpx.post(
+        "https://api.clerk.com/v1/sign_in_tokens",
+        headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"},
+        json={"user_id": e2e_user_id, "expires_in_seconds": 300},
+    )
+    token_resp.raise_for_status()
+    token = token_resp.json()["token"]
+
+    destination = f"{preview_frontend_origin()}/?__clerk_ticket={token}&cb={int(time.time())}"
+    return RedirectResponse(url=destination, status_code=302)

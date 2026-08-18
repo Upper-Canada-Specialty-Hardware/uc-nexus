@@ -13,17 +13,21 @@ should cite the code it came from so a reader can check rather than trust.
 empty database, at `https://frontend-uc-nexus-pr-<N>.up.railway.app` and
 `https://backend-uc-nexus-pr-<N>.up.railway.app`. Draft PRs do not get one.
 
-**A fresh environment now configures itself, and the runbook below is mostly history.** Verified end
-to end on pr-558 (2026-08-10) with nothing set on that environment by hand: `relayStatus` came up
-`connected: true` company TUBC, 22 GP projects synced, and `/testing/clerk-sign-in` minted a token.
-Open a PR, wait a couple of minutes, sign in, test. The two pieces that make that true are the relay
-discovering preview environments (below) and the sign-in digest being inherited (runbook step 2);
-both are one-time setup on production and both are already done. Read the rest for what to do when
-one of them is not working, rather than as a checklist to run per PR.
+**A fresh environment now configures itself, and the runbook below is diagnosis, not a checklist.**
+Open a non-draft PR, wait a couple of minutes for the `preview-env` workflow to go green, and it posts
+a "test environment ready" comment whose `/testing/session` link signs you in on `/app` with projects
+present - nothing set by hand. Three pieces make that true, all one-time setup already done on
+production: the `preview-env` workflow guarantees Postgres + backend + frontend are all built and mints
+the per-env sign-in key (`.github/workflows/preview-env.yml`, preview-env autonomy plan); the relay
+discovers preview environments (below); and GP job sync then adopts the projects. Verified self-config
+end to end on pr-558 (2026-08-10): `relayStatus` `connected: true` company TUBC, 22 GP projects synced.
+Read the rest for what to do when a piece is not working - a red `preview-env` check above all - rather
+than as steps to run per PR.
 
-For signing in (`/testing/clerk-sign-in`, `TESTING_ENABLED`, the `X-Testing-Secret` header) see
-the Environment and Getting Started sections of [CLAUDE.md](CLAUDE.md) - the runbook below refers to
-them rather than restating them.
+For signing in, the agent path is the `/testing/session` link in that comment (it mints a dedicated
+e2e account and needs no secret from you). The human `/testing/clerk-sign-in` fallback, `TESTING_ENABLED`
+and the `X-Testing-Secret` header are in the Environment and Getting Started sections of
+[CLAUDE.md](CLAUDE.md); the runbook below refers to them rather than restating them.
 
 ## The relay is on another machine. Never stand one up locally
 
@@ -166,15 +170,18 @@ step here has failed silently at least once.
    Services inside it are `backend` and `frontend`; the public hostnames are
    `backend-uc-nexus-pr-<N>.up.railway.app`.
    - Signal: `railway environment list --json` lists it, with `meta.prNumber` matching.
-2. **Nothing, if `PREVIEW_TESTING_SIGN_IN_SECRET_HASH` is set on production.** A preview inherits that
-   digest at creation and resolves it automatically, so the sign-in secret works on a brand new
-   environment with nothing set on it. Production itself always resolves to no digest however many of
-   these variables it holds, which is what makes storing it there safe - see the Auth bullet in
-   [CLAUDE.md](CLAUDE.md)'s Environment section for why that matters.
-   - Signal: `GET /testing/clerk-sign-in` with the matching `X-Testing-Secret` answers 200, not 401.
-   - Per-environment override, still supported and still wins: set `TESTING_SIGN_IN_SECRET_HASH` on
-     that backend. Needed only for an environment that predates the inherited variable, or one you
-     deliberately want on its own secret.
+2. **Nothing for the agent sign-in - the `preview-env` workflow provisions it.** On the first run for
+   an environment it generates the per-env key `K`, sets `TESTING_SESSION_KEY_HASH` on that backend,
+   and puts the `/testing/session?key=<K>` link in the "test environment ready" comment. Navigate that
+   link; it mints the dedicated e2e account (refused on production) and needs no secret from you.
+   Requires `E2E_CLERK_USER_ID` on the production backend so previews inherit it - one-time setup.
+   - Signal: `GET /testing/session?key=<K>` 302s to the frontend; a wrong key answers 401.
+   - The human fallback below is the `/testing/clerk-sign-in` secret path, only for a red `preview-env`
+     check: `PREVIEW_TESTING_SIGN_IN_SECRET_HASH` on production is inherited by every preview, so
+     `GET /testing/clerk-sign-in` with the matching `X-Testing-Secret` answers 200; production resolves
+     to no digest however many of these variables it holds, which is what makes storing it there safe.
+     Per-environment override, still supported and still wins: set `TESTING_SIGN_IN_SECRET_HASH` on
+     that backend, for an environment that predates the inherited variable or wants its own secret.
 3. **`RELAY_SEED_SECRET_HASH` on that same backend**, so the relay's handshake is accepted rather than
    refused 4403. Usually inherited at environment creation; set it by hand if the environment predates
    the variable.

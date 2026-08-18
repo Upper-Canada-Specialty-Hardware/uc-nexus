@@ -1,0 +1,361 @@
+name: preview-env
+
+# Hands off a fully built, signed-in-ready test environment for every non-draft PR (preview-env
+# autonomy plan; closes #607 #601 #600 #598). Two failure modes it closes:
+#
+#   1. Railway's focused PR deploys skip a service whose directory the PR did not touch, and a
+#      relay-only / docs-only PR leaves the whole environment unbuilt, Postgres included. This
+#      force-deploys any service with no successful deployment in the environment - Postgres, then the
+#      backend (after Postgres accepts connections), then the frontend.
+#   2. Signing in used to need a mint with a secret no agent could hold. This provisions a per-env key
+#      K for GET /testing/session and puts the sign-in link in one sticky PR comment. The link mints
+#      the dedicated e2e account, which production refuses (app/auth._reject_e2e_account_in_production),
+#      so it is safe to sit in a public comment.
+#
+# The workflow only ever ADDS deploys: when Railway built a service itself this push, it has a success
+# in history and this just health-checks it. Everything runs against the Railway public GraphQL API
+# (backboard) - the CLI's redeploy cannot create a FIRST deployment for a never-built service, which is
+# exactly the SKIPPED case here.
+#
+# One-time ops outside any PR (not created by this workflow):
+#   - repo secret RAILWAY_WORKSPACE_TOKEN: a Railway WORKSPACE token (a project token authenticates
+#     with a different header and sees one environment only, so it cannot list siblings or deploy them).
+#   - repo variable RAILWAY_PROJECT_ID: the UC Nexus Railway project id.
+#   - a dedicated e2e Clerk user, Admin/Manager in its publicMetadata, with E2E_CLERK_USER_ID set on
+#     the PRODUCTION backend so every preview inherits it.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# One run per PR; a newer push cancels an in-flight run so two never race on the same environment,
+# variable, or sticky comment.
+concurrency:
+  group: preview-env-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  preview-env:
+    name: Build and hand off the PR test environment
+    runs-on: ubuntu-latest
+    # Drafts get no Railway environment (prDeploys skips them), and bot PRs (dependabot) are excluded
+    # from PR deploys too - so there would be nothing to build or sign into.
+    if: github.event.pull_request.draft == false && github.event.pull_request.user.type != 'Bot'
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_WORKSPACE_TOKEN }}
+      RAILWAY_API_URL: https://backboard.railway.com/graphql/v2
+      PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+      PR: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Resolve, build, verify, and hand off
+        shell: bash
+        run: |
+          # -e is on by default under Actions; turn it off so this script controls its own flow and a
+          # tolerated failure (a poll that is not ready yet, a transient API blip) does not abort it.
+          set +e -o pipefail
+
+          if [ -z "${RAILWAY_TOKEN}" ]; then
+            echo "::error::RAILWAY_WORKSPACE_TOKEN secret is not set on this repository"; exit 1
+          fi
+          if [ -z "${PROJECT_ID}" ]; then
+            echo "::error::RAILWAY_PROJECT_ID variable is not set on this repository"; exit 1
+          fi
+
+          ENV_NAME="uc-nexus-pr-${PR}"
+          BACKEND_URL="https://backend-${ENV_NAME}.up.railway.app"
+          FRONTEND_URL="https://frontend-${ENV_NAME}.up.railway.app"
+          MARKER="<!-- preview-env-ready -->"
+
+          # --- Railway GraphQL helper --------------------------------------------------------------
+          # rgql <query> <variables-json> -> prints .data on success, returns 1 on transport or API
+          # error (so callers can retry a poll or hard-fail a one-shot).
+          rgql() {
+            local q="$1" v="$2" resp body
+            body=$(jq -cn --arg q "$q" --argjson v "$v" '{query:$q, variables:$v}') || return 1
+            resp=$(curl -sS -X POST "$RAILWAY_API_URL" \
+              -H "Authorization: Bearer $RAILWAY_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$body") || return 1
+            if printf '%s' "$resp" | jq -e 'has("errors") and (.errors|length>0)' >/dev/null 2>&1; then
+              printf 'Railway API error: %s\n' "$(printf '%s' "$resp" | jq -c '.errors')" >&2
+              return 1
+            fi
+            printf '%s' "$resp" | jq -c '.data'
+          }
+
+          # --- 1. resolve the environment (poll up to ~3min) ---------------------------------------
+          ENV_QUERY='query($id:String!){ environments(projectId:$id){ edges{ node{ id name } } } }'
+          ENV_VARS=$(jq -cn --arg id "$PROJECT_ID" '{id:$id}')
+          ENV_ID=""
+          for i in $(seq 1 18); do
+            data=$(rgql "$ENV_QUERY" "$ENV_VARS") || { echo "  Railway API not answering yet ($i/18)"; sleep 10; continue; }
+            ENV_ID=$(printf '%s' "$data" | jq -r --arg n "$ENV_NAME" '[.environments.edges[]?|select(.node.name==$n)|.node.id][0] // empty')
+            [ -n "$ENV_ID" ] && break
+            echo "waiting for Railway environment $ENV_NAME to exist ($i/18)"
+            sleep 10
+          done
+          if [ -z "$ENV_ID" ]; then
+            echo "::error::Railway environment $ENV_NAME never appeared within 3 minutes. Confirm prDeploys is enabled on the UC Nexus Railway project settings and that this PR is not a draft."
+            exit 1
+          fi
+          echo "environment $ENV_NAME -> $ENV_ID"
+
+          # Brief settle so Railway's OWN deploys for this push register as QUEUED/BUILDING before the
+          # facts read below - otherwise a service Railway is about to build (a fresh PR) reads as
+          # never-built-and-idle and gets a duplicate force-deploy. A service Railway will not build
+          # (unchanged on a docs-only PR) already carries its SKIPPED record here, so this does not hide
+          # the case this workflow exists to fix.
+          sleep 25
+
+          # --- 2. resolve service ids by name ------------------------------------------------------
+          SVC_QUERY='query($id:String!){ project(id:$id){ services{ edges{ node{ id name } } } } }'
+          svc_data=$(rgql "$SVC_QUERY" "$ENV_VARS") || { echo "::error::could not list Railway services"; exit 1; }
+          svc_id() { printf '%s' "$svc_data" | jq -r --arg n "$1" '[.project.services.edges[]?|select(.node.name==$n)|.node.id][0] // empty'; }
+          PG_ID=$(svc_id "Postgres"); BE_ID=$(svc_id "backend"); FE_ID=$(svc_id "frontend")
+          for pair in "Postgres=$PG_ID" "backend=$BE_ID" "frontend=$FE_ID"; do
+            if [ -z "${pair#*=}" ]; then echo "::error::Railway service '${pair%%=*}' not found in the project"; exit 1; fi
+          done
+          echo "services: Postgres=$PG_ID backend=$BE_ID frontend=$FE_ID"
+
+          # --- deployment facts per service --------------------------------------------------------
+          # "<hasSuccess> <inFlight>": hasSuccess = a SUCCESS in the recent window; inFlight = the latest
+          # deployment is still working. needs-force-deploy = no success AND nothing in flight. The
+          # inFlight half (latest of ALL statuses) keeps this from stomping a build Railway - or the
+          # variable change below - already started.
+          # first:100 not first:5, and not the status.successfulOnly filter (the API rejects that shape):
+          # Railway appends a SKIPPED record per push for unchanged services, so a small window would let
+          # a once-force-built service's SUCCESS scroll out after enough pushes and get pointlessly
+          # rebuilt. 100 is ~100 pushes of headroom - effectively never for one PR.
+          DEP_QUERY='query($input:DeploymentListInput!,$first:Int){ deployments(input:$input,first:$first){ edges{ node{ id status createdAt } } } }'
+          deploy_facts() {
+            local sid="$1" input data has infl
+            input=$(jq -cn --arg p "$PROJECT_ID" --arg s "$sid" --arg e "$ENV_ID" '{projectId:$p,serviceId:$s,environmentId:$e}')
+            data=$(rgql "$DEP_QUERY" "$(jq -cn --argjson input "$input" '{input:$input,first:100}')") || return 1
+            has=$(printf '%s' "$data" | jq -r '[.deployments.edges[]?.node.status]|any(.=="SUCCESS")')
+            infl=$(printf '%s' "$data" | jq -r '(.deployments.edges[0].node.status // "NONE") as $s | (["BUILDING","DEPLOYING","QUEUED","WAITING","INITIALIZING","NEEDS_APPROVAL"]|any(.==$s))')
+            printf '%s %s' "$has" "$infl"
+          }
+          pg_facts=$(deploy_facts "$PG_ID") || { echo "::error::could not read Postgres deployments"; exit 1; }
+          be_facts=$(deploy_facts "$BE_ID") || { echo "::error::could not read backend deployments"; exit 1; }
+          fe_facts=$(deploy_facts "$FE_ID") || { echo "::error::could not read frontend deployments"; exit 1; }
+          read PG_HAS PG_INFL <<<"$pg_facts"
+          read BE_HAS BE_INFL <<<"$be_facts"
+          read FE_HAS FE_INFL <<<"$fe_facts"
+          echo "deploy facts: Postgres(success=$PG_HAS inflight=$PG_INFL) backend(success=$BE_HAS inflight=$BE_INFL) frontend(success=$FE_HAS inflight=$FE_INFL)"
+
+          # --- 3. provision the session capability -------------------------------------------------
+          # K lives nowhere but the PR comment (the verifier-not-credential shape every testing var
+          # uses). So: reuse K out of the existing sticky comment when there is one, and only generate a
+          # fresh K on the true first run. If the comment carries K but the backend does not carry its
+          # hash - a PR that was reopened onto a fresh environment - re-provision so the old link keeps
+          # working.
+          BE_RETRY_ELIGIBLE=false
+          upsert_key_hash() {  # $1 = sha256 hex of K
+            # When the backend has never built, skip the auto-redeploy: the ordered pass below builds it
+            # AFTER Postgres, with the variable already set. When it has, redeploy now so the new hash
+            # takes effect, and let the readiness wait absorb it.
+            local skip="true"; [ "$BE_HAS" = "true" ] && skip="false"
+            local vin
+            vin=$(jq -cn --arg p "$PROJECT_ID" --arg e "$ENV_ID" --arg s "$BE_ID" --arg val "$1" --argjson skip "$skip" \
+              '{input:{projectId:$p,environmentId:$e,serviceId:$s,name:"TESTING_SESSION_KEY_HASH",value:$val,skipDeploys:$skip}}')
+            rgql 'mutation($input:VariableUpsertInput!){ variableUpsert(input:$input) }' "$vin" >/dev/null \
+              || { echo "::error::failed to set TESTING_SESSION_KEY_HASH on the backend service"; exit 1; }
+            if [ "$skip" = "false" ]; then
+              echo "variable change triggered a backend redeploy; the readiness wait will absorb it"
+              BE_INFL="true"; BE_RETRY_ELIGIBLE=true; sleep 15
+            fi
+          }
+
+          existing_body=$(gh api "repos/${REPO}/issues/${PR}/comments" --paginate \
+            --jq ".[] | select(.body|contains(\"$MARKER\")) | .body" 2>/dev/null)
+          K=$(printf '%s' "$existing_body" | grep -oE 'session\?key=[A-Za-z0-9_-]+' | head -1 | sed 's/.*key=//')
+          if [ -n "$K" ]; then
+            KHASH=$(printf '%s' "$K" | sha256sum | cut -d' ' -f1)
+            cur=$(rgql 'query($p:String!,$e:String!,$s:String!){ variables(projectId:$p,environmentId:$e,serviceId:$s) }' \
+              "$(jq -cn --arg p "$PROJECT_ID" --arg e "$ENV_ID" --arg s "$BE_ID" '{p:$p,e:$e,s:$s}')" \
+              | jq -r '.variables.TESTING_SESSION_KEY_HASH // ""')
+            if [ "$cur" != "$KHASH" ]; then
+              echo "backend is missing this environment's session key hash; re-provisioning it"
+              upsert_key_hash "$KHASH"
+            else
+              echo "reusing the session key from the existing comment; backend already carries its hash"
+            fi
+          else
+            echo "no session key on this PR yet; generating one and provisioning the backend"
+            K=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+            KHASH=$(printf '%s' "$K" | sha256sum | cut -d' ' -f1)
+            upsert_key_hash "$KHASH"
+          fi
+
+          # --- decide which services need a force-deploy (after provisioning, so a var-triggered ----
+          # backend redeploy already reads as in flight and is not triggered twice) ------------------
+          PG_DEPLOY=false; BE_DEPLOY=false; FE_DEPLOY=false
+          [ "$PG_HAS" = "false" ] && [ "$PG_INFL" = "false" ] && PG_DEPLOY=true
+          [ "$BE_HAS" = "false" ] && [ "$BE_INFL" = "false" ] && BE_DEPLOY=true
+          [ "$FE_HAS" = "false" ] && [ "$FE_INFL" = "false" ] && FE_DEPLOY=true
+          [ "$BE_DEPLOY" = "true" ] && BE_RETRY_ELIGIBLE=true
+
+          # --- 4. force-deploy what Railway skipped, in order --------------------------------------
+          TRIGGER='mutation($input:EnvironmentTriggersDeployInput!){ environmentTriggersDeploy(input:$input) }'
+          trigger_deploy() {  # $1 = service id
+            local tin
+            tin=$(jq -cn --arg e "$ENV_ID" --arg p "$PROJECT_ID" --arg s "$1" '{input:{environmentId:$e,projectId:$p,serviceId:$s}}')
+            rgql "$TRIGGER" "$tin" >/dev/null || { echo "::error::failed to trigger a deploy for service $1"; exit 1; }
+          }
+          wait_deploy_success() {  # $1 service id, $2 label, $3 timeout seconds -> 0 on SUCCESS
+            local sid="$1" label="$2" timeout="$3" waited=0 status input
+            input=$(jq -cn --arg p "$PROJECT_ID" --arg s "$sid" --arg e "$ENV_ID" '{projectId:$p,serviceId:$s,environmentId:$e}')
+            while [ "$waited" -lt "$timeout" ]; do
+              status=$(rgql "$DEP_QUERY" "$(jq -cn --argjson input "$input" '{input:$input,first:1}')" \
+                | jq -r '.deployments.edges[0].node.status // "NONE"')
+              echo "  $label deployment: ${status:-UNKNOWN} (${waited}s)"
+              case "$status" in
+                SUCCESS) return 0 ;;
+                FAILED|CRASHED|REMOVED) return 1 ;;
+              esac
+              sleep 15; waited=$((waited+15))
+            done
+            return 1
+          }
+
+          if [ "$PG_DEPLOY" = "true" ]; then
+            echo "Postgres has no successful deployment; deploying it"
+            trigger_deploy "$PG_ID"
+            if wait_deploy_success "$PG_ID" "Postgres" 360; then
+              echo "Postgres up; settling ~40s before the backend so it does not fire ahead of Postgres accepting connections"
+              sleep 40
+            else
+              echo "::warning::Postgres deployment did not reach SUCCESS in time; continuing (the backend gets one retry if it dies on DB connect)"
+            fi
+          fi
+          if [ "$BE_DEPLOY" = "true" ]; then
+            echo "backend has no successful deployment; deploying it"
+            trigger_deploy "$BE_ID"
+          fi
+          if [ "$FE_DEPLOY" = "true" ]; then
+            echo "frontend has no successful deployment; deploying it"
+            trigger_deploy "$FE_ID"
+          fi
+
+          # --- 5. wait for ready -------------------------------------------------------------------
+          SIGN_IN="${BACKEND_URL}/testing/session?key=${K}"
+          # /testing/session answers 302 (mint + redirect) only when the key hash is live on the
+          # RUNNING backend AND the Clerk mint works, so this probe - not /health - is what proves the
+          # handed-out link actually works. No -L, so the minted ticket is discarded. 000 on transport error.
+          signin_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$SIGN_IN" || echo 000; }
+
+          wait_http_200() {  # $1 url, $2 label, $3 timeout -> 0 on first 200
+            local url="$1" label="$2" timeout="$3" waited=0 code
+            while [ "$waited" -lt "$timeout" ]; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$url" || echo 000)
+              if [ "$code" = "200" ]; then echo "  $label 200 (${waited}s)"; return 0; fi
+              echo "  $label -> $code (${waited}s)"
+              sleep 15; waited=$((waited+15))
+            done
+            return 1
+          }
+
+          BACKEND_READY=false
+          # Generous ceiling: a cold build plus alembic migrations on boot (healthcheckTimeout is 300s).
+          if wait_http_200 "$BACKEND_URL/health" "backend /health" 600; then
+            BACKEND_READY=true
+          elif [ "$BE_RETRY_ELIGIBLE" = "true" ]; then
+            echo "backend not healthy and it was (re)deployed this run; retrying it once (the Postgres-connection-timeout trap)"
+            trigger_deploy "$BE_ID"
+            wait_http_200 "$BACKEND_URL/health" "backend /health (retry)" 600 && BACKEND_READY=true
+          fi
+
+          FRONTEND_READY=false
+          wait_http_200 "$FRONTEND_URL/" "frontend /" 420 && FRONTEND_READY=true
+
+          GQL_READY=false; SIGNIN_READY=false
+          gql_probe() { curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST "$BACKEND_URL/graphql" \
+              -H 'Content-Type: application/json' --data '{"query":"{ __typename }"}' || echo 000; }
+          # POLL for the sign-in 302, do not probe once. A variable-change redeploy keeps serving the OLD
+          # instance - which lacks the just-set key hash, so /testing/session 401s - until the new deploy
+          # cuts over, and /health returns 200 the whole time (from that old instance). A single probe
+          # therefore races the rollout and reads 401 against a backend that is minutes from being right.
+          wait_signin_302() {  # $1 timeout seconds -> 0 once the sign-in link answers 302
+            local timeout="$1" waited=0 code
+            while [ "$waited" -lt "$timeout" ]; do
+              code=$(signin_code)
+              if [ "$code" = "302" ]; then echo "  sign-in 302 (${waited}s)"; return 0; fi
+              echo "  sign-in -> $code (${waited}s)"
+              sleep 15; waited=$((waited+15))
+            done
+            return 1
+          }
+          if [ "$BACKEND_READY" = "true" ]; then
+            gcode=$(gql_probe); echo "graphql probe -> $gcode"; [ "$gcode" = "200" ] && GQL_READY=true
+            # Wait out the key-hash redeploy's cutover. If 302 never lands, redeploy once - covers the
+            # first-run race where an in-flight build snapshotted its vars before the upsert - and wait
+            # again. On the reuse path (backend already carries the hash) the first poll 302s at 0s.
+            if wait_signin_302 420; then
+              SIGNIN_READY=true
+            else
+              echo "sign-in link never reached 302; redeploying the backend once and waiting again"
+              trigger_deploy "$BE_ID"
+              wait_http_200 "$BACKEND_URL/health" "backend /health (key-apply retry)" 600 >/dev/null || true
+              wait_signin_302 420 && SIGNIN_READY=true
+            fi
+            # Re-probe graphql against whatever instance is now live, so a cutover mid-run is reflected.
+            gcode=$(gql_probe); echo "graphql probe (final) -> $gcode"; { [ "$gcode" = "200" ] && GQL_READY=true; } || GQL_READY=false
+          fi
+
+          # --- 6. post or update the one sticky comment --------------------------------------------
+          body_file="${RUNNER_TEMP}/preview-comment.md"
+          if [ "$BACKEND_READY" = "true" ] && [ "$FRONTEND_READY" = "true" ] && [ "$GQL_READY" = "true" ] && [ "$SIGNIN_READY" = "true" ]; then
+            {
+              echo "$MARKER"
+              echo "test environment ready"
+              echo ""
+              echo "sign in (navigate once, lands on /app as the e2e account, projects present):"
+              echo "$SIGN_IN"
+              echo ""
+              echo "frontend $FRONTEND_URL"
+              echo "backend $BACKEND_URL"
+            } > "$body_file"
+            READY=true
+          else
+            {
+              echo "$MARKER"
+              echo "test environment: not fully ready"
+              echo ""
+              echo "the preview-env workflow could not confirm the environment is fully up:"
+              echo "backend healthy: $BACKEND_READY"
+              echo "frontend healthy: $FRONTEND_READY"
+              echo "graphql answering: $GQL_READY"
+              echo "sign-in link answering (302): $SIGNIN_READY"
+              echo ""
+              echo "check the Railway deploy logs for the backend and Postgres services on $ENV_NAME; the manual redeploy steps are in the testing runbook. the sign-in link works once it recovers:"
+              echo "$SIGN_IN"
+              echo ""
+              echo "frontend $FRONTEND_URL"
+              echo "backend $BACKEND_URL"
+            } > "$body_file"
+            READY=false
+          fi
+
+          CID=$(gh api "repos/${REPO}/issues/${PR}/comments" --paginate \
+            --jq ".[] | select(.body|contains(\"$MARKER\")) | .id" 2>/dev/null | head -1)
+          payload=$(jq -cn --rawfile body "$body_file" '{body:$body}')
+          if [ -n "$CID" ]; then
+            printf '%s' "$payload" | gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" --input - >/dev/null \
+              && echo "updated sticky comment $CID"
+          else
+            printf '%s' "$payload" | gh api --method POST "repos/${REPO}/issues/${PR}/comments" --input - >/dev/null \
+              && echo "posted sticky comment"
+          fi
+
+          if [ "$READY" != "true" ]; then
+            echo "::error::the PR test environment did not come up fully (backend=$BACKEND_READY frontend=$FRONTEND_READY graphql=$GQL_READY signin=$SIGNIN_READY)"
+            exit 1
+          fi
+          echo "test environment ready: $SIGN_IN"
