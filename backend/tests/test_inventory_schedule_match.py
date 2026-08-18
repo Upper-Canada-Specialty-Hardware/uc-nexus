@@ -281,3 +281,40 @@ def test_availability_resolver_carries_the_classification(db_session, monkeypatc
     rows = WarehouseQueries().project_inventory_availability(None, project_id=str(project.id))
     by_combo = {(r.hardware_category, r.product_code): r.classification for r in rows}
     assert by_combo[("Hinge", "BB1279")] == Classification.SHOP_HARDWARE
+
+
+# --- the batched multi-project variant + the combo cost resolver --------------------------------
+
+
+def test_bulk_scheduled_classifications_matches_the_single_project_read(db_session):
+    p1 = _make_project(db_session)
+    p2 = _make_project(db_session)
+    _add_schedule_item(db_session, p1, category="Hinge", code="BB1279", classification=Classification.SITE_HARDWARE)
+    _add_schedule_item(db_session, p2, category="Lock", code="L9080", classification=Classification.SHOP_HARDWARE)
+
+    bulk = warehouse_repository.get_scheduled_classifications_for_projects(db_session, [p1.id, p2.id])
+
+    assert bulk[p1.id] == warehouse_repository.get_scheduled_classifications(db_session, p1.id)
+    assert bulk[p2.id] == warehouse_repository.get_scheduled_classifications(db_session, p2.id)
+    assert warehouse_repository.get_scheduled_classifications_for_projects(db_session, []) == {}
+
+
+def test_resolve_project_combo_cost_prefers_the_newest_row_over_the_schedule(db_session):
+    from decimal import Decimal
+
+    from app.models.hardware import HardwareItem as HI
+
+    project = _make_project(db_session)
+    _add_schedule_item(db_session, project, category="Hinge", code="BB1279")
+    db_session.query(HI).filter_by(project_id=project.id).update({"unit_cost": Decimal("9")})
+    _add_inventory(db_session, project, category="Hinge", code="BB1279")
+    db_session.query(InventoryLocation).filter_by(project_id=project.id).update({"unit_cost": Decimal("4")})
+
+    cost = warehouse_repository.resolve_project_combo_cost(db_session, project.id, "Hinge", "BB1279")
+    assert cost == Decimal("4")
+
+
+def test_resolve_project_combo_cost_is_none_when_nothing_knows_a_price(db_session):
+    project = _make_project(db_session)
+    _add_schedule_item(db_session, project, category="Hinge", code="BB1279")
+    assert warehouse_repository.resolve_project_combo_cost(db_session, project.id, "Hinge", "BB1279") is None

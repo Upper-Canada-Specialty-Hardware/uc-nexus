@@ -403,6 +403,74 @@ def test_unit_cost_travels_onto_the_project_row(db_session):
     assert il.unit_cost == Decimal("6")
 
 
+def test_project_entries_price_by_their_own_cost_not_the_pool_first_cost(db_session):
+    """Two same-shelf entries merge into ONE pool row that keeps the first cost; each project's
+    units must still carry their own entry's cost, whichever landed first."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    p1 = _make_project(db_session)
+    p2 = _make_project(db_session)
+    migration_repo.migrate_inventory(
+        db_session,
+        [
+            _entry(wh, destination="PROJECT", project_id=p1.id, quantity=2, unit_cost=4),
+            _entry(wh, destination="PROJECT", project_id=p2.id, quantity=3, unit_cost=9),
+        ],
+        ACTOR,
+    )
+    il1 = db_session.query(InventoryLocation).filter_by(project_id=p1.id).one()
+    il2 = db_session.query(InventoryLocation).filter_by(project_id=p2.id).one()
+    assert il1.unit_cost == Decimal("4")
+    assert il2.unit_cost == Decimal("9")
+
+
+def test_an_empty_pool_row_forgets_its_migration_cost(db_session):
+    """A drained pool row's cost describes units that are gone. The next receipt into that shelf
+    (a stock PO passes no cost) must not inherit the stale migration price."""
+    from datetime import datetime
+
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    project = _make_project(db_session)
+    migration_repo.migrate_inventory(
+        db_session,
+        [_entry(wh, destination="PROJECT", project_id=project.id, quantity=2, unit_cost=4)],
+        ACTOR,
+    )
+    il = db_session.query(InventoryLocation).filter_by(project_id=project.id).one()
+    drained = db_session.get(StockItem, il.stock_item_id)
+    assert drained.quantity == 0
+
+    refilled = stock_repository.receive_into_stock(
+        db_session,
+        warehouse_id=wh,
+        hardware_category=CAT,
+        product_code=CODE,
+        quantity=5,
+        deficient_quantity=0,
+        aisle="A",
+        row="62",
+        bay="R",
+        received_at=datetime.utcnow(),
+        received_by=ACTOR,
+        po_number="PO-1",
+    )
+    assert refilled.id == drained.id
+    assert refilled.unit_cost is None
+
+
+def test_an_over_large_unit_cost_is_a_named_validation_error(db_session):
+    """The cost columns are Numeric(10, 4); without the check this dies at flush as a raw 500."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    with pytest.raises(ValidationError) as e:
+        migration_repo.migrate_inventory(db_session, [_entry(wh, unit_cost=1234567.89)], ACTOR)
+    assert "Entry 1" in e.value.message and "unit_cost" in e.value.message
+
+
+def test_clean_unit_cost_rejects_non_finite_values():
+    """Decimal('nan') parses; comparing it raises. The finite check has to come first."""
+    assert migration_repo._clean_unit_cost("nan") is None
+    assert migration_repo._clean_unit_cost("inf") is None
+
+
 def test_cost_carries_back_through_destock(db_session):
     """A destocked migrated unit keeps its value: the pool row it lands on picks up the row's cost."""
     wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
@@ -553,6 +621,101 @@ def test_marking_covers_every_row_when_the_quantity_fits(db_session):
     assert hi2.state == HardwareItemState.IN_PO
 
 
+def test_marking_skips_an_overflowing_row_and_marks_the_later_fit(db_session):
+    """Quantities 3, 3, 1 against N=4: the second row overflows and is skipped, the third still fits.
+    A `break` there under-marked coverage whenever a large row preceded small ones."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    project = _make_project(db_session)
+    rows = [
+        _make_hi(db_session, project, _make_opening(db_session, project.id, number), quantity=qty)
+        for number, qty in (("A01", 3), ("A02", 3), ("A03", 1))
+    ]
+
+    migration_repo.migrate_inventory(
+        db_session,
+        [_entry(wh, destination="PROJECT", project_id=project.id, quantity=4)],
+        ACTOR,
+    )
+    states = [db_session.get(HardwareItem, hi.id).state for hi in rows]
+    assert states == [HardwareItemState.IN_PO, HardwareItemState.AVAILABLE, HardwareItemState.IN_PO]
+
+
+def test_marks_record_the_coverage_targets(db_session):
+    """The marking would be wiped by a schedule replace; the marks are what lets finalize re-apply it."""
+    from app.models.sharepoint_migration_run import SharepointMigrationMark
+
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    project = _make_project(db_session)
+    _make_hi(db_session, project, _make_opening(db_session, project.id, "A01"), quantity=3)
+
+    migration_repo.migrate_inventory(
+        db_session,
+        [_entry(wh, destination="PROJECT", project_id=project.id, quantity=5)],
+        ACTOR,
+    )
+    mark = db_session.query(SharepointMigrationMark).one()
+    assert (mark.project_id, mark.hardware_category, mark.product_code) == (project.id, CAT, CODE)
+    # The TARGET (what landed on the shelf), not the 3 units the greedy pass happened to cover.
+    assert mark.quantity == 5
+    assert mark.run_id is not None
+
+
+def test_reapply_marks_after_a_schedule_replace(db_session):
+    """replace_schedule wipes every HardwareItem, marking included; the recorded target re-marks the
+    regenerated rows so the project does not read as never-purchased again."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    project = _make_project(db_session)
+    o1 = _make_opening(db_session, project.id, "A01")
+    old = _make_hi(db_session, project, o1, quantity=3)
+
+    migration_repo.migrate_inventory(
+        db_session,
+        [_entry(wh, destination="PROJECT", project_id=project.id, quantity=3)],
+        ACTOR,
+    )
+    assert db_session.get(HardwareItem, old.id).state == HardwareItemState.IN_PO
+
+    # The replace: every row wiped, the new schedule's rows arrive AVAILABLE.
+    db_session.delete(old)
+    db_session.flush()
+    new = _make_hi(db_session, project, o1, quantity=3)
+
+    remarked = migration_repo.reapply_migration_marks(db_session, project.id)
+    assert remarked == 1
+    assert db_session.get(HardwareItem, new.id).state == HardwareItemState.IN_PO
+    # Idempotent: the surviving marked rows already cover the target, so a second pass marks nothing.
+    assert migration_repo.reapply_migration_marks(db_session, project.id) == 0
+
+
+def test_reapply_is_a_no_op_without_marks(db_session):
+    project = _make_project(db_session)
+    assert migration_repo.reapply_migration_marks(db_session, project.id) == 0
+
+
+def test_reconcile_counts_marked_rows_as_received(db_session):
+    """The recon inner join through po_line_item_id never sees a null-linked IN_PO row, so migrated
+    coverage read as NOT_COVERED, got auto-selected on a PO re-import, and a real PO was drafted for
+    units already on the shelf."""
+    from app.repositories import import_repository
+
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    project = _make_project(db_session)
+    _make_hi(db_session, project, _make_opening(db_session, project.id, "A01"), quantity=4)
+    migration_repo.migrate_inventory(
+        db_session,
+        [_entry(wh, destination="PROJECT", project_id=project.id, quantity=4)],
+        ACTOR,
+    )
+
+    results = import_repository.reconcile_schedule(
+        db_session,
+        project.id,
+        [{"opening_number": "A01", "hardware_category": CAT, "product_code": CODE, "quantity_needed": 4}],
+    )
+    by_status = {r["status"]: r["quantity"] for r in results}
+    assert by_status == {"RECEIVED": 4}
+
+
 def test_marking_is_ordered_by_opening_number(db_session):
     """Deterministic order (opening_number, id): the lower opening is the one that gets covered."""
     wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
@@ -577,10 +740,10 @@ def test_marking_is_ordered_by_opening_number(db_session):
 # --- the light schedule-products query the wizard snaps + classifies from ------------------------
 
 
-def test_project_schedule_products_returns_the_dominant_category_and_classification(db_session):
-    """A code split across categories snaps to the category covering the most units, with its
-    dominant classification - so the wizard's snapped (category, code) matches what the backend
-    marks and classifies against."""
+def test_project_schedule_products_returns_every_category_pair(db_session):
+    """A code split across categories is EVERY pair, not one dominant winner - collapsing left the
+    minority pair's rows unmarked and unclassified. Classification is dominant WITHIN each pair, and
+    required_quantity is the pair's units (the wizard's split budget), largest pair first."""
     project = _make_project(db_session)
     o1 = _make_opening(db_session, project.id, "A01")
     o2 = _make_opening(db_session, project.id, "A02")
@@ -594,11 +757,11 @@ def test_project_schedule_products_returns_the_dominant_category_and_classificat
     )
 
     rows = warehouse_repository.get_project_schedule_products(db_session, [project.id])
-    by_code = {(r["project_id"], r["product_code"]): r for r in rows}
-    row = by_code[(project.id, "X-1")]
-    # Hinge covers 6 units vs Lock's 2, so it wins; SITE covers 5 of the 6 Hinge units, so it wins.
-    assert row["hardware_category"] == "Hinge"
-    assert row["classification"] == Classification.SITE_HARDWARE
+    pairs = [(r["hardware_category"], r["classification"], r["required_quantity"]) for r in rows]
+    assert pairs == [
+        ("Hinge", Classification.SITE_HARDWARE, 6),  # SITE covers 5 of the 6 Hinge units
+        ("Lock", Classification.SHOP_HARDWARE, 2),
+    ]
 
 
 def test_project_schedule_products_is_empty_for_no_projects(db_session):

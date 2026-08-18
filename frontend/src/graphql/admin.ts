@@ -151,6 +151,7 @@ export const GET_HARDWARE_STATUS_BY_PRODUCT = gql`
       sentToShop
       stagedForShipping
       shippedOut
+      returnedToProject
     }
   }
 `;
@@ -459,6 +460,7 @@ export const GET_PROJECT_SCHEDULE_PRODUCTS = gql`
       hardwareCategory
       productCode
       classification
+      requiredQuantity
     }
   }
 `;

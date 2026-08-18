@@ -1436,8 +1436,10 @@ class WarehouseDashboard:
     total_item_count: int
     total_value: float
     unlocated_count: int
-    # Stock pool: units on hand and rows with no aisle. No value - StockItem has no unit cost.
+    # Stock pool: units on hand, their off-PO value (migrated stock carries its own unit cost;
+    # PO-received pool stock counts 0), and rows with no aisle.
     stock_item_count: int
+    stock_value: float
     stock_unlocated_count: int
     pending_pull_shop: int
     pending_pull_shipping: int
@@ -1478,7 +1480,11 @@ class HardwareStatusByProduct:
     on_hand: int
     sent_to_shop: int
     staged_for_shipping: int
+    # Gross packing-slip exits; returns never decrement it.
     shipped_out: int
+    # RETURN_TO_PROJECT shipment-return units: back in on_hand while still inside the gross
+    # shipped_out, so a reader summing "where the units are" must subtract this once.
+    returned_to_project: int
 
 
 @strawberry.type
@@ -1524,6 +1530,8 @@ class StockItem:
     quantity: int
     deficient_quantity: int
     available: int
+    # Off-PO cost per unit (the SharePoint migration writes it; a PO-received pool row carries none).
+    unit_cost: float | None
     aisle: str | None
     row: str | None
     bay: str | None
@@ -1740,16 +1748,18 @@ class SharepointInventorySnapshot:
 
 @strawberry.type
 class ProjectScheduleProduct:
-    """One schedule product of a project, for the migration wizard's category snap + classification step.
+    """One schedule (category, code) PAIR of a project, for the migration wizard's snap + classification.
 
-    `hardware_category` is the schedule's dominant category for this product code - what a matched
-    migrated row snaps to so it becomes claimable. `classification` is the dominant Site/Shop value,
+    One row per pair, NOT one per code: a code split across categories is several pairs, and the
+    wizard splits the migrated quantity across them by `required_quantity` so the minority pair's
+    rows still get marked and classified. `classification` is the pair's dominant Site/Shop value,
     or null where the schedule never classified it (the step asks for a pick there)."""
 
     project_id: strawberry.ID
     hardware_category: str
     product_code: str
     classification: Classification | None
+    required_quantity: int
 
 
 @strawberry.type

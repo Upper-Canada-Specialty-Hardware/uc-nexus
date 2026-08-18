@@ -34,7 +34,7 @@ from .receive_decision import ReceiveDecision  # noqa: E402, F401
 from .receive_draft import ReceiveDraft, ReceiveDraftLineItem  # noqa: E402, F401
 from .receiving import ReceiveLineItem, ReceiveRecord  # noqa: E402, F401
 from .relay_install import RelayInstall  # noqa: E402, F401
-from .sharepoint_migration_run import SharepointMigrationRun  # noqa: E402, F401
+from .sharepoint_migration_run import SharepointMigrationMark, SharepointMigrationRun  # noqa: E402, F401
 from .shipment_container import (  # noqa: E402, F401
     ShipmentContainer,
     ShipmentContainerItem,

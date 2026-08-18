@@ -51,6 +51,7 @@ function status(overrides: Partial<HardwareStatusRow>): Map<string, HardwareStat
     onOrder: 0,
     receivedQuantity: 0,
     onHand: 0,
+    returnedToProject: 0,
     sentToShop: 0,
     stagedForShipping: 0,
     shippedOut: 0,
@@ -301,6 +302,30 @@ it('leaves a normal PO project unchanged: received equals where-the-units-are-no
   });
 
   expect(row.existingCommitted).toBe(40);
+});
+
+it('a return to project does not double-count into committed', () => {
+  // 40 received, 40 shipped, 10 came back RETURN_TO_PROJECT: those 10 are in onHand AND still in the
+  // gross shippedOut. Without the subtraction committed read 50 against required 40 - a permanent
+  // phantom over-commit badge on a correctly stocked product.
+  const all = [hi({ opening_number: '101', item_quantity: 40 })];
+
+  const [row] = build({
+    all,
+    selected: [],
+    rows: [recon('101', 'RECEIVED', 40)],
+    selectedKeys: [],
+    status: status({
+      requiredQuantity: 40,
+      receivedQuantity: 40,
+      onHand: 10,
+      shippedOut: 40,
+      returnedToProject: 10,
+    }),
+  });
+
+  expect(row.existingCommitted).toBe(40);
+  expect(row.overCommitAmount).toBe(0);
 });
 
 it('a destock that moves units off the project lowers committed', () => {

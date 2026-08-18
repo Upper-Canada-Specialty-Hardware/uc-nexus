@@ -226,12 +226,15 @@ export function buildProductReconRows(args: {
       // Count units that EXIST, whatever their origin, not just PO receipts. receivedQuantity is the
       // cumulative PO-receipt count and misses off-PO stock (the SharePoint migration, shipment
       // returns, stock allocations); onHand + sentToShop + staged + shipped is where units actually
-      // are now and picks that up. For pure-PO stock the two are equal, so max() leaves it unchanged;
-      // for migrated stock the max is the real figure, which is what stops the buyer re-buying units
-      // that already exist. projectTotalReceived above stays PO receipts - that column is about receipts.
+      // are now and picks that up. shippedOut is GROSS - a RETURN_TO_PROJECT unit is back inside
+      // onHand while still counted there, so returnedToProject comes off once or every returned unit
+      // reads as a phantom over-commit. For pure-PO stock the two sides are equal, so max() leaves
+      // it unchanged; for migrated stock the max is the real figure, which is what stops the buyer
+      // re-buying units that already exist. projectTotalReceived above stays PO receipts - that
+      // column is about receipts.
       const existingReceived = Math.max(
         ds.receivedQuantity,
-        ds.onHand + ds.sentToShop + ds.stagedForShipping + ds.shippedOut,
+        ds.onHand + ds.sentToShop + ds.stagedForShipping + ds.shippedOut - ds.returnedToProject,
       );
       row.existingCommitted = ds.poDrafted + ds.onOrder + existingReceived;
     } else {

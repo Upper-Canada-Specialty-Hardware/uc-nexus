@@ -1306,6 +1306,8 @@ def _return_units_to_project_inventory(
         .order_by(InventoryLocationModel.received_at.desc())
     ).first()
     if il is None:
+        from .inventory import resolve_project_combo_cost
+
         now = datetime.utcnow()
         warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
         stock_row = _find_or_create_stock_row(
@@ -1326,6 +1328,11 @@ def _return_units_to_project_inventory(
             product_code=product_code,
             quantity=0,
             deficient_quantity=0,
+            # Every prior row for the combo is gone (that is why this one exists), so the cost is
+            # re-resolved from the schedule, else the anchor stock row - the same rule allocate
+            # applies. Leaving it null valued the restored units at zero.
+            unit_cost=resolve_project_combo_cost(session, project_id, hardware_category, product_code)
+            or stock_row.unit_cost,
             received_at=now,
         )
         session.add(il)

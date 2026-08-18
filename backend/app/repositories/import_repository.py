@@ -198,6 +198,32 @@ def reconcile_schedule(
             continue
         hi_by_pair[pair].append(row)
 
+    # ---- Bulk Query 1b: null-linked IN_PO rows (the SharePoint migration's purchased-marking) ----
+    # These carry no PO line, so the inner join above never sees them - and without this they fell
+    # into NOT_COVERED, got auto-selected on a PO re-import, and finalize minted a duplicate row per
+    # combo while a real PO was drafted for units already on the shelf. They bucket as RECEIVED:
+    # bought and received under the retired system is exactly what the marking asserts.
+    marked_stmt = (
+        select(
+            OpeningModel.opening_number,
+            HardwareItemModel.product_code,
+            func.sum(HardwareItemModel.item_quantity).label("marked_quantity"),
+        )
+        .join(OpeningModel, HardwareItemModel.opening_id == OpeningModel.id)
+        .where(
+            HardwareItemModel.project_id == project_id,
+            HardwareItemModel.state == HardwareItemState.IN_PO,
+            HardwareItemModel.po_line_item_id.is_(None),
+        )
+        .group_by(OpeningModel.opening_number, HardwareItemModel.product_code)
+    )
+    marked_by_pair: dict[tuple[str, str], int] = {}
+    for row in session.execute(marked_stmt).all():
+        pair = (row.opening_number, row.product_code)
+        if pair not in pair_set:
+            continue
+        marked_by_pair[pair] = int(row.marked_quantity or 0)
+
     # ---- Bulk Query 2: PullRequest aggregates ----
     pr_stmt = (
         select(
@@ -278,6 +304,9 @@ def reconcile_schedule(
                     buckets["ORDERED"] += ordered_portion
             elif po_status == POStatus.CLOSED:
                 buckets["RECEIVED"] += hi_qty
+
+        # Migration-marked rows (Bulk Query 1b): received, just not through a Nexus PO.
+        buckets["RECEIVED"] += marked_by_pair.get(pair_key, 0)
 
         # Step 3: PR deductions
         received_qty = buckets.get("RECEIVED", 0)
@@ -970,6 +999,16 @@ def finalize_import_session(
             )
         )
     session.flush()
+
+    # 5b. Re-apply the SharePoint migration's purchased-marking. A replace_schedule wipe above took
+    # the null-linked IN_PO rows with it, and without this the project reads as never-purchased
+    # again and the next PO draft offers to re-buy the migrated shelf stock. The recorded coverage
+    # targets are marked against whatever rows this finalize just wrote; on a normal re-import the
+    # preserved rows already cover the targets and this is a no-op. One indexed SELECT on a project
+    # the migration never touched.
+    from app.repositories import sharepoint_migration_repository
+
+    sharepoint_migration_repository.reapply_migration_marks(session, project.id)
 
     # 6. Shipping-out requests (#293): Start a Request mints a PENDING ShippingOutRequest, NOT a
     # PullRequest. A signed-in user accepts it later, which mints the warehouse PullRequest.

@@ -196,3 +196,106 @@ def test_returnable_lines_tracks_what_has_already_come_back(db_session):
     assert line["shipped_quantity"] == 5
     assert line["returned_quantity"] == 2
     assert line["returnable_quantity"] == 3
+
+
+# --- returned units keep their value (unit cost re-resolved from the project / schedule) ---------
+
+
+def test_return_to_project_carries_the_combo_cost(db_session):
+    """The slip item has no link back to the rows the units shipped off, so the return re-resolves
+    the combo's cost. Before this every returned unit valued at $0 from then on."""
+    from decimal import Decimal
+
+    from .inventory_fixtures import make_il
+
+    project = _make_project(db_session)
+    make_il(db_session, project, quantity=10, code="HG-100", category="HINGE", unit_cost=Decimal("6"))
+    slip = _make_slip(db_session, project.id)
+    item = _make_loose_item(db_session, slip.id, qty=5)
+    wh_id = _wh(db_session)
+
+    _return(
+        db_session,
+        slip.id,
+        wh_id,
+        [{"packing_slip_item_id": item.id, "quantity": 3, "disposition": ReturnDisposition.RETURN_TO_PROJECT}],
+    )
+
+    returned = (
+        db_session.scalars(
+            select(InventoryLocation).where(
+                InventoryLocation.project_id == project.id,
+                InventoryLocation.shipment_return_item_id.is_not(None),
+            )
+        )
+        .unique()
+        .one()
+    )
+    assert returned.unit_cost == Decimal("6")
+
+
+def test_stock_branch_return_fills_the_pool_cost(db_session):
+    from decimal import Decimal
+
+    from .inventory_fixtures import make_il
+
+    project = _make_project(db_session)
+    make_il(db_session, project, quantity=10, code="NS-9", category="STRIKE", unit_cost=Decimal("2.5"))
+    slip = _make_slip(db_session, project.id)
+    item = _make_loose_item(db_session, slip.id, qty=4, code="NS-9", cat="STRIKE")
+    wh_id = _wh(db_session)
+
+    _return(
+        db_session,
+        slip.id,
+        wh_id,
+        [{"packing_slip_item_id": item.id, "quantity": 4, "disposition": ReturnDisposition.NON_STOCK}],
+    )
+
+    stock = db_session.scalars(select(StockItem).where(StockItem.product_code == "NS-9", StockItem.quantity > 0)).one()
+    assert stock.unit_cost == Decimal("2.5")
+
+
+def test_return_cost_falls_back_to_the_schedule(db_session):
+    """No inventory row knows a price (all shipped out), but the schedule does."""
+    from decimal import Decimal
+
+    from app.models.enums import HardwareItemState
+    from app.models.hardware import HardwareItem
+    from app.models.project import Opening
+
+    project = _make_project(db_session)
+    opening = Opening(id=uuid.uuid4(), project_id=project.id, opening_number="A01")
+    db_session.add(opening)
+    db_session.flush()
+    db_session.add(
+        HardwareItem(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            opening_id=opening.id,
+            hardware_category="HINGE",
+            product_code="HG-100",
+            item_quantity=5,
+            unit_cost=Decimal("3.75"),
+            state=HardwareItemState.AVAILABLE,
+        )
+    )
+    db_session.flush()
+    slip = _make_slip(db_session, project.id)
+    item = _make_loose_item(db_session, slip.id, qty=5)
+    wh_id = _wh(db_session)
+
+    _return(
+        db_session,
+        slip.id,
+        wh_id,
+        [{"packing_slip_item_id": item.id, "quantity": 2, "disposition": ReturnDisposition.RETURN_TO_PROJECT}],
+    )
+
+    returned = db_session.scalars(
+        select(InventoryLocation).where(
+            InventoryLocation.project_id == project.id,
+            InventoryLocation.shipment_return_item_id.is_not(None),
+        )
+    ).one()
+    assert returned.unit_cost == Decimal("3.75")

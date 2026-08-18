@@ -264,6 +264,10 @@ def reclassify_stock_item(
         received_at=now,
     )
     new_row.quantity += quantity
+    # The units keep their off-PO cost across the split, the same as a full in-place reclassify
+    # keeps the row's. Fills a null only - a destination row with its own cost keeps it.
+    if si.unit_cost is not None and new_row.unit_cost is None:
+        new_row.unit_cost = si.unit_cost
 
     session.flush()
 

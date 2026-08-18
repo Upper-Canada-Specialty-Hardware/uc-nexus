@@ -238,14 +238,18 @@ export interface MigrationEntry {
   bay: string | null;
 }
 
-/** One schedule product of a mapped project, keyed by product code for the wizard's snap + step. */
-export interface ScheduleProductInfo {
+/** One schedule (category, code) pair of a mapped project. A code split across categories is
+ *  SEVERAL pairs, and the wizard splits a matched row's quantity across them - collapsing to one
+ *  dominant category left the minority pair's rows unmarked and unclassified. */
+export interface ScheduleProductPair {
   hardwareCategory: string;
   classification: MigrationClassification | null;
+  /** Sum of the schedule's item quantities under this pair - the split budget. */
+  requiredQuantity: number;
 }
 
-/** Nexus project id -> product code -> the schedule's category + dominant classification for it. */
-export type ScheduleProductsByProject = Map<string, Map<string, ScheduleProductInfo>>;
+/** Nexus project id -> product code -> that code's schedule pairs, largest requiredQuantity first. */
+export type ScheduleProductsByProject = Map<string, Map<string, ScheduleProductPair[]>>;
 
 /** Index the flat projectScheduleProducts rows by (project, product code). */
 export function buildScheduleProductsByProject(
@@ -254,6 +258,7 @@ export function buildScheduleProductsByProject(
     hardwareCategory: string;
     productCode: string;
     classification: MigrationClassification | null;
+    requiredQuantity: number;
   }[],
 ): ScheduleProductsByProject {
   const byProject: ScheduleProductsByProject = new Map();
@@ -263,10 +268,22 @@ export function buildScheduleProductsByProject(
       byCode = new Map();
       byProject.set(r.projectId, byCode);
     }
-    byCode.set(r.productCode.trim(), {
+    const code = r.productCode.trim();
+    const pairs = byCode.get(code) ?? [];
+    pairs.push({
       hardwareCategory: r.hardwareCategory,
       classification: r.classification,
+      requiredQuantity: r.requiredQuantity,
     });
+    byCode.set(code, pairs);
+  }
+  // Deterministic split order whatever order the rows arrived in.
+  for (const byCode of byProject.values()) {
+    for (const pairs of byCode.values()) {
+      pairs.sort(
+        (a, b) => b.requiredQuantity - a.requiredQuantity || a.hardwareCategory.localeCompare(b.hardwareCategory),
+      );
+    }
   }
   return byProject;
 }
@@ -413,31 +430,52 @@ export function buildEntries({
     // Category snap: a PROJECT row whose product code the project's schedule names takes the
     // schedule's category, because claimability matches on the exact (category, code) pair and
     // SharePoint's free-text Part Category rarely matches the schedule's wording - a mismatch leaves
-    // the units invisible to coverage forever. A mapped non-schedule type keeps its type code (that
-    // is how #454 recognises it downstream) and never snaps; everything else falls back to Part
-    // Category 1 only when the schedule does not name the code.
-    let category = categoryFor(c.item, itemTypeResolutions, emptyCategoryLabel);
-    if (!isMappedType(typeResolution) && c.destination === 'PROJECT' && projectId) {
-      const scheduleCategory = scheduleProductsByProject.get(projectId)?.get(productCode)?.hardwareCategory;
-      if (scheduleCategory) category = scheduleCategory;
-    }
-    if (!category) {
-      drop('No part category');
-      continue;
-    }
-
-    entries.push({
+    // the units invisible to coverage forever. A code the schedule carries under SEVERAL categories
+    // becomes several entries, the quantity split greedily by each pair's required units (remainder
+    // to the largest pair) - one dominant category would leave the minority pair's rows unmatched.
+    // A mapped non-schedule type keeps its type code (that is how #454 recognises it downstream) and
+    // never snaps; everything else falls back to Part Category 1 only when the schedule does not
+    // name the code.
+    const base = {
       destination: c.destination,
       warehouseId: resolution.warehouseId || defaultWarehouseId,
-      hardwareCategory: category,
       productCode,
-      quantity: c.quantity,
       unitCost: c.item.unitCost > 0 ? c.item.unitCost : null,
       projectId,
       aisle: resolution.aisle,
       row: resolution.row,
       bay: resolution.bay,
-    });
+    };
+    const pairs =
+      !isMappedType(typeResolution) && c.destination === 'PROJECT' && projectId
+        ? (scheduleProductsByProject.get(projectId)?.get(productCode) ?? [])
+        : [];
+    if (pairs.length > 0) {
+      let remaining = c.quantity;
+      const takes: { hardwareCategory: string; quantity: number }[] = [];
+      for (const pair of pairs) {
+        const take = Math.min(remaining, pair.requiredQuantity);
+        if (take > 0) takes.push({ hardwareCategory: pair.hardwareCategory, quantity: take });
+        remaining -= take;
+        if (remaining <= 0) break;
+      }
+      // More on the shelf than the whole schedule asks for: the excess rides the largest pair.
+      // (takes is never empty here - the quantity and every pair's required are both >= 1.)
+      if (remaining > 0) takes[0].quantity += remaining;
+      for (const take of takes) {
+        entries.push({ ...base, hardwareCategory: take.hardwareCategory, quantity: take.quantity });
+      }
+      kept.push(c);
+      continue;
+    }
+
+    const category = categoryFor(c.item, itemTypeResolutions, emptyCategoryLabel);
+    if (!category) {
+      drop('No part category');
+      continue;
+    }
+
+    entries.push({ ...base, hardwareCategory: category, quantity: c.quantity });
     kept.push(c);
   }
 
@@ -448,28 +486,29 @@ export function buildEntries({
   };
 }
 
-/** One row of the classification step: a (project, product) the migration matched to the schedule. */
+/** One row of the classification step: a (project, category, code) PAIR the migration matched. */
 export interface ClassificationStepRow {
   projectId: string;
   hardwareCategory: string;
   productCode: string;
-  /** The schedule's dominant classification, shown inherited (read-only). Null means the schedule
+  /** The pair's dominant classification, shown inherited (read-only). Null means the schedule
    *  never classified it, so the step requires a Site/Shop pick before commit. */
   inherited: MigrationClassification | null;
 }
 
-/** Stable key for a classification-step row and its user pick. */
-export function classificationStepKey(projectId: string, productCode: string): string {
-  return `${projectId}|${productCode}`;
+/** Stable key for a classification-step row and its user pick. The category is part of it: a code
+ *  split across two schedule categories is two independently-classified rows. */
+export function classificationStepKey(projectId: string, hardwareCategory: string, productCode: string): string {
+  return `${projectId}|${hardwareCategory}|${productCode}`;
 }
 
 /**
- * The classification step's rows: one per (project, product) the migration matched to the schedule.
+ * The classification step's rows: one per (project, category, code) pair the migration matched.
  *
  * Only PROJECT entries whose product code the mapped project's schedule names appear - a STOCK row or
- * an unmatched product has no schedule row to classify. Deduplicated by (project, product) since a
- * product can land on several locations. The category is the snapped schedule category the entry
- * already carries, so the decision keys to exactly the rows the backend classifies and marks.
+ * an unmatched product has no schedule row to classify. Deduplicated per pair since a product can
+ * land on several locations. The category is the snapped schedule category the entry already
+ * carries, so the decision keys to exactly the rows the backend classifies and marks.
  */
 export function buildClassificationRows(
   entries: MigrationEntry[],
@@ -478,15 +517,18 @@ export function buildClassificationRows(
   const byKey = new Map<string, ClassificationStepRow>();
   for (const e of entries) {
     if (e.destination !== 'PROJECT' || !e.projectId) continue;
-    const info = scheduleProductsByProject.get(e.projectId)?.get(e.productCode);
-    if (!info) continue;
-    const key = classificationStepKey(e.projectId, e.productCode);
+    const pair = scheduleProductsByProject
+      .get(e.projectId)
+      ?.get(e.productCode)
+      ?.find((p) => p.hardwareCategory === e.hardwareCategory);
+    if (!pair) continue;
+    const key = classificationStepKey(e.projectId, e.hardwareCategory, e.productCode);
     if (!byKey.has(key)) {
       byKey.set(key, {
         projectId: e.projectId,
         hardwareCategory: e.hardwareCategory,
         productCode: e.productCode,
-        inherited: info.classification,
+        inherited: pair.classification,
       });
     }
   }
@@ -498,7 +540,9 @@ export function unclassifiedRequiredRows(
   rows: ClassificationStepRow[],
   picks: Map<string, MigrationClassification>,
 ): ClassificationStepRow[] {
-  return rows.filter((r) => r.inherited === null && !picks.get(classificationStepKey(r.projectId, r.productCode)));
+  return rows.filter(
+    (r) => r.inherited === null && !picks.get(classificationStepKey(r.projectId, r.hardwareCategory, r.productCode)),
+  );
 }
 
 export interface ClassificationDecision {
@@ -509,10 +553,13 @@ export interface ClassificationDecision {
 }
 
 /**
- * The classification-step decisions the mutation sends.
+ * The classification-step decisions the mutation sends: the user's picks AND the inherited values.
  *
- * Only the matched-but-unclassified rows the user picked - an inherited row is never sent, since the
- * backend writes only where classification is still null and would ignore it anyway.
+ * Inherited rows go too, on purpose. The backend writes a decision only where classification is
+ * still null, so re-sending an inherited value costs nothing on the rows that already carry it -
+ * and it is what classifies the NULL minority rows of a partially-classified pair (the schedule's
+ * dominant value covers 5 of 6 rows; the sixth would otherwise stay off the bench forever while
+ * the step shows the product as handled).
  */
 export function buildClassificationPayload(
   rows: ClassificationStepRow[],
@@ -520,14 +567,13 @@ export function buildClassificationPayload(
 ): ClassificationDecision[] {
   const out: ClassificationDecision[] = [];
   for (const r of rows) {
-    if (r.inherited !== null) continue;
-    const pick = picks.get(classificationStepKey(r.projectId, r.productCode));
-    if (pick === 'SITE_HARDWARE' || pick === 'SHOP_HARDWARE') {
+    const value = r.inherited ?? picks.get(classificationStepKey(r.projectId, r.hardwareCategory, r.productCode));
+    if (value === 'SITE_HARDWARE' || value === 'SHOP_HARDWARE') {
       out.push({
         projectId: r.projectId,
         hardwareCategory: r.hardwareCategory,
         productCode: r.productCode,
-        classification: pick,
+        classification: value,
       });
     }
   }

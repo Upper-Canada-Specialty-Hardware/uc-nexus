@@ -65,6 +65,9 @@ export interface HardwareStatusRow {
   onOrder: number;
   receivedQuantity: number;
   onHand: number;
+  /** RETURN_TO_PROJECT shipment-return units: back inside onHand while still counted in the gross
+   *  shippedOut, so "where the units are" sums must subtract this once. */
+  returnedToProject: number;
   sentToShop: number;
   stagedForShipping: number;
   shippedOut: number;

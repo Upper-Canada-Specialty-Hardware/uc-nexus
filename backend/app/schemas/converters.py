@@ -902,6 +902,7 @@ def stock_item_to_type(si) -> StockItem:
         quantity=si.quantity,
         deficient_quantity=deficient_qty,
         available=si.quantity - deficient_qty,
+        unit_cost=float(si.unit_cost) if getattr(si, "unit_cost", None) is not None else None,
         aisle=si.aisle,
         row=si.row,
         bay=si.bay,

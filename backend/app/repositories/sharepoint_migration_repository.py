@@ -27,7 +27,7 @@ from app.models.hardware import HardwareItem
 from app.models.inventory_item_type import CustomInventoryItem
 from app.models.project import Opening
 from app.models.project import Project as ProjectModel
-from app.models.sharepoint_migration_run import SharepointMigrationRun
+from app.models.sharepoint_migration_run import SharepointMigrationMark, SharepointMigrationRun
 from app.models.warehouse import Warehouse
 from app.repositories import custom_items_repository
 from app.repositories import stock as stock_repository
@@ -200,6 +200,10 @@ def migrate_inventory(
                     target_row=row,
                     target_bay=bay,
                     performed_by=performed_by,
+                    # The ENTRY's own cost, not the pool row's. receive_into_stock merges same-shelf
+                    # entries into one row and keeps the first cost it saw, so reading the pool back
+                    # here would price this project's units at whichever entry happened to land first.
+                    unit_cost_override=unit_cost,
                 )
                 project_locations += 1
                 key = (entry["project_id"], category, code)
@@ -217,16 +221,18 @@ def migrate_inventory(
             ) from e
 
     classified = _apply_classifications(session, classifications or [])
-    marked = _mark_purchased(session, project_qty)
 
-    session.add(
-        SharepointMigrationRun(
-            run_at=now,
-            performed_by=performed_by,
-            entry_count=len(entries),
-            unit_count=total_units,
-        )
+    # The run marker is created before the marking so each mark can carry its run id - the marks are
+    # what lets finalize re-apply the coverage after a schedule replace wipes the marked rows.
+    run = SharepointMigrationRun(
+        run_at=now,
+        performed_by=performed_by,
+        entry_count=len(entries),
+        unit_count=total_units,
     )
+    session.add(run)
+    session.flush()
+    marked = _mark_purchased(session, project_qty, run_id=run.id)
     session.flush()
 
     logger.info(
@@ -274,7 +280,7 @@ def _apply_classifications(session: Session, classifications: list[dict]) -> int
     return total
 
 
-def _mark_purchased(session: Session, project_qty: dict[tuple[uuid.UUID, str, str], int]) -> int:
+def _mark_purchased(session: Session, project_qty: dict[tuple[uuid.UUID, str, str], int], *, run_id: uuid.UUID) -> int:
     """Flip covered AVAILABLE schedule rows to IN_PO, leaving po_line_item_id null.
 
     The real POs exist in GP under UBC - registered and received years ago - so the marking is
@@ -282,50 +288,132 @@ def _mark_purchased(session: Session, project_qty: dict[tuple[uuid.UUID, str, st
     drop out of not_purchased, survive re-imports (finalize preserves IN_PO and its dedup skips
     regenerating them), and are never re-bought by a later PO draft.
 
-    Greedy floor in deterministic (opening_number, id) order: mark rows while the cumulative
-    item_quantity still fits within the migrated project quantity N, and stop at the first row that
-    would overflow it - a row that does not fully fit stays AVAILABLE, because SharePoint only knows
-    what remains on the shelf, not what was originally bought.
+    Each combo's target N is also recorded as a `SharepointMigrationMark`, because the rows carrying
+    the marking are wiped by a `replace_schedule` re-import - finalize reads the marks back and
+    re-applies the coverage against the new schedule's rows.
     """
     marked = 0
     for (project_id, category, code), n in project_qty.items():
-        rows = (
-            session.execute(
-                select(HardwareItem)
-                .join(Opening, HardwareItem.opening_id == Opening.id)
-                .where(
-                    HardwareItem.project_id == project_id,
-                    HardwareItem.hardware_category == category,
-                    HardwareItem.product_code == code,
-                    HardwareItem.state == HardwareItemState.AVAILABLE,
-                )
-                .order_by(Opening.opening_number, HardwareItem.id)
+        marked += mark_purchased_rows(session, project_id, category, code, n)
+        session.add(
+            SharepointMigrationMark(
+                run_id=run_id,
+                project_id=project_id,
+                hardware_category=category,
+                product_code=code,
+                quantity=n,
             )
-            .scalars()
-            .all()
         )
-        cumulative = 0
-        for hi in rows:
-            if cumulative + hi.item_quantity > n:
-                break
-            hi.state = HardwareItemState.IN_PO
-            cumulative += hi.item_quantity
-            marked += 1
     if marked:
         session.flush()
     return marked
 
 
+def mark_purchased_rows(session: Session, project_id: uuid.UUID, category: str, code: str, n: int) -> int:
+    """Greedy floor over one combo's AVAILABLE rows: mark every row that still fits within N.
+
+    Deterministic (opening_number, id) order. A row that would overflow the remaining budget is
+    SKIPPED, not a stopping point - a later smaller row that still fits is marked (quantities 3, 3, 1
+    against N=4 mark the 3 and the 1). A partially-covered row stays AVAILABLE whole, because
+    SharePoint only knows what remains on the shelf, not what was originally bought.
+
+    Shared with the finalize re-apply step (`import_repository`), so the migration and a schedule
+    replace mark by exactly the same rule.
+    """
+    rows = (
+        session.execute(
+            select(HardwareItem)
+            .join(Opening, HardwareItem.opening_id == Opening.id)
+            .where(
+                HardwareItem.project_id == project_id,
+                HardwareItem.hardware_category == category,
+                HardwareItem.product_code == code,
+                HardwareItem.state == HardwareItemState.AVAILABLE,
+            )
+            .order_by(Opening.opening_number, HardwareItem.id)
+        )
+        .scalars()
+        .all()
+    )
+    marked = 0
+    remaining = n
+    for hi in rows:
+        if hi.item_quantity > remaining:
+            continue
+        hi.state = HardwareItemState.IN_PO
+        remaining -= hi.item_quantity
+        marked += 1
+        if remaining <= 0:
+            break
+    return marked
+
+
+def reapply_migration_marks(session: Session, project_id: uuid.UUID) -> int:
+    """Re-mark a project's schedule rows from the recorded migration coverage, after a re-import.
+
+    A `replace_schedule` finalize wipes every HardwareItem - the null-linked IN_PO marking included -
+    and regenerates from the new input as AVAILABLE, so without this the project reads as
+    never-purchased the moment its schedule is re-uploaded. For each recorded (category, code) target
+    N, whatever null-linked IN_PO rows survived count first (a normal re-import preserves them), and
+    the remainder is marked greedily by the same rule the migration used. A no-migration project has
+    no marks and pays one indexed SELECT.
+    """
+    mark_rows = session.execute(
+        select(
+            SharepointMigrationMark.hardware_category,
+            SharepointMigrationMark.product_code,
+            func.sum(SharepointMigrationMark.quantity),
+        )
+        .where(SharepointMigrationMark.project_id == project_id)
+        .group_by(SharepointMigrationMark.hardware_category, SharepointMigrationMark.product_code)
+    ).all()
+    if not mark_rows:
+        return 0
+
+    # Units already covered by surviving null-linked IN_PO rows, per combo, in one query.
+    covered = {
+        (category, code): int(total or 0)
+        for category, code, total in session.execute(
+            select(
+                HardwareItem.hardware_category,
+                HardwareItem.product_code,
+                func.sum(HardwareItem.item_quantity),
+            )
+            .where(
+                HardwareItem.project_id == project_id,
+                HardwareItem.state == HardwareItemState.IN_PO,
+                HardwareItem.po_line_item_id.is_(None),
+            )
+            .group_by(HardwareItem.hardware_category, HardwareItem.product_code)
+        ).all()
+    }
+
+    marked = 0
+    for category, code, target in mark_rows:
+        remaining = int(target or 0) - covered.get((category, code), 0)
+        if remaining > 0:
+            marked += mark_purchased_rows(session, project_id, category, code, remaining)
+    if marked:
+        session.flush()
+    return marked
+
+
+# The columns are Numeric(10, 4): six integer digits. Anything past this dies at flush as an
+# unnamed NumericValueOutOfRange, so _validate_entries refuses it with the entry named instead.
+_MAX_UNIT_COST = Decimal("999999.9999")
+
+
 def _clean_unit_cost(value) -> Decimal | None:
-    """A non-negative Decimal cost, or None. Blank / zero / negative / unparseable all read as None,
-    so a row with no cost on the source list simply carries no cost rather than a spurious 0.0000."""
+    """A positive finite Decimal cost, or None. Blank / zero / negative / NaN / unparseable all read
+    as None, so a row with no cost on the source list simply carries no cost rather than a spurious
+    0.0000. (The <= comparison itself raises on NaN, so the finite check must come first.)"""
     if value is None:
         return None
     try:
         dec = Decimal(str(value))
     except (ArithmeticError, TypeError, ValueError):
         return None
-    if dec <= 0:
+    if not dec.is_finite() or dec <= 0:
         return None
     return dec
 
@@ -359,6 +447,15 @@ def _validate_entries(session: Session, entries: list[dict]) -> None:
         quantity = entry.get("quantity")
         if not isinstance(quantity, int) or quantity < 1:
             raise ValidationError(f"{label}: quantity must be a positive integer", field="quantity")
+
+        # The cost columns are Numeric(10, 4); an over-large value would otherwise reach the flush
+        # and die as a raw 500 naming no entry - the same trap the aisle-length check below guards.
+        cost = _clean_unit_cost(entry.get("unit_cost"))
+        if cost is not None and cost > _MAX_UNIT_COST:
+            raise ValidationError(
+                f"{label}: unit_cost must be {_MAX_UNIT_COST} or less",
+                field="unit_cost",
+            )
 
         warehouse_id = entry.get("warehouse_id")
         if warehouse_id is None:

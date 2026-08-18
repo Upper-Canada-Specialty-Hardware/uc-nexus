@@ -47,6 +47,8 @@ export interface StockItem {
   quantity: number;
   deficientQuantity: number;
   available: number;
+  /** Off-PO cost per unit (the SharePoint migration writes it); null on PO-received pool stock. */
+  unitCost: number | null;
   aisle: string | null;
   row: string | null;
   bay: string | null;
@@ -231,6 +233,15 @@ export default function StockPoolView() {
       headerName: 'Available',
       width: 100,
       type: 'number',
+    },
+    {
+      // Off-PO cost (the SharePoint migration writes it). PO-received pool stock carries none and
+      // reads as a dash rather than a lying zero.
+      field: 'unitCost',
+      headerName: 'Unit Cost',
+      width: 110,
+      type: 'number',
+      valueFormatter: (value: number | null) => (value != null ? `$${value.toFixed(2)}` : '—'),
     },
     {
       field: 'warehouseId',

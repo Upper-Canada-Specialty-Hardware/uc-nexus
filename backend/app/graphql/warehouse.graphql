@@ -677,7 +677,11 @@ type HardwareStatusByProduct {
   on_hand: Int!
   sent_to_shop: Int!
   staged_for_shipping: Int!
+  # Gross packing-slip exits; returns never decrement it.
   shipped_out: Int!
+  # RETURN_TO_PROJECT shipment-return units: back in on_hand while still inside the gross
+  # shipped_out, so a reader summing "where the units are" must subtract this once.
+  returned_to_project: Int!
 }
 
 type Query {

@@ -33,13 +33,16 @@ type SharepointInventorySnapshot {
 }
 
 # One schedule product of a project, for the wizard's category snap + classification step. The
-# category is the schedule's dominant category for this code (what a matched migrated row snaps to);
-# the classification is the dominant Site/Shop value, or null where the schedule never classified it.
+# One schedule (category, code) PAIR - one row per pair, not per code. A code split across
+# categories is several pairs; the wizard splits the migrated quantity across them by
+# required_quantity so the minority pair's rows still get marked and classified. classification is
+# the pair's dominant Site/Shop value, or null where the schedule never classified it.
 type ProjectScheduleProduct {
   project_id: ID!
   hardware_category: String!
   product_code: String!
   classification: Classification
+  required_quantity: Int!
 }
 
 type MigrationResult {
