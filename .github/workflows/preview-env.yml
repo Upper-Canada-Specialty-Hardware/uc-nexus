@@ -125,21 +125,21 @@ jobs:
           echo "services: Postgres=$PG_ID backend=$BE_ID frontend=$FE_ID"
 
           # --- deployment facts per service --------------------------------------------------------
-          # "<hasSuccess> <inFlight>": hasSuccess = a successful deployment exists; inFlight = the latest
-          # deployment is still working. needs-force-deploy = no success AND nothing in flight.
-          # hasSuccess is asked with `status.successfulOnly` rather than by scanning recent history:
-          # Railway appends a SKIPPED record per push for unchanged services, so a fixed window would let
-          # a once-force-built service's SUCCESS scroll out after enough pushes and get rebuilt again.
-          # successfulOnly is immune to that. The inFlight half (latest of ALL statuses) keeps this from
-          # stomping a build Railway - or the variable change below - already started.
+          # "<hasSuccess> <inFlight>": hasSuccess = a SUCCESS in the recent window; inFlight = the latest
+          # deployment is still working. needs-force-deploy = no success AND nothing in flight. The
+          # inFlight half (latest of ALL statuses) keeps this from stomping a build Railway - or the
+          # variable change below - already started.
+          # first:100 not first:5, and not the status.successfulOnly filter (the API rejects that shape):
+          # Railway appends a SKIPPED record per push for unchanged services, so a small window would let
+          # a once-force-built service's SUCCESS scroll out after enough pushes and get pointlessly
+          # rebuilt. 100 is ~100 pushes of headroom - effectively never for one PR.
           DEP_QUERY='query($input:DeploymentListInput!,$first:Int){ deployments(input:$input,first:$first){ edges{ node{ id status createdAt } } } }'
           deploy_facts() {
-            local sid="$1" base infl_data succ_data has infl
-            base=$(jq -cn --arg p "$PROJECT_ID" --arg s "$sid" --arg e "$ENV_ID" '{projectId:$p,serviceId:$s,environmentId:$e}')
-            infl_data=$(rgql "$DEP_QUERY" "$(jq -cn --argjson input "$base" '{input:$input,first:1}')") || return 1
-            succ_data=$(rgql "$DEP_QUERY" "$(jq -cn --argjson input "$base" '{input:($input + {status:{successfulOnly:true}}),first:1}')") || return 1
-            has=$(printf '%s' "$succ_data" | jq -r '([.deployments.edges[]?]|length) > 0')
-            infl=$(printf '%s' "$infl_data" | jq -r '(.deployments.edges[0].node.status // "NONE") as $s | (["BUILDING","DEPLOYING","QUEUED","WAITING","INITIALIZING","NEEDS_APPROVAL"]|any(.==$s))')
+            local sid="$1" input data has infl
+            input=$(jq -cn --arg p "$PROJECT_ID" --arg s "$sid" --arg e "$ENV_ID" '{projectId:$p,serviceId:$s,environmentId:$e}')
+            data=$(rgql "$DEP_QUERY" "$(jq -cn --argjson input "$input" '{input:$input,first:100}')") || return 1
+            has=$(printf '%s' "$data" | jq -r '[.deployments.edges[]?.node.status]|any(.=="SUCCESS")')
+            infl=$(printf '%s' "$data" | jq -r '(.deployments.edges[0].node.status // "NONE") as $s | (["BUILDING","DEPLOYING","QUEUED","WAITING","INITIALIZING","NEEDS_APPROVAL"]|any(.==$s))')
             printf '%s %s' "$has" "$infl"
           }
           pg_facts=$(deploy_facts "$PG_ID") || { echo "::error::could not read Postgres deployments"; exit 1; }
