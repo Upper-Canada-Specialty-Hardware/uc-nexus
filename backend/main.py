@@ -587,7 +587,7 @@ def get_testing_session(request: Request, key: str = ""):
     token_resp = httpx.post(
         "https://api.clerk.com/v1/sign_in_tokens",
         headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"},
-        json={"user_id": e2e_user_id, "expire_in_seconds": 300},
+        json={"user_id": e2e_user_id, "expires_in_seconds": 300},
     )
     token_resp.raise_for_status()
     token = token_resp.json()["token"]

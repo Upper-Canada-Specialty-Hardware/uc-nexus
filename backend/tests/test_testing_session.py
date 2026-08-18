@@ -121,6 +121,10 @@ def test_success_mints_the_e2e_account_only_and_redirects_to_this_previews_front
     # Minted for the e2e account and nothing the caller chose - no email, no other selectable id.
     assert calls["json"]["user_id"] == _E2E_USER
     assert "email" not in calls["json"]
+    # Clerk's parameter is `expires_in_seconds` (not `expire_in_seconds`): the wrong name is accepted
+    # as an unknown field and silently ignored, turning the intended short expiry into Clerk's 30-day
+    # default - or, on strict validation, a 400 that 500s this route. Pin the exact name.
+    assert calls["json"]["expires_in_seconds"] == 300
     # Bounced to THIS environment's frontend, derived from the env name, carrying the Clerk ticket.
     location = resp.headers["location"]
     assert location.startswith("https://frontend-uc-nexus-pr-999.up.railway.app/?__clerk_ticket=tok_test")

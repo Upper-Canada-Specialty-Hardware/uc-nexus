@@ -244,6 +244,12 @@ jobs:
           fi
 
           # --- 5. wait for ready -------------------------------------------------------------------
+          SIGN_IN="${BACKEND_URL}/testing/session?key=${K}"
+          # /testing/session answers 302 (mint + redirect) only when the key hash is live on the
+          # RUNNING backend AND the Clerk mint works, so this probe - not /health - is what proves the
+          # handed-out link actually works. No -L, so the minted ticket is discarded. 000 on transport error.
+          signin_code() { curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$SIGN_IN" || echo 000; }
+
           wait_http_200() {  # $1 url, $2 label, $3 timeout -> 0 on first 200
             local url="$1" label="$2" timeout="$3" waited=0 code
             while [ "$waited" -lt "$timeout" ]; do
@@ -268,18 +274,31 @@ jobs:
           FRONTEND_READY=false
           wait_http_200 "$FRONTEND_URL/" "frontend /" 420 && FRONTEND_READY=true
 
-          GQL_READY=false
+          GQL_READY=false; SIGNIN_READY=false
+          gql_probe() { curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST "$BACKEND_URL/graphql" \
+              -H 'Content-Type: application/json' --data '{"query":"{ __typename }"}' || echo 000; }
           if [ "$BACKEND_READY" = "true" ]; then
-            gcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST "$BACKEND_URL/graphql" \
-              -H 'Content-Type: application/json' --data '{"query":"{ __typename }"}' || echo 000)
-            echo "graphql probe -> $gcode"
-            [ "$gcode" = "200" ] && GQL_READY=true
+            gcode=$(gql_probe); echo "graphql probe -> $gcode"; [ "$gcode" = "200" ] && GQL_READY=true
+
+            scode=$(signin_code); echo "sign-in probe -> $scode"
+            if [ "$scode" = "401" ]; then
+              # The key hash was set AFTER the backend's in-flight build snapshotted its variables - the
+              # first-run race on a backend-touching PR: the backend is healthy but does not carry
+              # TESTING_SESSION_KEY_HASH yet. One redeploy applies it, and this guards the whole class -
+              # any reason the running backend lacks the live key surfaces here, not in a dead link.
+              echo "sign-in link 401; redeploying the backend once so it picks up the session key hash"
+              trigger_deploy "$BE_ID"
+              if wait_http_200 "$BACKEND_URL/health" "backend /health (key-apply retry)" 600; then
+                gcode=$(gql_probe); echo "graphql probe (retry) -> $gcode"; { [ "$gcode" = "200" ] && GQL_READY=true; } || GQL_READY=false
+                scode=$(signin_code); echo "sign-in probe (retry) -> $scode"
+              fi
+            fi
+            [ "$scode" = "302" ] && SIGNIN_READY=true
           fi
 
           # --- 6. post or update the one sticky comment --------------------------------------------
-          SIGN_IN="${BACKEND_URL}/testing/session?key=${K}"
           body_file="${RUNNER_TEMP}/preview-comment.md"
-          if [ "$BACKEND_READY" = "true" ] && [ "$FRONTEND_READY" = "true" ] && [ "$GQL_READY" = "true" ]; then
+          if [ "$BACKEND_READY" = "true" ] && [ "$FRONTEND_READY" = "true" ] && [ "$GQL_READY" = "true" ] && [ "$SIGNIN_READY" = "true" ]; then
             {
               echo "$MARKER"
               echo "test environment ready"
@@ -296,10 +315,11 @@ jobs:
               echo "$MARKER"
               echo "test environment: not fully ready"
               echo ""
-              echo "the preview-env workflow could not confirm all three of backend /health, frontend, and a graphql probe:"
+              echo "the preview-env workflow could not confirm the environment is fully up:"
               echo "backend healthy: $BACKEND_READY"
               echo "frontend healthy: $FRONTEND_READY"
               echo "graphql answering: $GQL_READY"
+              echo "sign-in link answering (302): $SIGNIN_READY"
               echo ""
               echo "check the Railway deploy logs for the backend and Postgres services on $ENV_NAME; the manual redeploy steps are in the testing runbook. the sign-in link works once it recovers:"
               echo "$SIGN_IN"
@@ -322,7 +342,7 @@ jobs:
           fi
 
           if [ "$READY" != "true" ]; then
-            echo "::error::the PR test environment did not come up fully (backend=$BACKEND_READY frontend=$FRONTEND_READY graphql=$GQL_READY)"
+            echo "::error::the PR test environment did not come up fully (backend=$BACKEND_READY frontend=$FRONTEND_READY graphql=$GQL_READY signin=$SIGNIN_READY)"
             exit 1
           fi
           echo "test environment ready: $SIGN_IN"
