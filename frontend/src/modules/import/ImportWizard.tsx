@@ -1712,6 +1712,7 @@ export default function ImportWizard({
             <ReconciliationStep
               isReimport={isReimport}
               purpose={purpose!}
+              isHardwareMode={isHardwareMode}
               reconcileLoading={reconcileLoading}
               reconcileError={reconcileError?.message ?? null}
               onRetryReconcile={runReconcile}
