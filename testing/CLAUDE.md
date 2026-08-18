@@ -28,7 +28,7 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 > true production created alongside; the agent-side rule does not change at any point in that
 > evolution.
 
-- **Railway PR environments, a.k.a. "Preview Environments" (the testing target)** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **That inheritance is a copy taken when the environment is created, not a live link** (#431): a variable added to production afterwards never reaches a PR environment that already exists, so set it on that environment's own backend service too and let it redeploy. Found the hard way with `RELAY_SEED_SECRET_HASH` on pr-430 - see the relay section below. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`). The missing service shows one `SKIPPED` deployment and its `/health` 404s. **A PR touching NEITHER `backend/` nor `frontend/` - a relay-only or docs-only one - leaves the whole environment unbuilt, Postgres included**, and the backend then dies on `could not translate host name "postgres.railway.internal"`, which reads like a networking fault rather than a service that was never started. Check the database first: `railway deployment list --service Postgres` returning nothing at all is the tell. Fix it from the CLI, in this order, no dashboard and no raw API call:
+- **Railway PR environments, a.k.a. "Preview Environments" (the testing target)** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **That inheritance is a copy taken when the environment is created, not a live link** (#431): a variable added to production afterwards never reaches a PR environment that already exists, so set it on that environment's own backend service too and let it redeploy. Found the hard way with `RELAY_SEED_SECRET_HASH` on pr-430 - see the relay section below. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`). The missing service shows one `SKIPPED` deployment and its `/health` 404s. **A PR touching NEITHER `backend/` nor `frontend/` - a relay-only or docs-only one - leaves the whole environment unbuilt, Postgres included**, and the backend then dies on `could not translate host name "postgres.railway.internal"`, which reads like a networking fault rather than a service that was never started. **The `preview-env` workflow now guarantees all three services** (`.github/workflows/preview-env.yml`, preview-env autonomy plan): on every non-draft push it force-deploys, over the Railway API, any of Postgres / backend / frontend that has no successful deployment in the environment - Postgres first, the backend only after Postgres is up, then the frontend - and posts the "test environment ready" comment when they answer. So an unbuilt environment is self-correcting, and everything below is the MANUAL FALLBACK for a red `preview-env` check. Check the database first: `railway deployment list --service Postgres` returning nothing at all is the tell. Fix it from the CLI, in this order, no dashboard and no raw API call:
 
 ```
 railway redeploy --project <id> --environment uc-nexus-pr-<N> --service Postgres --from-source -y
@@ -40,6 +40,11 @@ railway redeploy --project <id> --environment uc-nexus-pr-<N> --service backend 
 Environments auto-delete when the PR closes, **so never merge the PR whose environment you are testing in** - it disappears mid-session and every fetch starts failing for a reason that looks like a network fault.
 - **Local (manual fallback)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Run the backend with `poetry run uvicorn main:app --reload` (from `backend/`) and the frontend with `npm run dev` (from `frontend/`). Needs a local Postgres (not provided; the worktree-localdev adoption was dropped).
 - **Auth**: Clerk sign-in, automated via one-time sign-in tokens (no manual password/verification needed).
+  - **The agent path is the `/testing/session` link in the PR's "test environment ready" comment**
+    (preview-env autonomy plan). `GET /testing/session?key=<K>` mints a ticket for a DEDICATED e2e
+    account and 302s you onto the frontend signed in; the per-env key `K` is placed by the preview-env
+    workflow and lives only in that comment. Everything below is the human `/testing/clerk-sign-in`
+    fallback - reach for it only when the comment link is not working.
   - Backend endpoint `GET /testing/clerk-sign-in` generates the token (requires `TESTING_ENABLED=true`).
   - Since #422 the endpoint also requires a credential: an Admin/Manager `Authorization` bearer, or
     the shared testing secret in an `X-Testing-Secret` header. The secret is the bootstrap path on a
@@ -59,7 +64,10 @@ Environments auto-delete when the PR closes, **so never merge the PR whose envir
   - **Every environment inherits production Clerk keys**, so the accounts in a PR environment are real
     staff accounts and a session minted there is a real session. The Postgres data in a PR environment
     is disposable; the identities are not. Sign in as the account you were given, and do not mint
-    tokens for colleagues' accounts to test role behaviour - ask instead.
+    tokens for colleagues' accounts to test role behaviour - ask instead. The one exception is the
+    dedicated e2e account the `/testing/session` link mints: it is not a person, holds Admin/Manager,
+    and is refused on production (`app/auth._reject_e2e_account_in_production`), which is why its
+    sign-in link is safe to sit in a public PR comment.
   - The unauthenticated version of this endpoint was itself a vulnerability (#422 / #424), fixed by
     the gates above. Do not treat the endpoint answering on a given host as evidence that the host is
     a test environment - production answered it too, which is exactly what #424 shut off.
@@ -405,9 +413,41 @@ caught two failures that all three stacked PRs were reporting as clean:
    const BACKEND  = `https://backend-uc-nexus-pr-${PR}.up.railway.app`;
    const FRONTEND = `https://frontend-uc-nexus-pr-${PR}.up.railway.app`;
    ```
-1. **Sign in**: Use `evaluate_script` to fetch a sign-in token and navigate with it. Since #422 the
-   fetch must carry the testing secret whose SHA-256 you set as `TESTING_SIGN_IN_SECRET_HASH` on the
-   PR environment's backend (see the Auth bullet in the Environment section):
+1. **Sign in**: open the **"test environment ready"** comment the preview-env workflow posts on your
+   PR and navigate its sign-in link. It is `<BACKEND>/testing/session?key=<K>` and needs nothing from
+   you - one navigation lands you on `/app`, signed in as the dedicated e2e account (Admin/Manager),
+   with projects already present. The link mints a fresh Clerk ticket on every visit, so it never goes
+   stale, survives a DevAction schema reset, and can be navigated again any time.
+   ```js
+   // straight from the comment - no token fetch, no secret to hold
+   window.location.href = '<paste the session link from the PR comment>';
+   ```
+   - Clerk auto-authenticates — no email, password, or verification code needed.
+   - **No comment yet?** The workflow posts it once the environment is green (a couple of minutes after
+     a non-draft push). A red `preview-env` check means the environment did not come up - the comment
+     it posts says which of backend/frontend/graphql failed, and [PR-ENVIRONMENT.md](PR-ENVIRONMENT.md)
+     is the diagnosis.
+   - The link is safe to reuse and safe to sit in a public comment: the e2e account it mints is
+     **refused on production** (`app/auth._reject_e2e_account_in_production`), so it only ever opens
+     this disposable preview.
+2. **Reset data** (if needed): Click the "DevAction: drop and rebuild schema" button in the app bar.
+   - Since #442 the button mints the Clerk session token off the auth bridge and sends it as an
+     `Authorization: Bearer` header - `/admin/reset-data` sits behind `require_admin_request` (#422),
+     so the signed-in account must hold **Admin/Manager**. With no session it alerts and skips the
+     request instead of firing a doomed unauthenticated POST.
+   - A MUI confirm dialog appears first — click "Drop & Rebuild" to confirm.
+   - Then a `window.alert()` fires with "Schema dropped and rebuilt..." — use `handle_dialog` with `action: "accept"` to dismiss it.
+   - Only then can you `take_snapshot` again (alerts block all MCP interaction).
+3. **Post-login**: You land on `/app` — the Module Selector with 6 module cards.
+
+### Human sign-in, and when the comment path is broken
+
+`GET /testing/clerk-sign-in` is the human fallback and nothing else uses it any more. It mints a REAL
+staff session for an arbitrary email, gated on an Admin/Manager bearer OR the shared secret in
+`X-Testing-Secret`. Reach for it only when the comment's `/testing/session` link will not work - a red
+`preview-env` check, or `E2E_CLERK_USER_ID` unset on the environment - because it is the same
+impersonation-shaped endpoint #422 gated, not an agent convenience.
+
    ```js
    (async () => {
      const PR = 420;  // <- the PR number under test
@@ -419,26 +459,17 @@ caught two failures that all three stacked PRs were reporting as clean:
      return 'Navigating with sign-in token...';
    })()
    ```
-   For the local fallback, use `http://localhost:8000` / `http://localhost:5173`. Do not substitute the production hosts here - see the Environment section.
-   - Clerk auto-authenticates — no email, password, or verification code needed.
-   - You land on `/app` (Module Selector) fully signed in.
-   - **Don't know the inherited secret's preimage?** It lives only in the scratch of the session that
-     minted it, so a later session usually cannot recover it. Do not reset production's
-     `PREVIEW_TESTING_SIGN_IN_SECRET_HASH` for this - an existing environment copied the old digest
-     at creation and a production reset would not reach it anyway. Instead set a per-environment
-     override, which always wins: generate a pair (one-liner in `backend/.env.example`), then
-     `railway variables --set "TESTING_SIGN_IN_SECRET_HASH=<sha256>" --environment uc-nexus-pr-<N>
-     --service backend`. The set prints nothing on success - verify with a `--json` read - and it
-     redeploys the backend (~2 min). Verified on pr-575, 2026-08-10.
-2. **Reset data** (if needed): Click the "DevAction: drop and rebuild schema" button in the app bar.
-   - Since #442 the button mints the Clerk session token off the auth bridge and sends it as an
-     `Authorization: Bearer` header - `/admin/reset-data` sits behind `require_admin_request` (#422),
-     so the signed-in account must hold **Admin/Manager**. With no session it alerts and skips the
-     request instead of firing a doomed unauthenticated POST.
-   - A MUI confirm dialog appears first — click "Drop & Rebuild" to confirm.
-   - Then a `window.alert()` fires with "Schema dropped and rebuilt..." — use `handle_dialog` with `action: "accept"` to dismiss it.
-   - Only then can you `take_snapshot` again (alerts block all MCP interaction).
-3. **Post-login**: You land on `/app` — the Module Selector with 6 module cards.
+   For the local fallback, use `http://localhost:8000` / `http://localhost:5173`. Do not substitute the
+   production hosts here - see the Environment section.
+
+**Don't know the inherited secret's preimage?** It lives only in the scratch of the session that minted
+it, so a later session usually cannot recover it. Do not reset production's
+`PREVIEW_TESTING_SIGN_IN_SECRET_HASH` for this - an existing environment copied the old digest at
+creation and a production reset would not reach it anyway. Instead set a per-environment override,
+which always wins: generate a pair (one-liner in `backend/.env.example`), then `railway variables
+--set "TESTING_SIGN_IN_SECRET_HASH=<sha256>" --environment uc-nexus-pr-<N> --service backend`. The set
+prints nothing on success - verify with a `--json` read - and it redeploys the backend (~2 min).
+Verified on pr-575, 2026-08-10.
 
 ## Chrome DevTools MCP Patterns
 

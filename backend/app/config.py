@@ -17,6 +17,24 @@ BUCKET_NAME = os.getenv("BUCKET_NAME", "")
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
 TESTING_ENABLED = os.getenv("TESTING_ENABLED", "").lower() in ("true", "1", "yes")
 
+# The dedicated e2e testing Clerk account (preview-env autonomy plan). Not a real person: a user
+# created once in the Clerk dashboard and granted Admin/Manager in its publicMetadata.roles. Set on
+# PRODUCTION so every preview inherits it, and it is load-bearing in two places at once:
+#   - GET /testing/session mints a sign-in ticket for THIS id and nothing else (the hands-off preview
+#     sign-in link that lives in a PR comment).
+#   - the auth chokepoint (app/auth._reject_e2e_account_in_production) REFUSES this id on production,
+#     which is the entire reason that link is safe to hand around - every environment shares the one
+#     production Clerk instance, so a ticket minted for this account is a valid production JWT.
+# Blank disables both: /testing/session answers 500 (misconfigured) and the deny is inert.
+E2E_CLERK_USER_ID = os.getenv("E2E_CLERK_USER_ID", "")
+
+# SHA-256 hex of this preview environment's per-env session key K. Set by the preview-env workflow on
+# the backend service of each uc-nexus-pr-<N>, never on production - GET /testing/session compares
+# sha256(?key=) against it in constant time. A verifier, not a credential: the backend holds only the
+# hash, and K itself lives nowhere but the PR's "test environment ready" comment. Blank closes the
+# route's key path (401).
+TESTING_SESSION_KEY_HASH = os.getenv("TESTING_SESSION_KEY_HASH", "")
+
 # SHA-256 hex of the shared testing sign-in secret (#422). /testing/clerk-sign-in mints a REAL Clerk
 # session - every environment shares the production Clerk instance - so TESTING_ENABLED alone is an
 # environment switch, not an auth gate. A caller must either already hold an Admin/Manager session or
@@ -87,6 +105,20 @@ def is_preview_environment() -> bool:
     """Whether this deployment is a Railway per-PR preview environment. Empty name off Railway -> not
     a preview, correct for local dev and CI."""
     return bool(_PREVIEW_ENVIRONMENT_RE.match(RAILWAY_ENVIRONMENT_NAME.strip()))
+
+
+def preview_frontend_origin() -> str:
+    """The public frontend origin for THIS preview environment, e.g.
+    ``https://frontend-uc-nexus-pr-42.up.railway.app``.
+
+    Derived from the environment name rather than looked up, exactly as
+    app/services/relay_channels.py derives the backend channel URL: Railway public hostnames are
+    ``<service>-<environment>.up.railway.app`` and the frontend service is ``frontend`` in every
+    environment, so the derivation is total for any name matching the preview shape. GET
+    /testing/session (its only caller) is gated on is_preview_environment() first, so this is never
+    asked to derive an origin for production or a local checkout, where the name would not fit.
+    """
+    return f"https://frontend-{RAILWAY_ENVIRONMENT_NAME.strip()}.up.railway.app"
 
 
 def db_direct_access_enabled() -> bool:

@@ -143,6 +143,27 @@ async def get_context(request: Request) -> dict:
     return {"request": request}
 
 
+def _reject_e2e_account_in_production(user_id: str | None) -> None:
+    """Refuse the dedicated e2e testing account (config.E2E_CLERK_USER_ID) on production.
+
+    GET /testing/session mints a Clerk sign-in ticket for that account and the link sits in a public
+    PR comment. Every environment shares the one production Clerk instance, so a ticket minted for the
+    account is a valid PRODUCTION session JWT - this deny is the whole reason the link is safe to hand
+    around, and the property the design leans on rather than a defence in depth. It is enforced at the
+    identity chokepoint every gated resolver funnels through (authenticated_user_id) and at the plain
+    routes' gate (require_admin_request), so it holds whichever surface the token is presented to,
+    GraphQL or an admin route alike.
+
+    A no-op off production, and when no e2e account is configured. Read from the config MODULE at call
+    time (not an import-time binding) so the deny reflects the current environment and a test can flip
+    either input with monkeypatch."""
+    from app.config import E2E_CLERK_USER_ID, is_production_environment
+
+    uid = (E2E_CLERK_USER_ID or "").strip()
+    if uid and user_id == uid and is_production_environment():
+        raise ForbiddenError("The e2e testing account cannot be used on production")
+
+
 def _bearer_token(request) -> str | None:
     header = request.headers.get("authorization") or request.headers.get("Authorization")
     if not header:
@@ -182,6 +203,7 @@ def authenticated_user_id(context) -> str:
         user_id = claims.get("sub")
         if not user_id:
             raise AuthError("Authentication token has no subject")
+        _reject_e2e_account_in_production(user_id)
     except AppError as e:
         context[_IDENTITY_KEY] = e
         raise
@@ -278,6 +300,7 @@ def require_admin_request(request) -> dict:
     user_id = claims.get("sub")
     if not user_id:
         raise AuthError("Authentication token has no subject")
+    _reject_e2e_account_in_production(user_id)
 
     roles = user_repository.get_user_roles(user_id)
     if ADMIN_ROLE not in roles:

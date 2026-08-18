@@ -147,6 +147,11 @@ _ROUTE_EXEMPT: dict[str, str] = {
     "health": "public liveness probe returning a constant; deploy healthchecks call it anonymously",
     "relay_link": "authenticated by the enrolled relay's Bearer secret on the websocket handshake, not Clerk",
     "relay_channels": "same enrolled relay Bearer secret as relay_link, checked inline; a workstation has no session",
+    "get_testing_session": (
+        "gated inline on TESTING_ENABLED + is_preview_environment + a constant-time per-env key-hash "
+        "compare; require_admin_request is the wrong gate for it by design (the whole point is a "
+        "no-session preview sign-in), and the account it mints is refused on production"
+    ),
 }
 
 
