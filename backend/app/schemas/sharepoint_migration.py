@@ -70,7 +70,9 @@ class SharepointMigrationQueries:
                 project_inventory_qty=_to_int(r.get("Project_x0020_Inventory_x0020_Qt")),
                 project_number=_to_str(r.get("Project_x0020_Number_x0020_Temp")),
                 project_name=_to_str(r.get("Project_x0020_Name_x0020_Temp")),
-                unit_cost=_to_float(r.get("Unit_x0020_Cost")),
+                unit_cost=_to_float(r.get("UnitCost")),
+                # The list has no Part Description column (see _FIELDS); always empty, and the
+                # catalog description falls back to Part Category 1 downstream.
                 part_description=_to_str(r.get("Part_x0020_Description")),
                 finish=_to_str(r.get("Finish")),
                 rating=_to_str(r.get("Rating")),

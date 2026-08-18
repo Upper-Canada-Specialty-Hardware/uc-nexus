@@ -42,13 +42,17 @@ _FIELDS = (
     "Project_x0020_Number_x0020_Temp",
     "Project_x0020_Name_x0020_Temp",
     # Unit cost of the part. No PO line exists in Nexus for migrated stock (it was bought years ago in
-    # the system being retired), so this is the only place the cost can come from. Internal name for
-    # display "Unit Cost"; a wrong guess here just reads as no cost (valuation falls back to 0), never
-    # an error. Confirm against the list's columnDefinitions if cost comes through empty.
-    "Unit_x0020_Cost",
+    # the system being retired), so this is the only place the cost can come from. The internal name
+    # really is "UnitCost" with no _x0020_ - confirmed against the list's columnDefinitions
+    # (2026-08-18: currency column, display "Unit Cost", populated on ~91% of rows). The first guess
+    # (Unit_x0020_Cost) selected nothing, which reads as no cost rather than an error - the review
+    # step's all-costless warning is what catches a regression here.
+    "UnitCost",
     # Descriptive columns. Only meaningful for non-schedule stock - a frame or a specialty is
     # described by these and by nothing else, since no hardware schedule describes it (#454).
-    "Part_x0020_Description",
+    # There is NO Part Description column on the list (confirmed against columnDefinitions
+    # 2026-08-18), so part_description always reads empty and the catalog's description falls back
+    # to Part Category 1 - which is why no such select appears here.
     "Finish",
     "Rating",
     "Mounting",
