@@ -13,6 +13,10 @@ import { monoSx, tabularSx } from '../../theme';
 interface ReconciliationStepProps {
   isReimport: boolean;
   purpose: ImportPurpose;
+  /** #565/#604: the Select Hardware pathway picks by product, so quantityNeeded always equals
+   *  quantityRequiredByProject. The Selected Qty column would be pure duplication there, so it is
+   *  omitted. Openings mode (the default) keeps it. */
+  isHardwareMode: boolean;
   reconcileLoading: boolean;
   /** Why the reconcile read failed, or null. Shown rather than swallowed: with no rows the PO purpose
    *  auto-selects nothing, so Next stays disabled and a silent failure reads as a broken wizard. */
@@ -91,6 +95,7 @@ const HEADER_TOOLTIPS: Record<'po' | 'assembly', string> = {
 export default function ReconciliationStep({
   isReimport,
   purpose,
+  isHardwareMode,
   reconcileLoading,
   reconcileError,
   onRetryReconcile,
@@ -217,36 +222,41 @@ export default function ReconciliationStep({
         minWidth: 130,
         cellClassName: 'mono-cell',
       },
-      // Quantities are figures to compare down a column, not status - they read as tabular numerals
-      // rather than as tags, which the theme reserves for real lifecycle state.
-      //
-      // Reconciliation is scoped to the unique product code, not the openings that were ticked: the
-      // hardware lands in fungible project inventory, so opening identity is not a thing at this step
-      // (#483). For a PO that means "Qty Needed" is the product's project-wide schedule total, which is
-      // the number the buyer reasons against. Assembly keeps the selected pull scope, since there the
-      // figure is what this request is pulling.
-      purpose === 'po'
-        ? {
-            field: 'quantityRequiredByProject',
-            headerName: 'Qty Needed',
-            description: "Total quantity this product needs across the project's whole hardware schedule.",
-            flex: 0.9,
-            type: 'number',
-            cellClassName: 'figure-cell',
-          }
-        : {
-            field: 'quantityNeeded',
-            headerName: 'Qty Needed',
-            flex: 0.9,
-            type: 'number',
-            cellClassName: 'figure-cell',
-          },
     ];
 
+    // Quantities are figures to compare down a column, not status - they read as tabular numerals
+    // rather than as tags, which the theme reserves for real lifecycle state.
     if (purpose === 'po') {
-      // #483: the two numbers the buyer is actually reasoning about. Both are project totals, not
-      // per-opening: the hardware lands in fungible project inventory, so what the selected openings
-      // happen to be is irrelevant to whether the project has bought enough.
+      // #604: Selected Qty is informational - the need across just the openings ticked in the
+      // previous step, mirroring the wizard chronology (pick openings, then see what they need).
+      // Reconciliation and the over-order check stay scoped to the product code project-wide (#483:
+      // hardware lands in fungible project inventory, opening identity is not a thing at this step),
+      // so this figure never drives a decision - it is the "what did I just select" answer the buyer
+      // lost when #603 rescoped the grid. Omitted in hardware mode, where selection is by product so
+      // it would always equal Project Needed.
+      if (!isHardwareMode) {
+        cols.push({
+          field: 'quantityNeeded',
+          headerName: 'Selected Qty',
+          description:
+            'Quantity this product needs across just the openings selected in the previous step. The over-order warning still measures against the project-wide need.',
+          flex: 0.9,
+          type: 'number',
+          cellClassName: 'figure-cell',
+        });
+      }
+      // #483: the numbers the buyer actually reasons about, all project totals - the selected
+      // openings are irrelevant to whether the project has bought enough. Project Needed is the
+      // decision driver (renamed from "Qty Needed": with a selected figure beside it the bare header
+      // is ambiguous about scope, and the trio now reads Project Needed / Ordered / Received).
+      cols.push({
+        field: 'quantityRequiredByProject',
+        headerName: 'Project Needed',
+        description: "Total quantity this product needs across the project's whole hardware schedule.",
+        flex: 0.9,
+        type: 'number',
+        cellClassName: 'figure-cell',
+      });
       cols.push({
         field: 'projectTotalOrdered',
         headerName: 'Project Ordered',
@@ -260,6 +270,16 @@ export default function ReconciliationStep({
         headerName: 'Project Received',
         description: 'Quantity that reached the warehouse and beyond. Never more than Project Ordered.',
         flex: 0.8,
+        type: 'number',
+        cellClassName: 'figure-cell',
+      });
+    } else {
+      // Assembly keeps the selected pull scope as "Qty Needed" - there the figure is what this
+      // request is pulling, so the selected openings are exactly the right scope.
+      cols.push({
+        field: 'quantityNeeded',
+        headerName: 'Qty Needed',
+        flex: 0.9,
         type: 'number',
         cellClassName: 'figure-cell',
       });
@@ -331,7 +351,7 @@ export default function ReconciliationStep({
     });
 
     return cols;
-  }, [showQtyAvailable, purpose]);
+  }, [showQtyAvailable, purpose, isHardwareMode]);
 
   const rowSelectionModel = useMemo<GridRowSelectionModel>(
     () => ({ type: 'include' as const, ids: new Set<string>(productLevelSelection) }),
