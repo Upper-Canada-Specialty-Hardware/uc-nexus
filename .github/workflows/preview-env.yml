@@ -125,20 +125,21 @@ jobs:
           echo "services: Postgres=$PG_ID backend=$BE_ID frontend=$FE_ID"
 
           # --- deployment facts per service --------------------------------------------------------
-          # "<hasSuccess> <inFlight>": hasSuccess = any SUCCESS in recent history; inFlight = the latest
-          # deployment is still working. needs-force-deploy = no success ever AND nothing in flight.
-          # "no success ever" rather than "latest is SKIPPED" is deliberate: Railway appends a SKIPPED
-          # record per push for unchanged services, so a service force-built once would otherwise
-          # rebuild on every subsequent push. The inFlight half keeps this from stomping a build Railway
-          # (or the variable change below) already started.
+          # "<hasSuccess> <inFlight>": hasSuccess = a successful deployment exists; inFlight = the latest
+          # deployment is still working. needs-force-deploy = no success AND nothing in flight.
+          # hasSuccess is asked with `status.successfulOnly` rather than by scanning recent history:
+          # Railway appends a SKIPPED record per push for unchanged services, so a fixed window would let
+          # a once-force-built service's SUCCESS scroll out after enough pushes and get rebuilt again.
+          # successfulOnly is immune to that. The inFlight half (latest of ALL statuses) keeps this from
+          # stomping a build Railway - or the variable change below - already started.
           DEP_QUERY='query($input:DeploymentListInput!,$first:Int){ deployments(input:$input,first:$first){ edges{ node{ id status createdAt } } } }'
           deploy_facts() {
-            local sid="$1" input data
-            input=$(jq -cn --arg p "$PROJECT_ID" --arg s "$sid" --arg e "$ENV_ID" '{projectId:$p,serviceId:$s,environmentId:$e}')
-            data=$(rgql "$DEP_QUERY" "$(jq -cn --argjson input "$input" '{input:$input,first:5}')") || return 1
-            local has infl
-            has=$(printf '%s' "$data" | jq -r '[.deployments.edges[]?.node.status]|any(.=="SUCCESS")')
-            infl=$(printf '%s' "$data" | jq -r '(.deployments.edges[0].node.status // "NONE") as $s | (["BUILDING","DEPLOYING","QUEUED","WAITING","INITIALIZING","NEEDS_APPROVAL"]|any(.==$s))')
+            local sid="$1" base infl_data succ_data has infl
+            base=$(jq -cn --arg p "$PROJECT_ID" --arg s "$sid" --arg e "$ENV_ID" '{projectId:$p,serviceId:$s,environmentId:$e}')
+            infl_data=$(rgql "$DEP_QUERY" "$(jq -cn --argjson input "$base" '{input:$input,first:1}')") || return 1
+            succ_data=$(rgql "$DEP_QUERY" "$(jq -cn --argjson input "$base" '{input:($input + {status:{successfulOnly:true}}),first:1}')") || return 1
+            has=$(printf '%s' "$succ_data" | jq -r '([.deployments.edges[]?]|length) > 0')
+            infl=$(printf '%s' "$infl_data" | jq -r '(.deployments.edges[0].node.status // "NONE") as $s | (["BUILDING","DEPLOYING","QUEUED","WAITING","INITIALIZING","NEEDS_APPROVAL"]|any(.==$s))')
             printf '%s %s' "$has" "$infl"
           }
           pg_facts=$(deploy_facts "$PG_ID") || { echo "::error::could not read Postgres deployments"; exit 1; }
@@ -277,23 +278,35 @@ jobs:
           GQL_READY=false; SIGNIN_READY=false
           gql_probe() { curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST "$BACKEND_URL/graphql" \
               -H 'Content-Type: application/json' --data '{"query":"{ __typename }"}' || echo 000; }
+          # POLL for the sign-in 302, do not probe once. A variable-change redeploy keeps serving the OLD
+          # instance - which lacks the just-set key hash, so /testing/session 401s - until the new deploy
+          # cuts over, and /health returns 200 the whole time (from that old instance). A single probe
+          # therefore races the rollout and reads 401 against a backend that is minutes from being right.
+          wait_signin_302() {  # $1 timeout seconds -> 0 once the sign-in link answers 302
+            local timeout="$1" waited=0 code
+            while [ "$waited" -lt "$timeout" ]; do
+              code=$(signin_code)
+              if [ "$code" = "302" ]; then echo "  sign-in 302 (${waited}s)"; return 0; fi
+              echo "  sign-in -> $code (${waited}s)"
+              sleep 15; waited=$((waited+15))
+            done
+            return 1
+          }
           if [ "$BACKEND_READY" = "true" ]; then
             gcode=$(gql_probe); echo "graphql probe -> $gcode"; [ "$gcode" = "200" ] && GQL_READY=true
-
-            scode=$(signin_code); echo "sign-in probe -> $scode"
-            if [ "$scode" = "401" ]; then
-              # The key hash was set AFTER the backend's in-flight build snapshotted its variables - the
-              # first-run race on a backend-touching PR: the backend is healthy but does not carry
-              # TESTING_SESSION_KEY_HASH yet. One redeploy applies it, and this guards the whole class -
-              # any reason the running backend lacks the live key surfaces here, not in a dead link.
-              echo "sign-in link 401; redeploying the backend once so it picks up the session key hash"
+            # Wait out the key-hash redeploy's cutover. If 302 never lands, redeploy once - covers the
+            # first-run race where an in-flight build snapshotted its vars before the upsert - and wait
+            # again. On the reuse path (backend already carries the hash) the first poll 302s at 0s.
+            if wait_signin_302 420; then
+              SIGNIN_READY=true
+            else
+              echo "sign-in link never reached 302; redeploying the backend once and waiting again"
               trigger_deploy "$BE_ID"
-              if wait_http_200 "$BACKEND_URL/health" "backend /health (key-apply retry)" 600; then
-                gcode=$(gql_probe); echo "graphql probe (retry) -> $gcode"; { [ "$gcode" = "200" ] && GQL_READY=true; } || GQL_READY=false
-                scode=$(signin_code); echo "sign-in probe (retry) -> $scode"
-              fi
+              wait_http_200 "$BACKEND_URL/health" "backend /health (key-apply retry)" 600 >/dev/null || true
+              wait_signin_302 420 && SIGNIN_READY=true
             fi
-            [ "$scode" = "302" ] && SIGNIN_READY=true
+            # Re-probe graphql against whatever instance is now live, so a cutover mid-run is reflected.
+            gcode=$(gql_probe); echo "graphql probe (final) -> $gcode"; { [ "$gcode" = "200" ] && GQL_READY=true; } || GQL_READY=false
           fi
 
           # --- 6. post or update the one sticky comment --------------------------------------------
