@@ -42,6 +42,13 @@ _NOTIFICATION_TYPE_WITHOUT_DECISION = (
     "'INVENTORY_SHORTFALL', 'GP_WRITE_FAILED', 'RECEIVE_DRAFT_SUBMITTED', 'RECEIVE_DRAFT_REJECTED'"
 )
 
+# The same list with RECEIVE_DECISION_REQUIRED restored - what the downgrade recreates.
+_NOTIFICATION_TYPE_WITH_DECISION = (
+    "'PULL_REQUEST_CANCELLED', 'PULL_REQUEST_COMPLETED', 'SHIPMENT_COMPLETED', "
+    "'INVENTORY_SHORTFALL', 'GP_WRITE_FAILED', 'RECEIVE_DRAFT_SUBMITTED', "
+    "'RECEIVE_DRAFT_REJECTED', 'RECEIVE_DECISION_REQUIRED'"
+)
+
 
 def upgrade() -> None:
     # --- Drop the keep-or-ship decision workflow -------------------------------------------------
@@ -86,7 +93,14 @@ def downgrade() -> None:
     op.drop_column("shipment_container_items", "is_manual")
 
     # --- Restore the keep-or-ship decision workflow ----------------------------------------------
-    op.execute("ALTER TYPE notification_type ADD VALUE IF NOT EXISTS 'RECEIVE_DECISION_REQUIRED'")
+    # Recast rather than ADD VALUE: 079's downgrade (further down the chain, same transaction) uses
+    # RECEIVE_DECISION_REQUIRED in a `type IN (...)` DELETE, and Postgres forbids using a value ADDed
+    # to an enum in the transaction that added it. A recast bakes the value into a freshly created
+    # type, so it is an original member and safe to use immediately.
+    op.execute("ALTER TYPE notification_type RENAME TO notification_type_old")
+    op.execute(f"CREATE TYPE notification_type AS ENUM ({_NOTIFICATION_TYPE_WITH_DECISION})")
+    op.execute("ALTER TABLE notifications ALTER COLUMN type TYPE notification_type USING type::text::notification_type")
+    op.execute("DROP TYPE notification_type_old")
 
     # Recreate the table in its post-090 shape: record-or-draft sourced, both ends unique, the
     # has-source check. Empty - the decision rows themselves are not recoverable on a feature rollback.
