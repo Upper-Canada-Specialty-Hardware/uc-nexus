@@ -5,6 +5,7 @@ import {
   isWeightInvalid,
   primaryWarehouse,
   slipMaterialLines,
+  slipOpeningSummary,
   warehouseAddressLines,
 } from '../deliveryRequest';
 import { DELIVERY_REQUEST_FIELDS } from '../../../types/deliveryRequestFields';
@@ -159,6 +160,38 @@ describe('containers on the Delivery Request', () => {
       [],
     );
     expect(lines).toEqual(['(1) Unit of AD8406 - Locksets (Opening 0019-EX)']);
+  });
+});
+
+describe('slipOpeningSummary', () => {
+  it('lists every distinct opening once, sorted, from both slip items and containers', () => {
+    const summary = slipOpeningSummary(
+      [
+        { id: '1', openingNumber: '0021-EX', productCode: 'AD8406', hardwareCategory: 'Locksets', quantity: 1 },
+        { id: '2', openingNumber: '0019-EX', productCode: 'BB1279', hardwareCategory: 'Hinges', quantity: 2 },
+      ],
+      [
+        {
+          id: 'c1',
+          containerType: 'SKID',
+          name: 'Skid 1',
+          items: [
+            // A repeat of an opening already on the flat list, plus a new one only in a container.
+            { id: 'ci-1', openingNumber: '0019-EX', hardwareCategory: 'Hinges', productCode: 'BB1279', quantity: 1, position: 0 },
+            { id: 'ci-2', openingNumber: '0005-EX', hardwareCategory: 'Closers', productCode: 'CL100', quantity: 1, position: 1 },
+          ],
+        },
+      ],
+    );
+    expect(summary).toBe('0005-EX, 0019-EX, 0021-EX');
+  });
+
+  it('is blank when a shipment carries only loose stock with no opening', () => {
+    expect(
+      slipOpeningSummary([
+        { id: '1', openingNumber: null, productCode: 'AD8406', hardwareCategory: 'Locksets', quantity: 2 },
+      ]),
+    ).toBe('');
   });
 });
 

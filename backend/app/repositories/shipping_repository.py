@@ -80,7 +80,9 @@ def get_ship_ready_items(
         key = (row.opening_number, row.hardware_category, row.product_code)
         fulfilled_map[key] = row.total_requested
 
-    # 2. Subtract what packing slips have already carried out
+    # 2. Subtract what packing slips have already carried out. Manual lines are excluded: a manual
+    # line never came off the staged pool in the first place, so subtracting it here would understate
+    # what is still staged for a real product that happens to share the key.
     shipped_stmt = (
         select(
             PackingSlipItem.opening_number,
@@ -89,6 +91,7 @@ def get_ship_ready_items(
             func.sum(PackingSlipItem.quantity).label("total_shipped"),
         )
         .join(PackingSlip, PackingSlipItem.packing_slip_id == PackingSlip.id)
+        .where(PackingSlipItem.is_manual.is_(False))
         .group_by(
             PackingSlipItem.opening_number,
             PackingSlipItem.hardware_category,
@@ -193,7 +196,6 @@ def _apply_delivery_details(packing_slip: PackingSlip, details: dict | None) -> 
 def confirm_shipment(
     session: Session,
     project_id: uuid.UUID,
-    packing_slip_number: str,
     shipped_by: str,
     items: list[dict],
     details: dict | None = None,
@@ -204,13 +206,18 @@ def confirm_shipment(
     department filled in. The status is documentation of the truck's journey and nothing else - this
     call is still the moment the hardware is claimed.
 
+    The packing-slip number is minted here, not passed in: a global PS-NNNNN sequence the server
+    owns (packing_slip_numbers.py), claimed inside this transaction so a rolled-back confirm returns
+    the number.
+
     Args:
         session: SQLAlchemy session
         project_id: UUID of the project
-        packing_slip_number: Unique slip number (1-50 chars)
         shipped_by: Name of shipper
         items: list of dicts with keys opening_number, hardware_category, product_code, quantity,
-            and optional building / floor / location placement.
+            optional building / floor / location placement, and optional is_manual. A manual line is
+            free-text hardware that is on the truck but was never in inventory: it is skipped by the
+            staged-pool availability check and stamped is_manual onto the slip.
         details: the Delivery Request header (DELIVERY_REQUEST_FIELDS). Every field is optional -
             the form is filled in against whatever the site has said, and a blank is a real answer.
     """
@@ -220,25 +227,14 @@ def confirm_shipment(
     # stop until accounting has repaired it, or the reconciliation gets worse the longer it runs.
     project_repository.require_gp_setup_ok(session, project_id)
 
-    # 1. Validate packing_slip_number
-    if not packing_slip_number or len(packing_slip_number) < 1 or len(packing_slip_number) > 50:
-        raise ValidationError("packing_slip_number must be 1-50 characters", field="packing_slip_number")
-
     if not shipped_by:
         raise ValidationError("shipped_by must not be empty", field="shipped_by")
 
     if not items:
         raise ValidationError("items must not be empty", field="items")
 
-    # Check uniqueness
-    existing_stmt = select(PackingSlip).where(PackingSlip.packing_slip_number == packing_slip_number)
-    if session.scalars(existing_stmt).first() is not None:
-        raise ConflictError(
-            f"Packing slip {packing_slip_number} already exists",
-            field="packing_slip_number",
-        )
-
-    # 2. Validate availability against the staged pool
+    # 1. Validate availability against the staged pool. Manual lines never entered inventory, so they
+    # are not measured against what is staged - only the real lines are.
     ship_ready = get_ship_ready_items(session, project_id)
     available_loose: dict[tuple, int] = {}
     for li in ship_ready["loose_items"]:
@@ -247,6 +243,8 @@ def confirm_shipment(
 
     cart_agg: dict[tuple, int] = defaultdict(int)
     for item in items:
+        if item.get("is_manual"):
+            continue
         key = (item["opening_number"], item["hardware_category"], item["product_code"])
         cart_agg[key] += item["quantity"]
 
@@ -258,6 +256,18 @@ def confirm_shipment(
                 f"requested {requested}, available {available}",
                 field="items",
             )
+
+    # 2. Mint the slip number. The uniqueness guard stays as a backstop: the mint already skips any
+    # value a legacy hand-typed slip occupies, so this only ever fires on a genuine bug.
+    from app.repositories import packing_slip_numbers
+
+    packing_slip_number = packing_slip_numbers.mint_packing_slip_number(session)
+    existing_stmt = select(PackingSlip).where(PackingSlip.packing_slip_number == packing_slip_number)
+    if session.scalars(existing_stmt).first() is not None:
+        raise ConflictError(
+            f"Packing slip {packing_slip_number} already exists",
+            field="packing_slip_number",
+        )
 
     # 3. Create PackingSlip
     now = datetime.utcnow()
@@ -288,6 +298,7 @@ def confirm_shipment(
                 product_code=item["product_code"],
                 hardware_category=item["hardware_category"],
                 quantity=item["quantity"],
+                is_manual=item.get("is_manual", False),
             )
         )
 
@@ -451,6 +462,10 @@ def get_returnable_lines(session: Session, packing_slip_id: uuid.UUID) -> list[d
     already = _returned_quantities(session, packing_slip_id)
     lines = []
     for psi in ps.items:
+        # A manual line never entered inventory, so there is nothing to restock - it is not
+        # returnable and does not appear in the returns picker.
+        if psi.is_manual:
+            continue
         returned = already.get(psi.id, 0)
         lines.append(
             {
@@ -517,6 +532,12 @@ def create_shipment_return(
         psi = psi_by_id.get(item["packing_slip_item_id"])
         if psi is None:
             raise ValidationError("Line is not part of this packing slip", field="packing_slip_item_id")
+        if psi.is_manual:
+            # A manual line was never in inventory, so there is nothing to restock it to.
+            raise ValidationError(
+                "A manual line cannot be returned - it was never in inventory.",
+                field="packing_slip_item_id",
+            )
         rma_ref = item.get("rma_reference")
         if rma_ref is not None and len(rma_ref) > 100:
             raise ValidationError("rma_reference must be 100 characters or fewer", field="rma_reference")

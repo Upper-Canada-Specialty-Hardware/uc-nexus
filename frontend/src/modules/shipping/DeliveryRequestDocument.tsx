@@ -172,6 +172,8 @@ export interface DeliveryRequestDocumentProps {
   /** The day the request was raised, already formatted. */
   date: string;
   shipper: string;
+  /** Distinct opening numbers on the shipment, comma-joined; blank for an all-loose-stock shipment. */
+  openings: string;
   materialLines: string[];
   /**
    * UC Hardware's own address for the letterhead box, newline-separated. Separate from the pickup
@@ -190,6 +192,7 @@ export default function DeliveryRequestDocument({
   jobNumber,
   date,
   shipper,
+  openings,
   materialLines,
   divisionAddress,
   values,
@@ -254,6 +257,9 @@ export default function DeliveryRequestDocument({
 
         <Field label="PROJECT:" value={projectName} />
         <Field label="JOB NUMBER:" value={jobNumber} />
+        {/* Every distinct opening on the shipment, so the site sees the whole door list at a glance
+            without reading it off the material lines. Blank for an all-loose-stock shipment. */}
+        <Field label="OPENINGS:" value={openings} />
 
         <StackedField label="PICKUP LOCATION:" value={values.pickupLocation} minLines={3} />
 

@@ -117,11 +117,11 @@ def get_warehouse_dashboard(session: Session) -> dict:
         or 0
     )
 
-    # Back-ordered: PO line items where received < ordered on active POs
-    back_ordered = (
+    # Back-ordered: count of active POs still owed anything (received < ordered on any line).
+    back_ordered_po_count = (
         session.scalar(
-            select(func.coalesce(func.sum(POLineItemModel.ordered_quantity - POLineItemModel.received_quantity), 0))
-            .join(POModel, POLineItemModel.po_id == POModel.id)
+            select(func.count(func.distinct(POModel.id)))
+            .join(POLineItemModel, POLineItemModel.po_id == POModel.id)
             .where(
                 POModel.status.in_([POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
                 POModel.deleted_at.is_(None),
@@ -165,7 +165,7 @@ def get_warehouse_dashboard(session: Session) -> dict:
         "pending_pull_shop": int(pending_shop),
         "pending_pull_shipping": int(pending_shipping),
         "received_last_7_days": int(received_recent),
-        "back_ordered_count": int(back_ordered),
+        "back_ordered_po_count": int(back_ordered_po_count),
         "deficient_count": int(deficient_project) + int(deficient_stock),
         "pending_receive_draft_count": int(pending_drafts),
     }

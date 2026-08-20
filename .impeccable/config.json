@@ -18,6 +18,24 @@
           "frontend/src/modules/warehouse/LocationsTab.tsx"
         ],
         "createdAt": "2026-08-10T19:29:40.003Z"
+      },
+      {
+        "rule": "design-system-font",
+        "value": "*",
+        "files": [
+          "frontend/src/modules/shipping/DeliveryRequestDocument.tsx"
+        ],
+        "createdAt": "2026-08-20T18:37:52.917Z",
+        "reason": "react-pdf print document: Helvetica family are PDF-14 core fonts, not governed by the web design system (Source Sans 3 / IBM Plex Mono)"
+      },
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "frontend/src/modules/warehouse/WarehouseLanding.tsx"
+        ],
+        "createdAt": "2026-08-20T19:55:16.748Z",
+        "reason": "intentional amber attention accent matching the design system's .ds-gauge-attention / .ds-ledger-selected treatment (inset 3px amber); pre-existing, documented in-line"
       }
     ]
   }

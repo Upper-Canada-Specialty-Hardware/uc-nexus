@@ -346,7 +346,7 @@ export default function RequestWorkspaceScheduleTab({
                           <TableCell>Product</TableCell>
                           <TableCell>Category</TableCell>
                           <TableCell />
-                          <TableCell align="right">Owed</TableCell>
+                          <TableCell align="right">Required by hardware schedule</TableCell>
                           <TableCell align="right">Sent</TableCell>
                           <TableCell align="right">Claimed</TableCell>
                           <TableCell align="right">Free</TableCell>

@@ -182,9 +182,38 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
               hardwareCategory: item.hardwareCategory,
               productCode: item.productCode,
               quantity: take,
+              isManual: false,
               position: container.items.length,
             },
           ];
+      save(container, next);
+    },
+    [save],
+  );
+
+  /**
+   * Append a free-text, off-inventory line to a container: hardware that is on the truck but was
+   * never in Nexus inventory. It rides the same save round trip as a placement, flagged is_manual, so
+   * remove / qty-edit / reorder work on it unchanged; the backend keeps it out of the staged-pool
+   * arithmetic and off the returnable list.
+   */
+  const addManualLine = useCallback(
+    (
+      container: Container,
+      line: { productCode: string; hardwareCategory: string; quantity: number; openingNumber: string | null },
+    ) => {
+      const next: ContainerItem[] = [
+        ...container.items,
+        {
+          id: 'new',
+          openingNumber: line.openingNumber,
+          hardwareCategory: line.hardwareCategory,
+          productCode: line.productCode,
+          quantity: line.quantity,
+          isManual: true,
+          position: container.items.length,
+        },
+      ];
       save(container, next);
     },
     [save],
@@ -456,6 +485,7 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
                   onRemoveItem={(itemId) => removeItem(c, itemId)}
                   onMove={(index, delta) => move(c, index, delta)}
                   onSetQuantity={(itemId, q) => setItemQuantity(c, itemId, q)}
+                  onAddManualLine={(line) => addManualLine(c, line)}
                 />
               ))}
             </Stack>
@@ -601,6 +631,7 @@ function ContainerCard({
   onRemoveItem,
   onMove,
   onSetQuantity,
+  onAddManualLine,
 }: {
   container: Container;
   selected: boolean;
@@ -609,6 +640,12 @@ function ContainerCard({
   onRemoveItem: (itemId: string) => void;
   onMove: (index: number, delta: number) => void;
   onSetQuantity: (itemId: string, quantity: number) => void;
+  onAddManualLine: (line: {
+    productCode: string;
+    hardwareCategory: string;
+    quantity: number;
+    openingNumber: string | null;
+  }) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: containerDropId(container.id) });
   const stacked = isStacked(container.containerType);
@@ -678,7 +715,124 @@ function ContainerCard({
           </Stack>
         </SortableContext>
       )}
+
+      <ManualLineForm containerName={container.name} onAdd={onAddManualLine} />
     </Paper>
+  );
+}
+
+/**
+ * The "Add line" affordance on a container: a free-text, off-inventory line the shipping user types
+ * for hardware that is on the truck but was never in Nexus inventory. Collapsed to a button until
+ * used, so it does not compete with the staged pool that is the main way things get loaded.
+ */
+function ManualLineForm({
+  containerName,
+  onAdd,
+}: {
+  containerName: string;
+  onAdd: (line: {
+    productCode: string;
+    hardwareCategory: string;
+    quantity: number;
+    openingNumber: string | null;
+  }) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [productCode, setProductCode] = useState('');
+  const [hardwareCategory, setHardwareCategory] = useState('');
+  const [opening, setOpening] = useState('');
+  const [quantity, setQuantity] = useState(1);
+
+  const canAdd = productCode.trim() !== '' && hardwareCategory.trim() !== '' && quantity >= 1;
+
+  const reset = () => {
+    setProductCode('');
+    setHardwareCategory('');
+    setOpening('');
+    setQuantity(1);
+    setOpen(false);
+  };
+
+  const submit = () => {
+    if (!canAdd) return;
+    onAdd({
+      productCode: productCode.trim(),
+      hardwareCategory: hardwareCategory.trim(),
+      quantity,
+      openingNumber: opening.trim() || null,
+    });
+    reset();
+  };
+
+  if (!open) {
+    return (
+      <Button
+        size="small"
+        startIcon={<Plus size={15} strokeWidth={1.75} />}
+        onClick={() => setOpen(true)}
+        sx={{ mt: 1 }}
+      >
+        Add line
+      </Button>
+    );
+  }
+
+  return (
+    <Box sx={{ mt: 1, pt: 1, borderTop: '1px dashed', borderColor: 'divider' }}>
+      <Typography sx={{ ...microLabelSx, display: 'block', mb: 0.75 }}>
+        Manual line - off-inventory, not returnable
+      </Typography>
+      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="flex-start">
+        <TextField
+          size="small"
+          label="Product code"
+          value={productCode}
+          onChange={(e) => setProductCode(e.target.value)}
+          sx={{ flex: '1 1 130px', minWidth: 120 }}
+        />
+        <TextField
+          size="small"
+          label="Category"
+          value={hardwareCategory}
+          onChange={(e) => setHardwareCategory(e.target.value)}
+          sx={{ flex: '1 1 130px', minWidth: 120 }}
+        />
+        <TextField
+          size="small"
+          label="Opening (optional)"
+          value={opening}
+          onChange={(e) => setOpening(e.target.value)}
+          sx={{ flex: '1 1 120px', minWidth: 110 }}
+        />
+        <TextField
+          size="small"
+          type="number"
+          label="Qty"
+          value={quantity}
+          onChange={(e) => {
+            const next = Number.parseInt(e.target.value, 10);
+            setQuantity(Number.isNaN(next) ? 1 : Math.max(1, next));
+          }}
+          inputProps={{ min: 1, 'aria-label': `Quantity of the manual line for ${containerName}` }}
+          sx={{ width: 80 }}
+        />
+      </Stack>
+      <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+        <Button
+          size="small"
+          variant="contained"
+          disabled={!canAdd}
+          onClick={submit}
+          aria-label={`Add manual line to ${containerName}`}
+        >
+          Add
+        </Button>
+        <Button size="small" onClick={reset}>
+          Cancel
+        </Button>
+      </Stack>
+    </Box>
   );
 }
 
@@ -734,6 +888,14 @@ function ContainerRow({
           {stacked && `${index + 1}. `}
           {label}
         </Typography>
+        {item.isManual && (
+          <Chip
+            size="small"
+            variant="outlined"
+            label="manual"
+            sx={{ height: 18, '& .MuiChip-label': { px: 0.75, fontSize: '0.6875rem' } }}
+          />
+        )}
       </Box>
       <Stack direction="row" spacing={0.5} alignItems="center">
         {/* Correctable in place. Splitting a product across two containers means getting the split

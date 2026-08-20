@@ -21,7 +21,7 @@ export interface WarehouseDashboard {
   stockUnlocatedCount: number;
   pendingPullShop: number;
   pendingPullShipping: number;
-  backOrderedCount: number;
+  backOrderedPoCount: number;
   deficientCount: number;
   /** Counted receives waiting on a Warehouse Manager. */
   pendingReceiveDraftCount: number;

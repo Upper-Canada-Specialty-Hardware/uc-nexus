@@ -75,6 +75,7 @@ function looseInput(quantity: number, overrides: Record<string, unknown> = {}) {
     hardwareCategory: 'HINGE',
     productCode: 'HG-100',
     quantity,
+    isManual: false,
     ...overrides,
   };
 }
@@ -145,6 +146,7 @@ describe('splitting loose hardware', () => {
       hardwareCategory: 'HINGE',
       productCode: 'HG-100',
       quantity: 4,
+      isManual: false,
       position: 0,
     };
     renderWorkspace([
@@ -168,6 +170,7 @@ describe('splitting loose hardware', () => {
       hardwareCategory: 'HINGE',
       productCode: 'HG-100',
       quantity: 4,
+      isManual: false,
       position: 0,
     };
     renderWorkspace([
@@ -222,6 +225,7 @@ describe('sameStagedStock', () => {
     id: 'ci-1',
     openingItemId: null,
     quantity: 1,
+    isManual: false,
     position: 0,
     ...row,
   };
@@ -238,4 +242,43 @@ describe('sameStagedStock', () => {
     expect(sameStagedStock({ ...base, openingNumber: null }, row)).toBe(false);
   });
 
+  it('never folds a manual line into staged stock, even when the fields coincide', () => {
+    // A manual line is off-inventory, so topping it up with a staged placement would put real stock
+    // on a line the arithmetic ignores.
+    expect(sameStagedStock({ ...base, isManual: true }, row)).toBe(false);
+  });
+});
+
+describe('adding a manual line', () => {
+  it('appends a free-text off-inventory line flagged is_manual', async () => {
+    const fired = vi.fn();
+    renderWorkspace([
+      poolMock({ containers: [container()] }),
+      setItemsMock(
+        'c-1',
+        [
+          {
+            openingNumber: null,
+            hardwareCategory: 'MISC',
+            productCode: 'MAN-1',
+            quantity: 2,
+            isManual: true,
+          },
+        ],
+        fired,
+      ),
+    ]);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add line' }));
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Product code' }), {
+      target: { value: 'MAN-1' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Category' }), { target: { value: 'MISC' } });
+    fireEvent.change(screen.getByRole('spinbutton', { name: /Quantity of the manual line/i }), {
+      target: { value: '2' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add manual line to Box 1' }));
+
+    await waitFor(() => expect(fired).toHaveBeenCalled());
+  });
 });

@@ -128,10 +128,25 @@ def set_container_items(
     container = _open_container(session, container_id)
     staged_pool = build_staged_pool(session, container.project_id)
 
+    # A manual line is free-text hardware that was never in Nexus inventory, so it is not measured
+    # against the staged pool - only validated as a well-formed line. Real lines are aggregated and
+    # checked against what is genuinely staged and unplaced.
     wanted: dict[tuple[str | None, str, str], int] = {}
     for item in items:
+        category = (item.get("hardware_category") or "").strip()
+        product = (item.get("product_code") or "").strip()
+        quantity = int(item.get("quantity", 1))
+        if item.get("is_manual"):
+            if not category or not product:
+                raise ValidationError(
+                    "A manual line needs a hardware category and a product code.",
+                    field="items",
+                )
+            if quantity < 1:
+                raise ValidationError("A manual line needs a quantity of at least 1.", field="items")
+            continue
         key = loose_key(item.get("opening_number"), item["hardware_category"], item["product_code"])
-        wanted[key] = wanted.get(key, 0) + int(item.get("quantity", 1))
+        wanted[key] = wanted.get(key, 0) + quantity
 
     _check_available(session, container, wanted, staged_pool)
 
@@ -148,6 +163,7 @@ def set_container_items(
                 hardware_category=item["hardware_category"],
                 product_code=item["product_code"],
                 quantity=int(item.get("quantity", 1)),
+                is_manual=bool(item.get("is_manual", False)),
                 # The list order IS the stacking order. Index 0 is loaded first, which on a skid is
                 # the bottom of the stack.
                 position=index,
@@ -165,19 +181,19 @@ def confirm_shipment_from_containers(
     project_id: uuid.UUID,
     container_ids: list[uuid.UUID],
     *,
-    packing_slip_number: str,
     shipped_by: str,
     details: dict | None,
 ):
     """Ship the named containers as one shipment (#451).
 
     Deliberately a thin wrapper over `confirm_shipment` rather than a second confirm path: that
-    function owns the quarantine gate, the slip-number uniqueness check and the availability
-    arithmetic, and a container flow that re-implemented any of them would be a second set of rules
-    to keep in step.
+    function owns the quarantine gate, the slip-number mint, the uniqueness backstop and the
+    availability arithmetic, and a container flow that re-implemented any of them would be a second
+    set of rules to keep in step.
 
-    All this adds is where the items come from and, afterwards, stamping the slip onto the
-    containers so they read as shipped instead of staying open and re-shippable.
+    All this adds is where the items come from - including their manual flag - and, afterwards,
+    stamping the slip onto the containers so they read as shipped instead of staying open and
+    re-shippable.
     """
     from app.repositories import shipping_repository
 
@@ -203,6 +219,7 @@ def confirm_shipment_from_containers(
             "product_code": item.product_code,
             "hardware_category": item.hardware_category,
             "quantity": item.quantity,
+            "is_manual": item.is_manual,
         }
         for container in containers
         for item in sorted(container.items, key=lambda i: i.position)
@@ -211,7 +228,6 @@ def confirm_shipment_from_containers(
     slip = shipping_repository.confirm_shipment(
         session,
         project_id,
-        packing_slip_number,
         shipped_by,
         items,
         details,
@@ -257,6 +273,11 @@ def build_staged_pool(
 
     for container in containers:
         for item in container.items:
+            # A manual line was never part of the staged pool, so it does not consume it. Counting it
+            # as placed would let a manual line matching a real staged combo eat pool a genuine drag
+            # is entitled to.
+            if item.is_manual:
+                continue
             key = loose_key(item.opening_number, item.hardware_category, item.product_code)
             bucket = pool.setdefault(key, {"staged": 0, "placed": 0})
             bucket["placed"] += item.quantity

@@ -60,9 +60,9 @@ export default function ImportModule() {
 
   useEffect(() => {
     if (consumedRef.current) return;
-    // Old shipping links (the receive-decision "Ship out now", any bookmark) now land on the request
-    // workspace, which composes off the schedule AND off loose inventory in one cart. source=latest is
-    // dropped - the workspace computes coverage server-side, so there is nothing to hydrate.
+    // Old ?purpose=shipping links (any bookmark) now land on the request workspace, which composes
+    // off the schedule AND off loose inventory in one cart. source=latest is dropped - the workspace
+    // computes coverage server-side, so there is nothing to hydrate.
     if (purposeParam === 'shipping') {
       consumedRef.current = true;
       navigate(`/app/shipping/requests/new${projectIdParam ? `?projectId=${projectIdParam}` : ''}`, {
