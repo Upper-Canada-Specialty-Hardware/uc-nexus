@@ -115,7 +115,8 @@ def downgrade() -> None:
         sa.Column(
             "receive_draft_id",
             postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("receive_drafts.id", ondelete="CASCADE"),
+            # Named to match what 090 created, so 090's downgrade can drop it by name on the way down.
+            sa.ForeignKey("receive_drafts.id", name="fk_receive_decisions_receive_draft", ondelete="CASCADE"),
             nullable=True,
         ),
         sa.UniqueConstraint("receive_record_id", name="uq_receive_decisions_receive_record"),
