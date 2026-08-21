@@ -1,7 +1,7 @@
 name: preview-env
 
 # Hands off a fully built, signed-in-ready test environment for every non-draft PR (preview-env
-# autonomy plan; closes #607 #601 #600 #598). Two failure modes it closes:
+# autonomy plan; closes #607 #601 #600 #598). Three failure modes it closes:
 #
 #   1. Railway's focused PR deploys skip a service whose directory the PR did not touch, and a
 #      relay-only / docs-only PR leaves the whole environment unbuilt, Postgres included. This
@@ -11,6 +11,12 @@ name: preview-env
 #      K for GET /testing/session and puts the sign-in link in one sticky PR comment. The link mints
 #      the dedicated e2e account, which production refuses (app/auth._reject_e2e_account_in_production),
 #      so it is safe to sit in a public comment.
+#   3. Railway's initial deploy on a fresh PR environment can land as SUCCESS with no build behind it
+#      (empty deploy logs, "Deployment does not have an associated build" from the CLI), so no replica
+#      ever serves and the public domain 404s indefinitely while every status surface reads green
+#      (#625). The readiness wait recognizes that shape - latest deployment SUCCESS yet the domain
+#      still 404ing past a grace window - and triggers one from-source deploy per service instead of
+#      waiting out its timeout.
 #
 # The workflow only ever ADDS deploys: when Railway built a service itself this push, it has a success
 # in history and this just health-checks it. Everything runs against the Railway public GraphQL API
@@ -204,10 +210,16 @@ jobs:
 
           # --- 4. force-deploy what Railway skipped, in order --------------------------------------
           TRIGGER='mutation($input:EnvironmentTriggersDeployInput!){ environmentTriggersDeploy(input:$input) }'
-          trigger_deploy() {  # $1 = service id
+          trigger_deploy() {  # $1 = service id -> 1 on API failure; callers decide how fatal that is
             local tin
             tin=$(jq -cn --arg e "$ENV_ID" --arg p "$PROJECT_ID" --arg s "$1" '{input:{environmentId:$e,projectId:$p,serviceId:$s}}')
-            rgql "$TRIGGER" "$tin" >/dev/null || { echo "::error::failed to trigger a deploy for service $1"; exit 1; }
+            rgql "$TRIGGER" "$tin" >/dev/null || { echo "::warning::failed to trigger a deploy for service $1"; return 1; }
+          }
+          latest_status() {  # $1 = service id -> prints the newest deployment's status; empty/NONE when unreadable
+            local input
+            input=$(jq -cn --arg p "$PROJECT_ID" --arg s "$1" --arg e "$ENV_ID" '{projectId:$p,serviceId:$s,environmentId:$e}')
+            rgql "$DEP_QUERY" "$(jq -cn --argjson input "$input" '{input:$input,first:1}')" \
+              | jq -r '.deployments.edges[0].node.status // "NONE"'
           }
           wait_deploy_success() {  # $1 service id, $2 label, $3 timeout seconds -> 0 on SUCCESS
             local sid="$1" label="$2" timeout="$3" waited=0 status input
@@ -227,7 +239,7 @@ jobs:
 
           if [ "$PG_DEPLOY" = "true" ]; then
             echo "Postgres has no successful deployment; deploying it"
-            trigger_deploy "$PG_ID"
+            trigger_deploy "$PG_ID" || { echo "::error::could not trigger the Postgres deploy"; exit 1; }
             if wait_deploy_success "$PG_ID" "Postgres" 360; then
               echo "Postgres up; settling ~40s before the backend so it does not fire ahead of Postgres accepting connections"
               sleep 40
@@ -237,11 +249,11 @@ jobs:
           fi
           if [ "$BE_DEPLOY" = "true" ]; then
             echo "backend has no successful deployment; deploying it"
-            trigger_deploy "$BE_ID"
+            trigger_deploy "$BE_ID" || { echo "::error::could not trigger the backend deploy"; exit 1; }
           fi
           if [ "$FE_DEPLOY" = "true" ]; then
             echo "frontend has no successful deployment; deploying it"
-            trigger_deploy "$FE_ID"
+            trigger_deploy "$FE_ID" || { echo "::error::could not trigger the frontend deploy"; exit 1; }
           fi
 
           # --- 5. wait for ready -------------------------------------------------------------------
@@ -262,18 +274,46 @@ jobs:
             return 1
           }
 
+          # wait_http_200 plus the #625 rescue. Railway's initial deploy on a fresh PR environment can
+          # land SUCCESS with no build behind it, so no replica serves and the edge 404s "Application
+          # not found" forever while every status surface reads green. The signature: newest deployment
+          # SUCCESS yet the domain still 404ing past a ~90s grace (routing for a real deploy cuts over
+          # in seconds, and 404 is otherwise never expected - a crashed app answers 502/503). On it,
+          # trigger ONE from-source deploy (environmentTriggersDeploy builds from the branch head - the
+          # API shape of the `railway redeploy --from-source` that recovers this state manually) and
+          # restart the wait budget for the rebuild. One rescue per call, so a genuinely broken service
+          # still fails out instead of looping.
+          wait_service_up() {  # $1 url, $2 label, $3 service id, $4 timeout -> 0 on first 200
+            local url="$1" label="$2" sid="$3" timeout="$4" waited=0 code streak=0 rescued=false status
+            while [ "$waited" -lt "$timeout" ]; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$url" || echo 000)
+              if [ "$code" = "200" ]; then echo "  $label 200 (${waited}s)"; return 0; fi
+              echo "  $label -> $code (${waited}s)"
+              if [ "$code" = "404" ]; then streak=$((streak+15)); else streak=0; fi
+              if [ "$rescued" = "false" ] && [ "$streak" -ge 90 ]; then
+                status=$(latest_status "$sid")
+                if [ "$status" = "SUCCESS" ]; then
+                  echo "  $label: deployment reports SUCCESS but the domain has 404'd for ${streak}s - success with no build behind it (#625); triggering a from-source deploy"
+                  if trigger_deploy "$sid"; then rescued=true; streak=0; waited=0; fi
+                fi
+              fi
+              sleep 15; waited=$((waited+15))
+            done
+            return 1
+          }
+
           BACKEND_READY=false
           # Generous ceiling: a cold build plus alembic migrations on boot (healthcheckTimeout is 300s).
-          if wait_http_200 "$BACKEND_URL/health" "backend /health" 600; then
+          if wait_service_up "$BACKEND_URL/health" "backend /health" "$BE_ID" 600; then
             BACKEND_READY=true
           elif [ "$BE_RETRY_ELIGIBLE" = "true" ]; then
             echo "backend not healthy and it was (re)deployed this run; retrying it once (the Postgres-connection-timeout trap)"
             trigger_deploy "$BE_ID"
-            wait_http_200 "$BACKEND_URL/health" "backend /health (retry)" 600 && BACKEND_READY=true
+            wait_service_up "$BACKEND_URL/health" "backend /health (retry)" "$BE_ID" 600 && BACKEND_READY=true
           fi
 
           FRONTEND_READY=false
-          wait_http_200 "$FRONTEND_URL/" "frontend /" 420 && FRONTEND_READY=true
+          wait_service_up "$FRONTEND_URL/" "frontend /" "$FE_ID" 420 && FRONTEND_READY=true
 
           GQL_READY=false; SIGNIN_READY=false
           gql_probe() { curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST "$BACKEND_URL/graphql" \
