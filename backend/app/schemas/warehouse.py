@@ -15,7 +15,7 @@ from app.auth import (
 )
 from app.database import SessionLocal
 from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
-from app.repositories import custom_items_repository, user_repository, warehouse_admin_repository
+from app.repositories import custom_items_repository, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
 from app.services import gp_idempotency, gp_outbox_enqueue, gp_po
 from app.services.relay_gateway import gateway as relay_gateway
@@ -26,7 +26,6 @@ from .converters import (
     pick_sheet_to_type,
     po_to_type,
     pull_request_to_type,
-    receive_decision_to_type,
     receive_draft_to_type,
     receive_record_to_type,
     stock_item_to_type,
@@ -44,7 +43,6 @@ from .inputs import (
     CancelPullRequestInput,
     CreateReceiveDraftInput,
     CreateWarehouseInput,
-    DecideReceiveDecisionInput,
     OverrideInventoryQuantityInput,
     PickLineInput,
     RejectReceiveDraftInput,
@@ -73,7 +71,6 @@ from .types import (
     ProjectProgressByProduct,
     PullRequest,
     PurchaseOrder,
-    ReceiveDecision,
     ReceiveDraft,
     ReceiveRecord,
     ReceiveRow,
@@ -203,9 +200,6 @@ def _persist_create_receive(
             warehouse_id=warehouse_id,
             receipt_number=gp_receipt.get("receipt_number"),
             batch_number=gp_receipt.get("batch_number"),
-            # #499: so the booking stamps its receive onto the decision the count already raised,
-            # rather than raising a second one nobody asked for.
-            receive_draft_id=receive_draft_id,
         )
         # Capture the id before commit: expire_on_commit would make receive_record.id raise
         # DetachedInstanceError once the session block closes.
@@ -247,92 +241,19 @@ def _is_warehouse_manager(info) -> bool:
 
 def _load_draft_type(draft_id: uuid.UUID) -> ReceiveDraft:
     with SessionLocal() as session:
-        draft, po, decision = warehouse_repository.get_receive_draft(session, draft_id)
-        return receive_draft_to_type(draft, po, decision)
-
-
-def _may_book_draft(decision, user_id: str, *, is_manager: bool) -> bool:
-    """Whether this caller may book (approve) the draft the decision belongs to.
-
-    Decision-first: the PO creator's keep-or-ship answer gates the booking, and the Warehouse
-    Manager no longer books past it.
-      - No decision at all (a stock PO, which has no project whose inventory to keep it in): there
-        is no keep-or-ship question, so the manager's approval is the whole gate, as before.
-      - Undecided: nobody books yet - the manager included. The creator has to answer first, which
-        is the whole point of the gate: a receive is not routed into inventory before its owner has
-        said that is where it belongs.
-      - KEEP_IN_INVENTORY: it is staying, so the manager's approval is exactly the step that applies.
-      - SHIP_OUT: it is leaving again, so only the person who chose that books it (from Shipment
-        Decisions). The manager does not route a ship-out into inventory.
-
-    Pure so it can be pinned directly. The decision is read from the database by the caller below,
-    never from anything the client sends.
-    """
-    from app.models.enums import ReceiveDecisionChoice
-
-    if decision is None:
-        return is_manager
-    if decision.decision is None:
-        return False
-    if decision.decision == ReceiveDecisionChoice.KEEP_IN_INVENTORY:
-        return is_manager
-    # SHIP_OUT: only the creator who chose it, whether or not they are a manager.
-    return decision.decided_by_user_id == user_id
+        draft, po = warehouse_repository.get_receive_draft(session, draft_id)
+        return receive_draft_to_type(draft, po)
 
 
 def _authorize_draft_approval(info, user_id: str, draft_id: uuid.UUID) -> None:
-    """Refuse a draft approval this caller is not entitled to.
+    """Refuse a draft approval to anyone but a Warehouse Manager or Admin.
 
-    The manager no longer short-circuits: booking a project receive is gated on the PO creator's
-    keep-or-ship answer, so the decision is loaded and checked for everyone. A stock PO has no
-    decision and falls back to the manager-only gate."""
-    from sqlalchemy import select
-
-    from app.models.enums import ReceiveDecisionChoice
-    from app.models.receive_decision import ReceiveDecision as ReceiveDecisionModel
-
-    is_manager = bool(set(caller_roles(info.context)) & {ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE})
-    with SessionLocal() as session:
-        decision = session.scalars(
-            select(ReceiveDecisionModel).where(ReceiveDecisionModel.receive_draft_id == draft_id)
-        ).first()
-    if _may_book_draft(decision, user_id, is_manager=is_manager):
+    `user_id` / `draft_id` are unused now that approval is a plain role gate; kept in the signature
+    so the two call sites (the live approve and the outbox-queued approve) share one check.
+    """
+    if set(caller_roles(info.context)) & {ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE}:
         return
-    # Name the actual blocker rather than the generic role message, so the approvals queue is not a
-    # dead end the manager cannot explain.
-    if decision is not None and decision.decision is None:
-        raise ForbiddenError(
-            "This receive is waiting on the PO creator's decision to keep it in inventory or ship it out."
-        )
-    if decision is not None and decision.decision == ReceiveDecisionChoice.SHIP_OUT:
-        raise ForbiddenError(
-            "The PO creator chose to ship this out - they book it from Shipment Decisions, not the approvals queue."
-        )
     raise ForbiddenError("Only a Warehouse Manager can approve this receive.")
-
-
-def _load_decision(session, decision_id: uuid.UUID):
-    """(decision, po, receive_record) for one decision, with the receive's lines eager-loaded - the
-    decision card lists everything that came in on that shipment."""
-    from sqlalchemy import select
-    from sqlalchemy.orm import selectinload
-
-    from app.models.purchase_order import PurchaseOrder as POModel
-    from app.models.receive_decision import ReceiveDecision as ReceiveDecisionModel
-    from app.models.receiving import ReceiveRecord as ReceiveRecordModel
-
-    decision = session.get(ReceiveDecisionModel, decision_id)
-    po = session.get(POModel, decision.po_id)
-    receive_record = (
-        session.scalars(
-            select(ReceiveRecordModel)
-            .options(selectinload(ReceiveRecordModel.line_items))
-            .where(ReceiveRecordModel.id == decision.receive_record_id)
-        )
-        .unique()
-        .first()
-    )
-    return decision, po, receive_record
 
 
 def _claim_draft_for_approval(draft_id, reviewer_user_id, reviewer_name, key):
@@ -409,34 +330,13 @@ class WarehouseQueries:
                 po_id=uuid.UUID(str(po_id)) if po_id else None,
                 created_by_user_id=user["user_id"] if mine else None,
             )
-            return [receive_draft_to_type(draft, po, decision) for draft, po, decision in rows]
+            return [receive_draft_to_type(draft, po) for draft, po in rows]
 
     @strawberry.field
     def receive_draft(self, info: strawberry.Info, id: strawberry.ID) -> ReceiveDraft:
         with SessionLocal() as session:
-            draft, po, decision = warehouse_repository.get_receive_draft(session, uuid.UUID(str(id)))
-            return receive_draft_to_type(draft, po, decision)
-
-    @strawberry.field
-    def my_receive_decisions(self, info: strawberry.Info) -> list[ReceiveDecision]:
-        """Shipments waiting on this caller to say where they go.
-
-        The caller's own GP buyer id answers the fallback arm - the POs raised before
-        `created_by_user_id` existed - and it costs a Clerk round trip, so it is fetched only when
-        such a PO is actually outstanding. This query is on the PO list, which is one of the
-        most-visited pages in the app; paying Clerk on every mount for a fallback that matches
-        nothing would be the wrong default. It is also specifically NOT resolved inside the receive
-        persist, where a Clerk outage would roll back a GP receipt that had already posted.
-        """
-        user = current_user(info)
-        with SessionLocal() as session:
-            gp_buyer_id = (
-                user_repository.get_user_gp_buyer_id(user["user_id"])
-                if warehouse_repository.any_untargeted_decision_pending(session)
-                else None
-            )
-            rows = warehouse_repository.get_pending_decisions_for_user(session, user["user_id"], gp_buyer_id)
-            return [receive_decision_to_type(d, po, rr, draft) for d, po, rr, draft in rows]
+            draft, po = warehouse_repository.get_receive_draft(session, uuid.UUID(str(id)))
+            return receive_draft_to_type(draft, po)
 
     @strawberry.field
     def project_inventory_availability(
@@ -732,7 +632,7 @@ class WarehouseQueries:
                 pending_pull_shop=d["pending_pull_shop"],
                 pending_pull_shipping=d["pending_pull_shipping"],
                 received_last_7_days=d["received_last_7_days"],
-                back_ordered_count=d["back_ordered_count"],
+                back_ordered_po_count=d["back_ordered_po_count"],
                 deficient_count=d["deficient_count"],
                 pending_receive_draft_count=d["pending_receive_draft_count"],
             )
@@ -1055,12 +955,9 @@ class WarehouseMutations:
           A parked draft is recoverable: `approvalIdempotencyKey` is on the type, so the reviewer's
           retry resumes through the ledger rather than starting a new approval.
 
-        Since #499 a Warehouse Manager is not the only caller. A PO creator who answered SHIP_OUT is
-        saying this delivery never enters their queue - it goes straight back out - so they book it
-        themselves and carry straight on into the shipping request. That is a narrow bypass and it is
-        checked against the database, not the client: the caller must own an undecided-elsewhere
-        SHIP_OUT decision on THIS draft. Nothing else about the pipeline changes; the receipt is
-        posted GP-first through the same ledger either way.
+        Approval is a Warehouse Manager (or Admin) gate, full stop: a count is approved, the GP
+        receipt posts, and the units book into inventory. There is no per-shipment decision ahead of
+        it any more.
         """
         user = current_user(info)
         key = gp_idempotency.validate_key(input.idempotency_key)
@@ -1167,37 +1064,6 @@ class WarehouseMutations:
         )
         draft = await asyncio.to_thread(_load_draft_type, draft_id)
         return ApproveReceiveDraftResult(queued=False, outbox_entry_id=None, receive_record=record, draft=draft)
-
-    @strawberry.mutation
-    def decide_receive_decision(self, info: strawberry.Info, input: DecideReceiveDecisionInput) -> ReceiveDecision:
-        """Answer the keep-or-ship question a landed shipment raised.
-
-        Recording the answer is all this does. SHIP_OUT does not build a shipping-out request: only
-        the hardware schedule knows which opening and leaf a fungible quantity is owed to, so the
-        frontend takes the recorded choice and deep-links into Start a Request, where that identity is
-        re-attached (docs/HARDWARE_IDENTITY_LIFECYCLE.md).
-        """
-        from app.models.enums import ReceiveDecisionChoice as ReceiveDecisionChoiceDB
-
-        user = current_user(info)
-        actor_name = resolve_display_name(user["user_id"])
-        decision_id = uuid.UUID(str(input.decision_id))
-        with SessionLocal() as session:
-            warehouse_repository.decide_receive_decision(
-                session,
-                decision_id,
-                ReceiveDecisionChoiceDB(input.decision.value),
-                user["user_id"],
-                actor_name,
-                # Deferred: only a decision with no stamped target needs the caller's GP buyer id,
-                # and reaching Clerk for one that has a target would make an outage there refuse a
-                # decision that depends on nothing from it.
-                lambda: user_repository.get_user_gp_buyer_id(user["user_id"]),
-                ADMIN_ROLE in caller_roles(info.context),
-            )
-            session.commit()
-            decision, po, receive_record = _load_decision(session, decision_id)
-            return receive_decision_to_type(decision, po, receive_record)
 
     # Pull Requests - the pick (#367)
     @strawberry.mutation

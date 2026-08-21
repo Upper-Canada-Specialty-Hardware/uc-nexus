@@ -16,8 +16,6 @@ from .enums import (
     POStatus,
     PullRequestSource,
     PullRequestStatus,
-    ReceiveDecisionChoice,
-    ReceiveDecisionStatus,
     ReceiveDraftStatus,
     ReconciliationStatus,
     RequestStage,
@@ -415,14 +413,6 @@ class ReceiveDraft:
     po_number: str | None
     project_id: strawberry.ID | None
     warehouse_id: strawberry.ID | None
-    # #499: what the PO's creator said to do with this delivery. SHIP_OUT means the approval belongs
-    # to the shipping request rather than the warehouse manager's queue. Null when nobody was asked
-    # (a stock PO) or when the draft predates the question being raised at count time.
-    keep_or_ship_decision: ReceiveDecisionChoice | None = None
-    # The question was raised and is still unanswered. A manager must still be able to approve one -
-    # a creator on holiday cannot be allowed to strand a counted truck - and approving it means
-    # keeping it, so the row says the answer is outstanding rather than hiding it.
-    decision_pending: bool = False
     created_by_user_id: str
     created_by: str
     reviewed_by: str | None
@@ -442,42 +432,6 @@ class ReceiveDraft:
     created_at: datetime
     updated_at: datetime
     line_items: list[ReceiveDraftLineItem]
-
-
-@strawberry.type
-class ReceiveDecisionLine:
-    hardware_category: str
-    product_code: str
-    quantity_received: int
-
-
-@strawberry.type
-class ReceiveDecision:
-    """The keep-or-ship question a landed shipment raises for whoever ordered it.
-
-    Raised when the count is submitted since #499, so exactly one of the two ids below is set: a
-    draft-stage question names the count, and gets its receive record stamped on when the warehouse
-    manager's approval books the receipt.
-    """
-
-    id: strawberry.ID
-    status: ReceiveDecisionStatus
-    decision: ReceiveDecisionChoice | None
-    po_id: strawberry.ID
-    po_number: str | None
-    project_id: strawberry.ID
-    receive_record_id: strawberry.ID | None
-    receive_draft_id: strawberry.ID | None
-    # Null before the approval books the receipt, and null while one is queued on the GP outbox -
-    # either way GP has not numbered it yet.
-    receipt_number: str | None
-    # At draft stage these are when the count was submitted and who counted it; once booked they are
-    # the receipt's. Same question, same card, whichever stage it is at.
-    received_at: datetime
-    received_by: str
-    created_at: datetime
-    decided_at: datetime | None
-    line_items: list[ReceiveDecisionLine]
 
 
 @strawberry.type
@@ -874,6 +828,9 @@ class PackingSlipItem:
     product_code: str
     hardware_category: str
     quantity: int
+    # A free-text, off-inventory line typed into a container: on the truck, never in inventory. Not
+    # returnable, and excluded from the staged-pool arithmetic.
+    is_manual: bool
 
 
 @strawberry.type
@@ -1024,6 +981,9 @@ class ShipmentContainerItem:
     hardware_category: str
     product_code: str
     quantity: int
+    # A free-text, off-inventory line typed into the container: on the truck, never in inventory.
+    # Not counted against the staged pool and not returnable.
+    is_manual: bool
     # Stacking order. Only meaningful on a skid or a door cart - the two loaded in a sequence
     # somebody reverses at the far end. Position 0 is loaded FIRST, so on a skid it is the bottom.
     position: int
@@ -1444,7 +1404,7 @@ class WarehouseDashboard:
     pending_pull_shop: int
     pending_pull_shipping: int
     received_last_7_days: int
-    back_ordered_count: int
+    back_ordered_po_count: int
     deficient_count: int
     # Counted receives waiting on a Warehouse Manager.
     pending_receive_draft_count: int

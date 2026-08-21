@@ -69,9 +69,8 @@ class PurchaseOrder(Base):
     buyer_id: Mapped[str | None] = mapped_column(String(15), nullable=True)
     # Clerk user id of the person who raised this PO request - the import wizard user who finalized
     # it, or the caller of createDraftPo. Taken from the authenticated caller, never an argument
-    # (#427). It exists so a receive against this PO can ask its originator where the hardware should
-    # go (ReceiveDecision); NULL on every PO raised before that question existed, which the decision
-    # read answers by falling back to buyer_id.
+    # (#427). Used to address the rejected-draft notification back to the PO's originator; NULL on
+    # every PO raised before the column existed.
     created_by_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
     vendor_quote_number: Mapped[str | None] = mapped_column(String, nullable=True)
     # Issue #156: optional order-time dollar costs captured during the ordering action (Create PO

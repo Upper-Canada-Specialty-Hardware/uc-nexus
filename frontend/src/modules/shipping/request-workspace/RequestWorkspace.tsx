@@ -78,8 +78,8 @@ function CreateRoute() {
   const [project, setProject] = useState<Project | null>(null);
   const [touched, setTouched] = useState(false);
 
-  // Preselect the project a deep link named (the receive-decision "Ship out now" entry point), once
-  // the list is in and only until the user takes over the picker themselves.
+  // Preselect the project a deep link named (generic ?projectId deep-link support), once the list is
+  // in and only until the user takes over the picker themselves.
   useEffect(() => {
     if (touched || project || !preselectId || !data?.projects) return;
     const found = data.projects.find((p) => p.id === preselectId);

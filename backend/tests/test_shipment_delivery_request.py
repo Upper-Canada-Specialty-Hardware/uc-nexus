@@ -134,7 +134,6 @@ def test_confirm_shipment_starts_scheduled_carrying_its_delivery_request(db_sess
     slip = shipping_repository.confirm_shipment(
         db_session,
         project_id=project.id,
-        packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
         shipped_by="shipper",
         items=[_shipped_line()],
         details=FULL_DETAILS,
@@ -159,7 +158,6 @@ def test_confirm_shipment_takes_no_delivery_request_at_all(db_session):
     slip = shipping_repository.confirm_shipment(
         db_session,
         project_id=project.id,
-        packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
         shipped_by="shipper",
         items=[_shipped_line()],
     )
@@ -186,7 +184,6 @@ def test_confirm_shipment_snapshots_where_the_hardware_was_going(db_session):
     slip = shipping_repository.confirm_shipment(
         db_session,
         project_id=project.id,
-        packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
         shipped_by="shipper",
         items=[_shipped_line(building="A", floor="1", location="Rm 101")],
     )
@@ -260,7 +257,6 @@ def test_confirm_shipment_refuses_a_weight_the_column_cannot_hold(db_session):
         shipping_repository.confirm_shipment(
             db_session,
             project_id=project.id,
-            packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
             shipped_by="shipper",
             items=[_shipped_line()],
             details={**FULL_DETAILS, "weight_lbs": 100000000.0},

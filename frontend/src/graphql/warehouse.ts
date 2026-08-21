@@ -305,7 +305,7 @@ export const GET_WAREHOUSE_DASHBOARD = gql`
       stockUnlocatedCount
       pendingPullShop
       pendingPullShipping
-      backOrderedCount
+      backOrderedPoCount
       deficientCount
       pendingReceiveDraftCount
     }
@@ -457,10 +457,6 @@ const RECEIVE_DRAFT_FIELDS = `
   # #504: the packing slip this count was made against. Null only on drafts raised before the
   # requirement existed.
   packingSlipDocumentId
-  # #499: what the PO's creator said to do with this delivery. SHIP_OUT means it leaves the
-  # manager's queue - the creator books it themselves on the way into the shipping request.
-  keepOrShipDecision
-  decisionPending
   reviewedBy
   reviewedAt
   rejectionReason

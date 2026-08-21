@@ -28,7 +28,7 @@ export const GET_SHIP_READY_ITEMS = gql`
 const CONTAINER_FIELDS = `
   id projectId containerType name packingSlipId createdBy createdAt updatedAt
   items {
-    id shipmentContainerId openingNumber hardwareCategory productCode quantity position
+    id shipmentContainerId openingNumber hardwareCategory productCode quantity isManual position
   }
 `;
 
@@ -219,6 +219,7 @@ const SLIP_CONTAINER_FIELDS = `
       hardwareCategory
       productCode
       quantity
+      isManual
       position
     }
   }`;
@@ -240,6 +241,7 @@ export const GET_PACKING_SLIPS = gql`
         productCode
         hardwareCategory
         quantity
+        isManual
       }
     }
   }
@@ -273,6 +275,7 @@ export const CONFIRM_SHIPMENT = gql`
         productCode
         hardwareCategory
         quantity
+        isManual
       }
     }
   }
@@ -294,6 +297,7 @@ export const CONFIRM_SHIPMENT_FROM_CONTAINERS = gql`
         productCode
         hardwareCategory
         quantity
+        isManual
       }
     }
   }

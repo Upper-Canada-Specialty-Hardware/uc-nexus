@@ -54,6 +54,7 @@ def _container_items_input(items) -> list[dict]:
             "hardware_category": i.hardware_category,
             "product_code": i.product_code,
             "quantity": i.quantity,
+            "is_manual": i.is_manual,
         }
         for i in items
     ]
@@ -372,7 +373,6 @@ class ShippingMutations:
                 session,
                 uuid.UUID(str(input.project_id)),
                 [uuid.UUID(str(cid)) for cid in input.container_ids],
-                packing_slip_number=input.packing_slip_number,
                 shipped_by=actor,
                 details=_delivery_details(input),
             )
@@ -500,7 +500,6 @@ class ShippingMutations:
             ps = shipping_repository.confirm_shipment(
                 session,
                 project_id,
-                input.packing_slip_number,
                 actor,
                 items_data,
                 _delivery_details(input),

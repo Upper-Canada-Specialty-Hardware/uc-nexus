@@ -1,9 +1,11 @@
 """The warehouseDashboard rollup feeds the Warehouse landing cards.
 
-The Deficient Items card showed `back_ordered_count` (undelivered PO-line units, a deliveries
-concept) while linking to the review screen for damaged/short-shipped units. `deficient_count`
-counts what that screen actually lists: deficient units across project inventory and the stock
-pool.
+The Receiving card shows `back_ordered_po_count` - the number of active POs still owed anything -
+rather than the old `back_ordered_count` sum of undelivered PO-line units: a PO count answers "how
+many orders still need chasing" where a unit sum did not.
+
+The Deficient Items card `deficient_count` counts deficient units across project inventory and the
+stock pool - what the review screen for damaged/short-shipped units actually lists.
 
 The resolver-level test exists because this file used to stop at the repository, and that gap
 shipped a broken dashboard (#474): the repository grew `pending_receive_draft_count`, the Strawberry
@@ -14,10 +16,13 @@ warehouseDashboard call raised, and no test noticed.
 import asyncio
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from app import auth
+from app.models.enums import POStatus
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
+from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.stock_item import StockItem
 from app.repositories import user_repository, warehouse_admin_repository
 from app.repositories.warehouse import progress
@@ -32,6 +37,51 @@ def _make_project(session) -> Project:
     session.add(p)
     session.flush()
     return p
+
+
+def _po(session, project, status, lines):
+    """A PO with the given (ordered, received) lines. `lines` is a list of (ordered, received)."""
+    po = PurchaseOrder(
+        id=uuid.uuid4(),
+        request_number=f"PO-REQ-{uuid.uuid4().hex[:6]}",
+        project_id=project.id,
+        status=status,
+    )
+    session.add(po)
+    session.flush()
+    for i, (ordered, received) in enumerate(lines):
+        session.add(
+            POLineItem(
+                id=uuid.uuid4(),
+                po_id=po.id,
+                hardware_category="HINGE",
+                product_code=f"HG-{i}",
+                ordered_quantity=ordered,
+                received_quantity=received,
+                unit_cost=Decimal("10.00"),
+            )
+        )
+    session.flush()
+    return po
+
+
+def test_back_ordered_po_count_counts_distinct_owed_active_pos(db_session):
+    """One count per active PO with any owed line, regardless of how many lines are owed; a fully
+    received PO, a wrong-status PO, and a DRAFT are all excluded."""
+    session = db_session
+    baseline = progress.get_warehouse_dashboard(session)["back_ordered_po_count"]
+    project = _make_project(session)
+
+    # Owed, active → counts. PO with two owed lines still counts once (distinct PO).
+    _po(session, project, POStatus.PARTIALLY_RECEIVED, [(5, 2)])
+    _po(session, project, POStatus.GP_REGISTERED, [(3, 3), (4, 1)])
+    # Fully received active PO → nothing owed → excluded.
+    _po(session, project, POStatus.VENDOR_CONFIRMED, [(2, 2)])
+    # Owed but not an active/received status → excluded.
+    _po(session, project, POStatus.DRAFT, [(5, 0)])
+
+    dashboard = progress.get_warehouse_dashboard(session)
+    assert dashboard["back_ordered_po_count"] == baseline + 2
 
 
 def test_deficient_count_sums_project_inventory_and_stock_pool(db_session):

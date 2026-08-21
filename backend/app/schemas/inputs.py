@@ -7,7 +7,6 @@ from .enums import (
     DeficiencyResolution,
     DestockSource,
     MigrationDestination,
-    ReceiveDecisionChoice,
     ReturnDisposition,
     TransferSourceType,
 )
@@ -227,6 +226,10 @@ class ContainerItemInput:
     hardware_category: str = ""
     product_code: str = ""
     quantity: int = 1
+    # A free-text, off-inventory line the shipping user typed straight into the container: hardware
+    # on the truck that was never in Nexus inventory. Defaulted false so a real placement need not
+    # send it, and so a tab loaded against the previous deploy still validates.
+    is_manual: bool = False
 
 
 @strawberry.input
@@ -569,12 +572,6 @@ class ApproveReceiveDraftInput:
 
 
 @strawberry.input
-class DecideReceiveDecisionInput:
-    decision_id: strawberry.ID
-    decision: ReceiveDecisionChoice
-
-
-@strawberry.input
 class ShipmentItemInput:
     opening_number: str | None = None
     product_code: str = ""
@@ -638,7 +635,13 @@ class ConfirmShipmentInput(DeliveryRequestHeaderInput):
     """What went on the truck, plus the Delivery Request written for it (#447)."""
 
     project_id: strawberry.ID
-    packing_slip_number: str
+    # Deprecated and ignored - the server mints the number from a global PS-NNNNN counter. Optional
+    # with a default so the confirm dialog can stop sending it; still accepted so a tab loaded
+    # against the previous deploy does not fail schema validation.
+    packing_slip_number: str | None = strawberry.field(
+        default=None,
+        deprecation_reason="Ignored; the server mints the packing slip number from a global counter.",
+    )
     items: list[ShipmentItemInput] = strawberry.field(default_factory=list)
 
 
@@ -652,7 +655,11 @@ class ConfirmShipmentFromContainersInput(DeliveryRequestHeaderInput):
     """
 
     project_id: strawberry.ID
-    packing_slip_number: str
+    # Deprecated and ignored - the server mints the number. Same #493 shape as ConfirmShipmentInput.
+    packing_slip_number: str | None = strawberry.field(
+        default=None,
+        deprecation_reason="Ignored; the server mints the packing slip number from a global counter.",
+    )
     container_ids: list[strawberry.ID] = strawberry.field(default_factory=list)
 
 

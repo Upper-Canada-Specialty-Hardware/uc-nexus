@@ -375,6 +375,9 @@ type PackingSlipItem {
   product_code: String!
   hardware_category: String!
   quantity: Int!
+  # A free-text, off-inventory line typed into a container: on the truck, never in inventory. Not
+  # returnable, and excluded from the staged-pool arithmetic.
+  is_manual: Boolean!
 }
 
 enum ReturnDisposition {
@@ -446,8 +449,6 @@ enum NotificationType {
   RECEIVE_DRAFT_SUBMITTED
   # A manager sent a draft back -> its author's Clerk user id.
   RECEIVE_DRAFT_REJECTED
-  # Hardware landed against somebody's PO and they must say where it goes -> their Clerk user id.
-  RECEIVE_DECISION_REQUIRED
 }
 
 # --- Drafted receives (Part A) ---
@@ -541,50 +542,6 @@ type ApproveReceiveDraftResult {
   draft: ReceiveDraft!
   receive_record: ReceiveRecord
   outbox_entry_id: ID
-}
-
-# --- Keep-or-ship decisions (Part B) ---
-# Minted inside the receive persist, so both routes into it produce one: the online approval and the
-# outbox worker draining a queued receipt. Never for a stock PO.
-
-enum ReceiveDecisionStatus {
-  PENDING
-  DECIDED
-}
-
-enum ReceiveDecisionChoice {
-  KEEP_IN_INVENTORY
-  # Records the choice only. Building the shipping-out request stays in Start a Request, which the
-  # frontend deep-links into - only the schedule knows which opening a fungible quantity is owed to.
-  SHIP_OUT
-}
-
-type ReceiveDecisionLine {
-  hardware_category: String!
-  product_code: String!
-  quantity_received: Int!
-}
-
-type ReceiveDecision {
-  id: ID!
-  status: ReceiveDecisionStatus!
-  decision: ReceiveDecisionChoice
-  po_id: ID!
-  po_number: String
-  project_id: ID!
-  receive_record_id: ID!
-  # Null while the approval is still queued on the outbox - GP has not numbered the receipt yet.
-  receipt_number: String
-  received_at: DateTime!
-  received_by: String!
-  created_at: DateTime!
-  decided_at: DateTime
-  line_items: [ReceiveDecisionLine!]!
-}
-
-input DecideReceiveDecisionInput {
-  decision_id: ID!
-  decision: ReceiveDecisionChoice!
 }
 
 input ReceiveLineItemInput {
@@ -697,10 +654,6 @@ type Query {
   # caller's own: a warehouse user needs the state of their counts, a manager needs everybody's.
   receiveDrafts(status: ReceiveDraftStatus, poId: ID, mine: Boolean! = false): [ReceiveDraft!]!
   receiveDraft(id: ID!): ReceiveDraft!
-  # Shipments waiting on this caller to say where they go. Two arms: the PO's stamped originator,
-  # and - for POs raised before that was recorded - the PO's GP buyer matched against the CALLER's
-  # own gpBuyerId, which is one Clerk lookup for the person asking rather than a roster sweep.
-  myReceiveDecisions: [ReceiveDecision!]!
   openingItems(projectId: ID): [OpeningItem!]!
   openingItemDetails(id: ID!): OpeningItemDetail!
   pullRequests(projectId: ID, source: PullRequestSource, status: PullRequestStatus, statuses: [PullRequestStatus!]): [PullRequest!]!
@@ -739,8 +692,6 @@ type Mutation {
   # received_by is the DRAFT AUTHOR's name; the approver goes on the draft's review fields. Warehouse
   # Manager or Admin/Manager.
   approveReceiveDraft(input: ApproveReceiveDraftInput!): ApproveReceiveDraftResult!
-  # Answer the keep-or-ship question. Records the choice; SHIP_OUT creates nothing by itself.
-  decideReceiveDecision(input: DecideReceiveDecisionInput!): ReceiveDecision!
   # Issue #427: the actor on every audit and history row is the Clerk-authenticated caller
   # (current_user -> resolve_display_name), never an argument. The startedBy / enteredBy / pickedBy /
   # fetchedBy / completedBy arguments these mutations used to take were left in as ignored

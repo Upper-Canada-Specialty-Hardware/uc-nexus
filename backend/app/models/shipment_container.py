@@ -92,6 +92,11 @@ class ShipmentContainerItem(Base):
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # A free-text, off-inventory line a shipping user typed straight into the container: hardware
+    # that is on the truck but was never in Nexus inventory. It never touches the staged-pool
+    # arithmetic - not counted as placed, not validated against what is staged - and is not
+    # returnable, because there is nothing in inventory to restock it to.
+    is_manual: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
 
     container: Mapped["ShipmentContainer"] = relationship(back_populates="items")

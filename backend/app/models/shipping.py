@@ -134,6 +134,11 @@ class PackingSlipItem(Base):
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    # A free-text, off-inventory line the shipping user typed into a container (see
+    # ShipmentContainerItem.is_manual): on the truck, never in Nexus inventory. Carried onto the slip
+    # so the Delivery Request prints it, but excluded from the ship-ready arithmetic and never
+    # returnable - there is nothing in inventory to restock.
+    is_manual: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
 
     packing_slip: Mapped["PackingSlip"] = relationship(back_populates="items")
 

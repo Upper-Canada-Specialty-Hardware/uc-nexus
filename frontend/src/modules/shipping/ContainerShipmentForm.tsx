@@ -3,12 +3,12 @@ import {
   Alert,
   Box,
   Button,
+  Chip,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   Stack,
-  TextField,
   Typography,
 } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
@@ -54,7 +54,6 @@ export default function ContainerShipmentForm({
   const { showToast } = useToast();
   const { displayName } = useIdentity();
   const shipmentMethods = useShipmentMethods(!open);
-  const [packingSlipNumber, setPackingSlipNumber] = useState('');
   const [details, setDetails] = useState<DeliveryDetails>(EMPTY_DELIVERY_DETAILS);
   const [error, setError] = useState<string | null>(null);
 
@@ -71,8 +70,12 @@ export default function ContainerShipmentForm({
       }
       cache.gc();
     },
-    onCompleted: () => {
-      showToast(`Shipment ${packingSlipNumber} confirmed`, 'success');
+    // The number is minted server-side now, so the toast reads it off the confirmed slip.
+    onCompleted: (data) => {
+      const slipNumber = (
+        data as { confirmShipmentFromContainers?: { packingSlipNumber?: string } } | undefined
+      )?.confirmShipmentFromContainers?.packingSlipNumber;
+      showToast(slipNumber ? `Shipment ${slipNumber} confirmed` : 'Shipment confirmed', 'success');
       onShipped();
     },
     onError: (e) => setError(e.message),
@@ -80,10 +83,6 @@ export default function ContainerShipmentForm({
 
   const submit = () => {
     setError(null);
-    if (!packingSlipNumber.trim()) {
-      setError('A packing slip number is required.');
-      return;
-    }
     if (isWeightInvalid(details.weightLbs)) {
       setError(WEIGHT_ERROR);
       return;
@@ -92,7 +91,6 @@ export default function ContainerShipmentForm({
       variables: {
         input: {
           projectId,
-          packingSlipNumber: packingSlipNumber.trim(),
           containerIds: containers.map((c) => c.id),
           ...deliveryDetailsInput(details),
         },
@@ -118,10 +116,25 @@ export default function ContainerShipmentForm({
                     {c.name} ({CONTAINER_TYPE_LABEL[c.containerType]})
                   </Typography>
                   {c.items.map((i, index) => (
-                    <Typography key={i.id} variant="caption" sx={{ display: 'block', ...monoSx }}>
-                      {isStacked(c.containerType) && `${index + 1}. `}
-                      {i.openingNumber ? `${i.openingNumber} · ` : ''}
-                      {i.productCode} × {i.quantity}
+                    <Typography
+                      key={i.id}
+                      variant="caption"
+                      component="div"
+                      sx={{ display: 'flex', alignItems: 'center', gap: 0.5, ...monoSx }}
+                    >
+                      <span>
+                        {isStacked(c.containerType) && `${index + 1}. `}
+                        {i.openingNumber ? `${i.openingNumber} · ` : ''}
+                        {i.productCode} × {i.quantity}
+                      </span>
+                      {i.isManual && (
+                        <Chip
+                          size="small"
+                          variant="outlined"
+                          label="manual"
+                          sx={{ height: 16, '& .MuiChip-label': { px: 0.75, fontSize: '0.6875rem' } }}
+                        />
+                      )}
                     </Typography>
                   ))}
                 </Box>
@@ -135,16 +148,6 @@ export default function ContainerShipmentForm({
             shipperName={displayName}
             disabled={loading}
             shipmentMethods={shipmentMethods}
-            leadingShipmentField={
-              <TextField
-                label="Packing Slip Number"
-                required
-                value={packingSlipNumber}
-                onChange={(e) => setPackingSlipNumber(e.target.value)}
-                disabled={loading}
-                fullWidth
-              />
-            }
           />
         </Stack>
       </DialogContent>

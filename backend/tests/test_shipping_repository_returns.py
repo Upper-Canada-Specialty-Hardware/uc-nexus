@@ -299,3 +299,44 @@ def test_return_cost_falls_back_to_the_schedule(db_session):
         )
     ).one()
     assert returned.unit_cost == Decimal("3.75")
+
+
+def _make_manual_item(session, slip_id, *, qty=2, code="MAN-1", cat="MISC") -> PackingSlipItem:
+    """A manual line on the slip: on the truck, never in inventory - so there is nothing to restock."""
+    psi = PackingSlipItem(
+        id=uuid.uuid4(),
+        packing_slip_id=slip_id,
+        opening_number=None,
+        product_code=code,
+        hardware_category=cat,
+        quantity=qty,
+        is_manual=True,
+    )
+    session.add(psi)
+    session.flush()
+    return psi
+
+
+def test_a_manual_line_is_not_offered_as_returnable(db_session):
+    project = _make_project(db_session)
+    slip = _make_slip(db_session, project.id)
+    real = _make_loose_item(db_session, slip.id, qty=5)
+    _make_manual_item(db_session, slip.id, qty=2)
+
+    lines = shipping_repository.get_returnable_lines(db_session, slip.id)
+    assert [line["packing_slip_item_id"] for line in lines] == [real.id]
+
+
+def test_returning_a_manual_line_is_refused(db_session):
+    project = _make_project(db_session)
+    slip = _make_slip(db_session, project.id)
+    manual = _make_manual_item(db_session, slip.id, qty=2)
+    wh_id = _wh(db_session)
+
+    with pytest.raises(ValidationError, match="manual line cannot be returned"):
+        _return(
+            db_session,
+            slip.id,
+            wh_id,
+            [{"packing_slip_item_id": manual.id, "quantity": 1, "disposition": ReturnDisposition.RETURN_TO_PROJECT}],
+        )

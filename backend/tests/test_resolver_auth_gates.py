@@ -162,10 +162,9 @@ def test_rejecting_a_receive_draft_takes_either_manager_role(field, monkeypatch,
     `shopAssemblyMembers` used to hold that on its own; the Shop Assembly Manager role stays defined
     in Clerk but no longer gates any field.
 
-    `approveReceiveDraft` used to be pinned here too. Since #499 its requirement is not a property of
-    the field alone - a PO creator who answered SHIP_OUT may approve that one draft - so the table
-    says SIGNED_IN and the real gate is `_authorize_draft_approval`, pinned in
-    test_receive_decisions.py against the decision row rather than against a role.
+    `approveReceiveDraft` is not pinned here. Its table entry is SIGNED_IN and the real role check is
+    `_authorize_draft_approval` inside the resolver - a plain Admin/Manager gate, exercised in
+    test_receive_drafts.py through the approve flow rather than against the policy table.
     """
     assert ROOT_FIELD_POLICY[field] == frozenset({ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE})
 
