@@ -221,6 +221,17 @@ jobs:
             rgql "$DEP_QUERY" "$(jq -cn --argjson input "$input" '{input:$input,first:1}')" \
               | jq -r '.deployments.edges[0].node.status // "NONE"'
           }
+          # Postgres cannot go through trigger_deploy: environmentTriggersDeploy fires the environment's
+          # repo TRIGGERS, so for the image-backed Postgres it answers ok and deploys NOTHING (observed
+          # on pr-626: zero Postgres deployments after the trigger, then the backend dying forever on
+          # postgres.railway.internal DNS). serviceInstanceDeployV2 deploys the service instance itself
+          # whatever its source kind, and returns the new deployment id - so a silent no-op cannot hide.
+          deploy_service_instance() {  # $1 = service id -> prints the new deployment id; 1 on failure
+            local out
+            out=$(rgql 'mutation($s:String!,$e:String!){ serviceInstanceDeployV2(serviceId:$s,environmentId:$e) }' \
+              "$(jq -cn --arg s "$1" --arg e "$ENV_ID" '{s:$s,e:$e}')") || return 1
+            printf '%s' "$out" | jq -re '.serviceInstanceDeployV2 // empty' || return 1
+          }
           wait_deploy_success() {  # $1 service id, $2 label, $3 timeout seconds -> 0 on SUCCESS
             local sid="$1" label="$2" timeout="$3" waited=0 status input
             input=$(jq -cn --arg p "$PROJECT_ID" --arg s "$sid" --arg e "$ENV_ID" '{projectId:$p,serviceId:$s,environmentId:$e}')
@@ -239,7 +250,8 @@ jobs:
 
           if [ "$PG_DEPLOY" = "true" ]; then
             echo "Postgres has no successful deployment; deploying it"
-            trigger_deploy "$PG_ID" || { echo "::error::could not trigger the Postgres deploy"; exit 1; }
+            pg_dep=$(deploy_service_instance "$PG_ID") || { echo "::error::could not deploy the Postgres service instance"; exit 1; }
+            echo "  Postgres deployment $pg_dep created"
             if wait_deploy_success "$PG_ID" "Postgres" 360; then
               echo "Postgres up; settling ~40s before the backend so it does not fire ahead of Postgres accepting connections"
               sleep 40
