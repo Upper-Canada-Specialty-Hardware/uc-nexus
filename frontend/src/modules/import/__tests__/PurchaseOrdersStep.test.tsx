@@ -6,12 +6,11 @@ import * as draftOps from '../draftOps';
 import type { DraftGroup } from '../types';
 import type { ProductMeta } from '../DraftOrganizer';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../../graphql/shared';
+import type { GpCostCode } from '../DraftOrganizer';
 
-// The relay poll is irrelevant to the organizing UI; stub it disconnected so no cost-code field
-// renders and no relay query fires.
-vi.mock('../../../relay/useRelayStatus', () => ({
-  useRelayStatus: () => ({ connected: false, company: null, build: null, installId: null }),
-}));
+// The MUI menu/dialog interactions here are slow under parallel load; the 5s default trips when the
+// heavy DataGrid suites run alongside. Give them room, the same as the sibling step tests do.
+vi.setConfig({ testTimeout: 30_000 });
 
 const catalog: Map<string, ProductMeta> = new Map([
   ['HG-100|HINGE', { productCode: 'HG-100', hardwareCategory: 'HINGE', unitCost: 5 }],
@@ -30,14 +29,23 @@ function makeDraft(id: string, label: string, lines: Record<string, number>, inc
 
 /** Renders the step with real draftOps wiring, so a menu action's effect on the drafts is observable
  *  through the rendered ledger - the same reducers the wizard uses. */
-function Harness({ initial }: { initial: DraftGroup[] }) {
+function Harness({
+  initial,
+  costCodes = [],
+  costCodeWaiverReason = null,
+}: {
+  initial: DraftGroup[];
+  costCodes?: GpCostCode[];
+  costCodeWaiverReason?: string | null;
+}) {
   const [groups, setGroups] = useState(initial);
   const seq = useRef(0);
   return (
     <MockedProvider mocks={[priorMock]}>
       <PurchaseOrdersStep
         projectId="proj-1"
-        jobNumber={null}
+        costCodes={costCodes}
+        costCodeWaiverReason={costCodeWaiverReason}
         draftGroups={groups}
         productCatalog={catalog}
         unitCostOverrides={new Map()}
@@ -184,6 +192,54 @@ describe('PurchaseOrdersStep organizing', () => {
     expect(screen.getByText('1 draft(s), seeded one per manufacturer. Move lines between drafts, split a line\'s quantity, and check the ones to order. The GP vendor and PO number are chosen later at registration in Microsoft GP.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /New PO draft/i }));
     expect(screen.getByDisplayValue('New PO')).toBeInTheDocument();
+  });
+
+  // ---- Cost code required (#627) ----
+
+  const COST_CODES: GpCostCode[] = [
+    { costCode: 'CC-1', costElement: '1', description: 'Labor' },
+    { costCode: 'CC-2', costElement: '1', description: 'Material' },
+  ];
+
+  it('shows the cost-code waiver alert with the reason when the list is unavailable', () => {
+    render(
+      <Harness
+        initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 2 })]}
+        costCodeWaiverReason="the relay is offline"
+      />,
+    );
+    expect(screen.getByText(/Cost codes are unavailable \(the relay is offline\)/)).toBeInTheDocument();
+    expect(screen.getByText(/still be required when the PO is registered in GP/)).toBeInTheDocument();
+  });
+
+  it('does not render the cost-code field or waiver when codes loaded and none is missing', () => {
+    render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 2 })]} costCodes={COST_CODES} />);
+    // No waiver (list loaded), and the required-state helper shows because no code is picked yet.
+    expect(screen.queryByText(/Cost codes are unavailable/)).not.toBeInTheDocument();
+    expect(screen.getByText('Required for GP registration')).toBeInTheDocument();
+  });
+
+  it('requires a cost code on an included draft that holds lines, clearing once picked', () => {
+    render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 2 })]} costCodes={COST_CODES} />);
+
+    // Error helper while empty.
+    expect(screen.getByText('Required for GP registration')).toBeInTheDocument();
+
+    // Pick a code; the required helper clears.
+    fireEvent.mouseDown(screen.getByLabelText(/Cost code/));
+    fireEvent.click(screen.getByRole('option', { name: /CC-1/ }));
+    expect(screen.queryByText('Required for GP registration')).not.toBeInTheDocument();
+  });
+
+  it('does not flag a not-included draft for a missing cost code', () => {
+    render(
+      <Harness
+        initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 2 }, false)]}
+        costCodes={COST_CODES}
+      />,
+    );
+    // The select still renders (list loaded), but a draft that mints no PO shows no error.
+    expect(screen.queryByText('Required for GP registration')).not.toBeInTheDocument();
   });
 
   it('removes a draft only once it is empty', () => {

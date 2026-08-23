@@ -1,10 +1,23 @@
 // ---- Faceted opening filters (#564) ----
 //
-// A row of multi-select dropdowns above the openings grid. Each facet narrows the visible openings
-// by one attribute. Composition is AND ACROSS facets (a row must satisfy every active facet) and OR
-// WITHIN one facet (a row satisfies a facet if its value is any of that facet's picked values). The
-// facet bar composes on top of the paste-numbers filter as a further intersection, and it replaces
-// the DataGrid's built-in single-item column filter, which could only ever hold one clause.
+// The openings-specific facet list, sitting on top of the generic facet engine in ./facets (#627).
+// Composition is AND ACROSS facets and OR WITHIN one facet; the bar composes on top of the
+// paste-numbers filter as a further intersection, and it replaces the DataGrid's built-in single-item
+// column filter, which could only ever hold one clause.
+//
+// matchesFacets / buildFacetOptions / hasActiveFacets keep their pre-#627 openings-shaped signatures,
+// so OpeningSelectionPanel (shared with the shipping workspace) and its tests are untouched; each
+// delegates to the generic core with the OPENING_FACET_CONFIG below.
+
+import {
+  BLANK as GENERIC_BLANK,
+  buildFacetOptions as genericBuildFacetOptions,
+  type FacetConfig,
+  type FacetOption as GenericFacetOption,
+  type FacetSelections as GenericFacetSelections,
+  hasActiveFacets as genericHasActiveFacets,
+  matchesFacets as genericMatchesFacets,
+} from './facets';
 
 /** The opening attributes offered as facets. All are `string | null` on ParsedOpening. */
 export type FacetField =
@@ -36,12 +49,20 @@ export const FACETS: readonly FacetDef[] = [
   { field: 'interior_exterior', label: 'Int/Ext' },
 ];
 
+/** The openings facet list as generic FacetConfig - the field name doubles as the value accessor,
+ *  since every FacetField is a property on FacetableOpening. Consumed by the generic FacetBar. */
+export const OPENING_FACET_CONFIG: readonly FacetConfig<FacetableOpening, FacetField>[] = FACETS.map(
+  ({ field, label }) => ({ field, label, valueOf: (o: FacetableOpening) => o[field] }),
+);
+
 /** Openings with a null/empty value for a facet still need to be selectable, so they collect into a
  *  single named bucket rather than being silently unfilterable. */
-export const BLANK = '(Blank)';
+export const BLANK = GENERIC_BLANK;
 
 /** Per-facet chosen values. Absent field, or an empty set, means "All" (no constraint). */
-export type FacetSelections = Map<FacetField, Set<string>>;
+export type FacetSelections = GenericFacetSelections<FacetField>;
+
+export type FacetOption = GenericFacetOption;
 
 /** The value used both as an option key and for matching - null/empty folds into the BLANK bucket. */
 export function facetValueOf(opening: FacetableOpening, field: FacetField): string {
@@ -51,35 +72,16 @@ export function facetValueOf(opening: FacetableOpening, field: FacetField): stri
 
 /** AND across facets, OR within a facet. An unconstrained facet (missing or empty) is skipped. */
 export function matchesFacets(opening: FacetableOpening, selections: FacetSelections): boolean {
-  for (const { field } of FACETS) {
-    const picked = selections.get(field);
-    if (!picked || picked.size === 0) continue;
-    if (!picked.has(facetValueOf(opening, field))) return false;
-  }
-  return true;
+  return genericMatchesFacets(opening, selections, OPENING_FACET_CONFIG);
 }
 
 export function hasActiveFacets(selections: FacetSelections): boolean {
-  for (const picked of selections.values()) {
-    if (picked.size > 0) return true;
-  }
-  return false;
-}
-
-export interface FacetOption {
-  value: string;
-  count: number;
+  return genericHasActiveFacets(selections);
 }
 
 /** Distinct values of one facet across `openings`, each with how many openings carry it, sorted
  *  naturally (so floors read 1, 2, 10 not 1, 10, 2). Counts are over the full opening set. */
 export function buildFacetOptions(openings: FacetableOpening[], field: FacetField): FacetOption[] {
-  const counts = new Map<string, number>();
-  for (const opening of openings) {
-    const value = facetValueOf(opening, field);
-    counts.set(value, (counts.get(value) ?? 0) + 1);
-  }
-  return Array.from(counts.entries())
-    .map(([value, count]) => ({ value, count }))
-    .sort((a, b) => a.value.localeCompare(b.value, undefined, { numeric: true }));
+  const facet = OPENING_FACET_CONFIG.find((f) => f.field === field)!;
+  return genericBuildFacetOptions(openings, facet);
 }

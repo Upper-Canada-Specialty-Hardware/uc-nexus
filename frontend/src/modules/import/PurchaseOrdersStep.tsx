@@ -1,9 +1,6 @@
 import { useMemo, useState } from 'react';
-import { Box, Button, Typography } from '@mui/material';
+import { Alert, Box, Button, Typography } from '@mui/material';
 import { Plus } from 'lucide-react';
-import { useQuery } from '@apollo/client/react';
-import { GET_GP_COST_CODES } from '../../graphql/po';
-import { useRelayStatus } from '../../relay/useRelayStatus';
 import { tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
 import type { DraftAttachmentType, DraftGroup } from './types';
@@ -14,8 +11,12 @@ import { DraftCard, SplitLineDialog, type GpCostCode, type ProductMeta, type Spl
 interface PurchaseOrdersStepProps {
   /** The wizard's project - order-as memory is scoped to it (#509). */
   projectId: string;
-  /** The GP job number (#490). Cost codes are per job, so the live list is keyed on it. */
-  jobNumber: string | null;
+  /** #490/#627: the GP job's cost codes, read once by the wizard and passed down. When non-empty a
+   *  cost code is required on each included draft; empty means the code is picked at GP registration. */
+  costCodes: GpCostCode[];
+  /** #627: why the cost-code list is unavailable, or null when it loaded. When set, the step shows a
+   *  warning that a draft can be created without a code and that it is still required at registration. */
+  costCodeWaiverReason: string | null;
   /** #570: the PO drafts the buyer is slicing, owned by the wizard. */
   draftGroups: DraftGroup[];
   /** Per-productKey display metadata (product code, category, base unit cost) for the draft ledgers. */
@@ -41,7 +42,8 @@ interface PurchaseOrdersStepProps {
 
 export default function PurchaseOrdersStep({
   projectId,
-  jobNumber,
+  costCodes,
+  costCodeWaiverReason,
   draftGroups,
   productCatalog,
   unitCostOverrides,
@@ -59,18 +61,6 @@ export default function PurchaseOrdersStep({
   onSetAttachmentType,
   onRemoveAttachment,
 }: PurchaseOrdersStepProps) {
-  // #490: one job, so one cost-code read for the whole step rather than one per card. Relay down or
-  // job absent -> empty list -> the cards render no cost-code field, and the code is picked at GP
-  // registration as before.
-  const relay = useRelayStatus({});
-  const company = relay.company ?? '';
-  const { data: costCodesData } = useQuery<{ gpCostCodes: GpCostCode[] }>(GET_GP_COST_CODES, {
-    variables: { company, job: jobNumber ?? '' },
-    skip: relay.connected !== true || !company || !jobNumber,
-    fetchPolicy: 'cache-first',
-  });
-  const costCodes = useMemo(() => costCodesData?.gpCostCodes ?? [], [costCodesData]);
-
   // The split dialog is a single instance driven by the card that opened it.
   const [splitCtx, setSplitCtx] = useState<SplitContext | null>(null);
   const splitTargets = useMemo(
@@ -98,6 +88,15 @@ export default function PurchaseOrdersStep({
           New PO draft
         </Button>
       </Box>
+
+      {/* #627: cost codes could not load, so the required-cost-code gate is waived. Say why, and that
+          the code is still required when the PO is registered in GP. */}
+      {costCodeWaiverReason && (
+        <Alert severity="warning" sx={{ mb: 3 }}>
+          Cost codes are unavailable ({costCodeWaiverReason}), so a PO draft can be created without one.
+          The cost code will still be required when the PO is registered in GP.
+        </Alert>
+      )}
 
       <StaggerList count={draftGroups.length}>
         {draftGroups.map((draft) => (

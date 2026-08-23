@@ -450,6 +450,7 @@ def project_to_type(
         submittal_assignment_count=p.submittal_assignment_count,
         estimator_code=p.estimator_code,
         titan_user_id=p.titan_user_id,
+        schedule_filename=p.schedule_filename,
         off_site_storage_agreement=p.off_site_storage_agreement,
         gc_contact_name=p.gc_contact_name,
         gc_phone=p.gc_phone,

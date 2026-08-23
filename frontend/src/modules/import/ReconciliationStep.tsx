@@ -32,6 +32,10 @@ interface ReconciliationStepProps {
   /** Real reservation-aware availability per `${category}|${product}` (on-hand - deficient -
    *  reserved), for assembly eligibility. Empty for the PO purpose. */
   availableByProduct: Map<string, number>;
+  /** #627: the hardware pathway's Order Qty per product, keyed by itemGroupKey. Caps a product's
+   *  newly-ordered qty so the over-order rollup matches what will actually be ordered. Empty in
+   *  openings mode. */
+  orderQtyOverrides: Map<string, number>;
   /** projectInventoryAvailability still loading (assembly), so an eligibility of zero is
    *  "not known yet", not "nothing to pull". */
   availabilityLoading: boolean;
@@ -105,6 +109,7 @@ export default function ReconciliationStep({
   selectedReconItems,
   hardwareStatusByProduct,
   availableByProduct,
+  orderQtyOverrides,
   availabilityLoading,
   availabilityError,
   onSelectionChange,
@@ -121,6 +126,7 @@ export default function ReconciliationStep({
         selectedReconItems,
         hardwareStatusByProduct,
         availableByProduct,
+        orderQtyOverrides,
       }),
     [
       purpose,
@@ -130,6 +136,7 @@ export default function ReconciliationStep({
       selectedReconItems,
       hardwareStatusByProduct,
       availableByProduct,
+      orderQtyOverrides,
     ],
   );
 

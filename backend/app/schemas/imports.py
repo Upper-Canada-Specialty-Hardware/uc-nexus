@@ -243,6 +243,8 @@ def finalize_payload(input: FinalizeImportSessionInput, *, created_by_user_id: s
         if input.shop_assembly_items
         else None,
         "replace_schedule": input.replace_schedule,
+        # #627: the source XML file name; None on a hydrate-from-persisted finalize.
+        "schedule_filename": input.schedule_filename,
         # Whoever finalized the wizard owns the PO requests it mints, from the Clerk token rather
         # than an argument (#427). A receive against one of those POs later asks them whether the
         # shipment stays in the project's inventory or ships straight out.

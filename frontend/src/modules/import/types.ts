@@ -123,43 +123,102 @@ export interface DraftGroup {
   attachments?: DraftAttachment[];
 }
 
+// Raw per-product totals for one vendor group, plus a representative item per product so the seed can
+// translate productKey -> itemGroupKey for the Order Qty override lookup. Insertion order follows first
+// occurrence, which is the order products appeared in the selection.
+function productTotals(
+  items: AggregatedHardwareItem[],
+): { totals: Map<string, number>; repByPk: Map<string, AggregatedHardwareItem> } {
+  const totals = new Map<string, number>();
+  const repByPk = new Map<string, AggregatedHardwareItem>();
+  for (const hi of items) {
+    const pk = productKey(hi);
+    totals.set(pk, (totals.get(pk) ?? 0) + hi.item_quantity);
+    if (!repByPk.has(pk)) repByPk.set(pk, hi);
+  }
+  return { totals, repByPk };
+}
+
+// #627: seed the per-vendor draft lines, applying the Order Qty overrides as a PER-PRODUCT budget
+// rather than per vendor group. The override is keyed by itemGroupKey (`category|product`) while a draft
+// line is keyed by productKey (`product|category`) - the translation happens here. A product can span
+// more than one manufacturer (its opening-level items carry different vendor_no), so its total order
+// must be capped ONCE across every vendor draft it lands in, not min(override, total) applied to each.
+// The budget is drawn down greedily in vendor-group order - the same order buildPoDrafts consumes the
+// product's openings - and a line that draws 0 is omitted. Openings mode passes an empty/undefined map,
+// so every line takes its full vendor-group total exactly as before.
+function seededVendorLines(
+  vendorGroups: Map<string, AggregatedHardwareItem[]>,
+  orderQtyOverrides?: Map<string, number>,
+): Array<{ vendor: string; lines: Map<string, number> }> {
+  // Remaining order budget per product (itemGroupKey). A product only appears here when it carries an
+  // override; anything absent takes its full total (no cap).
+  const remaining = new Map<string, number>();
+  if (orderQtyOverrides && orderQtyOverrides.size > 0) {
+    const productTotal = new Map<string, number>();
+    for (const items of vendorGroups.values()) {
+      for (const hi of items) {
+        const igk = itemGroupKey(hi);
+        productTotal.set(igk, (productTotal.get(igk) ?? 0) + hi.item_quantity);
+      }
+    }
+    for (const [igk, total] of productTotal) {
+      const override = orderQtyOverrides.get(igk);
+      if (override !== undefined) remaining.set(igk, Math.min(override, total));
+    }
+  }
+
+  const result: Array<{ vendor: string; lines: Map<string, number> }> = [];
+  for (const [vendor, items] of vendorGroups) {
+    const { totals, repByPk } = productTotals(items);
+    const lines = new Map<string, number>();
+    for (const [pk, vendorTotal] of totals) {
+      let qty = vendorTotal;
+      const igk = itemGroupKey(repByPk.get(pk)!);
+      if (remaining.has(igk)) {
+        const budget = remaining.get(igk)!;
+        qty = Math.min(vendorTotal, budget);
+        remaining.set(igk, budget - qty);
+      }
+      // A vendor group that draws 0 of a capped product does not list it at all.
+      if (qty > 0) lines.set(pk, qty);
+    }
+    result.push({ vendor, lines });
+  }
+  return result;
+}
+
 // Seed one draft per manufacturer group at full quantity - the starting point the buyer then slices.
 // Unchecked by default (nothing is ordered until the buyer says so), same as the old vendor selection.
-export function seedDraftGroups(vendorGroups: Map<string, AggregatedHardwareItem[]>): DraftGroup[] {
-  const groups: DraftGroup[] = [];
-  for (const [vendor, items] of vendorGroups) {
-    const lines = new Map<string, number>();
-    for (const hi of items) {
-      const pk = productKey(hi);
-      lines.set(pk, (lines.get(pk) ?? 0) + hi.item_quantity);
-    }
-    groups.push({
-      id: `seed:${vendor}`,
-      label: vendor,
-      included: false,
-      info: { notes: '', preferredDeliveryDate: '', costCode: '' },
-      lines,
-    });
-  }
-  return groups;
+// #627: orderQtyOverrides caps a product's seeded lines at the buyer's Order Qty (hardware pathway only).
+export function seedDraftGroups(
+  vendorGroups: Map<string, AggregatedHardwareItem[]>,
+  orderQtyOverrides?: Map<string, number>,
+): DraftGroup[] {
+  return seededVendorLines(vendorGroups, orderQtyOverrides).map(({ vendor, lines }) => ({
+    id: `seed:${vendor}`,
+    label: vendor,
+    included: false,
+    info: { notes: '', preferredDeliveryDate: '', costCode: '' },
+    lines,
+  }));
 }
 
 // A signature of the aggregated selection the drafts are seeded from. Re-seed only when this changes
 // (a different selection, or a reclassification that moved items in or out), so walking Back and
 // forward without changing the selection does not clobber the buyer's slicing - the same guard the
-// request composer uses with its offer signature.
-export function draftSeedSignature(vendorGroups: Map<string, AggregatedHardwareItem[]>): string {
-  const parts: string[] = [];
-  for (const [vendor, items] of vendorGroups) {
-    const byProduct = new Map<string, number>();
-    for (const hi of items) {
-      const pk = productKey(hi);
-      byProduct.set(pk, (byProduct.get(pk) ?? 0) + hi.item_quantity);
-    }
-    const sorted = Array.from(byProduct.entries()).sort(([a], [b]) => a.localeCompare(b));
-    parts.push(`${vendor}::${sorted.map(([k, q]) => `${k}=${q}`).join(',')}`);
-  }
-  return parts.join('||');
+// request composer uses with its offer signature. #627: the seeded (override-capped) quantities are
+// folded in, so changing an Order Qty re-seeds the drafts rather than leaving them at the old total.
+export function draftSeedSignature(
+  vendorGroups: Map<string, AggregatedHardwareItem[]>,
+  orderQtyOverrides?: Map<string, number>,
+): string {
+  return seededVendorLines(vendorGroups, orderQtyOverrides)
+    .map(({ vendor, lines }) => {
+      const sorted = Array.from(lines.entries()).sort(([a], [b]) => a.localeCompare(b));
+      return `${vendor}::${sorted.map(([k, q]) => `${k}=${q}`).join(',')}`;
+    })
+    .join('||');
 }
 
 // One aggregated hardware line the classification step works on. Keyed by classificationKey

@@ -324,6 +324,10 @@ class FinalizeImportSessionInput:
     # rows are wiped (including IN_PO ones) and openings absent from the new input
     # are deleted. Downstream POs/receiving/SAR/inventory aggregates are preserved.
     replace_schedule: bool = False
+    # #627: the source XML file name, sent only when the hardware items came from a fresh parse
+    # (initial import, re-import from a new file, schedule replace). A hydrate-from-persisted finalize
+    # sends None, and the repository leaves the stored name in place so it survives.
+    schedule_filename: str | None = None
 
 
 @strawberry.input

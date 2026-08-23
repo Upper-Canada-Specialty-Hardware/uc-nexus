@@ -4,6 +4,7 @@ import type {
   ParsedProject,
   ParseResult,
 } from '../../types/hardwareSchedule';
+import { isDoorFrameItem } from '../../types/hardwareSchedule';
 
 export interface ProjectHardwareScheduleProjectResponse {
   projectId: string;
@@ -20,6 +21,9 @@ export interface ProjectHardwareScheduleProjectResponse {
   submittalAssignmentCount: number | null;
   estimatorCode: string | null;
   titanUserId: string | null;
+  // #627: source XML file name of the persisted schedule, shown on the wizard's picker and
+  // loaded-schedule card. Null when imported before this change.
+  scheduleFilename: string | null;
 }
 
 export interface ProjectHardwareScheduleOpeningResponse {
@@ -143,7 +147,12 @@ export function mapScheduleResponseToParseResult(
   response: ProjectHardwareScheduleResponse,
 ): ParseResult {
   const openings = response.openings.map(mapOpening);
-  const hardwareItems = response.hardwareItems.map(mapHardwareItem);
+  // #627: drop persisted door/frame items so "start from last uploaded" stops showing them on
+  // projects imported before the filter landed. The db rows stay until a schedule replace drops them
+  // naturally; this only shapes what the wizard hydrates into. Same fail-open predicate as the parser.
+  const hardwareItems = response.hardwareItems
+    .filter((hi) => !isDoorFrameItem(hi.itemCategoryCode))
+    .map(mapHardwareItem);
   return {
     project: mapProject(response.project),
     openings,

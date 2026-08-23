@@ -6,6 +6,7 @@ import type {
   ParseResult,
   SkippedRow,
 } from '../types/hardwareSchedule';
+import { isDoorFrameItem } from '../types/hardwareSchedule';
 
 // ---------------------------------------------------------------------------
 // Types for parsed XML nodes (from fast-xml-parser)
@@ -245,6 +246,10 @@ export function extractHardwareItems(
   const hardwareItems: ParsedHardwareItem[] = [];
   const skippedRows: SkippedRow[] = [];
   const warnings: string[] = [];
+  // #627: door/frame Material_Lists dropped this parse. Counted rather than emitted as one skippedRow
+  // per assignment - a full schedule has thousands, and a single aggregate warning is what the user
+  // reads, not two thousand rows in the validation summary.
+  let filteredDoorFrameCount = 0;
 
   // Count total assignments for progress reporting
   let totalAssignments = 0;
@@ -288,6 +293,15 @@ export function extractHardwareItems(
     const itemCategoryCode = textOrNull(mlf?.Item_Category_Code);
     const productGroupCode = textOrNull(mlf?.Product_Group_Code);
     const submittalId = textOrNull(mlf?.Submittal_ID);
+
+    // #627: skip the whole Material_List when it is a door or frame (temporary - the import path only
+    // orders hardware today). Fail-open: only the known door/frame category codes drop; an unknown or
+    // missing code passes through. processedCount still advances so the progress bar stays accurate.
+    if (isDoorFrameItem(itemCategoryCode)) {
+      filteredDoorFrameCount += 1;
+      processedCount += assignments.length;
+      continue;
+    }
     // Door leaf (#311): read once per Material_List from the ML-level <Attribute Code="Leaf">.
     // Null for frames (they carry no Leaf attribute); applied to every assignment below.
     const mlLeaf = extractMlLeaf(ml);
@@ -376,6 +390,13 @@ export function extractHardwareItems(
   // Final progress report
   if (onProgress && totalAssignments > 0) {
     onProgress(1);
+  }
+
+  // #627: one aggregate line for everything the door/frame filter dropped.
+  if (filteredDoorFrameCount > 0) {
+    warnings.push(
+      `Filtered ${filteredDoorFrameCount} door/frame material${filteredDoorFrameCount === 1 ? '' : 's'} (doors and frames are not yet supported)`,
+    );
   }
 
   return { hardwareItems, skippedRows, warnings };

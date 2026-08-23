@@ -323,12 +323,19 @@ export function DraftCard({
         {costCodes.length > 0 && (
           <TextField
             select
+            required
+            // #627: required at PO-request creation now, not just at GP registration. The error shows
+            // only on an included draft that holds lines and has no code yet - a draft that mints no PO
+            // (not included, or empty) carries the required marker but no error.
+            error={draft.included && !isEmpty && !draft.info.costCode}
             label="Cost code"
             size="small"
             value={draft.info.costCode}
             onChange={(e) => onUpdateDraftInfo(draft.id, 'costCode', e.target.value)}
             sx={{ width: 260, '& .MuiSelect-select': monoSx }}
-            helperText="Optional, carried to GP registration"
+            helperText={
+              draft.included && !isEmpty && !draft.info.costCode ? 'Required for GP registration' : ' '
+            }
           >
             <MenuItem value="">
               <em>None</em>

@@ -610,6 +610,93 @@ describe('extractHardwareItems', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Door/frame filter (#627)
+// ---------------------------------------------------------------------------
+
+describe('extractHardwareItems - door/frame filter (#627)', () => {
+  // One Material_List per category code, each with two assignments, so a dropped ML removes two
+  // would-be items and the aggregate warning still counts materials (Material_Lists), not items.
+  const contractWith = (categoryCode: string | undefined) => ({
+    Detail: {
+      Material_List: [
+        {
+          '@_Description': `PROD-${categoryCode ?? 'NONE'}`,
+          Material_List_Fields:
+            categoryCode === undefined
+              ? { Product_Description: 'Thing' }
+              : { Product_Description: 'Thing', Item_Category_Code: categoryCode },
+          Assignments: {
+            Assignment: [
+              { '@_Code': 'D101', Material_ID: 'M1', Qty_Per: '1' },
+              { '@_Code': 'D102', Material_ID: 'M2', Qty_Per: '1' },
+            ],
+          },
+        },
+      ],
+    },
+  });
+
+  it.each(['HMD', 'WDD', 'ALD', 'OTD', 'HMF', 'ALF'])(
+    'drops every Material_List whose Item_Category_Code is %s',
+    (code) => {
+      const result = extractHardwareItems(contractWith(code));
+      expect(result.hardwareItems).toHaveLength(0);
+      // Aggregate warning only, never one skippedRow per assignment.
+      expect(result.skippedRows).toHaveLength(0);
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]).toContain('1 door/frame material');
+    },
+  );
+
+  it('keeps HDW hardware', () => {
+    const result = extractHardwareItems(contractWith('HDW'));
+    expect(result.hardwareItems).toHaveLength(2);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it('fail-open: an unknown category code passes through', () => {
+    const result = extractHardwareItems(contractWith('WILD'));
+    expect(result.hardwareItems).toHaveLength(2);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it('fail-open: a missing category code passes through', () => {
+    const result = extractHardwareItems(contractWith(undefined));
+    expect(result.hardwareItems).toHaveLength(2);
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it('warning carries the count of dropped materials, hardware is kept', () => {
+    const contract = {
+      Detail: {
+        Material_List: [
+          {
+            '@_Description': 'DOOR-A',
+            Material_List_Fields: { Product_Description: 'Door', Item_Category_Code: 'HMD' },
+            Assignments: { Assignment: [{ '@_Code': 'D1', Material_ID: 'M1', Qty_Per: '1' }] },
+          },
+          {
+            '@_Description': 'FRAME-A',
+            Material_List_Fields: { Product_Description: 'Frame', Item_Category_Code: 'HMF' },
+            Assignments: { Assignment: [{ '@_Code': 'D1', Material_ID: 'M2', Qty_Per: '1' }] },
+          },
+          {
+            '@_Description': 'LOCK-A',
+            Material_List_Fields: { Product_Description: 'Lock', Item_Category_Code: 'HDW' },
+            Assignments: { Assignment: [{ '@_Code': 'D1', Material_ID: 'M3', Qty_Per: '2' }] },
+          },
+        ],
+      },
+    };
+    const result = extractHardwareItems(contract);
+    expect(result.hardwareItems).toHaveLength(1);
+    expect(result.hardwareItems[0].product_code).toBe('LOCK-A');
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('2 door/frame materials');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Door-leaf awareness (#311)
 // ---------------------------------------------------------------------------
 

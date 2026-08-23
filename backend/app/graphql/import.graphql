@@ -130,6 +130,8 @@ input FinalizeImportSessionInput {
   shipping_out_pr_drafts: [ShippingOutPRDraftInput!]
   include_shop_assembly_request: Boolean!
   shop_assembly_request_number: String
+  # #627: source XML file name; sent only on a fresh-parse finalize, null on a hydrate.
+  schedule_filename: String
   shop_assembly_openings: [SAROpeningInput!]
   # Shipping deficiency guard (#341). An OPENING_ITEM line naming a leaf whose source shop-assembly
   # checklist still has units awaiting a replacement is refused with a VALIDATION_ERROR naming every
