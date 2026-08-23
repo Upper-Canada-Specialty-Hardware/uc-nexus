@@ -123,20 +123,6 @@ export interface DraftGroup {
   attachments?: DraftAttachment[];
 }
 
-// #627: per-product seed quantity for the hardware pathway's Order Qty column. The override is keyed
-// by itemGroupKey (`category|product`) while the draft line is keyed by productKey (`product|category`),
-// so the translation happens here at the seed boundary. Default (no override) is the product's full
-// schedule total; an override caps it at min(override, total). openings-mode passes an empty/undefined
-// map, so the seed is the full total exactly as before.
-function seededLineQty(
-  total: number,
-  representativeItem: AggregatedHardwareItem,
-  orderQtyOverrides?: Map<string, number>,
-): number {
-  const override = orderQtyOverrides?.get(itemGroupKey(representativeItem));
-  return override === undefined ? total : Math.min(override, total);
-}
-
 // Raw per-product totals for one vendor group, plus a representative item per product so the seed can
 // translate productKey -> itemGroupKey for the Order Qty override lookup. Insertion order follows first
 // occurrence, which is the order products appeared in the selection.
@@ -153,29 +139,69 @@ function productTotals(
   return { totals, repByPk };
 }
 
+// #627: seed the per-vendor draft lines, applying the Order Qty overrides as a PER-PRODUCT budget
+// rather than per vendor group. The override is keyed by itemGroupKey (`category|product`) while a draft
+// line is keyed by productKey (`product|category`) - the translation happens here. A product can span
+// more than one manufacturer (its opening-level items carry different vendor_no), so its total order
+// must be capped ONCE across every vendor draft it lands in, not min(override, total) applied to each.
+// The budget is drawn down greedily in vendor-group order - the same order buildPoDrafts consumes the
+// product's openings - and a line that draws 0 is omitted. Openings mode passes an empty/undefined map,
+// so every line takes its full vendor-group total exactly as before.
+function seededVendorLines(
+  vendorGroups: Map<string, AggregatedHardwareItem[]>,
+  orderQtyOverrides?: Map<string, number>,
+): Array<{ vendor: string; lines: Map<string, number> }> {
+  // Remaining order budget per product (itemGroupKey). A product only appears here when it carries an
+  // override; anything absent takes its full total (no cap).
+  const remaining = new Map<string, number>();
+  if (orderQtyOverrides && orderQtyOverrides.size > 0) {
+    const productTotal = new Map<string, number>();
+    for (const items of vendorGroups.values()) {
+      for (const hi of items) {
+        const igk = itemGroupKey(hi);
+        productTotal.set(igk, (productTotal.get(igk) ?? 0) + hi.item_quantity);
+      }
+    }
+    for (const [igk, total] of productTotal) {
+      const override = orderQtyOverrides.get(igk);
+      if (override !== undefined) remaining.set(igk, Math.min(override, total));
+    }
+  }
+
+  const result: Array<{ vendor: string; lines: Map<string, number> }> = [];
+  for (const [vendor, items] of vendorGroups) {
+    const { totals, repByPk } = productTotals(items);
+    const lines = new Map<string, number>();
+    for (const [pk, vendorTotal] of totals) {
+      let qty = vendorTotal;
+      const igk = itemGroupKey(repByPk.get(pk)!);
+      if (remaining.has(igk)) {
+        const budget = remaining.get(igk)!;
+        qty = Math.min(vendorTotal, budget);
+        remaining.set(igk, budget - qty);
+      }
+      // A vendor group that draws 0 of a capped product does not list it at all.
+      if (qty > 0) lines.set(pk, qty);
+    }
+    result.push({ vendor, lines });
+  }
+  return result;
+}
+
 // Seed one draft per manufacturer group at full quantity - the starting point the buyer then slices.
 // Unchecked by default (nothing is ordered until the buyer says so), same as the old vendor selection.
-// #627: orderQtyOverrides caps a product's seeded line at the buyer's Order Qty (hardware pathway only).
+// #627: orderQtyOverrides caps a product's seeded lines at the buyer's Order Qty (hardware pathway only).
 export function seedDraftGroups(
   vendorGroups: Map<string, AggregatedHardwareItem[]>,
   orderQtyOverrides?: Map<string, number>,
 ): DraftGroup[] {
-  const groups: DraftGroup[] = [];
-  for (const [vendor, items] of vendorGroups) {
-    const { totals, repByPk } = productTotals(items);
-    const lines = new Map<string, number>();
-    for (const [pk, total] of totals) {
-      lines.set(pk, seededLineQty(total, repByPk.get(pk)!, orderQtyOverrides));
-    }
-    groups.push({
-      id: `seed:${vendor}`,
-      label: vendor,
-      included: false,
-      info: { notes: '', preferredDeliveryDate: '', costCode: '' },
-      lines,
-    });
-  }
-  return groups;
+  return seededVendorLines(vendorGroups, orderQtyOverrides).map(({ vendor, lines }) => ({
+    id: `seed:${vendor}`,
+    label: vendor,
+    included: false,
+    info: { notes: '', preferredDeliveryDate: '', costCode: '' },
+    lines,
+  }));
 }
 
 // A signature of the aggregated selection the drafts are seeded from. Re-seed only when this changes
@@ -187,17 +213,12 @@ export function draftSeedSignature(
   vendorGroups: Map<string, AggregatedHardwareItem[]>,
   orderQtyOverrides?: Map<string, number>,
 ): string {
-  const parts: string[] = [];
-  for (const [vendor, items] of vendorGroups) {
-    const { totals, repByPk } = productTotals(items);
-    const byProduct = new Map<string, number>();
-    for (const [pk, total] of totals) {
-      byProduct.set(pk, seededLineQty(total, repByPk.get(pk)!, orderQtyOverrides));
-    }
-    const sorted = Array.from(byProduct.entries()).sort(([a], [b]) => a.localeCompare(b));
-    parts.push(`${vendor}::${sorted.map(([k, q]) => `${k}=${q}`).join(',')}`);
-  }
-  return parts.join('||');
+  return seededVendorLines(vendorGroups, orderQtyOverrides)
+    .map(({ vendor, lines }) => {
+      const sorted = Array.from(lines.entries()).sort(([a], [b]) => a.localeCompare(b));
+      return `${vendor}::${sorted.map(([k, q]) => `${k}=${q}`).join(',')}`;
+    })
+    .join('||');
 }
 
 // One aggregated hardware line the classification step works on. Keyed by classificationKey

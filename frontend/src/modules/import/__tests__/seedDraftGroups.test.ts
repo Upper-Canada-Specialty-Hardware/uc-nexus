@@ -64,6 +64,38 @@ describe('draftSeedSignature - Order Qty overrides (#627)', () => {
   });
 });
 
+describe('seedDraftGroups - override across multiple manufacturers (#627)', () => {
+  // Same product (itemGroupKey LOCK|LCK) split across two manufacturers: 6 under SARGENT, 4 under
+  // Schlage (product total 10). The override must cap the TOTAL, not each vendor line independently.
+  const twoVendors = () =>
+    new Map<string, AggregatedHardwareItem[]>([
+      ['SARGENT', [hw('O1', 'LCK', 6, 'LOCK')]],
+      ['Schlage', [hw('O2', 'LCK', 4, 'LOCK')]],
+    ]);
+  const lineOf = (groups: ReturnType<typeof seedDraftGroups>) =>
+    Object.fromEntries(groups.map((g) => [g.label, g.lines.get('LCK|LOCK') ?? 0]));
+
+  it('caps the total across vendor groups, not per group', () => {
+    const groups = seedDraftGroups(twoVendors(), new Map([['LOCK|LCK', 5]]));
+    const total = groups.reduce((s, g) => s + [...g.lines.values()].reduce((a, b) => a + b, 0), 0);
+    expect(total).toBe(5); // NOT min(5,6)+min(5,4)=9
+    // Greedy in vendor order: SARGENT takes 5 of its 6, Schlage's line is dropped.
+    expect(lineOf(groups)).toEqual({ SARGENT: 5, Schlage: 0 });
+  });
+
+  it('fills the second vendor with the remaining budget', () => {
+    // Override 8 across SARGENT(6) + Schlage(4): SARGENT full 6, Schlage min(4, 2)=2 -> total 8.
+    const groups = seedDraftGroups(twoVendors(), new Map([['LOCK|LCK', 8]]));
+    expect(lineOf(groups)).toEqual({ SARGENT: 6, Schlage: 2 });
+  });
+
+  it('the signature reflects the distributed quantities', () => {
+    const base = draftSeedSignature(twoVendors());
+    const capped = draftSeedSignature(twoVendors(), new Map([['LOCK|LCK', 5]]));
+    expect(capped).not.toBe(base);
+  });
+});
+
 describe('buildPoDrafts on an override-capped seed (#627)', () => {
   it('claims only the override, leaving the remainder unclaimed for AVAILABLE', () => {
     const groups = vendorGroups();

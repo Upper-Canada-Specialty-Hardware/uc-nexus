@@ -68,6 +68,7 @@ import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
 import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
+import { isDoorFrameItem } from '../../types/hardwareSchedule';
 import SelectOpeningsStep from './SelectOpeningsStep';
 import SelectHardwareStep from './SelectHardwareStep';
 import ReconciliationStep from './ReconciliationStep';
@@ -374,7 +375,17 @@ export default function ImportWizard({
     fetchProjectSchedule({ variables: { projectId: project.id } });
   }, [open, isReimport, project.id, fetchProjectSchedule]);
 
-  const persistedHardwareItemCount = scheduleData?.projectHardwareSchedule?.hardwareItems.length ?? 0;
+  // #627: count only what will actually hydrate. The hydrate path drops persisted door/frame rows, so
+  // counting the raw list would overstate the picker's "N hardware items" (and could offer the picker
+  // on a legacy project whose only rows are door/frame, which hydrates to nothing). Matches the
+  // filter in mapScheduleResponseToParseResult.
+  const persistedHardwareItemCount = useMemo(
+    () =>
+      (scheduleData?.projectHardwareSchedule?.hardwareItems ?? []).filter(
+        (hi) => !isDoorFrameItem(hi.itemCategoryCode),
+      ).length,
+    [scheduleData],
+  );
   const persistedOpeningCount = scheduleData?.projectHardwareSchedule?.openings.length ?? 0;
   // #627: the file name behind the persisted schedule, shown on the picker and the loaded card. Null
   // for a project imported before the field existed - the line is then simply omitted.
@@ -410,8 +421,10 @@ export default function ImportWizard({
   // #490/#627: the GP job's cost codes, read once for the whole PO step. Lifted here from
   // PurchaseOrdersStep so the Next gate can require a cost code when the list loaded, while the step
   // renders the alert and the DraftCard renders the required select from the same source. Cost codes
-  // are per GP job, so the read is keyed on the job number and the connected relay's company.
-  const relay = useRelayStatus({ skip: !open });
+  // are per GP job, so the read is keyed on the job number and the connected relay's company. Scoped to
+  // the PO purpose: only that path reads cost codes, so the openings/assembly/schedule paths must not
+  // run the 10s relay poll for nothing.
+  const relay = useRelayStatus({ skip: !open || purpose !== 'po' });
   const relayCompany = relay.company ?? '';
   const gpJobNumber = project.projectId ?? null;
   const {

@@ -20,6 +20,7 @@ const project: ProjectHardwareScheduleProjectResponse = {
   submittalAssignmentCount: null,
   estimatorCode: null,
   titanUserId: null,
+  scheduleFilename: null,
 };
 
 function item(
