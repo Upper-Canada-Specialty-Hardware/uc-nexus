@@ -20,8 +20,10 @@ name: preview-env
 #   4. The same half-provisioning can create the environment with NO Postgres volume instance, so
 #      Postgres crash-loops on a missing mount while its deployment reads SUCCESS and the backend
 #      times out on postgres.railway.internal forever (pr-626). The volume self-heal commits the
-#      environment's staged config (where the forked volume is likely stranded), creates a volume
-#      itself if none surfaces, and forces a fresh Postgres deploy so it boots with the mount.
+#      environment's staged config (in case the forked volume is stranded there), tries volumeCreate,
+#      and forces a fresh Postgres deploy when a volume surfaces. When none does - on pr-626 every
+#      creation route acknowledged and then evaporated - the run fails FAST with the one working
+#      remedy (close and reopen the PR) instead of waiting out doomed readiness timeouts.
 #
 # The workflow only ever ADDS deploys: when Railway built a service itself this push, it has a success
 # in history and this just health-checks it. Everything runs against the Railway public GraphQL API
@@ -99,6 +101,21 @@ jobs:
               return 1
             fi
             printf '%s' "$resp" | jq -c '.data'
+          }
+
+          # post_sticky <body-file> - create or update the one marker-tagged PR comment.
+          post_sticky() {
+            local cid payload
+            cid=$(gh api "repos/${REPO}/issues/${PR}/comments" --paginate \
+              --jq ".[] | select(.body|contains(\"$MARKER\")) | .id" 2>/dev/null | head -1)
+            payload=$(jq -cn --rawfile body "$1" '{body:$body}')
+            if [ -n "$cid" ]; then
+              printf '%s' "$payload" | gh api --method PATCH "repos/${REPO}/issues/comments/${cid}" --input - >/dev/null \
+                && echo "updated sticky comment $cid"
+            else
+              printf '%s' "$payload" | gh api --method POST "repos/${REPO}/issues/${PR}/comments" --input - >/dev/null \
+                && echo "posted sticky comment"
+            fi
           }
 
           # --- 1. resolve the environment (poll up to ~3min) ---------------------------------------
@@ -207,12 +224,13 @@ jobs:
                 echo "  forcing a fresh Postgres deploy so it boots with the mount"
                 PG_HAS=false; PG_INFL=false
               else
-                echo "::warning::could not materialize a Postgres volume; the environment will likely not come up"
+                PG_STRANDED=true
               fi
             fi
           else
             echo "::warning::could not read the environment's volume state; skipping the volume check"
           fi
+
 
           # --- 3. provision the session capability -------------------------------------------------
           # K lives nowhere but the PR comment (the verifier-not-credential shape every testing var
@@ -256,6 +274,31 @@ jobs:
             K=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
             KHASH=$(printf '%s' "$K" | sha256sum | cut -d' ' -f1)
             upsert_key_hash "$KHASH"
+          fi
+
+          # A volume-less environment is unrepairable through the API (volumeCreate acknowledges and
+          # then discards the volume in an ephemeral environment - verified on pr-626, where even the
+          # CLI's volume add evaporates the same way). The backend can never come up without its
+          # database, so say exactly that and stop instead of burning twenty minutes of doomed
+          # readiness waits. Closing and reopening the PR makes Railway provision a fresh environment.
+          if [ "${PG_STRANDED:-false}" = "true" ]; then
+            SIGN_IN="${BACKEND_URL}/testing/session?key=${K}"
+            body_file="${RUNNER_TEMP}/preview-comment.md"
+            {
+              echo "$MARKER"
+              echo "test environment: stranded by Railway provisioning"
+              echo ""
+              echo "this PR environment was created without the Postgres volume, and the API cannot attach one to an ephemeral environment after the fact. the backend can never come up here."
+              echo ""
+              echo "close and reopen the PR to make Railway provision a fresh environment; this workflow then verifies it and refreshes this comment. the sign-in link works once that fresh environment is up:"
+              echo "$SIGN_IN"
+              echo ""
+              echo "frontend $FRONTEND_URL"
+              echo "backend $BACKEND_URL"
+            } > "$body_file"
+            post_sticky "$body_file"
+            echo "::error::the PR environment has no Postgres volume and cannot be repaired in place; close and reopen the PR to reprovision it"
+            exit 1
           fi
 
           # --- decide which services need a force-deploy (after provisioning, so a var-triggered ----
@@ -453,16 +496,7 @@ jobs:
             READY=false
           fi
 
-          CID=$(gh api "repos/${REPO}/issues/${PR}/comments" --paginate \
-            --jq ".[] | select(.body|contains(\"$MARKER\")) | .id" 2>/dev/null | head -1)
-          payload=$(jq -cn --rawfile body "$body_file" '{body:$body}')
-          if [ -n "$CID" ]; then
-            printf '%s' "$payload" | gh api --method PATCH "repos/${REPO}/issues/comments/${CID}" --input - >/dev/null \
-              && echo "updated sticky comment $CID"
-          else
-            printf '%s' "$payload" | gh api --method POST "repos/${REPO}/issues/${PR}/comments" --input - >/dev/null \
-              && echo "posted sticky comment"
-          fi
+          post_sticky "$body_file"
 
           if [ "$READY" != "true" ]; then
             echo "::error::the PR test environment did not come up fully (backend=$BACKEND_READY frontend=$FRONTEND_READY graphql=$GQL_READY signin=$SIGNIN_READY)"
