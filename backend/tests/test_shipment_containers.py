@@ -181,7 +181,6 @@ def test_shipping_stamps_the_slip_and_closes_the_containers(db_session):
         db_session,
         project.id,
         [skid.id, box.id],
-        packing_slip_number=f"PS-{uuid.uuid4().hex[:6]}",
         shipped_by="shipper",
         details=None,
     )
@@ -204,7 +203,6 @@ def test_an_empty_container_cannot_be_shipped(db_session):
             db_session,
             project.id,
             [container.id],
-            packing_slip_number=f"PS-{uuid.uuid4().hex[:6]}",
             shipped_by="shipper",
             details=None,
         )
@@ -217,7 +215,6 @@ def test_shipping_nothing_is_refused(db_session):
             db_session,
             project.id,
             [],
-            packing_slip_number=f"PS-{uuid.uuid4().hex[:6]}",
             shipped_by="shipper",
             details=None,
         )
@@ -232,7 +229,6 @@ def test_a_shipped_container_cannot_be_edited_or_broken_down(db_session):
         db_session,
         project.id,
         [container.id],
-        packing_slip_number=f"PS-{uuid.uuid4().hex[:6]}",
         shipped_by="shipper",
         details=None,
     )
@@ -258,7 +254,6 @@ def test_a_container_from_another_project_cannot_join_the_shipment(db_session):
             db_session,
             project.id,
             [container.id],
-            packing_slip_number=f"PS-{uuid.uuid4().hex[:6]}",
             shipped_by="shipper",
             details=None,
         )
@@ -366,7 +361,6 @@ def test_the_same_container_named_twice_ships_once(db_session):
         db_session,
         project.id,
         [box.id, box.id],
-        packing_slip_number=f"PS-{uuid.uuid4().hex[:6]}",
         shipped_by="shipper",
         details=None,
     )
@@ -393,7 +387,6 @@ def test_a_shipped_slip_carries_its_containers(db_session):
         db_session,
         project.id,
         [skid.id, box.id],
-        packing_slip_number=f"PS-{uuid.uuid4().hex[:6]}",
         shipped_by="shipper",
         details=None,
     )
@@ -421,7 +414,6 @@ def test_the_stacking_order_survives_onto_the_slip(db_session):
         db_session,
         project.id,
         [skid.id],
-        packing_slip_number=f"PS-{uuid.uuid4().hex[:6]}",
         shipped_by="shipper",
         details=None,
     )
@@ -430,6 +422,93 @@ def test_the_stacking_order_survives_onto_the_slip(db_session):
 
     loaded = sorted(slip.containers[0].items, key=lambda i: i.position)
     assert [i.opening_number for i in loaded] == ["102", "101"]
+
+
+# --- manual lines -------------------------------------------------------------------------------
+# A free-text, off-inventory line typed straight into a container: hardware on the truck that was
+# never in Nexus inventory. It rides the same items list but touches none of the staged-pool
+# arithmetic and is not returnable.
+
+
+def _manual_item(qty=1, code="MAN-1", cat="MISC", opening=None):
+    return {
+        "opening_number": opening,
+        "hardware_category": cat,
+        "product_code": code,
+        "quantity": qty,
+        "is_manual": True,
+    }
+
+
+def test_a_manual_line_needs_no_staged_stock(db_session):
+    # Nothing staged at all, yet a manual line places fine - it was never in inventory.
+    project = _project(db_session)
+    box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
+    result = containers.set_container_items(db_session, box.id, [_manual_item(3)])
+    assert [(i.product_code, i.is_manual, i.quantity) for i in result.items] == [("MAN-1", True, 3)]
+
+
+def test_a_manual_line_missing_its_product_or_category_is_refused(db_session):
+    project = _project(db_session)
+    box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
+    with pytest.raises(ValidationError, match="hardware category and a product code"):
+        containers.set_container_items(
+            db_session,
+            box.id,
+            [
+                {
+                    "opening_number": None,
+                    "hardware_category": "MISC",
+                    "product_code": "",
+                    "quantity": 1,
+                    "is_manual": True,
+                }
+            ],
+        )
+
+
+def test_a_manual_line_does_not_consume_a_real_products_staged_pool(db_session):
+    # A manual line keyed the same as a real staged product must not read as placed against it, so a
+    # real drag remains entitled to the whole staged quantity.
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4)  # (101, HINGE, HG-100)
+    manual_box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
+    containers.set_container_items(
+        db_session, manual_box.id, [_manual_item(5, code="HG-100", cat="HINGE", opening="101")]
+    )
+
+    assert _pool_loose(db_session, project)[("101", "HINGE", "HG-100")]["placed"] == 0
+
+    real_box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 2")
+    result = containers.set_container_items(db_session, real_box.id, [_loose_item(4)])
+    assert [i.quantity for i in result.items if not i.is_manual] == [4]
+
+
+def test_a_shipped_manual_line_does_not_understate_the_staged_pool(db_session):
+    # After shipping a real 2 plus a manual 5 keyed the same, the pool still shows 2 staged
+    # (4 fulfilled - 2 real shipped); the manual 5 is not subtracted.
+    from app.repositories import shipping_repository
+
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4)
+    box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
+    containers.set_container_items(
+        db_session, box.id, [_loose_item(2), _manual_item(5, code="HG-100", cat="HINGE", opening="101")]
+    )
+    slip = containers.confirm_shipment_from_containers(
+        db_session, project.id, [box.id], shipped_by="shipper", details=None
+    )
+    db_session.flush()
+
+    # The manual line rode onto the slip flagged is_manual.
+    assert sorted((i.product_code, i.is_manual) for i in slip.items) == [("HG-100", False), ("HG-100", True)]
+
+    ready = shipping_repository.get_ship_ready_items(db_session, project.id)
+    by_key = {
+        (li["opening_number"], li["hardware_category"], li["product_code"]): li["available_quantity"]
+        for li in ready["loose_items"]
+    }
+    assert by_key[("101", "HINGE", "HG-100")] == 2
 
 
 def test_a_slip_cut_without_containers_simply_has_none(db_session):
@@ -441,7 +520,6 @@ def test_a_slip_cut_without_containers_simply_has_none(db_session):
     slip = shipping_repository.confirm_shipment(
         db_session,
         project.id,
-        f"PS-{uuid.uuid4().hex[:6]}",
         "shipper",
         [{"opening_number": "101", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1}],
         None,

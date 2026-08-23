@@ -137,7 +137,9 @@ type PackingSlip {
 
 input ConfirmShipmentInput {
   projectId: ID!
-  packingSlipNumber: String!
+  # Deprecated and ignored - the server mints a global PS-NNNNN number. Still accepted so a tab from
+  # the previous deploy validates.
+  packingSlipNumber: String @deprecated(reason: "Ignored; the server mints the packing slip number from a global counter.")
   items: [ShipmentItemInput!]!
   # + every field of the Delivery Request header block above.
 }
@@ -245,6 +247,9 @@ type ShipmentContainerItem {
   hardwareCategory: String!
   productCode: String!
   quantity: Int!
+  # A free-text, off-inventory line typed into the container: on the truck, never in inventory. Not
+  # counted against the staged pool and not returnable.
+  isManual: Boolean!
   # Load order. 0 is loaded first, which on a skid is the bottom of the stack. Only meaningful for
   # SKID and DOOR_CART, the two that are unloaded in reverse.
   position: Int!
@@ -302,6 +307,10 @@ input ContainerItemInput {
   hardwareCategory: String! = ""
   productCode: String! = ""
   quantity: Int! = 1
+  # A free-text, off-inventory line the shipping user typed into the container: on the truck, never
+  # in inventory. Defaulted false so a real placement need not send it. A manual line is validated
+  # (category + product non-empty, qty >= 1) but skipped by the staged-pool availability check.
+  isManual: Boolean! = false
 }
 
 input SetContainerItemsInput {
@@ -314,7 +323,9 @@ input SetContainerItemsInput {
 
 input ConfirmShipmentFromContainersInput {
   projectId: ID!
-  packingSlipNumber: String!
+  # Deprecated and ignored - the server mints a global PS-NNNNN number. Still accepted so a tab from
+  # the previous deploy validates.
+  packingSlipNumber: String @deprecated(reason: "Ignored; the server mints the packing slip number from a global counter.")
   containerIds: [ID!]!
   # + every field of the Delivery Request header block above.
 }

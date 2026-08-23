@@ -430,35 +430,12 @@ def committed(_migrate_database):
     def _build(*, with_project=True, ordered=10, quantity=4):
         from sqlalchemy import select
 
-        from app.models.enums import ReceiveDecisionChoice
-        from app.models.receive_decision import ReceiveDecision as ReceiveDecisionModel
         from app.models.stock_item import StockItem
 
         with SessionLocal() as session:
             project = _make_project(session) if with_project else None
             po, li = _make_po(session, project.id if project else None, ordered=ordered)
             draft = _draft(session, po, li, quantity)
-            if with_project:
-                # Decision-first gate: a project receive can only be approved once its keep-or-ship
-                # question is answered. These tests exercise the approval mechanics, not the gate, so
-                # the fixture answers KEEP - the state a real receive reaches before a manager books
-                # it. The gate itself is pinned in test_receive_decisions.py.
-                dec = session.scalars(
-                    select(ReceiveDecisionModel).where(ReceiveDecisionModel.receive_draft_id == draft.id)
-                ).first()
-                if dec is not None:
-                    warehouse_repository.decide_receive_decision(
-                        session,
-                        dec.id,
-                        ReceiveDecisionChoice.KEEP_IN_INVENTORY,
-                        AUTHOR,
-                        AUTHOR_NAME,
-                        # Called with no args on the untargeted-decision arm (this PO has no
-                        # created_by, so the decision has no target). actor_is_admin bypasses the
-                        # is-target check regardless, so it just needs to be callable.
-                        lambda: None,
-                        actor_is_admin=True,
-                    )
             fixture = _CommittedFixture(
                 project.id if project else None,
                 po.id,
@@ -493,7 +470,6 @@ def _cleanup(fixtures) -> None:
     from app.models.purchase_order import PODocument
     from app.models.purchase_order import POLineItem as POLineItemModel
     from app.models.purchase_order import PurchaseOrder as POModel
-    from app.models.receive_decision import ReceiveDecision
     from app.models.receive_draft import ReceiveDraft as DraftModel
     from app.models.receiving import ReceiveLineItem, ReceiveRecord
     from app.models.stock_item import StockItem
@@ -501,7 +477,6 @@ def _cleanup(fixtures) -> None:
     with SessionLocal() as session:
         for f in fixtures:
             receive_ids = list(session.scalars(select(ReceiveRecord.id).where(ReceiveRecord.po_id == f.po_id)).all())
-            session.execute(delete(ReceiveDecision).where(ReceiveDecision.po_id == f.po_id))
             # Line items go with the draft via ON DELETE CASCADE.
             session.execute(delete(DraftModel).where(DraftModel.po_id == f.po_id))
             session.execute(delete(InventoryLocation).where(InventoryLocation.po_line_item_id == f.po_line_item_id))
@@ -676,14 +651,8 @@ def test_a_resumed_approval_does_not_re_validate_what_gp_has_already_run(committ
     assert result.draft.status.value == "APPROVED"
 
 
-def test_a_stock_po_draft_works_end_to_end_and_raises_no_decision(committed, monkeypatch, approve_env):
-    """A project-less PO routes to the stock pool. Drafts apply to it unchanged; the keep-or-ship
-    question does not, because there is no project's inventory to keep it in."""
-    from sqlalchemy import func, select
-
-    from app.database import SessionLocal
-    from app.models.receive_decision import ReceiveDecision
-
+def test_a_stock_po_draft_works_end_to_end(committed, monkeypatch, approve_env):
+    """A project-less PO routes to the stock pool. Drafts apply to it and approve unchanged."""
     f = committed(with_project=False, quantity=2)
     monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay())
 
@@ -691,13 +660,19 @@ def test_a_stock_po_draft_works_end_to_end_and_raises_no_decision(committed, mon
 
     assert result.queued is False
     assert result.draft.status.value == "APPROVED"
-    with SessionLocal() as session:
-        count = session.scalar(
-            select(func.count())
-            .select_from(ReceiveDecision)
-            .where(ReceiveDecision.receive_record_id == uuid.UUID(str(result.receive_record.id)))
-        )
-    assert count == 0
+
+
+def test_a_manager_approves_a_project_draft_with_no_decision_in_sight(committed, monkeypatch, approve_env):
+    """The keep-or-ship decision workflow is gone: a counted project receive is approved by a
+    Warehouse Manager directly, the GP receipt posts, and the units book. No creator step gates it."""
+    f = committed(with_project=True, quantity=4)
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay())
+
+    result = _approve(f.draft_id)
+
+    assert result.queued is False
+    assert result.draft.status.value == "APPROVED"
+    assert result.receive_record is not None
 
 
 # --- the packing slip requirement (#504) -------------------------------------------------------

@@ -21,10 +21,6 @@ export interface ReceiveDraft {
   createdByUserId: string;
   /** Their display name, which becomes the receive's receivedBy at approval. */
   createdBy: string;
-  /** #499: what the PO's creator said to do with this delivery, null when nobody was asked. */
-  keepOrShipDecision: 'KEEP_IN_INVENTORY' | 'SHIP_OUT' | null;
-  /** The question was raised and is still outstanding. */
-  decisionPending: boolean;
   reviewedBy: string | null;
   reviewedAt: string | null;
   rejectionReason: string | null;

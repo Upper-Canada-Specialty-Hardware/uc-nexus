@@ -42,12 +42,6 @@ from app.models.enums import (
     PullRequestStatus as PullRequestStatusDB,
 )
 from app.models.enums import (
-    ReceiveDecisionChoice as ReceiveDecisionChoiceDB,
-)
-from app.models.enums import (
-    ReceiveDecisionStatus as ReceiveDecisionStatusDB,
-)
-from app.models.enums import (
     ReceiveDraftStatus as ReceiveDraftStatusDB,
 )
 from app.models.enums import (
@@ -86,8 +80,6 @@ DeficiencyResolution = strawberry.enum(DeficiencyResolutionDB)
 DeficientItemSource = strawberry.enum(DeficientItemSourceDB)
 ReturnDisposition = strawberry.enum(ReturnDispositionDB)
 ReceiveDraftStatus = strawberry.enum(ReceiveDraftStatusDB)
-ReceiveDecisionStatus = strawberry.enum(ReceiveDecisionStatusDB)
-ReceiveDecisionChoice = strawberry.enum(ReceiveDecisionChoiceDB)
 
 
 # GraphQL-only enums (not stored in database)

@@ -86,24 +86,6 @@ class ReceiveDraftStatus(str, enum.Enum):
     REJECTED = "REJECTED"
 
 
-class ReceiveDecisionStatus(str, enum.Enum):
-    PENDING = "PENDING"
-    DECIDED = "DECIDED"
-
-
-class ReceiveDecisionChoice(str, enum.Enum):
-    """What the person who raised the PO wants done with a shipment that just landed.
-
-    Recording the choice is all this does. SHIP_OUT does not create a shipping-out request: only the
-    hardware schedule knows which opening and leaf a fungible quantity is owed to, so re-attaching
-    that identity stays where it lives - Start a Request, which the frontend deep-links into once the
-    choice is recorded. See docs/HARDWARE_IDENTITY_LIFECYCLE.md.
-    """
-
-    KEEP_IN_INVENTORY = "KEEP_IN_INVENTORY"
-    SHIP_OUT = "SHIP_OUT"
-
-
 class ShopAssemblyRequestStatus(str, enum.Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
@@ -174,10 +156,6 @@ class NotificationType(str, enum.Enum):
     # A manager sent a draft back. Person-targeted (the author's Clerk user id in recipient_role),
     # because a rejection is owed to exactly the person who has to act on it.
     RECEIVE_DRAFT_REJECTED = "RECEIVE_DRAFT_REJECTED"
-    # Hardware somebody ordered has landed and they have to say where it goes - project inventory or
-    # straight back out to site. Person-targeted at the PO's creator: this is a purchasing decision
-    # about their own order, and broadcasting it would make it nobody's.
-    RECEIVE_DECISION_REQUIRED = "RECEIVE_DECISION_REQUIRED"
 
 
 class AuditEntityType(str, enum.Enum):

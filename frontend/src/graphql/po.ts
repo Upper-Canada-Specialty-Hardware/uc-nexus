@@ -472,50 +472,6 @@ export const UPDATE_PO_DOCUMENT_SETTINGS = gql`
   }
 `;
 
-// --- Keep-or-ship decisions ---
-//
-// When a receive is approved and booked, the person who raised the PO is asked where the shipment
-// goes: the project's inventory, or straight back out to site. Scoped to the caller server-side (the
-// PO's recorded originator, falling back to its GP buyer matched against the caller's own gpBuyerId
-// for POs raised before that was recorded), so there is no user argument to pass.
-export const GET_MY_RECEIVE_DECISIONS = gql`
-  query GetMyReceiveDecisions {
-    myReceiveDecisions {
-      id
-      status
-      poId
-      poNumber
-      projectId
-      receiveRecordId
-      # #499: set instead of receiveRecordId while the delivery is still a count. Shipping one out
-      # from here books its receipt first, because a pull can only claim inventory that exists.
-      receiveDraftId
-      # Null before the receipt is booked, and while an approval is queued on the GP outbox - either
-      # way GP has not numbered it yet.
-      receiptNumber
-      receivedAt
-      receivedBy
-      createdAt
-      lineItems {
-        hardwareCategory
-        productCode
-        quantityReceived
-      }
-    }
-  }
-`;
-
-export const DECIDE_RECEIVE_DECISION = gql`
-  mutation DecideReceiveDecision($input: DecideReceiveDecisionInput!) {
-    decideReceiveDecision(input: $input) {
-      id
-      status
-      decision
-      decidedAt
-    }
-  }
-`;
-
 // #500: send the generated supplier PO to the vendor it was placed with. The vendor's email is read
 // live from GP through the relay - Nexus stores no vendor contact (#509), so it cannot go stale.
 // Every refusal comes back as sent:false with a message the user can act on, not an error.

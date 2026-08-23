@@ -76,6 +76,7 @@ function slip(overrides: Record<string, unknown> = {}) {
         productCode: 'DOOR-1',
         hardwareCategory: 'Door',
         quantity: 1,
+        isManual: false,
       },
       {
         __typename: 'PackingSlipItem',
@@ -87,6 +88,7 @@ function slip(overrides: Record<string, unknown> = {}) {
         productCode: 'SIL-40002-228',
         hardwareCategory: 'Silentia Folding Screen Caster w/Brake',
         quantity: 37,
+        isManual: false,
       },
     ],
     // How the load was arranged (#451). Every slip read carries it now, so the fixture does too.

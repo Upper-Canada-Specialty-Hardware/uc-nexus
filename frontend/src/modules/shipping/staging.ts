@@ -25,6 +25,9 @@ export interface ContainerItem {
   hardwareCategory: string;
   productCode: string;
   quantity: number;
+  /** A free-text, off-inventory line typed straight into the container: on the truck, never in
+   *  inventory. Skips the staged-pool arithmetic and is not returnable. */
+  isManual: boolean;
   position: number;
 }
 
@@ -59,12 +62,17 @@ export interface StagingPool {
  * (opening, category, product) and `confirmShipment` checks availability the same way, so two
  * openings staging the same product are two separate quantities - merging them here would top up a
  * line booked against the wrong door.
+ *
+ * A manual line is never the same stock as a staged pool row even when its category/product/opening
+ * coincide: it is off-inventory, so folding a staged placement into it (or the reverse) would put
+ * real staged stock on a line the arithmetic ignores.
  */
 export function sameStagedStock(
   item: ContainerItem,
   row: { openingNumber: string | null; hardwareCategory: string; productCode: string },
 ): boolean {
   return (
+    !item.isManual &&
     item.openingNumber === row.openingNumber &&
     item.hardwareCategory === row.hardwareCategory &&
     item.productCode === row.productCode
@@ -78,5 +86,6 @@ export function toItemsInput(items: ContainerItem[]) {
     hardwareCategory: i.hardwareCategory,
     productCode: i.productCode,
     quantity: i.quantity,
+    isManual: i.isManual,
   }));
 }

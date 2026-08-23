@@ -55,6 +55,7 @@ import {
   primaryWarehouse,
   shipmentStatusDisplay,
   slipMaterialLines,
+  slipOpeningSummary,
   valuesFromSlip,
   warehouseAddressLines,
   type PackingSlip,
@@ -201,6 +202,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
             jobNumber={project?.projectId ?? ''}
             date={parseServerDate(slip.shippedAt).toLocaleDateString(undefined, LONG_DATE)}
             shipper={slip.shippedBy}
+            openings={slipOpeningSummary(slip.items, slip.containers)}
             materialLines={slipMaterialLines(slip.items, slip.containers)}
             divisionAddress={divisionAddress}
             values={valuesFromSlip(slip)}

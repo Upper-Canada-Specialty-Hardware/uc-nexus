@@ -173,11 +173,9 @@ export const GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS = [
   'warehouseDashboard',
   'inventoryRows',
   'projectInventoryAvailability',
-  // A queued approval persists NOTHING until the drain: no receive record, no inventory, and no
-  // keep-or-ship decision for the person who raised the PO. The drain is when all three appear, and
-  // it lands while the browser is on an arbitrary route - so the draft's own status (APPROVED with a
-  // receipt now, rather than APPROVED and still syncing) and the decision that came with it are only
+  // A queued approval persists NOTHING until the drain: no receive record and no inventory. The
+  // drain is when both appear, and it lands while the browser is on an arbitrary route - so the
+  // draft's own status (APPROVED with a receipt now, rather than APPROVED and still syncing) is only
   // reachable this way.
   'receiveDrafts',
-  'myReceiveDecisions',
 ];

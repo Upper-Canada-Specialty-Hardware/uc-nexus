@@ -116,7 +116,6 @@ def create_receive(
     *,
     receipt_number: str | None = None,
     batch_number: str | None = None,
-    receive_draft_id: uuid.UUID | None = None,
 ) -> ReceiveRecordModel:
     """
     Create a ReceiveRecord with ReceiveLineItems and InventoryLocations.
@@ -335,26 +334,6 @@ def create_receive(
         po.status = POStatus.CLOSED
     elif any_received and po.status not in (POStatus.PARTIALLY_RECEIVED, POStatus.CLOSED):
         po.status = POStatus.PARTIALLY_RECEIVED
-
-    # Ask whoever raised the PO where this shipment goes - project inventory, or straight back out to
-    # site. It lives HERE, at the end of the persist, rather than in the resolver, because there are
-    # two ways into this function: the online approval and the outbox worker draining a receipt that
-    # was queued while the relay was down. A decision raised in the resolver would exist only for the
-    # first. No-ops for a stock PO.
-    from .receive_decisions import create_decision_for_receive, stamp_receive_record_on_draft_decision
-
-    stamped = (
-        stamp_receive_record_on_draft_decision(session, receive_draft_id, receive_record.id)
-        if receive_draft_id is not None
-        else None
-    )
-    if stamped is None:
-        create_decision_for_receive(
-            session,
-            po,
-            receive_record.id,
-            total_quantity=sum(li["quantity_received"] for li in line_items_input),
-        )
 
     return receive_record
 

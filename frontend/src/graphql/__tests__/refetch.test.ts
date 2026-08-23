@@ -22,7 +22,6 @@ const ROOT_FIELD_OF_QUERY: Record<string, string> = {
   GetWarehouseDashboard: 'warehouseDashboard',
   GetProjectProgressByProduct: 'projectProgressByProduct',
   GetReceiveDrafts: 'receiveDrafts',
-  GetMyReceiveDecisions: 'myReceiveDecisions',
 };
 
 const PAIRS: [string, string[], string[]][] = [
@@ -50,12 +49,11 @@ it('makes approval inherit the whole meaning of a receive, without refetching an
   );
 });
 
-it('refreshes the drafts and the decisions when the GP outbox drains', () => {
-  // A queued approval persists NOTHING until the drain: no receive record, no inventory, and no
-  // keep-or-ship decision. The drain is when all three appear, and it lands while the browser is on
-  // an arbitrary route - which is exactly what refetchQueries cannot reach.
+it('refreshes the drafts when the GP outbox drains', () => {
+  // A queued approval persists NOTHING until the drain: no receive record and no inventory. The
+  // drain is when both appear, and it lands while the browser is on an arbitrary route - which is
+  // exactly what refetchQueries cannot reach.
   expect(refetch.GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS).toContain('receiveDrafts');
-  expect(refetch.GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS).toContain('myReceiveDecisions');
 });
 
 describe('refetch/evict lists stay disjoint', () => {

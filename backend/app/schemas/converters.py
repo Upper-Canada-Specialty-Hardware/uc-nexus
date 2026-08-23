@@ -50,8 +50,6 @@ from .types import (
     PullRequest,
     PullRequestItem,
     PurchaseOrder,
-    ReceiveDecision,
-    ReceiveDecisionLine,
     ReceiveDraft,
     ReceiveDraftLineItem,
     ReceiveDraftLocation,
@@ -148,17 +146,10 @@ def receive_draft_line_item_to_type(li) -> ReceiveDraftLineItem:
     )
 
 
-def receive_draft_to_type(draft, po, decision=None) -> ReceiveDraft:
+def receive_draft_to_type(draft, po) -> ReceiveDraft:
     """The draft plus the PO fields every consumer renders beside it. `po` is passed in rather than
-    walked off a relationship so a list read stays one query.
-
-    `decision` is the keep-or-ship question this count raised (#499), passed the same way and for the
-    same reason. None when there is none to have: a stock PO raises no decision, and neither did any
-    draft counted before that change.
-    """
+    walked off a relationship so a list read stays one query."""
     return ReceiveDraft(
-        keep_or_ship_decision=decision.decision if decision is not None else None,
-        decision_pending=decision is not None and decision.decision is None,
         id=strawberry.ID(str(draft.id)),
         status=draft.status,
         po_id=strawberry.ID(str(draft.po_id)),
@@ -182,50 +173,6 @@ def receive_draft_to_type(draft, po, decision=None) -> ReceiveDraft:
         created_at=draft.created_at,
         updated_at=draft.updated_at,
         line_items=[receive_draft_line_item_to_type(li) for li in draft.line_items],
-    )
-
-
-def receive_decision_to_type(decision, po, receive_record, draft=None) -> ReceiveDecision:
-    """One of `receive_record` / `draft` is always present, never neither (#499).
-
-    A decision raised when the count was submitted names the draft and has no receive record until
-    approval books one; a decision from before that change names the record and has no draft. The
-    lines, the counter and the time are read off whichever it is, so the card says the same thing at
-    both stages - the difference is only that a draft-stage one has no GP receipt number yet, because
-    GP has not been told about the delivery.
-    """
-    source = receive_record if receive_record is not None else draft
-    if source is None:
-        raise ValueError(f"Receive decision {decision.id} names neither a receive record nor a draft")
-    booked = receive_record is not None
-    return ReceiveDecision(
-        id=strawberry.ID(str(decision.id)),
-        status=decision.status,
-        decision=decision.decision,
-        po_id=strawberry.ID(str(decision.po_id)),
-        po_number=po.po_number if po is not None else None,
-        project_id=strawberry.ID(str(decision.project_id)),
-        receive_record_id=(
-            strawberry.ID(str(decision.receive_record_id)) if decision.receive_record_id is not None else None
-        ),
-        receive_draft_id=(
-            strawberry.ID(str(decision.receive_draft_id)) if decision.receive_draft_id is not None else None
-        ),
-        # Null before approval, and null while an approval is queued on the outbox - either way GP
-        # has not numbered the receipt yet.
-        receipt_number=receive_record.receipt_number if booked else None,
-        received_at=source.received_at if booked else source.created_at,
-        received_by=source.received_by if booked else source.created_by_name,
-        created_at=decision.created_at,
-        decided_at=decision.decided_at,
-        line_items=[
-            ReceiveDecisionLine(
-                hardware_category=li.hardware_category,
-                product_code=li.product_code,
-                quantity_received=li.quantity_received,
-            )
-            for li in source.line_items
-        ],
     )
 
 
@@ -788,6 +735,7 @@ def packing_slip_item_to_type(psi) -> PackingSlipItem:
         product_code=psi.product_code,
         hardware_category=psi.hardware_category,
         quantity=psi.quantity,
+        is_manual=psi.is_manual,
     )
 
 
@@ -816,6 +764,7 @@ def container_to_type(c) -> ShipmentContainer:
                 hardware_category=i.hardware_category,
                 product_code=i.product_code,
                 quantity=i.quantity,
+                is_manual=i.is_manual,
                 position=i.position,
             )
             for i in sorted(c.items, key=lambda i: i.position)

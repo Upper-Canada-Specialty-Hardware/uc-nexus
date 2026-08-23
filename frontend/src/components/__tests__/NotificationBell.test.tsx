@@ -14,8 +14,8 @@ function notification(overrides: Record<string, unknown> = {}) {
     id: 'n-1',
     projectId: 'proj-1',
     recipientRole: 'u_creator',
-    type: 'RECEIVE_DECISION_REQUIRED',
-    message: '3 units received against PO-123.',
+    type: 'RECEIVE_DRAFT_REJECTED',
+    message: 'For Wendy Warehouse: Manny sent back your receive against PO-123 - recount.',
     isRead: false,
     createdAt: '2026-08-02T11:00:00Z',
     ...overrides,
@@ -63,7 +63,6 @@ function renderBell(items: Record<string, unknown>[], seen: string[] = []) {
       <MemoryRouter initialEntries={['/app']}>
         <Routes>
           <Route path="/app" element={<NotificationBell />} />
-          <Route path="/app/po/decisions" element={<div>Shipment Decisions</div>} />
           <Route path="/app/warehouse/receiving" element={<div>Receiving</div>} />
         </Routes>
         <LocationProbe />
@@ -77,16 +76,6 @@ const SLOW = { timeout: 5000 };
 vi.setConfig({ testTimeout: 30_000 });
 
 describe('NotificationBell', () => {
-  it('takes the PO creator to the decision they owe an answer to', async () => {
-    renderBell([notification()]);
-
-    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }));
-    fireEvent.click(await screen.findByText('3 units received against PO-123.', undefined, SLOW));
-
-    await screen.findByText('Shipment Decisions', undefined, SLOW);
-    expect(screen.getByTestId('location')).toHaveTextContent('/app/po/decisions');
-  });
-
   it('takes a warehouse user to their drafts when one is sent back', async () => {
     renderBell([
       notification({

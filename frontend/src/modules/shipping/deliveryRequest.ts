@@ -41,6 +41,8 @@ export interface PackingSlipItem {
   productCode: string | null;
   hardwareCategory: string | null;
   quantity: number;
+  /** A free-text, off-inventory line: on the truck, never in inventory. Not returnable. */
+  isManual: boolean;
 }
 
 /** One placement inside a shipped container, as the slip stored it (#451). */
@@ -50,6 +52,8 @@ export interface SlipContainerItem {
   hardwareCategory: string | null;
   productCode: string | null;
   quantity: number;
+  /** A free-text, off-inventory line typed into the container: on the truck, never in inventory. */
+  isManual: boolean;
   /** Load order. 0 went on first, which on a skid is the bottom of the stack. */
   position: number;
 }
@@ -254,6 +258,33 @@ export function containerMaterialLines(containers: SlipContainer[]): string[] {
     });
   }
   return lines;
+}
+
+/**
+ * The distinct opening numbers on a shipment, sorted and comma-joined, for the OPENINGS form line.
+ *
+ * The material block already tags each line with its opening, but that is one door per line and the
+ * site wants the whole list at a glance. Openings come off both the flat slip items and the
+ * container items, since a container-built shipment carries its openings there. Loose-stock lines
+ * have no opening and drop out, so an all-loose shipment produces an empty string - a blank line on
+ * the form.
+ */
+export function slipOpeningSummary(
+  items: PackingSlipItem[],
+  containers?: SlipContainer[],
+): string {
+  const openings = new Set<string>();
+  for (const item of items) {
+    const opening = item.openingNumber?.trim();
+    if (opening) openings.add(opening);
+  }
+  for (const container of containers ?? []) {
+    for (const item of container.items) {
+      const opening = item.openingNumber?.trim();
+      if (opening) openings.add(opening);
+    }
+  }
+  return [...openings].sort((a, b) => a.localeCompare(b)).join(', ');
 }
 
 // ---- Pickup location ------------------------------------------------------
