@@ -19,8 +19,9 @@ name: preview-env
 #      waiting out its timeout.
 #   4. The same half-provisioning can create the environment with NO Postgres volume instance, so
 #      Postgres crash-loops on a missing mount while its deployment reads SUCCESS and the backend
-#      times out on postgres.railway.internal forever (pr-626). The volume self-heal creates the
-#      missing volume and forces a fresh Postgres deploy so it boots with the mount.
+#      times out on postgres.railway.internal forever (pr-626). The volume self-heal commits the
+#      environment's staged config (where the forked volume is likely stranded), creates a volume
+#      itself if none surfaces, and forces a fresh Postgres deploy so it boots with the mount.
 #
 # The workflow only ever ADDS deploys: when Railway built a service itself this push, it has a success
 # in history and this just health-checks it. Everything runs against the Railway public GraphQL API
@@ -164,26 +165,53 @@ jobs:
           # The half-provisioning that leaves services undeployed can also leave the environment with
           # NO volume instance for Postgres (observed on pr-626: the postgres image crash-looping
           # "Railway volume not mounted to the correct path" with an EMPTY mount while its deployment
-          # reads SUCCESS, and the backend timing out on postgres.railway.internal forever). Create the
-          # missing volume at the production mount path and force a fresh Postgres deploy so it boots
-          # with the mount - a Postgres deployment that predates the volume is doomed regardless of its
-          # status, so its facts are reset. Fail-open: if the check itself errors, warn and carry on.
-          VOL_QUERY='query($id:String!){ environment(id:$id){ volumeInstances { edges { node { serviceId mountPath } } } } }'
-          if vol_data=$(rgql "$VOL_QUERY" "$(jq -cn --arg id "$ENV_ID" '{id:$id}')"); then
-            has_pg_vol=$(printf '%s' "$vol_data" | jq -r --arg s "$PG_ID" '[.environment.volumeInstances.edges[]?.node|select(.serviceId==$s)]|length>0')
-            if [ "$has_pg_vol" != "true" ]; then
-              echo "Postgres has no volume instance in this environment (half-provisioned PR env); creating one"
-              vin=$(jq -cn --arg p "$PROJECT_ID" --arg e "$ENV_ID" --arg s "$PG_ID" \
-                '{input:{projectId:$p,environmentId:$e,serviceId:$s,mountPath:"/var/lib/postgresql/data"}}')
-              if rgql 'mutation($input:VolumeCreateInput!){ volumeCreate(input:$input){ id } }' "$vin" >/dev/null; then
-                echo "  volume created; forcing a fresh Postgres deploy so it boots with the mount"
+          # reads SUCCESS, and the backend timing out on postgres.railway.internal forever). Two facts
+          # drive the shape of the heal, both learned on pr-626:
+          #   - a volume mutation against an environment only STAGES a config change: volumeCreate and
+          #     the CLI's volume add both answer "created" while the committed environment still shows
+          #     no volume. environmentPatchCommitStaged is what materializes it - and the provisioning
+          #     race that strands these environments is likely exactly an uncommitted stage.
+          #   - so commit whatever is already staged FIRST (the forked Postgres volume may be sitting
+          #     right there), re-check, and only volumeCreate when the commit surfaced nothing.
+          #     skipDeploys on the commit keeps the ordered deploy pass below in control.
+          # A Postgres deployment that predates its volume is doomed regardless of status, so the
+          # Postgres facts are reset after a heal. Fail-open: if any step errors, warn and carry on.
+          VOL_QUERY='query($id:String!){ environment(id:$id){ unmergedChangesCount volumeInstances { edges { node { volumeId serviceId mountPath } } } } }'
+          read_env_vol_state() {  # sets UNMERGED / PG_VOLS / PG_VOL_DETAIL; 1 on API failure
+            local data
+            data=$(rgql "$VOL_QUERY" "$(jq -cn --arg id "$ENV_ID" '{id:$id}')") || return 1
+            UNMERGED=$(printf '%s' "$data" | jq -r '.environment.unmergedChangesCount // 0')
+            PG_VOLS=$(printf '%s' "$data" | jq -r --arg s "$PG_ID" '[.environment.volumeInstances.edges[]?.node|select(.serviceId==$s)]|length')
+            PG_VOL_DETAIL=$(printf '%s' "$data" | jq -c --arg s "$PG_ID" '[.environment.volumeInstances.edges[]?.node|select(.serviceId==$s)]')
+          }
+          commit_staged() {
+            rgql 'mutation($e:String!){ environmentPatchCommitStaged(environmentId:$e, skipDeploys:true, commitMessage:"preview-env: commit staged changes") }' \
+              "$(jq -cn --arg e "$ENV_ID" '{e:$e}')" >/dev/null
+          }
+          if read_env_vol_state; then
+            echo "environment config: unmergedChangesCount=$UNMERGED postgresVolumeInstances=$PG_VOLS"
+            if [ "$PG_VOLS" = "0" ]; then
+              if [ "$UNMERGED" != "0" ]; then
+                echo "Postgres has no volume but the environment has uncommitted staged changes; committing them"
+                commit_staged && read_env_vol_state
+              fi
+              if [ "$PG_VOLS" = "0" ]; then
+                echo "Postgres still has no volume instance; creating one at the production mount path"
+                vin=$(jq -cn --arg p "$PROJECT_ID" --arg e "$ENV_ID" --arg s "$PG_ID" \
+                  '{input:{projectId:$p,environmentId:$e,serviceId:$s,mountPath:"/var/lib/postgresql/data"}}')
+                rgql 'mutation($input:VolumeCreateInput!){ volumeCreate(input:$input){ id } }' "$vin" >/dev/null \
+                  && commit_staged && read_env_vol_state
+              fi
+              if [ "$PG_VOLS" != "0" ]; then
+                echo "  Postgres volume present after heal: $PG_VOL_DETAIL"
+                echo "  forcing a fresh Postgres deploy so it boots with the mount"
                 PG_HAS=false; PG_INFL=false
               else
-                echo "::warning::could not create the missing Postgres volume; the environment will likely not come up"
+                echo "::warning::could not materialize a Postgres volume; the environment will likely not come up"
               fi
             fi
           else
-            echo "::warning::could not read the environment's volume instances; skipping the volume check"
+            echo "::warning::could not read the environment's volume state; skipping the volume check"
           fi
 
           # --- 3. provision the session capability -------------------------------------------------
