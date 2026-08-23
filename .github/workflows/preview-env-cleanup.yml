@@ -1,0 +1,64 @@
+name: preview-env-cleanup
+
+# Deletes the PR's Railway environment when the PR closes. Railway tears down environments IT
+# created, but preview-env forks one itself when Railway provisions nothing (a PR touching no
+# service directory) - and nothing else would ever delete those. Deleting an already-gone
+# environment is a no-op here, so this runs for every close, merge included.
+
+on:
+  pull_request:
+    types: [closed]
+
+# Shares the build workflow's group so closing the PR also cancels an in-flight build run.
+concurrency:
+  group: preview-env-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    name: Delete the PR test environment
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_WORKSPACE_TOKEN }}
+      RAILWAY_API_URL: https://backboard.railway.com/graphql/v2
+      PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Delete the environment if it still exists
+        shell: bash
+        run: |
+          set +e -o pipefail
+          [ -n "$RAILWAY_TOKEN" ] || { echo "no Railway token configured; nothing to do"; exit 0; }
+          [ -n "$PROJECT_ID" ] || { echo "no Railway project id configured; nothing to do"; exit 0; }
+          ENV_NAME="uc-nexus-pr-${PR}"
+
+          rgql() {
+            local q="$1" v="$2" resp body
+            body=$(jq -cn --arg q "$q" --argjson v "$v" '{query:$q, variables:$v}') || return 1
+            resp=$(curl -sS -X POST "$RAILWAY_API_URL" \
+              -H "Authorization: Bearer $RAILWAY_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data "$body") || return 1
+            if printf '%s' "$resp" | jq -e 'has("errors") and (.errors|length>0)' >/dev/null 2>&1; then
+              printf 'Railway API error: %s\n' "$(printf '%s' "$resp" | jq -c '.errors')" >&2
+              return 1
+            fi
+            printf '%s' "$resp" | jq -c '.data'
+          }
+
+          data=$(rgql 'query($id:String!){ environments(projectId:$id){ edges{ node{ id name } } } }' \
+            "$(jq -cn --arg id "$PROJECT_ID" '{id:$id}')") \
+            || { echo "::warning::could not list Railway environments"; exit 0; }
+          ENV_ID=$(printf '%s' "$data" | jq -r --arg n "$ENV_NAME" '[.environments.edges[]?|select(.node.name==$n)|.node.id][0] // empty')
+          if [ -z "$ENV_ID" ]; then
+            echo "environment $ENV_NAME does not exist; nothing to delete"
+            exit 0
+          fi
+          if rgql 'mutation($id:String!){ environmentDelete(id:$id) }' "$(jq -cn --arg id "$ENV_ID" '{id:$id}')" >/dev/null; then
+            echo "deleted environment $ENV_NAME ($ENV_ID)"
+          else
+            echo "::warning::could not delete environment $ENV_NAME ($ENV_ID); it may need manual removal in the Railway dashboard"
+          fi
