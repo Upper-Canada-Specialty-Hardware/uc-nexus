@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import SelectHardwareStep from '../SelectHardwareStep';
 import type { ParsedHardwareItem } from '../../../types/hardwareSchedule';
 
@@ -59,15 +59,18 @@ const ITEMS: ParsedHardwareItem[] = [
   }),
 ];
 
-/** Stateful wrapper so the selection chip reflects real selection changes. */
+/** Stateful wrapper so the selection chip and Order Qty inputs reflect real changes. */
 function Harness({
   items = ITEMS,
   onSelect,
+  onOrderQty,
 }: {
   items?: ParsedHardwareItem[];
   onSelect?: (s: Set<string>) => void;
+  onOrderQty?: (key: string, qty: number) => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [overrides, setOverrides] = useState<Map<string, number>>(new Map());
   return (
     <SelectHardwareStep
       hardwareItems={items}
@@ -76,12 +79,37 @@ function Harness({
         setSelected(s);
         onSelect?.(s);
       }}
+      orderQtyOverrides={overrides}
+      onOrderQtyChange={(key, qty) => {
+        setOverrides((prev) => {
+          const next = new Map(prev);
+          next.set(key, qty);
+          return next;
+        });
+        onOrderQty?.(key, qty);
+      }}
     />
   );
 }
 
 const filterBox = () =>
   screen.getByPlaceholderText('Filter by product, category, or manufacturer...');
+
+const orderQtyInput = (key: string) =>
+  screen.getByRole('spinbutton', { name: `Order quantity for ${key}` }) as HTMLInputElement;
+
+function openFacet(field: string) {
+  fireEvent.mouseDown(within(screen.getByTestId(`facet-${field}`)).getByRole('combobox'));
+}
+
+function pickOption(name: RegExp) {
+  fireEvent.click(screen.getByRole('option', { name }));
+}
+
+function closeMenu() {
+  const backdrop = document.querySelector('.MuiBackdrop-root');
+  if (backdrop) fireEvent.click(backdrop);
+}
 
 // ---- Tests ----
 
@@ -154,5 +182,101 @@ describe('SelectHardwareStep', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Deselect All' }));
     expect(onSelect).toHaveBeenLastCalledWith(new Set());
     expect(screen.getByText('0 of 2 selected')).toBeInTheDocument();
+  });
+});
+
+// ---- Facets (#627) ----
+
+describe('SelectHardwareStep - facets', () => {
+  it('renders Category and Manufacturer facet dropdowns', () => {
+    render(<Harness />);
+    expect(screen.getByTestId('facet-category')).toBeInTheDocument();
+    expect(screen.getByTestId('facet-manufacturer')).toBeInTheDocument();
+  });
+
+  it('narrows the rows by the Category facet and Select All takes only those', () => {
+    const onSelect = vi.fn();
+    render(<Harness onSelect={onSelect} />);
+
+    openFacet('category');
+    pickOption(/Locks/);
+    closeMenu();
+
+    expect(screen.getByText('LCK-200')).toBeInTheDocument();
+    expect(screen.queryByText('HNG-100')).not.toBeInTheDocument();
+    expect(screen.getByText('0 of 1 selected')).toBeInTheDocument();
+    expect(screen.getByText(/filtered from 2 total/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    expect(onSelect).toHaveBeenLastCalledWith(new Set(['Locks|LCK-200']));
+  });
+
+  it('intersects a facet with the text box (AND)', () => {
+    render(<Harness />);
+
+    // Manufacturer facet VEND-A keeps only HNG-100; a text token of "lck" then leaves nothing.
+    openFacet('manufacturer');
+    pickOption(/VEND-A/);
+    closeMenu();
+    expect(screen.getByText('HNG-100')).toBeInTheDocument();
+    expect(screen.queryByText('LCK-200')).not.toBeInTheDocument();
+
+    fireEvent.change(filterBox(), { target: { value: 'lck' } });
+    expect(screen.queryByText('HNG-100')).not.toBeInTheDocument();
+    expect(screen.queryByText('LCK-200')).not.toBeInTheDocument();
+  });
+
+  it('token-AND text: both tokens must match somewhere on the row', () => {
+    render(<Harness />);
+
+    // "hinges hng" both match HNG-100 (category + code); "hinges lck" matches nothing.
+    fireEvent.change(filterBox(), { target: { value: 'hinges hng' } });
+    expect(screen.getByText('HNG-100')).toBeInTheDocument();
+    expect(screen.queryByText('LCK-200')).not.toBeInTheDocument();
+
+    fireEvent.change(filterBox(), { target: { value: 'hinges lck' } });
+    expect(screen.queryByText('HNG-100')).not.toBeInTheDocument();
+    expect(screen.queryByText('LCK-200')).not.toBeInTheDocument();
+  });
+});
+
+// ---- Order Qty (#627) ----
+
+describe('SelectHardwareStep - Order Qty', () => {
+  it('defaults to the product total and is disabled until the row is selected', () => {
+    render(<Harness />);
+
+    const input = orderQtyInput('Hinges|HNG-100');
+    // Default is the schedule total (3 + 2 = 5).
+    expect(input.value).toBe('5');
+    expect(input).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    expect(orderQtyInput('Hinges|HNG-100')).not.toBeDisabled();
+  });
+
+  it('clamps the entered quantity to 1..total', () => {
+    const onOrderQty = vi.fn();
+    render(<Harness onOrderQty={onOrderQty} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+
+    // Above the total clamps down to the total.
+    fireEvent.change(orderQtyInput('Hinges|HNG-100'), { target: { value: '99' } });
+    expect(onOrderQty).toHaveBeenLastCalledWith('Hinges|HNG-100', 5);
+
+    // Below 1 clamps up to 1.
+    fireEvent.change(orderQtyInput('Hinges|HNG-100'), { target: { value: '0' } });
+    expect(onOrderQty).toHaveBeenLastCalledWith('Hinges|HNG-100', 1);
+  });
+
+  it('accepts a valid reduced quantity', () => {
+    const onOrderQty = vi.fn();
+    render(<Harness onOrderQty={onOrderQty} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    fireEvent.change(orderQtyInput('Hinges|HNG-100'), { target: { value: '2' } });
+    expect(onOrderQty).toHaveBeenLastCalledWith('Hinges|HNG-100', 2);
+    expect(orderQtyInput('Hinges|HNG-100').value).toBe('2');
   });
 });

@@ -27,6 +27,11 @@ class Project(Base):
     submittal_assignment_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     estimator_code: Mapped[str | None] = mapped_column(String, nullable=True)
     titan_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # #627: the source XML file name of the persisted hardware schedule, shown on the wizard's
+    # "use last uploaded" picker and loaded-schedule card. Written on a fresh-parse finalize; a
+    # hydrate-from-persisted finalize leaves it, so the stored name survives. NULL = imported before
+    # this, or a hydrate that never carried one.
+    schedule_filename: Mapped[str | None] = mapped_column(String, nullable=True)
     off_site_storage_agreement: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
     )

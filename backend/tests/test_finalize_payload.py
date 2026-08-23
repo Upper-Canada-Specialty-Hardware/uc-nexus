@@ -58,6 +58,7 @@ def test_every_key_the_repository_reads_is_produced():
         "shop_assembly_request_number",
         "shop_assembly_items",
         "replace_schedule",
+        "schedule_filename",
         "created_by_user_id",
     ):
         assert key in payload, f"the repository reads {key} and finalize stopped sending it"
@@ -143,6 +144,22 @@ def test_shipping_drafts_carry_only_the_flat_line_shape():
     }
     for gone in ("item_type", "opening_item_id", "leaf"):
         assert gone not in item
+
+
+def test_schedule_filename_defaults_to_none_and_passes_through():
+    # #627: absent on a hydrate finalize (the repository then leaves the stored name), and forwarded
+    # verbatim when a fresh parse carried a file name.
+    absent = finalize_payload(
+        FinalizeImportSessionInput(project_id="p1", openings=[_opening()]),
+        created_by_user_id="u",
+    )
+    assert absent["schedule_filename"] is None
+
+    present = finalize_payload(
+        FinalizeImportSessionInput(project_id="p1", openings=[_opening()], schedule_filename="contracterp-74.xml"),
+        created_by_user_id="u",
+    )
+    assert present["schedule_filename"] == "contracterp-74.xml"
 
 
 @pytest.mark.parametrize("field", ["shop_assembly_items", "shipping_out_pr_drafts"])

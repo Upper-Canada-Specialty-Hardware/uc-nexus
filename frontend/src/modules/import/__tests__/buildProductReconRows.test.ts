@@ -66,6 +66,7 @@ function build(args: {
   rows: ReconciliationRow[];
   selectedKeys: string[];
   status?: Map<string, HardwareStatusRow>;
+  orderQtyOverrides?: Map<string, number>;
 }) {
   return buildProductReconRows({
     purpose: 'po',
@@ -74,6 +75,7 @@ function build(args: {
     allHardwareItems: args.all,
     selectedReconItems: new Set(args.selectedKeys),
     hardwareStatusByProduct: args.status,
+    orderQtyOverrides: args.orderQtyOverrides,
   });
 }
 
@@ -112,6 +114,39 @@ it('flags a selection that pushes the product past the project total', () => {
 
   expect(row.overCommitAmount).toBe(10);
   expect(row.overOrdersProject).toBe(true);
+});
+
+it('caps selectedNewPOQty at the Order Qty override, clearing an over-order (#627)', () => {
+  // 40 already ordered against a project need of 40. Selecting 10 more would over-order, but the
+  // hardware pathway's Order Qty caps this product's order at 5, so only 5 are actually placed - and
+  // 40 + 5 > 40 still over-orders, so the flag stands but measures the reduced amount.
+  const all = [hi({ opening_number: '101', item_quantity: 40 })];
+  const selected = [hi({ opening_number: '101', item_quantity: 10 })];
+  const rows = [recon('101', 'ORDERED', 40)];
+
+  const [capped] = build({
+    all,
+    selected,
+    rows,
+    selectedKeys: [openingKey('101')],
+    // itemGroupKey is `category|product`.
+    orderQtyOverrides: new Map([['Locks|LCK-200', 5]]),
+  });
+  expect(capped.selectedNewPOQty).toBe(5);
+  expect(capped.overCommitAmount).toBe(5);
+  expect(capped.overOrdersProject).toBe(true);
+
+  // And an override that brings the project back within its total clears the flag entirely: 30
+  // ordered, need 40, select 20 but cap the order at 5 -> 35 <= 40.
+  const [cleared] = build({
+    all,
+    selected: [hi({ opening_number: '101', item_quantity: 20 })],
+    rows: [recon('101', 'ORDERED', 30)],
+    selectedKeys: [openingKey('101')],
+    orderQtyOverrides: new Map([['Locks|LCK-200', 5]]),
+  });
+  expect(cleared.selectedNewPOQty).toBe(5);
+  expect(cleared.overOrdersProject).toBe(false);
 });
 
 it('does not flag when nothing is selected, however over-committed history is', () => {

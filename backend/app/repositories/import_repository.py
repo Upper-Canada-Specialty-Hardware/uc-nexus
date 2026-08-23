@@ -691,6 +691,8 @@ def finalize_import_session(
     # minted from the project's counter below.
     sar_items_input = input_data.get("shop_assembly_items") or []
     replace_schedule = bool(input_data.get("replace_schedule", False))
+    # #627: the source XML file name, present only when the hardware items came from a fresh parse.
+    schedule_filename = input_data.get("schedule_filename")
 
     # 1. Project lookup (must already exist)
     project_stmt = (
@@ -708,6 +710,12 @@ def finalize_import_session(
     # someone would have to unpick all of it once accounting fixed the job. Passes when the verdict is
     # null (never checked) - see require_gp_setup_ok.
     project_repository.require_gp_setup_ok(session, project.id)
+
+    # #627: record the source XML file name when this finalize came from a fresh parse. None on a
+    # hydrate-from-persisted finalize, which re-sends the persisted items unchanged - leaving the
+    # stored name untouched so it survives.
+    if schedule_filename is not None:
+        project.schedule_filename = schedule_filename
 
     # 2. Wipe AVAILABLE hardware items for this project — they are pure XML-derived rows
     # that will be regenerated from the current input. Existing IN_PO rows (attached to

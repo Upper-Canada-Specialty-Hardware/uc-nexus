@@ -105,3 +105,28 @@ export interface ParseResult {
   hardwareItems: ParsedHardwareItem[];
   validationSummary: ValidationSummary;
 }
+
+// ---------------------------------------------------------------------------
+// Door/frame filtering (#627) — TEMPORARY
+// ---------------------------------------------------------------------------
+
+// TITAN Item_Category_Code values for doors and frames. Doors end in D (HMD hollow-metal, WDD wood,
+// ALD aluminium, OTD other), frames end in F (HMF hollow-metal, ALF aluminium); hardware is HDW. The
+// import path can only order hardware today, so these are filtered out of the parsed schedule.
+//
+// TEMPORARY: lifted once doors and frames get real support. When that lands, drop this set and the
+// isDoorFrameItem calls in parserLogic (extractHardwareItems) and hydrateSchedule.
+export const DOOR_FRAME_CATEGORY_CODES: ReadonlySet<string> = new Set([
+  'HMD',
+  'WDD',
+  'ALD',
+  'OTD',
+  'HMF',
+  'ALF',
+]);
+
+// True when an item's TITAN Item_Category_Code marks it a door or frame. Fail-open: a null,
+// undefined, or unknown code returns false, so only the known door/frame codes are ever dropped.
+export function isDoorFrameItem(itemCategoryCode: string | null | undefined): boolean {
+  return itemCategoryCode != null && DOOR_FRAME_CATEGORY_CODES.has(itemCategoryCode);
+}

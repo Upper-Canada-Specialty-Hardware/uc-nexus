@@ -137,6 +137,11 @@ export function buildProductReconRows(args: {
   // of the recon RECEIVED bucket, which is blind to inventory that arrived off-PO. Absent for the PO
   // purpose (qtyAvailable is unused there) and in unit tests.
   availableByProduct?: Map<string, number>;
+  // #627: the hardware pathway's Order Qty per product, keyed by itemGroupKey (`category|product`).
+  // A product's newly-selected PO quantity is capped at its override, so the over-order warning
+  // measures what will actually be ordered rather than the full schedule total. Empty/absent
+  // (openings mode, unit tests) leaves selectedNewPOQty at the schedule total.
+  orderQtyOverrides?: Map<string, number>;
 }): ProductReconRow[] {
   const {
     purpose,
@@ -146,6 +151,7 @@ export function buildProductReconRows(args: {
     selectedReconItems,
     hardwareStatusByProduct,
     availableByProduct,
+    orderQtyOverrides,
   } = args;
 
   const qtyNeededByProduct = new Map<string, number>();
@@ -210,6 +216,13 @@ export function buildProductReconRows(args: {
     row.selectedNewPOQty = row.underlyingOpeningKeys
       .filter((k) => selectedReconItems.has(k))
       .reduce((sum, k) => sum + (hsQtyByOpeningKey.get(k) ?? 0), 0);
+    // #627: the hardware pathway caps a product's order at its Order Qty. `row.id` is the itemGroupKey
+    // the override is keyed on, so the newly-ordered quantity - what feeds the over-order warning - is
+    // the overridden amount, never the full schedule total.
+    const orderQtyOverride = orderQtyOverrides?.get(row.id);
+    if (orderQtyOverride !== undefined) {
+      row.selectedNewPOQty = Math.min(row.selectedNewPOQty, orderQtyOverride);
+    }
 
     // An excluded (By Others) product is short-circuited by reconcile to a single BY_OTHERS bucket;
     // it is not UC Hardware's to order or track, so it keeps that chip rather than borrowing the

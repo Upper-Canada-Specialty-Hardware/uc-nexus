@@ -593,6 +593,9 @@ class Project:
     submittal_assignment_count: int | None
     estimator_code: str | None
     titan_user_id: str | None
+    # #627: source XML file name of the persisted hardware schedule, or null (imported before this, or
+    # a hydrate that carried none). Read by the wizard's projectHardwareSchedule payload.
+    schedule_filename: str | None
     off_site_storage_agreement: bool
     gc_contact_name: str | None
     gc_phone: str | None

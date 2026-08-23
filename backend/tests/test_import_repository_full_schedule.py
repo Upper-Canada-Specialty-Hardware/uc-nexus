@@ -456,6 +456,84 @@ def test_get_project_openings_empty_for_project_without_schedule(db_session):
     assert data == {"openings": [], "opening_count": 0, "hardware_item_count": 0}
 
 
+# ---------------------------------------------------------------------------
+# Schedule source filename (#627)
+# ---------------------------------------------------------------------------
+
+
+def test_schedule_filename_written_on_fresh_parse(db_session):
+    """A finalize carrying a source file name stamps it on the project."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100")],
+            "schedule_filename": "contracterp-74.xml",
+        },
+    )
+    db_session.flush()
+
+    refreshed = db_session.get(Project, project.id)
+    assert refreshed.schedule_filename == "contracterp-74.xml"
+
+
+def test_schedule_filename_preserved_when_finalize_sends_none(db_session):
+    """A hydrate-from-persisted finalize sends no file name; the stored one survives untouched."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100")],
+            "schedule_filename": "first.xml",
+        },
+    )
+    db_session.flush()
+
+    # No schedule_filename key at all: same as a hydrate run, which passes None.
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100")],
+            "schedule_filename": None,
+        },
+    )
+    db_session.flush()
+
+    refreshed = db_session.get(Project, project.id)
+    assert refreshed.schedule_filename == "first.xml"
+
+
+def test_schedule_filename_exposed_on_schedule_query(db_session):
+    """The persisted file name is carried on the project the schedule query returns."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100")],
+            "schedule_filename": "sched.xml",
+        },
+    )
+    db_session.flush()
+
+    schedule = import_repository.get_project_hardware_schedule(db_session, project.id)
+    assert schedule is not None
+    assert schedule["project"].schedule_filename == "sched.xml"
+
+
 def test_manufacturer_persists_and_round_trips(db_session):
     """Manufacturer flows finalize input -> HardwareItem row -> schedule query, and a null
     manufacturer round-trips as None (blank) rather than erroring."""

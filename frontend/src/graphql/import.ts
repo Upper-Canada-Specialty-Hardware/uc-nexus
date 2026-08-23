@@ -18,6 +18,7 @@ export const GET_PROJECT_HARDWARE_SCHEDULE = gql`
         submittalAssignmentCount
         estimatorCode
         titanUserId
+        scheduleFilename
       }
       openings {
         openingNumber

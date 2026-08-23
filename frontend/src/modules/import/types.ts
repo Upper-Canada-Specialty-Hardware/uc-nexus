@@ -123,15 +123,49 @@ export interface DraftGroup {
   attachments?: DraftAttachment[];
 }
 
+// #627: per-product seed quantity for the hardware pathway's Order Qty column. The override is keyed
+// by itemGroupKey (`category|product`) while the draft line is keyed by productKey (`product|category`),
+// so the translation happens here at the seed boundary. Default (no override) is the product's full
+// schedule total; an override caps it at min(override, total). openings-mode passes an empty/undefined
+// map, so the seed is the full total exactly as before.
+function seededLineQty(
+  total: number,
+  representativeItem: AggregatedHardwareItem,
+  orderQtyOverrides?: Map<string, number>,
+): number {
+  const override = orderQtyOverrides?.get(itemGroupKey(representativeItem));
+  return override === undefined ? total : Math.min(override, total);
+}
+
+// Raw per-product totals for one vendor group, plus a representative item per product so the seed can
+// translate productKey -> itemGroupKey for the Order Qty override lookup. Insertion order follows first
+// occurrence, which is the order products appeared in the selection.
+function productTotals(
+  items: AggregatedHardwareItem[],
+): { totals: Map<string, number>; repByPk: Map<string, AggregatedHardwareItem> } {
+  const totals = new Map<string, number>();
+  const repByPk = new Map<string, AggregatedHardwareItem>();
+  for (const hi of items) {
+    const pk = productKey(hi);
+    totals.set(pk, (totals.get(pk) ?? 0) + hi.item_quantity);
+    if (!repByPk.has(pk)) repByPk.set(pk, hi);
+  }
+  return { totals, repByPk };
+}
+
 // Seed one draft per manufacturer group at full quantity - the starting point the buyer then slices.
 // Unchecked by default (nothing is ordered until the buyer says so), same as the old vendor selection.
-export function seedDraftGroups(vendorGroups: Map<string, AggregatedHardwareItem[]>): DraftGroup[] {
+// #627: orderQtyOverrides caps a product's seeded line at the buyer's Order Qty (hardware pathway only).
+export function seedDraftGroups(
+  vendorGroups: Map<string, AggregatedHardwareItem[]>,
+  orderQtyOverrides?: Map<string, number>,
+): DraftGroup[] {
   const groups: DraftGroup[] = [];
   for (const [vendor, items] of vendorGroups) {
+    const { totals, repByPk } = productTotals(items);
     const lines = new Map<string, number>();
-    for (const hi of items) {
-      const pk = productKey(hi);
-      lines.set(pk, (lines.get(pk) ?? 0) + hi.item_quantity);
+    for (const [pk, total] of totals) {
+      lines.set(pk, seededLineQty(total, repByPk.get(pk)!, orderQtyOverrides));
     }
     groups.push({
       id: `seed:${vendor}`,
@@ -147,14 +181,18 @@ export function seedDraftGroups(vendorGroups: Map<string, AggregatedHardwareItem
 // A signature of the aggregated selection the drafts are seeded from. Re-seed only when this changes
 // (a different selection, or a reclassification that moved items in or out), so walking Back and
 // forward without changing the selection does not clobber the buyer's slicing - the same guard the
-// request composer uses with its offer signature.
-export function draftSeedSignature(vendorGroups: Map<string, AggregatedHardwareItem[]>): string {
+// request composer uses with its offer signature. #627: the seeded (override-capped) quantities are
+// folded in, so changing an Order Qty re-seeds the drafts rather than leaving them at the old total.
+export function draftSeedSignature(
+  vendorGroups: Map<string, AggregatedHardwareItem[]>,
+  orderQtyOverrides?: Map<string, number>,
+): string {
   const parts: string[] = [];
   for (const [vendor, items] of vendorGroups) {
+    const { totals, repByPk } = productTotals(items);
     const byProduct = new Map<string, number>();
-    for (const hi of items) {
-      const pk = productKey(hi);
-      byProduct.set(pk, (byProduct.get(pk) ?? 0) + hi.item_quantity);
+    for (const [pk, total] of totals) {
+      byProduct.set(pk, seededLineQty(total, repByPk.get(pk)!, orderQtyOverrides));
     }
     const sorted = Array.from(byProduct.entries()).sort(([a], [b]) => a.localeCompare(b));
     parts.push(`${vendor}::${sorted.map(([k, q]) => `${k}=${q}`).join(',')}`);

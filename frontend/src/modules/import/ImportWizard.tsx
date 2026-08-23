@@ -33,7 +33,8 @@ import { isGpSetupBroken } from '../../types/project';
 import { useHardwareScheduleParser } from '../../hooks/useHardwareScheduleParser';
 import { useNavigate } from 'react-router-dom';
 import { GET_PROJECT_EXCLUDED_ITEMS, GET_PROJECT_HARDWARE_SCHEDULE, RECONCILE_SCHEDULE, FINALIZE_IMPORT_SESSION } from '../../graphql/import';
-import { UPLOAD_PO_DOCUMENT } from '../../graphql/po';
+import { UPLOAD_PO_DOCUMENT, GET_GP_COST_CODES } from '../../graphql/po';
+import { useRelayStatus } from '../../relay/useRelayStatus';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { GET_PROJECT_INVENTORY_AVAILABILITY } from '../../graphql/warehouse';
 import { GET_REQUEST_COVERAGE } from '../../graphql/shipping';
@@ -72,6 +73,7 @@ import SelectHardwareStep from './SelectHardwareStep';
 import ReconciliationStep from './ReconciliationStep';
 import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
+import type { GpCostCode } from './DraftOrganizer';
 import ComposeRequestStep from './ComposeRequestStep';
 import WizardNav from './WizardNav';
 import OverOrderWarningModal from './OverOrderWarningModal';
@@ -229,6 +231,13 @@ export default function ImportWizard({
   // itemGroupKey (`hardware_category|product_code`). Only one is live per pathway.
   const [selectedOpenings, setSelectedOpenings] = useState<Set<string>>(new Set());
   const [selectedProductKeys, setSelectedProductKeys] = useState<Set<string>>(new Set());
+  // #627: the hardware pathway's per-product Order Qty, keyed by itemGroupKey (`category|product`).
+  // Hardware mode only - the openings pathway takes quantities whole from the schedule. Absent means
+  // "order the full total"; the draft seed caps a product's line at min(override, total).
+  const [orderQtyOverrides, setOrderQtyOverrides] = useState<Map<string, number>>(new Map());
+  // #627: the uploaded XML file name, captured at file select. Sent on finalize when the schedule came
+  // from a fresh parse; null on a hydrate-from-persisted run, so the stored name survives.
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
 
   // Action step state
   // #570: the PO drafts the buyer is composing. Seeded one-per-manufacturer from the aggregated
@@ -367,6 +376,9 @@ export default function ImportWizard({
 
   const persistedHardwareItemCount = scheduleData?.projectHardwareSchedule?.hardwareItems.length ?? 0;
   const persistedOpeningCount = scheduleData?.projectHardwareSchedule?.openings.length ?? 0;
+  // #627: the file name behind the persisted schedule, shown on the picker and the loaded card. Null
+  // for a project imported before the field existed - the line is then simply omitted.
+  const persistedScheduleFilename = scheduleData?.projectHardwareSchedule?.project.scheduleFilename ?? null;
   const canStartFromLatest = isReimport && persistedHardwareItemCount > 0;
   const [hydratedFromPersisted, setHydratedFromPersisted] = useState(false);
 
@@ -394,6 +406,39 @@ export default function ImportWizard({
   // #588: uploads the buyer's pre-attached documents onto the POs finalize just minted. Separate call
   // per doc, same as the PO detail modal - the PO exists by then, so this is the ordinary upload path.
   const [uploadPoDocument] = useMutation<{ uploadPoDocument: { id: string } }>(UPLOAD_PO_DOCUMENT);
+
+  // #490/#627: the GP job's cost codes, read once for the whole PO step. Lifted here from
+  // PurchaseOrdersStep so the Next gate can require a cost code when the list loaded, while the step
+  // renders the alert and the DraftCard renders the required select from the same source. Cost codes
+  // are per GP job, so the read is keyed on the job number and the connected relay's company.
+  const relay = useRelayStatus({ skip: !open });
+  const relayCompany = relay.company ?? '';
+  const gpJobNumber = project.projectId ?? null;
+  const {
+    data: costCodesData,
+    error: costCodesError,
+    loading: costCodesLoading,
+  } = useQuery<{ gpCostCodes: GpCostCode[] }>(GET_GP_COST_CODES, {
+    variables: { company: relayCompany, job: gpJobNumber ?? '' },
+    skip: !open || purpose !== 'po' || relay.connected !== true || !relayCompany || !gpJobNumber,
+    fetchPolicy: 'cache-first',
+  });
+  const costCodes = useMemo(() => costCodesData?.gpCostCodes ?? [], [costCodesData]);
+  // Required only when the list actually loaded with entries. Empty (relay down, no job, read failed,
+  // or a job GP holds no codes for) waives the requirement - see costCodeWaiverReason.
+  const costCodesRequired = costCodes.length > 0;
+  // Why the list is unavailable, or null when it loaded (or is still loading - a transient null is not
+  // a waiver, so the alert does not flash before the read settles).
+  const costCodeWaiverReason = useMemo<string | null>(() => {
+    if (purpose !== 'po') return null;
+    if (relay.connected === null) return null; // relay status still resolving
+    if (relay.connected !== true || !relayCompany) return 'the relay is offline';
+    if (!gpJobNumber) return 'this project has no GP job number';
+    if (costCodesError) return 'the cost-code read from GP failed';
+    if (costCodesLoading && costCodesData === undefined) return null; // read in flight
+    if (costCodes.length === 0) return 'this GP job has no cost codes in GP';
+    return null;
+  }, [purpose, relay.connected, relayCompany, gpJobNumber, costCodesError, costCodesLoading, costCodesData, costCodes.length]);
 
   // Pre-populate BY_OTHERS classifications from this project's exclusion table once XML is parsed
   const parsedHardwareItems = parser.parseResult?.hardwareItems;
@@ -702,19 +747,26 @@ export default function ImportWizard({
   // #570: re-seed the PO drafts when, and only when, the aggregated selection changes. Held against a
   // signature so Back-and-forward through the wizard preserves the buyer's slicing; a real change to
   // the selection (different openings, a reclassification) re-seeds from the new manufacturer groups.
-  const draftSeedSig = useMemo(() => draftSeedSignature(vendorGroups), [vendorGroups]);
+  // #627: the Order Qty overrides fold into both the signature and the seed, so changing a product's
+  // Order Qty re-seeds its draft line at the new (capped) quantity rather than leaving it at the total.
+  const draftSeedSig = useMemo(
+    () => draftSeedSignature(vendorGroups, orderQtyOverrides),
+    [vendorGroups, orderQtyOverrides],
+  );
   useEffect(() => {
     if (purpose !== 'po') return;
     if (seededDraftSignature === draftSeedSig) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot re-seed keyed off the selection signature, same pattern as the composer
-    setDraftGroups(seedDraftGroups(vendorGroups));
+    setDraftGroups(seedDraftGroups(vendorGroups, orderQtyOverrides));
     setSeededDraftSignature(draftSeedSig);
-  }, [purpose, draftSeedSig, vendorGroups, seededDraftSignature]);
+  }, [purpose, draftSeedSig, vendorGroups, orderQtyOverrides, seededDraftSignature]);
 
   // ---- Step Navigation ----
 
   const handleFileSelect = useCallback(
     (file: File) => {
+      // #627: capture the source file name so finalize can persist it on the project.
+      setUploadedFileName(file.name);
       parser.parseFile(file);
     },
     [parser],
@@ -808,6 +860,8 @@ export default function ImportWizard({
     setPurpose(isHardwareMode ? 'po' : null);
     setSelectedOpenings(new Set());
     setSelectedProductKeys(new Set());
+    setOrderQtyOverrides(new Map());
+    setUploadedFileName(null);
     setDraftGroups([]);
     setSeededDraftSignature(null);
     setUnitCostOverrides(new Map());
@@ -872,8 +926,11 @@ export default function ImportWizard({
       allHardwareItems: parsed?.hardwareItems ?? [],
       selectedReconItems,
       hardwareStatusByProduct,
+      // #627: cap a product's newly-ordered qty at its Order Qty, so the over-order warning measures
+      // what will actually be ordered. Empty in openings mode, so it changes nothing there.
+      orderQtyOverrides,
     }).filter((r) => r.overOrdersProject);
-  }, [purpose, isReimport, reconciliationRows, selectedHardwareItems, parsed, selectedReconItems, hardwareStatusByProduct]);
+  }, [purpose, isReimport, reconciliationRows, selectedHardwareItems, parsed, selectedReconItems, hardwareStatusByProduct, orderQtyOverrides]);
 
   const advanceToNextStep = useCallback(() => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
@@ -971,6 +1028,15 @@ export default function ImportWizard({
 
   const removeDraftAttachment = useCallback((draftId: string, attachmentId: string) => {
     setDraftGroups((prev) => draftOps.removeAttachment(prev, draftId, attachmentId));
+  }, []);
+
+  // #627: Order Qty overrides, keyed by itemGroupKey (the SelectHardwareStep row id).
+  const updateOrderQty = useCallback((key: string, qty: number) => {
+    setOrderQtyOverrides((prev) => {
+      const next = new Map(prev);
+      next.set(key, qty);
+      return next;
+    });
   }, []);
 
   // Unit cost overrides, keyed by productKey (#570).
@@ -1123,11 +1189,14 @@ export default function ImportWizard({
       // schedule (i.e., they did not pick "Use last uploaded schedule"). The backend wipes all
       // existing HardwareItems and openings absent from the new input.
       replaceSchedule: canStartFromLatest && !hydratedFromPersisted,
+      // #627: the source file name, sent only when the schedule came from a fresh parse. A hydrate
+      // run leaves this null, so the backend keeps the stored name.
+      scheduleFilename: uploadedFileName,
       // The exact lines the wizard gated on (#342), not a second derivation of them - carrying both
       // numbers per line, and already minus the excluded and unallocated ones.
       shopAssemblyItems: purpose === 'assembly' ? requestLines : null,
     };
-  }, [parsed, project.id, purpose, poDraftBuild, unitCostOverrides, classifications, siteShopClassifications, requestLines, sarRequestNumber, canStartFromLatest, hydratedFromPersisted]);
+  }, [parsed, project.id, purpose, poDraftBuild, unitCostOverrides, classifications, siteShopClassifications, requestLines, sarRequestNumber, canStartFromLatest, hydratedFromPersisted, uploadedFileName]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -1311,7 +1380,13 @@ export default function ImportWizard({
     () => draftGroups.filter((g) => g.included && g.lines.size > 0).length,
     [draftGroups],
   );
-  const canProceedPurchaseOrders = includedDraftCount > 0;
+  // #627: when the cost-code list loaded, every included non-empty draft must carry a cost code.
+  const includedDraftsMissingCostCode = useMemo(
+    () => draftGroups.filter((g) => g.included && g.lines.size > 0 && !g.info.costCode).length,
+    [draftGroups],
+  );
+  const canProceedPurchaseOrders =
+    includedDraftCount > 0 && (!costCodesRequired || includedDraftsMissingCostCode === 0);
 
   // #566: the compose step's loading/error flags, computed once so the AppBar Next and the step body
   // read the identical numbers. These exact expressions are what the step is handed as props below.
@@ -1371,6 +1446,13 @@ export default function ImportWizard({
       break;
     case 'purchase-orders':
       canProceedCurrentStep = canProceedPurchaseOrders;
+      // #627: explain a Next blocked only by a missing cost code (there is at least one orderable draft).
+      if (includedDraftCount > 0 && costCodesRequired && includedDraftsMissingCostCode > 0) {
+        navHint =
+          includedDraftsMissingCostCode === 1
+            ? 'A cost code is required on the included PO draft.'
+            : 'A cost code is required on each included PO draft.';
+      }
       break;
     case 'shop-assembly':
       canProceedCurrentStep = composeGate.canProceed;
@@ -1466,9 +1548,20 @@ export default function ImportWizard({
                     <Typography variant="body2" color="text.secondary">
                       Resume from this project's last uploaded schedule.
                     </Typography>
-                    <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: 1 }}>
+                    <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: persistedScheduleFilename ? 0.25 : 1 }}>
                       {persistedOpeningCount} openings, {persistedHardwareItemCount} hardware items.
                     </Typography>
+                    {/* #627: the file the persisted schedule was uploaded from. Omitted for projects
+                        imported before the name was captured. */}
+                    {persistedScheduleFilename && (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ ...monoSx, mb: 1, wordBreak: 'break-all' }}
+                      >
+                        {persistedScheduleFilename}
+                      </Typography>
+                    )}
                     <Button variant="contained" onClick={handleLoadFromLatest} sx={{ mt: 'auto' }}>
                       Use last uploaded schedule
                     </Button>
@@ -1588,7 +1681,7 @@ export default function ImportWizard({
                           ? 'Loaded last uploaded hardware schedule.'
                           : 'File parsed successfully!'}
                       </Typography>
-                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mt: 0.5 }}>
+                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', mt: 0.5, flexWrap: 'wrap' }}>
                         <Typography sx={microLabelSx}>Project</Typography>
                         <Typography variant="body2" sx={monoSx}>
                           {existingProjectName}
@@ -1598,6 +1691,16 @@ export default function ImportWizard({
                           color={isReimport ? 'info' : 'success'}
                           size="small"
                         />
+                        {/* #627: which file the loaded schedule came from. Only on the hydrate path,
+                            where the source is the persisted schedule rather than a just-parsed file. */}
+                        {hydratedFromPersisted && persistedScheduleFilename && (
+                          <>
+                            <Typography sx={microLabelSx}>File</Typography>
+                            <Typography variant="body2" sx={{ ...monoSx, wordBreak: 'break-all' }}>
+                              {persistedScheduleFilename}
+                            </Typography>
+                          </>
+                        )}
                       </Box>
                     </Box>
                     <Box sx={{ flexGrow: 1 }} />
@@ -1704,6 +1807,8 @@ export default function ImportWizard({
               hardwareItems={hardwareItems}
               selectedProductKeys={selectedProductKeys}
               onSelectionChange={setSelectedProductKeys}
+              orderQtyOverrides={orderQtyOverrides}
+              onOrderQtyChange={updateOrderQty}
             />
           )}
 
@@ -1722,6 +1827,7 @@ export default function ImportWizard({
               selectedReconItems={selectedReconItems}
               hardwareStatusByProduct={hardwareStatusByProduct}
               availableByProduct={availableByProduct}
+              orderQtyOverrides={orderQtyOverrides}
               availabilityLoading={availabilityLoading && availabilityData === undefined}
               availabilityError={availabilityError !== undefined}
               onSelectionChange={setSelectedReconItems}
@@ -1744,7 +1850,8 @@ export default function ImportWizard({
           {effectiveStepId === 'purchase-orders' && (
             <PurchaseOrdersStep
               projectId={project.id}
-              jobNumber={project.projectId ?? null}
+              costCodes={costCodes}
+              costCodeWaiverReason={costCodeWaiverReason}
               draftGroups={draftGroups}
               productCatalog={poProductCatalog}
               unitCostOverrides={unitCostOverrides}
