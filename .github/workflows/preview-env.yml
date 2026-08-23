@@ -1,7 +1,7 @@
 name: preview-env
 
 # Hands off a fully built, signed-in-ready test environment for every non-draft PR (preview-env
-# autonomy plan; closes #607 #601 #600 #598). Three failure modes it closes:
+# autonomy plan; closes #607 #601 #600 #598). Four failure modes it closes:
 #
 #   1. Railway's focused PR deploys skip a service whose directory the PR did not touch, and a
 #      relay-only / docs-only PR leaves the whole environment unbuilt, Postgres included. This
@@ -17,6 +17,10 @@ name: preview-env
 #      (#625). The readiness wait recognizes that shape - latest deployment SUCCESS yet the domain
 #      still 404ing past a grace window - and triggers one from-source deploy per service instead of
 #      waiting out its timeout.
+#   4. The same half-provisioning can create the environment with NO Postgres volume instance, so
+#      Postgres crash-loops on a missing mount while its deployment reads SUCCESS and the backend
+#      times out on postgres.railway.internal forever (pr-626). The volume self-heal creates the
+#      missing volume and forces a fresh Postgres deploy so it boots with the mount.
 #
 # The workflow only ever ADDS deploys: when Railway built a service itself this push, it has a success
 # in history and this just health-checks it. Everything runs against the Railway public GraphQL API
@@ -155,6 +159,32 @@ jobs:
           read BE_HAS BE_INFL <<<"$be_facts"
           read FE_HAS FE_INFL <<<"$fe_facts"
           echo "deploy facts: Postgres(success=$PG_HAS inflight=$PG_INFL) backend(success=$BE_HAS inflight=$BE_INFL) frontend(success=$FE_HAS inflight=$FE_INFL)"
+
+          # --- 2.5 Postgres volume self-heal -------------------------------------------------------
+          # The half-provisioning that leaves services undeployed can also leave the environment with
+          # NO volume instance for Postgres (observed on pr-626: the postgres image crash-looping
+          # "Railway volume not mounted to the correct path" with an EMPTY mount while its deployment
+          # reads SUCCESS, and the backend timing out on postgres.railway.internal forever). Create the
+          # missing volume at the production mount path and force a fresh Postgres deploy so it boots
+          # with the mount - a Postgres deployment that predates the volume is doomed regardless of its
+          # status, so its facts are reset. Fail-open: if the check itself errors, warn and carry on.
+          VOL_QUERY='query($id:String!){ environment(id:$id){ volumeInstances { edges { node { serviceId mountPath } } } } }'
+          if vol_data=$(rgql "$VOL_QUERY" "$(jq -cn --arg id "$ENV_ID" '{id:$id}')"); then
+            has_pg_vol=$(printf '%s' "$vol_data" | jq -r --arg s "$PG_ID" '[.environment.volumeInstances.edges[]?.node|select(.serviceId==$s)]|length>0')
+            if [ "$has_pg_vol" != "true" ]; then
+              echo "Postgres has no volume instance in this environment (half-provisioned PR env); creating one"
+              vin=$(jq -cn --arg p "$PROJECT_ID" --arg e "$ENV_ID" --arg s "$PG_ID" \
+                '{input:{projectId:$p,environmentId:$e,serviceId:$s,mountPath:"/var/lib/postgresql/data"}}')
+              if rgql 'mutation($input:VolumeCreateInput!){ volumeCreate(input:$input){ id } }' "$vin" >/dev/null; then
+                echo "  volume created; forcing a fresh Postgres deploy so it boots with the mount"
+                PG_HAS=false; PG_INFL=false
+              else
+                echo "::warning::could not create the missing Postgres volume; the environment will likely not come up"
+              fi
+            fi
+          else
+            echo "::warning::could not read the environment's volume instances; skipping the volume check"
+          fi
 
           # --- 3. provision the session capability -------------------------------------------------
           # K lives nowhere but the PR comment (the verifier-not-credential shape every testing var
