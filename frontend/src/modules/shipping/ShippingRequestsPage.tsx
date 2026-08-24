@@ -193,7 +193,7 @@ export default function ShippingRequestsPage({ projectId }: Props) {
               <Link component={RouterLink} to="/app/warehouse/pull-requests">
                 Warehouse → Pull Requests
               </Link>{' '}
-              (Confirm Pick, then Mark as Pulled) to move items to ship-ready.
+              (confirm the pick, then send it to staging) to move items to ship-ready.
             </Alert>
           ) : undefined
         }

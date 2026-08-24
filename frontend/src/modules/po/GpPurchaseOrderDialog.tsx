@@ -751,6 +751,10 @@ export default function GpPurchaseOrderDialog({
   // user fields they should control, rather than as a relay that needs starting.
   const RELAY_DOWN_HELPER = 'GP relay not connected - start it to choose from GP';
 
+  // #490: the code seeded off the draft, still untouched. Named under the field so the pre-filled
+  // pick reads as a confirmation rather than a fresh question being asked twice.
+  const costCodeCarriedFromDraft = !!registerPo?.costCode && costCode === registerPo.costCode;
+
   // Status line under the cost-code dropdown (an explicit validation error takes precedence).
   const costCodeHelper = !isJob
     ? ''
@@ -760,7 +764,9 @@ export default function GpPurchaseOrderDialog({
         ? 'Loading cost codes from GP…'
         : costCodes.length === 0
           ? 'No cost codes defined for this job in GP'
-          : '';
+          : costCodeCarriedFromDraft
+            ? 'Carried from the PO draft - change it if wrong'
+            : '';
 
   const importedVendorName = registerPo ? poVendorName(registerPo) || null : null;
   const vendorHelper =

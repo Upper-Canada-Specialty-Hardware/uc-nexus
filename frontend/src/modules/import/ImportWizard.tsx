@@ -1459,6 +1459,11 @@ export default function ImportWizard({
       break;
     case 'purchase-orders':
       canProceedCurrentStep = canProceedPurchaseOrders;
+      // The other silent grey-out on this step: nothing ticked means nothing to order, but the
+      // checkbox that fixes it lives on the draft's name and is easy to miss.
+      if (includedDraftCount === 0) {
+        navHint = 'Include at least one PO draft - tick the checkbox on its name.';
+      }
       // #627: explain a Next blocked only by a missing cost code (there is at least one orderable draft).
       if (includedDraftCount > 0 && costCodesRequired && includedDraftsMissingCostCode > 0) {
         navHint =

@@ -308,6 +308,100 @@ describe('from-schedule source gate', () => {
   });
 });
 
+// The composer collapse: rows with nothing to add (no suggestion, or no stock behind the suggestion)
+// fold behind a per-opening expander line; a row in the cart is always visible.
+
+function coverageRow(over: Partial<Record<string, unknown>> = {}) {
+  return {
+    openingNumber: '101',
+    hardwareCategory: 'HINGE',
+    productCode: 'HG-100',
+    classification: null,
+    owedQuantity: 4,
+    sentQuantity: 0,
+    claimedQuantity: 0,
+    suggestedQuantity: 4,
+    onOrderQuantity: 0,
+    ...over,
+  };
+}
+
+function coverageMockRows(rows: Array<Record<string, unknown>>): MockedResponse {
+  return {
+    request: { query: GET_REQUEST_COVERAGE, variables: { projectId: 'proj-1', openingNumbers: ['101'] } },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+    result: { data: { requestCoverage: rows } },
+  };
+}
+
+async function reachCoverage(extraMocks: MockedResponse[]) {
+  renderAt('/app/shipping/requests/new?projectId=proj-1', [
+    projectsMock(),
+    availabilityMock(),
+    scheduleOpeningsMock(),
+    ...extraMocks,
+  ]);
+  await screen.findByText(/2 openings/i, {}, SLOW);
+  fireEvent.click(screen.getByRole('button', { name: /use current schedule/i }));
+  const paste = await screen.findByPlaceholderText('Paste opening numbers, one per line...', {}, SLOW);
+  fireEvent.change(paste, { target: { value: '101' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Filter' }));
+}
+
+describe('composer collapse', () => {
+  it('hides rows with nothing to add and reveals them through the expander', async () => {
+    await reachCoverage([
+      coverageMockRows([
+        coverageRow(),
+        // Already covered: nothing left to suggest.
+        coverageRow({ hardwareCategory: 'LOCK', productCode: 'LK-200', suggestedQuantity: 0, sentQuantity: 4 }),
+        // Awaiting stock: suggested, but no availability behind it (only HINGE|HG-100 has a pool).
+        coverageRow({ hardwareCategory: 'DOOR', productCode: 'DR-300', suggestedQuantity: 3, onOrderQuantity: 5 }),
+      ]),
+    ]);
+    await screen.findByText('HG-100', {}, SLOW);
+
+    expect(screen.queryByText('LK-200')).not.toBeInTheDocument();
+    expect(screen.queryByText('DR-300')).not.toBeInTheDocument();
+    const expander = screen.getByRole('button', {
+      name: '2 lines with nothing to add · 1 awaiting stock (5 on order) · 1 already covered - show',
+    });
+
+    fireEvent.click(expander);
+    expect(screen.getByText('LK-200')).toBeInTheDocument();
+    expect(screen.getByText('DR-300')).toBeInTheDocument();
+  });
+
+  it('collapses an opening with nothing to add to its header and the expander line alone', async () => {
+    await reachCoverage([
+      coverageMockRows([coverageRow({ suggestedQuantity: 0, sentQuantity: 4 })]),
+    ]);
+    const expander = await screen.findByRole(
+      'button',
+      { name: '1 line with nothing to add · 1 already covered - show' },
+      SLOW,
+    );
+    // No table at all until expanded - the opening is its header plus this one line.
+    expect(screen.queryByText('Suggested')).not.toBeInTheDocument();
+
+    fireEvent.click(expander);
+    expect(await screen.findByText('HG-100', {}, SLOW)).toBeInTheDocument();
+  });
+
+  it('keeps a restored draft line visible even when its row has nothing left to suggest', async () => {
+    sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify([{ openingNumber: '101', hardwareCategory: 'HINGE', productCode: 'HG-100', quantity: 2 }]),
+    );
+    await reachCoverage([coverageMockRows([coverageRow({ suggestedQuantity: 0, sentQuantity: 4 })])]);
+
+    const qty = await screen.findByRole('spinbutton', { name: 'Quantity of HG-100 for 101' }, SLOW);
+    expect(qty).toHaveValue(2);
+    // The only row is pinned visible by the cart, so there is nothing to collapse.
+    expect(screen.queryByRole('button', { name: /with nothing to add/ })).not.toBeInTheDocument();
+  });
+});
+
 // The extras lane (#610): loose stock demoted to a bottom accordion, opening on its own only when
 // the cart already carries loose lines.
 

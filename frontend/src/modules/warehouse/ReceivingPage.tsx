@@ -20,6 +20,7 @@ import { useQuery } from '@apollo/client/react';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import DataTable from '../../components/DataTable';
+import SelectionActionBar, { BarButton } from '../../components/SelectionActionBar';
 import ReceiveModal from './ReceiveModal';
 import ReceivingHistory from './ReceivingHistory';
 import MyReceiveDraftsView from './MyReceiveDraftsView';
@@ -486,28 +487,20 @@ export default function ReceivingPage() {
 
       {showReceive && (
         <>
-      {/* Pending POs Section */}
-      <Box
+      {/* Pending POs Section. Multi-select receive moved off this band and into the floating
+          selection bar over the grid, so the band is just the label like the sections below. */}
+      <Typography
+        component="div"
         sx={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'flex-end',
-          gap: 2,
+          ...microLabelSx,
           pb: 0.75,
           mb: 1.5,
           borderBottom: '2px solid',
           borderColor: 'text.primary',
         }}
       >
-        <Typography component="div" sx={microLabelSx}>
-          POs Awaiting Receipt{poRows.length > 0 ? ` (${poRows.length})` : ''}
-        </Typography>
-        {selectedPOIds.length > 0 && (
-          <Button variant="contained" size="small" onClick={handleReceiveSelected} sx={{ mb: 0.25 }}>
-            Receive {selectedPOIds.length} Selected
-          </Button>
-        )}
-      </Box>
+        POs Awaiting Receipt{poRows.length > 0 ? ` (${poRows.length})` : ''}
+      </Typography>
 
       {openPOsLoading && (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -525,7 +518,8 @@ export default function ReceivingPage() {
         </Alert>
       )}
       {!openPOsLoading && !openPOsError && poRows.length > 0 && (
-        <Box sx={{ mb: 4 }}>
+        // position: relative anchors the floating selection bar (#617 pattern) over this grid alone.
+        <Box sx={{ mb: 4, position: 'relative' }}>
           <DataTable
             columns={poColumns}
             rows={poRows}
@@ -538,6 +532,11 @@ export default function ReceivingPage() {
             sx={{ cursor: 'pointer' }}
             getRowId={(row) => row.id}
           />
+          {/* Row click stays the single-PO path; ticking checkboxes is the multi path, and the bar
+              is its visible grammar from the first tick. */}
+          <SelectionActionBar count={selectedPOIds.length} onClear={() => setSelectedPOIds([])}>
+            <BarButton label="Receive" onClick={handleReceiveSelected} />
+          </SelectionActionBar>
         </Box>
       )}
 

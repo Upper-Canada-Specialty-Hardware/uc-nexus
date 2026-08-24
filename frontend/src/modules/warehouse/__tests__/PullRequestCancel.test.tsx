@@ -137,7 +137,8 @@ it('sends an un-picked pull back to its sheet rather than offering completion', 
   renderModal([], pullRequest({ pickedAt: null, pickedBy: null, partiallyPicked: false }));
 
   expect(await screen.findByRole('button', { name: /Resume pick/ })).toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: /Mark as Pulled/ })).not.toBeInTheDocument();
+  // The terminal handover verb is destination-worded (Send to shop for this SHOP_ASSEMBLY fixture).
+  expect(screen.queryByRole('button', { name: /Send to (shop|staging)/ })).not.toBeInTheDocument();
   expect(screen.getByText(/Nothing has left inventory yet/)).toBeInTheDocument();
 });
 

@@ -14,7 +14,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { ArrowLeft, ArrowRight, Plus, Split, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Pencil, Plus, Split, X } from 'lucide-react';
 import {
   GROUP_BY_OPTIONS,
   distinctProductCodes,
@@ -61,6 +61,21 @@ interface Card {
 function uniqueKeys(rows: ClassificationRow[]): string[] {
   return Array.from(new Set(rows.map((r) => r.classificationKey)));
 }
+
+// One step on the two-axis stage rail. The active axis carries the amber underline; the inactive one
+// keeps the same box so the rail never shifts as the layer flips.
+const railStepSx = (active: boolean) =>
+  ({
+    fontSize: '0.6875rem',
+    fontWeight: 700,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase',
+    lineHeight: 1.4,
+    pb: 0.25,
+    borderBottom: '2px solid',
+    borderColor: active ? 'secondary.main' : 'transparent',
+    color: active ? 'text.primary' : 'text.disabled',
+  }) as const;
 
 function isTextTarget(el: Element | null): boolean {
   if (!el) return false;
@@ -121,6 +136,13 @@ export default function GuidedClassification({
 
   const completeCount = useMemo(
     () => rows.filter((r) => isRowClassified(r, classifyOpts)).length,
+    [rows, classifyOpts],
+  );
+
+  // Two-axis only: rows the user has scoped but not yet answered Site/Shop for. Without this clause
+  // the header counter sits still after a By UCH click and the click reads as if it did nothing.
+  const scopedAwaiting = useMemo(
+    () => rows.filter((r) => r.classification !== '' && !isRowClassified(r, classifyOpts)).length,
     [rows, classifyOpts],
   );
 
@@ -316,6 +338,10 @@ export default function GuidedClassification({
 
   const canSplit = !currentCard.isSplit && currentCard.rows.length > 1;
   const productCodes = distinctProductCodes(currentCard.rows);
+  // The scope already answered on this card, for the rail's step-1 chip. Rows scoped in different
+  // sessions can disagree, so a mixed card falls back to a neutral label rather than guessing.
+  const scopeValues = Array.from(new Set(currentCard.rows.map((r) => r.classification).filter(Boolean)));
+  const scopePick = scopeValues.length === 1 ? labelMap[scopeValues[0]] : undefined;
 
   return (
     <Box sx={{ minWidth: 0 }}>
@@ -324,7 +350,11 @@ export default function GuidedClassification({
           Group {safeIndex + 1} of {cards.length}
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx }}>
-          {completeCount} of {rows.length} classified
+          {hasSiteShop
+            ? `${completeCount} of ${rows.length} fully classified${
+                scopedAwaiting > 0 ? ` · ${scopedAwaiting} scoped, awaiting Site/Shop` : ''
+              }`
+            : `${completeCount} of ${rows.length} classified`}
         </Typography>
         <Box sx={{ ml: 'auto', display: 'flex', alignItems: 'center', gap: 0.5 }}>
           <Button variant="text" size="small" onClick={() => setStarted(false)}>
@@ -370,18 +400,33 @@ export default function GuidedClassification({
                 </Typography>
               )}
             </Box>
-            {hasSiteShop && layer === 'siteShop' && (
-              <Button
-                size="small"
-                variant="text"
-                startIcon={<ArrowLeft size={16} strokeWidth={1.75} />}
-                onClick={changeScope}
-                sx={{ flexShrink: 0 }}
-              >
-                Change scope
-              </Button>
-            )}
           </Box>
+
+          {/* #585's two layers, narrated: the rail names the axis currently being asked, and once the
+              card is scoped, step 1 becomes the picked answer as a chip. Clicking the chip is the old
+              Change-scope affordance - the scopeOverrideId mechanism underneath is untouched. */}
+          {hasSiteShop && (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mt: 1.25 }}>
+              {layer === 'scope' ? (
+                <Typography component="span" sx={railStepSx(true)}>
+                  1 Scope
+                </Typography>
+              ) : (
+                <Chip
+                  size="small"
+                  label={scopePick?.label ?? 'Mixed'}
+                  color={scopePick?.color}
+                  onClick={changeScope}
+                  onDelete={changeScope}
+                  deleteIcon={<Pencil size={13} strokeWidth={1.75} />}
+                  aria-label="Change scope"
+                />
+              )}
+              <Typography component="span" sx={railStepSx(layer === 'siteShop')}>
+                2 Site or Shop
+              </Typography>
+            </Box>
+          )}
 
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 1.5 }}>
             {layer === 'scope'

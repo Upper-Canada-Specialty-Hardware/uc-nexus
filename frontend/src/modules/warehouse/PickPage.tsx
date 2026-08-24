@@ -131,8 +131,8 @@ export default function PickPage() {
       }
       setShortfalls([]);
       // #613: a full confirm keeps the picker on the sheet instead of bouncing to the queue. The
-      // refetch above flips this page into its picked state, where a Mark as Pulled button offers the
-      // terminal handover inline - so the rush case is confirm-then-complete, two clicks, no navigation.
+      // refetch above flips this page into its picked state, where a Send to staging/shop button
+      // offers the terminal handover inline - confirm-then-send, two clicks, no navigation.
       showToast(`Pick confirmed. ${payload?.appliedQuantity ?? 0} unit(s) came off the shelf.`, 'success');
     },
     onError: (e) => {
@@ -320,8 +320,8 @@ export default function PickPage() {
               : ''}
             {pr.status === 'IN_PROGRESS'
               ? pr.source === 'SHIPPING_OUT'
-                ? 'Mark it as pulled to feed the shipping staging pool, or go back to the queue.'
-                : 'Mark it as pulled to send it to the shop, or go back to the queue.'
+                ? 'Send it to staging so it can be loaded into containers, or go back to the queue.'
+                : 'Send it to the shop, or go back to the queue.'
               : 'Go back to the queue.'}
           </Typography>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -343,7 +343,7 @@ export default function PickPage() {
                 onClick={handleMarkAsPulled}
                 disabled={completing}
               >
-                {completing ? 'Marking as pulled...' : 'Mark as Pulled'}
+                {completing ? 'Sending...' : pr.source === 'SHIPPING_OUT' ? 'Send to staging' : 'Send to shop'}
               </Button>
             )}
           </Stack>

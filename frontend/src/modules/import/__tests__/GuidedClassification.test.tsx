@@ -144,8 +144,9 @@ describe('GuidedClassification keybinds', () => {
 
     fireEvent.keyDown(document.body, { key: '1' });
 
-    // The row now carries By UCH; PO still needs Site/Shop, so it stays on group 1.
-    expect(screen.getByText('By UCH')).toBeInTheDocument();
+    // The row now carries By UCH (and the rail's step-1 chip echoes it); PO still needs Site/Shop,
+    // so it stays on group 1.
+    expect(screen.getAllByText('By UCH').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('Group 1 of 2')).toBeInTheDocument();
   });
 
@@ -215,6 +216,41 @@ describe('GuidedClassification focused layers (#585)', () => {
     expect(screen.getByRole('button', { name: /By UCH/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /By Others/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Site/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('GuidedClassification stage rail', () => {
+  it('shows the two-step rail with Scope active on a fresh card', () => {
+    render(<Harness baseRows={TWO_VENDORS} />);
+    start();
+
+    expect(screen.getByText('1 Scope')).toBeInTheDocument();
+    expect(screen.getByText('2 Site or Shop')).toBeInTheDocument();
+  });
+
+  it('folds the picked scope into a step-1 chip that is the Change-scope affordance', () => {
+    render(<Harness baseRows={TWO_VENDORS} />);
+    start();
+
+    fireEvent.click(screen.getByRole('button', { name: /By UCH/ }));
+
+    expect(screen.queryByText('1 Scope')).not.toBeInTheDocument();
+    const chip = screen.getByRole('button', { name: 'Change scope' });
+    expect(chip).toHaveTextContent('By UCH');
+
+    fireEvent.click(chip);
+    expect(screen.getByText('1 Scope')).toBeInTheDocument();
+  });
+
+  it('counts a scoped-but-awaiting row in the header counter', () => {
+    render(<Harness baseRows={TWO_VENDORS} />);
+    start();
+    expect(screen.getByText('0 of 2 fully classified')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /By UCH/ }));
+
+    // The By UCH click now visibly lands: the counter names the row waiting on its second axis.
+    expect(screen.getByText('0 of 2 fully classified · 1 scoped, awaiting Site/Shop')).toBeInTheDocument();
   });
 });
 

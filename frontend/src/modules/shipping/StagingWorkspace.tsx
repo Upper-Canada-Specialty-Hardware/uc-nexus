@@ -337,15 +337,23 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
             Everything pulled for shipping and not yet sent. Put it into the skids, carts and boxes
             that go on the truck, then ship whole containers.
           </Typography>
-          <Button
-            variant="contained"
-            // #425: a job whose GP cost codes point at accounts this company does not have cannot be
-            // received against, so it must not be shipped from either.
-            disabled={selectedContainers.length === 0 || isGpSetupBroken(project)}
-            onClick={() => setShipOpen(true)}
-          >
-            Ship {selectedContainers.length || ''} container{selectedContainers.length === 1 ? '' : 's'}
-          </Button>
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', flexShrink: 0 }}>
+            <Button
+              variant="contained"
+              // #425: a job whose GP cost codes point at accounts this company does not have cannot be
+              // received against, so it must not be shipped from either.
+              disabled={selectedContainers.length === 0 || isGpSetupBroken(project)}
+              onClick={() => setShipOpen(true)}
+            >
+              Ship {selectedContainers.length || ''} container{selectedContainers.length === 1 ? '' : 's'}
+            </Button>
+            {/* Why the button is grey, said beside it. The GP quarantine case keeps its banner above. */}
+            {selectedContainers.length === 0 && !isGpSetupBroken(project) && (
+              <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
+                {containers.length === 0 ? 'Create a container first' : 'Tick a container to ship it'}
+              </Typography>
+            )}
+          </Box>
         </Box>
 
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems="flex-start">
@@ -383,7 +391,7 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
             {pool && allUnplacedLoose.length === 0 && (
               <Alert severity="info">
                 Nothing is waiting to be loaded. Hardware arrives here once its shipping pull has
-                been picked and marked as pulled.
+                been picked and sent to staging.
               </Alert>
             )}
 
@@ -427,6 +435,18 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
           </Paper>
 
           <Box sx={{ flex: 1, minWidth: 0, width: '100%' }}>
+            {/* First-visit signpost, gone once the first container exists. It sits ABOVE the create
+                form so step 1 points at the thing directly under it. */}
+            {containers.length === 0 && (
+              <Alert severity="info" sx={{ mb: 2 }}>
+                <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                  Nothing ships loose - everything goes in a container.
+                </Typography>
+                <Typography variant="body2" sx={{ mt: 0.5 }}>
+                  1 Create a container below · 2 Place pulled lines into it · 3 Tick it and ship
+                </Typography>
+              </Alert>
+            )}
             <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
               <Typography sx={{ ...microLabelSx, display: 'block', mb: 1 }}>New container</Typography>
               <Stack direction="row" spacing={1}>
@@ -466,13 +486,6 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
                 </Button>
               </Stack>
             </Paper>
-
-            {containers.length === 0 && (
-              <Alert severity="info">
-                No containers yet. A shipment is made of them, so start with the skid or box you are
-                loading first.
-              </Alert>
-            )}
 
             <Stack spacing={2}>
               {containers.map((c) => (
