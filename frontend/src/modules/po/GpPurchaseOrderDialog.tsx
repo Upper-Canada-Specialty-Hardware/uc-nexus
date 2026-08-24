@@ -482,9 +482,20 @@ export default function GpPurchaseOrderDialog({
   // and a transient blip must not wipe the user's pick mid-form.
   const costCodeScopeRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      // Reset with the other open-scoped refs: a scope held from a previous dialog session would
+      // read as a job change on the next open and wipe THAT draft's seeded code.
+      costCodeScopeRef.current = null;
+      return;
+    }
+    // Wait for the relay's company before recording the scope. On the dialog's FIRST open the
+    // relayStatus read resolves after mount, and '' -> 'TUBC' must not count as a company change -
+    // it consumed the first-pass guard and wiped the #490 seed before the user ever saw it
+    // (caught live on the pr-629 walk-through). A relay blip mid-form goes '' and back, which this
+    // also ignores.
+    if (!company) return;
     const scope = `${company}|${jobNumber ?? ''}`;
-    // First pass after an open must not wipe the seed above (#490) - only a genuine job/company
+    // First record after an open must not wipe the seed above (#490) - only a genuine job/company
     // change clears the pick, which is the case a code from another job must not survive.
     if (costCodeScopeRef.current === null) {
       costCodeScopeRef.current = scope;
