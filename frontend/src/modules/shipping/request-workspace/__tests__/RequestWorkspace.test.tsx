@@ -1,7 +1,7 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
-import { beforeAll, beforeEach, describe, it, expect } from 'vitest';
+import { beforeAll, beforeEach, describe, it, expect, vi } from 'vitest';
 import { ToastProvider } from '../../../../components/Toast';
 import RequestWorkspace from '../RequestWorkspace';
 import { GET_PROJECTS } from '../../../../graphql/shared';
@@ -11,6 +11,10 @@ import {
   GET_REQUEST_COVERAGE,
   GET_SHIPPING_OUT_REQUEST,
 } from '../../../../graphql/shipping';
+
+// Every test walks the source gate and mounts the DataGrid opening picker, which blows through
+// vitest's default 5s per-test budget on the CI runner (fine locally).
+vi.setConfig({ testTimeout: 30_000 });
 
 // MUI X DataGrid (the opening picker, once past the source gate) observes container size; jsdom has
 // no ResizeObserver.
