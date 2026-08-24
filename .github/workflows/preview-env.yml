@@ -1,7 +1,7 @@
 name: preview-env
 
 # Hands off a fully built, signed-in-ready test environment for every non-draft PR (preview-env
-# autonomy plan; closes #607 #601 #600 #598). Four failure modes it closes:
+# autonomy plan; closes #607 #601 #600 #598). Five failure modes it closes:
 #
 #   1. Railway's focused PR deploys skip a service whose directory the PR did not touch, and a PR
 #      touching NO service directory (workflow/docs/relay-only) can get no environment AT ALL - on
@@ -31,6 +31,12 @@ name: preview-env
 #      it and forks a fresh environment from production: the automated equivalent of closing and
 #      reopening the PR. Only when even the fresh fork's Postgres crash-loops does the run fail,
 #      fast, with that diagnosis.
+#   5. A deployment superseded mid-rollout (the key-hash redeploy racing a Railway-initiated one)
+#      posts CANCELLED as the last commit status for its "UC Nexus - *" context, leaving the PR red
+#      for an environment that is verifiably serving (pr-629) - and later runs deploy nothing, so
+#      nothing ever overwrites it. The key-hash upsert now always skips the var-triggered deploy and
+#      redeploys explicitly once, and after the readiness gate passes the run overwrites any settled
+#      non-success "UC Nexus - *" status on the head commit.
 #
 # The workflow only ever ADDS deploys: when Railway built a service itself this push, it has a success
 # in history and this just health-checks it. Everything runs against the Railway public GraphQL API
@@ -58,6 +64,8 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
+  # For the status heal in step 7: overwriting a superseded Railway deploy's stale commit status.
+  statuses: write
 
 jobs:
   preview-env:
@@ -356,17 +364,21 @@ jobs:
           # working.
           BE_RETRY_ELIGIBLE=false
           upsert_key_hash() {  # $1 = sha256 hex of K
-            # When the backend has never built, skip the auto-redeploy: the ordered pass below builds it
-            # AFTER Postgres, with the variable already set. When it has, redeploy now so the new hash
-            # takes effect, and let the readiness wait absorb it.
-            local skip="true"; [ "$BE_HAS" = "true" ] && skip="false"
+            # skipDeploys ALWAYS: a var-triggered deploy is Railway-initiated and races this
+            # workflow's own redeploys, and the superseded loser posts CANCELLED as the commit
+            # status - which can land last and leave the PR red for a healthy environment (pr-629).
+            # The explicit redeploy below applies the hash with exactly one deploy, initiated here.
+            # When the backend has never built, no redeploy at all: the ordered pass below builds it
+            # AFTER Postgres, with the variable already set.
             local vin
-            vin=$(jq -cn --arg p "$PROJECT_ID" --arg e "$ENV_ID" --arg s "$BE_ID" --arg val "$1" --argjson skip "$skip" \
-              '{input:{projectId:$p,environmentId:$e,serviceId:$s,name:"TESTING_SESSION_KEY_HASH",value:$val,skipDeploys:$skip}}')
+            vin=$(jq -cn --arg p "$PROJECT_ID" --arg e "$ENV_ID" --arg s "$BE_ID" --arg val "$1" \
+              '{input:{projectId:$p,environmentId:$e,serviceId:$s,name:"TESTING_SESSION_KEY_HASH",value:$val,skipDeploys:true}}')
             rgql 'mutation($input:VariableUpsertInput!){ variableUpsert(input:$input) }' "$vin" >/dev/null \
               || { echo "::error::failed to set TESTING_SESSION_KEY_HASH on the backend service"; exit 1; }
-            if [ "$skip" = "false" ]; then
-              echo "variable change triggered a backend redeploy; the readiness wait will absorb it"
+            if [ "$BE_HAS" = "true" ]; then
+              echo "redeploying the backend so the new key hash takes effect; the readiness wait will absorb it"
+              redeploy_service "$BE_ID" \
+                || echo "::warning::could not trigger the key-apply backend redeploy; the sign-in wait's retry path covers it"
               BE_INFL="true"; BE_RETRY_ELIGIBLE=true; sleep 15
             fi
           }
@@ -537,4 +549,31 @@ jobs:
             echo "::error::the PR test environment did not come up fully (backend=$BACKEND_READY frontend=$FRONTEND_READY graphql=$GQL_READY signin=$SIGNIN_READY)"
             exit 1
           fi
+
+          # --- 7. heal superseded-deploy commit statuses -------------------------------------------
+          # Railway posts a commit status per deployment outcome, and a deploy superseded mid-rollout
+          # posts as a failure ("Deployment cancelled") - which can land as the LAST status for its
+          # context even when a newer deployment succeeded and is serving (pr-629: the key-hash
+          # rollout left the backend context red under a healthy environment, and later runs deploy
+          # nothing, so nothing ever overwrote it). Overwrite any settled non-success "UC Nexus - *"
+          # status on the head commit, reusing the status's own Railway link. This only runs past the
+          # READY gate above (health + graphql + sign-in 302 all proven), so a genuinely broken
+          # environment fails this workflow's own check and keeps its red statuses. pending is left
+          # alone: it is an unsettled deploy whose real outcome should win.
+          heal_ctx() {  # $1 = status context, $2 = fallback target url
+            local state turl
+            state=$(printf '%s' "$combined" | jq -r --arg c "$1" '[.[]|select(.context==$c)][0].state // empty')
+            if [ -z "$state" ] || [ "$state" = "success" ] || [ "$state" = "pending" ]; then return 0; fi
+            turl=$(printf '%s' "$combined" | jq -r --arg c "$1" '[.[]|select(.context==$c)][0].target_url // empty')
+            [ -n "$turl" ] || turl="$2"
+            gh api --method POST "repos/${REPO}/statuses/${HEAD_SHA}" \
+              -f state=success -f context="$1" -f target_url="$turl" \
+              -f "description=superseded deploy posted ${state}; environment verified serving" >/dev/null \
+              && echo "healed commit status '$1' (was $state)" \
+              || echo "::warning::could not heal commit status '$1'"
+          }
+          combined=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/status" --jq '.statuses' 2>/dev/null) || combined='[]'
+          heal_ctx "UC Nexus - backend" "$BACKEND_URL"
+          heal_ctx "UC Nexus - frontend" "$FRONTEND_URL"
+
           echo "test environment ready: $SIGN_IN"
