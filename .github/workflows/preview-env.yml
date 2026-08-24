@@ -29,8 +29,11 @@ name: preview-env
 #      unreliable because volume instances only materialize on deploy. A stranded environment cannot
 #      be repaired in place (volumeCreate acknowledges and then evaporates), so the workflow deletes
 #      it and forks a fresh environment from production: the automated equivalent of closing and
-#      reopening the PR. Only when even the fresh fork's Postgres crash-loops does the run fail,
-#      fast, with that diagnosis.
+#      reopening the PR. Each fork's Postgres gets one redeploy retry first - the volume instance
+#      materializes on deploy and the first boot can beat its mount attaching - and the re-fork
+#      retries environmentCreate until the teardown frees the name (the environments list drops the
+#      row immediately, so only the create itself can tell). Only when even the fresh fork's
+#      Postgres crash-loops does the run fail, fast, with that diagnosis.
 #   5. A deployment superseded mid-rollout (the key-hash redeploy racing a Railway-initiated one)
 #      posts CANCELLED as the last commit status for its "UC Nexus - *" context, leaving the PR red
 #      for an environment that is verifiably serving (pr-629) - and later runs deploy nothing, so
@@ -162,7 +165,7 @@ jobs:
             ENV_ID=$(printf '%s' "$out" | jq -re '.environmentCreate.id // empty') || return 1
             CREATED_ENV=true
             echo "created environment $ENV_NAME -> $ENV_ID (forked from production)"
-            sleep 20  # let the fork's config settle before reading facts
+            sleep 45  # let the fork's config - the Postgres volume included - settle before reading facts
           }
           if [ -z "$ENV_ID" ]; then
             echo "Railway did not provision an environment for this PR; forking one from production"
@@ -311,8 +314,17 @@ jobs:
           # SUCCESS while it crash-loops "Railway volume not mounted to the correct path" (pr-626) -
           # config-level volume queries proved unreliable (volume instances only materialize on
           # deploy), so ask the deployment's own runtime logs for that line: direct evidence.
-          pg_bringup() {  # -> 0 Postgres up with volume; 1 volumeless-stranded; 2 other failure
+          pg_volume_missing() {  # -> 0 when the newest Postgres deployment logs the missing-volume line
             local dep_id hits
+            dep_id=$(latest_deployment "$PG_ID" "id")
+            [ -n "$dep_id" ] || return 1
+            hits=$(rgql 'query($d:String!,$l:Int,$f:String){ deploymentLogs(deploymentId:$d,limit:$l,filter:$f){ message } }' \
+              "$(jq -cn --arg d "$dep_id" --arg f "Railway volume not mounted" '{d:$d,l:20,f:$f}')" \
+              | jq -r '[.deploymentLogs[]?]|length')
+            [ -n "$hits" ] && [ "$hits" != "0" ]
+          }
+          pg_bringup() {  # -> 0 Postgres up with volume; 1 volumeless-stranded; 2 other failure
+            local dep_id
             if [ "$PG_HAS" = "false" ] && [ "$PG_INFL" = "false" ]; then
               echo "Postgres has no successful deployment; deploying it"
               dep_id=$(deploy_service_instance "$PG_ID") || { echo "::error::could not deploy the Postgres service instance"; exit 1; }
@@ -322,14 +334,18 @@ jobs:
               wait_deploy_success "$PG_ID" "Postgres" 360 || return 2
             fi
             sleep 10  # let a crash-looping container emit its first lines
-            dep_id=$(latest_deployment "$PG_ID" "id")
-            [ -n "$dep_id" ] || return 2
-            hits=$(rgql 'query($d:String!,$l:Int,$f:String){ deploymentLogs(deploymentId:$d,limit:$l,filter:$f){ message } }' \
-              "$(jq -cn --arg d "$dep_id" --arg f "Railway volume not mounted" '{d:$d,l:20,f:$f}')" \
-              | jq -r '[.deploymentLogs[]?]|length')
-            if [ -n "$hits" ] && [ "$hits" != "0" ]; then
-              echo "Postgres is crash-looping on a missing volume mount ($hits log hits) - the environment is stranded"
-              return 1
+            if pg_volume_missing; then
+              # A fork's volume instance materializes on deploy, and the FIRST boot can beat its mount
+              # attaching (pr-630: two consecutive forks came up volumeless). One redeploy before
+              # declaring the environment stranded - the mount is usually there for the second boot.
+              echo "Postgres is crash-looping on a missing volume mount; redeploying it once before declaring the environment stranded"
+              deploy_service_instance "$PG_ID" >/dev/null || return 2
+              wait_deploy_success "$PG_ID" "Postgres (volume retry)" 360 || return 2
+              sleep 10
+              if pg_volume_missing; then
+                echo "Postgres is still crash-looping on a missing volume mount - the environment is stranded"
+                return 1
+              fi
             fi
             echo "Postgres is up with its volume mounted"
             return 0
@@ -342,17 +358,18 @@ jobs:
             echo "deleting the stranded environment and forking a fresh one from production"
             rgql 'mutation($id:String!){ environmentDelete(id:$id) }' "$(jq -cn --arg id "$ENV_ID" '{id:$id}')" >/dev/null \
               || echo "::warning::could not delete the stranded environment; forking a fresh one anyway"
-            # environmentDelete is asynchronous: the name stays taken until the teardown finishes, and
-            # environmentCreate meanwhile fails "An environment with that name already exists" (pr-630
-            # died on exactly that, twice, off fixed sleeps). Poll until the name frees, then fork.
+            # environmentDelete is asynchronous, and the environments LIST drops the row immediately
+            # while the NAME stays reserved until the teardown finishes - so a list poll proves
+            # nothing and environmentCreate keeps failing "An environment with that name already
+            # exists" (pr-630, twice). The create call itself is the only true readiness signal:
+            # retry it until the name frees.
+            forked=false
             for i in $(seq 1 12); do
-              data=$(rgql "$ENV_QUERY" "$ENV_VARS") || { sleep 10; continue; }
-              still=$(printf '%s' "$data" | jq -r --arg n "$ENV_NAME" '[.environments.edges[]?|select(.node.name==$n)|.node.id][0] // empty')
-              [ -z "$still" ] && break
-              echo "  waiting for the stranded environment to finish deleting ($i/12)"
-              sleep 10
+              if create_env; then forked=true; break; fi
+              echo "  fork attempt $i/12 did not go through (name likely still reserved by the teardown); retrying"
+              sleep 15
             done
-            create_env || { sleep 20; create_env; } || fail_stranded
+            [ "$forked" = "true" ] || fail_stranded
             PG_HAS=false; PG_INFL=false; BE_HAS=false; BE_INFL=false; FE_HAS=false; FE_INFL=false
             pg_bringup; pg_rc=$?
             [ "$pg_rc" = "1" ] && fail_stranded
