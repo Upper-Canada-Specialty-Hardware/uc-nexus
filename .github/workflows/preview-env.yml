@@ -342,7 +342,16 @@ jobs:
             echo "deleting the stranded environment and forking a fresh one from production"
             rgql 'mutation($id:String!){ environmentDelete(id:$id) }' "$(jq -cn --arg id "$ENV_ID" '{id:$id}')" >/dev/null \
               || echo "::warning::could not delete the stranded environment; forking a fresh one anyway"
-            sleep 15
+            # environmentDelete is asynchronous: the name stays taken until the teardown finishes, and
+            # environmentCreate meanwhile fails "An environment with that name already exists" (pr-630
+            # died on exactly that, twice, off fixed sleeps). Poll until the name frees, then fork.
+            for i in $(seq 1 12); do
+              data=$(rgql "$ENV_QUERY" "$ENV_VARS") || { sleep 10; continue; }
+              still=$(printf '%s' "$data" | jq -r --arg n "$ENV_NAME" '[.environments.edges[]?|select(.node.name==$n)|.node.id][0] // empty')
+              [ -z "$still" ] && break
+              echo "  waiting for the stranded environment to finish deleting ($i/12)"
+              sleep 10
+            done
             create_env || { sleep 20; create_env; } || fail_stranded
             PG_HAS=false; PG_INFL=false; BE_HAS=false; BE_INFL=false; FE_HAS=false; FE_INFL=false
             pg_bringup; pg_rc=$?
