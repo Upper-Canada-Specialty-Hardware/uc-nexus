@@ -13,6 +13,7 @@ from .enums import (
     NotificationType,
     PickOutcome,
     PODocumentType,
+    POOrigin,
     POStatus,
     PullRequestSource,
     PullRequestStatus,
@@ -288,6 +289,18 @@ class GpJobSyncResult:
 
 
 @strawberry.type
+class GpPoSyncResult:
+    """What one pass of the GP PO mirror did (gp-owned-po mirror). `mode` is 'backfill' | 'incremental'
+    | 'unsupported' (relay too old); `created`/`updated` count the rows the pass wrote; `backfill_done`
+    is whether history is fully mirrored yet."""
+
+    mode: str
+    created: int
+    updated: int
+    backfill_done: bool
+
+
+@strawberry.type
 class GpTaxDetail:
     """A GP purchase tax detail (TX00201, TXDTLTYP=2) read live via the relay, for the register-PO
     tax-detail dropdown (issue #257). GP-first: the options are whatever the company defines
@@ -540,7 +553,13 @@ class ProjectShipTo:
 class PurchaseOrder:
     id: strawberry.ID
     po_number: str | None
-    request_number: str
+    # Null on a mirrored (GP-origin) PO - it was never raised through Nexus. The UI falls back to
+    # po_number for the display id there.
+    request_number: str | None
+    # Whether this row was drafted in Nexus (NEXUS) or discovered in GP by the mirror sync (GP).
+    origin: POOrigin
+    # When the mirror sync last wrote GP-derived fields onto this row; null on a never-synced NEXUS PO.
+    gp_synced_at: datetime | None
     project_id: strawberry.ID | None
     status: POStatus
     cost_code: str | None
@@ -962,6 +981,53 @@ class POStatistics:
     partially_received: int
     closed: int
     cancelled: int
+
+
+@strawberry.type
+class POListRow:
+    """A register row at company scale (gp-owned-po mirror). Carries a line_item_count scalar instead
+    of the line collection - the register never materializes every line of every PO. The detail modal
+    loads lines through purchaseOrder(id)."""
+
+    id: strawberry.ID
+    po_number: str | None
+    request_number: str | None
+    project_id: strawberry.ID | None
+    status: POStatus
+    origin: POOrigin
+    gp_company: str | None
+    vendor_name_snapshot: str | None
+    ordered_at: datetime | None
+    expected_delivery_date: date | None
+    created_at: datetime
+    gp_synced_at: datetime | None
+    line_item_count: int
+
+
+@strawberry.type
+class PurchaseOrderPage:
+    rows: list[POListRow]
+    total_count: int
+
+
+@strawberry.type
+class OpenPOSummary:
+    """A receiving-picker row (gp-owned-po mirror). Carries the two pending-quantity scalars the page
+    computes instead of the line collection, so the company-wide open-PO list never materializes every
+    line. The receive modal loads lines through poReceivingDetails."""
+
+    id: strawberry.ID
+    po_number: str | None
+    project_id: strawberry.ID | None
+    status: POStatus
+    origin: POOrigin
+    gp_vendor_id: str | None
+    vendor_name_snapshot: str | None
+    notes: str | None
+    ordered_at: datetime | None
+    expected_delivery_date: date | None
+    pending_line_count: int
+    pending_quantity: int
 
 
 @strawberry.type

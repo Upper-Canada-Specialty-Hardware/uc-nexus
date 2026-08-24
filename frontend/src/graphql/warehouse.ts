@@ -71,6 +71,27 @@ export const GET_OPEN_POS = gql`
   }
 `;
 
+// Lean company-scale receiving picker (gp-owned-po mirror): rows carry two pending-quantity scalars
+// from a grouped query instead of the line collection, so the list never materializes every line.
+export const GET_OPEN_POS_SUMMARY = gql`
+  query GetOpenPosSummary($projectId: ID) {
+    openPosSummary(projectId: $projectId) {
+      id
+      poNumber
+      projectId
+      status
+      origin
+      gpVendorId
+      vendorNameSnapshot
+      notes
+      orderedAt
+      expectedDeliveryDate
+      pendingLineCount
+      pendingQuantity
+    }
+  }
+`;
+
 export const GET_UNLOCATED_INVENTORY = gql`
   query GetUnlocatedInventory($projectId: ID, $warehouseId: ID) {
     unlocatedInventory(projectId: $projectId, warehouseId: $warehouseId) {

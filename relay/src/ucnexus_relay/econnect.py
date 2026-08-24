@@ -1692,3 +1692,164 @@ def insert_whrecline_row(
         revision, location, comments,
         date_received, received_by,
     )
+
+
+# --- GP PO mirror read (gp-owned-po mirror) --------------------------------------------------------
+#
+# A PO is only real once it is in GP, so the register is a mirror of GP's own purchase orders rather
+# than only the ones Nexus drafted. This op reads them for the backend sync to upsert locally.
+#
+# Tables (standard GP Purchasing, cross-checked against the offline schema reference and the existing
+# read paths in this file):
+#   POP10100 / POP30100  - PO header, open work / posted history. A PO lives in exactly one.
+#   POP10110 / POP30110  - PO line, open work / posted history.
+#   POP10500             - purchasing receipt line quantities (QTYSHPPD = qty received per PO line);
+#                          the same table read_po_receipt_context already sums for the receive flow.
+#
+# Modification signal: DEX_ROW_TS, the Dexterity row timestamp present on every GP table. It is set
+# when a row lands in history (i.e. when a PO closes), which is exactly the "newly closed" event the
+# incremental pass must catch. The backfill does not need it - it walks the whole PO space by PONUMBER.
+#
+# Received quantity:
+#   - open PO: SUM(POP10500.QTYSHPPD) per line, the live authoritative figure (a receipt posted inside
+#     GP shows up on the next pass).
+#   - history PO: QTYORDER - QTYCANCE. A posted (history) PO is terminal, so its non-cancelled quantity
+#     was received; deriving it this way avoids depending on the POP30xxx receipt-history table names,
+#     and history POs are display-only in Nexus (never receivable), so per-receipt precision is moot.
+#
+# LIVE-VERIFY (during the PR-env clickthrough, since GP is not reachable from dev): confirm POP30110
+# exists and carries QTYORDER/QTYCANCE on the target company, and that DEX_ROW_TS on POP30100 advances
+# when a PO is transferred to history. The open-PO path uses only tables already proven in production.
+
+_PO_HEADER_COLS = (
+    "'{src}' AS src, RTRIM(PONUMBER) AS po, POSTATUS AS status, RTRIM(VENDORID) AS vendor, "
+    "RTRIM(VENDNAME) AS vendname, DOCDATE AS docdate, DEX_ROW_TS AS modified"
+)
+_MAX_PO_PAGE_SIZE = 1000
+
+
+def _po_header_union(*, history_where: str = "") -> str:
+    work = f"SELECT {_PO_HEADER_COLS.format(src='work')} FROM dbo.POP10100"
+    hist = f"SELECT {_PO_HEADER_COLS.format(src='history')} FROM dbo.POP30100 {history_where}".strip()
+    return f"{work} UNION ALL {hist}"
+
+
+def _read_po_lines(conn, table: str, po_numbers: list[str]) -> dict[str, list[dict]]:
+    """PO lines for a set of PO numbers, grouped by PO number. `table` is POP10110 (work) or POP30110
+    (history). Received qty is left to the caller (work sums POP10500; history derives it)."""
+    if not po_numbers:
+        return {}
+    placeholders = ",".join("?" * len(po_numbers))
+    rows = conn.cursor().execute(
+        f"SELECT RTRIM(PONUMBER) AS po, ORD, RTRIM(ITEMNMBR) AS item, RTRIM(ITEMDESC) AS itemdesc, "
+        f"UNITCOST, QTYORDER, QTYCANCE, RTRIM(JOBNUMBR) AS job, POLNESTA "
+        f"FROM dbo.{table} WHERE PONUMBER IN ({placeholders}) ORDER BY PONUMBER, ORD",
+        *po_numbers,
+    ).fetchall()
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        out.setdefault(r.po, []).append(
+            {
+                "ord": int(r.ORD),
+                "item": r.item,
+                "itemdesc": r.itemdesc,
+                "unit_cost": float(r.UNITCOST or 0),
+                "qty": float(r.QTYORDER or 0),
+                "qty_cancelled": float(r.QTYCANCE or 0),
+                "job": r.job or None,
+                "line_status": int(r.POLNESTA) if r.POLNESTA is not None else None,
+            }
+        )
+    return out
+
+
+def _read_received_sums(conn, po_numbers: list[str]) -> dict[tuple[str, int], float]:
+    """SUM(QTYSHPPD) per (PONUMBER, POLNENUM) from POP10500, for open POs. POLNENUM == POP10110.ORD."""
+    if not po_numbers:
+        return {}
+    placeholders = ",".join("?" * len(po_numbers))
+    rows = conn.cursor().execute(
+        f"SELECT RTRIM(PONUMBER) AS po, POLNENUM, SUM(QTYSHPPD) AS received "
+        f"FROM dbo.POP10500 WHERE PONUMBER IN ({placeholders}) GROUP BY PONUMBER, POLNENUM",
+        *po_numbers,
+    ).fetchall()
+    return {(r.po, int(r.POLNENUM)): float(r.received or 0) for r in rows}
+
+
+def _assemble_pos(conn, headers: list) -> list[dict]:
+    """Attach lines + received qty to a list of header rows (each has .src/.po/.status/.vendor/
+    .vendname/.docdate/.modified). Splits work vs history so each reads its own tables."""
+    work_pos = [h.po for h in headers if h.src == "work"]
+    hist_pos = [h.po for h in headers if h.src == "history"]
+
+    work_lines = _read_po_lines(conn, "POP10110", work_pos)
+    hist_lines = _read_po_lines(conn, "POP30110", hist_pos)
+    received = _read_received_sums(conn, work_pos)
+
+    pos = []
+    for h in headers:
+        is_work = h.src == "work"
+        raw_lines = (work_lines if is_work else hist_lines).get(h.po, [])
+        lines = []
+        for ln in raw_lines:
+            if is_work:
+                rcvd = received.get((h.po, ln["ord"]), 0.0)
+            else:
+                rcvd = max(0.0, ln["qty"] - ln["qty_cancelled"])
+            lines.append(
+                {
+                    "ord": ln["ord"],
+                    "item": ln["item"],
+                    "itemdesc": ln["itemdesc"],
+                    "unit_cost": ln["unit_cost"],
+                    "qty": ln["qty"],
+                    "qty_cancelled": ln["qty_cancelled"],
+                    "job": ln["job"],
+                    "line_status": ln["line_status"],
+                    "received": rcvd,
+                }
+            )
+        pos.append(
+            {
+                "po_number": h.po,
+                "gp_status": int(h.status) if h.status is not None else None,
+                "vendor_id": h.vendor or None,
+                "vendor_name": (h.vendname or "").strip() or None,
+                "doc_date": h.docdate.date().isoformat() if h.docdate is not None else None,
+                "modified_at": h.modified.isoformat() if h.modified is not None else None,
+                "source_table": "work" if is_work else "history",
+                "lines": lines,
+            }
+        )
+    return pos
+
+
+def sync_pos(conn, *, cursor: str | None, page_size: int, modified_since: str | None) -> dict:
+    """Read a page of GP purchase orders for the mirror sync. Returns {pos: [...], next_cursor}.
+
+    Two modes:
+      - backfill (modified_since is None): keyset page over POP10100 UNION POP30100 ordered by
+        PONUMBER, TOP page_size, WHERE PONUMBER > cursor. next_cursor is the last PONUMBER of the page,
+        or None when the page came back short (history drained).
+      - incremental (modified_since set): every open work PO (the bounded active order book, re-read so
+        live receipt sums and status are always current) plus history POs with DEX_ROW_TS >=
+        modified_since (newly closed/voided). Not paginated - next_cursor is always None.
+    """
+    page_size = max(1, min(int(page_size or 300), _MAX_PO_PAGE_SIZE))
+    cur = conn.cursor()
+
+    if modified_since is None:
+        sql = (
+            f"SELECT TOP (?) src, po, status, vendor, vendname, docdate, modified "
+            f"FROM ({_po_header_union()}) u WHERE u.po > ? ORDER BY u.po"
+        )
+        headers = cur.execute(sql, page_size, (cursor or "")).fetchall()
+        pos = _assemble_pos(conn, headers)
+        next_cursor = headers[-1].po if len(headers) == page_size else None
+        return {"pos": pos, "next_cursor": next_cursor}
+
+    union = _po_header_union(history_where="WHERE DEX_ROW_TS >= ?")
+    sql = f"SELECT src, po, status, vendor, vendname, docdate, modified FROM ({union}) u ORDER BY u.po"
+    headers = cur.execute(sql, modified_since).fetchall()
+    pos = _assemble_pos(conn, headers)
+    return {"pos": pos, "next_cursor": None}

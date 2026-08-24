@@ -6,11 +6,11 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
-from app.models.enums import Classification, HardwareItemState, PODocumentType, POStatus
+from app.models.enums import Classification, HardwareItemState, PODocumentType, POOrigin, POStatus
 from app.models.purchase_order import PODocument, PODocumentData, POLineItem, PurchaseOrder
 from app.models.receiving import ReceiveRecord
 
@@ -502,6 +502,124 @@ def get_open_pos(session: Session, project_id: uuid.UUID | None = None) -> list[
     return list(session.scalars(stmt).unique().all())
 
 
+def _link_available_items(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    hardware_category: str,
+    product_code: str,
+    quantity: int,
+    po_line_item_id: uuid.UUID,
+) -> int:
+    """Greedily attach up to `quantity` units of a schedule combo to a PO line for coverage tracking
+    (gp-owned-po mirror). Marks AVAILABLE HardwareItem rows for the project IN_PO with po_line_item_id,
+    oldest opening first, whole rows only - the same greedy rule the SharePoint migration mark uses.
+    Returns the units actually linked. Never over-consumes: a row that would overshoot is skipped."""
+    from app.models.hardware import HardwareItem
+    from app.models.project import Opening
+
+    rows = (
+        session.execute(
+            select(HardwareItem)
+            .join(Opening, HardwareItem.opening_id == Opening.id)
+            .where(
+                HardwareItem.project_id == project_id,
+                HardwareItem.hardware_category == hardware_category,
+                HardwareItem.product_code == product_code,
+                HardwareItem.state == HardwareItemState.AVAILABLE,
+            )
+            .order_by(Opening.opening_number, HardwareItem.id)
+        )
+        .scalars()
+        .all()
+    )
+    linked = 0
+    remaining = quantity
+    for hi in rows:
+        if hi.item_quantity > remaining:
+            continue
+        hi.state = HardwareItemState.IN_PO
+        hi.po_line_item_id = po_line_item_id
+        remaining -= hi.item_quantity
+        linked += hi.item_quantity
+        if remaining <= 0:
+            break
+    return linked
+
+
+def link_schedule_to_mirrored_po(session: Session, po_id: uuid.UUID, links: list[dict]) -> tuple[PurchaseOrder, int]:
+    """Attach project schedule hardware to a mirrored PO's lines for coverage/reconciliation only
+    (gp-owned-po mirror). Receiving never depends on this. Only valid on a GP-origin PO that has a
+    project; each link names a PO line plus a (hardware_category, product_code, quantity) of the
+    project's own schedule to mark as covered by that line. Returns (po, total units linked)."""
+    po = get_purchase_order(session, po_id)
+    if po is None:
+        raise NotFoundError(f"Purchase order {po_id} not found")
+    if po.origin != POOrigin.GP:
+        raise InvalidStateTransitionError("Schedule linking applies only to GP-origin purchase orders")
+    if po.project_id is None:
+        raise InvalidStateTransitionError("This purchase order has no project to link schedule hardware from")
+
+    line_ids = {li.id for li in po.line_items}
+    total = 0
+    for link in links:
+        li_id = link["po_line_item_id"]
+        if li_id not in line_ids:
+            raise ValidationError("PO line item does not belong to this purchase order", field="po_line_item_id")
+        qty = int(link.get("quantity") or 0)
+        if qty <= 0:
+            continue
+        total += _link_available_items(
+            session,
+            project_id=po.project_id,
+            hardware_category=link["hardware_category"],
+            product_code=link["product_code"],
+            quantity=qty,
+            po_line_item_id=li_id,
+        )
+    return po, total
+
+
+def get_open_pos_summary(
+    session: Session, project_id: uuid.UUID | None = None
+) -> tuple[list[PurchaseOrder], dict[uuid.UUID, tuple[int, int]]]:
+    """Open POs for the receiving picker, as lean rows plus a {po_id: (pending_qty, pending_lines)}
+    map (gp-owned-po mirror). Company-wide open POs are hundreds of rows; the receiving page only needs
+    two pending-quantity scalars per PO, which one grouped query supplies - no line collection is
+    loaded (the old query materialized every line for that math). Detail loads through poReceivingDetails."""
+    stmt = (
+        select(PurchaseOrder)
+        .where(
+            PurchaseOrder.deleted_at.is_(None),
+            PurchaseOrder.status.in_([POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
+        )
+        .order_by(PurchaseOrder.ordered_at.asc(), PurchaseOrder.id)
+    )
+    if project_id is not None:
+        stmt = stmt.where(PurchaseOrder.project_id == project_id)
+    rows = list(session.scalars(stmt).all())
+
+    has_outstanding = POLineItem.ordered_quantity > POLineItem.received_quantity
+    outstanding = case(
+        (has_outstanding, POLineItem.ordered_quantity - POLineItem.received_quantity),
+        else_=0,
+    )
+    pending: dict[uuid.UUID, tuple[int, int]] = {}
+    ids = [r.id for r in rows]
+    if ids:
+        for po_id, qty, lines in session.execute(
+            select(
+                POLineItem.po_id,
+                func.coalesce(func.sum(outstanding), 0),
+                func.coalesce(func.sum(case((has_outstanding, 1), else_=0)), 0),
+            )
+            .where(POLineItem.po_id.in_(ids))
+            .group_by(POLineItem.po_id)
+        ).all():
+            pending[po_id] = (int(qty), int(lines))
+    return rows, pending
+
+
 def reload_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder | None:
     """Re-read a PO with the relationships every mutation response needs (line_items, documents). No
     deleted_at filter - callers hold an id they just wrote."""
@@ -565,6 +683,79 @@ def get_po_statistics(session: Session, project_id: uuid.UUID | None = None) -> 
             counts["total"] += count
 
     return counts
+
+
+# Sortable columns for the server-driven register (gp-owned-po mirror). Client sort keys map here; an
+# unknown key falls back to created_at so a bad param can never 500.
+_PAGE_SORT_COLUMNS = {
+    "poNumber": PurchaseOrder.po_number,
+    "status": PurchaseOrder.status,
+    "orderedAt": PurchaseOrder.ordered_at,
+    "createdAt": PurchaseOrder.created_at,
+    "vendor": PurchaseOrder.vendor_name_snapshot,
+}
+_MAX_PAGE_LIMIT = 200
+
+
+def get_purchase_orders_page(
+    session: Session,
+    *,
+    search: str | None = None,
+    statuses: list[POStatus] | None = None,
+    origin: POOrigin | None = None,
+    project_id: uuid.UUID | None = None,
+    sort_field: str = "createdAt",
+    sort_dir: str = "desc",
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[PurchaseOrder], dict[uuid.UUID, int], int]:
+    """One page of the company-wide register. The register is a mirror of GP at company scale, so it
+    must never eager-load every line of every PO (the old all-rows query is dead at that scale). Returns
+    (page rows without line_items, {po_id: line_item_count}, total_count). The count comes from one
+    grouped query over the page's ids, honoring the N+1 rules - list rows carry a scalar, not a
+    collection. Detail/expand loads lines through the existing purchaseOrder(id) query."""
+    filters = [PurchaseOrder.deleted_at.is_(None)]
+    if statuses:
+        filters.append(PurchaseOrder.status.in_(statuses))
+    if origin is not None:
+        filters.append(PurchaseOrder.origin == origin)
+    if project_id is not None:
+        filters.append(PurchaseOrder.project_id == project_id)
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        filters.append(
+            or_(
+                PurchaseOrder.po_number.ilike(term),
+                PurchaseOrder.request_number.ilike(term),
+                PurchaseOrder.vendor_name_snapshot.ilike(term),
+            )
+        )
+
+    total = session.scalar(select(func.count()).select_from(PurchaseOrder).where(*filters)) or 0
+
+    col = _PAGE_SORT_COLUMNS.get(sort_field, PurchaseOrder.created_at)
+    ordering = col.desc() if sort_dir == "desc" else col.asc()
+    limit = max(1, min(int(limit or 50), _MAX_PAGE_LIMIT))
+    offset = max(0, int(offset or 0))
+    rows = list(
+        session.scalars(
+            select(PurchaseOrder)
+            .where(*filters)
+            # id as the tiebreaker so a page boundary is stable when the sort column ties.
+            .order_by(ordering, PurchaseOrder.id)
+            .limit(limit)
+            .offset(offset)
+        ).all()
+    )
+
+    counts: dict[uuid.UUID, int] = {}
+    ids = [r.id for r in rows]
+    if ids:
+        for po_id, n in session.execute(
+            select(POLineItem.po_id, func.count()).where(POLineItem.po_id.in_(ids)).group_by(POLineItem.po_id)
+        ).all():
+            counts[po_id] = n
+    return rows, counts, total
 
 
 def update_po(

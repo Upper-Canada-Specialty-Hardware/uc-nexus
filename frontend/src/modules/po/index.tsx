@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   Box,
   Typography,
@@ -13,44 +13,41 @@ import {
   TableCell,
   TableContainer,
   TableSortLabel,
+  TablePagination,
   IconButton,
-  Collapse,
   CircularProgress,
   TextField,
-  Select,
-  MenuItem,
-  Checkbox,
-  ListItemText,
+  InputAdornment,
   Tooltip,
   Autocomplete,
+  ToggleButton,
+  ToggleButtonGroup,
   createFilterOptions,
 } from '@mui/material';
+import { Plus, ChevronRight, Settings, Search, RefreshCw } from 'lucide-react';
+import { useQuery, useMutation } from '@apollo/client/react';
+import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import {
-  Plus,
-  ChevronRight,
-  ChevronsUpDown,
-  ChevronsDownUp,
-  Settings,
-} from 'lucide-react';
-import { motion } from 'motion/react';
-import { useQuery } from '@apollo/client/react';
-import { GET_PURCHASE_ORDERS, GET_PO_STATISTICS } from '../../graphql/po';
-import { GET_GP_OUTBOX } from '../../graphql/shared';
-import { GET_PROJECTS } from '../../graphql/shared';
+  PURCHASE_ORDERS_PAGE,
+  GET_PO_STATISTICS,
+  GET_PURCHASE_ORDER,
+  SYNC_GP_POS,
+} from '../../graphql/po';
+import { GET_GP_OUTBOX, GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
 import PODetailModal from './PODetailModal';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import CreatePOChooser from './CreatePOChooser';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
-import { poVendorName } from './poVendorName';
-import { PO_STATUS_VALUES, formatPoStatus, poStatusChipColor } from './poStatus';
+import { formatPoStatus, poStatusChipColor } from './poStatus';
 import { isStatusCardActive, toggleStatusCard } from './statusCardFilter';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { useIdentity } from '../../hooks/useIdentity';
 import PODocumentSettingsPage from './PODocumentSettingsPage';
+import { useToast } from '../../components/Toast';
 import { monoSx, tabularSx, microLabelSx } from '../../theme';
-import { AnimatedNumber, FadeIn, StaggerItem, StaggerList, springs } from '../../motion';
+import { AnimatedNumber, FadeIn, StaggerItem, StaggerList } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
@@ -67,6 +64,8 @@ interface POLineItem {
   receivedQuantity: number;
   unitCost: number;
   orderAs: string | null;
+  // GP POP10110.ORD this line maps to; present on registered/mirrored lines.
+  gpLineOrd: number | null;
   // Issue #232: derived from the line's linked HardwareItem(s); drives the PO dialog's vendor suggestion.
   manufacturer: string | null;
   createdAt: string;
@@ -123,10 +122,15 @@ export interface PODocumentData {
   includeCustoms: boolean;
 }
 
+// The full PO the detail modal renders. The register list itself is slim (POListRow); opening a row
+// fetches this by id (gp-owned-po mirror). request_number is null on a mirrored PO.
 export interface PurchaseOrder {
   id: string;
   poNumber: string | null;
-  requestNumber: string;
+  requestNumber: string | null;
+  // NEXUS (drafted here) or GP (discovered by the mirror sync).
+  origin: string;
+  gpSyncedAt: string | null;
   projectId: string | null;
   status: string;
   gpCompany: string | null;
@@ -151,6 +155,23 @@ export interface PurchaseOrder {
   documentData: PODocumentData | null;
 }
 
+// One register row (gp-owned-po mirror). Slim on purpose - a lineItemCount scalar, not the lines.
+interface POListRow {
+  id: string;
+  poNumber: string | null;
+  requestNumber: string | null;
+  projectId: string | null;
+  status: string;
+  origin: string;
+  gpCompany: string | null;
+  vendorNameSnapshot: string | null;
+  orderedAt: string | null;
+  expectedDeliveryDate: string | null;
+  createdAt: string;
+  gpSyncedAt: string | null;
+  lineItemCount: number;
+}
+
 interface POStatistics {
   total: number;
   draft: number;
@@ -158,20 +179,13 @@ interface POStatistics {
   vendorConfirmed: number;
   partiallyReceived: number;
   closed: number;
-  // No `cancelled`. The resolver still returns it, but every read on this page filters
-  // deleted_at IS NULL and cancel_po sets it, so the figure is always 0 - not worth fetching.
 }
-
 
 // --- Status strip config ---
 
-// `status` is the po_status the segment filters the table down to when clicked (#316); null on Total,
-// which clears the status filter instead. Clicking the already-active segment clears it too, so the
-// strip doubles as the status filter and never traps you in a filtered view with no way back.
-//
-// Rendered as ONE compact strip rather than seven tiles: the counts are a readout, and a grid of tiles
-// spent a third of the page saying "0" six times. Total leads; a zero count is dimmed so the eye lands
-// on the statuses that actually have POs in them.
+// `status` is the po_status the segment filters the table to when clicked (#316); null on Total, which
+// clears the status filter. Clicking the active segment clears it too, so the strip doubles as the
+// status filter and never traps you in a filtered view.
 const STAT_CARDS: { label: string; key: keyof POStatistics; status: string | null }[] = [
   { label: 'Total', key: 'total', status: null },
   { label: 'Draft', key: 'draft', status: 'DRAFT' },
@@ -180,212 +194,34 @@ const STAT_CARDS: { label: string; key: keyof POStatistics; status: string | nul
   { label: 'Partially Received', key: 'partiallyReceived', status: 'PARTIALLY_RECEIVED' },
   { label: 'Closed', key: 'closed', status: 'CLOSED' },
 ];
-// No Cancelled segment. `cancel_po` writes status=CANCELLED and deleted_at in the same statement, and
-// every read here filters deleted_at IS NULL - so the count was structurally always 0 and the segment
-// filtered to an always-empty table. A cancelled draft is gone from this list by design; a readout
-// that can only ever say "0" is worse than no readout.
 
-// --- Sort + filter state ---
+// --- Server-driven sort ---
 
-type SortField =
-  | 'projectNumber'
-  | 'projectName'
-  | 'poNumber'
-  | 'status'
-  | 'vendor'
-  | 'createdAt'
-  | 'orderedAt'
-  | 'itemsCount';
+// Only columns the server can order by (gp-owned-po mirror). Project columns join client-side and are
+// not sortable server-side; the items column is a scalar count, also not a sort key.
+type SortField = 'poNumber' | 'status' | 'vendor' | 'createdAt' | 'orderedAt';
 
 interface SortState {
-  field: SortField | null;
-  direction: 'asc' | 'desc';
+  field: SortField;
+  dir: 'asc' | 'desc';
 }
 
-interface FilterState {
-  projectIds: Set<string>;
-  poSearch: string;
-  statuses: Set<string>;
-  vendorSearch: string;
-  createdFrom: string;
-  createdTo: string;
-  orderedFrom: string;
-  orderedTo: string;
-  itemsMin: string;
+type OriginFilter = 'ALL' | 'NEXUS' | 'GP';
+
+const DEFAULT_SORT: SortState = { field: 'createdAt', dir: 'desc' };
+const ROWS_PER_PAGE_OPTIONS = [25, 50, 100];
+
+function poDisplayId(po: POListRow): string {
+  return po.poNumber ?? po.requestNumber ?? '';
 }
 
-const EMPTY_FILTER_STATE: FilterState = {
-  projectIds: new Set(),
-  poSearch: '',
-  statuses: new Set(),
-  vendorSearch: '',
-  createdFrom: '',
-  createdTo: '',
-  orderedFrom: '',
-  orderedTo: '',
-  itemsMin: '',
-};
-
-function poDisplayId(po: PurchaseOrder): string {
-  return po.poNumber ?? po.requestNumber;
-}
-
-// Project columns (issue: PO list is now all-projects). POs carry only projectId (a UUID); the human
-// project number + name come from the projects list, joined client-side via this map.
+// Project columns: POs carry only projectId (a UUID); the human number + name come from the projects
+// list, joined client-side via this map.
 type ProjectsById = Map<string, Project>;
 
-function poProjectNumber(po: PurchaseOrder, projectsById: ProjectsById): string {
-  if (!po.projectId) return '';
-  return projectsById.get(po.projectId)?.projectId ?? '';
-}
-
-function poProjectName(po: PurchaseOrder, projectsById: ProjectsById): string {
-  if (!po.projectId) return '';
-  const p = projectsById.get(po.projectId);
-  return p?.description || p?.projectId || '';
-}
-
-function matchesFilter(po: PurchaseOrder, f: FilterState): boolean {
-  if (f.projectIds.size > 0) {
-    if (!po.projectId || !f.projectIds.has(po.projectId)) return false;
-  }
-  if (f.poSearch) {
-    if (!poDisplayId(po).toLowerCase().includes(f.poSearch.toLowerCase())) return false;
-  }
-  if (f.statuses.size > 0 && !f.statuses.has(po.status)) return false;
-  if (f.vendorSearch) {
-    if (!poVendorName(po).toLowerCase().includes(f.vendorSearch.toLowerCase())) return false;
-  }
-  if (f.createdFrom || f.createdTo) {
-    const d = po.createdAt.substring(0, 10);
-    if (f.createdFrom && d < f.createdFrom) return false;
-    if (f.createdTo && d > f.createdTo) return false;
-  }
-  if (f.orderedFrom || f.orderedTo) {
-    if (!po.orderedAt) return false;
-    const d = po.orderedAt.substring(0, 10);
-    if (f.orderedFrom && d < f.orderedFrom) return false;
-    if (f.orderedTo && d > f.orderedTo) return false;
-  }
-  if (f.itemsMin) {
-    const min = parseInt(f.itemsMin, 10);
-    if (Number.isFinite(min) && (po.lineItems?.length ?? 0) < min) return false;
-  }
-  return true;
-}
-
-function comparePOs(
-  a: PurchaseOrder,
-  b: PurchaseOrder,
-  sort: SortState,
-  projectsById: ProjectsById,
-): number {
-  if (!sort.field) return 0;
-  const dir = sort.direction === 'asc' ? 1 : -1;
-  let av: string | number = 0;
-  let bv: string | number = 0;
-  let aNull = false;
-  let bNull = false;
-  switch (sort.field) {
-    case 'projectNumber':
-      av = poProjectNumber(a, projectsById).toLowerCase();
-      bv = poProjectNumber(b, projectsById).toLowerCase();
-      aNull = !av;
-      bNull = !bv;
-      break;
-    case 'projectName':
-      av = poProjectName(a, projectsById).toLowerCase();
-      bv = poProjectName(b, projectsById).toLowerCase();
-      aNull = !av;
-      bNull = !bv;
-      break;
-    case 'poNumber':
-      av = poDisplayId(a).toLowerCase();
-      bv = poDisplayId(b).toLowerCase();
-      break;
-    case 'status':
-      av = a.status;
-      bv = b.status;
-      break;
-    case 'vendor':
-      av = poVendorName(a).toLowerCase();
-      bv = poVendorName(b).toLowerCase();
-      aNull = !av;
-      bNull = !bv;
-      break;
-    case 'createdAt':
-      av = a.createdAt;
-      bv = b.createdAt;
-      break;
-    case 'orderedAt':
-      av = a.orderedAt ?? '';
-      bv = b.orderedAt ?? '';
-      aNull = !a.orderedAt;
-      bNull = !b.orderedAt;
-      break;
-    case 'itemsCount':
-      av = a.lineItems?.length ?? 0;
-      bv = b.lineItems?.length ?? 0;
-      break;
-  }
-  if (aNull && bNull) return 0;
-  if (aNull) return 1;
-  if (bNull) return -1;
-  if (av < bv) return -1 * dir;
-  if (av > bv) return 1 * dir;
-  return 0;
-}
-
-// --- Line items mini-table (rendered inside an expanded row) ---
-
-interface POLineItemsMiniTableProps {
-  lineItems: POLineItem[];
-  hasReceives: boolean;
-}
-
-function POLineItemsMiniTable({ lineItems, hasReceives }: POLineItemsMiniTableProps) {
-  if (lineItems.length === 0) {
-    return (
-      <Typography variant="body2" color="text.secondary">
-        No line items.
-      </Typography>
-    );
-  }
-  return (
-    <Table size="small" sx={{ bgcolor: 'background.paper' }}>
-      <TableHead>
-        <TableRow>
-          <TableCell>Product Code</TableCell>
-          <TableCell>Order As</TableCell>
-          <TableCell>Hardware Category</TableCell>
-          <TableCell align="right">Ordered Qty</TableCell>
-          {hasReceives && <TableCell align="right">Received Qty</TableCell>}
-          <TableCell align="right">Unit Cost</TableCell>
-          <TableCell align="right">Line Total</TableCell>
-        </TableRow>
-      </TableHead>
-      <TableBody>
-        {lineItems.map((li) => (
-          <TableRow key={li.id}>
-            <TableCell sx={monoSx}>{li.productCode}</TableCell>
-            <TableCell sx={li.orderAs ? monoSx : { color: 'text.disabled' }}>
-              {li.orderAs || '—'}
-            </TableCell>
-            <TableCell>{li.hardwareCategory}</TableCell>
-            <TableCell align="right" sx={tabularSx}>{li.orderedQuantity}</TableCell>
-            {hasReceives && (
-              <TableCell align="right" sx={tabularSx}>{li.receivedQuantity}</TableCell>
-            )}
-            <TableCell align="right" sx={tabularSx}>${(li.unitCost ?? 0).toFixed(2)}</TableCell>
-            <TableCell align="right" sx={tabularSx}>
-              ${((li.orderedQuantity ?? 0) * (li.unitCost ?? 0)).toFixed(2)}
-            </TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
-  );
-}
+const projectFilterOptions = createFilterOptions<Project>({
+  stringify: (p) => `${p.projectId} ${p.description ?? ''}`,
+});
 
 // --- Sortable column header ---
 
@@ -393,8 +229,6 @@ interface SortHeaderProps {
   field: SortField;
   label: string;
   align?: 'left' | 'right';
-  // Hug the content instead of sharing the leftover width. Every column hugs except Vendor, which
-  // takes the remainder - vendor names are the one value here long enough to want the room.
   hug?: boolean;
   sortState: SortState;
   onSort: (field: SortField) => void;
@@ -405,12 +239,12 @@ function SortHeader({ field, label, align = 'left', hug = true, sortState, onSor
   return (
     <TableCell
       align={align}
-      sortDirection={active ? sortState.direction : false}
+      sortDirection={active ? sortState.dir : false}
       sx={hug ? { width: '1%', whiteSpace: 'nowrap' } : undefined}
     >
       <TableSortLabel
         active={active}
-        direction={active ? sortState.direction : 'asc'}
+        direction={active ? sortState.dir : 'asc'}
         onClick={() => onSort(field)}
       >
         {label}
@@ -419,342 +253,90 @@ function SortHeader({ field, label, align = 'left', hug = true, sortState, onSor
   );
 }
 
-// --- Filter row ---
+const PO_TABLE_COLUMN_COUNT = 9;
 
-// Match projects by both number and name so typing either narrows the list.
-const projectFilterOptions = createFilterOptions<Project>({
-  stringify: (p) => `${p.projectId} ${p.description ?? ''}`,
-});
-
-interface FilterRowProps {
-  filterState: FilterState;
-  onChange: (updater: (prev: FilterState) => FilterState) => void;
-  projects: Project[];
-}
-
-function FilterRow({ filterState, onChange, projects }: FilterRowProps) {
-  return (
-    <TableRow>
-      <TableCell sx={{ width: 48 }} />
-      {/* Spans both project columns (# and name) — one selector filters by project. */}
-      <TableCell colSpan={2}>
-        <Autocomplete
-          multiple
-          size="small"
-          options={projects}
-          value={projects.filter((p) => filterState.projectIds.has(p.id))}
-          onChange={(_e, selected) =>
-            onChange((s) => ({ ...s, projectIds: new Set(selected.map((p) => p.id)) }))
-          }
-          disableCloseOnSelect
-          limitTags={2}
-          filterOptions={projectFilterOptions}
-          getOptionLabel={(p) => p.description || p.projectId}
-          isOptionEqualToValue={(a, b) => a.id === b.id}
-          renderOption={(props, option, { selected }) => {
-            const { key, ...liProps } = props as typeof props & { key: string };
-            return (
-              <li key={key} {...liProps}>
-                <Checkbox size="small" checked={selected} sx={{ mr: 1 }} />
-                <ListItemText
-                  primary={option.description || option.projectId}
-                  secondary={option.description ? `#${option.projectId}` : undefined}
-                />
-              </li>
-            );
-          }}
-          renderInput={(params) => (
-            <TextField
-              {...params}
-              placeholder={filterState.projectIds.size === 0 ? 'All projects' : undefined}
-              inputProps={{ ...params.inputProps, 'aria-label': 'Filter by project' }}
-            />
-          )}
-          sx={{ minWidth: 200 }}
-        />
-      </TableCell>
-      <TableCell>
-        <TextField
-          size="small"
-          placeholder="Search…"
-          value={filterState.poSearch}
-          onChange={(e) => onChange((s) => ({ ...s, poSearch: e.target.value }))}
-          fullWidth
-        />
-      </TableCell>
-      <TableCell>
-        <Select
-          size="small"
-          multiple
-          displayEmpty
-          value={Array.from(filterState.statuses)}
-          onChange={(e) => {
-            const v = e.target.value as string[];
-            onChange((s) => ({ ...s, statuses: new Set(v) }));
-          }}
-          renderValue={(selected) => {
-            if ((selected as string[]).length === 0) {
-              return (
-                <Typography variant="body2" color="text.secondary">
-                  All
-                </Typography>
-              );
-            }
-            return (
-              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.3 }}>
-                {(selected as string[]).map((s) => (
-                  <Chip
-                    key={s}
-                    label={formatPoStatus(s)}
-                    color={poStatusChipColor(s)}
-                    size="small"
-                  />
-                ))}
-              </Box>
-            );
-          }}
-          fullWidth
-        >
-          {PO_STATUS_VALUES.map((s) => (
-            <MenuItem key={s} value={s}>
-              <Checkbox checked={filterState.statuses.has(s)} size="small" />
-              <ListItemText primary={formatPoStatus(s)} />
-            </MenuItem>
-          ))}
-        </Select>
-      </TableCell>
-      <TableCell>
-        <TextField
-          size="small"
-          placeholder="Search…"
-          value={filterState.vendorSearch}
-          onChange={(e) => onChange((s) => ({ ...s, vendorSearch: e.target.value }))}
-          fullWidth
-        />
-      </TableCell>
-      <TableCell>
-        {/* A bare pair of date boxes gave no clue which end was which. The aria-labels stay for
-            assistive tech; the From/To eyebrows say the same thing on screen. */}
-        <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
-          <Typography component="span" sx={{ ...microLabelSx, flexShrink: 0 }}>
-            From
-          </Typography>
-          <TextField
-            size="small"
-            type="date"
-            value={filterState.createdFrom}
-            onChange={(e) => onChange((s) => ({ ...s, createdFrom: e.target.value }))}
-            inputProps={{ 'aria-label': 'Created from' }}
-            sx={{ flex: 1 }}
-          />
-          <Typography component="span" sx={{ ...microLabelSx, flexShrink: 0 }}>
-            To
-          </Typography>
-          <TextField
-            size="small"
-            type="date"
-            value={filterState.createdTo}
-            onChange={(e) => onChange((s) => ({ ...s, createdTo: e.target.value }))}
-            inputProps={{ 'aria-label': 'Created to' }}
-            sx={{ flex: 1 }}
-          />
-        </Box>
-      </TableCell>
-      <TableCell>
-        <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
-          <Typography component="span" sx={{ ...microLabelSx, flexShrink: 0 }}>
-            From
-          </Typography>
-          <TextField
-            size="small"
-            type="date"
-            value={filterState.orderedFrom}
-            onChange={(e) => onChange((s) => ({ ...s, orderedFrom: e.target.value }))}
-            inputProps={{ 'aria-label': 'Ordered from' }}
-            sx={{ flex: 1 }}
-          />
-          <Typography component="span" sx={{ ...microLabelSx, flexShrink: 0 }}>
-            To
-          </Typography>
-          <TextField
-            size="small"
-            type="date"
-            value={filterState.orderedTo}
-            onChange={(e) => onChange((s) => ({ ...s, orderedTo: e.target.value }))}
-            inputProps={{ 'aria-label': 'Ordered to' }}
-            sx={{ flex: 1 }}
-          />
-        </Box>
-      </TableCell>
-      <TableCell align="right">
-        <TextField
-          size="small"
-          type="number"
-          placeholder="≥"
-          value={filterState.itemsMin}
-          onChange={(e) => onChange((s) => ({ ...s, itemsMin: e.target.value }))}
-          inputProps={{ min: 0, 'aria-label': 'Minimum items' }}
-          sx={{ width: 90 }}
-        />
-      </TableCell>
-      <TableCell />
-    </TableRow>
-  );
-}
-
-// --- Single PO row + collapsible line-item panel ---
-
-const PO_TABLE_COLUMN_COUNT = 10;
+// --- Single register row ---
 
 interface POTableRowProps {
-  po: PurchaseOrder;
+  po: POListRow;
   projectNumber: string;
   projectName: string;
-  expanded: boolean;
-  onToggle: () => void;
   onOpen: () => void;
-  // #353 PR E: this PO has a GP write sitting on the outbox. Passed down rather than resolved per
-  // row: a field on PurchaseOrder would make the All-Projects list an N+1.
+  // #353 PR E: this PO has a GP write on the outbox. Joined client-side, not a per-row resolver.
   gpWriteQueued: boolean;
 }
 
-function POTableRow({
-  po,
-  projectNumber,
-  projectName,
-  expanded,
-  onToggle,
-  onOpen,
-  gpWriteQueued,
-}: POTableRowProps) {
+function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued }: POTableRowProps) {
   const hugSx = { width: '1%', whiteSpace: 'nowrap' as const };
   return (
-    <>
-      {/* The whole data row opens the PO. The leading cell is the expander and nothing else, so a
-          click meant for "show me the lines" never turns into a modal. */}
-      <TableRow
-        hover
-        onClick={onOpen}
-        sx={{
-          cursor: 'pointer',
-          '& > *': { borderBottom: 'unset' },
-          '&:hover .po-row-chevron': { color: 'text.primary' },
-        }}
-      >
-        <TableCell
-          sx={{ width: 48 }}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggle();
-          }}
-        >
-          <IconButton
-            size="small"
-            aria-label={expanded ? 'Collapse line items' : 'Expand line items'}
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggle();
-            }}
-          >
-            <motion.span
-              animate={{ rotate: expanded ? 90 : 0 }}
-              transition={springs.fast}
-              style={{ display: 'inline-flex' }}
-            >
-              <ChevronRight {...ICON} />
-            </motion.span>
-          </IconButton>
-        </TableCell>
-        <TableCell sx={{ ...hugSx, ...monoSx }}>{projectNumber || '-'}</TableCell>
-        <TableCell sx={hugSx}>
-          <Typography variant="body2" noWrap title={projectName || undefined} sx={{ maxWidth: 240 }}>
-            {projectName || '-'}
-          </Typography>
-        </TableCell>
-        <TableCell sx={hugSx}>
-          {po.poNumber ? (
+    <TableRow
+      hover
+      onClick={onOpen}
+      sx={{ cursor: 'pointer', '&:hover .po-row-chevron': { color: 'text.primary' } }}
+    >
+      <TableCell sx={{ ...hugSx, ...monoSx }}>{projectNumber || '-'}</TableCell>
+      <TableCell sx={hugSx}>
+        <Typography variant="body2" noWrap title={projectName || undefined} sx={{ maxWidth: 240 }}>
+          {projectName || '-'}
+        </Typography>
+      </TableCell>
+      <TableCell sx={hugSx}>
+        {po.poNumber ? (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
             <Box component="span" sx={monoSx}>
               {po.poNumber}
             </Box>
-          ) : (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
-              <Box component="span" sx={{ ...monoSx, color: 'text.secondary' }}>
-                {po.requestNumber}
-              </Box>
-              <Chip
-                label="Draft"
-                size="small"
-                variant="outlined"
-                sx={{ height: 20, fontSize: '0.7rem' }}
-              />
-            </Box>
-          )}
-        </TableCell>
-        <TableCell sx={hugSx}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
-            <Chip
-              label={formatPoStatus(po.status)}
-              color={poStatusChipColor(po.status)}
-              size="small"
-            />
-            {/* #353 PR E: the registration was accepted but has not reached GP yet, so the PO is
-                still DRAFT. Saying so stops it reading as "nobody has done this". */}
-            {gpWriteQueued && (
-              <Tooltip title="Waiting for the GP relay. This will post automatically when it reconnects." arrow>
-                <Chip label="GP registration queued" color="warning" size="small" variant="outlined" />
+            {po.origin === 'GP' && (
+              <Tooltip title="Mirrored from GP - not raised through Nexus" arrow>
+                <Chip label="GP" size="small" variant="outlined" sx={{ height: 20, fontSize: '0.7rem' }} />
               </Tooltip>
             )}
-            {/* #316: no Register in GP action here. A button sitting beside the status chip read as a
-                second status ("why do Draft POs also have a Register in GP status?"). Registering is a
-                deliberate act with a whole dialog behind it, so it lives on the PO itself - open the PO
-                and register from there. */}
           </Box>
-        </TableCell>
-        <TableCell>{poVendorName(po) || '-'}</TableCell>
-        <TableCell sx={{ ...hugSx, ...tabularSx }}>
-          {parseServerDate(po.createdAt).toLocaleDateString()}
-        </TableCell>
-        <TableCell sx={{ ...hugSx, ...tabularSx }}>
-          {po.orderedAt ? parseServerDate(po.orderedAt).toLocaleDateString() : '-'}
-        </TableCell>
-        <TableCell sx={{ ...hugSx, ...tabularSx }} align="right">
-          {po.lineItems?.length ?? 0}
-        </TableCell>
-        {/* Says the row goes somewhere, and gives the keyboard the same door the mouse has. */}
-        <TableCell sx={{ width: 44, py: 0 }} align="right">
-          <IconButton
-            size="small"
-            className="po-row-chevron"
-            aria-label={`Open ${poDisplayId(po)} details`}
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpen();
-            }}
-            sx={{ color: 'text.disabled', transition: 'color 0.15s ease' }}
-          >
-            <ChevronRight {...ICON} />
-          </IconButton>
-        </TableCell>
-      </TableRow>
-      <TableRow>
-        <TableCell
-          sx={{ p: 0, borderBottom: expanded ? undefined : 'none' }}
-          colSpan={PO_TABLE_COLUMN_COUNT}
-        >
-          <Collapse in={expanded} timeout={220} unmountOnExit>
-            <Box sx={{ p: 2, bgcolor: 'action.hover' }}>
-              <Typography component="h3" sx={{ ...microLabelSx, mb: 1 }}>
-                Line Items
-              </Typography>
-              <POLineItemsMiniTable
-                lineItems={po.lineItems}
-                hasReceives={po.receiveRecords.length > 0}
-              />
+        ) : (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+            <Box component="span" sx={{ ...monoSx, color: 'text.secondary' }}>
+              {po.requestNumber ?? '-'}
             </Box>
-          </Collapse>
-        </TableCell>
-      </TableRow>
-    </>
+            <Chip label="Draft" size="small" variant="outlined" sx={{ height: 20, fontSize: '0.7rem' }} />
+          </Box>
+        )}
+      </TableCell>
+      <TableCell sx={hugSx}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexWrap: 'wrap' }}>
+          <Chip label={formatPoStatus(po.status)} color={poStatusChipColor(po.status)} size="small" />
+          {gpWriteQueued && (
+            <Tooltip title="Waiting for the GP relay. This will post automatically when it reconnects." arrow>
+              <Chip label="GP registration queued" color="warning" size="small" variant="outlined" />
+            </Tooltip>
+          )}
+        </Box>
+      </TableCell>
+      <TableCell>{po.vendorNameSnapshot || '-'}</TableCell>
+      <TableCell sx={{ ...hugSx, ...tabularSx }}>
+        {parseServerDate(po.createdAt).toLocaleDateString()}
+      </TableCell>
+      <TableCell sx={{ ...hugSx, ...tabularSx }}>
+        {po.orderedAt ? parseServerDate(po.orderedAt).toLocaleDateString() : '-'}
+      </TableCell>
+      <TableCell sx={{ ...hugSx, ...tabularSx }} align="right">
+        {po.lineItemCount}
+      </TableCell>
+      {/* Says the row goes somewhere, and gives the keyboard the same door the mouse has. */}
+      <TableCell sx={{ width: 44, py: 0 }} align="right">
+        <IconButton
+          size="small"
+          className="po-row-chevron"
+          aria-label={`Open ${poDisplayId(po)} details`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpen();
+          }}
+          sx={{ color: 'text.disabled', transition: 'color 0.15s ease' }}
+        >
+          <ChevronRight {...ICON} />
+        </IconButton>
+      </TableCell>
+    </TableRow>
   );
 }
 
@@ -763,23 +345,35 @@ function POTableRow({
 function POListPage() {
   const navigate = useNavigate();
   const { isAdmin } = useIdentity();
+  const { showToast } = useToast();
   const [selectedPOId, setSelectedPOId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [chooserOpen, setChooserOpen] = useState(false);
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
-  const [filterState, setFilterState] = useState<FilterState>(EMPTY_FILTER_STATE);
-  const [sortState, setSortState] = useState<SortState>({ field: null, direction: 'asc' });
 
-  // Relay presence is polled as the page loads (not when a dialog opens), so the user knows up front
-  // whether GP actions work. Create PO is a GP-first flow, so it can't run when the relay is down.
-  // This is the main PO page, so it polls continuously (no skip) - it's the single relay poller the
-  // detail/create/register dialogs read through their relayConnected prop.
+  // Server-driven filter / sort / page state.
+  const [searchInput, setSearchInput] = useState('');
+  const [committedSearch, setCommittedSearch] = useState('');
+  const [statuses, setStatuses] = useState<Set<string>>(new Set());
+  const [origin, setOrigin] = useState<OriginFilter>('ALL');
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
+
+  // Debounce the search box so a query does not fire on every keystroke; a new term returns to page 1.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setCommittedSearch(searchInput.trim());
+      setPage(0);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
   const { connected: relayConnected } = useRelayStatus();
 
-  // #353 PR E: which POs have a GP write still on the outbox. Read as ONE list query and joined onto
-  // rows client-side on `entityKey` (`po:<id>`), deliberately not as a field on PurchaseOrder - a
-  // per-row resolver would be an N+1 on this all-projects list, and converters must not query.
+  // #353 PR E: which POs have a GP write still on the outbox, joined onto rows client-side on
+  // entityKey (`po:<id>`) rather than as a per-row resolver (which would be an N+1).
   const { data: outboxData } = useQuery<{ gpOutbox: { id: string; entityKey: string; status: string }[] }>(
     GET_GP_OUTBOX,
     { variables: { limit: 200 }, fetchPolicy: 'cache-and-network', pollInterval: 15_000 },
@@ -793,84 +387,73 @@ function POListPage() {
     return ids;
   }, [outboxData]);
 
-  const toggleExpand = (id: string) => {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
+  const { data: statsData, loading: statsLoading, refetch: refetchStats } = useQuery<{
+    poStatistics: POStatistics;
+  }>(GET_PO_STATISTICS);
 
-  // --- Queries (all-projects view; per-project scoping is done via the table's project filter) ---
+  const pageVariables = useMemo(
+    () => ({
+      search: committedSearch || null,
+      statuses: statuses.size ? Array.from(statuses) : null,
+      origin: origin === 'ALL' ? null : origin,
+      projectId: projectId || null,
+      sortField: sort.field,
+      sortDir: sort.dir,
+      limit: rowsPerPage,
+      offset: page * rowsPerPage,
+    }),
+    [committedSearch, statuses, origin, projectId, sort, rowsPerPage, page],
+  );
 
   const {
-    data: statsData,
-    loading: statsLoading,
-    refetch: refetchStats,
-  } = useQuery<{ poStatistics: POStatistics }>(GET_PO_STATISTICS);
-
-  const {
-    data: posData,
-    loading: posLoading,
-    refetch: refetchPOs,
-  } = useQuery<{ purchaseOrders: PurchaseOrder[] }>(GET_PURCHASE_ORDERS, {
+    data: pageData,
+    loading: pageLoading,
+    refetch: refetchPage,
+  } = useQuery<{ purchaseOrdersPage: { rows: POListRow[]; totalCount: number } }>(PURCHASE_ORDERS_PAGE, {
+    variables: pageVariables,
     fetchPolicy: 'cache-and-network',
   });
 
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
 
+  // The selected PO's full detail (lines/documents/receives) for the modal, fetched on open.
+  const { data: selectedData, refetch: refetchSelected } = useQuery<{ purchaseOrder: PurchaseOrder | null }>(
+    GET_PURCHASE_ORDER,
+    { variables: { id: selectedPOId }, skip: !selectedPOId, fetchPolicy: 'cache-and-network' },
+  );
+
+  const [syncGpPos, { loading: syncing }] = useMutation(SYNC_GP_POS);
+
   const stats = statsData?.poStatistics;
-  const purchaseOrders = useMemo(
-    () => posData?.purchaseOrders ?? [],
-    [posData?.purchaseOrders],
-  );
+  const rows = useMemo(() => pageData?.purchaseOrdersPage.rows ?? [], [pageData]);
+  const totalCount = pageData?.purchaseOrdersPage.totalCount ?? 0;
   const projects = useMemo(() => projectsData?.projects ?? [], [projectsData?.projects]);
-  const projectsById = useMemo<ProjectsById>(
-    () => new Map(projects.map((p) => [p.id, p])),
-    [projects],
-  );
-  const selectedPO = purchaseOrders.find((po) => po.id === selectedPOId) ?? null;
+  const projectsById = useMemo<ProjectsById>(() => new Map(projects.map((p) => [p.id, p])), [projects]);
+  const selectedPO = selectedData?.purchaseOrder ?? null;
 
-  // --- Filter + sort ---
-
-  const filteredAndSortedPOs = useMemo(() => {
-    const filtered = purchaseOrders.filter((po) => matchesFilter(po, filterState));
-    if (!sortState.field) return filtered;
-    return [...filtered].sort((a, b) => comparePOs(a, b, sortState, projectsById));
-  }, [purchaseOrders, filterState, sortState, projectsById]);
-
-  const handleSortClick = (field: SortField) => {
-    setSortState((prev) => {
-      if (prev.field === field) {
-        return { field, direction: prev.direction === 'asc' ? 'desc' : 'asc' };
-      }
-      return { field, direction: 'asc' };
-    });
+  const projectNumberOf = (po: POListRow) => (po.projectId ? projectsById.get(po.projectId)?.projectId ?? '' : '');
+  const projectNameOf = (po: POListRow) => {
+    if (!po.projectId) return '';
+    const p = projectsById.get(po.projectId);
+    return p?.description || p?.projectId || '';
   };
 
   // --- Handlers ---
+
+  const handleSortClick = (field: SortField) => {
+    setSort((prev) => (prev.field === field ? { field, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { field, dir: 'asc' }));
+    setPage(0);
+  };
+
+  const handleCardClick = (status: string | null) => {
+    setStatuses((prev) => toggleStatusCard({ statuses: prev }, status).statuses);
+    setPage(0);
+  };
 
   const handleOpenPO = (id: string) => {
     setSelectedPOId(id);
     setModalOpen(true);
   };
-
-  const handleExpandAll = () => {
-    setExpandedIds(new Set(filteredAndSortedPOs.map((po) => po.id)));
-  };
-
-  const handleCollapseAll = () => {
-    setExpandedIds(new Set());
-  };
-
-  const visibleExpandedCount = useMemo(
-    () => filteredAndSortedPOs.filter((po) => expandedIds.has(po.id)).length,
-    [filteredAndSortedPOs, expandedIds],
-  );
-  const allVisibleExpanded =
-    filteredAndSortedPOs.length > 0 && visibleExpandedCount === filteredAndSortedPOs.length;
-  const noneVisibleExpanded = visibleExpandedCount === 0;
 
   const handleCloseModal = () => {
     setModalOpen(false);
@@ -878,8 +461,28 @@ function POListPage() {
   };
 
   const handleRefetch = () => {
-    refetchPOs();
+    refetchPage();
     refetchStats();
+    if (selectedPOId) refetchSelected();
+  };
+
+  const handleSyncGpPos = async () => {
+    try {
+      const resp = await syncGpPos();
+      const r = (resp.data as { syncGpPos?: { mode: string; created: number; updated: number; backfillDone: boolean } })?.syncGpPos;
+      if (r) {
+        const msg =
+          r.mode === 'unsupported'
+            ? 'The connected relay does not support PO mirroring yet - update the relay.'
+            : `GP sync (${r.mode}): ${r.created} added, ${r.updated} updated${r.backfillDone ? '' : ' - backfill still running'}.`;
+        showToast(msg, r.mode === 'unsupported' ? 'warning' : 'success');
+      }
+      handleRefetch();
+    } catch (e) {
+      const message =
+        e instanceof CombinedGraphQLErrors ? e.errors[0]?.message : e instanceof Error ? e.message : 'GP sync failed';
+      showToast(message ?? 'GP sync failed', 'error');
+    }
   };
 
   // --- Render ---
@@ -895,17 +498,23 @@ function POListPage() {
           <Button
             variant="outlined"
             size="small"
+            startIcon={<RefreshCw {...ICON} />}
+            onClick={handleSyncGpPos}
+            disabled={syncing || !relayConnected}
+          >
+            {syncing ? 'Syncing…' : 'Sync from GP'}
+          </Button>
+        )}
+        {isAdmin && (
+          <Button
+            variant="outlined"
+            size="small"
             startIcon={<Settings {...ICON} />}
             onClick={() => navigate('/app/po/document-settings')}
           >
             Document Settings
           </Button>
         )}
-        {/* #480: one entry point. Schedule-driven (#471) and manual creation are two answers to
-            "how do you want to raise this", not two features, so the button asks. Issue #256:
-            either way the PO lands as a DRAFT (no GP involved), so no relay gating here - the relay
-            is only needed later, to register the draft into GP. This is the screen's one filled
-            accent: the thing you came here to do. */}
         <Button
           variant="contained"
           size="small"
@@ -916,10 +525,7 @@ function POListPage() {
         </Button>
       </Box>
 
-      {/* Status strip. Clicking a segment filters the table to that status (#316) - the count and the
-          list it describes are the same thing, so reading one and then hunting the filter row for the
-          other was busywork. Display-only borders are deliberately absent: the only edge here marks
-          the segment that IS filtering the table. */}
+      {/* Status strip. Clicking a segment filters the table to that status (#316). */}
       <FadeIn>
         <Paper
           variant="outlined"
@@ -927,13 +533,13 @@ function POListPage() {
         >
           <StaggerList count={STAT_CARDS.length}>
             {STAT_CARDS.map((card, i) => {
-              const active = isStatusCardActive(filterState, card.status);
+              const active = isStatusCardActive({ statuses }, card.status);
               const count = stats?.[card.key] ?? 0;
               const zero = !statsLoading && count === 0;
               return (
                 <StaggerItem key={card.key} style={{ display: 'flex' }}>
                   <ButtonBase
-                    onClick={() => setFilterState((f) => toggleStatusCard(f, card.status))}
+                    onClick={() => handleCardClick(card.status)}
                     aria-pressed={active}
                     aria-label={`Filter by ${card.label}`}
                     sx={{
@@ -953,8 +559,6 @@ function POListPage() {
                       component="span"
                       sx={{
                         ...tabularSx,
-                        // `title` step off the DESIGN.md ramp; the strip stays compact through its
-                        // padding and 1.0 line-height, not through an off-ramp font size.
                         fontSize: '1.25rem',
                         fontWeight: 700,
                         lineHeight: 1,
@@ -983,24 +587,54 @@ function POListPage() {
         </Paper>
       </FadeIn>
 
-      {/* Expand / Collapse controls */}
-      <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, mb: 1 }}>
-        <Button
+      {/* Filter bar: search reaches full history; project + origin narrow it. Server-driven. */}
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, mb: 1.5, alignItems: 'center' }}>
+        <TextField
           size="small"
-          startIcon={<ChevronsUpDown {...ICON} />}
-          onClick={handleExpandAll}
-          disabled={posLoading || allVisibleExpanded}
-        >
-          Expand all
-        </Button>
-        <Button
+          placeholder="Search PO #, request #, or vendor…"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <Search {...ICON} />
+              </InputAdornment>
+            ),
+          }}
+          sx={{ flex: 1, minWidth: 260 }}
+        />
+        <Autocomplete
           size="small"
-          startIcon={<ChevronsDownUp {...ICON} />}
-          onClick={handleCollapseAll}
-          disabled={posLoading || noneVisibleExpanded}
+          options={projects}
+          value={projects.find((p) => p.id === projectId) ?? null}
+          onChange={(_e, selected) => {
+            setProjectId(selected?.id ?? null);
+            setPage(0);
+          }}
+          filterOptions={projectFilterOptions}
+          getOptionLabel={(p) => p.description || p.projectId}
+          isOptionEqualToValue={(a, b) => a.id === b.id}
+          renderInput={(params) => (
+            <TextField {...params} placeholder="All projects" inputProps={{ ...params.inputProps, 'aria-label': 'Filter by project' }} />
+          )}
+          sx={{ minWidth: 220 }}
+        />
+        <ToggleButtonGroup
+          size="small"
+          exclusive
+          value={origin}
+          onChange={(_e, v) => {
+            if (v) {
+              setOrigin(v as OriginFilter);
+              setPage(0);
+            }
+          }}
+          aria-label="Filter by origin"
         >
-          Collapse all
-        </Button>
+          <ToggleButton value="ALL">All</ToggleButton>
+          <ToggleButton value="NEXUS">Nexus</ToggleButton>
+          <ToggleButton value="GP">GP</ToggleButton>
+        </ToggleButtonGroup>
       </Box>
 
       {/* PO Table */}
@@ -1008,102 +642,64 @@ function POListPage() {
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell sx={{ width: 48 }} />
-              <SortHeader
-                field="projectNumber"
-                label="Project #"
-                sortState={sortState}
-                onSort={handleSortClick}
-              />
-              <SortHeader
-                field="projectName"
-                label="Project"
-                sortState={sortState}
-                onSort={handleSortClick}
-              />
-              <SortHeader
-                field="poNumber"
-                label="PO / Request #"
-                sortState={sortState}
-                onSort={handleSortClick}
-              />
-              <SortHeader
-                field="status"
-                label="Status"
-                sortState={sortState}
-                onSort={handleSortClick}
-              />
-              <SortHeader
-                field="vendor"
-                label="Vendor"
-                hug={false}
-                sortState={sortState}
-                onSort={handleSortClick}
-              />
-              <SortHeader
-                field="createdAt"
-                label="Creation Date"
-                sortState={sortState}
-                onSort={handleSortClick}
-              />
-              <SortHeader
-                field="orderedAt"
-                label="Order Date"
-                sortState={sortState}
-                onSort={handleSortClick}
-              />
-              <SortHeader
-                field="itemsCount"
-                label="Items"
-                align="right"
-                sortState={sortState}
-                onSort={handleSortClick}
-              />
+              <TableCell sx={{ width: '1%', whiteSpace: 'nowrap' }}>Project #</TableCell>
+              <TableCell sx={{ width: '1%', whiteSpace: 'nowrap' }}>Project</TableCell>
+              <SortHeader field="poNumber" label="PO / Request #" sortState={sort} onSort={handleSortClick} />
+              <SortHeader field="status" label="Status" sortState={sort} onSort={handleSortClick} />
+              <SortHeader field="vendor" label="Vendor" hug={false} sortState={sort} onSort={handleSortClick} />
+              <SortHeader field="createdAt" label="Creation Date" sortState={sort} onSort={handleSortClick} />
+              <SortHeader field="orderedAt" label="Order Date" sortState={sort} onSort={handleSortClick} />
+              <TableCell align="right" sx={{ width: '1%', whiteSpace: 'nowrap' }}>
+                Items
+              </TableCell>
               <TableCell sx={{ width: 44 }} />
             </TableRow>
-            <FilterRow
-              filterState={filterState}
-              onChange={setFilterState}
-              projects={projects}
-            />
           </TableHead>
           <TableBody>
-            {posLoading && (
+            {pageLoading && (
               <TableRow>
                 <TableCell colSpan={PO_TABLE_COLUMN_COUNT} align="center" sx={{ py: 4 }}>
                   <CircularProgress size={24} />
                 </TableCell>
               </TableRow>
             )}
-            {!posLoading && filteredAndSortedPOs.length === 0 && (
+            {!pageLoading && rows.length === 0 && (
               <TableRow>
                 <TableCell colSpan={PO_TABLE_COLUMN_COUNT} align="center" sx={{ py: 4 }}>
                   <Typography variant="body2" color="text.secondary">
-                    {purchaseOrders.length === 0
-                      ? 'No purchase orders found.'
-                      : 'No purchase orders match the current filters.'}
+                    No purchase orders match the current filters.
                   </Typography>
                 </TableCell>
               </TableRow>
             )}
-            {!posLoading &&
-              filteredAndSortedPOs.map((po) => (
+            {!pageLoading &&
+              rows.map((po) => (
                 <POTableRow
                   key={po.id}
                   po={po}
-                  projectNumber={poProjectNumber(po, projectsById)}
-                  projectName={poProjectName(po, projectsById)}
-                  expanded={expandedIds.has(po.id)}
-                  onToggle={() => toggleExpand(po.id)}
+                  projectNumber={projectNumberOf(po)}
+                  projectName={projectNameOf(po)}
                   onOpen={() => handleOpenPO(po.id)}
                   gpWriteQueued={queuedPoIds.has(po.id)}
                 />
               ))}
           </TableBody>
         </Table>
+        <TablePagination
+          component="div"
+          count={totalCount}
+          page={page}
+          onPageChange={(_e, p) => setPage(p)}
+          rowsPerPage={rowsPerPage}
+          onRowsPerPageChange={(e) => {
+            setRowsPerPage(parseInt(e.target.value, 10));
+            setPage(0);
+          }}
+          rowsPerPageOptions={ROWS_PER_PAGE_OPTIONS}
+        />
       </TableContainer>
 
-      {/* Detail Modal */}
+      {/* Detail Modal - the selected PO's full detail, fetched by id. */}
       {selectedPO && (
         <PODetailModal
           open={modalOpen}
@@ -1114,7 +710,6 @@ function POListPage() {
         />
       )}
 
-      {/* Create PO Dialog (creates a brand-new PO directly in GP) */}
       <CreatePOChooser
         open={chooserOpen}
         onClose={() => setChooserOpen(false)}
@@ -1141,8 +736,6 @@ function POListPage() {
         }}
         relayConnected={relayConnected}
       />
-      {/* The register-a-Draft dialog is not mounted here any more (#316). It lives on PODetailModal,
-          which is now the only way to reach it. */}
     </Box>
   );
 }

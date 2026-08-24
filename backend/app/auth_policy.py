@@ -132,14 +132,20 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "markNotificationAsRead": SIGNED_IN,
     # --- po.py ----------------------------------------------------------------------------
     "openPOs": SIGNED_IN,
+    # Lean company-scale receiving picker list (gp-owned-po mirror).
+    "openPosSummary": SIGNED_IN,
     "poDocumentDownloadUrl": SIGNED_IN,
     "poDocumentSettings": SIGNED_IN,
     "poStatistics": SIGNED_IN,
     "priorOrderAsValues": SIGNED_IN,
     "purchaseOrder": SIGNED_IN,
     "purchaseOrders": SIGNED_IN,
+    # Server-paginated register over the whole company (gp-owned-po mirror).
+    "purchaseOrdersPage": SIGNED_IN,
     "cancelPo": SIGNED_IN,
     "createDraftPo": SIGNED_IN,
+    # Attach schedule hardware to a mirrored PO's lines for coverage tracking (gp-owned-po mirror).
+    "linkScheduleToMirroredPo": SIGNED_IN,
     "deletePoDocument": SIGNED_IN,
     # Signed-in, not admin: which projects a caller may raise a PO against is decided inside the
     # resolver from the caller's own GP buyer assignment (#216), not by role.
@@ -158,6 +164,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "projects": SIGNED_IN,
     "createGpJob": ADMIN_ROLE,
     "syncGpJobs": ADMIN_ROLE,
+    "syncGpPos": ADMIN_ROLE,
     "updateProject": ADMIN_ROLE,
     # --- relay.py -------------------------------------------------------------------------
     # The gp_* reads are signed-in because every PO screen needs them. Three exceptions: two return

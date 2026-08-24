@@ -34,6 +34,7 @@ from .types import (
     InventoryLocation,
     Notification,
     Opening,
+    OpenPOSummary,
     PackingSlip,
     PackingSlipItem,
     PickSheet,
@@ -44,6 +45,7 @@ from .types import (
     PODocumentInfo,
     PODocumentSettings,
     POLineItem,
+    POListRow,
     Project,
     ProjectHardwareSchedule,
     ProjectScheduleHardwareItem,
@@ -365,6 +367,8 @@ def po_to_type(po, receive_records=None) -> PurchaseOrder:
         id=strawberry.ID(str(po.id)),
         po_number=po.po_number,
         request_number=po.request_number,
+        origin=po.origin,
+        gp_synced_at=po.gp_synced_at,
         project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
         status=po.status,
         cost_code=po.cost_code,
@@ -388,6 +392,45 @@ def po_to_type(po, receive_records=None) -> PurchaseOrder:
         receive_records=[receive_record_to_type(rr) for rr in (receive_records or [])],
         documents=[po_document_to_type(doc) for doc in documents],
         document_data=po_document_data_to_type(doc_data) if doc_data is not None else None,
+    )
+
+
+def open_po_summary_to_type(po, pending_quantity: int, pending_line_count: int) -> OpenPOSummary:
+    """A lean receiving-picker row (gp-owned-po mirror). Pending scalars come from the caller's grouped
+    query, never from po.line_items."""
+    return OpenPOSummary(
+        id=strawberry.ID(str(po.id)),
+        po_number=po.po_number,
+        project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
+        status=po.status,
+        origin=po.origin,
+        gp_vendor_id=po.gp_vendor_id,
+        vendor_name_snapshot=po.vendor_name_snapshot,
+        notes=po.notes,
+        ordered_at=po.ordered_at,
+        expected_delivery_date=po.expected_delivery_date,
+        pending_line_count=pending_line_count,
+        pending_quantity=pending_quantity,
+    )
+
+
+def po_list_row_to_type(po, line_item_count: int) -> POListRow:
+    """A slim register row (gp-owned-po mirror). line_item_count is supplied by the caller from a
+    grouped count query, never read off po.line_items - the register never loads the collection."""
+    return POListRow(
+        id=strawberry.ID(str(po.id)),
+        po_number=po.po_number,
+        request_number=po.request_number,
+        project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
+        status=po.status,
+        origin=po.origin,
+        gp_company=po.gp_company,
+        vendor_name_snapshot=po.vendor_name_snapshot,
+        ordered_at=po.ordered_at,
+        expected_delivery_date=po.expected_delivery_date,
+        created_at=po.created_at,
+        gp_synced_at=po.gp_synced_at,
+        line_item_count=line_item_count,
     )
 
 

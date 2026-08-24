@@ -287,6 +287,21 @@ def _run_read_po_totals(company: str, payload: dict) -> dict:
     return {"company": company, "totals": totals}
 
 
+def _run_sync_pos(company: str, payload: dict) -> dict:
+    """Read a page of GP purchase orders for the backend's mirror sync (gp-owned-po mirror). Read-only:
+    backfill walks POP10100/POP30100 by PONUMBER keyset; incremental re-reads open POs + history rows
+    changed since the watermark. See econnect.sync_pos."""
+    ops.check_company_allowed(company)
+    with db.get_read_connection(company) as conn:
+        result = econnect.sync_pos(
+            conn,
+            cursor=payload.get("cursor"),
+            page_size=payload.get("page_size", 300),
+            modified_since=payload.get("modified_since"),
+        )
+    return {"company": company, **result}
+
+
 def _run_create_po(company: str, payload: dict) -> dict:
     ops.check_company_allowed(company)
     request = models.CreatePoRequest(company=company, **payload)
@@ -430,6 +445,8 @@ _OPS = {
     "list_cost_code_master": _run_list_cost_code_master,
     "list_jobs": _run_list_jobs,
     "read_po_totals": _run_read_po_totals,
+    # issue: gp-owned-po mirror - a page of GP's own purchase orders for the backend to mirror locally.
+    "sync_pos": _run_sync_pos,
     "create_po": _run_create_po,
     "create_receipt": _run_create_receipt,
     # issue #380 - the create-job form's live reads, and the create itself.

@@ -109,6 +109,168 @@ export const GET_PURCHASE_ORDERS = gql`
   }
 `;
 
+// One PO with the full detail the PO modal renders (gp-owned-po mirror). The register list is slim
+// (purchaseOrdersPage), so opening a row fetches its lines/documents/receives here on demand.
+export const GET_PURCHASE_ORDER = gql`
+  query GetPurchaseOrder($id: ID!) {
+    purchaseOrder(id: $id) {
+      id
+      poNumber
+      requestNumber
+      origin
+      gpSyncedAt
+      projectId
+      status
+      gpCompany
+      gpVendorId
+      vendorNameSnapshot
+      buyerId
+      vendorQuoteNumber
+      costCode
+      shippingCost
+      tariffAmount
+      notes
+      preferredDeliveryDate
+      expectedDeliveryDate
+      orderedAt
+      createdAt
+      updatedAt
+      documentData {
+        id
+        poId
+        vendorAddress
+        buyerName
+        currency
+        shipTo
+        shippingMethod
+        quotationNumber
+        freight
+        miscellaneous
+        taxAmount
+        taxLabel
+        tariffAmount
+        requiredByOverride
+        includeFsc
+        includeUsaTariff
+        includeCustoms
+      }
+      lineItems {
+        id
+        poId
+        hardwareCategory
+        productCode
+        classification
+        orderedQuantity
+        receivedQuantity
+        unitCost
+        orderAs
+        gpLineOrd
+        manufacturer
+        createdAt
+        updatedAt
+      }
+      receiveRecords {
+        id
+        poId
+        receivedAt
+        receivedBy
+        createdAt
+        lineItems {
+          id
+          receiveRecordId
+          poLineItemId
+          hardwareCategory
+          productCode
+          quantityReceived
+          createdAt
+        }
+      }
+      documents {
+        id
+        poId
+        fileName
+        contentType
+        fileSize
+        documentType
+        uploadedAt
+        downloadUrl
+      }
+    }
+  }
+`;
+
+// The company-scale register (gp-owned-po mirror): server-driven paging/search/sort. Rows are slim -
+// a lineItemCount scalar instead of the line collection - so the list never materializes every line of
+// every PO. Opening a row loads the full PO via GET_PURCHASE_ORDER.
+export const PURCHASE_ORDERS_PAGE = gql`
+  query PurchaseOrdersPage(
+    $search: String
+    $statuses: [POStatus!]
+    $origin: POOrigin
+    $projectId: ID
+    $sortField: String
+    $sortDir: String
+    $limit: Int
+    $offset: Int
+  ) {
+    purchaseOrdersPage(
+      search: $search
+      statuses: $statuses
+      origin: $origin
+      projectId: $projectId
+      sortField: $sortField
+      sortDir: $sortDir
+      limit: $limit
+      offset: $offset
+    ) {
+      totalCount
+      rows {
+        id
+        poNumber
+        requestNumber
+        projectId
+        status
+        origin
+        gpCompany
+        vendorNameSnapshot
+        orderedAt
+        expectedDeliveryDate
+        createdAt
+        gpSyncedAt
+        lineItemCount
+      }
+    }
+  }
+`;
+
+// Admin: run one GP PO mirror pass now (gp-owned-po mirror).
+export const SYNC_GP_POS = gql`
+  mutation SyncGpPos {
+    syncGpPos {
+      mode
+      created
+      updated
+      backfillDone
+    }
+  }
+`;
+
+// Attach project schedule hardware to a mirrored PO's lines for coverage tracking (gp-owned-po mirror).
+export const LINK_SCHEDULE_TO_MIRRORED_PO = gql`
+  mutation LinkScheduleToMirroredPo($input: LinkScheduleToMirroredPoInput!) {
+    linkScheduleToMirroredPo(input: $input) {
+      id
+      lineItems {
+        id
+        hardwareCategory
+        productCode
+        orderedQuantity
+        receivedQuantity
+      }
+    }
+  }
+`;
+
 // Issue #232: suggest a GP ordering vendor for a hardware line's TITAN manufacturer. A saved mapping
 // wins (savedMapping true, one candidate at score 100); otherwise the top-N live vendors ranked by
 // fuzzy score are returned (savedMapping false).

@@ -22,6 +22,19 @@ class POStatus(str, enum.Enum):
     CANCELLED = "CANCELLED"
 
 
+class POOrigin(str, enum.Enum):
+    """Who owns the PO's authoritative record (gp-owned-po mirror).
+
+    NEXUS is a PO drafted here and pushed into GP the normal way - Nexus stamped its GP number and
+    every non-GP field (documents, notes, cost code) is ours to edit. GP is a row the mirror sync
+    discovered in GP's own tables and wrote locally; the sync owns its GP-derived fields and never
+    invents the Nexus-only overlay. A NEXUS PO that also exists in GP stays NEXUS - origin records
+    where the row was born, not merely that GP knows about it."""
+
+    NEXUS = "NEXUS"
+    GP = "GP"
+
+
 class PullRequestSource(str, enum.Enum):
     SHOP_ASSEMBLY = "SHOP_ASSEMBLY"
     SHIPPING_OUT = "SHIPPING_OUT"

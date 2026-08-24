@@ -21,7 +21,7 @@ from app.errors import AppError
 from app.repositories import relay_repository
 from app.schemas.mutations import Mutation
 from app.schemas.queries import Query
-from app.services import gp_job_sync, gp_outbox_worker, relay_adopt, relay_seed
+from app.services import gp_job_sync, gp_outbox_worker, gp_po_sync, relay_adopt, relay_seed
 from app.services import relay_channels as relay_channels_service
 from app.services.relay_gateway import HEARTBEAT_INTERVAL_SECONDS
 from app.services.relay_gateway import gateway as relay_gateway
@@ -136,6 +136,8 @@ async def lifespan(_app: FastAPI):
         tasks.append(asyncio.create_task(gp_outbox_worker.run_forever()))
     if gp_job_sync.enabled():
         tasks.append(asyncio.create_task(gp_job_sync.run_forever()))
+    if gp_po_sync.enabled():
+        tasks.append(asyncio.create_task(gp_po_sync.run_forever()))
     try:
         yield
     finally:
@@ -349,6 +351,7 @@ async def relay_link(websocket: WebSocket):
     # poll interval later (#353 PR E), and pick up any GP job created while it was away (#380).
     gp_outbox_worker.wake()
     gp_job_sync.wake()
+    gp_po_sync.wake()
     try:
         await _serve_relay_link(websocket, require_hello=adopted)
     except WebSocketDisconnect:
