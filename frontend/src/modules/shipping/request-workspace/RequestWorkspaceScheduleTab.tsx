@@ -117,6 +117,9 @@ export default function RequestWorkspaceScheduleTab({
   // across the round trip to the import wizard on the same sessionStorage key.
   const [view, setView] = useState<'source' | 'select'>('source');
   const [selectedOpenings, setSelectedOpenings] = useState<Set<string>>(new Set());
+  // Openings whose nothing-to-add rows are shown. Collapsed by default: the dead rows (no suggestion,
+  // or no stock behind the suggestion) are the noise the composer drowns in on a real schedule.
+  const [expandedOpenings, setExpandedOpenings] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -184,6 +187,24 @@ export default function RequestWorkspaceScheduleTab({
     const next = rows.reduce((acc, row) => addScheduleRowAtSuggested(acc, row, headroom), cart);
     onCartChange(next);
   };
+
+  const toggleExpanded = (openingNumber: string) =>
+    setExpandedOpenings((prev) => {
+      const next = new Set(prev);
+      if (next.has(openingNumber)) next.delete(openingNumber);
+      else next.add(openingNumber);
+      return next;
+    });
+
+  // Openings the global add-all actually contributes to: at least one row with a suggestion AND a
+  // pool behind it - the same predicate the partition keeps visible. Counting every selected
+  // opening would overstate the click on openings that are fully collapsed with nothing to add.
+  const contributingOpenings = useMemo(
+    () =>
+      grouped.filter((g) => g.rows.some((r) => r.suggestedQuantity > 0 && (headroom.get(productKey(r)) ?? 0) > 0))
+        .length,
+    [grouped, headroom],
+  );
 
   // Which products the selected openings still owe, and to which openings, so the extras lane can
   // nudge a loose add toward the tagged path. Only rows with something left to send (suggested > 0)
@@ -307,13 +328,48 @@ export default function RequestWorkspaceScheduleTab({
         ) : (
           <Stack spacing={2.5}>
             <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Button size="small" variant="outlined" onClick={() => addAll(grouped.flatMap((g) => g.rows))}>
-                Add all suggested
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={contributingOpenings === 0}
+                onClick={() => addAll(grouped.flatMap((g) => g.rows))}
+              >
+                Add all suggested - {contributingOpenings} opening{contributingOpenings === 1 ? '' : 's'}
               </Button>
             </Box>
             {grouped.map((group) => {
               const meta = openingMeta.get(group.openingNumber);
               const place = [meta?.building, meta?.floor].filter(Boolean).join(' · ');
+              // Offerable rows stay; dead rows collapse behind the expander. The partition reads the
+              // BASE pool figure (headroom), not the cart-adjusted remaining: remaining moves as the
+              // cart fills, and a row must not vanish mid-composition because a competing opening
+              // drained its pool - it just shows its disabled Add, as before. A row already in the
+              // cart is always visible, which also pins restored draft lines on first render.
+              const visibleRows: CoverageRow[] = [];
+              const hiddenRows: CoverageRow[] = [];
+              for (const row of group.rows) {
+                const basePool = headroom.get(productKey(row)) ?? 0;
+                if (lineQuantity(cart, row) > 0 || (row.suggestedQuantity > 0 && basePool > 0)) {
+                  visibleRows.push(row);
+                } else {
+                  hiddenRows.push(row);
+                }
+              }
+              const expanded = expandedOpenings.has(group.openingNumber);
+              // Expanded = today's full page, in the original order and with the same muted treatment.
+              const shownRows = expanded ? group.rows : visibleRows;
+              const awaiting = hiddenRows.filter((r) => r.suggestedQuantity > 0);
+              const covered = hiddenRows.length - awaiting.length;
+              const onOrderUnits = awaiting.reduce((sum, r) => sum + r.onOrderQuantity, 0);
+              const expanderLabel = [
+                `${hiddenRows.length} ${hiddenRows.length === 1 ? 'line' : 'lines'} with nothing to add`,
+                awaiting.length > 0
+                  ? `${awaiting.length} awaiting stock${onOrderUnits > 0 ? ` (${onOrderUnits} on order)` : ''}`
+                  : null,
+                covered > 0 ? `${covered} already covered` : null,
+              ]
+                .filter(Boolean)
+                .join(' · ');
               return (
                 <Box key={group.openingNumber} sx={{ minWidth: 0 }}>
                   <Stack
@@ -334,9 +390,10 @@ export default function RequestWorkspaceScheduleTab({
                       )}
                     </Box>
                     <Button size="small" variant="text" onClick={() => addAll(group.rows)}>
-                      Add all suggested
+                      Add {group.openingNumber}&rsquo;s suggested
                     </Button>
                   </Stack>
+                  {shownRows.length > 0 && (
                   <TableContainer
                     sx={{ overflowX: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}
                   >
@@ -356,7 +413,7 @@ export default function RequestWorkspaceScheduleTab({
                         </TableRow>
                       </TableHead>
                       <TableBody>
-                        {group.rows.map((row) => {
+                        {shownRows.map((row) => {
                           const inCart = lineQuantity(cart, row);
                           const muted = row.suggestedQuantity === 0 && inCart === 0;
                           // The live remaining pool for this product, excluding this line's own hold, so
@@ -440,6 +497,17 @@ export default function RequestWorkspaceScheduleTab({
                       </TableBody>
                     </Table>
                   </TableContainer>
+                  )}
+                  {hiddenRows.length > 0 && (
+                    <Button
+                      size="small"
+                      variant="text"
+                      onClick={() => toggleExpanded(group.openingNumber)}
+                      sx={{ mt: 0.25, color: 'text.secondary', fontWeight: 400 }}
+                    >
+                      {expanderLabel} - {expanded ? 'hide' : 'show'}
+                    </Button>
+                  )}
                 </Box>
               );
             })}

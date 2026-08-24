@@ -247,6 +247,36 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     return [...seen.values()];
   }, [poDetailsList, projects]);
 
+  // Why Submit is grey, named beside it - the FIRST unmet requirement in the disable chain, so the
+  // user is never left reverse-engineering a dead button. blockedPos gets a caption too even though
+  // it has its own alert: a tall modal can scroll that alert out of view while the button stays.
+  const submitBlockedReason = useMemo(() => {
+    if (!hasAnyReceiveQuantity) return 'Enter a received quantity';
+    if (hasQuantityErrors) return 'Fix the highlighted quantities';
+    if (!allPackingSlipsAttached) {
+      const missing = poIds.find(
+        (poId) => lineItemsToReceive.some((li) => li.poId === poId) && !packingSlips[poId],
+      );
+      const label = missing ? poDetailsMap[missing]?.poNumber : null;
+      return `Attach the packing slip${label ? ` for ${label}` : ''}`;
+    }
+    if (blockedPos.length > 0) {
+      return blockedPos.length === 1
+        ? `${blockedPos[0].poNumber ?? 'A PO in this batch'} isn't registered in GP yet`
+        : `${blockedPos.length} POs aren't registered in GP yet`;
+    }
+    return null;
+  }, [
+    hasAnyReceiveQuantity,
+    hasQuantityErrors,
+    allPackingSlipsAttached,
+    poIds,
+    lineItemsToReceive,
+    packingSlips,
+    poDetailsMap,
+    blockedPos,
+  ]);
+
   // Two deliveries against one PO before the first is approved is legitimate, so this only warns.
   // The backend is the enforcement point: the approval claim refuses the second when the two would
   // together over-receive the PO.
@@ -396,6 +426,12 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
 
   // ---- Render ----
 
+  // Escape is a dismissal, not a discard: once a count has been typed in, the key is swallowed and
+  // the user has to use Cancel. Quantities are the only entry this dialog holds (put-away moved to
+  // the approval, #501), and nothing is recoverable once handleClose resets it.
+  const hasUnsavedEntry = !succeeded && hasAnyReceiveQuantity;
+  const showForm = !poDetailsLoading && !poDetailsError && !succeeded;
+
   const actions = succeeded ? (
     <>
       <Button onClick={() => navigate('/app/warehouse/receiving?view=drafts')}>View My Drafts</Button>
@@ -406,6 +442,11 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   ) : (
     <>
       <Button onClick={handleClose}>Cancel</Button>
+      {showForm && !submitting && submitBlockedReason && (
+        <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center', textAlign: 'right' }}>
+          {submitBlockedReason}
+        </Typography>
+      )}
       {/* #425 no longer blocks here (it blocks the approval instead), and neither does the relay:
           drafting is the act of writing down what arrived, and neither GP's health nor the relay's
           has anything to say about that. A PO that is not in GP at all still does - such a draft
@@ -425,11 +466,6 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
       </Button>
     </>
   );
-
-  // Escape is a dismissal, not a discard: once counts or rack rows have been typed in, the key is
-  // swallowed and the user has to use Cancel. Nothing here is recoverable once handleClose resets it.
-  const hasUnsavedEntry = !succeeded && (hasAnyReceiveQuantity || false);
-  const showForm = !poDetailsLoading && !poDetailsError && !succeeded;
 
   return (
     <>

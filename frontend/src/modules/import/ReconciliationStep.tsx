@@ -1,7 +1,12 @@
 import { useMemo, useCallback, useEffect, useRef } from 'react';
 import { Alert, Box, Button, Chip, CircularProgress, Tooltip, Typography } from '@mui/material';
-import { AlertTriangle, Info } from 'lucide-react';
-import { DataGrid, type GridColDef, type GridRowSelectionModel } from '@mui/x-data-grid';
+import { AlertTriangle } from 'lucide-react';
+import {
+  DataGrid,
+  type GridColDef,
+  type GridColumnGroupingModel,
+  type GridRowSelectionModel,
+} from '@mui/x-data-grid';
 import type { HardwareStatusRow, ImportPurpose, ReconciliationRow } from './types';
 import { buildProductReconRows, STATUS_PRIORITY } from './reconciliation';
 import type { ProductReconRow } from './reconciliation';
@@ -86,9 +91,9 @@ const STATUS_LABEL_MAP: Record<string, string> = {
   BY_OTHERS: 'By Others',
 };
 
-// Buckets that count as "already committed" toward the project need. Only po and assembly reach this
-// step; the schedule replace path (#608) has no reconciliation, so it needs no tooltip here.
-const HEADER_TOOLTIPS: Record<'po' | 'assembly', string> = {
+// What this step is FOR, said under the heading rather than hidden behind an info icon. Only po and
+// assembly reach this step; the schedule replace path (#608) has no reconciliation.
+const STEP_PURPOSE: Record<'po' | 'assembly', string> = {
   po: 'Reconciliation compares the hardware schedule against existing purchase orders. Items already drafted, ordered, or received are shown so you can decide which remaining items to create new POs for.',
   assembly:
     'Reconciliation shows the lifecycle state of each item. Only items that have been received into the warehouse can be pulled for shop assembly. Items still on order or already assembled are not eligible.',
@@ -240,7 +245,7 @@ export default function ReconciliationStep({
       // hardware lands in fungible project inventory, opening identity is not a thing at this step),
       // so this figure never drives a decision - it is the "what did I just select" answer the buyer
       // lost when #603 rescoped the grid. Omitted in hardware mode, where selection is by product so
-      // it would always equal Project Needed.
+      // it would always equal the project Needed figure.
       if (!isHardwareMode) {
         cols.push({
           field: 'quantityNeeded',
@@ -253,30 +258,33 @@ export default function ReconciliationStep({
         });
       }
       // #483: the numbers the buyer actually reasons about, all project totals - the selected
-      // openings are irrelevant to whether the project has bought enough. Project Needed is the
-      // decision driver (renamed from "Qty Needed": with a selected figure beside it the bare header
-      // is ambiguous about scope, and the trio now reads Project Needed / Ordered / Received).
+      // openings are irrelevant to whether the project has bought enough. The shared "Project" word
+      // lives in the column-group band above the trio, so the leaf headers stay one word and never
+      // truncate to "Proje..." the way the compound names did.
       cols.push({
         field: 'quantityRequiredByProject',
-        headerName: 'Project Needed',
+        headerName: 'Needed',
         description: "Total quantity this product needs across the project's whole hardware schedule.",
         flex: 0.9,
+        minWidth: 90,
         type: 'number',
         cellClassName: 'figure-cell',
       });
       cols.push({
         field: 'projectTotalOrdered',
-        headerName: 'Project Ordered',
+        headerName: 'Ordered',
         description: 'Quantity the project has placed on a GP PO, including everything received since.',
         flex: 0.8,
+        minWidth: 90,
         type: 'number',
         cellClassName: 'figure-cell',
       });
       cols.push({
         field: 'projectTotalReceived',
-        headerName: 'Project Received',
-        description: 'Quantity that reached the warehouse and beyond. Never more than Project Ordered.',
+        headerName: 'Received',
+        description: 'Quantity that reached the warehouse and beyond. Never more than Ordered.',
         flex: 0.8,
+        minWidth: 95,
         type: 'number',
         cellClassName: 'figure-cell',
       });
@@ -365,16 +373,37 @@ export default function ReconciliationStep({
     [productLevelSelection],
   );
 
+  // One band, po purpose only: assembly has no project-total trio to group. The three fields are
+  // present in both openings and hardware mode (isHardwareMode only drops Selected Qty, which is
+  // outside the band), so the model needs no per-mode variant.
+  const columnGroupingModel = useMemo<GridColumnGroupingModel | undefined>(
+    () =>
+      purpose === 'po'
+        ? [
+            {
+              groupId: 'project-totals',
+              headerName: 'Project totals',
+              children: [
+                { field: 'quantityRequiredByProject' },
+                { field: 'projectTotalOrdered' },
+                { field: 'projectTotalReceived' },
+              ],
+            },
+          ]
+        : undefined,
+    [purpose],
+  );
+
   return (
     <Box>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+      <Box sx={{ mb: 2 }}>
         <Typography variant="h6">Reconciliation</Typography>
+        {/* The step's purpose, always visible - the info-icon tooltip this replaces made the whole
+            screen's point discoverable only by hover. */}
         {isReimport && (
-          <Tooltip arrow title={purpose === 'assembly' ? HEADER_TOOLTIPS.assembly : HEADER_TOOLTIPS.po}>
-            <Box component="span" sx={{ display: 'inline-flex', color: 'text.secondary' }}>
-              <Info size={16} strokeWidth={1.75} />
-            </Box>
-          </Tooltip>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+            {purpose === 'assembly' ? STEP_PURPOSE.assembly : STEP_PURPOSE.po}
+          </Typography>
         )}
       </Box>
 
@@ -462,6 +491,7 @@ export default function ReconciliationStep({
             <DataGrid
               rows={aggregatedProductRows}
               columns={columns}
+              columnGroupingModel={columnGroupingModel}
               pageSizeOptions={[10, 25, 50]}
               initialState={{
                 pagination: { paginationModel: { pageSize: 25 } },

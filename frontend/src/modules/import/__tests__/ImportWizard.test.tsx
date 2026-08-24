@@ -577,7 +577,7 @@ describe('ImportWizard hardware mode', () => {
     // both selected products carry through - the guided walk-through counts two to classify.
     expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Start classifying' }));
-    expect(screen.getByText('0 of 2 classified')).toBeInTheDocument();
+    expect(screen.getByText('0 of 2 fully classified')).toBeInTheDocument();
   });
 });
 

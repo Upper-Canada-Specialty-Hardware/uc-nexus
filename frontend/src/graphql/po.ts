@@ -35,6 +35,9 @@ export const GET_PURCHASE_ORDERS = gql`
       vendorNameSnapshot
       buyerId
       vendorQuoteNumber
+      # #490's register-dialog seed reads registerPo.costCode off this row; without the field the
+      # draft's code never reaches the dialog and the buyer is asked to pick it a second time.
+      costCode
       shippingCost
       tariffAmount
       notes

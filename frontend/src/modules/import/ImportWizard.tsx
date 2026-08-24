@@ -1459,6 +1459,17 @@ export default function ImportWizard({
       break;
     case 'purchase-orders':
       canProceedCurrentStep = canProceedPurchaseOrders;
+      // The other silent grey-outs on this step. includedDraftCount only counts included drafts
+      // that CARRY lines, so "tick the checkbox" would misdirect when the tick is already there and
+      // the draft is just empty - each blocker names its own fix.
+      if (includedDraftCount === 0) {
+        navHint =
+          draftGroups.length === 0
+            ? 'No PO drafts to include - go back and select items that need ordering.'
+            : draftGroups.some((g) => g.included)
+              ? 'Every included draft is empty - add lines to it, or include a draft that has some.'
+              : 'Include at least one PO draft - tick the checkbox on its name.';
+      }
       // #627: explain a Next blocked only by a missing cost code (there is at least one orderable draft).
       if (includedDraftCount > 0 && costCodesRequired && includedDraftsMissingCostCode > 0) {
         navHint =

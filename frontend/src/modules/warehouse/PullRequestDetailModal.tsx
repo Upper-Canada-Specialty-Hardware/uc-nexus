@@ -295,6 +295,10 @@ export default function PullRequestDetailModal({
 
   const goToPick = () => navigate(`/app/warehouse/pull-requests/${pr.id}/pick`);
 
+  // The terminal handover verb, worded by destination (#613 keeps the 2-step state machine - this is
+  // label only, the COMPLETED status and its chips are untouched).
+  const sendLabel = pr.source === 'SHIPPING_OUT' ? 'Send to staging' : 'Send to shop';
+
   let actionButtons: React.ReactNode | undefined;
 
   if (isPending) {
@@ -333,7 +337,7 @@ export default function PullRequestDetailModal({
           onClick={() => setConfirmCompleteOpen(true)}
           disabled={completeLoading}
         >
-          {completeLoading ? 'Completing...' : 'Mark as Pulled'}
+          {completeLoading ? 'Sending...' : sendLabel}
         </Button>
       </>
     );
@@ -487,8 +491,12 @@ export default function PullRequestDetailModal({
       <ConfirmDialog
         open={confirmCompleteOpen}
         title="Complete Pull Request"
-        message={`Hand Pull Request ${pr.requestNumber} over? This is where the system stops following the hardware - it cannot be undone.`}
-        confirmLabel="Mark as Pulled"
+        message={
+          pr.source === 'SHIPPING_OUT'
+            ? `Hand Pull Request ${pr.requestNumber} over? This sends the picked stock to staging, ready to be loaded into containers - it cannot be undone.`
+            : `Hand Pull Request ${pr.requestNumber} over? This sends the picked stock to the shop - the system stops following the hardware here, and it cannot be undone.`
+        }
+        confirmLabel={sendLabel}
         cancelLabel="Cancel"
         onConfirm={handleComplete}
         onCancel={() => setConfirmCompleteOpen(false)}

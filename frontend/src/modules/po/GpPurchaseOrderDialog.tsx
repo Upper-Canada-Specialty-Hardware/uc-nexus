@@ -482,9 +482,22 @@ export default function GpPurchaseOrderDialog({
   // and a transient blip must not wipe the user's pick mid-form.
   const costCodeScopeRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      // Reset with the other open-scoped refs: a scope held from a previous dialog session would
+      // read as a job change on the next open and wipe THAT draft's seeded code.
+      costCodeScopeRef.current = null;
+      return;
+    }
+    // Record the scope only once BOTH halves are known. Each half races the first open: company
+    // resolves async off relayStatus ('' -> 'TUBC'), and jobNumber derives from the projectId the
+    // seed effect above sets in the SAME commit - so the first pass here still reads the old ''
+    // and records a half-empty scope, and the next render's real scope then counts as a change and
+    // wipes the #490 seed before the user ever sees it (both halves caught live on the pr-629
+    // walk-through; reopens masked it because projectId state survives a close). A relay blip
+    // mid-form goes '' and back, which this also ignores.
+    if (!company || !jobNumber) return;
     const scope = `${company}|${jobNumber ?? ''}`;
-    // First pass after an open must not wipe the seed above (#490) - only a genuine job/company
+    // First record after an open must not wipe the seed above (#490) - only a genuine job/company
     // change clears the pick, which is the case a code from another job must not survive.
     if (costCodeScopeRef.current === null) {
       costCodeScopeRef.current = scope;
@@ -751,6 +764,10 @@ export default function GpPurchaseOrderDialog({
   // user fields they should control, rather than as a relay that needs starting.
   const RELAY_DOWN_HELPER = 'GP relay not connected - start it to choose from GP';
 
+  // #490: the code seeded off the draft, still untouched. Named under the field so the pre-filled
+  // pick reads as a confirmation rather than a fresh question being asked twice.
+  const costCodeCarriedFromDraft = !!registerPo?.costCode && costCode === registerPo.costCode;
+
   // Status line under the cost-code dropdown (an explicit validation error takes precedence).
   const costCodeHelper = !isJob
     ? ''
@@ -760,7 +777,9 @@ export default function GpPurchaseOrderDialog({
         ? 'Loading cost codes from GP…'
         : costCodes.length === 0
           ? 'No cost codes defined for this job in GP'
-          : '';
+          : costCodeCarriedFromDraft
+            ? 'Carried from the PO draft - change it if wrong'
+            : '';
 
   const importedVendorName = registerPo ? poVendorName(registerPo) || null : null;
   const vendorHelper =
