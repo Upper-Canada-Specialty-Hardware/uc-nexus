@@ -488,12 +488,14 @@ export default function GpPurchaseOrderDialog({
       costCodeScopeRef.current = null;
       return;
     }
-    // Wait for the relay's company before recording the scope. On the dialog's FIRST open the
-    // relayStatus read resolves after mount, and '' -> 'TUBC' must not count as a company change -
-    // it consumed the first-pass guard and wiped the #490 seed before the user ever saw it
-    // (caught live on the pr-629 walk-through). A relay blip mid-form goes '' and back, which this
-    // also ignores.
-    if (!company) return;
+    // Record the scope only once BOTH halves are known. Each half races the first open: company
+    // resolves async off relayStatus ('' -> 'TUBC'), and jobNumber derives from the projectId the
+    // seed effect above sets in the SAME commit - so the first pass here still reads the old ''
+    // and records a half-empty scope, and the next render's real scope then counts as a change and
+    // wipes the #490 seed before the user ever sees it (both halves caught live on the pr-629
+    // walk-through; reopens masked it because projectId state survives a close). A relay blip
+    // mid-form goes '' and back, which this also ignores.
+    if (!company || !jobNumber) return;
     const scope = `${company}|${jobNumber ?? ''}`;
     // First record after an open must not wipe the seed above (#490) - only a genuine job/company
     // change clears the pick, which is the case a code from another job must not survive.
