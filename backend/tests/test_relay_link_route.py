@@ -34,13 +34,15 @@ from main import app  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _no_job_sync(monkeypatch):
-    """Switch the GP job sync (#380) off for the lifespans these tests start.
+    """Switch the GP job sync (#380) and the GP PO mirror (gp-owned-po mirror) off for the lifespans
+    these tests start.
 
-    The sync is woken by /relay-link registration, so it puts a list_jobs frame on the socket the
-    moment a relay connects - which is the point of it, but it lands on these tests' sockets ahead of
-    the heartbeat frames they assert on, and at a moment that depends on scheduling. These exercise
-    the route, not the sync, so the frame is pure noise here."""
+    Both are woken by /relay-link registration, so each puts a frame on the socket the moment a relay
+    connects (list_jobs and sync_pos respectively) - which is the point of them, but they land on these
+    tests' sockets ahead of the heartbeat frames they assert on, and at a moment that depends on
+    scheduling. These exercise the route, not the syncs, so those frames are pure noise here."""
     monkeypatch.setenv("GP_JOB_SYNC_ENABLED", "false")
+    monkeypatch.setenv("GP_PO_SYNC_ENABLED", "false")
 
 
 def _enroll_committed(label: str, company: str, secret: str) -> str:
