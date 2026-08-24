@@ -248,8 +248,8 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   }, [poDetailsList, projects]);
 
   // Why Submit is grey, named beside it - the FIRST unmet requirement in the disable chain, so the
-  // user is never left reverse-engineering a dead button. blockedPos is deliberately absent here:
-  // it already has its own alert above the form.
+  // user is never left reverse-engineering a dead button. blockedPos gets a caption too even though
+  // it has its own alert: a tall modal can scroll that alert out of view while the button stays.
   const submitBlockedReason = useMemo(() => {
     if (!hasAnyReceiveQuantity) return 'Enter a received quantity';
     if (hasQuantityErrors) return 'Fix the highlighted quantities';
@@ -260,6 +260,11 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
       const label = missing ? poDetailsMap[missing]?.poNumber : null;
       return `Attach the packing slip${label ? ` for ${label}` : ''}`;
     }
+    if (blockedPos.length > 0) {
+      return blockedPos.length === 1
+        ? `${blockedPos[0].poNumber ?? 'A PO in this batch'} isn't registered in GP yet`
+        : `${blockedPos.length} POs aren't registered in GP yet`;
+    }
     return null;
   }, [
     hasAnyReceiveQuantity,
@@ -269,6 +274,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     lineItemsToReceive,
     packingSlips,
     poDetailsMap,
+    blockedPos,
   ]);
 
   // Two deliveries against one PO before the first is approved is legitimate, so this only warns.
@@ -420,9 +426,10 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
 
   // ---- Render ----
 
-  // Escape is a dismissal, not a discard: once counts or rack rows have been typed in, the key is
-  // swallowed and the user has to use Cancel. Nothing here is recoverable once handleClose resets it.
-  const hasUnsavedEntry = !succeeded && (hasAnyReceiveQuantity || false);
+  // Escape is a dismissal, not a discard: once a count has been typed in, the key is swallowed and
+  // the user has to use Cancel. Quantities are the only entry this dialog holds (put-away moved to
+  // the approval, #501), and nothing is recoverable once handleClose resets it.
+  const hasUnsavedEntry = !succeeded && hasAnyReceiveQuantity;
   const showForm = !poDetailsLoading && !poDetailsError && !succeeded;
 
   const actions = succeeded ? (

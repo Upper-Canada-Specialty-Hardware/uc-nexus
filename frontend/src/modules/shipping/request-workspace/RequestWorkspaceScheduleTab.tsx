@@ -196,6 +196,16 @@ export default function RequestWorkspaceScheduleTab({
       return next;
     });
 
+  // Openings the global add-all actually contributes to: at least one row with a suggestion AND a
+  // pool behind it - the same predicate the partition keeps visible. Counting every selected
+  // opening would overstate the click on openings that are fully collapsed with nothing to add.
+  const contributingOpenings = useMemo(
+    () =>
+      grouped.filter((g) => g.rows.some((r) => r.suggestedQuantity > 0 && (headroom.get(productKey(r)) ?? 0) > 0))
+        .length,
+    [grouped, headroom],
+  );
+
   // Which products the selected openings still owe, and to which openings, so the extras lane can
   // nudge a loose add toward the tagged path. Only rows with something left to send (suggested > 0)
   // count - an opening whose demand is already met is no reason to steer a loose add.
@@ -318,8 +328,13 @@ export default function RequestWorkspaceScheduleTab({
         ) : (
           <Stack spacing={2.5}>
             <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Button size="small" variant="outlined" onClick={() => addAll(grouped.flatMap((g) => g.rows))}>
-                Add all suggested - {grouped.length} opening{grouped.length === 1 ? '' : 's'}
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={contributingOpenings === 0}
+                onClick={() => addAll(grouped.flatMap((g) => g.rows))}
+              >
+                Add all suggested - {contributingOpenings} opening{contributingOpenings === 1 ? '' : 's'}
               </Button>
             </Box>
             {grouped.map((group) => {
