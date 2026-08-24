@@ -22,18 +22,18 @@ name: preview-env
 #      (#625). The readiness wait recognizes that shape - latest deployment SUCCESS yet the domain
 #      still 404ing past a grace window - and triggers one from-source deploy per service instead of
 #      waiting out its timeout.
-#   4. Provisioning can leave the environment with NO Postgres volume, so Postgres crash-loops on a
-#      missing mount while its deployment reads SUCCESS and the backend times out on
-#      postgres.railway.internal forever (pr-626). Detection is the crash-loop line itself in the
-#      deployment's runtime logs ("Railway volume not mounted") - config-level volume queries are
-#      unreliable because volume instances only materialize on deploy. A stranded environment cannot
-#      be repaired in place (volumeCreate acknowledges and then evaporates), so the workflow deletes
-#      it and forks a fresh environment from production: the automated equivalent of closing and
-#      reopening the PR. Each fork's Postgres gets one redeploy retry first - the volume instance
-#      materializes on deploy and the first boot can beat its mount attaching - and the re-fork
-#      retries environmentCreate until the teardown frees the name (the environments list drops the
-#      row immediately, so only the create itself can tell). Only when even the fresh fork's
-#      Postgres crash-loops does the run fail, fast, with that diagnosis.
+#   4. The environment can come up with NO Postgres volume - and a fork ALWAYS does: environment
+#      duplication copies services, variables and buckets but drops the volumeMounts/volumes stanzas
+#      outright (pr-626, and pr-630 on four consecutive forks), so Postgres crash-loops on a missing
+#      mount while its deployment reads SUCCESS and the backend times out on
+#      postgres.railway.internal forever. Detection is the crash-loop line itself in the deployment's
+#      runtime logs ("Railway volume not mounted") - config-level volume queries are unreliable
+#      because volume instances only materialize on deploy. The heal is IN PLACE: volumeCreate (which
+#      looks like a no-op - the volume lists empty - but materializes on the next deploy, verified on
+#      pr-630) followed by one redeploy. Only if Postgres still crash-loops does the workflow fall
+#      back to delete-and-refork (environmentCreate retried until the async teardown frees the name -
+#      the environments list drops the row immediately, so only the create itself can tell), and only
+#      when even that fork's Postgres cannot be healed does the run fail, fast, with that diagnosis.
 #   5. A deployment superseded mid-rollout (the key-hash redeploy racing a Railway-initiated one)
 #      posts CANCELLED as the last commit status for its "UC Nexus - *" context, leaving the PR red
 #      for an environment that is verifiably serving (pr-629) - and later runs deploy nothing, so
@@ -335,12 +335,20 @@ jobs:
             fi
             sleep 10  # let a crash-looping container emit its first lines
             if pg_volume_missing; then
-              # A fork's volume instance materializes on deploy, and the FIRST boot can beat its mount
-              # attaching (pr-630: two consecutive forks came up volumeless). One redeploy before
-              # declaring the environment stranded - the mount is usually there for the second boot.
-              echo "Postgres is crash-looping on a missing volume mount; redeploying it once before declaring the environment stranded"
+              # A fork NEVER brings the volume: environment duplication copies services, variables and
+              # buckets but drops the volumeMounts/volumes stanzas outright (pr-630, four forks in a
+              # row), so the first boot crash-loops on the missing mount. The heal is IN PLACE:
+              # volumeCreate looks like a no-op - the volume lists empty right after - but the
+              # instance materializes on the next deploy (verified live on pr-630). Create, redeploy,
+              # re-check. A redeploy alone does NOT recover it; a fresh fork would just be volumeless
+              # again.
+              echo "Postgres is crash-looping on a missing volume mount; creating its volume and redeploying"
+              rgql 'mutation($input:VolumeCreateInput!){ volumeCreate(input:$input){ id } }' \
+                "$(jq -cn --arg p "$PROJECT_ID" --arg e "$ENV_ID" --arg s "$PG_ID" \
+                  '{input:{projectId:$p,environmentId:$e,serviceId:$s,mountPath:"/var/lib/postgresql/data"}}')" >/dev/null \
+                || echo "::warning::volumeCreate did not go through; redeploying anyway"
               deploy_service_instance "$PG_ID" >/dev/null || return 2
-              wait_deploy_success "$PG_ID" "Postgres (volume retry)" 360 || return 2
+              wait_deploy_success "$PG_ID" "Postgres (volume heal)" 360 || return 2
               sleep 10
               if pg_volume_missing; then
                 echo "Postgres is still crash-looping on a missing volume mount - the environment is stranded"
