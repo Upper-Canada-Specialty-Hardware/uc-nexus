@@ -19,7 +19,7 @@ export const WAREHOUSE_REFETCH_QUERIES = [
 // mounted instances - so this costs nothing anywhere else in the app.
 export const RECEIVE_REFETCH_QUERIES = [
   ...WAREHOUSE_REFETCH_QUERIES,
-  'GetOpenPOs',
+  'GetOpenPosSummary',
   'GetBackOrderedItems',
   'GetRecentReceiveRecords',
 ];
@@ -156,7 +156,9 @@ export const PULL_CANCEL_STALE_ROOT_FIELDS = [
 // detail/receiving view (status moves DRAFT -> GP_REGISTERED, received quantities move), the recent
 // receives feed, and the warehouse inventory reads that a drained receipt has just added stock to.
 export const GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS = [
-  'purchaseOrders',
+  // The server-driven PO register list (#631: was `purchaseOrders`, now the paged field), so a
+  // queued registration that drains does not leave the register showing the PO as DRAFT.
+  'purchaseOrdersPage',
   'purchaseOrder',
   'poReceivingDetails',
   'recentReceiveRecords',
@@ -169,7 +171,8 @@ export const GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS = [
   // most likely on when the drain lands. Evicting one without the other is what would let the
   // awaiting-receipt table keep pre-receipt pending counts directly above a grid that had updated.
   'backOrderedItems',
-  'openPOs',
+  // The lean receiving picker (#631: was `openPOs`, now the summary field).
+  'openPosSummary',
   'warehouseDashboard',
   'inventoryRows',
   'projectInventoryAvailability',

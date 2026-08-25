@@ -414,8 +414,17 @@ def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None
     ]
 
 
+# gp-owned-po mirror: the cross-company scope grows to GP's entire PO history once the mirror backfills,
+# so the unpaginated list is capped at the most-recently-received rows rather than returning everything.
+# A sane cap is the lighter correct option here (versus the register's full server paging): this is a
+# reconciliation view, the newest receipts are what a reader wants first, and a project-scoped call
+# returns far fewer than the cap anyway.
+_RECEIVING_HISTORY_MAX_ROWS = 500
+
+
 def get_receiving_history_pos(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
-    """Every PO that has reached GP, with how much of it has landed (#447).
+    """Every PO that has reached GP, with how much of it has landed (#447). Capped at the
+    _RECEIVING_HISTORY_MAX_ROWS most-recently-received rows (gp-owned-po mirror).
 
     The Receiving page's other lists answer "what is still owed". This answers "what did we receive,
     and against what" - the reconciliation question, which needs the fully-received POs the open
@@ -491,6 +500,8 @@ def get_receiving_history_pos(session: Session, project_id: uuid.UUID | None = N
     )
     if project_id is not None:
         stmt = stmt.where(POModel.project_id == project_id)
+
+    stmt = stmt.limit(_RECEIVING_HISTORY_MAX_ROWS)
 
     return [
         {

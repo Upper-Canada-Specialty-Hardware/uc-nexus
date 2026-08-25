@@ -192,20 +192,172 @@ def test_status_below_registration_preserves_vendor_confirmed(db_session, projec
     assert _get(db_session, "PO201").status == POStatus.VENDOR_CONFIRMED
 
 
-def test_gp_origin_project_repoints_but_nexus_does_not(db_session, project):
-    # A second project the PO's job could match.
+def test_gp_origin_project_is_write_once_never_repointed(db_session, project):
+    # A second project the PO's job could later match.
     other = Project(id=uuid.uuid4(), project_id="J9", description="Job Nine")
     db_session.add(other)
     db_session.flush()
 
-    # GP-origin row: project follows the job match on every pass.
+    # First pass fills the project from the job match.
     sync_repo.upsert_mirrored_po(
         db_session, COMPANY, _po("PO300", [_line(16384, "IT1", 2, job="J1")]), _project_map(db_session)
     )
     db_session.flush()
     assert _get(db_session, "PO300").project_id == project.id
+    # A later JOBNUMBR edit in GP must NOT repoint an already-attached project - that would strand any
+    # inventory received under the first project and silently revert a manual project edit.
     sync_repo.upsert_mirrored_po(
         db_session, COMPANY, _po("PO300", [_line(16384, "IT1", 2, job="J9")]), _project_map(db_session)
     )
     db_session.flush()
-    assert _get(db_session, "PO300").project_id == other.id
+    assert _get(db_session, "PO300").project_id == project.id  # unchanged, write-once
+
+
+def test_write_once_fills_a_null_project_when_the_job_appears_later(db_session, project):
+    # Job unknown on the first pass (no matching project yet) -> jobless.
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO301", [_line(16384, "IT1", 2, job="J-LATE")]), _project_map(db_session)
+    )
+    db_session.flush()
+    assert _get(db_session, "PO301").project_id is None
+    # The project gets adopted later; the next pass fills the still-NULL project.
+    late = Project(id=uuid.uuid4(), project_id="J-LATE", description="Adopted later")
+    db_session.add(late)
+    db_session.flush()
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO301", [_line(16384, "IT1", 2, job="J-LATE")]), _project_map(db_session)
+    )
+    db_session.flush()
+    assert _get(db_session, "PO301").project_id == late.id
+
+
+def test_existing_line_cancelled_to_zero_is_zeroed_not_left_stale(db_session, project):
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO310", [_line(16384, "IT1", 5, received=2)]), pm)
+    db_session.flush()
+    # GP later cancels the whole line (net 0) after 2 had been received.
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO310", [_line(16384, "IT1", 5, received=2, cancelled=5)]), pm
+    )
+    db_session.flush()
+    line = _get(db_session, "PO310").line_items[0]
+    # Outstanding is zeroed (ordered pinned to received) so no phantom pending survives; ck>=1 holds.
+    assert line.received_quantity == 2
+    assert line.ordered_quantity == 2
+    assert line.ordered_quantity - line.received_quantity == 0
+
+
+def test_received_never_reduced_below_stored(db_session, project):
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO311", [_line(16384, "IT1", 5, received=4)]), pm)
+    db_session.flush()
+    # An unposted GP batch reports a LOWER received; the mirror must never walk received backwards.
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO311", [_line(16384, "IT1", 5, received=1)]), pm)
+    db_session.flush()
+    assert _get(db_session, "PO311").line_items[0].received_quantity == 4
+
+
+def test_fractional_ordered_rounds_half_up_and_sub_one_is_skipped(db_session, project):
+    pm = _project_map(db_session)
+    # 2.5 rounds to 3 (half up), not 2 (banker's).
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO312", [_line(16384, "IT1", 2.5)]), pm)
+    db_session.flush()
+    assert _get(db_session, "PO312").line_items[0].ordered_quantity == 3
+    # A net that rounds below 1 creates no line (nothing orderable, ck>=1 could not hold).
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO313", [_line(16384, "IT1", 0.4)]), pm)
+    db_session.flush()
+    assert _get(db_session, "PO313").line_items == []
+
+
+def test_cancelled_po_is_soft_deleted_and_releases_hardware(db_session, project):
+    from app.models.enums import HardwareItemState
+    from app.models.hardware import HardwareItem
+    from app.models.project import Opening
+
+    pm = _project_map(db_session)
+    # A mirrored open PO with a line, and a schedule item linked IN_PO against that line.
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO320", [_line(16384, "IT1", 3, job="J1")]), pm)
+    db_session.flush()
+    row = _get(db_session, "PO320")
+    opening = Opening(id=uuid.uuid4(), project_id=project.id, opening_number="101")
+    db_session.add(opening)
+    db_session.flush()
+    hi = HardwareItem(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        opening_id=opening.id,
+        hardware_category="IT1 description",
+        product_code="IT1",
+        item_quantity=3,
+        state=HardwareItemState.IN_PO,
+        po_line_item_id=row.line_items[0].id,
+    )
+    db_session.add(hi)
+    db_session.flush()
+
+    # GP posts the PO as fully cancelled (history, nothing received).
+    sync_repo.upsert_mirrored_po(
+        db_session,
+        COMPANY,
+        _po("PO320", [_line(16384, "IT1", 3, cancelled=3, job="J1")], source="history"),
+        pm,
+    )
+    db_session.flush()
+    row = _get(db_session, "PO320")
+    assert row.status == POStatus.CANCELLED
+    assert row.deleted_at is not None
+    db_session.refresh(hi)
+    assert hi.state == HardwareItemState.AVAILABLE
+    assert hi.po_line_item_id is None
+
+
+def test_legacy_null_company_row_converges_instead_of_duplicating(db_session, project):
+    # A legacy Nexus PO stamped with a number before gp_company was recorded (NULL company).
+    legacy = PurchaseOrder(
+        id=uuid.uuid4(),
+        po_number="PO400",
+        request_number="PO-REQ-400",
+        origin=POOrigin.NEXUS,
+        gp_company=None,
+        project_id=project.id,
+        status=POStatus.GP_REGISTERED,
+    )
+    db_session.add(legacy)
+    db_session.flush()
+    # The mirror sees the same number in GP; it must land on the legacy row, not insert a duplicate.
+    action = sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO400", [_line(16384, "IT1", 4, received=1)]), _project_map(db_session)
+    )
+    db_session.flush()
+    assert action == "updated"
+    row = _get(db_session, "PO400")
+    assert row.id == legacy.id
+    assert row.origin == POOrigin.NEXUS  # origin never flips
+    assert row.gp_company == COMPANY  # legacy NULL company filled in
+
+
+def test_po_number_pending_registration_is_skipped(db_session, project):
+    from app.models.gp_write import GpWriteIdempotency
+
+    # A register_po_in_gp got GP's number but has not persisted it onto the draft yet.
+    db_session.add(
+        GpWriteIdempotency(
+            key="idem-1",
+            op="register_po_in_gp",
+            relay_result={"po_number": "PO500", "company": COMPANY},
+            result_id=None,
+        )
+    )
+    db_session.flush()
+    pending = sync_repo.po_numbers_pending_registration(db_session, COMPANY)
+    assert "PO500" in pending
+    action = sync_repo.upsert_mirrored_po(
+        db_session,
+        COMPANY,
+        _po("PO500", [_line(16384, "IT1", 3)]),
+        _project_map(db_session),
+        pending_registration=pending,
+    )
+    db_session.flush()
+    assert action == "skipped"
+    assert _get(db_session, "PO500") is None

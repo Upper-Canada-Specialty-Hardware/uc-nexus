@@ -69,8 +69,111 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("gp_po_sync_state")
     op.drop_index(_GP_KEY_INDEX, table_name="purchase_orders")
-    # A mirrored PO has a null request_number; it must be gone before the column can go NOT NULL again.
+
+    # A mirrored PO has a null request_number and must be gone before the column can go NOT NULL again.
+    # None of the child tables (po_line_items / po_documents / po_document_data / receive_records +
+    # receive_line_items / receive_drafts) has ON DELETE CASCADE, and a GP-origin PO can have received
+    # into inventory, so the whole descendant graph is torn down FK-first, children before parents,
+    # before deleting the POs themselves. (The migration-integrity job runs this on an empty DB, so
+    # order does not matter there; a populated dev DB is why it does.)
+    op.execute(
+        """
+        -- inventory received under a GP PO: clear the RESTRICT referrers, then drop the rows (they sit
+        -- above both po_line_items and receive_line_items, so they must go first).
+        UPDATE deficiency_reviews SET inventory_location_id = NULL
+        WHERE inventory_location_id IN (
+          SELECT il.id FROM inventory_locations il
+          WHERE il.po_line_item_id IN (
+                  SELECT li.id FROM po_line_items li
+                  WHERE li.po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP'))
+             OR il.receive_line_item_id IN (
+                  SELECT rli.id FROM receive_line_items rli
+                  WHERE rli.receive_record_id IN (
+                          SELECT rr.id FROM receive_records rr
+                          WHERE rr.po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP'))
+                     OR rli.po_line_item_id IN (
+                          SELECT li.id FROM po_line_items li
+                          WHERE li.po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP'))))
+        """
+    )
+    op.execute(
+        """
+        UPDATE shipment_return_items SET resulting_inventory_location_id = NULL
+        WHERE resulting_inventory_location_id IN (
+          SELECT il.id FROM inventory_locations il
+          WHERE il.po_line_item_id IN (
+                  SELECT li.id FROM po_line_items li
+                  WHERE li.po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP'))
+             OR il.receive_line_item_id IN (
+                  SELECT rli.id FROM receive_line_items rli
+                  WHERE rli.receive_record_id IN (
+                          SELECT rr.id FROM receive_records rr
+                          WHERE rr.po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP'))
+                     OR rli.po_line_item_id IN (
+                          SELECT li.id FROM po_line_items li
+                          WHERE li.po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP'))))
+        """
+    )
+    op.execute(
+        """
+        DELETE FROM inventory_locations
+        WHERE po_line_item_id IN (
+                SELECT li.id FROM po_line_items li
+                WHERE li.po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP'))
+           OR receive_line_item_id IN (
+                SELECT rli.id FROM receive_line_items rli
+                WHERE rli.receive_record_id IN (
+                        SELECT rr.id FROM receive_records rr
+                        WHERE rr.po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP'))
+                   OR rli.po_line_item_id IN (
+                        SELECT li.id FROM po_line_items li
+                        WHERE li.po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP')))
+        """
+    )
+    op.execute(
+        """
+        DELETE FROM receive_line_items
+        WHERE receive_record_id IN (
+                SELECT rr.id FROM receive_records rr
+                WHERE rr.po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP'))
+           OR po_line_item_id IN (
+                SELECT li.id FROM po_line_items li
+                WHERE li.po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP'))
+        """
+    )
+    # Release schedule hardware the GP lines claimed, so dropping the lines does not trip the RESTRICT FK.
+    op.execute(
+        """
+        UPDATE hardware_items SET state = 'AVAILABLE', po_line_item_id = NULL
+        WHERE po_line_item_id IN (
+          SELECT li.id FROM po_line_items li
+          WHERE li.po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP'))
+        """
+    )
+    # Receive drafts and their lines (draft lines have a RESTRICT FK onto po_line_items).
+    op.execute(
+        """
+        DELETE FROM receive_draft_line_items
+        WHERE po_line_item_id IN (
+          SELECT li.id FROM po_line_items li
+          WHERE li.po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP'))
+        """
+    )
+    op.execute(
+        """
+        UPDATE receive_drafts SET receive_record_id = NULL
+        WHERE receive_record_id IN (
+          SELECT rr.id FROM receive_records rr
+          WHERE rr.po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP'))
+        """
+    )
+    op.execute("DELETE FROM receive_drafts WHERE po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP')")
+    op.execute("DELETE FROM receive_records WHERE po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP')")
+    op.execute("DELETE FROM po_documents WHERE po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP')")
+    op.execute("DELETE FROM po_document_data WHERE po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP')")
+    op.execute("DELETE FROM po_line_items WHERE po_id IN (SELECT id FROM purchase_orders WHERE origin = 'GP')")
     op.execute("DELETE FROM purchase_orders WHERE origin = 'GP'")
+
     op.alter_column("purchase_orders", "request_number", existing_type=sa.String(50), nullable=False)
     op.drop_column("purchase_orders", "gp_synced_at")
     op.drop_column("purchase_orders", "origin")

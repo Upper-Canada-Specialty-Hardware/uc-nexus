@@ -5,6 +5,7 @@ import {
   ButtonBase,
   Chip,
   Button,
+  Alert,
   Paper,
   Table,
   TableHead,
@@ -35,6 +36,7 @@ import {
 } from '../../graphql/po';
 import { GET_GP_OUTBOX, GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
+import Modal from '../../components/Modal';
 import PODetailModal from './PODetailModal';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import CreatePOChooser from './CreatePOChooser';
@@ -179,6 +181,7 @@ interface POStatistics {
   vendorConfirmed: number;
   partiallyReceived: number;
   closed: number;
+  cancelled: number;
 }
 
 // --- Status strip config ---
@@ -193,7 +196,14 @@ const STAT_CARDS: { label: string; key: keyof POStatistics; status: string | nul
   { label: 'Vendor Confirmed', key: 'vendorConfirmed', status: 'VENDOR_CONFIRMED' },
   { label: 'Partially Received', key: 'partiallyReceived', status: 'PARTIALLY_RECEIVED' },
   { label: 'Closed', key: 'closed', status: 'CLOSED' },
+  // Mirror-CANCELLED rows (deleted_at NULL) still count into Total, so without a segment for them the
+  // strip would stop summing to Total and those rows would be unreachable by any status filter.
+  { label: 'Cancelled', key: 'cancelled', status: 'CANCELLED' },
 ];
+
+// The register defaults to the open work rather than the full company history the backfill loads:
+// what is live and being acted on. Total (and the Cancelled/Closed segments) reach the rest.
+const OPEN_STATUSES = ['GP_REGISTERED', 'VENDOR_CONFIRMED', 'PARTIALLY_RECEIVED'];
 
 // --- Server-driven sort ---
 
@@ -354,7 +364,7 @@ function POListPage() {
   // Server-driven filter / sort / page state.
   const [searchInput, setSearchInput] = useState('');
   const [committedSearch, setCommittedSearch] = useState('');
-  const [statuses, setStatuses] = useState<Set<string>>(new Set());
+  const [statuses, setStatuses] = useState<Set<string>>(() => new Set(OPEN_STATUSES));
   const [origin, setOrigin] = useState<OriginFilter>('ALL');
   const [projectId, setProjectId] = useState<string | null>(null);
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
@@ -416,11 +426,18 @@ function POListPage() {
 
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
 
-  // The selected PO's full detail (lines/documents/receives) for the modal, fetched on open.
-  const { data: selectedData, refetch: refetchSelected } = useQuery<{ purchaseOrder: PurchaseOrder | null }>(
-    GET_PURCHASE_ORDER,
-    { variables: { id: selectedPOId }, skip: !selectedPOId, fetchPolicy: 'cache-and-network' },
-  );
+  // The selected PO's full detail (lines/documents/receives) for the modal, fetched on open. The
+  // modal opens immediately on a row click; loading/error drive its placeholder until this resolves.
+  const {
+    data: selectedData,
+    loading: selectedLoading,
+    error: selectedError,
+    refetch: refetchSelected,
+  } = useQuery<{ purchaseOrder: PurchaseOrder | null }>(GET_PURCHASE_ORDER, {
+    variables: { id: selectedPOId },
+    skip: !selectedPOId,
+    fetchPolicy: 'cache-and-network',
+  });
 
   const [syncGpPos, { loading: syncing }] = useMutation(SYNC_GP_POS);
 
@@ -437,6 +454,17 @@ function POListPage() {
     const p = projectsById.get(po.projectId);
     return p?.description || p?.projectId || '';
   };
+
+  // Clamp the page when the server's total shrinks under it without a filter change - cancel the last
+  // PO on the last page and the query would otherwise sit past the end on the empty state until a
+  // filter moved. Adjusted during render (React's prescribed alternative to a state-sync effect): the
+  // out-of-range page never commits, and setting it re-runs the query at the corrected offset. Guarded
+  // on a real server answer (pageData present) so it never fights the first load, and the strict
+  // inequality makes it self-terminating.
+  if (pageData) {
+    const lastPage = Math.max(0, Math.ceil(totalCount / rowsPerPage) - 1);
+    if (page > lastPage) setPage(lastPage);
+  }
 
   // --- Handlers ---
 
@@ -699,16 +727,33 @@ function POListPage() {
         />
       </TableContainer>
 
-      {/* Detail Modal - the selected PO's full detail, fetched by id. */}
-      {selectedPO && (
-        <PODetailModal
-          open={modalOpen}
-          po={selectedPO}
-          onClose={handleCloseModal}
-          onRefetch={handleRefetch}
-          relayConnected={relayConnected}
-        />
-      )}
+      {/* Detail Modal - the selected PO's full detail, fetched by id. The modal opens the instant a
+          row is clicked so the click never reads as dead: a spinner shows while the PO loads, then
+          the full detail, and a failed or missing PO surfaces its own message instead of nothing. */}
+      {modalOpen &&
+        (selectedPO ? (
+          <PODetailModal
+            open={modalOpen}
+            po={selectedPO}
+            onClose={handleCloseModal}
+            onRefetch={handleRefetch}
+            relayConnected={relayConnected}
+          />
+        ) : (
+          <Modal open title="Purchase Order" onClose={handleCloseModal} maxWidth="lg">
+            {selectedLoading ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>
+                <CircularProgress />
+              </Box>
+            ) : (
+              <Alert severity={selectedError ? 'error' : 'info'} sx={{ my: 1 }}>
+                {selectedError
+                  ? `Could not load this purchase order: ${selectedError.message}`
+                  : 'This purchase order could not be found. It may have been cancelled or removed.'}
+              </Alert>
+            )}
+          </Modal>
+        ))}
 
       <CreatePOChooser
         open={chooserOpen}

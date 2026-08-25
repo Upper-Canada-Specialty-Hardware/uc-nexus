@@ -458,7 +458,10 @@ class ReceivingHistoryPO:
 
     id: strawberry.ID
     po_number: str | None
-    request_number: str
+    # Nullable: every mirrored (GP-origin) PO is in scope here (GP_REGISTERED and past) and was never
+    # raised through Nexus, so it has no request number. A non-null field would break the whole
+    # Receiving History view the first time the mirror sync lands one.
+    request_number: str | None
     status: POStatus
     vendor_name: str | None
     project_id: strawberry.ID | None
@@ -1717,6 +1720,16 @@ class RegisterPOResult:
     queued: bool
     purchase_order: PurchaseOrder
     outbox_entry_id: strawberry.ID | None = None
+
+
+@strawberry.type
+class LinkScheduleResult:
+    """What linkScheduleToMirroredPo attached (gp-owned-po mirror). linked_units is the total schedule
+    units actually marked covered - 0 when the requested (product_code, quantity) had nothing AVAILABLE
+    to link, which the caller surfaces instead of reading a bare PO as success."""
+
+    linked_units: int
+    purchase_order: PurchaseOrder
 
 
 @strawberry.type

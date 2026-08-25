@@ -598,7 +598,8 @@ type RecentReceiveRecord {
 type ReceivingHistoryPO {
   id: ID!
   po_number: String
-  request_number: String!
+  # Nullable: a mirrored (GP-origin) PO was never raised through Nexus, so it has no request number.
+  request_number: String
   status: POStatus!
   vendor_name: String
   project_id: ID
@@ -648,7 +649,8 @@ type Query {
   unlocatedInventory(projectId: ID, warehouseId: ID): [InventoryItemDetail!]!
   recentReceiveRecords(limit: Int! = 10): [RecentReceiveRecord!]!
   # Every GP-registered PO with what has landed against it, including the complete ones openPOs and
-  # backOrderedItems drop (#447). The reconciliation view, not the what-is-owed view.
+  # backOrderedItems drop (#447). The reconciliation view, not the what-is-owed view. Capped at the 500
+  # most-recently-received rows, since the mirror grows this to GP's whole PO history.
   receivingHistoryPos(projectId: ID): [ReceivingHistoryPO!]!
   # Counted receives waiting on (or returned from) approval, newest first. `mine` scopes to the
   # caller's own: a warehouse user needs the state of their counts, a manager needs everybody's.

@@ -12,7 +12,7 @@ Orchestration (all inside one BEGIN..COMMIT held by the caller's connection):
 """
 
 import re
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")  # custom_db comes from trusted config, but validate before interpolating
@@ -1721,11 +1721,32 @@ def insert_whrecline_row(
 # exists and carries QTYORDER/QTYCANCE on the target company, and that DEX_ROW_TS on POP30100 advances
 # when a PO is transferred to history. The open-PO path uses only tables already proven in production.
 
+# po_raw is the RAW char(17) PONUMBER (the clustered key on both header tables); po is the trimmed
+# value returned to the caller and round-tripped as the keyset cursor. The backfill keyset filters and
+# orders on po_raw (sargable - seeks the index) and only ever SELECTs po for the returned value.
 _PO_HEADER_COLS = (
-    "'{src}' AS src, RTRIM(PONUMBER) AS po, POSTATUS AS status, RTRIM(VENDORID) AS vendor, "
-    "RTRIM(VENDNAME) AS vendname, DOCDATE AS docdate, DEX_ROW_TS AS modified"
+    "'{src}' AS src, PONUMBER AS po_raw, RTRIM(PONUMBER) AS po, POSTATUS AS status, "
+    "RTRIM(VENDORID) AS vendor, RTRIM(VENDNAME) AS vendname, DOCDATE AS docdate, DEX_ROW_TS AS modified"
 )
 _MAX_PO_PAGE_SIZE = 1000
+# SQL Server caps a statement at 2100 parameters. Incremental mode is unpaginated, so a large open-order
+# book can push far more than that many PO numbers into an IN-list; chunk it well under the ceiling.
+_PO_IN_CHUNK = 1000
+
+
+def _chunk(items: list, size: int):
+    """Yield `items` in successive slices of at most `size`. Empty input yields nothing."""
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
+def _parse_modified_since(value: str) -> datetime:
+    """The backend passes the incremental watermark as datetime.isoformat() text, i.e. with 6 fractional
+    digits. Binding that string straight against DEX_ROW_TS makes SQL Server parse a datetime literal,
+    and it rejects more than 3 fractional digits (Msg 241) - so every incremental pass carrying a
+    watermark would fail. Parse to a datetime here so pyodbc binds a real SQL datetime with no literal
+    parsing. datetime.fromisoformat accepts the string with or without a microsecond component."""
+    return datetime.fromisoformat(value)
 
 
 def _po_header_union(*, history_where: str = "") -> str:
@@ -1736,44 +1757,55 @@ def _po_header_union(*, history_where: str = "") -> str:
 
 def _read_po_lines(conn, table: str, po_numbers: list[str]) -> dict[str, list[dict]]:
     """PO lines for a set of PO numbers, grouped by PO number. `table` is POP10110 (work) or POP30110
-    (history). Received qty is left to the caller (work sums POP10500; history derives it)."""
-    if not po_numbers:
-        return {}
-    placeholders = ",".join("?" * len(po_numbers))
-    rows = conn.cursor().execute(
-        f"SELECT RTRIM(PONUMBER) AS po, ORD, RTRIM(ITEMNMBR) AS item, RTRIM(ITEMDESC) AS itemdesc, "
-        f"UNITCOST, QTYORDER, QTYCANCE, RTRIM(JOBNUMBR) AS job, POLNESTA "
-        f"FROM dbo.{table} WHERE PONUMBER IN ({placeholders}) ORDER BY PONUMBER, ORD",
-        *po_numbers,
-    ).fetchall()
+    (history). Received qty is left to the caller (work sums POP10500; history derives it). The IN-list
+    is chunked (_PO_IN_CHUNK) so an incremental pass over a large open-order book never trips the
+    2100-parameter ceiling."""
     out: dict[str, list[dict]] = {}
-    for r in rows:
-        out.setdefault(r.po, []).append(
-            {
-                "ord": int(r.ORD),
-                "item": r.item,
-                "itemdesc": r.itemdesc,
-                "unit_cost": float(r.UNITCOST or 0),
-                "qty": float(r.QTYORDER or 0),
-                "qty_cancelled": float(r.QTYCANCE or 0),
-                "job": r.job or None,
-                "line_status": int(r.POLNESTA) if r.POLNESTA is not None else None,
-            }
-        )
+    for group in _chunk(po_numbers, _PO_IN_CHUNK):
+        placeholders = ",".join("?" * len(group))
+        rows = conn.cursor().execute(
+            f"SELECT RTRIM(PONUMBER) AS po, ORD, RTRIM(ITEMNMBR) AS item, RTRIM(ITEMDESC) AS itemdesc, "
+            f"UNITCOST, QTYORDER, QTYCANCE, RTRIM(JOBNUMBR) AS job, POLNESTA "
+            f"FROM dbo.{table} WHERE PONUMBER IN ({placeholders}) ORDER BY PONUMBER, ORD",
+            *group,
+        ).fetchall()
+        for r in rows:
+            out.setdefault(r.po, []).append(
+                {
+                    "ord": int(r.ORD),
+                    "item": r.item,
+                    "itemdesc": r.itemdesc,
+                    "unit_cost": float(r.UNITCOST or 0),
+                    "qty": float(r.QTYORDER or 0),
+                    "qty_cancelled": float(r.QTYCANCE or 0),
+                    "job": r.job or None,
+                    "line_status": int(r.POLNESTA) if r.POLNESTA is not None else None,
+                }
+            )
     return out
 
 
 def _read_received_sums(conn, po_numbers: list[str]) -> dict[tuple[str, int], float]:
-    """SUM(QTYSHPPD) per (PONUMBER, POLNENUM) from POP10500, for open POs. POLNENUM == POP10110.ORD."""
-    if not po_numbers:
-        return {}
-    placeholders = ",".join("?" * len(po_numbers))
-    rows = conn.cursor().execute(
-        f"SELECT RTRIM(PONUMBER) AS po, POLNENUM, SUM(QTYSHPPD) AS received "
-        f"FROM dbo.POP10500 WHERE PONUMBER IN ({placeholders}) GROUP BY PONUMBER, POLNENUM",
-        *po_numbers,
-    ).fetchall()
-    return {(r.po, int(r.POLNENUM)): float(r.received or 0) for r in rows}
+    """SUM(QTYSHPPD) per (PONUMBER, POLNENUM) from POP10500, for open POs. POLNENUM == POP10110.ORD.
+    IN-list chunked (_PO_IN_CHUNK) for the same 2100-parameter reason as _read_po_lines.
+
+    LIVE-VERIFY (POP10500 unposted receipts): QTYSHPPD is the receipt quantity on this receipt-line
+    table. It is NOT confirmed whether receipts still sitting in an unposted GP receiving batch are
+    already reflected here. If they are invisible until the batch posts, a PO mid-receipt would sum to a
+    lower received qty than GP's edit list shows, and the mirror's received_quantity could regress for
+    that PO until posting. This cannot be checked offline (no GP access from dev). The relay does NOT
+    floor received here on purpose - the defensive guard (never let a synced received qty drop below the
+    last-seen value) lives backend-side."""
+    out: dict[tuple[str, int], float] = {}
+    for group in _chunk(po_numbers, _PO_IN_CHUNK):
+        placeholders = ",".join("?" * len(group))
+        rows = conn.cursor().execute(
+            f"SELECT RTRIM(PONUMBER) AS po, POLNENUM, SUM(QTYSHPPD) AS received "
+            f"FROM dbo.POP10500 WHERE PONUMBER IN ({placeholders}) GROUP BY PONUMBER, POLNENUM",
+            *group,
+        ).fetchall()
+        out.update({(r.po, int(r.POLNENUM)): float(r.received or 0) for r in rows})
+    return out
 
 
 def _assemble_pos(conn, headers: list) -> list[dict]:
@@ -1839,9 +1871,15 @@ def sync_pos(conn, *, cursor: str | None, page_size: int, modified_since: str | 
     cur = conn.cursor()
 
     if modified_since is None:
+        # Keyset on the RAW PONUMBER (po_raw), not RTRIM(PONUMBER): the raw column is the clustered key
+        # on POP10100/POP30100, so `> ?` seeks and ORDER BY streams from the index instead of scanning +
+        # sorting the whole union. The cursor round-tripped in and out is the TRIMMED po value; a
+        # char(17) `PONUMBER > @trimmed` comparison stays correct because T-SQL char comparison ignores
+        # trailing spaces - the padded 'PO000005         ' compares equal to the trimmed 'PO000005', so
+        # `>` excludes exactly that last-seen row and no other. next_cursor is likewise the trimmed po.
         sql = (
             f"SELECT TOP (?) src, po, status, vendor, vendname, docdate, modified "
-            f"FROM ({_po_header_union()}) u WHERE u.po > ? ORDER BY u.po"
+            f"FROM ({_po_header_union()}) u WHERE u.po_raw > ? ORDER BY u.po_raw"
         )
         headers = cur.execute(sql, page_size, (cursor or "")).fetchall()
         pos = _assemble_pos(conn, headers)
@@ -1850,6 +1888,6 @@ def sync_pos(conn, *, cursor: str | None, page_size: int, modified_since: str | 
 
     union = _po_header_union(history_where="WHERE DEX_ROW_TS >= ?")
     sql = f"SELECT src, po, status, vendor, vendname, docdate, modified FROM ({union}) u ORDER BY u.po"
-    headers = cur.execute(sql, modified_since).fetchall()
+    headers = cur.execute(sql, _parse_modified_since(modified_since)).fetchall()
     pos = _assemble_pos(conn, headers)
     return {"pos": pos, "next_cursor": None}

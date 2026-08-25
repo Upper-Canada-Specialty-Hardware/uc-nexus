@@ -722,12 +722,15 @@ def get_purchase_orders_page(
     if project_id is not None:
         filters.append(PurchaseOrder.project_id == project_id)
     if search and search.strip():
-        term = f"%{search.strip()}%"
+        # Escape LIKE wildcards so a user typing % or _ searches for the literal character instead of
+        # matching everything (backslash first, or it would double-escape the escapes we add after).
+        escaped = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        term = f"%{escaped}%"
         filters.append(
             or_(
-                PurchaseOrder.po_number.ilike(term),
-                PurchaseOrder.request_number.ilike(term),
-                PurchaseOrder.vendor_name_snapshot.ilike(term),
+                PurchaseOrder.po_number.ilike(term, escape="\\"),
+                PurchaseOrder.request_number.ilike(term, escape="\\"),
+                PurchaseOrder.vendor_name_snapshot.ilike(term, escape="\\"),
             )
         )
 
@@ -801,10 +804,19 @@ def update_po(
         po.project_id = project_id
 
     if po_number is not None:
+        cleaned = po_number.strip() or None
+        # A PO number is GP's identity once the PO is registered, and the (gp_company, po_number) key the
+        # mirror converges on. Editing or blanking it on a GP-origin row, or on any GP_REGISTERED+ row,
+        # orphans the row from its mirror key so the next sync pass mints a duplicate - so it is immutable
+        # once stamped. A NEXUS DRAFT (which has no GP number yet) can still set/clear it freely.
+        if cleaned != po.po_number and (po.origin == POOrigin.GP or po.status != POStatus.DRAFT):
+            raise ValidationError(
+                "The PO number is fixed once the PO is registered in GP and cannot be changed", field="po_number"
+            )
         # Validate uniqueness scoped to project (or globally for project-less POs)
-        if po_number.strip():
-            _assert_po_number_available(session, po_number, project_id=po.project_id, exclude_po_id=po.id)
-            po.po_number = po_number
+        if cleaned:
+            _assert_po_number_available(session, cleaned, project_id=po.project_id, exclude_po_id=po.id)
+            po.po_number = cleaned
         else:
             po.po_number = None
 

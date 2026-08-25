@@ -14,12 +14,15 @@ maps to a project gets that project (receives into project inventory); anything 
 import logging
 import uuid
 from datetime import date, datetime
+from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.enums import POOrigin, POStatus
+from app.models.enums import HardwareItemState, POOrigin, POStatus
+from app.models.gp_outbox import GpWriteOutbox
 from app.models.gp_po_sync_state import GpPoSyncState
+from app.models.gp_write import GpWriteIdempotency
 from app.models.purchase_order import POLineItem, PurchaseOrder
 
 logger = logging.getLogger(__name__)
@@ -46,9 +49,10 @@ NEXUS_ONLY_FIELDS = (
 
 
 def _to_int_qty(value: float, *, po_number: str, ord_: int, field: str) -> int:
-    """GP stores quantities as decimal; Nexus columns are integer (hardware is whole units). Round to
-    the nearest whole and log if a fractional value ever shows up, which would signal a UOM surprise."""
-    rounded = int(round(value or 0))
+    """GP stores quantities as decimal; Nexus columns are integer (hardware is whole units). Round HALF
+    UP - never int(round()), whose banker's rounding turns 2.5 into 2 and silently drops a unit - and
+    log if a fractional value ever shows up, which would signal a UOM surprise."""
+    rounded = int(Decimal(str(value or 0)).to_integral_value(rounding=ROUND_HALF_UP))
     if abs((value or 0) - rounded) > 1e-9:
         logger.warning(
             "gp po sync: fractional qty %s on %s ord %s (%s) rounded to %s", value, po_number, ord_, field, rounded
@@ -114,21 +118,43 @@ def _parse_doc_date(doc_date: str | None) -> datetime | None:
 
 
 def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict], *, is_gp_origin: bool) -> None:
-    """Match GP lines onto the PO's line rows by gp_line_ord. Received qty is always GP's (authoritative);
-    ordered qty and unit cost are GP-owned too. product_code / hardware_category are written only for a
-    GP-origin PO - a Nexus PO's lines carry the schedule's own categorization, which the mirror keeps.
-    Cancelled-to-zero lines are skipped (nothing to order or receive). Existing lines absent from GP are
-    left untouched rather than deleted, so mirrored inventory is never orphaned."""
+    """Match GP lines onto the PO's line rows by gp_line_ord. Received qty is GP's (authoritative) but
+    floored at what Nexus already stored; ordered qty and unit cost are GP-owned too. product_code /
+    hardware_category are written only for a GP-origin PO - a Nexus PO's lines carry the schedule's own
+    categorization, which the mirror keeps. Existing lines absent from GP are left untouched rather than
+    deleted, so mirrored inventory is never orphaned.
+
+    A line GP has cancelled to nothing orderable (net <= 0, or a fractional remainder that rounds below
+    one whole unit) is skipped when it is NEW - there is nothing to mirror. When it ALREADY exists it is
+    ZEROED, not left at its stale ordered_quantity: a line fully cancelled in GP after first mirror would
+    otherwise report phantom pending units in openPosSummary and the receive picker forever."""
     existing = {li.gp_line_ord: li for li in po.line_items if li.gp_line_ord is not None}
     for ln in gp_lines:
-        net = _net_ordered(ln)
-        if net <= 0:
-            continue
         ord_ = ln["ord"]
-        ordered_qty = _to_int_qty(net, po_number=po.po_number, ord_=ord_, field="ordered")
-        received_qty = _to_int_qty(ln.get("received") or 0, po_number=po.po_number, ord_=ord_, field="received")
-        unit_cost = ln.get("unit_cost") or 0
         li = existing.get(ord_)
+        net = _net_ordered(ln)
+        gp_received = _to_int_qty(ln.get("received") or 0, po_number=po.po_number, ord_=ord_, field="received")
+        # QTYSHPPD floor: an unposted GP batch can report a lower received than a receipt Nexus already
+        # booked; never let a mirror pass reduce received below the stored value, or the drop would
+        # reopen the PO to double-receiving. A new line has no stored value to protect.
+        received_qty = max(gp_received, li.received_quantity) if li is not None else gp_received
+        unit_cost = ln.get("unit_cost") or 0
+        ordered_qty = _to_int_qty(net, po_number=po.po_number, ord_=ord_, field="ordered") if net > 0 else 0
+
+        if ordered_qty < 1:
+            if li is not None:
+                # Zero the outstanding while respecting ck_po_line_items_ordered_quantity_positive
+                # (ordered >= 1): pin ordered to what has already been received (min 1). Pending
+                # (ordered - received) is then 0 whenever anything landed; a never-received cancelled
+                # line lands at ordered=1 / received=0, a single-unit residual the ck floor forces.
+                li.received_quantity = received_qty
+                li.ordered_quantity = max(1, received_qty)
+                li.unit_cost = unit_cost
+                if is_gp_origin:
+                    li.product_code = (ln.get("item") or "").strip() or _GP_CATEGORY_FALLBACK
+                    li.hardware_category = (ln.get("itemdesc") or "").strip() or _GP_CATEGORY_FALLBACK
+            continue
+
         if li is None:
             li = POLineItem(
                 id=uuid.uuid4(),
@@ -152,12 +178,90 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict], *, 
                 li.hardware_category = (ln.get("itemdesc") or "").strip() or _GP_CATEGORY_FALLBACK
 
 
-def upsert_mirrored_po(session: Session, company: str, po: dict, project_map: dict[str, uuid.UUID]) -> str:
+def _release_linked_hardware(session: Session, po: PurchaseOrder) -> None:
+    """Release the schedule hardware a PO's lines claimed back to AVAILABLE - cancel_po's rule and what
+    the repair migration 073 encodes. A cancelled PO must not keep HardwareItem rows IN_PO against it, or
+    required_quantity rollups double-count and the items can never be recreated as AVAILABLE by a later
+    import."""
+    from app.models.hardware import HardwareItem
+
+    line_ids = [li.id for li in po.line_items]
+    if line_ids:
+        session.execute(
+            update(HardwareItem)
+            .where(HardwareItem.po_line_item_id.in_(line_ids))
+            .values(po_line_item_id=None, state=HardwareItemState.AVAILABLE)
+        )
+
+
+def _apply_stage(session: Session, row: PurchaseOrder, stage: POStatus, now: datetime) -> None:
+    """Write a GP-derived stage past registration onto the row. A transition INTO CANCELLED carries the
+    invariants a bare `row.status = CANCELLED` skipped (which cancel_po enforces and its own comment
+    documents): soft-delete the row and release its linked hardware, so a dead PO stops being a live PO
+    in the register / receive picker and stops double-counting required_quantity."""
+    becoming_cancelled = stage == POStatus.CANCELLED and row.status != POStatus.CANCELLED
+    row.status = stage
+    if becoming_cancelled:
+        row.deleted_at = now
+        _release_linked_hardware(session, row)
+
+
+def po_numbers_pending_registration(session: Session, company: str) -> frozenset[str]:
+    """PO numbers GP has already minted for a Nexus registration whose local persist has NOT landed yet.
+    The mirror must not race register_po_in_gp: on a relay reconnect the sync can read a just-created GP
+    PO before the register persist stamps its number onto the draft, and mirroring it then inserts a
+    GP-origin duplicate that both trips the (project, po_number) unique index and leaves the draft stuck
+    DRAFT (retries re-hit the conflict). Skipping these numbers this pass lets the registration finish;
+    the next pass mirrors the row it stamped, now found by the (company, po_number) key.
+
+    Two sources: the idempotency ledger, whose relay_result carries GP's returned po_number until the
+    persist commits its result_id; and any still-queued register write on the durable outbox."""
+    pending: set[str] = set()
+
+    for row in session.scalars(
+        select(GpWriteIdempotency).where(
+            GpWriteIdempotency.op == "register_po_in_gp",
+            GpWriteIdempotency.result_id.is_(None),
+            GpWriteIdempotency.relay_result.isnot(None),
+        )
+    ).all():
+        result = row.relay_result or {}
+        number = (result.get("po_number") or "").strip()
+        if number and (result.get("company") or company) == company:
+            pending.add(number)
+
+    for row in session.scalars(
+        select(GpWriteOutbox).where(
+            GpWriteOutbox.op == "register_po_in_gp",
+            GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT")),
+            GpWriteOutbox.company == company,
+        )
+    ).all():
+        number = ((row.payload or {}).get("po_number") or "").strip()
+        if number:
+            pending.add(number)
+
+    return frozenset(pending)
+
+
+def upsert_mirrored_po(
+    session: Session,
+    company: str,
+    po: dict,
+    project_map: dict[str, uuid.UUID],
+    *,
+    pending_registration: frozenset[str] = frozenset(),
+) -> str:
     """Upsert one GP purchase order into a local row keyed by (company, po_number). Returns
     'created' | 'updated' | 'skipped'. Never touches NEXUS_ONLY_FIELDS. Caller commits."""
     po_number = (po.get("po_number") or "").strip()
     if not po_number:
         return "skipped"
+    # A number GP just minted for a Nexus registration whose persist has not committed. Mirroring it now
+    # would duplicate the row and wedge the registration - let the register finish, mirror it next pass.
+    if po_number in pending_registration:
+        return "skipped"
+
     lines = po.get("lines") or []
     stage = derive_po_stage(po.get("source_table") or "work", lines)
     project_id = _match_project_id(lines, project_map)
@@ -175,8 +279,25 @@ def upsert_mirrored_po(session: Session, company: str, po: dict, project_map: di
         .unique()
         .first()
     )
+    if row is None:
+        # Fall back to a legacy Nexus row stamped with this number before gp_company was recorded (NULL
+        # company). Converging onto it here fills its company below, instead of inserting a GP-origin
+        # duplicate that would trip ix_purchase_orders_(project|no_project)_po_number.
+        row = (
+            session.scalars(
+                select(PurchaseOrder)
+                .options(selectinload(PurchaseOrder.line_items))
+                .where(PurchaseOrder.po_number == po_number, PurchaseOrder.gp_company.is_(None))
+                .order_by(PurchaseOrder.created_at)
+            )
+            .unique()
+            .first()
+        )
 
     if row is None:
+        # New rows start at their derived stage when past registration, else at the registration
+        # baseline. A mirrored PO is never a DRAFT - it exists in GP by definition.
+        status = stage if stage in _APPLIED_STAGES else POStatus.GP_REGISTERED
         row = PurchaseOrder(
             id=uuid.uuid4(),
             po_number=po_number,
@@ -186,33 +307,41 @@ def upsert_mirrored_po(session: Session, company: str, po: dict, project_map: di
             project_id=project_id,
             gp_vendor_id=vendor_id,
             vendor_name_snapshot=vendor_name,
-            # New rows start at their derived stage when past registration, else at the registration
-            # baseline. A mirrored PO is never a DRAFT - it exists in GP by definition.
-            status=stage if stage in _APPLIED_STAGES else POStatus.GP_REGISTERED,
+            status=status,
             ordered_at=ordered_at,
             gp_synced_at=now,
+            # A PO GP reports as already cancelled is soft-deleted on arrival, exactly as cancel_po
+            # leaves one, so it never surfaces as a live PO in the register or the receive picker.
+            deleted_at=now if status == POStatus.CANCELLED else None,
         )
         session.add(row)
         session.flush()
         _upsert_lines(session, row, lines, is_gp_origin=True)
+        if status == POStatus.CANCELLED:
+            _release_linked_hardware(session, row)
         return "created"
 
     is_gp_origin = row.origin == POOrigin.GP
+    # Fill a legacy NULL company so the (company, po_number) key finds this row directly next pass.
+    if row.gp_company is None:
+        row.gp_company = company
     # GP-owned header fields converge. Vendor is GP's authority; ordered_at reflects GP's doc date.
     row.gp_vendor_id = vendor_id
     row.vendor_name_snapshot = vendor_name
     if ordered_at is not None:
         row.ordered_at = ordered_at
-    # Project attribution is the sync's to set only for a GP-origin row. A Nexus PO's project was fixed
-    # at registration and must not be re-pointed by job matching.
-    if is_gp_origin:
+    # Project attribution is write-once for a GP-origin row: fill a NULL project from the job match, but
+    # never REPOINT one already set. Repointing on a JOBNUMBR edit would strand inventory received under
+    # the old project and would silently revert a manual project edit on the next poll. A Nexus PO's
+    # project was fixed at registration and the sync never touches it.
+    if is_gp_origin and row.project_id is None and project_id is not None:
         row.project_id = project_id
+    row.gp_synced_at = now
+    _upsert_lines(session, row, lines, is_gp_origin=is_gp_origin)
     # Status only moves when the derived stage is past registration; otherwise the row (and any
     # VENDOR_CONFIRMED overlay) is left exactly as it is.
     if stage in _APPLIED_STAGES:
-        row.status = stage
-    row.gp_synced_at = now
-    _upsert_lines(session, row, lines, is_gp_origin=is_gp_origin)
+        _apply_stage(session, row, stage, now)
     return "updated"
 
 
@@ -228,14 +357,16 @@ def get_or_create_sync_state(session: Session, company: str) -> GpPoSyncState:
     return state
 
 
-def advance_backfill(session: Session, company: str, *, next_cursor: str | None) -> None:
-    """Record backfill progress. A None next_cursor means the page came back short - history drained,
-    so the backfill is done and the loop switches to incremental."""
+def advance_backfill(session: Session, company: str, *, cursor: str | None, done: bool) -> None:
+    """Record backfill progress. `done` marks history fully drained (the loop then switches to
+    incremental). `cursor`, when not None, stores the new keyset position; a None cursor leaves the
+    stored cursor untouched - used when a page could not be fully persisted and must be re-read from
+    where it already was, so a failed PO is never skipped past."""
     state = get_or_create_sync_state(session, company)
-    if next_cursor is None:
+    if cursor is not None:
+        state.backfill_cursor = cursor
+    if done:
         state.backfill_done = True
-    else:
-        state.backfill_cursor = next_cursor
 
 
 def set_watermark(session: Session, company: str, watermark: datetime) -> None:

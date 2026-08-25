@@ -46,7 +46,9 @@ const DASH = '\u2014';
 export interface ReceivingHistoryPO {
   id: string;
   poNumber: string | null;
-  requestNumber: string;
+  // Nullable: a mirrored GP-owned PO was never raised through Nexus, so it has a poNumber but no
+  // request number. The row falls back to poNumber for its label.
+  requestNumber: string | null;
   status: string;
   vendorName: string | null;
   projectId: string | null;
@@ -201,7 +203,9 @@ interface HistoryRowProps {
 
 function HistoryRow({ po, projectName, expanded, onToggle }: HistoryRowProps) {
   const hugSx = { width: '1%', whiteSpace: 'nowrap' as const };
-  const label = po.poNumber ?? po.requestNumber;
+  // A mirrored PO has a poNumber and a null requestNumber; a Nexus draft has the reverse until it is
+  // registered. Prefer the PO number, fall back to the request number, and dash when neither exists.
+  const label = po.poNumber ?? po.requestNumber ?? DASH;
   return (
     <>
       <TableRow hover sx={{ cursor: 'pointer', '& > *': { borderBottom: 'unset' } }} onClick={onToggle}>

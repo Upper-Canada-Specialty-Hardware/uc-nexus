@@ -47,6 +47,7 @@ from .inputs import (
 from .types import (
     EmailPoResult,
     GpPoSyncResult,
+    LinkScheduleResult,
     OpenPOSummary,
     PODocumentInfo,
     PODocumentSettings,
@@ -285,7 +286,12 @@ def _persist_register_po(
 
 @strawberry.type
 class POQueries:
-    @strawberry.field
+    @strawberry.field(
+        deprecation_reason=(
+            "Eager-loads every line of every PO, which does not scale to GP's mirrored history. "
+            "Use purchaseOrdersPage for the register and purchaseOrder(id) for detail."
+        )
+    )
     def purchase_orders(
         self, info: strawberry.Info, project_id: strawberry.ID | None = None, status: POStatus | None = None
     ) -> list[PurchaseOrder]:
@@ -383,7 +389,12 @@ class POQueries:
                 cancelled=stats["cancelled"],
             )
 
-    @strawberry.field
+    @strawberry.field(
+        deprecation_reason=(
+            "Eager-loads every line of every open PO, which does not scale to GP's mirrored history. "
+            "Use openPosSummary (lean rows + pending scalars) and poReceivingDetails for detail."
+        )
+    )
     def open_p_os(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[PurchaseOrder]:
         with SessionLocal() as session:
             pos = po_repository.get_open_pos(session, uuid.UUID(str(project_id)) if project_id else None)
@@ -419,7 +430,11 @@ class POMutations:
         reconnect; this is for seeing the result immediately after a PO is created directly in GP, or
         for kicking the first backfill. While the backfill is still running a pass mirrors one batch of
         pages and reports backfill_done false; the loop keeps draining the rest on its own."""
-        result = await gp_po_sync.run_once()
+        # Only a small cap runs inline here - a full backfill is tens of minutes and would time out at
+        # the edge while the server ran on. Kick the background loop to drain the rest.
+        result = await gp_po_sync.run_once(backfill_max_pages=gp_po_sync.ADMIN_SYNC_BACKFILL_PAGES)
+        if result.get("mode") == "backfill" and not result.get("backfill_done"):
+            gp_po_sync.wake()
         return GpPoSyncResult(
             mode=result.get("mode", "incremental"),
             created=result.get("created", 0),
@@ -430,10 +445,14 @@ class POMutations:
     @strawberry.mutation
     def link_schedule_to_mirrored_po(
         self, info: strawberry.Info, input: LinkScheduleToMirroredPoInput
-    ) -> PurchaseOrder:
+    ) -> LinkScheduleResult:
         """Attach project schedule hardware to a mirrored (GP-origin) PO's lines for coverage tracking
         (gp-owned-po mirror). Marks the named AVAILABLE schedule units IN_PO against the PO line, the
-        same linkage a Nexus draft uses. Coverage/reconciliation only - receiving never depends on it."""
+        same linkage a Nexus draft uses. Coverage/reconciliation only - receiving never depends on it.
+
+        Returns linked_units alongside the PO: a typo'd product code, or nothing AVAILABLE at the
+        requested qty, links 0 while still returning the PO, so the caller can tell a no-op from a hit
+        instead of reading a bare PO as success."""
         links = [
             {
                 "po_line_item_id": uuid.UUID(str(link.po_line_item_id)),
@@ -444,9 +463,12 @@ class POMutations:
             for link in input.links
         ]
         with SessionLocal() as session:
-            po, _ = po_repository.link_schedule_to_mirrored_po(session, uuid.UUID(str(input.po_id)), links)
+            po, total = po_repository.link_schedule_to_mirrored_po(session, uuid.UUID(str(input.po_id)), links)
             session.commit()
-            return po_to_type(po_repository.reload_po(session, po.id))
+            return LinkScheduleResult(
+                linked_units=total,
+                purchase_order=po_to_type(po_repository.reload_po(session, po.id)),
+            )
 
     @strawberry.mutation
     def create_draft_po(self, info: strawberry.Info, input: CreateDraftPOInput) -> PurchaseOrder:

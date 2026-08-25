@@ -9,6 +9,7 @@ export const GET_PO_STATISTICS = gql`
       vendorConfirmed
       partiallyReceived
       closed
+      cancelled
     }
   }
 `;
@@ -19,93 +20,6 @@ export const GET_PO_STATISTICS = gql`
 export const GET_PO_DOCUMENT_DOWNLOAD_URL = gql`
   query PoDocumentDownloadUrl($documentId: ID!) {
     poDocumentDownloadUrl(documentId: $documentId)
-  }
-`;
-
-export const GET_PURCHASE_ORDERS = gql`
-  query GetPurchaseOrders($projectId: ID, $status: POStatus) {
-    purchaseOrders(projectId: $projectId, status: $status) {
-      id
-      poNumber
-      requestNumber
-      projectId
-      status
-      gpCompany
-      gpVendorId
-      vendorNameSnapshot
-      buyerId
-      vendorQuoteNumber
-      # #490's register-dialog seed reads registerPo.costCode off this row; without the field the
-      # draft's code never reaches the dialog and the buyer is asked to pick it a second time.
-      costCode
-      shippingCost
-      tariffAmount
-      notes
-      preferredDeliveryDate
-      expectedDeliveryDate
-      orderedAt
-      createdAt
-      updatedAt
-      documentData {
-        id
-        poId
-        vendorAddress
-        buyerName
-        currency
-        shipTo
-        shippingMethod
-        quotationNumber
-        freight
-        miscellaneous
-        taxAmount
-        taxLabel
-        tariffAmount
-        requiredByOverride
-        includeFsc
-        includeUsaTariff
-        includeCustoms
-      }
-      lineItems {
-        id
-        poId
-        hardwareCategory
-        productCode
-        classification
-        orderedQuantity
-        receivedQuantity
-        unitCost
-        orderAs
-        manufacturer
-        createdAt
-        updatedAt
-      }
-      receiveRecords {
-        id
-        poId
-        receivedAt
-        receivedBy
-        createdAt
-        lineItems {
-          id
-          receiveRecordId
-          poLineItemId
-          hardwareCategory
-          productCode
-          quantityReceived
-          createdAt
-        }
-      }
-      documents {
-        id
-        poId
-        fileName
-        contentType
-        fileSize
-        documentType
-        uploadedAt
-        downloadUrl
-      }
-    }
   }
 `;
 
@@ -256,16 +170,21 @@ export const SYNC_GP_POS = gql`
 `;
 
 // Attach project schedule hardware to a mirrored PO's lines for coverage tracking (gp-owned-po mirror).
+// Returns how many schedule units actually matched and linked (linkedUnits): 0 means nothing was
+// available at the requested quantity, and a value below the requested quantity is a partial link.
 export const LINK_SCHEDULE_TO_MIRRORED_PO = gql`
   mutation LinkScheduleToMirroredPo($input: LinkScheduleToMirroredPoInput!) {
     linkScheduleToMirroredPo(input: $input) {
-      id
-      lineItems {
+      linkedUnits
+      purchaseOrder {
         id
-        hardwareCategory
-        productCode
-        orderedQuantity
-        receivedQuantity
+        lineItems {
+          id
+          hardwareCategory
+          productCode
+          orderedQuantity
+          receivedQuantity
+        }
       }
     }
   }

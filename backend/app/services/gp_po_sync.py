@@ -38,9 +38,14 @@ POLL_SECONDS = 300.0
 # Headers per backfill page. 300 keeps a page's line/receipt reads well inside the relay command
 # timeout while still draining company-scale history in a reasonable number of round trips.
 PAGE_SIZE = 300
-# A single run_once drains at most this many backfill pages before returning, so one pass is bounded
-# and interruptible; the loop then continues immediately (no poll wait) until the backfill is done.
+# A single background run_once drains at most this many backfill pages before returning, so one pass is
+# bounded and interruptible; the loop then continues immediately (no poll wait) until the backfill is
+# done or stalls.
 BACKFILL_MAX_PAGES_PER_PASS = 500
+# The admin syncGpPos mutation drains only this many pages inline, then wake()s the background loop for
+# the rest. A backfill of GP's whole history is tens of minutes; draining it inside one GraphQL request
+# would time out at the edge while the server ran on, so the mutation just kicks it and returns.
+ADMIN_SYNC_BACKFILL_PAGES = 2
 # The incremental read asks for rows modified since the watermark minus a day: GP's modified timestamp
 # is effectively day-granular and upserts are idempotent, so the overlap costs nothing and closes the
 # gap where a same-day change after the pass would otherwise be missed.
@@ -73,22 +78,42 @@ def _load_project_map(session) -> dict:
 
 def _persist_page(company: str, pos: list[dict], next_cursor: str | None, *, is_backfill: bool) -> dict:
     """Upsert one page of GP POs and advance the sync state. Runs in a worker thread - the relay socket
-    lives on the event loop and must not block on Postgres. Returns per-page counts."""
+    lives on the event loop and must not block on Postgres.
+
+    Each PO is upserted inside its own SAVEPOINT (begin_nested), so a failure rolls back only that PO and
+    the page's other upserts still commit at the end. The backfill cursor is advanced only over POs that
+    actually persisted: if a PO in the page failed, the cursor is parked at the last consecutively-
+    persisted PO (or left untouched when even the first failed) so the next pass re-reads and retries it.
+    History is invisible to the incremental phase, so a PO skipped PAST here would be a permanent hole.
+
+    Returns per-page counts plus `stored_cursor` (the keyset written, None when the cursor did not move)
+    and `backfill_done`."""
     created = updated = skipped = 0
     latest: datetime | None = None
+    all_persisted = True
+    last_persisted_cursor: str | None = None
     with SessionLocal() as session:
         project_map = _load_project_map(session)
+        pending_registration = sync_repo.po_numbers_pending_registration(session, company)
         for po in pos:
+            po_number = (po.get("po_number") or "").strip()
             try:
-                action = sync_repo.upsert_mirrored_po(session, company, po, project_map)
-            except Exception:  # noqa: BLE001 - one bad PO must not abort the whole page
-                session.rollback()
+                with session.begin_nested():  # per-PO SAVEPOINT
+                    action = sync_repo.upsert_mirrored_po(
+                        session, company, po, project_map, pending_registration=pending_registration
+                    )
+            except Exception:  # noqa: BLE001 - one bad PO must not lose the rest of the page
                 logger.exception("gp po sync: failed to upsert PO %s", po.get("po_number"))
                 skipped += 1
+                all_persisted = False
                 continue
             created += action == "created"
             updated += action == "updated"
             skipped += action == "skipped"
+            # Advance the resume point only while every PO so far has persisted; the first failure freezes
+            # it, so the cursor never moves past an unpersisted PO.
+            if all_persisted and po_number:
+                last_persisted_cursor = po_number
             modified = po.get("modified_at")
             if modified:
                 try:
@@ -96,20 +121,41 @@ def _persist_page(company: str, pos: list[dict], next_cursor: str | None, *, is_
                     latest = ts if latest is None or ts > latest else latest
                 except ValueError:
                     pass
+
+        stored_cursor: str | None = None
+        done = False
         if is_backfill:
-            sync_repo.advance_backfill(session, company, next_cursor=next_cursor)
+            if all_persisted:
+                if next_cursor is None:
+                    done = True  # short page, every PO persisted -> history drained
+                else:
+                    stored_cursor = next_cursor
+            else:
+                # A PO in this page did not persist: resume from the last one that did (None leaves the
+                # cursor untouched, so the next pass re-reads from the same place).
+                stored_cursor = last_persisted_cursor
+            sync_repo.advance_backfill(session, company, cursor=stored_cursor, done=done)
         if latest is not None:
             sync_repo.set_watermark(session, company, latest)
         session.commit()
-    return {"created": created, "updated": updated, "skipped": skipped}
+    return {
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "stored_cursor": stored_cursor,
+        "backfill_done": done,
+    }
 
 
-async def _run_backfill(company: str) -> dict:
-    """Drain up to BACKFILL_MAX_PAGES_PER_PASS pages from the stored cursor. Returns a result whose
-    backfill_done tells the loop whether to keep going immediately."""
+async def _run_backfill(company: str, *, max_pages: int) -> dict:
+    """Drain up to max_pages pages from the stored cursor. The result's `backfill_done` tells the loop the
+    history is fully mirrored; `stalled` tells it the cursor could not advance this pass (a relay handing
+    back the same keyset, or a page whose leading PO could not persist) so it must WAIT rather than treat
+    the backfill as "keep draining immediately" and hot-spin relay reads + full-page re-upserts."""
     created = updated = skipped = pos_seen = 0
     done = False
-    for _ in range(BACKFILL_MAX_PAGES_PER_PASS):
+    stalled = False
+    for _ in range(max_pages):
         cursor = await asyncio.to_thread(_load_cursor, company)
         result = await relay_gateway.relay_call(company, "sync_pos", {"cursor": cursor, "page_size": PAGE_SIZE})
         pos = (result or {}).get("pos") or []
@@ -119,17 +165,27 @@ async def _run_backfill(company: str) -> dict:
         updated += counts["updated"]
         skipped += counts["skipped"]
         pos_seen += len(pos)
-        if next_cursor is None:
+        if counts["backfill_done"]:
             done = True
             break
-        # Anti-stall: a relay that keeps handing back the same cursor would loop forever. Cursor is the
-        # last PONUMBER of the page, so it must advance; if it did not, stop and let the next pass retry.
-        if next_cursor == cursor:
-            logger.warning("gp po sync: backfill cursor did not advance past %s; stopping this pass", cursor)
+        # The cursor advances only over POs that persisted. If it did not move past the cursor we sent -
+        # the relay returned the same keyset, or this page's leading PO failed to persist - stop this pass
+        # so run_forever waits out the poll interval instead of re-reading the same page in a tight loop.
+        if counts["stored_cursor"] is None or counts["stored_cursor"] == cursor:
+            logger.warning("gp po sync: backfill cursor did not advance past %s; pausing this pass", cursor)
+            stalled = True
             break
     if done:
         logger.info("gp po sync: backfill complete for %s (created=%s updated=%s)", company, created, updated)
-    return {"mode": "backfill", "backfill_done": done, "created": created, "updated": updated, "pos": pos_seen}
+    return {
+        "mode": "backfill",
+        "backfill_done": done,
+        "stalled": stalled,
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "pos": pos_seen,
+    }
 
 
 async def _run_incremental(company: str) -> dict:
@@ -141,7 +197,14 @@ async def _run_incremental(company: str) -> dict:
     )
     pos = (result or {}).get("pos") or []
     counts = await asyncio.to_thread(_persist_page, company, pos, None, is_backfill=False)
-    return {"mode": "incremental", "backfill_done": True, **counts, "pos": len(pos)}
+    return {
+        "mode": "incremental",
+        "backfill_done": True,
+        "created": counts["created"],
+        "updated": counts["updated"],
+        "skipped": counts["skipped"],
+        "pos": len(pos),
+    }
 
 
 def _load_cursor(company: str) -> str | None:
@@ -165,9 +228,13 @@ def _backfill_done(company: str) -> bool:
         return state.backfill_done
 
 
-async def run_once() -> dict:
+async def run_once(*, backfill_max_pages: int = BACKFILL_MAX_PAGES_PER_PASS) -> dict:
     """One sync pass: backfill a batch of pages if history is not fully mirrored yet, otherwise run one
-    incremental pass. Returns a result dict (mode, counts, backfill_done).
+    incremental pass. Returns a result dict (mode, counts, backfill_done, stalled).
+
+    backfill_max_pages bounds how many backfill pages a single call drains. The background loop passes
+    its full budget; the admin syncGpPos mutation passes a small cap so it returns promptly (and wakes
+    the loop to drain the rest) rather than holding one GraphQL request open across the whole history.
 
     Raises RelayUnavailableError if no relay is connected. Returns a no-op result (mode 'unsupported')
     when the connected relay is too old to serve sync_pos, so the admin button and the loop both
@@ -181,7 +248,7 @@ async def run_once() -> dict:
     try:
         if await asyncio.to_thread(_backfill_done, company):
             return await _run_incremental(company)
-        return await _run_backfill(company)
+        return await _run_backfill(company, max_pages=backfill_max_pages)
     except RelayOpUnsupportedError:
         logger.info("gp po sync: connected relay does not support sync_pos yet; skipping until it updates")
         return {"mode": "unsupported", "backfill_done": False, "created": 0, "updated": 0, "pos": 0}
@@ -207,7 +274,14 @@ async def run_forever() -> None:
                             result.get("created"),
                             result.get("updated"),
                         )
-                    backfilling = result.get("mode") == "backfill" and not result.get("backfill_done")
+                    # Keep draining immediately only while the backfill is genuinely making progress. A
+                    # STALLED backfill (non-advancing cursor) must fall through to the poll wait, or the
+                    # `if backfilling: continue` below would hot-spin relay reads + full-page re-upserts.
+                    backfilling = (
+                        result.get("mode") == "backfill"
+                        and not result.get("backfill_done")
+                        and not result.get("stalled")
+                    )
             except asyncio.CancelledError:
                 raise
             except (RelayUnavailableError, RelayTimeoutError) as e:

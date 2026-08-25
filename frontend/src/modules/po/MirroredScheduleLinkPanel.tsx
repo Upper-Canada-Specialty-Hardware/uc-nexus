@@ -31,14 +31,16 @@ export default function MirroredScheduleLinkPanel({ po, onRefetch }: Props) {
   const [productCode, setProductCode] = useState('');
   const [quantity, setQuantity] = useState('');
 
-  const [linkSchedule, { loading }] = useMutation(LINK_SCHEDULE_TO_MIRRORED_PO);
+  const [linkSchedule, { loading }] = useMutation<{
+    linkScheduleToMirroredPo: { linkedUnits: number; purchaseOrder: { id: string } };
+  }>(LINK_SCHEDULE_TO_MIRRORED_PO);
 
   const qtyNum = parseInt(quantity, 10);
   const canSubmit = !!lineId && !!productCode.trim() && !!hardwareCategory.trim() && qtyNum > 0 && !loading;
 
   const handleLink = async () => {
     try {
-      await linkSchedule({
+      const res = await linkSchedule({
         variables: {
           input: {
             poId: po.id,
@@ -53,7 +55,19 @@ export default function MirroredScheduleLinkPanel({ po, onRefetch }: Props) {
           },
         },
       });
-      showToast('Schedule hardware linked for coverage', 'success');
+      // The mutation reports how many schedule units it actually matched and linked. Nothing matched
+      // (0) is a failed link, not a quiet success - leave the form filled so it can be corrected and
+      // retried. A count below what was asked for is a partial link worth flagging.
+      const linkedUnits = res.data?.linkScheduleToMirroredPo.linkedUnits ?? 0;
+      if (linkedUnits === 0) {
+        showToast('Nothing matched - no schedule hardware available to link at that quantity', 'error');
+        return;
+      }
+      if (linkedUnits < qtyNum) {
+        showToast(`Linked ${linkedUnits} of ${qtyNum} - only that many were available to cover`, 'warning');
+      } else {
+        showToast('Schedule hardware linked for coverage', 'success');
+      }
       setHardwareCategory('');
       setProductCode('');
       setQuantity('');
@@ -74,14 +88,22 @@ export default function MirroredScheduleLinkPanel({ po, onRefetch }: Props) {
         Attach this project's schedule hardware to a line on this GP-owned PO for reconciliation.
         Receiving is unaffected.
       </Typography>
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} sx={{ alignItems: { sm: 'flex-end' } }}>
+      {/* useFlexGap + flexWrap so the row wraps instead of clipping when the dialog is narrow (the
+          fixed minWidths summed past the dialog at 600-780px). The three text fields flex to absorb
+          slack width; Qty and the Link button stay their natural size and never shrink away. */}
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        spacing={1.5}
+        useFlexGap
+        sx={{ flexWrap: 'wrap', alignItems: { sm: 'flex-end' } }}
+      >
         <TextField
           select
           label="PO line"
           size="small"
           value={lineId}
           onChange={(e) => setLineId(e.target.value)}
-          sx={{ minWidth: 200 }}
+          sx={{ flex: '1 1 200px', minWidth: 160 }}
         >
           {po.lineItems.map((li) => (
             <MenuItem key={li.id} value={li.id} sx={monoSx}>
@@ -94,14 +116,14 @@ export default function MirroredScheduleLinkPanel({ po, onRefetch }: Props) {
           size="small"
           value={hardwareCategory}
           onChange={(e) => setHardwareCategory(e.target.value)}
-          sx={{ minWidth: 140 }}
+          sx={{ flex: '1 1 140px', minWidth: 120 }}
         />
         <TextField
           label="Product code"
           size="small"
           value={productCode}
           onChange={(e) => setProductCode(e.target.value)}
-          sx={{ minWidth: 140 }}
+          sx={{ flex: '1 1 140px', minWidth: 120 }}
         />
         <TextField
           label="Qty"
@@ -110,7 +132,7 @@ export default function MirroredScheduleLinkPanel({ po, onRefetch }: Props) {
           value={quantity}
           onChange={(e) => setQuantity(e.target.value)}
           slotProps={{ htmlInput: { min: 1 } }}
-          sx={{ width: 90 }}
+          sx={{ width: 90, flexShrink: 0 }}
         />
         <Button
           variant="outlined"
@@ -118,6 +140,7 @@ export default function MirroredScheduleLinkPanel({ po, onRefetch }: Props) {
           startIcon={<Link2 size={16} strokeWidth={1.75} />}
           onClick={handleLink}
           disabled={!canSubmit}
+          sx={{ flexShrink: 0 }}
         >
           {loading ? 'Linking…' : 'Link'}
         </Button>
