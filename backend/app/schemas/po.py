@@ -25,25 +25,37 @@ from app.repositories import (
     user_repository,
 )
 from app.services import email as email_service
-from app.services import gp_idempotency, gp_job_sync, gp_outbox_enqueue, gp_po, storage
+from app.services import gp_idempotency, gp_job_sync, gp_outbox_enqueue, gp_po, gp_po_sync, storage
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import (
+    open_po_summary_to_type,
     po_document_settings_to_type,
     po_document_to_type,
     po_line_item_to_type,
+    po_list_row_to_type,
     po_to_type,
 )
-from .enums import PODocumentType, POStatus
-from .inputs import CreateDraftPOInput, RegisterPOInput, SavePODocumentDataInput, UpdatePODocumentSettingsInput
+from .enums import PODocumentType, POOrigin, POStatus
+from .inputs import (
+    CreateDraftPOInput,
+    LinkScheduleToMirroredPoInput,
+    RegisterPOInput,
+    SavePODocumentDataInput,
+    UpdatePODocumentSettingsInput,
+)
 from .types import (
     EmailPoResult,
+    GpPoSyncResult,
+    LinkScheduleResult,
+    OpenPOSummary,
     PODocumentInfo,
     PODocumentSettings,
     POLineItem,
     POStatistics,
     PriorOrderAsForProduct,
     PurchaseOrder,
+    PurchaseOrderPage,
     RegisterPOResult,
 )
 
@@ -274,7 +286,12 @@ def _persist_register_po(
 
 @strawberry.type
 class POQueries:
-    @strawberry.field
+    @strawberry.field(
+        deprecation_reason=(
+            "Eager-loads every line of every PO, which does not scale to GP's mirrored history. "
+            "Use purchaseOrdersPage for the register and purchaseOrder(id) for detail."
+        )
+    )
     def purchase_orders(
         self, info: strawberry.Info, project_id: strawberry.ID | None = None, status: POStatus | None = None
     ) -> list[PurchaseOrder]:
@@ -292,6 +309,39 @@ class POQueries:
         with SessionLocal() as session:
             doc = po_repository.get_po_document(session, uuid.UUID(str(document_id)))
             return storage.generate_presigned_url(doc.s3_key)
+
+    @strawberry.field
+    def purchase_orders_page(
+        self,
+        info: strawberry.Info,
+        search: str | None = None,
+        statuses: list[POStatus] | None = None,
+        origin: POOrigin | None = None,
+        project_id: strawberry.ID | None = None,
+        sort_field: str = "createdAt",
+        sort_dir: str = "desc",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> PurchaseOrderPage:
+        """One page of the company-wide register (gp-owned-po mirror). Server-driven paging/search/sort
+        so the register scales to GP's full PO history. Rows carry a line_item_count scalar; the detail
+        modal loads lines through purchaseOrder(id)."""
+        with SessionLocal() as session:
+            rows, counts, total = po_repository.get_purchase_orders_page(
+                session,
+                search=search,
+                statuses=list(statuses) if statuses else None,
+                origin=origin,
+                project_id=uuid.UUID(str(project_id)) if project_id else None,
+                sort_field=sort_field,
+                sort_dir=sort_dir,
+                limit=limit,
+                offset=offset,
+            )
+            return PurchaseOrderPage(
+                rows=[po_list_row_to_type(r, counts.get(r.id, 0)) for r in rows],
+                total_count=total,
+            )
 
     @strawberry.field
     def purchase_order(self, info: strawberry.Info, id: strawberry.ID) -> PurchaseOrder | None:
@@ -339,11 +389,26 @@ class POQueries:
                 cancelled=stats["cancelled"],
             )
 
-    @strawberry.field
+    @strawberry.field(
+        deprecation_reason=(
+            "Eager-loads every line of every open PO, which does not scale to GP's mirrored history. "
+            "Use openPosSummary (lean rows + pending scalars) and poReceivingDetails for detail."
+        )
+    )
     def open_p_os(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[PurchaseOrder]:
         with SessionLocal() as session:
             pos = po_repository.get_open_pos(session, uuid.UUID(str(project_id)) if project_id else None)
             return [po_to_type(po) for po in pos]
+
+    @strawberry.field
+    def open_pos_summary(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[OpenPOSummary]:
+        """The receiving picker's open-PO list at company scale (gp-owned-po mirror). Lean rows with two
+        pending-quantity scalars from a grouped query, not the line collection."""
+        with SessionLocal() as session:
+            rows, pending = po_repository.get_open_pos_summary(
+                session, uuid.UUID(str(project_id)) if project_id else None
+            )
+            return [open_po_summary_to_type(r, *(pending.get(r.id, (0, 0)))) for r in rows]
 
     @strawberry.field
     def po_document_settings(self, info: strawberry.Info) -> PODocumentSettings:
@@ -358,6 +423,53 @@ class POQueries:
 
 @strawberry.type
 class POMutations:
+    @strawberry.mutation
+    async def sync_gp_pos(self, info: strawberry.Info) -> GpPoSyncResult:
+        """Admin: run one pass of the GP PO mirror now, instead of waiting out the poll interval
+        (gp-owned-po mirror). The background service already does this on a timer and on every relay
+        reconnect; this is for seeing the result immediately after a PO is created directly in GP, or
+        for kicking the first backfill. While the backfill is still running a pass mirrors one batch of
+        pages and reports backfill_done false; the loop keeps draining the rest on its own."""
+        # Only a small cap runs inline here - a full backfill is tens of minutes and would time out at
+        # the edge while the server ran on. Kick the background loop to drain the rest.
+        result = await gp_po_sync.run_once(backfill_max_pages=gp_po_sync.ADMIN_SYNC_BACKFILL_PAGES)
+        if result.get("mode") == "backfill" and not result.get("backfill_done"):
+            gp_po_sync.wake()
+        return GpPoSyncResult(
+            mode=result.get("mode", "incremental"),
+            created=result.get("created", 0),
+            updated=result.get("updated", 0),
+            backfill_done=result.get("backfill_done", False),
+        )
+
+    @strawberry.mutation
+    def link_schedule_to_mirrored_po(
+        self, info: strawberry.Info, input: LinkScheduleToMirroredPoInput
+    ) -> LinkScheduleResult:
+        """Attach project schedule hardware to a mirrored (GP-origin) PO's lines for coverage tracking
+        (gp-owned-po mirror). Marks the named AVAILABLE schedule units IN_PO against the PO line, the
+        same linkage a Nexus draft uses. Coverage/reconciliation only - receiving never depends on it.
+
+        Returns linked_units alongside the PO: a typo'd product code, or nothing AVAILABLE at the
+        requested qty, links 0 while still returning the PO, so the caller can tell a no-op from a hit
+        instead of reading a bare PO as success."""
+        links = [
+            {
+                "po_line_item_id": uuid.UUID(str(link.po_line_item_id)),
+                "hardware_category": link.hardware_category,
+                "product_code": link.product_code,
+                "quantity": link.quantity,
+            }
+            for link in input.links
+        ]
+        with SessionLocal() as session:
+            po, total = po_repository.link_schedule_to_mirrored_po(session, uuid.UUID(str(input.po_id)), links)
+            session.commit()
+            return LinkScheduleResult(
+                linked_units=total,
+                purchase_order=po_to_type(po_repository.reload_po(session, po.id)),
+            )
+
     @strawberry.mutation
     def create_draft_po(self, info: strawberry.Info, input: CreateDraftPOInput) -> PurchaseOrder:
         """Issue #256: manual PO creation lands as a plain DRAFT - no relay round-trip, no GP fields,

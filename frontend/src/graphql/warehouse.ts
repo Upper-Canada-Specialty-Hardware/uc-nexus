@@ -47,26 +47,23 @@ export const GET_INVENTORY_ROWS = gql`
   }
 `;
 
-export const GET_OPEN_POS = gql`
-  query GetOpenPOs($projectId: ID) {
-    openPOs(projectId: $projectId) {
+// Lean company-scale receiving picker (gp-owned-po mirror): rows carry two pending-quantity scalars
+// from a grouped query instead of the line collection, so the list never materializes every line.
+export const GET_OPEN_POS_SUMMARY = gql`
+  query GetOpenPosSummary($projectId: ID) {
+    openPosSummary(projectId: $projectId) {
       id
       poNumber
       projectId
       status
+      origin
       gpVendorId
       vendorNameSnapshot
       notes
       orderedAt
       expectedDeliveryDate
-      lineItems {
-        id
-        hardwareCategory
-        productCode
-        orderedQuantity
-        receivedQuantity
-        orderAs
-      }
+      pendingLineCount
+      pendingQuantity
     }
   }
 `;
@@ -118,8 +115,8 @@ export const GET_RECENT_RECEIVE_RECORDS = gql`
 /**
  * Every GP-registered PO with what has landed against it (#447) - the Receiving page's History view.
  *
- * Deliberately the complement of GET_OPEN_POS and GET_BACK_ORDERED_ITEMS, which answer "what is
- * still owed" and so drop a PO the moment it is complete. Reconciling a delivery needs the finished
+ * Deliberately the complement of GET_OPEN_POS_SUMMARY and GET_BACK_ORDERED_ITEMS, which answer "what
+ * is still owed" and so drop a PO the moment it is complete. Reconciling a delivery needs the finished
  * ones. Scalars only: expanding a row fetches that PO's receives through GET_PO_RECEIVING_DETAILS,
  * so the list stays one row per PO however many receives are behind it.
  */

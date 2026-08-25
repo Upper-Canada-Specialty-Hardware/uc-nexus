@@ -879,3 +879,22 @@ class MigrateSharepointInventoryInput:
     catalog_items: list[MigrationCatalogItemInput] | None = None
     # The classification step's decisions, one per matched-but-unclassified (project, product).
     classifications: list[MigrationClassificationInput] | None = None
+
+
+@strawberry.input
+class MirroredPoScheduleLink:
+    """One (schedule combo -> PO line) coverage link for a mirrored PO (gp-owned-po mirror). quantity
+    units of the project's own (hardware_category, product_code) schedule are marked covered by the
+    named PO line. The PO line's own GP item is unrelated to the schedule combo - this is a manual,
+    coverage-only attribution, not automatic matching."""
+
+    po_line_item_id: strawberry.ID
+    hardware_category: str
+    product_code: str
+    quantity: int
+
+
+@strawberry.input
+class LinkScheduleToMirroredPoInput:
+    po_id: strawberry.ID
+    links: list[MirroredPoScheduleLink]

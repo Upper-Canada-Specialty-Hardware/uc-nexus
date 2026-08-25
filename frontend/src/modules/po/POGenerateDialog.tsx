@@ -208,7 +208,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
   const buildDocProps = useCallback((): PurchaseOrderDocumentProps => {
     const requiredByLabel = formatDocDate(requiredBy);
     return {
-      poNumber: po.poNumber ?? po.requestNumber,
+      poNumber: po.poNumber ?? po.requestNumber ?? '',
       date: formatDocDate(po.orderedAt) || new Date().toLocaleDateString(),
       requiredBy: requiredByLabel,
       quotationNumber: quotationNumber || null,

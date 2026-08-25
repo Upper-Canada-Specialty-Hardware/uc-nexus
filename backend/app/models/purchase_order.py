@@ -20,7 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
-from .enums import Classification, PODocumentType, POStatus
+from .enums import Classification, PODocumentType, POOrigin, POStatus
 
 if TYPE_CHECKING:
     from .hardware import HardwareItem
@@ -44,11 +44,33 @@ class PurchaseOrder(Base):
             postgresql_where="project_id IS NULL AND po_number IS NOT NULL",
         ),
         Index("ix_purchase_orders_request_number", "request_number", unique=True),
+        # The GP identity of a mirrored PO, and the upsert key the sync converges on: one Nexus row
+        # per (gp_company, po_number). A nexus-registered PO gets both stamped together at registration,
+        # so it collapses onto its own mirror row rather than duplicating. DRAFTs carry neither and are
+        # excluded by the po_number predicate (multiple NULLs never collide in a partial index).
+        Index(
+            "ix_purchase_orders_gp_company_po_number",
+            "gp_company",
+            "po_number",
+            unique=True,
+            postgresql_where="po_number IS NOT NULL",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     po_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    request_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    # The PO-REQ-NNN a Nexus-drafted PO was raised from. Null on a mirrored (GP-origin) PO, which was
+    # never requested through Nexus - the register falls back to po_number for the display id there.
+    request_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Where this PO's authoritative record lives (gp-owned-po mirror). NEXUS: drafted here, pushed to
+    # GP. GP: discovered in GP's tables by the mirror sync. Defaults NEXUS so every pre-existing PO,
+    # and every draft/register path, keeps its meaning without change.
+    origin: Mapped[POOrigin] = mapped_column(
+        Enum(POOrigin, name="po_origin", create_constraint=True), nullable=False, default=POOrigin.NEXUS
+    )
+    # Last time the mirror sync wrote GP-derived fields onto this row. Null on a NEXUS PO the sync has
+    # never touched; set on every mirrored row and on a NEXUS row once its mirror pass converges.
+    gp_synced_at: Mapped[datetime | None] = mapped_column(nullable=True)
     project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
     status: Mapped[POStatus] = mapped_column(Enum(POStatus, name="po_status", create_constraint=True), nullable=False)
     # GP cost code chosen per-PO (the issue #121 dropdown, 'phase-step-element' e.g. '210-200-2'),

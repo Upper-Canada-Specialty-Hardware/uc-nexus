@@ -318,6 +318,42 @@ def test_update_po_sets_clears_and_leaves_shipping_cost_and_tariff(db_session):
     assert po.tariff_amount is None
 
 
+def test_update_po_rejects_changing_po_number_once_registered(db_session):
+    from app.errors import InvalidStateTransitionError  # noqa: F401 - imported for symmetry with repo raises
+
+    project = _make_project(db_session)
+    # A GP-registered PO: create_po's GP-first branch stamps the number and advances to GP_REGISTERED.
+    po = po_repository.create_po(
+        db_session,
+        line_items=[_line_item("ML2010")],
+        project_id=project.id,
+        po_number="PO0000123",
+        gp_company="TUBC",
+        gp_vendor_id="V1",
+        vendor_name_snapshot="Acme",
+    )
+    db_session.flush()
+    assert po.status == POStatus.GP_REGISTERED
+
+    # Changing the number now would orphan the row from the (gp_company, po_number) mirror key.
+    with pytest.raises(ValidationError):
+        po_repository.update_po(db_session, po.id, po_number="PO0000999")
+    # Blanking it is rejected the same way.
+    with pytest.raises(ValidationError):
+        po_repository.update_po(db_session, po.id, po_number="")
+    # Passing the SAME number is a no-op, not a rejection.
+    po_repository.update_po(db_session, po.id, po_number="PO0000123")
+    assert po.po_number == "PO0000123"
+
+
+def test_update_po_still_allows_setting_po_number_on_a_draft(db_session):
+    po = po_repository.create_po(db_session, line_items=[_line_item("ML2010")])
+    db_session.flush()
+    assert po.status == POStatus.DRAFT
+    po_repository.update_po(db_session, po.id, po_number="PO-DRAFT-1")
+    assert po.po_number == "PO-DRAFT-1"
+
+
 # #481: the vendor quotation is usually typed onto the PO after the draft exists, but a buyer working
 # from a quote in hand had nowhere to record it at creation. Optional, and blank must stay NULL - the
 # VENDOR_CONFIRMED auto-transition tests "a quote exists", which an empty string would satisfy.

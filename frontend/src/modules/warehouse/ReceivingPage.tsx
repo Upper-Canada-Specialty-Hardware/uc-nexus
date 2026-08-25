@@ -29,7 +29,7 @@ import { formatPoStatus, poStatusChipColor } from '../po/poStatus';
 import { GET_PROJECTS } from '../../graphql/shared';
 import {
   GET_BACK_ORDERED_ITEMS,
-  GET_OPEN_POS,
+  GET_OPEN_POS_SUMMARY,
   GET_RECENT_RECEIVE_RECORDS,
   GET_PENDING_DRAFT_SUMMARIES,
 } from '../../graphql/warehouse';
@@ -40,21 +40,19 @@ import { parseServerDate, parseServerDay } from '../../utils/serverDate';
 
 // ---- Types ----
 
-interface OpenPOLineItem {
-  id: string;
-  orderedQuantity: number;
-  receivedQuantity: number;
-}
-
+// Lean receiving-picker row (gp-owned-po mirror): the two pending scalars come from the server's
+// grouped query, so no line collection is loaded for the list.
 interface OpenPO {
   id: string;
   poNumber: string | null;
   projectId: string | null;
   status: string;
+  origin: string;
   vendorNameSnapshot: string | null;
   orderedAt: string | null;
   expectedDeliveryDate: string | null;
-  lineItems: OpenPOLineItem[];
+  pendingLineCount: number;
+  pendingQuantity: number;
 }
 
 interface Project {
@@ -228,7 +226,7 @@ export default function ReceivingPage() {
     data: openPOsData,
     loading: openPOsLoading,
     error: openPOsError,
-  } = useQuery<{ openPOs: OpenPO[] }>(GET_OPEN_POS, { skip: !showReceive });
+  } = useQuery<{ openPosSummary: OpenPO[] }>(GET_OPEN_POS_SUMMARY, { skip: !showReceive });
 
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
 
@@ -366,26 +364,17 @@ export default function ReceivingPage() {
 
   const poRows = useMemo(
     () =>
-      (openPOsData?.openPOs ?? []).map((po) => {
-        const pendingLines = po.lineItems.filter(
-          (li) => li.orderedQuantity - li.receivedQuantity > 0,
-        ).length;
-        const pendingQty = po.lineItems.reduce(
-          (sum, li) => sum + Math.max(0, li.orderedQuantity - li.receivedQuantity),
-          0,
-        );
-        return {
-          id: po.id,
-          poNumber: po.poNumber ?? '\u2014',
-          vendorName: poVendorName(po) || '\u2014',
-          projectName: po.projectId ? (projectMap.get(po.projectId) ?? '\u2014') : 'Stock PO',
-          expectedDeliveryDate: po.expectedDeliveryDate,
-          pendingLines,
-          pendingQty,
-          status: po.status,
-          pendingDraftCount: pendingDraftsByPoId.get(po.id)?.length ?? 0,
-        };
-      }),
+      (openPOsData?.openPosSummary ?? []).map((po) => ({
+        id: po.id,
+        poNumber: po.poNumber ?? '\u2014',
+        vendorName: poVendorName(po) || '\u2014',
+        projectName: po.projectId ? (projectMap.get(po.projectId) ?? '\u2014') : 'Stock PO',
+        expectedDeliveryDate: po.expectedDeliveryDate,
+        pendingLines: po.pendingLineCount,
+        pendingQty: po.pendingQuantity,
+        status: po.status,
+        pendingDraftCount: pendingDraftsByPoId.get(po.id)?.length ?? 0,
+      })),
     [openPOsData, projectMap, pendingDraftsByPoId],
   );
 

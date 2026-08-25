@@ -30,6 +30,9 @@ from app.models.enums import (
     PODocumentType as PODocumentTypeDB,
 )
 from app.models.enums import (
+    POOrigin as POOriginDB,
+)
+from app.models.enums import (
     POStatus as POStatusDB,
 )
 from app.models.enums import (
@@ -66,6 +69,7 @@ AuditEntityType = strawberry.enum(AuditEntityTypeDB)
 Classification = strawberry.enum(ClassificationDB)
 HardwareItemState = strawberry.enum(HardwareItemStateDB)
 POStatus = strawberry.enum(POStatusDB)
+POOrigin = strawberry.enum(POOriginDB)
 PullRequestSource = strawberry.enum(PullRequestSourceDB)
 PullRequestStatus = strawberry.enum(PullRequestStatusDB)
 PullPickLineState = strawberry.enum(PullPickLineStateDB)

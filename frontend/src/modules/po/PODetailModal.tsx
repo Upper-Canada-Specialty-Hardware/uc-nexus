@@ -34,6 +34,7 @@ import { UPDATE_PO, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
+import MirroredScheduleLinkPanel from './MirroredScheduleLinkPanel';
 import POGenerateDialog from './POGenerateDialog';
 import { poVendorName } from './poVendorName';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
@@ -598,7 +599,13 @@ export default function PODetailModal({
             color={poStatusChipColor(po.status)}
             size="small"
           />
-          {po.poNumber && (
+          {po.origin === 'GP' && (
+            <Tooltip title="Mirrored from GP - this PO was not raised through Nexus" arrow>
+              <Chip label="GP-owned" size="small" variant="outlined" />
+            </Tooltip>
+          )}
+          {/* A mirrored PO has no Nexus request number; only show it when there is one. */}
+          {po.requestNumber && (
             <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 0.75 }}>
               <Typography component="span" sx={microLabelSx}>
                 Request #
@@ -741,6 +748,11 @@ export default function PODetailModal({
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
             No line items.
           </Typography>
+        )}
+
+        {/* Coverage-only schedule linking for a mirrored PO that has a project (gp-owned-po mirror). */}
+        {po.origin === 'GP' && po.projectId && po.lineItems.length > 0 && (
+          <MirroredScheduleLinkPanel po={po} onRefetch={onRefetch} />
         )}
 
         {/* Documents Section */}

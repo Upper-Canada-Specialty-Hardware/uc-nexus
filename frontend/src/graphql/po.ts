@@ -9,6 +9,7 @@ export const GET_PO_STATISTICS = gql`
       vendorConfirmed
       partiallyReceived
       closed
+      cancelled
     }
   }
 `;
@@ -22,12 +23,16 @@ export const GET_PO_DOCUMENT_DOWNLOAD_URL = gql`
   }
 `;
 
-export const GET_PURCHASE_ORDERS = gql`
-  query GetPurchaseOrders($projectId: ID, $status: POStatus) {
-    purchaseOrders(projectId: $projectId, status: $status) {
+// One PO with the full detail the PO modal renders (gp-owned-po mirror). The register list is slim
+// (purchaseOrdersPage), so opening a row fetches its lines/documents/receives here on demand.
+export const GET_PURCHASE_ORDER = gql`
+  query GetPurchaseOrder($id: ID!) {
+    purchaseOrder(id: $id) {
       id
       poNumber
       requestNumber
+      origin
+      gpSyncedAt
       projectId
       status
       gpCompany
@@ -35,8 +40,6 @@ export const GET_PURCHASE_ORDERS = gql`
       vendorNameSnapshot
       buyerId
       vendorQuoteNumber
-      # #490's register-dialog seed reads registerPo.costCode off this row; without the field the
-      # draft's code never reaches the dialog and the buyer is asked to pick it a second time.
       costCode
       shippingCost
       tariffAmount
@@ -75,6 +78,7 @@ export const GET_PURCHASE_ORDERS = gql`
         receivedQuantity
         unitCost
         orderAs
+        gpLineOrd
         manufacturer
         createdAt
         updatedAt
@@ -104,6 +108,83 @@ export const GET_PURCHASE_ORDERS = gql`
         documentType
         uploadedAt
         downloadUrl
+      }
+    }
+  }
+`;
+
+// The company-scale register (gp-owned-po mirror): server-driven paging/search/sort. Rows are slim -
+// a lineItemCount scalar instead of the line collection - so the list never materializes every line of
+// every PO. Opening a row loads the full PO via GET_PURCHASE_ORDER.
+export const PURCHASE_ORDERS_PAGE = gql`
+  query PurchaseOrdersPage(
+    $search: String
+    $statuses: [POStatus!]
+    $origin: POOrigin
+    $projectId: ID
+    $sortField: String
+    $sortDir: String
+    $limit: Int
+    $offset: Int
+  ) {
+    purchaseOrdersPage(
+      search: $search
+      statuses: $statuses
+      origin: $origin
+      projectId: $projectId
+      sortField: $sortField
+      sortDir: $sortDir
+      limit: $limit
+      offset: $offset
+    ) {
+      totalCount
+      rows {
+        id
+        poNumber
+        requestNumber
+        projectId
+        status
+        origin
+        gpCompany
+        vendorNameSnapshot
+        orderedAt
+        expectedDeliveryDate
+        createdAt
+        gpSyncedAt
+        lineItemCount
+      }
+    }
+  }
+`;
+
+// Admin: run one GP PO mirror pass now (gp-owned-po mirror).
+export const SYNC_GP_POS = gql`
+  mutation SyncGpPos {
+    syncGpPos {
+      mode
+      created
+      updated
+      backfillDone
+    }
+  }
+`;
+
+// Attach project schedule hardware to a mirrored PO's lines for coverage tracking (gp-owned-po mirror).
+// Returns how many schedule units actually matched and linked (linkedUnits): 0 means nothing was
+// available at the requested quantity, and a value below the requested quantity is a partial link.
+export const LINK_SCHEDULE_TO_MIRRORED_PO = gql`
+  mutation LinkScheduleToMirroredPo($input: LinkScheduleToMirroredPoInput!) {
+    linkScheduleToMirroredPo(input: $input) {
+      linkedUnits
+      purchaseOrder {
+        id
+        lineItems {
+          id
+          hardwareCategory
+          productCode
+          orderedQuantity
+          receivedQuantity
+        }
       }
     }
   }
