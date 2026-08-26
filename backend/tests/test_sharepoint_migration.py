@@ -21,6 +21,8 @@ from app.repositories import stock as stock_repository
 from app.repositories import warehouse as warehouse_repository
 from app.repositories import warehouse_admin_repository
 
+from .inventory_fixtures import define_location
+
 ACTOR = "Migration Tester"
 
 # The default _entry's identity, so schedule rows built for marking/classification match it exactly.
@@ -82,6 +84,19 @@ def _entry(warehouse_id, **overrides) -> dict:
     }
     entry.update(overrides)
     return entry
+
+
+@pytest.fixture(autouse=True)
+def _default_shelf_is_defined(request):
+    """#632: a PROJECT-destination entry allocates onto the shelf it carries, and an allocate target
+    has to be a defined location. Every entry in this file uses `_entry`'s default triple, so it is
+    defined once here rather than 17 times. Skipped for the handful of pure tests in this module -
+    they take no db_session and must not start needing a database.
+    """
+    if "db_session" not in request.fixturenames:
+        return
+    session = request.getfixturevalue("db_session")
+    define_location(session, warehouse_admin_repository.get_primary_warehouse_id(session), "A", "62", "R")
 
 
 def test_stock_destination_creates_a_visible_stock_row(db_session):
@@ -504,6 +519,8 @@ def test_cost_carries_through_a_transfer(db_session):
         ACTOR,
     )
     il = db_session.query(InventoryLocation).filter_by(project_id=project.id).one()
+    # A transfer destination is a location the user chose, so it has to be defined first (#632).
+    define_location(db_session, wh, "Z", "9", "Q")
     stock_repository.transfer_inventory(
         db_session,
         source_type="INVENTORY_LOCATION",

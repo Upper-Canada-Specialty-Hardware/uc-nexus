@@ -48,6 +48,7 @@ function draft(overrides: Partial<ReceiveDraft> = {}): ReceiveDraft {
     approvalIdempotencyKey: null,
     receiveRecordId: null,
     outboxEntryId: null,
+    notes: null,
     totalQuantity: 2,
     createdAt: '2026-08-02T10:00:00Z',
     updatedAt: '2026-08-02T10:00:00Z',
@@ -213,7 +214,7 @@ describe('ReceiveDraftReviewModal', () => {
     await openModal();
 
     expect(screen.getByText(/Counted by/)).toHaveTextContent('Wendy Warehouse');
-    expect(within(screen.getByRole('grid')).getByRole('spinbutton')).toHaveValue(2);
+    expect(within(screen.getByRole('table')).getByRole('spinbutton')).toHaveValue(2);
     expect(screen.queryByLabelText('Aisle')).toBeNull();
     expect(screen.queryByLabelText('Bay')).toBeNull();
   });
@@ -255,7 +256,7 @@ describe('ReceiveDraftReviewModal', () => {
     await openModal([updateMock, approveMock]);
 
     // The count was two; the reviewer makes it three, which is exactly the PO's pending quantity.
-    fireEvent.change(within(screen.getByRole('grid')).getByRole('spinbutton'), { target: { value: '3' } });
+    fireEvent.change(within(screen.getByRole('table')).getByRole('spinbutton'), { target: { value: '3' } });
     await approveViaConfirm();
 
     await screen.findByText(/Approved\. 3 items added to inventory/, undefined, SLOW);
@@ -409,7 +410,7 @@ describe('ReceiveDraftReviewModal', () => {
     ];
     await openModal([updateMock, ...failThenPass]);
 
-    fireEvent.change(within(screen.getByRole('grid')).getByRole('spinbutton'), { target: { value: '3' } });
+    fireEvent.change(within(screen.getByRole('table')).getByRole('spinbutton'), { target: { value: '3' } });
     await approveViaConfirm();
     await screen.findByText(/Approving this receive failed/, undefined, SLOW);
 
@@ -424,7 +425,7 @@ describe('ReceiveDraftReviewModal', () => {
     // since the count was written - hence the live read this validates against.
     await openModal();
 
-    fireEvent.change(within(screen.getByRole('grid')).getByRole('spinbutton'), { target: { value: '4' } });
+    fireEvent.change(within(screen.getByRole('table')).getByRole('spinbutton'), { target: { value: '4' } });
     expect(screen.getByText('Max: 3')).toBeInTheDocument();
     expect(approveButton()).toBeDisabled();
   });

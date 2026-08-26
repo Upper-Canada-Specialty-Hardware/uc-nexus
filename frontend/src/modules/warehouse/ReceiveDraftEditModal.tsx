@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
-import { Alert, Box, Button, CircularProgress, Typography } from '@mui/material';
+import { Alert, Box, Button, CircularProgress, TextField, Typography } from '@mui/material';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { useApolloClient } from '@apollo/client/react';
 import { useToast } from '../../components/Toast';
@@ -37,6 +37,8 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
   const client = useApolloClient();
 
   const [receiveQuantities, setReceiveQuantities] = useState<Record<string, number>>({});
+  // #632: the counter's remark, editable alongside the count. '' clears it on save.
+  const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
 
@@ -59,6 +61,7 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
     const state = draftToEditorState(draft.lineItems);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate the editor from the draft
     setReceiveQuantities(state.receiveQuantities);
+    setNotes(draft.notes ?? '');
     setMutationError(null);
   }, [open, draft]);
 
@@ -96,6 +99,9 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
           input: {
             draftId: draft.id,
             warehouseId: draft.warehouseId,
+            // #632: always sent - the backend reads null as "unchanged", so clearing needs the
+            // empty string to travel.
+            notes,
             lineItems: buildReceiveLineItemsInput(lineItemsToReceive, receiveQuantities),
           },
         },
@@ -119,6 +125,7 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
     updateDraft,
     lineItemsToReceive,
     receiveQuantities,
+    notes,
     isRejected,
     resubmitDraft,
     showToast,
@@ -181,6 +188,20 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
           receiveQuantities={receiveQuantities}
           onQuantityChange={handleQuantityChange}
           showPoHeaders={false}
+        />
+      )}
+      {poDetails && (
+        <TextField
+          label="Notes (optional)"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          size="small"
+          fullWidth
+          multiline
+          minRows={1}
+          maxRows={4}
+          placeholder="Anything the approver should know — damage, shortages, substitutions"
+          sx={{ mt: 1 }}
         />
       )}
     </Modal>

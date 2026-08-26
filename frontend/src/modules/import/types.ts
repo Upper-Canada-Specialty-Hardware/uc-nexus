@@ -188,6 +188,20 @@ function seededVendorLines(
   return result;
 }
 
+// #632: the per-product selection totals the drafts were seeded from - the shared pool step 6's Qty
+// edits are capped by (a draft may hold at most the pool minus what sibling drafts hold). Derived
+// through the same seeding math (Order Qty budget included), so cap and seed cannot disagree.
+export function selectionTotalsByProduct(
+  vendorGroups: Map<string, AggregatedHardwareItem[]>,
+  orderQtyOverrides?: Map<string, number>,
+): Map<string, number> {
+  const totals = new Map<string, number>();
+  for (const { lines } of seededVendorLines(vendorGroups, orderQtyOverrides)) {
+    for (const [pk, qty] of lines) totals.set(pk, (totals.get(pk) ?? 0) + qty);
+  }
+  return totals;
+}
+
 // Seed one draft per manufacturer group at full quantity - the starting point the buyer then slices.
 // Unchecked by default (nothing is ordered until the buyer says so), same as the old vendor selection.
 // #627: orderQtyOverrides caps a product's seeded lines at the buyer's Order Qty (hardware pathway only).

@@ -1177,6 +1177,16 @@ export default function GpPurchaseOrderDialog({
             helperText={errors.tradeDiscount}
           />
         </Stack>
+        {/* #632: a foreign-currency PO is priced from GP's maintained exchange rate table at
+            registration, and a company with no rate maintained refuses it (the relay's
+            no_exchange_rate preflight). Say so up front, beside the currency it applies to. */}
+        {isForeignCurrency && (
+          <Alert severity="info" sx={{ mt: 2 }}>
+            A {gpVendorCurrency} purchase order needs a maintained exchange rate in GP (rate covering
+            today's date for the company's purchasing rate type). If none is maintained, registration
+            will be refused - add the rate in GP first, or use a CAD vendor.
+          </Alert>
+        )}
         {errors.gp && (
           <Alert severity="error" sx={{ mt: 2 }}>
             {errors.gp}

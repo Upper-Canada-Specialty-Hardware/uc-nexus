@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.errors import NotFoundError, ValidationError
 from app.models.enums import AuditAction, AuditEntityType
 from app.models.stock_item import StockItem
-from app.repositories.warehouse import location_detail, normalize_location_value
+from app.repositories.warehouse import ensure_registered_location, location_detail, normalize_location_value
 
 from .common import _find_or_create_stock_row, _log_audit_event, _validate_location_fields
 
@@ -121,6 +121,7 @@ def move_stock_location(
     _validate_location_fields(new_aisle, new_row, new_bay)
 
     si = get_stock_item(session, stock_item_id)
+    ensure_registered_location(session, si.warehouse_id, new_aisle, new_row, new_bay)
     old = location_detail(si.aisle, si.row, si.bay, si.warehouse_id)
     si.aisle = new_aisle
     si.row = new_row
@@ -176,6 +177,7 @@ def assign_stock_item_location(
     bay = normalize_location_value(bay) or ""
     _validate_location_fields(aisle, row, bay)
     si = get_stock_item(session, stock_item_id)
+    ensure_registered_location(session, si.warehouse_id, aisle, row, bay)
     si.aisle = aisle
     si.row = row
     si.bay = bay

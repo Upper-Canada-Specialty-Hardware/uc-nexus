@@ -25,6 +25,7 @@ function draft(overrides: Record<string, unknown> = {}) {
     approvalIdempotencyKey: null,
     receiveRecordId: null,
     outboxEntryId: null,
+    notes: null,
     totalQuantity: 4,
     createdAt: '2026-08-02T10:00:00Z',
     updatedAt: '2026-08-02T10:00:00Z',

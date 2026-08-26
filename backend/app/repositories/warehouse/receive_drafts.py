@@ -35,6 +35,17 @@ from .receiving import validate_receive_eligibility
 _IN_FLIGHT_STATUSES = (ReceiveDraftStatus.APPROVING, ReceiveDraftStatus.APPROVED)
 
 MAX_REJECTION_REASON = 1000
+MAX_RECEIVE_NOTES = 2000
+
+
+def _clean_notes(notes: str | None) -> str | None:
+    """Strip and bound a receive remark. Empty collapses to None so the columns stay null-or-text."""
+    cleaned = (notes or "").strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > MAX_RECEIVE_NOTES:
+        raise ValidationError(f"Notes must be {MAX_RECEIVE_NOTES} characters or fewer", field="notes")
+    return cleaned
 
 
 class ApprovalContext:
@@ -167,6 +178,7 @@ def create_receive_draft(
     *,
     idempotency_key: str | None = None,
     packing_slip_document_id: uuid.UUID | None = None,
+    notes: str | None = None,
 ) -> ReceiveDraftModel:
     """Record a counted delivery for a Warehouse Manager to approve.
 
@@ -203,6 +215,7 @@ def create_receive_draft(
         created_by_name=author_name,
         create_idempotency_key=idempotency_key or None,
         packing_slip_document_id=packing_slip_document_id,
+        notes=_clean_notes(notes),
     )
     session.add(draft)
     session.flush()
@@ -285,6 +298,7 @@ def update_receive_draft(
     actor_user_id: str,
     actor_is_manager: bool,
     warehouse_id: uuid.UUID | None = None,
+    notes: str | None = None,
 ) -> ReceiveDraftModel:
     """Rewrite what a draft says was counted.
 
@@ -295,6 +309,8 @@ def update_receive_draft(
     null, so treating it as an assignment would let a caller sending only corrected quantities
     silently move the delivery to whatever `get_primary_warehouse_id` returns at approval - hardware
     booked into the wrong building with nothing reported.
+
+    `notes` follows the same reading: None leaves the remark alone, an empty string clears it.
     """
     draft = _get_draft(session, draft_id)
     _assert_can_edit(draft, actor_user_id, actor_is_manager)
@@ -308,6 +324,8 @@ def update_receive_draft(
 
     if warehouse_id is not None:
         draft.warehouse_id = warehouse_id
+    if notes is not None:
+        draft.notes = _clean_notes(notes)
     _write_lines(session, draft, po, line_items_input)
     session.refresh(draft)
     return draft

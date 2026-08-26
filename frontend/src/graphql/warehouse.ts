@@ -172,6 +172,8 @@ export const GET_PO_RECEIVING_DETAILS = gql`
         # receipt it posted.
         receiptNumber
         batchNumber
+        # #632: the counter's remark, carried off the approved draft.
+        notes
         lineItems {
           id
           poLineItemId
@@ -433,6 +435,48 @@ export const ADJUST_INVENTORY_QUANTITY = gql`
   }
 `;
 
+// --- Defined-locations registry (#632) ---
+//
+// The put-away pickers read the ACTIVE registry and every location write is validated against it
+// server-side; the Locations tab reads everything so deactivated rows stay manageable.
+
+export const GET_WAREHOUSE_LOCATIONS = gql`
+  query GetWarehouseLocations($warehouseId: ID, $activeOnly: Boolean) {
+    warehouseLocations(warehouseId: $warehouseId, activeOnly: $activeOnly) {
+      id
+      warehouseId
+      aisle
+      row
+      bay
+      active
+      createdAt
+    }
+  }
+`;
+
+export const CREATE_WAREHOUSE_LOCATION = gql`
+  mutation CreateWarehouseLocation($warehouseId: ID!, $aisle: String!, $row: String!, $bay: String!) {
+    createWarehouseLocation(warehouseId: $warehouseId, aisle: $aisle, row: $row, bay: $bay) {
+      id
+      warehouseId
+      aisle
+      row
+      bay
+      active
+      createdAt
+    }
+  }
+`;
+
+export const DEACTIVATE_WAREHOUSE_LOCATION = gql`
+  mutation DeactivateWarehouseLocation($id: ID!) {
+    deactivateWarehouseLocation(id: $id) {
+      id
+      active
+    }
+  }
+`;
+
 // --- Drafted receives and the approval that posts them ---
 //
 // A receive is two actions now. `createReceiveDraft` records what somebody counted and reaches
@@ -462,6 +506,8 @@ const RECEIVE_DRAFT_FIELDS = `
   approvalIdempotencyKey
   receiveRecordId
   outboxEntryId
+  # #632: the counter's remark for the approver ("box crushed"). Carried onto the record at approval.
+  notes
   totalQuantity
   createdAt
   updatedAt

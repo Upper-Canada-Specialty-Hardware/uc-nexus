@@ -35,13 +35,14 @@ import {
 } from '../../graphql/shared';
 import {
   GET_UNLOCATED_INVENTORY,
-  GET_LOCATION_DISTINCT_VALUES,
+  GET_WAREHOUSE_LOCATIONS,
   GET_STOCK_ITEMS,
   ASSIGN_STOCK_ITEM_LOCATION,
 } from '../../graphql/warehouse';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
+import { type WarehouseLocationDef, normalizeLocationValue } from './receiveDraftTypes';
 
 // ---- Types ----
 
@@ -134,9 +135,12 @@ export default function PutAwayTab() {
   const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
     variables: { includeInactive: true },
   });
-  const { data: distinctData } = useQuery<{
-    locationDistinctValues: { aisles: string[]; rows: string[]; bays: string[] };
-  }>(GET_LOCATION_DISTINCT_VALUES, { fetchPolicy: 'cache-and-network' });
+  // #632: the defined-locations registry (active only) - the three pickers are strict picks from it,
+  // filtered to the item's warehouse, and Assign is gated on an exact registry match.
+  const { data: registryData } = useQuery<{ warehouseLocations: WarehouseLocationDef[] }>(
+    GET_WAREHOUSE_LOCATIONS,
+    { variables: { activeOnly: true }, fetchPolicy: 'cache-and-network' },
+  );
 
   const {
     data: unlocatedData,
@@ -159,9 +163,48 @@ export default function PutAwayTab() {
     },
   );
 
-  const aisleOptions = distinctData?.locationDistinctValues.aisles ?? [];
-  const rowOptions = distinctData?.locationDistinctValues.rows ?? [];
-  const bayOptions = distinctData?.locationDistinctValues.bays ?? [];
+  const registry = useMemo(() => registryData?.warehouseLocations ?? [], [registryData]);
+  const registryByWarehouse = useMemo(() => {
+    const m = new Map<string, WarehouseLocationDef[]>();
+    for (const wl of registry) {
+      const arr = m.get(wl.warehouseId) ?? [];
+      arr.push(wl);
+      m.set(wl.warehouseId, arr);
+    }
+    return m;
+  }, [registry]);
+
+  // Cascading options per row: aisles for the item's warehouse; rows within the picked aisle; bays
+  // within the picked aisle + row. A null warehouse (pre-#572 rows) falls back to every definition.
+  const optionsFor = useCallback(
+    (itemWarehouseId: string | null, loc: LocationInput) => {
+      const defs = itemWarehouseId ? (registryByWarehouse.get(itemWarehouseId) ?? []) : registry;
+      const a = normalizeLocationValue(loc.aisle);
+      const r = normalizeLocationValue(loc.row);
+      const aisles = new Set<string>();
+      const rowsSet = new Set<string>();
+      const bays = new Set<string>();
+      for (const d of defs) {
+        aisles.add(d.aisle);
+        if (!a || d.aisle === a) rowsSet.add(d.row);
+        if ((!a || d.aisle === a) && (!r || d.row === r)) bays.add(d.bay);
+      }
+      const sort = (s: Set<string>) => Array.from(s).sort((x, y) => x.localeCompare(y));
+      return { aisles: sort(aisles), rows: sort(rowsSet), bays: sort(bays) };
+    },
+    [registryByWarehouse, registry],
+  );
+
+  const isDefinedLocation = useCallback(
+    (itemWarehouseId: string | null, loc: LocationInput): boolean => {
+      const defs = itemWarehouseId ? (registryByWarehouse.get(itemWarehouseId) ?? []) : registry;
+      const a = normalizeLocationValue(loc.aisle);
+      const r = normalizeLocationValue(loc.row);
+      const b = normalizeLocationValue(loc.bay);
+      return !!a && !!r && !!b && defs.some((d) => d.aisle === a && d.row === r && d.bay === b);
+    },
+    [registryByWarehouse, registry],
+  );
 
   // Mutation
   const [assignLocation] = useMutation(ASSIGN_INVENTORY_LOCATION);
@@ -223,21 +266,6 @@ export default function PutAwayTab() {
       }));
     },
     [],
-  );
-
-  const isValid = useCallback(
-    (id: string): boolean => {
-      const loc = getLocationInput(id);
-      return (
-        loc.aisle.trim().length >= 1 &&
-        loc.aisle.trim().length <= 20 &&
-        loc.row.trim().length >= 1 &&
-        loc.row.trim().length <= 20 &&
-        loc.bay.trim().length >= 1 &&
-        loc.bay.trim().length <= 20
-      );
-    },
-    [getLocationInput],
   );
 
   const splitIsValid = useCallback(
@@ -351,7 +379,8 @@ export default function PutAwayTab() {
         Put Away
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Received hardware with no rack location yet. Give each row an aisle, row and bay.
+        Received hardware with no rack location yet. Pick a defined aisle, row and bay for each row —
+        locations are defined on the Locations tab.
       </Typography>
 
       {/* Filters */}
@@ -470,7 +499,8 @@ export default function PutAwayTab() {
                         {categoryItems.map((item) => {
                           const id = item.inventoryLocation.id;
                           const loc = getLocationInput(id);
-                          const valid = isValid(id);
+                          const rowOptions = optionsFor(item.inventoryLocation.warehouseId, loc);
+                          const valid = isDefinedLocation(item.inventoryLocation.warehouseId, loc);
                           const isAssigning = assigningId === id;
 
                           return (
@@ -512,24 +542,31 @@ export default function PutAwayTab() {
                                 {formatDate(item.inventoryLocation.receivedAt)}
                               </TableCell>
                               <TableCell>
+                                {/* #632: strict picks from the defined-locations registry, scoped
+                                    to the item's warehouse. Aisle narrows rows, aisle+row narrow
+                                    bays; Assign stays grey until the triple matches a defined
+                                    location exactly. */}
                                 <Box sx={{ display: 'flex', gap: 1, minWidth: 300 }}>
                                   <LocationAutocomplete
                                     label="Aisle"
                                     value={loc.aisle}
                                     onChange={(v) => updateLocationInput(id, 'aisle', v)}
-                                    options={aisleOptions}
+                                    options={rowOptions.aisles}
+                                    freeSolo={false}
                                   />
                                   <LocationAutocomplete
                                     label="Row"
                                     value={loc.row}
                                     onChange={(v) => updateLocationInput(id, 'row', v)}
-                                    options={rowOptions}
+                                    options={rowOptions.rows}
+                                    freeSolo={false}
                                   />
                                   <LocationAutocomplete
                                     label="Bay"
                                     value={loc.bay}
                                     onChange={(v) => updateLocationInput(id, 'bay', v)}
-                                    options={bayOptions}
+                                    options={rowOptions.bays}
+                                    freeSolo={false}
                                   />
                                 </Box>
                               </TableCell>
@@ -612,7 +649,8 @@ export default function PutAwayTab() {
                 {stockRows.map((si) => {
                   const id = si.id;
                   const loc = getLocationInput(id);
-                  const valid = isValid(id);
+                  const rowOptions = optionsFor(si.warehouseId, loc);
+                  const valid = isDefinedLocation(si.warehouseId, loc);
                   const isAssigning = assigningId === id;
                   return (
                     <TableRow key={id} hover>
@@ -639,19 +677,22 @@ export default function PutAwayTab() {
                             label="Aisle"
                             value={loc.aisle}
                             onChange={(v) => updateLocationInput(id, 'aisle', v)}
-                            options={aisleOptions}
+                            options={rowOptions.aisles}
+                            freeSolo={false}
                           />
                           <LocationAutocomplete
                             label="Row"
                             value={loc.row}
                             onChange={(v) => updateLocationInput(id, 'row', v)}
-                            options={rowOptions}
+                            options={rowOptions.rows}
+                            freeSolo={false}
                           />
                           <LocationAutocomplete
                             label="Bay"
                             value={loc.bay}
                             onChange={(v) => updateLocationInput(id, 'bay', v)}
-                            options={bayOptions}
+                            options={rowOptions.bays}
+                            freeSolo={false}
                           />
                         </Box>
                       </TableCell>

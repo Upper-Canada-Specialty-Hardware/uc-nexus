@@ -72,6 +72,8 @@ interface ReceiveRecord {
   receivedBy: string;
   receiptNumber: string | null;
   batchNumber: string | null;
+  // #632: the counter's remark, carried off the approved draft.
+  notes: string | null;
   lineItems: ReceiveRecordLineItem[];
 }
 
@@ -166,6 +168,12 @@ function ReceivesPanel({ poId }: { poId: string }) {
               by {receive.receivedBy}
             </Typography>
           </Box>
+          {/* #632: what the counter wanted remembered about this delivery. */}
+          {receive.notes && (
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.75, whiteSpace: 'pre-wrap' }}>
+              Notes: {receive.notes}
+            </Typography>
+          )}
           <Table size="small" sx={{ bgcolor: 'background.paper' }}>
             <TableHead>
               <TableRow>

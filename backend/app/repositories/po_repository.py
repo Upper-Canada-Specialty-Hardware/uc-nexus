@@ -855,6 +855,21 @@ def update_po(
     return po
 
 
+def update_po_notes(session: Session, po_id: uuid.UUID, notes: str | None) -> PurchaseOrder:
+    """Set the PO's notes at ANY status, receives included (#632).
+
+    Notes are a Nexus-only overlay on the PO - the GP mirror sync never writes them - so the
+    edit-lock `update_po` puts on GP-authoritative fields once receiving starts has nothing to
+    protect here. A warehouse remark belongs on the PO whenever it is learned, which is usually
+    exactly when the PO can no longer be edited.
+    """
+    po = get_purchase_order(session, po_id)
+    if po is None:
+        raise NotFoundError(f"Purchase order {po_id} not found")
+    po.notes = notes.strip() if notes and notes.strip() else None
+    return po
+
+
 def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     """
     - Validate exists + not soft-deleted (NotFoundError)

@@ -21,7 +21,7 @@ import {
   CircularProgress,
   Tooltip,
 } from '@mui/material';
-import { Trash2, Download, Upload, FileText, Mail } from 'lucide-react';
+import { Trash2, Download, Upload, FileText, Mail, Pencil } from 'lucide-react';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import type { GridColDef } from '@mui/x-data-grid';
@@ -30,7 +30,7 @@ import DataTable from '../../components/DataTable';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { useToast } from '../../components/Toast';
-import { UPDATE_PO, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM_UNIT_COST, UPLOAD_PO_DOCUMENT, DELETE_PO_DOCUMENT, EMAIL_PO_TO_VENDOR } from '../../graphql/po';
+import { UPDATE_PO, UPDATE_PO_NOTES, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM_UNIT_COST, UPLOAD_PO_DOCUMENT, DELETE_PO_DOCUMENT, EMAIL_PO_TO_VENDOR } from '../../graphql/po';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
@@ -124,6 +124,11 @@ export default function PODetailModal({
   // Generate-document dialog state
   const [generateOpen, setGenerateOpen] = useState(false);
 
+  // #632: inline notes edit in READ mode. Notes are the one field editable at any status (a
+  // Nexus-only overlay), so they get their own pencil instead of riding the gated Edit form.
+  const [notesEditing, setNotesEditing] = useState(false);
+  const [notesDraft, setNotesDraft] = useState('');
+
   // --- Mutations ---
 
   const [updatePo, { loading: updateLoading }] = useMutation(UPDATE_PO, {
@@ -148,6 +153,16 @@ export default function PODetailModal({
       } else {
         showToast(error.message, 'error');
       }
+    },
+  });
+
+  const [updatePoNotes, { loading: notesSaving }] = useMutation(UPDATE_PO_NOTES, {
+    onCompleted: () => {
+      showToast('Notes saved', 'success');
+      setNotesEditing(false);
+    },
+    onError: (error) => {
+      showToast(error.message, 'error');
     },
   });
 
@@ -727,8 +742,67 @@ export default function PODetailModal({
               {/* A PO with a project shows it in the list; here only its absence is worth a line -
                   the modal has the project's id, not its human number. */}
               {!po.projectId && <InfoField label="Project" value="No Project" />}
-              <Box sx={{ gridColumn: '1 / -1' }}>
-                <InfoField label="Notes" value={po.notes} wrap />
+              <Box sx={{ gridColumn: '1 / -1', minWidth: 0 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.25 }}>
+                  <Typography component="div" sx={microLabelSx}>
+                    Notes
+                  </Typography>
+                  {!notesEditing && (
+                    <Tooltip title="Edit notes - available at any status" arrow>
+                      <IconButton
+                        size="small"
+                        aria-label="Edit notes"
+                        onClick={() => {
+                          setNotesDraft(po.notes ?? '');
+                          setNotesEditing(true);
+                        }}
+                        sx={{ p: 0.25 }}
+                      >
+                        <Pencil size={14} strokeWidth={1.75} />
+                      </IconButton>
+                    </Tooltip>
+                  )}
+                </Box>
+                {notesEditing ? (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    <TextField
+                      value={notesDraft}
+                      onChange={(e) => setNotesDraft(e.target.value)}
+                      fullWidth
+                      size="small"
+                      multiline
+                      minRows={2}
+                      maxRows={6}
+                      autoFocus
+                      slotProps={{ htmlInput: { 'aria-label': 'Notes' } }}
+                    />
+                    <Box sx={{ display: 'flex', gap: 1 }}>
+                      <Button
+                        size="small"
+                        variant="contained"
+                        disabled={notesSaving}
+                        onClick={() => updatePoNotes({ variables: { id: po.id, notes: notesDraft || null } })}
+                      >
+                        Save notes
+                      </Button>
+                      <Button size="small" disabled={notesSaving} onClick={() => setNotesEditing(false)}>
+                        Cancel
+                      </Button>
+                    </Box>
+                  </Box>
+                ) : (
+                  <Typography
+                    component="div"
+                    variant="body2"
+                    sx={{
+                      color: po.notes ? 'text.primary' : 'text.disabled',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {po.notes || EMPTY}
+                  </Typography>
+                )}
               </Box>
             </Box>
           </FadeIn>

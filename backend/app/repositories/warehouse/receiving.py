@@ -21,7 +21,7 @@ from app.models.receiving import ReceiveRecord as ReceiveRecordModel
 from app.repositories import project_repository
 
 from .audit import _log_audit_event
-from .locations import _normalize_and_validate_location_fields, location_detail
+from .locations import _normalize_and_validate_location_fields, ensure_registered_location, location_detail
 
 
 def validate_receive_eligibility(
@@ -116,6 +116,7 @@ def create_receive(
     *,
     receipt_number: str | None = None,
     batch_number: str | None = None,
+    notes: str | None = None,
 ) -> ReceiveRecordModel:
     """
     Create a ReceiveRecord with ReceiveLineItems and InventoryLocations.
@@ -135,6 +136,7 @@ def create_receive(
             app it is always present, because receiving is GP-first and nothing is persisted here
             until GP has already numbered the receipt.
         batch_number: the GP batch that receipt landed in, from the same response.
+        notes: the counter's remark, carried off the approved draft (#632). Nexus-only.
     Returns:
         The created ReceiveRecord with line_items loaded.
     """
@@ -202,6 +204,7 @@ def create_receive(
                 loc["aisle"], loc["row"], loc["bay"] = _normalize_and_validate_location_fields(
                     loc["aisle"], loc["row"], loc["bay"]
                 )
+                ensure_registered_location(session, warehouse_id, loc["aisle"], loc["row"], loc["bay"])
 
     # 5. Execute in single transaction
     now = datetime.utcnow()
@@ -212,6 +215,7 @@ def create_receive(
         received_by=received_by,
         receipt_number=receipt_number,
         batch_number=batch_number,
+        notes=notes,
     )
     session.add(receive_record)
     session.flush()

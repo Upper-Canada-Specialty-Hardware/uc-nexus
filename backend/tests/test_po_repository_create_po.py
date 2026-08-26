@@ -412,3 +412,65 @@ def test_create_po_with_a_quote_stays_a_draft(db_session):
     )
 
     assert po.status == POStatus.DRAFT
+
+
+# --- #632: notes stay editable after the PO is locked --------------------------------------------
+# Notes are a Nexus-only overlay - the GP mirror sync never writes them - so the edit-lock update_po
+# puts on GP-authoritative fields once receiving starts has nothing to protect here. A warehouse
+# remark is usually learned at exactly the moment the PO can no longer be edited.
+
+
+def _po_with_a_receive(session):
+    from datetime import datetime as datetime_cls
+
+    from app.models.receiving import ReceiveRecord
+
+    po = po_repository.create_po(session, line_items=[_line_item("ML2010")])
+    session.flush()
+    session.add(ReceiveRecord(id=uuid.uuid4(), po_id=po.id, received_at=datetime_cls.utcnow(), received_by="warehouse"))
+    session.flush()
+    return po
+
+
+def test_notes_land_after_receiving_has_started_where_update_po_is_refused(db_session):
+    from app.errors import InvalidStateTransitionError
+
+    po = _po_with_a_receive(db_session)
+
+    with pytest.raises(InvalidStateTransitionError):
+        po_repository.update_po(db_session, po.id, notes="blocked")
+
+    po_repository.update_po_notes(db_session, po.id, "  box crushed on delivery  ")
+    assert po.notes == "box crushed on delivery"
+
+
+def test_notes_land_on_a_closed_po_where_update_po_is_refused(db_session):
+    from app.errors import InvalidStateTransitionError
+
+    po = po_repository.create_po(db_session, line_items=[_line_item("ML2010")])
+    po.status = POStatus.CLOSED
+    db_session.flush()
+
+    with pytest.raises(InvalidStateTransitionError):
+        po_repository.update_po(db_session, po.id, notes="blocked")
+
+    po_repository.update_po_notes(db_session, po.id, "short 2 per slip")
+    assert po.notes == "short 2 per slip"
+
+
+@pytest.mark.parametrize("blank", [None, "", "   "])
+def test_blank_notes_clear_the_column_rather_than_storing_whitespace(db_session, blank):
+    po = po_repository.create_po(db_session, line_items=[_line_item("ML2010")])
+    db_session.flush()
+    po_repository.update_po_notes(db_session, po.id, "something worth saying")
+    assert po.notes == "something worth saying"
+
+    po_repository.update_po_notes(db_session, po.id, blank)
+    assert po.notes is None
+
+
+def test_notes_on_a_po_that_does_not_exist_is_not_found(db_session):
+    from app.errors import NotFoundError
+
+    with pytest.raises(NotFoundError):
+        po_repository.update_po_notes(db_session, uuid.uuid4(), "nowhere")

@@ -164,6 +164,7 @@ def finalize_payload(input: FinalizeImportSessionInput, *, created_by_user_id: s
             {
                 "po_number": po.po_number,
                 "notes": po.notes,
+                "vendor_name": po.vendor_name,
                 "preferred_delivery_date": po.preferred_delivery_date,
                 "cost_code": po.cost_code,
                 "hardware_item_refs": [

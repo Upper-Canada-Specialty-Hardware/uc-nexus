@@ -69,6 +69,7 @@ function receive(overrides: Record<string, unknown> = {}) {
     receivedBy: 'Ada',
     receiptNumber: 'RCT0000123',
     batchNumber: 'EC-2026/07/30',
+    notes: null,
     lineItems: [
       {
         id: 'rli-1',

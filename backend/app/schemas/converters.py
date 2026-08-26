@@ -68,6 +68,7 @@ from .types import (
     ShopAssemblyRequestItem,
     StockItem,
     Warehouse,
+    WarehouseLocation,
 )
 
 
@@ -123,6 +124,7 @@ def receive_record_to_type(rr) -> ReceiveRecord:
         received_by=rr.received_by,
         receipt_number=rr.receipt_number,
         batch_number=rr.batch_number,
+        notes=rr.notes,
         created_at=rr.created_at,
         line_items=[receive_line_item_to_type(rli) for rli in rr.line_items],
     )
@@ -171,6 +173,7 @@ def receive_draft_to_type(draft, po) -> ReceiveDraft:
         packing_slip_document_id=(
             strawberry.ID(str(draft.packing_slip_document_id)) if draft.packing_slip_document_id else None
         ),
+        notes=draft.notes,
         total_quantity=sum(li.quantity_received for li in draft.line_items),
         created_at=draft.created_at,
         updated_at=draft.updated_at,
@@ -287,6 +290,18 @@ def warehouse_to_type(w) -> Warehouse:
         is_active=w.is_active,
         created_at=w.created_at,
         updated_at=w.updated_at,
+    )
+
+
+def warehouse_location_to_type(wl) -> WarehouseLocation:
+    return WarehouseLocation(
+        id=strawberry.ID(str(wl.id)),
+        warehouse_id=strawberry.ID(str(wl.warehouse_id)),
+        aisle=wl.aisle,
+        row=wl.row,
+        bay=wl.bay,
+        active=wl.active,
+        created_at=wl.created_at,
     )
 
 
@@ -414,9 +429,11 @@ def open_po_summary_to_type(po, pending_quantity: int, pending_line_count: int) 
     )
 
 
-def po_list_row_to_type(po, line_item_count: int) -> POListRow:
+def po_list_row_to_type(po, line_item_count: int, created_by: str | None = None) -> POListRow:
     """A slim register row (gp-owned-po mirror). line_item_count is supplied by the caller from a
-    grouped count query, never read off po.line_items - the register never loads the collection."""
+    grouped count query, never read off po.line_items - the register never loads the collection.
+    created_by is likewise resolved by the caller (batched over the page's distinct author ids, #632)
+    rather than one Clerk lookup per row."""
     return POListRow(
         id=strawberry.ID(str(po.id)),
         po_number=po.po_number,
@@ -426,6 +443,7 @@ def po_list_row_to_type(po, line_item_count: int) -> POListRow:
         origin=po.origin,
         gp_company=po.gp_company,
         vendor_name_snapshot=po.vendor_name_snapshot,
+        created_by=created_by,
         ordered_at=po.ordered_at,
         expected_delivery_date=po.expected_delivery_date,
         created_at=po.created_at,

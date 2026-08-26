@@ -28,6 +28,9 @@ export interface CoverageRow {
   owedQuantity: number;
   /** What has left the building for this opening: completed pulls, and the slips cut from them. */
   sentQuantity: number;
+  /** #632: the sent total split by exit - through the shop bench vs out on a truck. */
+  assembledQuantity: number;
+  shippedQuantity: number;
   /** What somebody else is already holding: pending requests and live pulls. */
   claimedQuantity: number;
   /** `max(owed - sent - claimed, 0)`. Zero when a re-upload lowered owed below what went out. */

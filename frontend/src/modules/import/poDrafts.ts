@@ -32,6 +32,9 @@ export interface POLineItemAliasPayload {
 export interface PODraftPayload {
   poNumber: null;
   notes: string | null;
+  // #632: the draft's vendor label, written to vendor_name_snapshot on the created PO so the
+  // register table and the GP-vendor auto-suggest have a seed. GP register overwrites it later.
+  vendorName: string | null;
   preferredDeliveryDate: string | null;
   costCode: string | null;
   hardwareItemRefs: HardwareItemRefPayload[];
@@ -52,6 +55,7 @@ export function toPoDraftInput(d: PODraftPayload): PODraftInputPayload {
   return {
     poNumber: d.poNumber,
     notes: d.notes,
+    vendorName: d.vendorName,
     preferredDeliveryDate: d.preferredDeliveryDate,
     costCode: d.costCode,
     hardwareItemRefs: d.hardwareItemRefs,
@@ -132,6 +136,7 @@ export function buildPoDrafts(
     drafts.push({
       poNumber: null,
       notes: group.info.notes || null,
+      vendorName: group.label.trim() || null,
       preferredDeliveryDate: group.info.preferredDeliveryDate || null,
       costCode: group.info.costCode || null,
       hardwareItemRefs: refs,

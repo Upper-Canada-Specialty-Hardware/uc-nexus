@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
@@ -15,7 +15,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { ArrowLeft, FileText, Upload } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, FileText, Upload } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import type { GridColDef } from '@mui/x-data-grid';
@@ -24,13 +24,17 @@ import type { CoverageRow } from '../../import/composer';
 import OpeningSelectionPanel, { type PanelRow, type SelectableOpening } from '../../import/OpeningSelectionPanel';
 import {
   addScheduleRowAtSuggested,
+  aggregateCoverageByProduct,
   cartLineKey,
   lineQuantity,
   productKey,
+  productLinesQuantity,
   remainingForProduct,
   setLineQuantity,
+  setProductQuantity,
   type CartLine,
   type Headroom,
+  type ProductCoverage,
 } from './requestCart';
 import { classificationChip, isShopClassified, SHOP_FRAMING, shopRowTintSx } from './classificationChip';
 import { monoSx, microLabelSx, tabularSx } from '../../../theme';
@@ -117,9 +121,11 @@ export default function RequestWorkspaceScheduleTab({
   // across the round trip to the import wizard on the same sessionStorage key.
   const [view, setView] = useState<'source' | 'select'>('source');
   const [selectedOpenings, setSelectedOpenings] = useState<Set<string>>(new Set());
-  // Openings whose nothing-to-add rows are shown. Collapsed by default: the dead rows (no suggestion,
-  // or no stock behind the suggestion) are the noise the composer drowns in on a real schedule.
-  const [expandedOpenings, setExpandedOpenings] = useState<Set<string>>(new Set());
+  // #632: products whose per-opening breakdown is open (the product row's expander).
+  const [expandedProducts, setExpandedProducts] = useState<Set<string>>(new Set());
+  // Whether the nothing-to-add products are shown. Collapsed by default: the dead rows (no
+  // suggestion, or no stock behind the suggestion) are the noise the composer drowns in.
+  const [showDeadRows, setShowDeadRows] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -164,47 +170,54 @@ export default function RequestWorkspaceScheduleTab({
     fetchPolicy: 'cache-and-network',
   });
 
-  // Grouped by opening, in opening order, each opening's rows in category/product order.
-  const grouped = useMemo(() => {
-    const rows = coverageData?.requestCoverage ?? [];
-    const byOpening = new Map<string, CoverageRow[]>();
-    for (const row of rows) {
-      const bucket = byOpening.get(row.openingNumber);
-      if (bucket) bucket.push(row);
-      else byOpening.set(row.openingNumber, [row]);
+  // #632: ONE product-level table summed across the selected openings, in category/product order.
+  // The per-opening rows live behind each product's expander.
+  const aggregates = useMemo(
+    () => aggregateCoverageByProduct(coverageData?.requestCoverage ?? []),
+    [coverageData],
+  );
+
+  // Offerable products stay; dead ones collapse behind the table-level expander. Same predicate the
+  // old per-opening partition used, against the BASE pool figure (headroom) so a row cannot vanish
+  // mid-composition when a competing line drains the live pool. A product already in the cart is
+  // always visible, which also pins restored draft lines on first render.
+  const { visibleAggs, hiddenAggs } = useMemo(() => {
+    const visible: ProductCoverage[] = [];
+    const hidden: ProductCoverage[] = [];
+    for (const agg of aggregates) {
+      const basePool = headroom.get(agg.key) ?? 0;
+      if (productLinesQuantity(cart, agg.rows) > 0 || (agg.suggestedQuantity > 0 && basePool > 0)) {
+        visible.push(agg);
+      } else {
+        hidden.push(agg);
+      }
     }
-    return Array.from(byOpening.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([openingNumber, group]) => ({
-        openingNumber,
-        rows: [...group].sort(
-          (a, b) => a.hardwareCategory.localeCompare(b.hardwareCategory) || a.productCode.localeCompare(b.productCode),
-        ),
-      }));
-  }, [coverageData]);
+    return { visibleAggs: visible, hiddenAggs: hidden };
+  }, [aggregates, cart, headroom]);
 
-  const addAll = (rows: CoverageRow[]) => {
-    const next = rows.reduce((acc, row) => addScheduleRowAtSuggested(acc, row, headroom), cart);
-    onCartChange(next);
-  };
-
-  const toggleExpanded = (openingNumber: string) =>
-    setExpandedOpenings((prev) => {
+  const toggleProduct = (key: string) =>
+    setExpandedProducts((prev) => {
       const next = new Set(prev);
-      if (next.has(openingNumber)) next.delete(openingNumber);
-      else next.add(openingNumber);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
 
-  // Openings the global add-all actually contributes to: at least one row with a suggestion AND a
-  // pool behind it - the same predicate the partition keeps visible. Counting every selected
-  // opening would overstate the click on openings that are fully collapsed with nothing to add.
-  const contributingOpenings = useMemo(
+  // Products the global add-all actually contributes to: a suggestion AND a pool behind it.
+  const contributingProducts = useMemo(
     () =>
-      grouped.filter((g) => g.rows.some((r) => r.suggestedQuantity > 0 && (headroom.get(productKey(r)) ?? 0) > 0))
-        .length,
-    [grouped, headroom],
+      aggregates.filter((agg) => agg.suggestedQuantity > 0 && (headroom.get(agg.key) ?? 0) > 0).length,
+    [aggregates, headroom],
   );
+
+  const addAllSuggested = () => {
+    let next = cart;
+    for (const agg of aggregates) {
+      if (agg.suggestedQuantity <= 0) continue;
+      next = setProductQuantity(next, agg.rows, agg.suggestedQuantity, headroom);
+    }
+    onCartChange(next);
+  };
 
   // Which products the selected openings still owe, and to which openings, so the extras lane can
   // nudge a loose add toward the tagged path. Only rows with something left to send (suggested > 0)
@@ -321,48 +334,29 @@ export default function RequestWorkspaceScheduleTab({
           </Alert>
         ) : coverageLoading && !coverageData ? (
           <Skeleton variant="rounded" height={180} />
-        ) : grouped.length === 0 ? (
+        ) : aggregates.length === 0 ? (
           <Alert severity="warning" variant="outlined">
             None of the selected openings has anything on the schedule.
           </Alert>
         ) : (
-          <Stack spacing={2.5}>
+          <Stack spacing={1.5}>
             <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
               <Button
                 size="small"
                 variant="outlined"
-                disabled={contributingOpenings === 0}
-                onClick={() => addAll(grouped.flatMap((g) => g.rows))}
+                disabled={contributingProducts === 0}
+                onClick={addAllSuggested}
               >
-                Add all suggested - {contributingOpenings} opening{contributingOpenings === 1 ? '' : 's'}
+                Add all suggested - {contributingProducts} product{contributingProducts === 1 ? '' : 's'}
               </Button>
             </Box>
-            {grouped.map((group) => {
-              const meta = openingMeta.get(group.openingNumber);
-              const place = [meta?.building, meta?.floor].filter(Boolean).join(' · ');
-              // Offerable rows stay; dead rows collapse behind the expander. The partition reads the
-              // BASE pool figure (headroom), not the cart-adjusted remaining: remaining moves as the
-              // cart fills, and a row must not vanish mid-composition because a competing opening
-              // drained its pool - it just shows its disabled Add, as before. A row already in the
-              // cart is always visible, which also pins restored draft lines on first render.
-              const visibleRows: CoverageRow[] = [];
-              const hiddenRows: CoverageRow[] = [];
-              for (const row of group.rows) {
-                const basePool = headroom.get(productKey(row)) ?? 0;
-                if (lineQuantity(cart, row) > 0 || (row.suggestedQuantity > 0 && basePool > 0)) {
-                  visibleRows.push(row);
-                } else {
-                  hiddenRows.push(row);
-                }
-              }
-              const expanded = expandedOpenings.has(group.openingNumber);
-              // Expanded = today's full page, in the original order and with the same muted treatment.
-              const shownRows = expanded ? group.rows : visibleRows;
-              const awaiting = hiddenRows.filter((r) => r.suggestedQuantity > 0);
-              const covered = hiddenRows.length - awaiting.length;
-              const onOrderUnits = awaiting.reduce((sum, r) => sum + r.onOrderQuantity, 0);
+            {(() => {
+              const shownAggs = showDeadRows ? aggregates : visibleAggs;
+              const awaiting = hiddenAggs.filter((a) => a.suggestedQuantity > 0);
+              const covered = hiddenAggs.length - awaiting.length;
+              const onOrderUnits = awaiting.reduce((sum, a) => sum + a.onOrderQuantity, 0);
               const expanderLabel = [
-                `${hiddenRows.length} ${hiddenRows.length === 1 ? 'line' : 'lines'} with nothing to add`,
+                `${hiddenAggs.length} ${hiddenAggs.length === 1 ? 'line' : 'lines'} with nothing to add`,
                 awaiting.length > 0
                   ? `${awaiting.length} awaiting stock${onOrderUnits > 0 ? ` (${onOrderUnits} on order)` : ''}`
                   : null,
@@ -371,150 +365,166 @@ export default function RequestWorkspaceScheduleTab({
                 .filter(Boolean)
                 .join(' · ');
               return (
-                <Box key={group.openingNumber} sx={{ minWidth: 0 }}>
-                  <Stack
-                    direction="row"
-                    alignItems="baseline"
-                    justifyContent="space-between"
-                    gap={1}
-                    sx={{ mb: 0.5 }}
-                  >
-                    <Box sx={{ minWidth: 0 }}>
-                      <Typography variant="subtitle2" component="span" sx={monoSx}>
-                        {group.openingNumber}
-                      </Typography>
-                      {place && (
-                        <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-                          {place}
-                        </Typography>
-                      )}
-                    </Box>
-                    <Button size="small" variant="text" onClick={() => addAll(group.rows)}>
-                      Add {group.openingNumber}&rsquo;s suggested
-                    </Button>
-                  </Stack>
-                  {shownRows.length > 0 && (
-                  <TableContainer
-                    sx={{ overflowX: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}
-                  >
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Product</TableCell>
-                          <TableCell>Category</TableCell>
-                          <TableCell />
-                          <TableCell align="right">Required by hardware schedule</TableCell>
-                          <TableCell align="right">Sent</TableCell>
-                          <TableCell align="right">Claimed</TableCell>
-                          <TableCell align="right">Free</TableCell>
-                          <TableCell align="right">Suggested</TableCell>
-                          <TableCell align="right">On order</TableCell>
-                          <TableCell align="right">Add</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {shownRows.map((row) => {
-                          const inCart = lineQuantity(cart, row);
-                          const muted = row.suggestedQuantity === 0 && inCart === 0;
-                          // The live remaining pool for this product, excluding this line's own hold, so
-                          // the Add button matches the extras lane (disabled when nothing is free) and
-                          // the Free column shows a competing opening draining the pool as you add.
-                          const remaining = remainingForProduct(
-                            cart,
-                            productKey(row),
-                            headroom,
-                            cartLineKey({
-                              openingNumber: row.openingNumber,
-                              hardwareCategory: row.hardwareCategory,
-                              productCode: row.productCode,
-                            }),
-                          );
-                          // A suggestion the free pool cannot cover in full: the line still goes and
-                          // claims what stock can, so this is a flag, not a block.
-                          const short = row.suggestedQuantity > 0 && remaining < row.suggestedQuantity;
-                          const shop = isShopClassified(row.classification);
-                          return (
-                            <TableRow
-                              key={`${row.hardwareCategory}|${row.productCode}`}
-                              hover
-                              sx={{ opacity: muted ? 0.5 : 1, ...(shop ? shopRowTintSx : null) }}
-                            >
-                              <TableCell sx={monoSx}>{row.productCode}</TableCell>
-                              <TableCell>{row.hardwareCategory}</TableCell>
-                              <TableCell>{classificationChip(row.classification)}</TableCell>
-                              <TableCell align="right" sx={contextCol}>
-                                {row.owedQuantity}
-                              </TableCell>
-                              <TableCell align="right" sx={contextCol}>
-                                {row.sentQuantity}
-                              </TableCell>
-                              <TableCell align="right" sx={contextCol}>
-                                {row.claimedQuantity}
-                              </TableCell>
-                              <TableCell align="right" sx={numCol}>
-                                {remaining}
-                              </TableCell>
-                              <TableCell
-                                align="right"
-                                sx={short ? { ...numCol, color: 'warning.main' } : numCol}
-                              >
-                                {row.suggestedQuantity}
-                              </TableCell>
-                              <TableCell align="right" sx={contextCol}>
-                                {row.onOrderQuantity}
-                              </TableCell>
-                              <TableCell align="right" sx={{ width: 1, whiteSpace: 'nowrap' }}>
-                                {inCart > 0 ? (
-                                  <TextField
-                                    size="small"
-                                    type="number"
-                                    value={inCart}
-                                    onChange={(e) =>
-                                      onCartChange(setLineQuantity(cart, row, Number.parseInt(e.target.value, 10), headroom))
-                                    }
-                                    slotProps={{
-                                      htmlInput: {
-                                        min: 0,
-                                        'aria-label': `Quantity of ${row.productCode} for ${row.openingNumber}`,
-                                      },
-                                    }}
-                                    sx={{ width: 76, '& input': { textAlign: 'right' } }}
-                                  />
-                                ) : (
-                                  <Button
-                                    size="small"
-                                    variant="outlined"
-                                    disabled={row.suggestedQuantity === 0 || remaining === 0}
-                                    onClick={() => onCartChange(addScheduleRowAtSuggested(cart, row, headroom))}
+                <Box sx={{ minWidth: 0 }}>
+                  {shownAggs.length > 0 && (
+                    <TableContainer
+                      sx={{ overflowX: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}
+                    >
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell sx={{ width: 36, px: 0.5 }} />
+                            <TableCell>Product</TableCell>
+                            <TableCell>Category</TableCell>
+                            <TableCell />
+                            <TableCell align="right">Required by hardware schedule</TableCell>
+                            <TableCell align="right">Through shop</TableCell>
+                            <TableCell align="right">Shipped out</TableCell>
+                            <TableCell align="right">Claimed</TableCell>
+                            <TableCell align="right">Free</TableCell>
+                            <TableCell align="right">Suggested</TableCell>
+                            <TableCell align="right">On order</TableCell>
+                            <TableCell align="right">Add</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {shownAggs.map((agg) => {
+                            const inCart = productLinesQuantity(cart, agg.rows);
+                            const muted = agg.suggestedQuantity === 0 && inCart === 0;
+                            // The live free pool for this product right now - every cart line of it
+                            // (these openings, other openings, the loose lane) already deducted.
+                            const freeNow = remainingForProduct(cart, agg.key, headroom);
+                            // A suggestion the pool cannot cover in full: the lines still go and
+                            // claim what stock can, so this is a flag, not a block.
+                            const short = agg.suggestedQuantity > 0 && freeNow + inCart < agg.suggestedQuantity;
+                            const shop = isShopClassified(agg.classification);
+                            const expanded = expandedProducts.has(agg.key);
+                            return (
+                              <Fragment key={agg.key}>
+                                <TableRow
+                                  hover
+                                  sx={{ opacity: muted ? 0.5 : 1, ...(shop ? shopRowTintSx : null) }}
+                                >
+                                  <TableCell sx={{ px: 0.5 }}>
+                                    <Button
+                                      size="small"
+                                      variant="text"
+                                      onClick={() => toggleProduct(agg.key)}
+                                      aria-label={`${expanded ? 'Hide' : 'Show'} per-opening breakdown for ${agg.productCode}`}
+                                      sx={{ minWidth: 0, p: 0.5, color: 'text.secondary' }}
+                                    >
+                                      {expanded ? (
+                                        <ChevronDown size={16} strokeWidth={1.75} />
+                                      ) : (
+                                        <ChevronRight size={16} strokeWidth={1.75} />
+                                      )}
+                                    </Button>
+                                  </TableCell>
+                                  <TableCell sx={monoSx}>{agg.productCode}</TableCell>
+                                  <TableCell>{agg.hardwareCategory}</TableCell>
+                                  <TableCell>{classificationChip(agg.classification)}</TableCell>
+                                  <TableCell align="right" sx={contextCol}>
+                                    {agg.requiredQuantity}
+                                  </TableCell>
+                                  <TableCell align="right" sx={contextCol}>
+                                    {agg.assembledQuantity}
+                                  </TableCell>
+                                  <TableCell align="right" sx={contextCol}>
+                                    {agg.shippedQuantity}
+                                  </TableCell>
+                                  <TableCell align="right" sx={contextCol}>
+                                    {agg.claimedQuantity}
+                                  </TableCell>
+                                  <TableCell align="right" sx={numCol}>
+                                    {freeNow}
+                                  </TableCell>
+                                  <TableCell
+                                    align="right"
+                                    sx={short ? { ...numCol, color: 'warning.main' } : numCol}
                                   >
-                                    Add
-                                  </Button>
+                                    {agg.suggestedQuantity}
+                                  </TableCell>
+                                  <TableCell align="right" sx={contextCol}>
+                                    {agg.onOrderQuantity}
+                                  </TableCell>
+                                  <TableCell align="right" sx={{ width: 1, whiteSpace: 'nowrap' }}>
+                                    {inCart > 0 ? (
+                                      <TextField
+                                        size="small"
+                                        type="number"
+                                        value={inCart}
+                                        onChange={(e) =>
+                                          onCartChange(
+                                            setProductQuantity(
+                                              cart,
+                                              agg.rows,
+                                              Number.parseInt(e.target.value, 10),
+                                              headroom,
+                                            ),
+                                          )
+                                        }
+                                        slotProps={{
+                                          htmlInput: {
+                                            min: 0,
+                                            'aria-label': `Quantity of ${agg.productCode} across selected openings`,
+                                          },
+                                        }}
+                                        sx={{ width: 76, '& input': { textAlign: 'right' } }}
+                                      />
+                                    ) : (
+                                      <Button
+                                        size="small"
+                                        variant="outlined"
+                                        disabled={agg.suggestedQuantity === 0 || freeNow === 0}
+                                        onClick={() =>
+                                          onCartChange(
+                                            setProductQuantity(cart, agg.rows, agg.suggestedQuantity, headroom),
+                                          )
+                                        }
+                                      >
+                                        Add
+                                      </Button>
+                                    )}
+                                  </TableCell>
+                                </TableRow>
+                                {expanded && (
+                                  <TableRow>
+                                    <TableCell colSpan={12} sx={{ py: 0, bgcolor: 'action.hover' }}>
+                                      <ProductOpeningBreakdown
+                                        agg={agg}
+                                        cart={cart}
+                                        headroom={headroom}
+                                        onCartChange={onCartChange}
+                                        openingMeta={openingMeta}
+                                      />
+                                    </TableCell>
+                                  </TableRow>
                                 )}
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
+                              </Fragment>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
                   )}
-                  {hiddenRows.length > 0 && (
+                  {hiddenAggs.length > 0 && (
                     <Button
                       size="small"
                       variant="text"
-                      onClick={() => toggleExpanded(group.openingNumber)}
+                      onClick={() => setShowDeadRows((prev) => !prev)}
                       sx={{ mt: 0.25, color: 'text.secondary', fontWeight: 400 }}
                     >
-                      {expanderLabel} - {expanded ? 'hide' : 'show'}
+                      {expanderLabel} - {showDeadRows ? 'hide' : 'show'}
                     </Button>
                   )}
                 </Box>
               );
-            })}
+            })()}
             <Typography component="div" sx={microLabelSx}>
-              A short line still goes - it claims what stock can cover.
+              A short line still goes - it claims what stock can cover. Quantities spread across the
+              selected openings in opening order, each capped at what that opening still needs.
             </Typography>
-            {grouped.some((g) => g.rows.some((r) => isShopClassified(r.classification))) && (
+            {aggregates.some((agg) => agg.rows.some((r) => isShopClassified(r.classification))) && (
               <Typography variant="caption" color="text.secondary">
                 {SHOP_FRAMING}
               </Typography>
@@ -522,6 +532,125 @@ export default function RequestWorkspaceScheduleTab({
           </Stack>
         )}
       </Box>
+    </Box>
+  );
+}
+
+interface ProductOpeningBreakdownProps {
+  agg: ProductCoverage;
+  cart: CartLine[];
+  headroom: Headroom;
+  onCartChange: (next: CartLine[]) => void;
+  openingMeta: Map<string, { building: string | null; floor: string | null }>;
+}
+
+/** #632: the per-opening rows behind one product's summed table row, carrying the per-opening
+ *  controls the old per-opening tables had - the cart stays opening-tagged (#610), so this is where
+ *  a specific door's share is fine-tuned after a product-level add distributed greedily. */
+function ProductOpeningBreakdown({ agg, cart, headroom, onCartChange, openingMeta }: ProductOpeningBreakdownProps) {
+  return (
+    <Box sx={{ py: 1, minWidth: 0 }}>
+      <Table size="small" sx={{ '& td, & th': { border: 0, py: 0.4 } }}>
+        <TableHead>
+          <TableRow>
+            <TableCell sx={microLabelSx}>Opening</TableCell>
+            <TableCell sx={microLabelSx} align="right">
+              Required
+            </TableCell>
+            <TableCell sx={microLabelSx} align="right">
+              Through shop
+            </TableCell>
+            <TableCell sx={microLabelSx} align="right">
+              Shipped out
+            </TableCell>
+            <TableCell sx={microLabelSx} align="right">
+              Claimed
+            </TableCell>
+            <TableCell sx={microLabelSx} align="right">
+              Suggested
+            </TableCell>
+            <TableCell sx={microLabelSx} align="right">
+              Add
+            </TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {agg.rows.map((row) => {
+            const inCart = lineQuantity(cart, row);
+            // Same live-pool exclusion the old per-opening table used: this line's own hold is left
+            // out so it can be re-typed up to the product ceiling.
+            const remaining = remainingForProduct(
+              cart,
+              productKey(row),
+              headroom,
+              cartLineKey({
+                openingNumber: row.openingNumber,
+                hardwareCategory: row.hardwareCategory,
+                productCode: row.productCode,
+              }),
+            );
+            const meta = openingMeta.get(row.openingNumber);
+            const place = [meta?.building, meta?.floor].filter(Boolean).join(' · ');
+            return (
+              <TableRow key={row.openingNumber}>
+                <TableCell>
+                  <Typography component="span" variant="body2" sx={monoSx}>
+                    {row.openingNumber}
+                  </Typography>
+                  {place && (
+                    <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                      {place}
+                    </Typography>
+                  )}
+                </TableCell>
+                <TableCell align="right" sx={contextCol}>
+                  {row.owedQuantity}
+                </TableCell>
+                <TableCell align="right" sx={contextCol}>
+                  {row.assembledQuantity}
+                </TableCell>
+                <TableCell align="right" sx={contextCol}>
+                  {row.shippedQuantity}
+                </TableCell>
+                <TableCell align="right" sx={contextCol}>
+                  {row.claimedQuantity}
+                </TableCell>
+                <TableCell align="right" sx={numCol}>
+                  {row.suggestedQuantity}
+                </TableCell>
+                <TableCell align="right" sx={{ width: 1, whiteSpace: 'nowrap' }}>
+                  {inCart > 0 ? (
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={inCart}
+                      onChange={(e) =>
+                        onCartChange(setLineQuantity(cart, row, Number.parseInt(e.target.value, 10), headroom))
+                      }
+                      slotProps={{
+                        htmlInput: {
+                          min: 0,
+                          'aria-label': `Quantity of ${row.productCode} for ${row.openingNumber}`,
+                        },
+                      }}
+                      sx={{ width: 76, '& input': { textAlign: 'right' } }}
+                    />
+                  ) : (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      disabled={row.suggestedQuantity === 0 || remaining === 0}
+                      onClick={() => onCartChange(addScheduleRowAtSuggested(cart, row, headroom))}
+                    >
+                      Add
+                    </Button>
+                  )}
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
     </Box>
   );
 }

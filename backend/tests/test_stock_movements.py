@@ -16,7 +16,7 @@ from app.models.inventory import InventoryLocation
 from app.models.stock_item import StockItem
 from app.repositories import stock as stock_repository
 
-from .inventory_fixtures import make_il, make_project, make_return_item, make_stock_item, wh_id
+from .inventory_fixtures import define_location, make_il, make_project, make_return_item, make_stock_item, wh_id
 
 # --- destock ------------------------------------------------------------------------------------
 
@@ -123,6 +123,8 @@ def test_deficient_swap_beyond_the_deficient_count_is_refused(db_session):
 def test_full_target_override_lands_stock_at_the_chosen_location(db_session):
     project = make_project(db_session)
     il = make_il(db_session, project, quantity=10, aisle="A", row="1", bay="1")
+    # An explicit target is a location the user chose, so it has to be a defined one (#632).
+    define_location(db_session, il.warehouse_id, "Z", "9", "9")
 
     stock_row = stock_repository.destock_inventory(
         db_session,
@@ -205,6 +207,7 @@ def test_destock_missing_row_raises_not_found(db_session):
 def test_allocate_creates_a_stock_origin_inventory_row(db_session):
     project = make_project(db_session)
     si = make_stock_item(db_session, quantity=10)
+    define_location(db_session, si.warehouse_id, "B", "2", "2")
 
     new_il = stock_repository.allocate_stock_to_project(
         db_session,
@@ -229,6 +232,7 @@ def test_allocate_creates_a_stock_origin_inventory_row(db_session):
 def test_allocate_beyond_available_is_refused(db_session):
     project = make_project(db_session)
     si = make_stock_item(db_session, quantity=10, deficient=3)  # available = 7
+    define_location(db_session, si.warehouse_id, "B", "2", "2")
 
     with pytest.raises(ValidationError):
         stock_repository.allocate_stock_to_project(
@@ -248,6 +252,7 @@ def test_allocate_beyond_available_is_refused(db_session):
 def test_allocate_keeps_the_drained_stock_row_for_origin_integrity(db_session):
     project = make_project(db_session)
     si = make_stock_item(db_session, quantity=4)
+    define_location(db_session, si.warehouse_id, "B", "2", "2")
 
     stock_repository.allocate_stock_to_project(
         db_session,
@@ -285,6 +290,7 @@ def _dest_rows(session, project_id, aisle, row, bay):
 def test_transfer_inventory_location_creates_destination_row(db_session):
     project = make_project(db_session)
     il = make_il(db_session, project, quantity=10, aisle="A", row="1", bay="1")
+    define_location(db_session, il.warehouse_id, "B", "2", "2")
 
     stock_repository.transfer_inventory(
         db_session,
@@ -310,6 +316,7 @@ def test_transfer_merges_into_a_matching_destination_row(db_session):
     si = make_stock_item(db_session, quantity=20)
     src = make_il(db_session, project, quantity=10, stock_item_id=si.id, aisle="A", row="1", bay="1")
     existing = make_il(db_session, project, quantity=3, stock_item_id=si.id, aisle="B", row="2", bay="2")
+    define_location(db_session, src.warehouse_id, "B", "2", "2")
 
     stock_repository.transfer_inventory(
         db_session,
@@ -336,6 +343,7 @@ def test_transfer_does_not_merge_two_different_return_origins(db_session):
     r2 = make_return_item(db_session, project)
     src = make_il(db_session, project, quantity=10, shipment_return_item_id=r1.id, aisle="A", row="1", bay="1")
     other = make_il(db_session, project, quantity=3, shipment_return_item_id=r2.id, aisle="B", row="2", bay="2")
+    define_location(db_session, src.warehouse_id, "B", "2", "2")
 
     stock_repository.transfer_inventory(
         db_session,
@@ -363,6 +371,7 @@ def test_transfer_return_origin_create_path_keeps_the_return_fk(db_session):
     project = make_project(db_session)
     ret = make_return_item(db_session, project)
     src = make_il(db_session, project, quantity=8, shipment_return_item_id=ret.id, aisle="A", row="1", bay="1")
+    define_location(db_session, src.warehouse_id, "C", "3", "3")
 
     stock_repository.transfer_inventory(
         db_session,
@@ -386,6 +395,7 @@ def test_transfer_return_origin_create_path_keeps_the_return_fk(db_session):
 
 def test_transfer_stock_item_source_moves_between_locations(db_session):
     si = make_stock_item(db_session, quantity=10, aisle="A", row="1", bay="1")
+    define_location(db_session, si.warehouse_id, "B", "2", "2")
 
     stock_repository.transfer_inventory(
         db_session,
@@ -413,8 +423,10 @@ def test_transfer_stock_item_source_moves_between_locations(db_session):
 
 def test_transfer_stock_item_beyond_available_is_refused(db_session):
     si = make_stock_item(db_session, quantity=10, deficient=4, aisle="A", row="1", bay="1")  # available 6
+    # Defined, so the refusal below can only be about the quantity.
+    define_location(db_session, si.warehouse_id, "B", "2", "2")
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as excinfo:
         stock_repository.transfer_inventory(
             db_session,
             source_type="STOCK_ITEM",
@@ -426,13 +438,15 @@ def test_transfer_stock_item_beyond_available_is_refused(db_session):
             dest_bay="2",
             performed_by="warehouse",
         )
+    assert excinfo.value.field == "quantity"
 
 
 def test_transfer_to_the_same_location_is_refused(db_session):
     project = make_project(db_session)
     il = make_il(db_session, project, quantity=10, aisle="A", row="1", bay="1")
+    define_location(db_session, il.warehouse_id, "A", "1", "1")
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError) as excinfo:
         stock_repository.transfer_inventory(
             db_session,
             source_type="INVENTORY_LOCATION",
@@ -444,10 +458,13 @@ def test_transfer_to_the_same_location_is_refused(db_session):
             dest_bay="1",
             performed_by="warehouse",
         )
+    assert excinfo.value.field == "destination"
 
 
 def test_transfer_rejects_unknown_source_type(db_session):
-    with pytest.raises(ValidationError):
+    define_location(db_session, wh_id(db_session), "B", "2", "2")
+
+    with pytest.raises(ValidationError) as excinfo:
         stock_repository.transfer_inventory(
             db_session,
             source_type="NONSENSE",
@@ -459,6 +476,7 @@ def test_transfer_rejects_unknown_source_type(db_session):
             dest_bay="2",
             performed_by="warehouse",
         )
+    assert excinfo.value.field == "source_type"
 
 
 def test_transfer_missing_destination_fields_refused(db_session):

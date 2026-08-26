@@ -57,3 +57,4 @@ from .shop_assembly import (  # noqa: E402, F401
 )
 from .stock_item import StockItem  # noqa: E402, F401
 from .warehouse import Warehouse  # noqa: E402, F401
+from .warehouse_location import WarehouseLocation  # noqa: E402, F401

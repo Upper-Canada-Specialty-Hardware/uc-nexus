@@ -601,6 +601,38 @@ def get_mc_setup(conn) -> dict:
     }
 
 
+def has_exchange_rate(conn, *, currency: str, rate_type: str, on_date: date) -> bool:
+    """Read-only preflight (#632): does GP hold a usable exchange rate for currency + rate_type
+    covering on_date?
+
+    Without this, a foreign PO against a company with no rate maintained sails through every check
+    and dies inside taPoHdr with a raw eConnect error. The join mirrors how GP resolves the rate
+    itself: an exchange table (DYNAMICS..MC40100) is defined for one currency + rate type, and its
+    rates live in DYNAMICS..MC00100. "Usable" is effective on or before the date and not expired -
+    GP stores "no expiry" as an empty date (1900-01-01), so EXPNDATE at or below that sentinel counts
+    as never-expiring. Deliberately looser than a SRCHTYPE-exact table's own resolution: a false pass
+    just means eConnect refuses as it does today, while a false refusal would block a registerable PO.
+    """
+    row = (
+        conn.cursor()
+        .execute(
+            """
+        SELECT TOP 1 1 AS ok
+        FROM DYNAMICS.dbo.MC40100 t
+        JOIN DYNAMICS.dbo.MC00100 r ON r.EXGTBLID = t.EXGTBLID
+        WHERE RTRIM(t.CURNCYID) = ? AND RTRIM(t.RATETPID) = ?
+          AND r.EXCHDATE <= ? AND (r.EXPNDATE >= ? OR r.EXPNDATE <= '1900-01-01')
+        """,
+            currency,
+            rate_type,
+            on_date,
+            on_date,
+        )
+        .fetchone()
+    )
+    return row is not None
+
+
 def list_tax_details(conn) -> list[dict]:
     """Read-only: PURCHASE tax details (TX00201 WHERE TXDTLTYP = 2) for the register-PO tax-detail
     dropdown (issue #257). TXDTLTYP 1 = Sales, 2 = Purchases. TXDTLPCT is the percent the relay uses

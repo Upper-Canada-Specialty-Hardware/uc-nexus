@@ -12,9 +12,10 @@ import {
   TableHead,
   TableRow,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
-import { ArrowLeft, ArrowRight, Pencil, Plus, Split, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Merge, Pencil, Plus, Split, X } from 'lucide-react';
 import {
   GROUP_BY_OPTIONS,
   distinctProductCodes,
@@ -163,6 +164,23 @@ export default function GuidedClassification({
     setSplitGroupKeys((prev) => new Set(prev).add(currentCard.groupKey));
   }, [currentCard]);
 
+  // #632: undo a split - drop the groupKey and the per-line cards recombine into one. Lands on the
+  // recombined card by replaying the card-order arithmetic the cards memo will run with the new set.
+  const unsplitCurrent = useCallback(() => {
+    if (!currentCard || !currentCard.isSplit) return;
+    const gk = currentCard.groupKey;
+    const next = new Set(splitGroupKeys);
+    next.delete(gk);
+    setScopeOverrideId(null);
+    setSplitGroupKeys(next);
+    let idx = 0;
+    for (const g of groups) {
+      if (g.key === gk) break;
+      idx += next.has(g.key) && g.rows.length > 1 ? g.rows.length : 1;
+    }
+    setIndex(idx);
+  }, [currentCard, splitGroupKeys, groups]);
+
   // #585: the guided card focuses one classification layer at a time. The scope layer (By UCH /
   // By Others) shows until the card is scoped; a By UCH pick reveals the Site/Shop layer, while
   // By Others completes the card outright. "Change scope" reverts an already-scoped card here.
@@ -225,7 +243,13 @@ export default function GuidedClassification({
       if (e.key === 'ArrowLeft') { e.preventDefault(); goPrev(); return; }
       if (e.key === 'ArrowRight') { e.preventDefault(); goNext(); return; }
       const k = e.key.toLowerCase();
-      if (k === 'x') { e.preventDefault(); splitCurrent(); return; }
+      // X toggles: splits a mixed group, recombines a card that came from a split (#632).
+      if (k === 'x') {
+        e.preventDefault();
+        if (currentCard?.isSplit) unsplitCurrent();
+        else splitCurrent();
+        return;
+      }
       // Only the visible layer's keys answer, so 1/2 and S/H never both fire at once (#585).
       const active = layer === 'scope' ? options : (siteShopOptions ?? []);
       const classify = layer === 'scope' ? classifyPrimary : classifySiteShop;
@@ -235,7 +259,7 @@ export default function GuidedClassification({
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [started, layer, options, siteShopOptions, goPrev, goNext, splitCurrent, classifyPrimary, classifySiteShop]);
+  }, [started, layer, options, siteShopOptions, goPrev, goNext, splitCurrent, unsplitCurrent, currentCard, classifyPrimary, classifySiteShop]);
 
   // ---- Grouping prompt ----
 
@@ -453,14 +477,33 @@ export default function GuidedClassification({
                   </Button>
                 ))}
             {canSplit && (
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<Split size={16} strokeWidth={1.75} />}
-                onClick={splitCurrent}
+              <Tooltip
+                // Without describeChild MUI hands the tooltip prose to aria-label, and the button's
+                // visible name stops being its accessible name.
+                describeChild
+                title="Give each line of this mixed group its own classification card, so lines that need different answers are asked one at a time."
               >
-                Split (X)
-              </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<Split size={16} strokeWidth={1.75} />}
+                  onClick={splitCurrent}
+                >
+                  Split (X)
+                </Button>
+              </Tooltip>
+            )}
+            {currentCard.isSplit && (
+              <Tooltip describeChild title="Recombine this group's per-line cards back into one card.">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<Merge size={16} strokeWidth={1.75} />}
+                  onClick={unsplitCurrent}
+                >
+                  Unsplit (X)
+                </Button>
+              </Tooltip>
             )}
           </Box>
         </Box>
@@ -539,7 +582,8 @@ export default function GuidedClassification({
           Next
         </Button>
         <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-          Keys: classify with the letter/number shown, ← → move between groups, X splits a mixed group.
+          Keys: classify with the letter/number shown, ← → move between groups, X splits a mixed group
+          (or recombines a split one).
         </Typography>
       </Box>
     </Box>

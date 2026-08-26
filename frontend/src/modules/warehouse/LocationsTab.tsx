@@ -18,18 +18,27 @@ import {
   FormControl,
   InputLabel,
   Select,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from '@mui/material';
-import { Ellipsis, MapPin, X } from 'lucide-react';
+import { Ellipsis, MapPin, Plus, X } from 'lucide-react';
 import { motion } from 'motion/react';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
-import { useQuery } from '@apollo/client/react';
+import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import {
   GET_LOCATION_UTILIZATION,
   GET_LOCATION_CONTENTS,
   GET_INVENTORY_ROWS,
   GET_STOCK_ITEMS,
+  GET_WAREHOUSE_LOCATIONS,
+  CREATE_WAREHOUSE_LOCATION,
+  DEACTIVATE_WAREHOUSE_LOCATION,
 } from '../../graphql/warehouse';
+import { useIdentity } from '../../hooks/useIdentity';
+import { useToast } from '../../components/Toast';
 import LocationActionDialog, {
   type LocationActionMode,
   type LocationActionTarget,
@@ -38,6 +47,7 @@ import LocationAuditStrip from './LocationAuditStrip';
 import TransferDialog, { type TransferSource } from './TransferDialog';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { springs } from '../../motion';
+import type { WarehouseLocationDef } from './receiveDraftTypes';
 
 interface LocationEntry {
   warehouseId: string | null;
@@ -124,13 +134,40 @@ function formatCurrency(value: number | null): string {
   return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 }
 
-type UtilRow = LocationEntry & { id: string };
+type UtilRow = LocationEntry & {
+  id: string;
+  /** #632: registry linkage. definedId null on an occupied location that is NOT defined (a
+   *  pre-registry variant); active null likewise. isEmpty marks a defined location holding nothing. */
+  definedId: string | null;
+  active: boolean | null;
+  isEmpty: boolean;
+};
 
 function warehouseChip(id: string | null, warehouseCode: Map<string, string>) {
   return id ? (
     <Chip label={warehouseCode.get(id) ?? '—'} size="small" variant="outlined" />
   ) : (
     <span>—</span>
+  );
+}
+
+/** #632: the registry chips a location row carries - Empty (defined, holds nothing), Retired
+ *  (deactivated), Not defined (occupied but absent from the registry, so unpickable for put-away). */
+function locationStatusChips(row: UtilRow) {
+  return (
+    <>
+      {row.isEmpty && <Chip label="Empty" size="small" variant="outlined" />}
+      {row.definedId && row.active === false && (
+        <Tooltip title="Retired from the put-away pickers. Hardware already here stays until it is moved.">
+          <Chip label="Retired" size="small" color="warning" variant="outlined" />
+        </Tooltip>
+      )}
+      {!row.definedId && (
+        <Tooltip title="Not in the defined-locations registry, so it can't be picked for new put-aways. Define it to make it pickable.">
+          <Chip label="Not defined" size="small" color="default" variant="outlined" />
+        </Tooltip>
+      )}
+    </>
   );
 }
 
@@ -141,6 +178,10 @@ function buildUtilColumns(
   compact: boolean,
   warehouseCode: Map<string, string>,
   showWarehouse: boolean,
+  manage?: {
+    onDeactivate: (row: UtilRow) => void;
+    onDefine: (row: UtilRow) => void;
+  },
 ): GridColDef<UtilRow>[] {
   if (compact) {
     return [
@@ -175,11 +216,12 @@ function buildUtilColumns(
       minWidth: 140,
       valueGetter: (_v, row) => formatLocation(row.aisle, row.row, row.bay),
       renderCell: (p) => (
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
           <Box sx={{ display: 'flex', color: 'text.secondary' }}>
             <MapPin size={18} strokeWidth={1.75} />
           </Box>
           <Typography sx={monoSx}>{p.value as string}</Typography>
+          {locationStatusChips(p.row)}
         </Box>
       ),
     },
@@ -196,6 +238,60 @@ function buildUtilColumns(
       : []),
     { field: 'itemCount', headerName: 'Items', width: 100, type: 'number' },
     { field: 'totalQuantity', headerName: 'Total Qty', width: 120, type: 'number' },
+    // #632: define / deactivate management, only for the roles the mutations accept.
+    ...(manage
+      ? [
+          {
+            field: 'manage',
+            headerName: '',
+            width: 120,
+            sortable: false,
+            renderCell: ({ row }: { row: UtilRow }) => {
+              if (!row.definedId) {
+                return (
+                  <Button
+                    size="small"
+                    variant="text"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      manage.onDefine(row);
+                    }}
+                  >
+                    Define
+                  </Button>
+                );
+              }
+              if (row.active === false) {
+                return (
+                  <Button
+                    size="small"
+                    variant="text"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      manage.onDefine(row);
+                    }}
+                  >
+                    Reactivate
+                  </Button>
+                );
+              }
+              return (
+                <Button
+                  size="small"
+                  variant="text"
+                  color="warning"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    manage.onDeactivate(row);
+                  }}
+                >
+                  Retire
+                </Button>
+              );
+            },
+          } as GridColDef<UtilRow>,
+        ]
+      : []),
   ];
 }
 
@@ -574,6 +670,10 @@ export default function LocationsTab() {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<LocationEntry | null>(null);
   const [warehouseFilter, setWarehouseFilter] = useState('');
+  const { showToast } = useToast();
+  const { isAdmin, hasRole } = useIdentity();
+  // #632: defining and retiring locations is warehouse management (the mutations enforce it too).
+  const canManage = isAdmin || hasRole('Warehouse Manager');
 
   const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
     variables: { includeInactive: true },
@@ -591,6 +691,66 @@ export default function LocationsTab() {
     variables: { warehouseId: warehouseFilter || null },
     fetchPolicy: 'cache-and-network',
   });
+
+  // #632: the registry, everything included - deactivated rows stay manageable here, and
+  // defined-but-empty locations get a row of their own in the list below.
+  const { data: registryData, refetch: refetchRegistry } = useQuery<{
+    warehouseLocations: WarehouseLocationDef[];
+  }>(GET_WAREHOUSE_LOCATIONS, {
+    variables: { warehouseId: warehouseFilter || null },
+    fetchPolicy: 'cache-and-network',
+  });
+  const registry = useMemo(() => registryData?.warehouseLocations ?? [], [registryData]);
+
+  const [createLocation, { loading: creating }] = useMutation(CREATE_WAREHOUSE_LOCATION);
+  const [deactivateLocation] = useMutation(DEACTIVATE_WAREHOUSE_LOCATION);
+
+  // Define-location dialog: a new triple typed from scratch. Row-level Define/Reactivate submit the
+  // row's own triple directly.
+  const [defineOpen, setDefineOpen] = useState(false);
+  const [defineWarehouseId, setDefineWarehouseId] = useState('');
+  const [defineAisle, setDefineAisle] = useState('');
+  const [defineRow, setDefineRow] = useState('');
+  const [defineBay, setDefineBay] = useState('');
+
+  const handleCreateLocation = useCallback(
+    async (warehouseId: string, aisle: string, row: string, bay: string) => {
+      try {
+        await createLocation({ variables: { warehouseId, aisle, row, bay } });
+        showToast(`${aisle} / ${row} / ${bay} defined`, 'success');
+        setDefineOpen(false);
+        setDefineAisle('');
+        setDefineRow('');
+        setDefineBay('');
+        refetchRegistry();
+      } catch (err: unknown) {
+        showToast(err instanceof Error ? err.message : 'Defining the location failed', 'error');
+      }
+    },
+    [createLocation, showToast, refetchRegistry],
+  );
+
+  const handleDeactivate = useCallback(
+    async (row: UtilRow) => {
+      if (!row.definedId) return;
+      try {
+        await deactivateLocation({ variables: { id: row.definedId } });
+        showToast(`${formatLocation(row.aisle, row.row, row.bay)} retired from the pickers`, 'success');
+        refetchRegistry();
+      } catch (err: unknown) {
+        showToast(err instanceof Error ? err.message : 'Retiring the location failed', 'error');
+      }
+    },
+    [deactivateLocation, showToast, refetchRegistry],
+  );
+
+  const handleDefineRow = useCallback(
+    (row: UtilRow) => {
+      if (!row.warehouseId || !row.row || !row.bay) return;
+      handleCreateLocation(row.warehouseId, row.aisle, row.row, row.bay);
+    },
+    [handleCreateLocation],
+  );
 
   // Product-code search looks INSIDE locations: inventoryRows and stockItems already carry both a
   // product code and a location, so a client-side join maps each matching product to the rack
@@ -634,11 +794,42 @@ export default function LocationsTab() {
   }, [search, invRowsData, stockItemsData]);
 
   const rows = useMemo(() => {
-    const all = utilData?.locationUtilization ?? [];
+    const occupied = utilData?.locationUtilization ?? [];
+    const registryByKey = new Map<string, WarehouseLocationDef>();
+    for (const def of registry) {
+      registryByKey.set(locationKey(def.warehouseId, def.aisle, def.row, def.bay), def);
+    }
+
+    // Occupied locations first (linked to their registry row when one matches), then every defined
+    // location holding nothing - the #632 point: a freshly defined bin exists before anything is in
+    // it, and the old derived-from-occupancy list simply could not show it.
+    const occupiedKeys = new Set(
+      occupied.map((loc) => locationKey(loc.warehouseId, loc.aisle, loc.row, loc.bay)),
+    );
+    const combined: (LocationEntry & { definedId: string | null; active: boolean | null; isEmpty: boolean })[] =
+      occupied.map((loc) => {
+        const def = registryByKey.get(locationKey(loc.warehouseId, loc.aisle, loc.row, loc.bay));
+        return { ...loc, definedId: def?.id ?? null, active: def?.active ?? null, isEmpty: false };
+      });
+    for (const def of registry) {
+      if (occupiedKeys.has(locationKey(def.warehouseId, def.aisle, def.row, def.bay))) continue;
+      combined.push({
+        warehouseId: def.warehouseId,
+        aisle: def.aisle,
+        row: def.row,
+        bay: def.bay,
+        itemCount: 0,
+        totalQuantity: 0,
+        definedId: def.id,
+        active: def.active ?? null,
+        isEmpty: true,
+      });
+    }
+
     const q = search.trim().toLowerCase();
     const filtered = !q
-      ? all
-      : all.filter((loc) => {
+      ? combined
+      : combined.filter((loc) => {
           const formatted = formatLocation(loc.aisle, loc.row, loc.bay).toLowerCase();
           if (
             formatted.includes(q) ||
@@ -655,15 +846,21 @@ export default function LocationsTab() {
       ...loc,
       id: `${loc.warehouseId ?? 'none'}-${loc.aisle}-${loc.row}-${loc.bay}-${i}`,
     }));
-  }, [utilData, search, productLocationKeys]);
+  }, [utilData, registry, search, productLocationKeys]);
 
   const handleRowClick = useCallback((params: GridRowParams<LocationEntry & { id: string }>) => {
     setSelected(params.row);
   }, []);
 
   const columns = useMemo(
-    () => buildUtilColumns(selected !== null, warehouseCode, !warehouseFilter),
-    [selected, warehouseCode, warehouseFilter],
+    () =>
+      buildUtilColumns(
+        selected !== null,
+        warehouseCode,
+        !warehouseFilter,
+        canManage ? { onDeactivate: handleDeactivate, onDefine: handleDefineRow } : undefined,
+      ),
+    [selected, warehouseCode, warehouseFilter, canManage, handleDeactivate, handleDefineRow],
   );
 
   const isSelectedRow = useCallback(
@@ -687,16 +884,34 @@ export default function LocationsTab() {
 
   const totalLocations = (utilData?.locationUtilization ?? []).length;
   const totalQty = (utilData?.locationUtilization ?? []).reduce((sum, r) => sum + r.totalQuantity, 0);
-  const allEmpty = totalLocations === 0;
+  const allEmpty = totalLocations === 0 && registry.length === 0;
 
   return (
     <Box>
-      <Typography variant="h5" sx={{ mb: 0.5 }}>
-        Locations
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Every rack position in use, and what is sitting in it.
-      </Typography>
+      <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 2 }}>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="h5" sx={{ mb: 0.5 }}>
+            Locations
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Every defined rack position and what is sitting in it. Put-away only accepts locations
+            defined here.
+          </Typography>
+        </Box>
+        {canManage && (
+          <Button
+            variant="outlined"
+            startIcon={<Plus size={16} strokeWidth={1.75} />}
+            onClick={() => {
+              setDefineWarehouseId(warehouseFilter || warehouses[0]?.id || '');
+              setDefineOpen(true);
+            }}
+            sx={{ flexShrink: 0 }}
+          >
+            Define location
+          </Button>
+        )}
+      </Box>
 
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2, flexWrap: 'wrap' }}>
         <TextField
@@ -732,7 +947,10 @@ export default function LocationsTab() {
       </Box>
 
       {allEmpty ? (
-        <Alert severity="info">No items are currently located in the warehouse.</Alert>
+        <Alert severity="info">
+          No locations defined and nothing located yet.
+          {canManage ? ' Define the first location to make put-away possible.' : ''}
+        </Alert>
       ) : rows.length === 0 ? (
         productSearchLoading ? (
           // The product-code join is still in flight - don't claim "no match" before it lands.
@@ -790,6 +1008,73 @@ export default function LocationsTab() {
           )}
         </Box>
       )}
+
+      {/* #632: define a location from scratch. Row-level Define/Reactivate submit their own triple. */}
+      <Dialog open={defineOpen} onClose={() => setDefineOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle sx={{ pb: 1 }}>Define location</DialogTitle>
+        <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
+          <Typography variant="body2" color="text.secondary">
+            A defined location becomes pickable on Put Away and everywhere else hardware is placed.
+            Values are stored uppercase.
+          </Typography>
+          {warehouses.length > 1 && (
+            <FormControl size="small">
+              <InputLabel id="define-location-warehouse">Warehouse</InputLabel>
+              <Select
+                labelId="define-location-warehouse"
+                label="Warehouse"
+                value={defineWarehouseId}
+                onChange={(e) => setDefineWarehouseId(e.target.value)}
+              >
+                {warehouses.map((w) => (
+                  <MenuItem key={w.id} value={w.id}>
+                    {w.name} ({w.code})
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
+          <Box sx={{ display: 'flex', gap: 1.5 }}>
+            <TextField
+              label="Aisle"
+              size="small"
+              value={defineAisle}
+              onChange={(e) => setDefineAisle(e.target.value.slice(0, 20))}
+              sx={{ flex: 1, '& .MuiInputBase-input': monoSx }}
+            />
+            <TextField
+              label="Row"
+              size="small"
+              value={defineRow}
+              onChange={(e) => setDefineRow(e.target.value.slice(0, 20))}
+              sx={{ flex: 1, '& .MuiInputBase-input': monoSx }}
+            />
+            <TextField
+              label="Bay"
+              size="small"
+              value={defineBay}
+              onChange={(e) => setDefineBay(e.target.value.slice(0, 20))}
+              sx={{ flex: 1, '& .MuiInputBase-input': monoSx }}
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDefineOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={
+              creating ||
+              !defineWarehouseId ||
+              !defineAisle.trim() ||
+              !defineRow.trim() ||
+              !defineBay.trim()
+            }
+            onClick={() => handleCreateLocation(defineWarehouseId, defineAisle, defineRow, defineBay)}
+          >
+            Define
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

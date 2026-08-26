@@ -10,6 +10,9 @@ interface LocationAutocompleteProps {
   size?: 'small' | 'medium';
   fullWidth?: boolean;
   autoFocus?: boolean;
+  /** #632: false makes this a strict pick from the defined-locations registry - typing still
+   *  filters, but only a listed value validates (the caller gates its action on an exact match). */
+  freeSolo?: boolean;
 }
 
 export default function LocationAutocomplete({
@@ -21,16 +24,19 @@ export default function LocationAutocomplete({
   size = 'small',
   fullWidth = true,
   autoFocus = false,
+  freeSolo = true,
 }: LocationAutocompleteProps) {
   return (
     <Autocomplete
-      freeSolo
+      freeSolo={freeSolo}
       disablePortal={false}
       disabled={disabled}
       size={size}
       fullWidth={fullWidth}
       options={options}
-      value={value || null}
+      // Strict mode: only surface a matching option as the value, so MUI never warns about a
+      // typed-but-unlisted string (the input text still shows through inputValue).
+      value={freeSolo ? value || null : options.includes(value) ? value : null}
       inputValue={value}
       onInputChange={(_, newInput) => onChange(newInput.slice(0, 20))}
       onChange={(_, newValue) => {

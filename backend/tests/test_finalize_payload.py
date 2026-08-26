@@ -17,6 +17,7 @@ from app.schemas.imports import finalize_payload
 from app.schemas.inputs import (
     FinalizeImportSessionInput,
     OpeningInput,
+    PODraftInput,
     SARItemInput,
     ShippingOutPRDraftInput,
     ShippingOutPRDraftItemInput,
@@ -160,6 +161,29 @@ def test_schedule_filename_defaults_to_none_and_passes_through():
         created_by_user_id="u",
     )
     assert present["schedule_filename"] == "contracterp-74.xml"
+
+
+def test_a_po_drafts_vendor_label_is_forwarded_to_the_repository():
+    # #632: the wizard's per-draft vendor label seeds vendor_name_snapshot on the created DRAFT PO.
+    # A field the repository reads but finalize stops sending is the exact failure this file exists for.
+    payload = finalize_payload(
+        FinalizeImportSessionInput(
+            project_id="p1",
+            openings=[_opening()],
+            po_drafts=[PODraftInput(po_number="PO-1", vendor_name="Allegion")],
+        ),
+        created_by_user_id="u",
+    )
+    assert payload["po_drafts"][0]["vendor_name"] == "Allegion"
+
+
+def test_a_po_draft_with_no_vendor_label_still_flattens():
+    # Optional: the wizard can raise a request before anybody has decided who it is going to.
+    payload = finalize_payload(
+        FinalizeImportSessionInput(project_id="p1", openings=[_opening()], po_drafts=[PODraftInput(po_number="PO-1")]),
+        created_by_user_id="u",
+    )
+    assert payload["po_drafts"][0]["vendor_name"] is None
 
 
 @pytest.mark.parametrize("field", ["shop_assembly_items", "shipping_out_pr_drafts"])

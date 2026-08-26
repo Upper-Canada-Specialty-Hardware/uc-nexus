@@ -153,6 +153,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "registerPoInGp": SIGNED_IN,
     "savePoDocumentData": SIGNED_IN,
     "updatePo": SIGNED_IN,
+    "updatePoNotes": SIGNED_IN,
     "updatePoDocumentSettings": ADMIN_ROLE,
     "updatePoLineItemOrderAs": SIGNED_IN,
     "updatePoLineItemUnitCost": SIGNED_IN,
@@ -302,6 +303,11 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "warehouse": SIGNED_IN,
     "warehouseDashboard": SIGNED_IN,
     "warehouses": SIGNED_IN,
+    # The registry read feeds every put-away picker, so it is signed-in; defining and retiring
+    # locations is warehouse management.
+    "warehouseLocations": SIGNED_IN,
+    "createWarehouseLocation": frozenset({ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE}),
+    "deactivateWarehouseLocation": frozenset({ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE}),
     "adjustInventoryQuantity": SIGNED_IN,
     # Approving a draft is what posts the GP receipt and credits inventory, so it is the one receiving
     # action that needs a role. Rejecting it is the same authority used the other way. Everything else

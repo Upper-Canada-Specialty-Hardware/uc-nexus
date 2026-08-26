@@ -168,6 +168,8 @@ class ShippingQueries:
                     classification=row["classification"],
                     owed_quantity=row["owed_quantity"],
                     sent_quantity=row["sent_quantity"],
+                    assembled_quantity=row["assembled_quantity"],
+                    shipped_quantity=row["shipped_quantity"],
                     claimed_quantity=row["claimed_quantity"],
                     suggested_quantity=row["suggested_quantity"],
                     on_order_quantity=row["on_order_quantity"],

@@ -10,6 +10,7 @@ assertions, so it lives here. Mirrors the inline helpers the existing suites alr
 import uuid
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.enums import (
@@ -23,12 +24,55 @@ from app.models.project import Project
 from app.models.shipping import PackingSlip, PackingSlipItem, ShipmentReturn, ShipmentReturnItem
 from app.models.shop_assembly import ShopAssemblyRequest
 from app.models.stock_item import StockItem
+from app.models.warehouse_location import WarehouseLocation
 from app.repositories import warehouse as warehouse_repository
 from app.repositories import warehouse_admin_repository
+from app.repositories.warehouse import normalize_location_value
 
 
 def wh_id(session: Session) -> uuid.UUID:
     return warehouse_admin_repository.get_primary_warehouse_id(session)
+
+
+def define_location(
+    session: Session,
+    warehouse_id: uuid.UUID | None = None,
+    aisle: str = "A",
+    row: str = "1",
+    bay: str = "1",
+    *,
+    active: bool = True,
+) -> WarehouseLocation:
+    """Register a put-away location so a write that TARGETS it is allowed (#632).
+
+    Every location a user chooses - put-away, move, merge target, destock/allocate target, transfer
+    destination - is checked against warehouse_locations, so a test that lands hardware on a shelf has
+    to define the shelf first. Rows are stored canonical (uppercase, trimmed, whitespace-collapsed)
+    because that is the form the repositories normalize their input to before the lookup: defining
+    "a1" here matches a call site passing "A1", and vice versa.
+
+    Idempotent, so a test that puts two rows on one shelf can call it twice.
+    """
+    a = normalize_location_value(aisle)
+    r = normalize_location_value(row)
+    b = normalize_location_value(bay)
+    wh = warehouse_id or wh_id(session)
+    existing = session.scalars(
+        select(WarehouseLocation).where(
+            WarehouseLocation.warehouse_id == wh,
+            WarehouseLocation.aisle == a,
+            WarehouseLocation.row == r,
+            WarehouseLocation.bay == b,
+        )
+    ).first()
+    if existing is not None:
+        existing.active = active
+        session.flush()
+        return existing
+    loc = WarehouseLocation(id=uuid.uuid4(), warehouse_id=wh, aisle=a, row=r, bay=b, active=active)
+    session.add(loc)
+    session.flush()
+    return loc
 
 
 def make_project(session: Session, description: str = "Test") -> Project:

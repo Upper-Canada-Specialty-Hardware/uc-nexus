@@ -178,6 +178,9 @@ export const GET_REQUEST_COVERAGE = gql`
       classification
       owedQuantity
       sentQuantity
+      # #632: the sent total split by exit (through shop vs shipped out).
+      assembledQuantity
+      shippedQuantity
       claimedQuantity
       suggestedQuantity
       onOrderQuantity

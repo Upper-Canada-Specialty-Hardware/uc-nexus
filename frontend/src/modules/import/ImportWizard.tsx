@@ -57,6 +57,7 @@ import {
   itemGroupKey,
   productKey,
   seedDraftGroups,
+  selectionTotalsByProduct,
   toClassificationInputs,
   type DraftAttachmentType,
   type DraftGroup,
@@ -319,7 +320,7 @@ export default function ImportWizard({
     if (purpose === 'po' || purpose === 'schedule') {
       base.push({ id: 'classification', label: 'Classification' });
     }
-    if (purpose === 'po') base.push({ id: 'purchase-orders', label: 'Purchase Orders' });
+    if (purpose === 'po') base.push({ id: 'purchase-orders', label: 'Organize PO Drafts' });
     if (purpose === 'assembly') base.push({ id: 'shop-assembly', label: 'Shop Assembly' });
     base.push({ id: 'finalize', label: 'Finalize' });
     return base;
@@ -577,7 +578,9 @@ export default function ImportWizard({
   // `on-hand - deficient - other requests' reservations`. Read the same numbers here so the wizard
   // can refuse an over-selection with per-combo detail instead of letting the whole finalize bounce.
   // Defined above the shop-assembly re-import filter because that filter now reads it.
-  const requestPurposeActive = open && purpose === 'assembly';
+  // #632: a PO re-import reads it too - step 6's per-line recon context shows "available in
+  // inventory" from the same reservation-aware number the composers and the server gate use.
+  const requestPurposeActive = open && (purpose === 'assembly' || (purpose === 'po' && isReimport));
   const {
     data: availabilityData,
     loading: availabilityLoading,
@@ -756,6 +759,32 @@ export default function ImportWizard({
     }
     return map;
   }, [vendorGroups]);
+
+  // #632: the per-product pool the drafts partition - step 6's Qty edit ceiling, and the "needed by
+  // schedule" figure its recon context shows. Same math as the seed, so the two cannot disagree.
+  const poSelectionTotals = useMemo(
+    () => selectionTotalsByProduct(vendorGroups, orderQtyOverrides),
+    [vendorGroups, orderQtyOverrides],
+  );
+
+  // #632: step 6's per-line recon context - needed / already ordered / received / available per
+  // productKey, from state the wizard already holds (no new query). Zeros are truthful on a fresh
+  // import: the project is new, so nothing is ordered, received, or on a shelf yet.
+  const poLineContext = useMemo(() => {
+    const map = new Map<string, { needed: number; onOrder: number; received: number; available: number }>();
+    if (purpose !== 'po') return map;
+    for (const [pk, meta] of poProductCatalog) {
+      const igk = `${meta.hardwareCategory}|${meta.productCode}`;
+      const status = hardwareStatusByProduct.get(igk);
+      map.set(pk, {
+        needed: poSelectionTotals.get(pk) ?? 0,
+        onOrder: status?.onOrder ?? 0,
+        received: status?.receivedQuantity ?? 0,
+        available: availableByProduct.get(igk) ?? status?.onHand ?? 0,
+      });
+    }
+    return map;
+  }, [purpose, poProductCatalog, poSelectionTotals, hardwareStatusByProduct, availableByProduct]);
 
   // #570: re-seed the PO drafts when, and only when, the aggregated selection changes. Held against a
   // signature so Back-and-forward through the wizard preserves the buyer's slicing; a real change to
@@ -1010,6 +1039,20 @@ export default function ImportWizard({
   // the split dialog a partial. A source line emptied to zero is dropped.
   const moveLine = useCallback((fromId: string, pk: string, qty: number, toId: string) => {
     setDraftGroups((prev) => draftOps.moveLine(prev, fromId, pk, qty, toId));
+  }, []);
+
+  // #632: direct Qty edit on a ledger line, capped at the product's selection pool minus what
+  // sibling drafts hold. Lowering just proceeds with less.
+  const updateLineQty = useCallback(
+    (draftId: string, pk: string, qty: number) => {
+      setDraftGroups((prev) => draftOps.updateLineQty(prev, draftId, pk, qty, poSelectionTotals.get(pk) ?? 0));
+    },
+    [poSelectionTotals],
+  );
+
+  // #632: drop a line outright - "not ordering this here". The emptied draft stays visible.
+  const removeLine = useCallback((draftId: string, pk: string) => {
+    setDraftGroups((prev) => draftOps.removeLine(prev, draftId, pk));
   }, []);
 
   const createDraft = useCallback(() => {
@@ -1880,12 +1923,16 @@ export default function ImportWizard({
               productCatalog={poProductCatalog}
               unitCostOverrides={unitCostOverrides}
               orderAsValues={orderAsValues}
+              selectionTotals={poSelectionTotals}
+              lineContextByPk={poLineContext}
               onToggleIncluded={toggleDraftIncluded}
               onRenameDraft={renameDraft}
               onUpdateDraftInfo={updateDraftInfo}
               onUpdateUnitCost={updateUnitCost}
               onUpdateOrderAs={updateOrderAs}
               onMoveLine={moveLine}
+              onUpdateLineQty={updateLineQty}
+              onRemoveLine={removeLine}
               onCreateDraft={createDraft}
               onMergeDraft={mergeDraft}
               onRemoveDraft={removeDraft}

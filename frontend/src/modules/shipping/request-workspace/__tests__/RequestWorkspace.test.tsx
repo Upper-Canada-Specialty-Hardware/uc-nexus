@@ -55,6 +55,7 @@ function projectsMock(): MockedResponse {
             description: 'Riverside Tower',
             client: null,
             jobSiteName: null,
+            scheduleFilename: null,
             openingCount: 4,
             gpSetupOk: true,
             gpSetupCheckedAt: null,
@@ -232,6 +233,8 @@ function coverageMock(suggested = 4, owed = 4): MockedResponse {
             classification: null,
             owedQuantity: owed,
             sentQuantity: 0,
+            assembledQuantity: 0,
+            shippedQuantity: 0,
             claimedQuantity: 0,
             suggestedQuantity: suggested,
             onOrderQuantity: 0,
@@ -286,9 +289,10 @@ describe('from-schedule source gate', () => {
     // Free is the openings-first addition (#610): the live pool remainder for the product.
     expect(screen.getByText('Free')).toBeInTheDocument();
     const cells = within(productCell.closest('tr') as HTMLElement).getAllByRole('cell');
-    // Product / Category / chip / Owed / Sent / Claimed / Free / Suggested / On order / Add
-    expect(cells[6]).toHaveTextContent('10'); // Free = availability (10), nothing in the cart yet
-    expect(cells[7]).toHaveTextContent('4'); // Suggested
+    // #632: expander / Product / Category / chip / Required / Through shop / Shipped out / Claimed /
+    // Free / Suggested / On order / Add - one row per PRODUCT, summed over the selected openings.
+    expect(cells[8]).toHaveTextContent('10'); // Free = availability (10), nothing in the cart yet
+    expect(cells[9]).toHaveTextContent('4'); // Suggested
   });
 
   it('flags a suggestion the free pool cannot cover, but still offers the add', async () => {
@@ -305,10 +309,10 @@ describe('from-schedule source gate', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Filter' }));
     const productCell = await screen.findByText('HG-100', {}, SLOW);
     const cells = within(productCell.closest('tr') as HTMLElement).getAllByRole('cell');
-    expect(cells[6]).toHaveTextContent('2'); // Free clamped to what stock can cover
-    expect(cells[7]).toHaveTextContent('4'); // Suggested still the full owed figure
+    expect(cells[8]).toHaveTextContent('2'); // Free clamped to what stock can cover
+    expect(cells[9]).toHaveTextContent('4'); // Suggested still the full owed figure
     // A shortfall does not block the add - the line goes and claims what stock can cover.
-    expect(within(cells[9]).getByRole('button', { name: 'Add' })).toBeEnabled();
+    expect(within(cells[11]).getByRole('button', { name: 'Add' })).toBeEnabled();
   });
 });
 
@@ -323,6 +327,8 @@ function coverageRow(over: Partial<Record<string, unknown>> = {}) {
     classification: null,
     owedQuantity: 4,
     sentQuantity: 0,
+    assembledQuantity: 0,
+    shippedQuantity: 0,
     claimedQuantity: 0,
     suggestedQuantity: 4,
     onOrderQuantity: 0,
@@ -399,10 +405,19 @@ describe('composer collapse', () => {
     );
     await reachCoverage([coverageMockRows([coverageRow({ suggestedQuantity: 0, sentQuantity: 4 })])]);
 
-    const qty = await screen.findByRole('spinbutton', { name: 'Quantity of HG-100 for 101' }, SLOW);
+    // #632: the product row carries ONE quantity for the product across the selected openings.
+    const qty = await screen.findByRole(
+      'spinbutton',
+      { name: 'Quantity of HG-100 across selected openings' },
+      SLOW,
+    );
     expect(qty).toHaveValue(2);
     // The only row is pinned visible by the cart, so there is nothing to collapse.
     expect(screen.queryByRole('button', { name: /with nothing to add/ })).not.toBeInTheDocument();
+
+    // The per-opening breakdown behind the expander still names the door the units are owed to.
+    fireEvent.click(screen.getByRole('button', { name: 'Show per-opening breakdown for HG-100' }));
+    expect(await screen.findByRole('spinbutton', { name: 'Quantity of HG-100 for 101' }, SLOW)).toHaveValue(2);
   });
 });
 

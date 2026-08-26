@@ -181,8 +181,14 @@ def _hardware_item_input(opening_number: str, product_code: str, **overrides) ->
     return base
 
 
-def _po_draft(refs, po_number="PO-1"):
-    return {"po_number": po_number, "notes": None, "hardware_item_refs": refs, "line_item_aliases": []}
+def _po_draft(refs, po_number="PO-1", vendor_name=None):
+    return {
+        "po_number": po_number,
+        "notes": None,
+        "vendor_name": vendor_name,
+        "hardware_item_refs": refs,
+        "line_item_aliases": [],
+    }
 
 
 def test_partial_ref_splits_a_row_into_in_po_and_available(db_session):
@@ -335,3 +341,61 @@ def test_null_quantity_still_claims_the_whole_combo(db_session):
     assert len(items) == 1
     assert items[0].state == HardwareItemState.IN_PO
     assert items[0].item_quantity == 4
+
+
+# --- #632: the wizard's per-draft vendor label ----------------------------------------------------
+# It seeds vendor_name_snapshot on the created DRAFT so the register table and bestGuessGpVendor have
+# something to show for a request. GP register overwrites it later with the confirmed GP vendor's
+# display name - the GP vendor stays the only vendor authority.
+
+
+def _one_ref():
+    return [{"opening_number": "A01", "product_code": "HG-100", "hardware_category": "HINGE", "quantity": 2}]
+
+
+def _finalize_with(db_session, project, draft):
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=2)],
+            "po_drafts": [draft],
+        },
+    )
+    db_session.flush()
+    return db_session.scalar(select(PurchaseOrder).where(PurchaseOrder.project_id == project.id))
+
+
+def test_a_drafts_vendor_label_lands_on_the_created_po_stripped(db_session):
+    project = _make_project(db_session)
+    db_session.commit()
+
+    po = _finalize_with(db_session, project, _po_draft(_one_ref(), vendor_name="  Allegion  "))
+
+    assert po.vendor_name_snapshot == "Allegion"
+
+
+@pytest.mark.parametrize("blank", [None, "", "   "])
+def test_a_blank_vendor_label_leaves_the_snapshot_null(db_session, blank):
+    project = _make_project(db_session)
+    db_session.commit()
+
+    po = _finalize_with(db_session, project, _po_draft(_one_ref(), vendor_name=blank))
+
+    assert po.vendor_name_snapshot is None
+
+
+def test_a_draft_dict_that_predates_the_vendor_key_still_finalizes(db_session):
+    """The repository reads the key with .get, so a payload built before the field existed - every
+    older fixture, and any queued wizard state - finalizes with a null snapshot rather than dying."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    po = _finalize_with(
+        db_session,
+        project,
+        {"po_number": "PO-1", "notes": None, "hardware_item_refs": _one_ref(), "line_item_aliases": []},
+    )
+
+    assert po.vendor_name_snapshot is None

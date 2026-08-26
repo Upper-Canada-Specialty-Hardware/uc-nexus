@@ -22,10 +22,11 @@ import {
   InputAdornment,
   Menu,
   MenuItem,
+  Popover,
   TextField,
   Typography,
 } from '@mui/material';
-import { FileText, MoreVertical, Paperclip, X } from 'lucide-react';
+import { FileText, Info, MoreVertical, Paperclip, X } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
@@ -58,6 +59,19 @@ export interface SplitContext {
   pk: string;
   productLabel: string;
   maxQty: number;
+}
+
+/** #632: the per-line reconciliation context the info popover renders - where this product already
+ *  stands project-wide, so the buyer can judge a quantity without leaving the step. */
+export interface LineContext {
+  /** The selected quantity - what this wizard pass says the schedule needs of the product. */
+  needed: number;
+  /** Placed with a vendor and not yet received, project-wide. */
+  onOrder: number;
+  /** Cumulative PO receipts, project-wide. */
+  received: number;
+  /** On the shelf and unclaimed (reservation-aware where loaded). */
+  available: number;
 }
 
 interface DraftLine {
@@ -187,12 +201,19 @@ export interface DraftCardProps {
   costCodes: GpCostCode[];
   unitCostOverrides: Map<string, number>;
   orderAsValues: Map<string, string>;
+  // #632: the per-product selection pool and how much of it ALL drafts currently hold - the Qty
+  // edit's ceiling is pool minus what the siblings hold.
+  selectionTotals: Map<string, number>;
+  heldByProduct: Map<string, number>;
+  lineContextByPk: Map<string, LineContext>;
   onToggleIncluded: (id: string) => void;
   onRenameDraft: (id: string, label: string) => void;
   onUpdateDraftInfo: (id: string, field: 'notes' | 'preferredDeliveryDate' | 'costCode', value: string) => void;
   onUpdateUnitCost: (pk: string, value: number) => void;
   onUpdateOrderAs: (pk: string, value: string) => void;
   onMoveLine: (fromId: string, pk: string, qty: number, toId: string) => void;
+  onUpdateLineQty: (id: string, pk: string, qty: number) => void;
+  onRemoveLine: (id: string, pk: string) => void;
   onMergeDraft: (fromId: string, intoId: string) => void;
   onRemoveDraft: (id: string) => void;
   onOpenSplit: (ctx: SplitContext) => void;
@@ -210,12 +231,17 @@ export function DraftCard({
   costCodes,
   unitCostOverrides,
   orderAsValues,
+  selectionTotals,
+  heldByProduct,
+  lineContextByPk,
   onToggleIncluded,
   onRenameDraft,
   onUpdateDraftInfo,
   onUpdateUnitCost,
   onUpdateOrderAs,
   onMoveLine,
+  onUpdateLineQty,
+  onRemoveLine,
   onMergeDraft,
   onRemoveDraft,
   onOpenSplit,
@@ -243,10 +269,13 @@ export function DraftCard({
   const poTotal = lines.reduce((sum, l) => sum + l.totalCost, 0);
   const isEmpty = draft.lines.size === 0;
 
-  // Card-level actions menu (merge / remove) and the per-row menu (move whole / split), each a single
-  // anchored Menu; the row menu remembers which line it was opened for.
+  // Card-level actions menu (merge / remove) and the per-row menu (move whole / split / remove), each
+  // a single anchored Menu; the row menu remembers which line it was opened for. The info popover
+  // (#632: per-line recon context) is likewise a single instance anchored at the row that opened it.
   const [cardMenuAnchor, setCardMenuAnchor] = useState<HTMLElement | null>(null);
   const [rowMenu, setRowMenu] = useState<{ anchor: HTMLElement; line: DraftLine } | null>(null);
+  const [infoPopover, setInfoPopover] = useState<{ anchor: HTMLElement; line: DraftLine } | null>(null);
+  const infoCtx = infoPopover ? lineContextByPk.get(infoPopover.line.pk) : undefined;
 
   return (
     <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 2, mb: 2, opacity: draft.included ? 1 : 0.6 }}>
@@ -257,13 +286,15 @@ export function DraftCard({
           control={<Checkbox checked={draft.included} onChange={() => onToggleIncluded(draft.id)} sx={{ py: 0 }} />}
           label={
             <Box sx={{ minWidth: 0 }}>
-              <Typography sx={microLabelSx}>PO draft</Typography>
+              <Typography sx={microLabelSx}>Vendor</Typography>
+              {/* #632: the label IS the vendor - finalize writes it to vendor_name_snapshot, so the
+                  register table and the GP-vendor auto-suggest have a seed. */}
               <TextField
                 variant="standard"
                 value={draft.label}
                 onChange={(e) => onRenameDraft(draft.id, e.target.value)}
-                placeholder="Draft name"
-                slotProps={{ input: { sx: monoSx }, htmlInput: { 'aria-label': 'Draft name' } }}
+                placeholder="Vendor"
+                slotProps={{ input: { sx: monoSx }, htmlInput: { 'aria-label': 'Vendor' } }}
                 sx={{ minWidth: 0, width: 220, maxWidth: '100%' }}
               />
             </Box>
@@ -434,7 +465,7 @@ export function DraftCard({
         <Box
           sx={{
             display: 'grid',
-            gridTemplateColumns: '1.1fr 1.3fr 1.2fr 0.6fr 0.8fr 0.8fr 40px',
+            gridTemplateColumns: '1.1fr 1.3fr 1.2fr 100px 0.8fr 0.8fr 32px 40px',
             '& .po-head': {
               ...microLabelSx,
               px: 1,
@@ -467,6 +498,7 @@ export function DraftCard({
             Total Cost
           </Box>
           <Box className="po-head" />
+          <Box className="po-head" />
 
           {lines.map((line) => (
             <Box key={line.pk} sx={{ display: 'contents' }}>
@@ -487,9 +519,30 @@ export function DraftCard({
                 <Typography variant="body2">{line.hardwareCategory}</Typography>
               </Box>
               <Box className="po-cell po-cell-right">
-                <Typography variant="body2" sx={tabularSx}>
-                  {line.qty}
-                </Typography>
+                {/* #632: Qty is editable in place, ceilinged at the product's selection pool minus
+                    what sibling drafts hold. Lowering proceeds with less; widening the scope stays
+                    the selection steps' job. */}
+                <TextField
+                  size="small"
+                  type="number"
+                  value={line.qty}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value, 10);
+                    if (!Number.isNaN(val)) onUpdateLineQty(draft.id, line.pk, val);
+                  }}
+                  slotProps={{
+                    input: { sx: tabularSx },
+                    htmlInput: {
+                      min: 0,
+                      max:
+                        (selectionTotals.get(line.pk) ?? line.qty) -
+                        ((heldByProduct.get(line.pk) ?? line.qty) - line.qty),
+                      step: 1,
+                      'aria-label': `Quantity of ${line.productCode}`,
+                    },
+                  }}
+                  sx={{ width: 84 }}
+                />
               </Box>
               <Box className="po-cell po-cell-right">
                 <TextField
@@ -516,10 +569,19 @@ export function DraftCard({
                 </Typography>
               </Box>
               <Box className="po-cell po-cell-right" sx={{ px: 0 }}>
+                {/* #632: per-line recon context - where this product already stands project-wide. */}
+                <IconButton
+                  size="small"
+                  aria-label={`Reconciliation context for ${line.productCode}`}
+                  onClick={(e) => setInfoPopover({ anchor: e.currentTarget, line })}
+                >
+                  <Info size={15} strokeWidth={1.75} />
+                </IconButton>
+              </Box>
+              <Box className="po-cell po-cell-right" sx={{ px: 0 }}>
                 <IconButton
                   size="small"
                   aria-label={`Line actions for ${line.productCode}`}
-                  disabled={otherDrafts.length === 0}
                   onClick={(e) => setRowMenu({ anchor: e.currentTarget, line })}
                 >
                   <MoreVertical size={16} strokeWidth={1.75} />
@@ -542,24 +604,87 @@ export function DraftCard({
             Move all to {t.label}
           </MenuItem>
         ))}
+        {otherDrafts.length > 0 && (
+          <MenuItem
+            disabled={!rowMenu || rowMenu.line.qty < 2}
+            onClick={() => {
+              if (rowMenu) {
+                onOpenSplit({
+                  fromId: draft.id,
+                  pk: rowMenu.line.pk,
+                  productLabel: rowMenu.line.productCode,
+                  maxQty: rowMenu.line.qty,
+                });
+              }
+              setRowMenu(null);
+            }}
+          >
+            Split…
+          </MenuItem>
+        )}
         {otherDrafts.length > 0 && <Divider />}
+        {/* #632: drop the line outright - "not ordering this here". Not a move; the product's
+            openings are just claimed by fewer drafts at finalize. */}
         <MenuItem
-          disabled={!rowMenu || rowMenu.line.qty < 2}
           onClick={() => {
-            if (rowMenu) {
-              onOpenSplit({
-                fromId: draft.id,
-                pk: rowMenu.line.pk,
-                productLabel: rowMenu.line.productCode,
-                maxQty: rowMenu.line.qty,
-              });
-            }
+            if (rowMenu) onRemoveLine(draft.id, rowMenu.line.pk);
             setRowMenu(null);
           }}
         >
-          Split…
+          Remove line
         </MenuItem>
       </Menu>
+
+      {/* #632: the per-line recon context. Read-only numbers the wizard already holds - no query. */}
+      <Popover
+        open={infoPopover != null}
+        anchorEl={infoPopover?.anchor ?? null}
+        onClose={() => setInfoPopover(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+      >
+        {infoPopover && (
+          <Box sx={{ p: 1.5, minWidth: 230 }}>
+            <Typography variant="body2" sx={{ ...monoSx, mb: 1 }}>
+              {infoPopover.line.productCode}
+            </Typography>
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: '1fr auto',
+                columnGap: 2,
+                rowGap: 0.5,
+                alignItems: 'baseline',
+              }}
+            >
+              <Typography variant="caption" color="text.secondary">
+                Needed by schedule
+              </Typography>
+              <Typography variant="body2" sx={{ ...tabularSx, textAlign: 'right' }}>
+                {infoCtx?.needed ?? 0}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Already on order
+              </Typography>
+              <Typography variant="body2" sx={{ ...tabularSx, textAlign: 'right' }}>
+                {infoCtx?.onOrder ?? 0}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Received
+              </Typography>
+              <Typography variant="body2" sx={{ ...tabularSx, textAlign: 'right' }}>
+                {infoCtx?.received ?? 0}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Available in inventory
+              </Typography>
+              <Typography variant="body2" sx={{ ...tabularSx, textAlign: 'right' }}>
+                {infoCtx?.available ?? 0}
+              </Typography>
+            </Box>
+          </Box>
+        )}
+      </Popover>
     </Box>
   );
 }
