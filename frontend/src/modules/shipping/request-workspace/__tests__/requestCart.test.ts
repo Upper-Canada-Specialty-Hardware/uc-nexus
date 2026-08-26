@@ -1,12 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import {
   addScheduleRowAtSuggested,
+  aggregateCoverageByProduct,
   buildRequestItems,
   cartGroups,
   headroomByProduct,
   heldByRequest,
+  productLinesQuantity,
   removeLine,
   setLineQuantity,
+  setProductQuantity,
   takeAllFreeLoose,
   type CartLine,
 } from '../requestCart';
@@ -23,6 +26,8 @@ function coverage(overrides: Partial<CoverageRow> = {}): CoverageRow {
     classification: 'SITE_HARDWARE',
     owedQuantity: 6,
     sentQuantity: 0,
+    assembledQuantity: 0,
+    shippedQuantity: 0,
     claimedQuantity: 0,
     suggestedQuantity: 6,
     onOrderQuantity: 0,
@@ -146,5 +151,226 @@ describe('cart shape and submission', () => {
     ];
     const next = removeLine(lines, { ...HINGE, openingNumber: 'A01' });
     expect(next).toEqual([{ openingNumber: 'A02', hardwareCategory: 'HINGE', productCode: 'HG-100', quantity: 3 }]);
+  });
+});
+
+// ---- #632: one product-level row per product, and the single quantity field behind it ----
+
+/** The cart's lines as `{ opening | 'loose': qty }` - a distribution reads at a glance. Only used on
+ *  single-product carts, where the opening alone identifies the line. */
+function shape(lines: CartLine[]): Record<string, number> {
+  return Object.fromEntries(lines.map((l) => [l.openingNumber ?? 'loose', l.quantity]));
+}
+
+/** Two openings of the one product, each owing its own quantity - the aggregate's `rows`. */
+function twoOpenings(a: number, b: number): CoverageRow[] {
+  return [
+    coverage({ openingNumber: 'A01', suggestedQuantity: a, owedQuantity: a }),
+    coverage({ openingNumber: 'A02', suggestedQuantity: b, owedQuantity: b }),
+  ];
+}
+
+describe('aggregateCoverageByProduct', () => {
+  it('sums every per-opening column across the openings behind one product', () => {
+    const [agg] = aggregateCoverageByProduct([
+      coverage({
+        openingNumber: 'A01',
+        owedQuantity: 6,
+        assembledQuantity: 1,
+        shippedQuantity: 2,
+        claimedQuantity: 1,
+        suggestedQuantity: 3,
+      }),
+      coverage({
+        openingNumber: 'A02',
+        owedQuantity: 4,
+        assembledQuantity: 2,
+        shippedQuantity: 0,
+        claimedQuantity: 1,
+        suggestedQuantity: 1,
+      }),
+    ]);
+    expect(agg.requiredQuantity).toBe(10);
+    expect(agg.assembledQuantity).toBe(3);
+    expect(agg.shippedQuantity).toBe(2);
+    expect(agg.claimedQuantity).toBe(2);
+    expect(agg.suggestedQuantity).toBe(4);
+    expect(agg.key).toBe(KEY);
+  });
+
+  it('takes on-order from the first row and NEVER sums it - one PO is not one PO per door', () => {
+    // The server reports on-order project-wide per product. Summing it over three openings would
+    // report the same purchase order three times.
+    const [agg] = aggregateCoverageByProduct([
+      coverage({ openingNumber: 'A01', onOrderQuantity: 5 }),
+      coverage({ openingNumber: 'A02', onOrderQuantity: 5 }),
+      coverage({ openingNumber: 'A03', onOrderQuantity: 5 }),
+    ]);
+    expect(agg.onOrderQuantity).toBe(5);
+  });
+
+  it('keeps the classification the openings agree on', () => {
+    const [agg] = aggregateCoverageByProduct([
+      coverage({ openingNumber: 'A01', classification: 'SHOP_HARDWARE' }),
+      coverage({ openingNumber: 'A02', classification: 'SHOP_HARDWARE' }),
+    ]);
+    expect(agg.classification).toBe('SHOP_HARDWARE');
+  });
+
+  it('collapses the classification to null when the openings disagree - no chip beats a wrong chip', () => {
+    const [agg] = aggregateCoverageByProduct([
+      coverage({ openingNumber: 'A01', classification: 'SITE_HARDWARE' }),
+      coverage({ openingNumber: 'A02', classification: 'SHOP_HARDWARE' }),
+      coverage({ openingNumber: 'A03', classification: 'SITE_HARDWARE' }),
+    ]);
+    expect(agg.classification).toBeNull();
+  });
+
+  it('an unclassified opening among classified ones also collapses to null', () => {
+    const [agg] = aggregateCoverageByProduct([
+      coverage({ openingNumber: 'A01', classification: 'SITE_HARDWARE' }),
+      coverage({ openingNumber: 'A02', classification: null }),
+    ]);
+    expect(agg.classification).toBeNull();
+  });
+
+  it('orders the per-opening rows ascending by opening, whatever order they arrived in', () => {
+    const [agg] = aggregateCoverageByProduct([
+      coverage({ openingNumber: 'A03' }),
+      coverage({ openingNumber: 'A01' }),
+      coverage({ openingNumber: 'A02' }),
+    ]);
+    expect(agg.rows.map((r) => r.openingNumber)).toEqual(['A01', 'A02', 'A03']);
+  });
+
+  it('splits the rows product-first and sorts the products by category then code', () => {
+    const aggs = aggregateCoverageByProduct([
+      coverage({ openingNumber: 'A01' }),
+      coverage({ openingNumber: 'A01', hardwareCategory: 'LOCK', productCode: 'LK-200' }),
+      coverage({ openingNumber: 'A02', hardwareCategory: 'LOCK', productCode: 'LK-200' }),
+      coverage({ openingNumber: 'A01', hardwareCategory: 'LOCK', productCode: 'LK-100' }),
+    ]);
+    expect(aggs.map((a) => a.key)).toEqual(['HINGE|HG-100', 'LOCK|LK-100', 'LOCK|LK-200']);
+    expect(aggs[2].rows).toHaveLength(2);
+  });
+
+  it('no coverage is no products', () => {
+    expect(aggregateCoverageByProduct([])).toEqual([]);
+  });
+});
+
+describe('productLinesQuantity', () => {
+  it("counts only the aggregate's own openings - loose lines and other openings are not its units", () => {
+    const rows = twoOpenings(6, 6);
+    const lines: CartLine[] = [
+      { openingNumber: 'A01', ...HINGE, quantity: 2 },
+      { openingNumber: 'A02', ...HINGE, quantity: 3 },
+      // An opening outside this selection, the loose lane, and a different product all sit out.
+      { openingNumber: 'A09', ...HINGE, quantity: 4 },
+      { openingNumber: null, ...HINGE, quantity: 5 },
+      { openingNumber: 'A01', hardwareCategory: 'LOCK', productCode: 'LK-200', quantity: 9 },
+    ];
+    expect(productLinesQuantity(lines, rows)).toBe(5);
+  });
+
+  it('is zero when the cart holds none of the product', () => {
+    expect(productLinesQuantity([], twoOpenings(6, 6))).toBe(0);
+  });
+});
+
+describe('setProductQuantity', () => {
+  it('fills ascending by opening, each opening capped at its own suggestion', () => {
+    const headroom = headroomByProduct(new Map([[KEY, 10]]), new Map());
+    // Rows arrive out of order; the fill still runs A01 before A02.
+    const rows = [
+      coverage({ openingNumber: 'A02', suggestedQuantity: 3 }),
+      coverage({ openingNumber: 'A01', suggestedQuantity: 2 }),
+    ];
+    expect(shape(setProductQuantity([], rows, 4, headroom))).toEqual({ A01: 2, A02: 2 });
+  });
+
+  it('never exceeds the summed suggestion, however much stock is free', () => {
+    const headroom = headroomByProduct(new Map([[KEY, 100]]), new Map());
+    const next = setProductQuantity([], twoOpenings(2, 3), 50, headroom);
+    expect(shape(next)).toEqual({ A01: 2, A02: 3 });
+  });
+
+  it('caps the whole add at the pool a competing loose line leaves behind', () => {
+    // 10 free, but the loose lane is already sitting on 6 of them, so only 4 can be tagged - even
+    // though the two openings between them suggest 8.
+    const headroom = headroomByProduct(new Map([[KEY, 10]]), new Map());
+    const start: CartLine[] = [{ openingNumber: null, ...HINGE, quantity: 6 }];
+    const next = setProductQuantity(start, twoOpenings(4, 4), 8, headroom);
+    expect(shape(next)).toEqual({ loose: 6, A01: 4 });
+  });
+
+  it('counts an opening OUTSIDE the aggregate against the pool too', () => {
+    // A09 is not in the selection, so its 7 units are somebody else's claim on the same product.
+    const headroom = headroomByProduct(new Map([[KEY, 10]]), new Map());
+    const start: CartLine[] = [{ openingNumber: 'A09', ...HINGE, quantity: 7 }];
+    const next = setProductQuantity(start, twoOpenings(4, 4), 8, headroom);
+    expect(shape(next)).toEqual({ A09: 7, A01: 3 });
+  });
+
+  it('lowering then raising the same number lands on exactly the same lines', () => {
+    const headroom = headroomByProduct(new Map([[KEY, 10]]), new Map());
+    const rows = twoOpenings(4, 4);
+    const full = setProductQuantity([], rows, 8, headroom);
+    expect(shape(full)).toEqual({ A01: 4, A02: 4 });
+
+    // Lowering drains the last opening first, because the fill assigns ascending.
+    const lowered = setProductQuantity(full, rows, 3, headroom);
+    expect(shape(lowered)).toEqual({ A01: 3 });
+
+    expect(shape(setProductQuantity(lowered, rows, 8, headroom))).toEqual(shape(full));
+  });
+
+  it('re-fills from a cart holding only a LATER opening, instead of reading its own units as a rival claim', () => {
+    // All 6 free units sit on A02 - added straight off that opening's row, so the lines are not the
+    // ascending prefix a product-level add would have left. Asking for 5 must land 5.
+    const headroom = headroomByProduct(new Map([[KEY, 6]]), new Map());
+    const start: CartLine[] = [{ openingNumber: 'A02', ...HINGE, quantity: 6 }];
+    const next = setProductQuantity(start, twoOpenings(6, 6), 5, headroom);
+    expect(next.reduce((sum, l) => sum + l.quantity, 0)).toBe(5);
+    expect(shape(next)).toEqual({ A01: 5 });
+  });
+
+  it('drops a line the redistribution empties rather than leaving a zero on the request', () => {
+    const headroom = headroomByProduct(new Map([[KEY, 10]]), new Map());
+    const rows = twoOpenings(4, 4);
+    const next = setProductQuantity(setProductQuantity([], rows, 8, headroom), rows, 4, headroom);
+    expect(next.some((l) => l.openingNumber === 'A02')).toBe(false);
+    expect(next.every((l) => l.quantity > 0)).toBe(true);
+  });
+
+  it('zero clears the product on these openings and leaves the loose line alone', () => {
+    const headroom = headroomByProduct(new Map([[KEY, 10]]), new Map());
+    const rows = twoOpenings(4, 4);
+    const start: CartLine[] = [
+      { openingNumber: null, ...HINGE, quantity: 2 },
+      { openingNumber: 'A01', ...HINGE, quantity: 4 },
+      { openingNumber: 'A02', ...HINGE, quantity: 4 },
+    ];
+    expect(shape(setProductQuantity(start, rows, 0, headroom))).toEqual({ loose: 2 });
+  });
+
+  it('keeps every line opening-tagged - the product field is a faster way of writing the same lines', () => {
+    const headroom = headroomByProduct(new Map([[KEY, 10]]), new Map());
+    const next = setProductQuantity([], twoOpenings(4, 4), 6, headroom);
+    expect(next.every((l) => l.openingNumber !== null)).toBe(true);
+    expect(next.every((l) => l.hardwareCategory === 'HINGE' && l.productCode === 'HG-100')).toBe(true);
+  });
+
+  it('a product with no pool takes nothing', () => {
+    const headroom = headroomByProduct(new Map(), new Map());
+    expect(setProductQuantity([], twoOpenings(4, 4), 8, headroom)).toEqual([]);
+  });
+
+  it('a non-numeric quantity reads as zero, and no rows is a no-op', () => {
+    const headroom = headroomByProduct(new Map([[KEY, 10]]), new Map());
+    const rows = twoOpenings(4, 4);
+    const full = setProductQuantity([], rows, 8, headroom);
+    expect(setProductQuantity(full, rows, Number.NaN, headroom)).toEqual([]);
+    expect(setProductQuantity(full, [], 3, headroom)).toBe(full);
   });
 });

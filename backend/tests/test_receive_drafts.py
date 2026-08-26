@@ -107,7 +107,7 @@ def _packing_slip(session, po):
     return doc
 
 
-def _draft(session, po, li, quantity=3, *, author_user_id=AUTHOR, author_name=AUTHOR_NAME):
+def _draft(session, po, li, quantity=3, *, author_user_id=AUTHOR, author_name=AUTHOR_NAME, notes=None):
     draft = warehouse_repository.create_receive_draft(
         session,
         po.id,
@@ -115,6 +115,7 @@ def _draft(session, po, li, quantity=3, *, author_user_id=AUTHOR, author_name=AU
         author_user_id,
         author_name,
         packing_slip_document_id=_packing_slip(session, po).id,
+        notes=notes,
     )
     session.flush()
     return draft
@@ -427,7 +428,7 @@ def committed(_migrate_database):
 
     created: list[_CommittedFixture] = []
 
-    def _build(*, with_project=True, ordered=10, quantity=4):
+    def _build(*, with_project=True, ordered=10, quantity=4, notes=None):
         from sqlalchemy import select
 
         from app.models.stock_item import StockItem
@@ -435,7 +436,7 @@ def committed(_migrate_database):
         with SessionLocal() as session:
             project = _make_project(session) if with_project else None
             po, li = _make_po(session, project.id if project else None, ordered=ordered)
-            draft = _draft(session, po, li, quantity)
+            draft = _draft(session, po, li, quantity, notes=notes)
             fixture = _CommittedFixture(
                 project.id if project else None,
                 po.id,
@@ -741,3 +742,107 @@ def test_the_slip_is_pinned_to_the_draft(db_session):
     )
 
     assert draft.packing_slip_document_id == slip.id
+
+
+# --- the counter's remark (#632) ----------------------------------------------------------------
+# What the person counting wants the approver to know ("box crushed", "short 2 per slip"). Nexus-only
+# - it never reaches GP - and it has to survive the draft, so it is copied onto the ReceiveRecord at
+# approval. Otherwise the one piece of context about a disputed delivery dies with the draft row.
+
+
+def test_a_draft_carries_the_counters_remark_stripped(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+
+    draft = _draft(db_session, po, li, 3, notes="  box crushed on the pallet  ")
+
+    assert draft.notes == "box crushed on the pallet"
+
+
+@pytest.mark.parametrize("blank", [None, "", "   "])
+def test_a_blank_remark_is_stored_as_null(db_session, blank):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+
+    draft = _draft(db_session, po, li, 3, notes=blank)
+
+    assert draft.notes is None
+
+
+def test_an_over_long_remark_is_a_named_validation_error(db_session):
+    """Text column, but unbounded free text on a row every approver reads is worth a named refusal
+    rather than a wall of prose."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+
+    with pytest.raises(ValidationError) as excinfo:
+        _draft(db_session, po, li, 3, notes="x" * 2001)
+
+    assert excinfo.value.field == "notes"
+
+
+def test_editing_leaves_the_remark_alone_unless_it_is_sent(db_session):
+    """Same reading as warehouse_id: None means "not being changed", an empty string clears it. A
+    manager correcting quantities must not silently wipe what the counter wrote."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li, 3, notes="short 2 per slip")
+
+    warehouse_repository.update_receive_draft(db_session, draft.id, _lines(li, 5), MANAGER, actor_is_manager=True)
+    db_session.flush()
+    assert draft.notes == "short 2 per slip"
+
+    warehouse_repository.update_receive_draft(
+        db_session, draft.id, _lines(li, 5), MANAGER, actor_is_manager=True, notes="  recounted, all present  "
+    )
+    db_session.flush()
+    assert draft.notes == "recounted, all present"
+
+    warehouse_repository.update_receive_draft(
+        db_session, draft.id, _lines(li, 5), MANAGER, actor_is_manager=True, notes=""
+    )
+    db_session.flush()
+    assert draft.notes is None
+
+
+def test_a_receive_record_stores_the_remark_it_was_given(db_session):
+    """The persist half: create_receive is the single path both a live approval and a drained outbox
+    row go through, so the column is written there."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+
+    record = warehouse_repository.create_receive(
+        db_session,
+        po.id,
+        AUTHOR_NAME,
+        [{"po_line_item_id": li.id, "quantity_received": 2, "locations": []}],
+        notes="box crushed on the pallet",
+    )
+
+    assert record.notes == "box crushed on the pallet"
+
+
+def test_a_receive_record_with_no_remark_stores_null(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+
+    record = warehouse_repository.create_receive(
+        db_session,
+        po.id,
+        AUTHOR_NAME,
+        [{"po_line_item_id": li.id, "quantity_received": 2, "locations": []}],
+    )
+
+    assert record.notes is None
+
+
+def test_approving_copies_the_drafts_remark_onto_the_receive(committed, monkeypatch, approve_env):
+    """End to end through the resolver: the remark is read off the draft inside the persist
+    transaction, which is the one place that covers a live approval AND a queued receipt draining."""
+    f = committed(notes="box crushed on the pallet")
+    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay())
+
+    result = _approve(f.draft_id)
+
+    assert result.receive_record.notes == "box crushed on the pallet"
+    assert result.draft.notes == "box crushed on the pallet"

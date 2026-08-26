@@ -14,6 +14,9 @@ export interface Project {
   description: string | null;
   client: string | null;
   jobSiteName: string | null;
+  /** #632: the XML the schedule on file came from (#627 capture). Null on projects last imported
+   *  before it existed - the name records on the next fresh upload. */
+  scheduleFilename?: string | null;
   openingCount: number;
   // GP job setup verdict (#425). null means the backend has never been able to check - no relay has
   // answered yet - and is NOT a quarantine. Only an explicit false is.

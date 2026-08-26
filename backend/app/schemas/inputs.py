@@ -184,6 +184,10 @@ class POLineItemOrderAsInput:
 class PODraftInput:
     po_number: str | None = None
     notes: str | None = None
+    # #632: the wizard's per-draft vendor label ("who is this being ordered from"). Written to
+    # vendor_name_snapshot on the created draft so the register table and bestGuessGpVendor have a
+    # seed; GP register later overwrites it with the confirmed GP vendor's display name (#509).
+    vendor_name: str | None = None
     # #490: the GP cost code, picked per vendor card at request time. Optional - it is only
     # authoritative at register, where RegisterPOInput.cost_code is still validated against the job's
     # live GP list. Captured here so the buyer who knows the code does not have to remember it later.
@@ -543,6 +547,9 @@ class CreateReceiveDraftInput:
     # Client-generated, one per submit action and re-sent on retry, so a network timeout that
     # actually committed cannot leave two drafts against one PO.
     idempotency_key: str = ""
+    # #632: free-text remark from the person counting ("box crushed", "short 2 per slip"). Carried
+    # onto the ReceiveRecord at approval. Nexus-only - never reaches GP.
+    notes: str | None = None
 
 
 @strawberry.input
@@ -553,6 +560,8 @@ class UpdateReceiveDraftInput:
     draft_id: strawberry.ID
     warehouse_id: strawberry.ID | None = None
     line_items: list[ReceiveLineItemInput] = strawberry.field(default_factory=list)
+    # None means "not being changed" (mirrors warehouse_id); send an empty string to clear.
+    notes: str | None = None
 
 
 @strawberry.input

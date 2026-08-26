@@ -32,6 +32,8 @@ export interface ReceiveDraft {
   /** #504: the PO document (type PACKING_SLIP) this count was made against, or null on drafts raised
    *  before the requirement existed. Its presigned URL is fetched on demand for viewing. */
   packingSlipDocumentId: string | null;
+  /** #632: the counter's remark for the approver ("box crushed"). Carried onto the receive record. */
+  notes: string | null;
   totalQuantity: number;
   createdAt: string;
   updatedAt: string;

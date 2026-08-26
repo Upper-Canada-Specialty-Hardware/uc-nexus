@@ -853,13 +853,15 @@ def finalize_import_session(
             request_number = f"PO-REQ-{next_seq:03d}"
             next_seq += 1
 
-            # Create PO. No vendor: the wizard groups drafts by the TITAN manufacturer, which is not
-            # a vendor - the GP vendor (PM00200) is picked later, at register time, and is the only
-            # vendor a PO ever carries (#509).
+            # Create PO. The wizard's per-draft vendor label seeds vendor_name_snapshot (#632) so the
+            # register table and bestGuessGpVendor have something to show for a request; the GP vendor
+            # (PM00200) picked at register time is still the only vendor authority - registering
+            # overwrites the snapshot with the confirmed GP display name (#509).
             po = POModel(
                 id=uuid.uuid4(),
                 po_number=po_number,
                 request_number=request_number,
+                vendor_name_snapshot=(po_draft.get("vendor_name") or "").strip() or None,
                 project_id=project.id,
                 status=POStatus.DRAFT,
                 notes=po_draft.get("notes"),

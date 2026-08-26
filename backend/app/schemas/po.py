@@ -7,7 +7,7 @@ from datetime import date
 
 import strawberry
 
-from app.auth import current_user
+from app.auth import current_user, resolve_display_name
 from app.database import SessionLocal
 from app.errors import (
     GpSetupInvalidError,
@@ -338,8 +338,25 @@ class POQueries:
                 limit=limit,
                 offset=offset,
             )
+            # #632: Created By, resolved over the page's DISTINCT author ids (a page of 50 rows has a
+            # handful of authors, and resolve_display_name caches per user) rather than per row. A
+            # mirrored GP row has no Nexus author, so it shows its GP buyer id instead; a Clerk id
+            # that no longer resolves (deleted account) degrades to the raw id rather than failing
+            # the whole register page.
+            names: dict[str, str] = {}
+            for user_id in {r.created_by_user_id for r in rows if r.created_by_user_id}:
+                try:
+                    names[user_id] = resolve_display_name(user_id)
+                except Exception:
+                    names[user_id] = user_id
+
+            def _created_by(r) -> str | None:
+                if r.created_by_user_id:
+                    return names.get(r.created_by_user_id)
+                return r.buyer_id or None
+
             return PurchaseOrderPage(
-                rows=[po_list_row_to_type(r, counts.get(r.id, 0)) for r in rows],
+                rows=[po_list_row_to_type(r, counts.get(r.id, 0), _created_by(r)) for r in rows],
                 total_count=total,
             )
 
@@ -763,6 +780,15 @@ class POMutations:
                 shipping_cost=_UNSET if shipping_cost is strawberry.UNSET else shipping_cost,
                 tariff_amount=_UNSET if tariff_amount is strawberry.UNSET else tariff_amount,
             )
+            session.commit()
+            return po_to_type(po_repository.reload_po(session, po.id))
+
+    @strawberry.mutation
+    def update_po_notes(self, info: strawberry.Info, id: strawberry.ID, notes: str | None = None) -> PurchaseOrder:
+        """Edit the PO's notes at any status (#632). Notes are a Nexus-only overlay, so the
+        receive/status lock `updatePo` enforces on GP-authoritative fields does not apply."""
+        with SessionLocal() as session:
+            po = po_repository.update_po_notes(session, uuid.UUID(str(id)), notes)
             session.commit()
             return po_to_type(po_repository.reload_po(session, po.id))
 

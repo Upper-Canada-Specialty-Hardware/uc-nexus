@@ -147,6 +147,7 @@ export const PURCHASE_ORDERS_PAGE = gql`
         origin
         gpCompany
         vendorNameSnapshot
+        createdBy
         orderedAt
         expectedDeliveryDate
         createdAt
@@ -293,6 +294,19 @@ export const GET_PROJECT_SHIP_TO = gql`
       city
       state
       zip
+    }
+  }
+`;
+
+// #632: notes are a Nexus-only overlay, editable at ANY status - received and closed POs included.
+// The full updatePo keeps its status/receive gate for everything else. Slim selection: Apollo merges
+// id + notes onto the cached PO, so the modal re-renders without a refetch.
+export const UPDATE_PO_NOTES = gql`
+  mutation UpdatePoNotes($id: ID!, $notes: String) {
+    updatePoNotes(id: $id, notes: $notes) {
+      id
+      notes
+      updatedAt
     }
   }
 `;

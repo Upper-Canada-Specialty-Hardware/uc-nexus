@@ -9,6 +9,7 @@ import {
   InputLabel,
   Select,
   MenuItem,
+  TextField,
 } from '@mui/material';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { useApolloClient } from '@apollo/client/react';
@@ -94,6 +95,9 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   // #504: one packing slip per PO, because one draft is created per PO. Held as the chosen File
   // until submit - uploading on pick would leave orphan documents on every abandoned count.
   const [packingSlips, setPackingSlips] = useState<Record<string, File>>({});
+  // #632: optional remark per PO ("box crushed", "short 2 per slip") - one draft per PO, so one
+  // notes field per PO. Carried onto the ReceiveRecord at approval.
+  const [draftNotes, setDraftNotes] = useState<Record<string, string>>({});
 
   const [createReceiveDraft] = useMutation<{ createReceiveDraft: { id: string } }>(CREATE_RECEIVE_DRAFT);
   const [uploadPoDocument] = useMutation<{ uploadPoDocument: { id: string } }>(UPLOAD_PO_DOCUMENT);
@@ -160,6 +164,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     if (open && poIds.length > 0) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- reset receive form state on open
       setReceiveQuantities({});
+      setDraftNotes({});
       setMutationError(null);
       setSucceeded(false);
       // Fresh open = fresh action set; drop any keys held from a prior batch.
@@ -343,6 +348,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
           warehouseId: warehouseId || null,
           idempotencyKey,
           packingSlipDocumentId,
+          notes: draftNotes[poId]?.trim() || null,
           lineItems: buildReceiveLineItemsInput(poLineItems, receiveQuantities),
         };
 
@@ -392,6 +398,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     poIds,
     warehouseId,
     packingSlips,
+    draftNotes,
     uploadPoDocument,
     lineItemsToReceive,
     receiveQuantities,
@@ -410,6 +417,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     setSucceeded(false);
     setConfirmOpen(false);
     setPackingSlips({});
+    setDraftNotes({});
     onClose();
   }, [onClose]);
 
@@ -554,6 +562,32 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
             onChange={setPackingSlips}
             showPoHeaders={poIds.length > 1}
           />
+        )}
+        {/* #632: an optional remark per draft (one draft per PO), shown to the approver and carried
+            onto the receive record - "box crushed", "short 2 per slip". */}
+        {showForm && (
+          <Box sx={{ mb: 2, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+            {poDetailsList.map((details) => (
+              <TextField
+                key={details.id}
+                label={
+                  poIds.length > 1
+                    ? `Notes — ${details.poNumber ?? 'PO'} (optional)`
+                    : 'Notes (optional)'
+                }
+                value={draftNotes[details.id] ?? ''}
+                onChange={(e) =>
+                  setDraftNotes((prev) => ({ ...prev, [details.id]: e.target.value }))
+                }
+                size="small"
+                fullWidth
+                multiline
+                minRows={1}
+                maxRows={4}
+                placeholder="Anything the approver should know — damage, shortages, substitutions"
+              />
+            ))}
+          </Box>
         )}
         {showForm && (
           <ReceiveLinesEditor

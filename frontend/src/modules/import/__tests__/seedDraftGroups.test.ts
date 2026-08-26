@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { seedDraftGroups, draftSeedSignature } from '../types';
+import { seedDraftGroups, draftSeedSignature, selectionTotalsByProduct } from '../types';
 import type { AggregatedHardwareItem } from '../types';
 import { buildPoDrafts } from '../poDrafts';
 
@@ -93,6 +93,48 @@ describe('seedDraftGroups - override across multiple manufacturers (#627)', () =
     const base = draftSeedSignature(twoVendors());
     const capped = draftSeedSignature(twoVendors(), new Map([['LOCK|LCK', 5]]));
     expect(capped).not.toBe(base);
+  });
+});
+
+// #632: step 6's Qty ceiling. It runs the SAME seeding math, so the cap and the seed can never
+// disagree about how much of a product the drafts are partitioning.
+
+describe('selectionTotalsByProduct (#632)', () => {
+  const twoVendors = () =>
+    new Map<string, AggregatedHardwareItem[]>([
+      ['SARGENT', [hw('O1', 'LCK', 6, 'LOCK')]],
+      ['Schlage', [hw('O2', 'LCK', 4, 'LOCK')]],
+    ]);
+
+  it('totals exactly what the seeded drafts hold, product by product', () => {
+    const groups = vendorGroups();
+    const totals = selectionTotalsByProduct(groups);
+    const seeded = seedDraftGroups(groups);
+
+    expect(totals.get(PK)).toBe(5);
+    for (const [pk, total] of totals) {
+      const held = seeded.reduce((sum, g) => sum + (g.lines.get(pk) ?? 0), 0);
+      expect(held).toBe(total);
+    }
+  });
+
+  it('sums a product that the seed spread over several manufacturer drafts', () => {
+    expect(selectionTotalsByProduct(twoVendors()).get('LCK|LOCK')).toBe(10);
+  });
+
+  it('respects the Order Qty budget, so the ceiling is never above what was seeded', () => {
+    const totals = selectionTotalsByProduct(twoVendors(), new Map([['LOCK|LCK', 5]]));
+    expect(totals.get('LCK|LOCK')).toBe(5); // NOT min(5,6)+min(5,4)=9
+    const seeded = seedDraftGroups(twoVendors(), new Map([['LOCK|LCK', 5]]));
+    expect(seeded.reduce((sum, g) => sum + (g.lines.get('LCK|LOCK') ?? 0), 0)).toBe(5);
+  });
+
+  it('an override above the schedule total still tops out at the schedule', () => {
+    expect(selectionTotalsByProduct(vendorGroups(), new Map([[IGK, 99]])).get(PK)).toBe(5);
+  });
+
+  it('an empty selection has no totals', () => {
+    expect(selectionTotalsByProduct(new Map()).size).toBe(0);
   });
 });
 

@@ -36,6 +36,12 @@
         ],
         "createdAt": "2026-08-20T19:55:16.748Z",
         "reason": "intentional amber attention accent matching the design system's .ds-gauge-attention / .ds-ledger-selected treatment (inset 3px amber); pre-existing, documented in-line"
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "0.9375rem",
+        "createdAt": "2026-08-26T18:41:50.188Z",
+        "reason": "pre-existing PO-header size carried verbatim through the #632 DataGrid-to-Table rewrite; same literal already shipped in ReturnShipmentDialog"
       }
     ]
   }

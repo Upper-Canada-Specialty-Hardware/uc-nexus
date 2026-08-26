@@ -376,6 +376,8 @@ class ReceiveRecord:
     # columns existed, and on the rare receive whose relay response carried no number.
     receipt_number: str | None
     batch_number: str | None
+    # #632: the counter's remark, copied off the draft at approval. Nexus-only.
+    notes: str | None
     created_at: datetime
     line_items: list[ReceiveLineItem]
 
@@ -441,6 +443,8 @@ class ReceiveDraft:
     # #504: the packing slip this count was made against. Null only on drafts raised before the
     # requirement existed, which render as "created before the requirement" rather than as missing.
     packing_slip_document_id: strawberry.ID | None
+    # #632: the counter's remark for the approver ("box crushed"). Carried onto the record at approval.
+    notes: str | None
     total_quantity: int
     created_at: datetime
     updated_at: datetime
@@ -1000,6 +1004,9 @@ class POListRow:
     origin: POOrigin
     gp_company: str | None
     vendor_name_snapshot: str | None
+    # #632: who raised it, resolved server-side - the Clerk display name for a Nexus request, the GP
+    # buyer id for a mirrored row that has no Nexus author, null when neither is known.
+    created_by: str | None
     ordered_at: datetime | None
     expected_delivery_date: date | None
     created_at: datetime
@@ -1149,6 +1156,10 @@ class RequestCoverageLine:
     # What has left the building for this opening: completed shop-assembly pulls, plus shipping-out
     # (the completed pull and the slip cut from it folded together, never added).
     sent_quantity: int
+    # #632: the same total split by exit. `assembled` went to the shop bench ("Sent to Shop" is a
+    # lifecycle exit); `shipped` went out on a truck. assembled + shipped == sent, kept for compat.
+    assembled_quantity: int
+    shipped_quantity: int
     # What somebody else is already holding: lines on pending requests and on live pulls.
     claimed_quantity: int
     # `max(owed - sent - claimed, 0)`. Zero rather than negative when a re-upload lowers the
@@ -1551,6 +1562,20 @@ class Warehouse:
     is_active: bool
     created_at: datetime
     updated_at: datetime
+
+
+@strawberry.type
+class WarehouseLocation:
+    """A defined put-away location in one warehouse - the registry every location write validates
+    against (#632). Stored canonical (uppercase/trimmed), so values here are pick-list-ready."""
+
+    id: strawberry.ID
+    warehouse_id: strawberry.ID
+    aisle: str
+    row: str
+    bay: str
+    active: bool
+    created_at: datetime
 
 
 @strawberry.type

@@ -227,8 +227,7 @@ export default function ProjectLandingPage({
                   variant="outlined"
                   sx={{
                     ...CARD_SX,
-                    borderLeft: '3px solid',
-                    borderLeftColor: 'secondary.main',
+                    bgcolor: 'action.hover',
                   }}
                 >
                   <CardActionArea onClick={() => handleSelect(null)} sx={{ height: '100%' }}>
@@ -262,7 +261,7 @@ export default function ProjectLandingPage({
                   variant="outlined"
                   sx={
                     isGpSetupBroken(p)
-                      ? { ...CARD_SX, borderLeft: '3px solid', borderLeftColor: 'error.main' }
+                      ? { ...CARD_SX, borderColor: 'error.main' }
                       : CARD_SX
                   }
                 >
@@ -306,6 +305,26 @@ export default function ProjectLandingPage({
                             sx={{ display: 'block', mt: 0.25 }}
                           >
                             {[p.client, p.jobSiteName].filter(Boolean).join(' • ')}
+                          </Typography>
+                        )}
+                        {/* #632: which XML the schedule on file came from. Omitted when unknown -
+                            projects last imported before the name was captured (#627) record it on
+                            their next fresh upload. */}
+                        {p.scheduleFilename && (
+                          <Typography
+                            variant="caption"
+                            title={p.scheduleFilename}
+                            sx={{
+                              ...monoSx,
+                              display: 'block',
+                              mt: 0.25,
+                              color: 'text.secondary',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {p.scheduleFilename}
                           </Typography>
                         )}
                       </Box>

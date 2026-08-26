@@ -311,4 +311,77 @@ describe('GuidedClassification split', () => {
 
     expect(screen.getByText('Group 1 of 2')).toBeInTheDocument();
   });
+
+  it('only offers Split on a group that has more than one row to split', () => {
+    render(<Harness baseRows={TWO_VENDORS} />);
+    start();
+    // Group 1 is VEND-A's single row - there is nothing to give its own card.
+    expect(screen.queryByRole('button', { name: /Split \(X\)/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Unsplit \(X\)/ })).not.toBeInTheDocument();
+  });
+});
+
+// #632: a split is undoable. The buyer who splits a group to answer one line differently, then finds
+// the lines agree after all, gets the one card back rather than answering the same thing twice.
+
+describe('GuidedClassification unsplit', () => {
+  it('recombines the per-line cards into the one group again, landing on it', () => {
+    render(<Harness baseRows={ONE_VENDOR_TWO_CODES} />);
+    start();
+
+    fireEvent.click(screen.getByRole('button', { name: /Split \(X\)/ }));
+    expect(screen.getByText('Group 1 of 2')).toBeInTheDocument();
+    // Split takes the card's own Split away and offers the undo in its place.
+    expect(screen.queryByRole('button', { name: /Split \(X\)/ })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Unsplit \(X\)/ }));
+
+    expect(screen.getByText('Group 1 of 1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Split \(X\)/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Unsplit \(X\)/ })).not.toBeInTheDocument();
+  });
+
+  it('lands on the recombined card even when the split card was not the first one', () => {
+    render(<Harness baseRows={ONE_VENDOR_TWO_CODES} />);
+    start();
+
+    fireEvent.keyDown(document.body, { key: 'x' });
+    // Step onto the SECOND per-line card, then undo from there.
+    fireEvent.keyDown(document.body, { key: 'ArrowRight' });
+    expect(screen.getByText('Group 2 of 2')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Unsplit \(X\)/ }));
+
+    expect(screen.getByText('Group 1 of 1')).toBeInTheDocument();
+    expect(screen.getByText('VEND-A')).toBeInTheDocument();
+  });
+
+  it('X toggles: it splits a mixed group and recombines a card that came from a split', () => {
+    render(<Harness baseRows={ONE_VENDOR_TWO_CODES} />);
+    start();
+
+    fireEvent.keyDown(document.body, { key: 'x' });
+    expect(screen.getByText('Group 1 of 2')).toBeInTheDocument();
+
+    fireEvent.keyDown(document.body, { key: 'x' });
+    expect(screen.getByText('Group 1 of 1')).toBeInTheDocument();
+
+    // And it still splits again from there - the toggle is not one-way.
+    fireEvent.keyDown(document.body, { key: 'x' });
+    expect(screen.getByText('Group 1 of 2')).toBeInTheDocument();
+  });
+
+  it('keeps the answers already given on the recombined card', () => {
+    render(<Harness baseRows={ONE_VENDOR_TWO_CODES} />);
+    start();
+
+    fireEvent.keyDown(document.body, { key: 'x' });
+    fireEvent.keyDown(document.body, { key: '2' }); // By Others on the first line, advances
+    expect(screen.getByText('Group 2 of 2')).toBeInTheDocument();
+
+    fireEvent.keyDown(document.body, { key: 'x' }); // unsplit from the second card
+    expect(screen.getByText('Group 1 of 1')).toBeInTheDocument();
+    // The one answered row still counts, on the card that now holds both.
+    expect(screen.getByText('1 of 2 fully classified')).toBeInTheDocument();
+  });
 });

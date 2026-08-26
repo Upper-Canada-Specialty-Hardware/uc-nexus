@@ -51,6 +51,56 @@ describe('draftOps.moveLine', () => {
   });
 });
 
+describe('draftOps.updateLineQty (#632)', () => {
+  it('lowers a line in place', () => {
+    const after = draftOps.updateLineQty([draft('a', { HG: 5 })], 'a', 'HG', 2, 5);
+    expect(after[0].lines.get('HG')).toBe(2);
+  });
+
+  it('caps a raise at the selection total minus what sibling drafts hold', () => {
+    // selection total 5, sibling b holds 2 -> a can hold at most 3
+    const after = draftOps.updateLineQty([draft('a', { HG: 1 }), draft('b', { HG: 2 })], 'a', 'HG', 99, 5);
+    expect(after[0].lines.get('HG')).toBe(3);
+    expect(after[1].lines.get('HG')).toBe(2); // sibling untouched
+  });
+
+  it('drops the line at 0 and clamps negatives to 0', () => {
+    expect(draftOps.updateLineQty([draft('a', { HG: 3 })], 'a', 'HG', 0, 3)[0].lines.has('HG')).toBe(false);
+    expect(draftOps.updateLineQty([draft('a', { HG: 3 })], 'a', 'HG', -4, 3)[0].lines.has('HG')).toBe(false);
+  });
+
+  it('is a no-op for an unknown draft, an absent line, or an unchanged quantity', () => {
+    const groups = [draft('a', { HG: 3 })];
+    expect(draftOps.updateLineQty(groups, 'ghost', 'HG', 1, 3)).toBe(groups);
+    expect(draftOps.updateLineQty(groups, 'a', 'LK', 1, 3)).toBe(groups);
+    expect(draftOps.updateLineQty(groups, 'a', 'HG', 3, 3)).toBe(groups);
+  });
+
+  it('floors a fractional quantity', () => {
+    expect(draftOps.updateLineQty([draft('a', { HG: 5 })], 'a', 'HG', 2.9, 5)[0].lines.get('HG')).toBe(2);
+  });
+});
+
+describe('draftOps.removeLine (#632)', () => {
+  it('drops the line and leaves the rest of the draft', () => {
+    const after = draftOps.removeLine([draft('a', { HG: 3, LK: 1 })], 'a', 'HG');
+    expect(after[0].lines.has('HG')).toBe(false);
+    expect(after[0].lines.get('LK')).toBe(1);
+  });
+
+  it('leaves an emptied draft in place - buildPoDrafts drops refs-empty drafts at finalize', () => {
+    const after = draftOps.removeLine([draft('a', { HG: 3 })], 'a', 'HG');
+    expect(after).toHaveLength(1);
+    expect(after[0].lines.size).toBe(0);
+  });
+
+  it('is a no-op for an unknown draft or an absent line', () => {
+    const groups = [draft('a', { HG: 3 })];
+    expect(draftOps.removeLine(groups, 'ghost', 'HG')).toBe(groups);
+    expect(draftOps.removeLine(groups, 'a', 'LK')).toBe(groups);
+  });
+});
+
 describe('draftOps.mergeDraft', () => {
   it('folds one draft into another and drops it, summing per productKey', () => {
     const after = draftOps.mergeDraft([draft('a', { HG: 2 }), draft('b', { HG: 1, LK: 1 })], 'a', 'b');

@@ -20,6 +20,7 @@ type CreateDraftVars = {
     warehouseId: string | null;
     idempotencyKey: string;
     packingSlipDocumentId: string;
+    notes: string | null;
     lineItems: {
       poLineItemId: string;
       quantityReceived: number;
@@ -124,6 +125,7 @@ function draftResultData() {
       reviewedAt: null,
       rejectionReason: null,
     approvalIdempotencyKey: null,
+      notes: null,
       receiveRecordId: null,
       outboxEntryId: null,
       totalQuantity: 2,
@@ -230,22 +232,23 @@ function renderModal(
   return { onClose };
 }
 
-// long timeout: jsdom + the DataGrid make renders slow, and right after a submit the confirm
-// dialog's exit transition still has the main modal aria-hidden, hiding its buttons from role
-// queries until the transition finishes
+// long timeout: jsdom makes renders slow, and right after a submit the confirm dialog's exit
+// transition still has the main modal aria-hidden, hiding its buttons from role queries until the
+// transition finishes
 const SLOW = { timeout: 5000 };
 
-// render + wait for the PO grid
+// render + wait for the PO table
 async function openModal(extraMocks: MockedResponse[] = []) {
   const result = renderModal(extraMocks);
   await screen.findByText('HG-100', undefined, SLOW);
   return result;
 }
 
-// the Receive Now cell input is the only spinbutton inside the grid (the fully received line
-// renders text). Since #501 there are no put-away inputs on this screen at all.
+// the Receive Now cell input is the only spinbutton inside the table (the fully received line
+// renders text). Since #501 there are no put-away inputs on this screen at all. #632: the editor is
+// a plain MUI Table at natural height, not a paginated DataGrid, so the role is 'table'.
 function receiveNowInput() {
-  return within(screen.getByRole('grid')).getByRole('spinbutton');
+  return within(screen.getByRole('table')).getByRole('spinbutton');
 }
 
 function submitButton() {
@@ -263,8 +266,8 @@ async function submitViaConfirm() {
   fireEvent.click(await screen.findByRole('button', { name: 'Submit' }, SLOW));
 }
 
-// DataGrid renders are slow under jsdom, and slower still when the whole suite runs in parallel -
-// the default 5s per-test budget flakes on the multi-interaction flows.
+// Renders are slow under jsdom, and slower still when the whole suite runs in parallel - the
+// default 5s per-test budget flakes on the multi-interaction flows.
 vi.setConfig({ testTimeout: 60_000 });
 
 describe('ReceiveModal', () => {
@@ -273,13 +276,13 @@ describe('ReceiveModal', () => {
 
     expect(screen.getByText(/PO-123/)).toBeInTheDocument();
 
-    const pendingRow = screen.getByText('HG-100').closest('[role="row"]') as HTMLElement;
+    const pendingRow = screen.getByText('HG-100').closest('tr') as HTMLElement;
     expect(within(pendingRow).getByText('10')).toBeInTheDocument(); // ordered
     expect(within(pendingRow).getByText('7')).toBeInTheDocument(); // already received
     expect(within(pendingRow).getByText('3')).toBeInTheDocument(); // pending
     expect(within(pendingRow).getByRole('spinbutton')).toHaveValue(0);
 
-    const fullRow = screen.getByText('LK-200').closest('[role="row"]') as HTMLElement;
+    const fullRow = screen.getByText('LK-200').closest('tr') as HTMLElement;
     expect(within(fullRow).getByText('Fully Received')).toBeInTheDocument();
     expect(within(fullRow).queryByRole('spinbutton')).toBeNull();
 
@@ -349,6 +352,8 @@ describe('ReceiveModal', () => {
         idempotencyKey: expect.stringMatching(UUID_RE),
         // #504: the slip is uploaded first and its id pinned to the draft.
         packingSlipDocumentId: 'doc-slip-1',
+        // #632: the counter's optional remark, null when nothing was typed.
+        notes: null,
         lineItems: [
           {
             poLineItemId: 'li-1',
@@ -363,6 +368,34 @@ describe('ReceiveModal', () => {
     expect(screen.queryByText(/GP Receipt/)).toBeNull();
     expect(await screen.findByRole('button', { name: 'View My Drafts' }, SLOW)).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("carries the counter's note into the draft, even when it is typed last", async () => {
+    // #632: an optional remark for the approver. Typed AFTER the quantity and the slip, which is the
+    // order it actually gets written in - the note is the afterthought once the count is down.
+    let captured: CreateDraftVars | null = null;
+    const draftMock: MockedResponse<Record<string, unknown>, CreateDraftVars> = {
+      request: { query: CREATE_RECEIVE_DRAFT, variables: () => true },
+      result: (vars) => {
+        captured = vars;
+        return { data: draftResultData() };
+      },
+    };
+    await openModal([poDetailsMock(), draftMock]);
+
+    setReceiveQty('3');
+    attachPackingSlips();
+    fireEvent.change(screen.getByLabelText('Notes (optional)'), {
+      target: { value: '  box crushed  ' },
+    });
+
+    // Submitted WITHOUT re-touching the slip, so nothing but the note has changed since the last
+    // render - which is exactly when a submit handler that forgot to watch the note drops it.
+    fireEvent.click(await screen.findByRole('button', { name: 'Submit for Approval' }, SLOW));
+    fireEvent.click(await screen.findByRole('button', { name: 'Submit' }, SLOW));
+
+    await screen.findByText(/Submitted for approval/, undefined, SLOW);
+    expect(captured!.input.notes).toBe('box crushed');
   });
 
   it('keeps the modal open and surfaces the error when the mutation fails', async () => {
@@ -457,7 +490,7 @@ describe('ReceiveModal', () => {
     await screen.findByText('HG-100', undefined, SLOW);
     await screen.findByText('CL-300', undefined, SLOW);
 
-    const [firstQty, secondQty] = screen.getAllByRole('grid').map((g) => within(g).getByRole('spinbutton'));
+    const [firstQty, secondQty] = screen.getAllByRole('table').map((t) => within(t).getByRole('spinbutton'));
     fireEvent.change(firstQty, { target: { value: '3' } });
     fireEvent.change(secondQty, { target: { value: '4' } });
     await submitViaConfirm();

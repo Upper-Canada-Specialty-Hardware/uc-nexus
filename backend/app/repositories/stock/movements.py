@@ -13,6 +13,7 @@ from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.stock_item import StockItem
 from app.repositories.warehouse import (
     clone_origin_fields,
+    ensure_registered_location,
     get_available_quantities,
     get_reserved_quantities,
     location_detail,
@@ -94,7 +95,11 @@ def destock_inventory(
             field="target_location",
         )
     if override:
-        final_aisle, final_row, final_bay = target_aisle, target_row, target_bay
+        # An explicit target is the user choosing a shelf, so it must be a defined one (#632). The
+        # else-branch inherits the source row's shelf and is deliberately unchecked - retiring a
+        # location must not strand a destock of the hardware already sitting on it.
+        final_aisle, final_row, final_bay = _normalize_optional_location_fields(target_aisle, target_row, target_bay)
+        ensure_registered_location(session, il.warehouse_id, final_aisle, final_row, final_bay)
     else:
         final_aisle, final_row, final_bay = il.aisle, il.row, il.bay
 
@@ -187,9 +192,16 @@ def allocate_stock_to_project(
         raise ValidationError("target_hardware_category is required", field="target_hardware_category")
     if not target_product_code:
         raise ValidationError("target_product_code is required", field="target_product_code")
-    _validate_location_fields(target_aisle, target_row, target_bay)
+    target_aisle, target_row, target_bay = _normalize_optional_location_fields(target_aisle, target_row, target_bay)
+    # All-or-nothing, like destock's override: a partial triple would land units at a location nobody
+    # chose in full, and it can never match a registry row.
+    provided = [v for v in (target_aisle, target_row, target_bay) if v is not None]
+    if provided and len(provided) != 3:
+        raise ValidationError("target aisle, row, and bay must all be provided together", field="target_location")
 
     si = get_stock_item(session, stock_item_id)
+    if provided:
+        ensure_registered_location(session, si.warehouse_id, target_aisle, target_row, target_bay)
     available = si.quantity - (si.deficient_quantity or 0)
     if quantity > available:
         raise ValidationError("Allocate quantity exceeds available stock", field="quantity")
@@ -400,6 +412,7 @@ def transfer_inventory(
     dest_wh = session.get(Warehouse, dest_warehouse_id)
     if dest_wh is None:
         raise NotFoundError(f"Warehouse {dest_warehouse_id} not found")
+    ensure_registered_location(session, dest_warehouse_id, dest_aisle, dest_row, dest_bay)
 
     now = datetime.utcnow()
 

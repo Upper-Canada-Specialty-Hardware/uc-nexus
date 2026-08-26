@@ -8,6 +8,8 @@ module exists rather than three separate reads in two wizards. What is pinned he
   - a completed shipping pull and the slip cut from it are ONE departure, not two
   - a request counts once - as a claim while it is live, as sent once its pull completes, never both
   - a re-upload that lowers owed below sent reads zero, never negative and never a return
+  - sent splits into `assembled` (through the shop bench) and `shipped` (out on a truck), and the
+    two always add back up to the total (#632)
 
 DB-backed like the rest of the suite: every test runs against a real Postgres in a rolled-back
 transaction.
@@ -253,6 +255,7 @@ def test_a_completed_shop_assembly_pull_is_sent(db_session):
 
     row = _row(db_session, project)
     assert row["sent_quantity"] == 4
+    assert (row["assembled_quantity"], row["shipped_quantity"]) == (4, 0)
     assert row["claimed_quantity"] == 0
     assert row["suggested_quantity"] == 2
 
@@ -274,6 +277,8 @@ def test_a_completed_shipping_pull_and_its_slip_are_one_departure(db_session):
 
     row = _row(db_session, project)
     assert row["sent_quantity"] == 4
+    # The fold happens inside the shipped column; nothing lands in assembled.
+    assert (row["assembled_quantity"], row["shipped_quantity"]) == (0, 4)
     assert row["suggested_quantity"] == 6
 
 
@@ -294,9 +299,10 @@ def test_hardware_picked_but_not_yet_shipped_still_counts_as_sent(db_session):
     assert _row(db_session, project)["sent_quantity"] == 4
 
 
-def test_the_two_exits_add_together(db_session):
+def test_the_two_exits_add_together_and_are_reported_apart(db_session):
     """A shop-assembly pull and a shipping pull are different departures for the same opening, so
-    unlike the pull/slip pair they sum."""
+    unlike the pull/slip pair they sum - and #632 also reports each one on its own, because "went to
+    the bench" and "went on a truck" are answers to different questions."""
     project = _project(db_session)
     opening = _opening(db_session, project)
     _owe(db_session, project, opening, 10)
@@ -317,7 +323,46 @@ def test_the_two_exits_add_together(db_session):
 
     row = _row(db_session, project)
     assert row["sent_quantity"] == 5
+    assert (row["assembled_quantity"], row["shipped_quantity"]) == (3, 2)
+    assert row["assembled_quantity"] + row["shipped_quantity"] == row["sent_quantity"]
     assert row["suggested_quantity"] == 5
+
+
+def test_the_split_is_keyed_per_exit_in_the_underlying_read(db_session):
+    """`_sent_quantities` is what carries the split; the coverage row just adds the two up. Reading it
+    directly pins the shape the composer hands over."""
+    project = _project(db_session)
+    opening = _opening(db_session, project)
+    _owe(db_session, project, opening, 10)
+    _pull(
+        db_session,
+        project,
+        source=PullRequestSource.SHOP_ASSEMBLY,
+        status=PullRequestStatus.COMPLETED,
+        lines=[("A01", 3)],
+    )
+    _pull(
+        db_session,
+        project,
+        source=PullRequestSource.SHIPPING_OUT,
+        status=PullRequestStatus.COMPLETED,
+        lines=[("A01", 2)],
+    )
+    # The slip cut from the shipping pull: folded with max, not added.
+    _slip(db_session, project, lines=[("A01", 2)])
+
+    sent = request_composer._sent_quantities(db_session, project.id, ["A01"])
+
+    assert sent["A01"][(CAT, CODE)] == {"assembled": 3, "shipped": 2}
+
+
+def test_an_opening_that_sent_nothing_reports_zero_on_both_exits(db_session):
+    project = _project(db_session)
+    opening = _opening(db_session, project)
+    _owe(db_session, project, opening, 6)
+
+    row = _row(db_session, project)
+    assert (row["sent_quantity"], row["assembled_quantity"], row["shipped_quantity"]) == (0, 0, 0)
 
 
 def test_a_cancelled_pull_sent_nothing(db_session):

@@ -14,7 +14,7 @@ from app.models.enums import AuditAction, AuditEntityType
 from app.repositories import warehouse as warehouse_repository
 from app.repositories import warehouse_admin_repository
 
-from .inventory_fixtures import make_il, make_project, make_stock_item, wh_id
+from .inventory_fixtures import define_location, make_il, make_project, make_stock_item, wh_id
 
 
 def _second_warehouse(session) -> uuid.UUID:
@@ -40,6 +40,8 @@ def test_merge_rewrites_only_the_given_warehouse(db_session):
     il_b = make_il(db_session, project, aisle="ZONE1", row="R7", bay="B9", warehouse_id=wh_b)
     si_a = make_stock_item(db_session, aisle="ZONE1", row="R7", bay="B9", warehouse_id=wh_a, code="SI-A")
     si_b = make_stock_item(db_session, aisle="ZONE1", row="R7", bay="B9", warehouse_id=wh_b, code="SI-B")
+    # A merge target is a location the user chose, so it has to be defined in that warehouse (#632).
+    define_location(db_session, wh_a, "ZONE2", "R8", "B0")
 
     counts = warehouse_repository.merge_locations(
         db_session,
@@ -71,6 +73,7 @@ def test_merge_audit_rows_stamp_the_warehouse(db_session):
     wh_a = wh_id(db_session)
     project = make_project(db_session)
     make_il(db_session, project, aisle="MERGE", row="R1", bay="B1", warehouse_id=wh_a)
+    define_location(db_session, wh_a, "MERGED", "R2", "B2")
 
     warehouse_repository.merge_locations(
         db_session,
@@ -119,6 +122,9 @@ def test_audit_history_warehouse_filter_matches_only_stamped_rows(db_session):
 
     il_a = make_il(db_session, project, aisle=None, row=None, bay=None, warehouse_id=wh_a)
     il_b = make_il(db_session, project, aisle=None, row=None, bay=None, warehouse_id=wh_b)
+    # The same string is a separate defined location in each building (#632).
+    define_location(db_session, wh_a, "HIST", "R1", "B1")
+    define_location(db_session, wh_b, "HIST", "R1", "B1")
     warehouse_repository.assign_inventory_location(db_session, il_a.id, "HIST", "R1", "B1", performed_by="a")
     warehouse_repository.assign_inventory_location(db_session, il_b.id, "HIST", "R1", "B1", performed_by="b")
 

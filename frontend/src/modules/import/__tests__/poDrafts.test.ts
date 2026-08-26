@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildPoDrafts } from '../poDrafts';
+import { buildPoDrafts, toPoDraftInput } from '../poDrafts';
 import type { DraftGroup, AggregatedHardwareItem } from '../types';
 
 function hw(
@@ -109,6 +109,8 @@ describe('buildPoDrafts', () => {
     expect(drafts[0].notes).toBe('rush');
     expect(drafts[0].preferredDeliveryDate).toBe('2026-09-01');
     expect(drafts[0].costCode).toBe('CC-1');
+    // #632: the card's label IS the vendor - it seeds vendor_name_snapshot on the created PO.
+    expect(drafts[0].vendorName).toBe('a');
     expect(drafts[0].lineItemAliases).toEqual([
       { hardwareCategory: 'HINGE', productCode: 'HG-100', orderAs: 'ACME-9000' },
     ]);
@@ -145,5 +147,44 @@ describe('buildPoDrafts', () => {
       }
     }
     expect(claimed).toEqual(openingTotals);
+  });
+});
+
+describe('vendorName off the draft label (#632)', () => {
+  const vendorGroups = () => new Map([['VEND-A', [hw('O-1', 'HG-100', 2)]]]);
+
+  function vendorNameOf(label: string): string | null {
+    const d = draft('a', { 'HG-100|HINGE': 2 });
+    d.label = label;
+    return buildPoDrafts([d], vendorGroups(), new Map())[0].vendorName;
+  }
+
+  it('trims the label', () => {
+    expect(vendorNameOf('  ACME Hardware  ')).toBe('ACME Hardware');
+  });
+
+  it('sends null rather than an empty string when the card was left unnamed', () => {
+    expect(vendorNameOf('')).toBeNull();
+    expect(vendorNameOf('   ')).toBeNull();
+  });
+
+  it('survives the input conversion, which drops only the client-only sourceDraftId', () => {
+    const d = draft('a', { 'HG-100|HINGE': 2 });
+    d.label = 'ACME Hardware';
+    d.info = { notes: 'rush', preferredDeliveryDate: '2026-09-01', costCode: 'CC-1' };
+    const input = toPoDraftInput(buildPoDrafts([d], vendorGroups(), new Map())[0]);
+
+    expect(input).toEqual({
+      poNumber: null,
+      notes: 'rush',
+      vendorName: 'ACME Hardware',
+      preferredDeliveryDate: '2026-09-01',
+      costCode: 'CC-1',
+      hardwareItemRefs: [
+        { openingNumber: 'O-1', productCode: 'HG-100', hardwareCategory: 'HINGE', quantity: null },
+      ],
+      lineItemAliases: [],
+    });
+    expect('sourceDraftId' in input).toBe(false);
   });
 });

@@ -167,6 +167,9 @@ interface POListRow {
   origin: string;
   gpCompany: string | null;
   vendorNameSnapshot: string | null;
+  // #632: who raised it - resolved server-side (Clerk display name for a Nexus request, the GP buyer
+  // id for a mirrored row, null when neither is known).
+  createdBy: string | null;
   orderedAt: string | null;
   expectedDeliveryDate: string | null;
   createdAt: string;
@@ -284,11 +287,23 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued }: P
       onClick={onOpen}
       sx={{ cursor: 'pointer', '&:hover .po-row-chevron': { color: 'text.primary' } }}
     >
-      <TableCell sx={{ ...hugSx, ...monoSx }}>{projectNumber || '-'}</TableCell>
-      <TableCell sx={hugSx}>
-        <Typography variant="body2" noWrap title={projectName || undefined} sx={{ maxWidth: 240 }}>
-          {projectName || '-'}
-        </Typography>
+      {/* #632: one Project column - mono number over the truncated name - so the register fits
+          1366px without the container growing an x-scroll. */}
+      <TableCell sx={{ ...hugSx, maxWidth: 180 }}>
+        <Box component="span" sx={{ ...monoSx, display: 'block' }}>
+          {projectNumber || '-'}
+        </Box>
+        {projectName && (
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            noWrap
+            title={projectName}
+            sx={{ display: 'block', minWidth: 0, maxWidth: 172 }}
+          >
+            {projectName}
+          </Typography>
+        )}
       </TableCell>
       <TableCell sx={hugSx}>
         {po.poNumber ? (
@@ -321,7 +336,17 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued }: P
           )}
         </Box>
       </TableCell>
-      <TableCell>{po.vendorNameSnapshot || '-'}</TableCell>
+      {/* The one stretch column: absorbs the slack and truncates instead of widening the table. */}
+      <TableCell sx={{ maxWidth: 0 }}>
+        <Typography variant="body2" noWrap title={po.vendorNameSnapshot || undefined}>
+          {po.vendorNameSnapshot || '-'}
+        </Typography>
+      </TableCell>
+      <TableCell sx={{ ...hugSx, maxWidth: 150 }}>
+        <Typography variant="body2" noWrap title={po.createdBy || undefined} sx={{ maxWidth: 142 }}>
+          {po.createdBy || '-'}
+        </Typography>
+      </TableCell>
       <TableCell sx={{ ...hugSx, ...tabularSx }}>
         {parseServerDate(po.createdAt).toLocaleDateString()}
       </TableCell>
@@ -670,11 +695,11 @@ function POListPage() {
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell sx={{ width: '1%', whiteSpace: 'nowrap' }}>Project #</TableCell>
               <TableCell sx={{ width: '1%', whiteSpace: 'nowrap' }}>Project</TableCell>
               <SortHeader field="poNumber" label="PO / Request #" sortState={sort} onSort={handleSortClick} />
               <SortHeader field="status" label="Status" sortState={sort} onSort={handleSortClick} />
               <SortHeader field="vendor" label="Vendor" hug={false} sortState={sort} onSort={handleSortClick} />
+              <TableCell sx={{ width: '1%', whiteSpace: 'nowrap' }}>Created By</TableCell>
               <SortHeader field="createdAt" label="Creation Date" sortState={sort} onSort={handleSortClick} />
               <SortHeader field="orderedAt" label="Order Date" sortState={sort} onSort={handleSortClick} />
               <TableCell align="right" sx={{ width: '1%', whiteSpace: 'nowrap' }}>

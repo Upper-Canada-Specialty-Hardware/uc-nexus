@@ -94,6 +94,14 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
                 "tax_detail_on_foreign_po",
                 f"a {currency} PO carries no tax schedule (issue #257); tax_detail_id must be omitted",
             )
+        # #632: eConnect resolves XCHGRATE from GP's maintained table mid-taPoHdr, so a company with
+        # no rate maintained for this currency dies there with a raw error. Preflight it.
+        if not econnect.has_exchange_rate(conn, currency=currency, rate_type=rate_type, on_date=h.doc_date):
+            raise RelayOpError(
+                "no_exchange_rate",
+                f"GP has no {currency} exchange rate covering {h.doc_date} for rate type {rate_type} - "
+                f"add one in GP or use a {mc['functional']} vendor",
+            )
     exchange_date = h.doc_date if is_foreign else None
 
     # 0b. job + cost code: the wsi proc (step 4 below) rejects a made-up job or a cost code not set up

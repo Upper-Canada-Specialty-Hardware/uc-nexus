@@ -266,6 +266,8 @@ function coverageLine(overrides: Record<string, unknown> = {}) {
     classification: 'SHOP_HARDWARE',
     owedQuantity: 6,
     sentQuantity: 0,
+    assembledQuantity: 0,
+    shippedQuantity: 0,
     claimedQuantity: 0,
     suggestedQuantity: 6,
     onOrderQuantity: 0,
@@ -403,14 +405,14 @@ describe('ImportWizard step transitions', () => {
     expect(nextButton()).toBeEnabled();
   });
 
-  it('po purpose inserts Classification and Purchase Orders steps before Finalize', () => {
+  it('po purpose inserts Classification and Organize PO Drafts steps before Finalize', () => {
     renderWizard();
     clickNext();
 
     expect(stepLabels()).toEqual([...FIRST_IMPORT_STEPS, 'Finalize']);
     fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
 
-    expect(stepLabels()).toEqual([...FIRST_IMPORT_STEPS, 'Classification', 'Purchase Orders', 'Finalize']);
+    expect(stepLabels()).toEqual([...FIRST_IMPORT_STEPS, 'Classification', 'Organize PO Drafts', 'Finalize']);
   });
 
   // #492: the assembly flow used to carry a Classification step. It asked the user to re-answer a
@@ -520,7 +522,7 @@ describe('ImportWizard hardware mode', () => {
     'Upload File',
     'Select Hardware',
     'Classification',
-    'Purchase Orders',
+    'Organize PO Drafts',
     'Finalize',
   ];
 
@@ -528,7 +530,7 @@ describe('ImportWizard hardware mode', () => {
     renderWizard({ initialSelectionMode: 'hardware' });
 
     // No Purpose step, no Select Openings; the product picker takes their place. Classification and
-    // Purchase Orders still follow because the purpose is po.
+    // Classification and Organize PO Drafts still follow because the purpose is po.
     expect(stepLabels()).toEqual(HARDWARE_FIRST_IMPORT_STEPS);
     expect(screen.queryByText('Select Openings')).not.toBeInTheDocument();
   });
@@ -546,7 +548,7 @@ describe('ImportWizard hardware mode', () => {
       'Select Hardware',
       'Reconciliation',
       'Classification',
-      'Purchase Orders',
+      'Organize PO Drafts',
       'Finalize',
     ]);
   });

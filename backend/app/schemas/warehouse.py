@@ -29,6 +29,7 @@ from .converters import (
     receive_draft_to_type,
     receive_record_to_type,
     stock_item_to_type,
+    warehouse_location_to_type,
     warehouse_to_type,
 )
 from .enums import (
@@ -79,6 +80,7 @@ from .types import (
     RestockedLine,
     Warehouse,
     WarehouseDashboard,
+    WarehouseLocation,
 )
 
 
@@ -192,6 +194,19 @@ def _persist_create_receive(
     """
     gp_receipt = relay_result or {}
     with SessionLocal() as session:
+        # #632: carry the counter's remark off the draft onto the record. Read here, inside the
+        # persist transaction, rather than threaded through ApprovalContext / the outbox context -
+        # the draft row still exists at this point on both routes, so this is the one place that
+        # covers live approvals AND queued receipts draining.
+        draft_notes = None
+        if receive_draft_id is not None:
+            from sqlalchemy import select
+
+            from app.models.receive_draft import ReceiveDraft as ReceiveDraftModel
+
+            draft_notes = session.scalar(
+                select(ReceiveDraftModel.notes).where(ReceiveDraftModel.id == receive_draft_id)
+            )
         receive_record = warehouse_repository.create_receive(
             session,
             po_id,
@@ -200,6 +215,7 @@ def _persist_create_receive(
             warehouse_id=warehouse_id,
             receipt_number=gp_receipt.get("receipt_number"),
             batch_number=gp_receipt.get("batch_number"),
+            notes=draft_notes,
         )
         # Capture the id before commit: expire_on_commit would make receive_record.id raise
         # DetachedInstanceError once the session block closes.
@@ -842,6 +858,22 @@ class WarehouseQueries:
             w = warehouse_admin_repository.find_warehouse(session, uuid.UUID(str(id)))
             return warehouse_to_type(w) if w is not None else None
 
+    @strawberry.field
+    def warehouse_locations(
+        self, info: strawberry.Info, warehouse_id: strawberry.ID | None = None, active_only: bool = False
+    ) -> list[WarehouseLocation]:
+        """The defined-locations registry (#632). Put-away pickers read it with activeOnly=true;
+        the Locations tab reads everything so deactivated rows stay manageable."""
+        with SessionLocal() as session:
+            return [
+                warehouse_location_to_type(wl)
+                for wl in warehouse_repository.get_warehouse_locations(
+                    session,
+                    warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
+                    active_only=active_only,
+                )
+            ]
+
 
 @strawberry.type
 class WarehouseMutations:
@@ -873,6 +905,7 @@ class WarehouseMutations:
                 packing_slip_document_id=(
                     uuid.UUID(str(input.packing_slip_document_id)) if input.packing_slip_document_id else None
                 ),
+                notes=input.notes,
             )
             draft_id = draft.id
             session.commit()
@@ -892,6 +925,7 @@ class WarehouseMutations:
                 user["user_id"],
                 _is_warehouse_manager(info),
                 warehouse_id=uuid.UUID(str(input.warehouse_id)) if input.warehouse_id else None,
+                notes=input.notes,
             )
             session.commit()
         return _load_draft_type(draft_id)
@@ -1419,6 +1453,27 @@ class WarehouseMutations:
                 inventory_locations=counts["inventory_locations"],
                 stock_items=counts["stock_items"],
             )
+
+    # Defined-locations registry (#632)
+    @strawberry.mutation
+    def create_warehouse_location(
+        self, info: strawberry.Info, warehouse_id: strawberry.ID, aisle: str, row: str, bay: str
+    ) -> WarehouseLocation:
+        """Define a put-away location. Re-defining a deactivated one reactivates it."""
+        with SessionLocal() as session:
+            wl = warehouse_repository.create_warehouse_location(session, uuid.UUID(str(warehouse_id)), aisle, row, bay)
+            session.commit()
+            session.refresh(wl)
+            return warehouse_location_to_type(wl)
+
+    @strawberry.mutation
+    def deactivate_warehouse_location(self, info: strawberry.Info, id: strawberry.ID) -> WarehouseLocation:
+        """Retire a location from the put-away pickers. Hardware already there stays put."""
+        with SessionLocal() as session:
+            wl = warehouse_repository.deactivate_warehouse_location(session, uuid.UUID(str(id)))
+            session.commit()
+            session.refresh(wl)
+            return warehouse_location_to_type(wl)
 
     # Warehouses (admin)
     @strawberry.mutation

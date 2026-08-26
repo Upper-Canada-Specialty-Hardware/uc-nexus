@@ -118,6 +118,7 @@ const projectsMock: MockedResponse = {
           description: 'Cowichan District Hospital',
           client: null,
           jobSiteName: null,
+          scheduleFilename: null,
           openingCount: 2,
           gpSetupOk: true,
           gpSetupCheckedAt: null,

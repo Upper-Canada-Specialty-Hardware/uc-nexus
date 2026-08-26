@@ -125,7 +125,10 @@ def get_request_coverage(
         for key in keys:
             owed_line = owed.get(opening_number, {}).get(key)
             owed_quantity = owed_line["owed_quantity"] if owed_line else 0
-            sent_quantity = sent.get(opening_number, {}).get(key, 0)
+            sent_line = sent.get(opening_number, {}).get(key)
+            assembled_quantity = sent_line["assembled"] if sent_line else 0
+            shipped_quantity = sent_line["shipped"] if sent_line else 0
+            sent_quantity = assembled_quantity + shipped_quantity
             claimed_quantity = claimed.get(opening_number, {}).get(key, 0)
             rows.append(
                 {
@@ -135,6 +138,9 @@ def get_request_coverage(
                     "classification": _dominant_classification(owed_line),
                     "owed_quantity": owed_quantity,
                     "sent_quantity": sent_quantity,
+                    # #632: the two exits separately - through the shop bench vs out on a truck.
+                    "assembled_quantity": assembled_quantity,
+                    "shipped_quantity": shipped_quantity,
                     "claimed_quantity": claimed_quantity,
                     # Floored at 0. An opening that has been sent more than the current schedule asks
                     # for is over-supplied, not owed a negative quantity.
@@ -200,12 +206,13 @@ def _sent_quantities(
     session: Session,
     project_id: uuid.UUID,
     opening_numbers: list[str],
-) -> dict[str, dict[_ComboKey, int]]:
-    """Units that have left the building, per {opening: {(cat, code): quantity}}.
+) -> dict[str, dict[_ComboKey, dict]]:
+    """Units that have left the building, per {opening: {(cat, code): {"assembled", "shipped"}}}.
 
-    Shop assembly and shipping out are added together - they are different exits, and hardware that
-    went to the bench is not hardware that went on a truck. Within shipping out, the completed pull
-    and the slip cut from it are folded with `max`, because they are two records of one departure.
+    The two exits stay separate in the result (#632: the workspace shows Through shop and Shipped out
+    as their own columns) and the caller sums them for the total - hardware that went to the bench is
+    not hardware that went on a truck. Within shipping out, the completed pull and the slip cut from
+    it are folded with `max`, because they are two records of one departure.
     """
     if not opening_numbers:
         return {}
@@ -265,12 +272,16 @@ def _sent_quantities(
     assembled = completed_by_source[PullRequestSource.SHOP_ASSEMBLY]
     shipped_out = completed_by_source[PullRequestSource.SHIPPING_OUT]
 
-    out: dict[str, dict[_ComboKey, int]] = {}
+    out: dict[str, dict[_ComboKey, dict]] = {}
     for key in set(assembled) | set(shipped_out) | set(shipped):
         opening_number, category, code = key
-        total = assembled.get(key, 0) + max(shipped_out.get(key, 0), shipped.get(key, 0))
-        if total > 0:
-            out.setdefault(opening_number, {})[(category, code)] = total
+        assembled_quantity = assembled.get(key, 0)
+        shipped_quantity = max(shipped_out.get(key, 0), shipped.get(key, 0))
+        if assembled_quantity + shipped_quantity > 0:
+            out.setdefault(opening_number, {})[(category, code)] = {
+                "assembled": assembled_quantity,
+                "shipped": shipped_quantity,
+            }
     return out
 
 

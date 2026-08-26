@@ -54,6 +54,9 @@ class ReceiveDraft(Base):
     reviewed_by_name: Mapped[str | None] = mapped_column(String, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # #632: what the counter wants the approver to know ("box crushed", "short 2 per slip").
+    # Copied onto the ReceiveRecord at approval so the remark survives the draft's lifecycle.
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Deduplicates a resubmitted create: the browser mints one key per submit action and re-sends it
     # on a network retry, so a timeout that actually committed cannot leave two drafts on one PO.
     create_idempotency_key: Mapped[str | None] = mapped_column(String, nullable=True)

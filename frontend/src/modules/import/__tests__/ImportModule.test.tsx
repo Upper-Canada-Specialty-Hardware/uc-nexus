@@ -54,6 +54,7 @@ function project(id: string, description: string) {
     description,
     client: null,
     jobSiteName: null,
+    scheduleFilename: null,
     openingCount: 4,
     gpSetupOk: true,
     gpSetupCheckedAt: null,

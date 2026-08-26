@@ -167,6 +167,143 @@ export function addScheduleRowAtSuggested(lines: CartLine[], row: CoverageRow, h
   );
 }
 
+/** #632: one product summed across the selected openings - the schedule tab's table row. */
+export interface ProductCoverage {
+  key: string;
+  hardwareCategory: string;
+  productCode: string;
+  /** The openings' shared classification, or null when they disagree (no chip beats a wrong chip). */
+  classification: CoverageRow['classification'];
+  requiredQuantity: number;
+  assembledQuantity: number;
+  shippedQuantity: number;
+  claimedQuantity: number;
+  suggestedQuantity: number;
+  /** Product-level already on the server (project-wide) - taken, NEVER summed across openings. */
+  onOrderQuantity: number;
+  /** The per-opening rows behind the sums, ascending by opening - the expand target, and the
+   *  distribution order for a product-level quantity. */
+  rows: CoverageRow[];
+}
+
+/** #632: aggregate the coverage rows product-first. Every column is a straight sum EXCEPT on-order,
+ *  which the server already reports project-wide per product - summing it across openings would
+ *  multiply one PO by however many doors want its contents. */
+export function aggregateCoverageByProduct(rows: CoverageRow[]): ProductCoverage[] {
+  const byProduct = new Map<string, ProductCoverage>();
+  for (const row of rows) {
+    const key = productKey(row);
+    const agg = byProduct.get(key);
+    if (!agg) {
+      byProduct.set(key, {
+        key,
+        hardwareCategory: row.hardwareCategory,
+        productCode: row.productCode,
+        classification: row.classification,
+        requiredQuantity: row.owedQuantity,
+        assembledQuantity: row.assembledQuantity,
+        shippedQuantity: row.shippedQuantity,
+        claimedQuantity: row.claimedQuantity,
+        suggestedQuantity: row.suggestedQuantity,
+        onOrderQuantity: row.onOrderQuantity,
+        rows: [row],
+      });
+    } else {
+      agg.requiredQuantity += row.owedQuantity;
+      agg.assembledQuantity += row.assembledQuantity;
+      agg.shippedQuantity += row.shippedQuantity;
+      agg.claimedQuantity += row.claimedQuantity;
+      agg.suggestedQuantity += row.suggestedQuantity;
+      if (agg.classification !== row.classification) agg.classification = null;
+      agg.rows.push(row);
+    }
+  }
+  const out = Array.from(byProduct.values());
+  for (const agg of out) {
+    agg.rows.sort((a, b) => a.openingNumber.localeCompare(b.openingNumber));
+  }
+  return out.sort(
+    (a, b) => a.hardwareCategory.localeCompare(b.hardwareCategory) || a.productCode.localeCompare(b.productCode),
+  );
+}
+
+/** #632: what the cart holds of a product on THESE openings' lines (loose lines and other openings
+ *  excluded) - the product-level quantity field's value. */
+export function productLinesQuantity(lines: CartLine[], rows: CoverageRow[]): number {
+  let total = 0;
+  for (const row of rows) {
+    total += lineQuantity(lines, {
+      openingNumber: row.openingNumber,
+      hardwareCategory: row.hardwareCategory,
+      productCode: row.productCode,
+    });
+  }
+  return total;
+}
+
+/**
+ * #632: set a product's total across its openings, distributing greedily in opening order.
+ *
+ * Cart lines stay opening-tagged (#610 invariant) - a product-level quantity is only a faster way of
+ * writing the same per-opening lines. Each opening is capped at its own suggested; the whole add is
+ * capped by the live free pool once every OTHER line of the product (loose, or an opening outside
+ * this aggregate) has taken its share. Lowering drains from the LAST opening backwards, because the
+ * greedy fill assigns ascending - so the same number always produces the same lines.
+ */
+export function setProductQuantity(
+  lines: CartLine[],
+  rows: CoverageRow[],
+  desired: number,
+  headroom: Headroom,
+): CartLine[] {
+  if (rows.length === 0) return lines;
+  const key = productKey(rows[0]);
+  const aggregateKeys = new Set(
+    rows.map((r) =>
+      cartLineKey({ openingNumber: r.openingNumber, hardwareCategory: r.hardwareCategory, productCode: r.productCode }),
+    ),
+  );
+  const ceiling = headroom.get(key) ?? 0;
+  let othersHold = 0;
+  for (const line of lines) {
+    if (productKey(line) !== key) continue;
+    if (aggregateKeys.has(cartLineKey(line))) continue;
+    othersHold += line.quantity;
+  }
+  const pool = Math.max(0, ceiling - othersHold);
+  const suggestedTotal = rows.reduce((sum, r) => sum + r.suggestedQuantity, 0);
+  let target = Math.max(
+    0,
+    Math.min(Number.isFinite(desired) ? Math.floor(desired) : 0, pool, suggestedTotal),
+  );
+
+  const ordered = [...rows].sort((a, b) => a.openingNumber.localeCompare(b.openingNumber));
+  // Clear the aggregate's own lines before re-filling. setLineQuantity clamps against everything
+  // ELSE the product holds, so a cart that already sits on a LATER opening - added off that
+  // opening's own row, or seeded from a persisted draft - would have its units counted against the
+  // earlier opening the greedy fill starts on, and the whole product would clamp to zero.
+  let next = lines;
+  for (const row of ordered) {
+    next = setLineQuantity(
+      next,
+      { openingNumber: row.openingNumber, hardwareCategory: row.hardwareCategory, productCode: row.productCode },
+      0,
+      headroom,
+    );
+  }
+  for (const row of ordered) {
+    const take = Math.min(row.suggestedQuantity, target);
+    target -= take;
+    next = setLineQuantity(
+      next,
+      { openingNumber: row.openingNumber, hardwareCategory: row.hardwareCategory, productCode: row.productCode },
+      take,
+      headroom,
+    );
+  }
+  return next;
+}
+
 /** Take all of a product that is still free onto its loose (opening-less) line. */
 export function takeAllFreeLoose(
   lines: CartLine[],

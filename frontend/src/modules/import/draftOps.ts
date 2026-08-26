@@ -40,6 +40,46 @@ export function moveLine(
   });
 }
 
+/** Set a line's quantity directly (#632). The ceiling is the product's selection total minus what
+ *  sibling drafts hold - moving quantity between drafts shares one pool, and raising beyond the
+ *  selection is not offered here (the selection steps stay the place to widen scope). Lowering just
+ *  proceeds with less: buildPoDrafts' cursor claims fewer openings. A line set to 0 is dropped. */
+export function updateLineQty(
+  groups: DraftGroup[],
+  id: string,
+  pk: string,
+  qty: number,
+  selectionTotal: number,
+): DraftGroup[] {
+  const target = groups.find((g) => g.id === id);
+  if (!target || !target.lines.has(pk)) return groups;
+  const heldByOthers = groups.reduce((sum, g) => (g.id === id ? sum : sum + (g.lines.get(pk) ?? 0)), 0);
+  const cap = Math.max(0, selectionTotal - heldByOthers);
+  const next = Math.max(0, Math.min(Math.floor(qty), cap));
+  if (next === target.lines.get(pk)) return groups;
+  return groups.map((g) => {
+    if (g.id !== id) return g;
+    const lines = new Map(g.lines);
+    if (next > 0) lines.set(pk, next);
+    else lines.delete(pk);
+    return { ...g, lines };
+  });
+}
+
+/** Drop a line from a draft outright (#632) - "we are not ordering this here". Unlike moveLine the
+ *  quantity is not conserved; the product's openings are simply claimed by fewer drafts at finalize.
+ *  A draft emptied to zero lines stays visible (buildPoDrafts drops refs-empty drafts itself). */
+export function removeLine(groups: DraftGroup[], id: string, pk: string): DraftGroup[] {
+  const target = groups.find((g) => g.id === id);
+  if (!target || !target.lines.has(pk)) return groups;
+  return groups.map((g) => {
+    if (g.id !== id) return g;
+    const lines = new Map(g.lines);
+    lines.delete(pk);
+    return { ...g, lines };
+  });
+}
+
 /** Fold one draft's lines into another and drop it - the way to clear a non-empty draft. The target
  *  keeps its own label and info; quantities sum per productKey and #588 attachments concatenate, so
  *  nothing is lost. */

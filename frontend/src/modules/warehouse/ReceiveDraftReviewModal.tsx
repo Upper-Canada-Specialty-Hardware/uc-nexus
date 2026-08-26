@@ -385,6 +385,16 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
           )}
         </Box>
 
+        {/* #632: the counter's remark - front and center, since it usually says exactly what the
+            approver needs to know before pressing the GP button. */}
+        {draft.notes && (
+          <Alert severity="info" icon={false} sx={{ mb: 2 }}>
+            <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+              <strong>{draft.createdBy}'s notes:</strong> {draft.notes}
+            </Typography>
+          </Alert>
+        )}
+
         {queued && (
           <Alert severity="warning" sx={{ mb: 2 }}>
             Queued — the GP relay is offline. This receipt will post automatically when it reconnects; you

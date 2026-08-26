@@ -11,6 +11,9 @@ export const GET_PROJECTS = gql`
       description
       client
       jobSiteName
+      # #632: the XML the schedule on file came from, shown on the project landing card. Null on
+      # projects last imported before the name was captured (#627) - the card omits the line.
+      scheduleFilename
       openingCount
       gpSetupOk
       gpSetupCheckedAt

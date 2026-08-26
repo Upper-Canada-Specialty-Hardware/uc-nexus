@@ -4,7 +4,14 @@ import { Plus } from 'lucide-react';
 import { tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
 import type { DraftAttachmentType, DraftGroup } from './types';
-import { DraftCard, SplitLineDialog, type GpCostCode, type ProductMeta, type SplitContext } from './DraftOrganizer';
+import {
+  DraftCard,
+  SplitLineDialog,
+  type GpCostCode,
+  type LineContext,
+  type ProductMeta,
+  type SplitContext,
+} from './DraftOrganizer';
 
 // ---- Props ----
 
@@ -23,12 +30,18 @@ interface PurchaseOrdersStepProps {
   productCatalog: Map<string, ProductMeta>;
   unitCostOverrides: Map<string, number>;
   orderAsValues: Map<string, string>;
+  /** #632: the per-product selection pool - Qty edits are capped at pool minus sibling holdings. */
+  selectionTotals: Map<string, number>;
+  /** #632: per-line recon context (needed / on order / received / available) for the info popover. */
+  lineContextByPk: Map<string, LineContext>;
   onToggleIncluded: (id: string) => void;
   onRenameDraft: (id: string, label: string) => void;
   onUpdateDraftInfo: (id: string, field: 'notes' | 'preferredDeliveryDate' | 'costCode', value: string) => void;
   onUpdateUnitCost: (pk: string, value: number) => void;
   onUpdateOrderAs: (pk: string, value: string) => void;
   onMoveLine: (fromId: string, pk: string, qty: number, toId: string) => void;
+  onUpdateLineQty: (id: string, pk: string, qty: number) => void;
+  onRemoveLine: (id: string, pk: string) => void;
   onCreateDraft: () => void;
   onMergeDraft: (fromId: string, intoId: string) => void;
   onRemoveDraft: (id: string) => void;
@@ -48,12 +61,16 @@ export default function PurchaseOrdersStep({
   productCatalog,
   unitCostOverrides,
   orderAsValues,
+  selectionTotals,
+  lineContextByPk,
   onToggleIncluded,
   onRenameDraft,
   onUpdateDraftInfo,
   onUpdateUnitCost,
   onUpdateOrderAs,
   onMoveLine,
+  onUpdateLineQty,
+  onRemoveLine,
   onCreateDraft,
   onMergeDraft,
   onRemoveDraft,
@@ -61,6 +78,15 @@ export default function PurchaseOrdersStep({
   onSetAttachmentType,
   onRemoveAttachment,
 }: PurchaseOrdersStepProps) {
+  // #632: how much of each product ALL drafts currently hold - a card's Qty ceiling for a line is
+  // selectionTotals minus what its siblings hold, i.e. this total minus the line's own quantity.
+  const heldByProduct = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const g of draftGroups) {
+      for (const [pk, qty] of g.lines) map.set(pk, (map.get(pk) ?? 0) + qty);
+    }
+    return map;
+  }, [draftGroups]);
   // The split dialog is a single instance driven by the card that opened it.
   const [splitCtx, setSplitCtx] = useState<SplitContext | null>(null);
   const splitTargets = useMemo(
@@ -76,12 +102,12 @@ export default function PurchaseOrdersStep({
       <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 2, mb: 3 }}>
         <Box sx={{ minWidth: 0 }}>
           <Typography variant="h6" sx={{ mb: 1 }}>
-            Purchase Orders
+            Organize PO Drafts
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={tabularSx}>
-            {draftGroups.length} draft(s), seeded one per manufacturer. Move lines between drafts, split a
-            line's quantity, and check the ones to order. The GP vendor and PO number are chosen later at
-            registration in Microsoft GP.
+            {draftGroups.length} draft(s), seeded one per manufacturer. Move lines between drafts, edit
+            quantities, and check the ones to order. The vendor name here seeds the register; the GP vendor
+            and PO number are confirmed later at registration in Microsoft GP.
           </Typography>
         </Box>
         <Button variant="outlined" startIcon={<Plus size={16} strokeWidth={1.75} />} onClick={onCreateDraft} sx={{ flexShrink: 0 }}>
@@ -111,12 +137,17 @@ export default function PurchaseOrdersStep({
               costCodes={costCodes}
               unitCostOverrides={unitCostOverrides}
               orderAsValues={orderAsValues}
+              selectionTotals={selectionTotals}
+              heldByProduct={heldByProduct}
+              lineContextByPk={lineContextByPk}
               onToggleIncluded={onToggleIncluded}
               onRenameDraft={onRenameDraft}
               onUpdateDraftInfo={onUpdateDraftInfo}
               onUpdateUnitCost={onUpdateUnitCost}
               onUpdateOrderAs={onUpdateOrderAs}
               onMoveLine={onMoveLine}
+              onUpdateLineQty={onUpdateLineQty}
+              onRemoveLine={onRemoveLine}
               onMergeDraft={onMergeDraft}
               onRemoveDraft={onRemoveDraft}
               onOpenSplit={setSplitCtx}

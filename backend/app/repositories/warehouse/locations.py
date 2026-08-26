@@ -1,4 +1,5 @@
-"""Physical locations: normalization, location browse/utilization/duplicates, moves, merges."""
+"""Physical locations: normalization, the defined-locations registry, browse/utilization/duplicates,
+moves, merges."""
 
 import uuid
 from collections import defaultdict
@@ -6,13 +7,14 @@ from collections import defaultdict
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.errors import NotFoundError, ValidationError
+from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models.audit_log import InventoryAuditLog
 from app.models.enums import AuditAction, AuditEntityType
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.stock_item import StockItem as StockItemModel
+from app.models.warehouse_location import WarehouseLocation as WarehouseLocationModel
 
 from .audit import _log_audit_event
 
@@ -38,6 +40,88 @@ def _normalize_and_validate_location_fields(aisle: str, row: str, bay: str) -> t
         if not value or len(value) < 1 or len(value) > 20:
             raise ValidationError(f"{field_name} must be 1-20 characters", field=field_name)
     return (a, b, c)
+
+
+def ensure_registered_location(session: Session, warehouse_id: uuid.UUID, aisle: str, row: str, bay: str) -> None:
+    """Refuse a location triple that is not defined and active in the warehouse's registry (#632).
+
+    Expects CANONICAL input - every caller normalizes first, and registry rows are stored normalized,
+    so this is exact string equality. Callers pass the location the USER CHOSE (a put-away, a move, a
+    destock/allocate target, a transfer destination); a location merely inherited off an existing row
+    (destock keeping the source's shelf) is not re-checked, so retiring a location never strands the
+    hardware already on it.
+    """
+    exists = session.scalar(
+        select(WarehouseLocationModel.id).where(
+            WarehouseLocationModel.warehouse_id == warehouse_id,
+            WarehouseLocationModel.aisle == aisle,
+            WarehouseLocationModel.row == row,
+            WarehouseLocationModel.bay == bay,
+            WarehouseLocationModel.active.is_(True),
+        )
+    )
+    if exists is None:
+        raise ValidationError(
+            f"{aisle} / {row} / {bay} is not a defined location in this warehouse. "
+            "Define it on the Locations tab first.",
+            field="location",
+        )
+
+
+def get_warehouse_locations(
+    session: Session, warehouse_id: uuid.UUID | None = None, active_only: bool = False
+) -> list[WarehouseLocationModel]:
+    """The registry, ordered for pickers and the Locations tab."""
+    stmt = select(WarehouseLocationModel).order_by(
+        WarehouseLocationModel.aisle, WarehouseLocationModel.row, WarehouseLocationModel.bay
+    )
+    if warehouse_id is not None:
+        stmt = stmt.where(WarehouseLocationModel.warehouse_id == warehouse_id)
+    if active_only:
+        stmt = stmt.where(WarehouseLocationModel.active.is_(True))
+    return list(session.scalars(stmt).all())
+
+
+def create_warehouse_location(
+    session: Session, warehouse_id: uuid.UUID, aisle: str, row: str, bay: str
+) -> WarehouseLocationModel:
+    """Define a location. Re-defining a deactivated one reactivates it - the row keeps its identity."""
+    from app.models.warehouse import Warehouse as WarehouseModel
+
+    if session.get(WarehouseModel, warehouse_id) is None:
+        raise NotFoundError(f"Warehouse {warehouse_id} not found")
+    aisle, row, bay = _normalize_and_validate_location_fields(aisle, row, bay)
+
+    existing = session.scalars(
+        select(WarehouseLocationModel).where(
+            WarehouseLocationModel.warehouse_id == warehouse_id,
+            WarehouseLocationModel.aisle == aisle,
+            WarehouseLocationModel.row == row,
+            WarehouseLocationModel.bay == bay,
+        )
+    ).first()
+    if existing is not None:
+        if existing.active:
+            raise ConflictError(f"{aisle} / {row} / {bay} is already defined in this warehouse")
+        existing.active = True
+        session.flush()
+        return existing
+
+    loc = WarehouseLocationModel(warehouse_id=warehouse_id, aisle=aisle, row=row, bay=bay, active=True)
+    session.add(loc)
+    session.flush()
+    return loc
+
+
+def deactivate_warehouse_location(session: Session, location_id: uuid.UUID) -> WarehouseLocationModel:
+    """Retire a location from the pickers. Hardware already sitting there stays put - the utilization
+    view keeps showing an occupied retired location until it drains."""
+    loc = session.get(WarehouseLocationModel, location_id)
+    if loc is None:
+        raise NotFoundError(f"Warehouse location {location_id} not found")
+    loc.active = False
+    session.flush()
+    return loc
 
 
 def location_detail(aisle: str | None, row: str | None, bay: str | None, warehouse_id: uuid.UUID | None) -> dict:
@@ -351,6 +435,7 @@ def merge_locations(
         raise ValidationError("performed_by is required", field="performed_by")
 
     to_aisle, to_row, to_bay = _normalize_and_validate_location_fields(to_aisle, to_row, to_bay)
+    ensure_registered_location(session, warehouse_id, to_aisle, to_row, to_bay)
     # from_* may already be in canonical form; either way only compare equality, no validation needed.
 
     counts = {"inventory_locations": 0, "stock_items": 0}
@@ -427,6 +512,7 @@ def move_inventory_location(
         raise NotFoundError(f"Inventory location {inv_id} not found")
 
     new_aisle, new_row, new_bay = _normalize_and_validate_location_fields(new_aisle, new_row, new_bay)
+    ensure_registered_location(session, il.warehouse_id, new_aisle, new_row, new_bay)
 
     old_aisle, old_row, old_bay = il.aisle, il.row, il.bay
     il.aisle = new_aisle
@@ -482,6 +568,7 @@ def assign_inventory_location(
         raise NotFoundError(f"Inventory location {inv_id} not found")
 
     aisle, row, bay = _normalize_and_validate_location_fields(aisle, row, bay)
+    ensure_registered_location(session, il.warehouse_id, aisle, row, bay)
 
     il.aisle = aisle
     il.row = row

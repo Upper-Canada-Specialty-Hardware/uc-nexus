@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, String
+from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -31,6 +31,8 @@ class ReceiveRecord(Base):
     received_by: Mapped[str] = mapped_column(String, nullable=False)
     receipt_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     batch_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # #632: free-text carried off the draft at approval ("box crushed", "short 2 per slip"). Nexus-only.
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
 
     line_items: Mapped[list["ReceiveLineItem"]] = relationship(back_populates="receive_record")

@@ -116,6 +116,7 @@ def create_receive(
     *,
     receipt_number: str | None = None,
     batch_number: str | None = None,
+    notes: str | None = None,
 ) -> ReceiveRecordModel:
     """
     Create a ReceiveRecord with ReceiveLineItems and InventoryLocations.
@@ -135,6 +136,7 @@ def create_receive(
             app it is always present, because receiving is GP-first and nothing is persisted here
             until GP has already numbered the receipt.
         batch_number: the GP batch that receipt landed in, from the same response.
+        notes: the counter's remark, carried off the approved draft (#632). Nexus-only.
     Returns:
         The created ReceiveRecord with line_items loaded.
     """
@@ -212,6 +214,7 @@ def create_receive(
         received_by=received_by,
         receipt_number=receipt_number,
         batch_number=batch_number,
+        notes=notes,
     )
     session.add(receive_record)
     session.flush()
