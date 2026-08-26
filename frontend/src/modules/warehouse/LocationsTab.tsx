@@ -48,15 +48,12 @@ import TransferDialog, { type TransferSource } from './TransferDialog';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { springs } from '../../motion';
 import type { WarehouseLocationDef } from './receiveDraftTypes';
-
-interface LocationEntry {
-  warehouseId: string | null;
-  aisle: string;
-  row: string | null;
-  bay: string | null;
-  itemCount: number;
-  totalQuantity: number;
-}
+import {
+  combineLocationRows,
+  locationKey,
+  type CombinedLocationRow,
+  type LocationEntry,
+} from './locationRows';
 
 interface WarehouseOption {
   id: string;
@@ -112,16 +109,6 @@ interface ProductLocation {
   bay: string | null;
 }
 
-/** A stable key for one rack position, shared between the utilization list and the product rows. */
-function locationKey(
-  warehouseId: string | null,
-  aisle: string | null,
-  row: string | null,
-  bay: string | null,
-): string {
-  return `${warehouseId ?? 'none'}|${aisle ?? ''}|${row ?? ''}|${bay ?? ''}`;
-}
-
 function formatLocation(aisle: string, row: string | null, bay: string | null): string {
   const parts = [aisle];
   if (row) parts.push(row);
@@ -134,14 +121,7 @@ function formatCurrency(value: number | null): string {
   return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 }
 
-type UtilRow = LocationEntry & {
-  id: string;
-  /** #632: registry linkage. definedId null on an occupied location that is NOT defined (a
-   *  pre-registry variant); active null likewise. isEmpty marks a defined location holding nothing. */
-  definedId: string | null;
-  active: boolean | null;
-  isEmpty: boolean;
-};
+type UtilRow = CombinedLocationRow & { id: string };
 
 function warehouseChip(id: string | null, warehouseCode: Map<string, string>) {
   return id ? (
@@ -793,39 +773,14 @@ export default function LocationsTab() {
     return keys;
   }, [search, invRowsData, stockItemsData]);
 
+  // Occupied + defined-but-empty, unfiltered. The search box narrows what the grid shows; the
+  // header counter counts from here so a registry that is entirely empty still reads as populated.
+  const combined = useMemo(
+    () => combineLocationRows(utilData?.locationUtilization ?? [], registry),
+    [utilData, registry],
+  );
+
   const rows = useMemo(() => {
-    const occupied = utilData?.locationUtilization ?? [];
-    const registryByKey = new Map<string, WarehouseLocationDef>();
-    for (const def of registry) {
-      registryByKey.set(locationKey(def.warehouseId, def.aisle, def.row, def.bay), def);
-    }
-
-    // Occupied locations first (linked to their registry row when one matches), then every defined
-    // location holding nothing - the #632 point: a freshly defined bin exists before anything is in
-    // it, and the old derived-from-occupancy list simply could not show it.
-    const occupiedKeys = new Set(
-      occupied.map((loc) => locationKey(loc.warehouseId, loc.aisle, loc.row, loc.bay)),
-    );
-    const combined: (LocationEntry & { definedId: string | null; active: boolean | null; isEmpty: boolean })[] =
-      occupied.map((loc) => {
-        const def = registryByKey.get(locationKey(loc.warehouseId, loc.aisle, loc.row, loc.bay));
-        return { ...loc, definedId: def?.id ?? null, active: def?.active ?? null, isEmpty: false };
-      });
-    for (const def of registry) {
-      if (occupiedKeys.has(locationKey(def.warehouseId, def.aisle, def.row, def.bay))) continue;
-      combined.push({
-        warehouseId: def.warehouseId,
-        aisle: def.aisle,
-        row: def.row,
-        bay: def.bay,
-        itemCount: 0,
-        totalQuantity: 0,
-        definedId: def.id,
-        active: def.active ?? null,
-        isEmpty: true,
-      });
-    }
-
     const q = search.trim().toLowerCase();
     const filtered = !q
       ? combined
@@ -846,7 +801,7 @@ export default function LocationsTab() {
       ...loc,
       id: `${loc.warehouseId ?? 'none'}-${loc.aisle}-${loc.row}-${loc.bay}-${i}`,
     }));
-  }, [utilData, registry, search, productLocationKeys]);
+  }, [combined, search, productLocationKeys]);
 
   const handleRowClick = useCallback((params: GridRowParams<LocationEntry & { id: string }>) => {
     setSelected(params.row);
@@ -882,9 +837,9 @@ export default function LocationsTab() {
   }
   if (utilError) return <Alert severity="error">Error: {utilError.message}</Alert>;
 
-  const totalLocations = (utilData?.locationUtilization ?? []).length;
-  const totalQty = (utilData?.locationUtilization ?? []).reduce((sum, r) => sum + r.totalQuantity, 0);
-  const allEmpty = totalLocations === 0 && registry.length === 0;
+  const totalLocations = combined.length;
+  const totalQty = combined.reduce((sum, r) => sum + r.totalQuantity, 0);
+  const allEmpty = combined.length === 0;
 
   return (
     <Box>
