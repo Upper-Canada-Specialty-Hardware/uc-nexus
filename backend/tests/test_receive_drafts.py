@@ -433,9 +433,12 @@ def committed(_migrate_database):
 
         from app.models.stock_item import StockItem
 
+        from .inventory_fixtures import define_location
+
         with SessionLocal() as session:
             project = _make_project(session) if with_project else None
             po, li = _make_po(session, project.id if project else None, ordered=ordered)
+            define_location(session)
             draft = _draft(session, po, li, quantity, notes=notes)
             fixture = _CommittedFixture(
                 project.id if project else None,

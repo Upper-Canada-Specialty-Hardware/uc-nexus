@@ -1,5 +1,20 @@
 import type { ReceiveDraftLineItem } from './receiveLines';
 
+/** One defined put-away location (#632) - the registry every location write validates against. */
+export interface WarehouseLocationDef {
+  id: string;
+  warehouseId: string;
+  aisle: string;
+  row: string;
+  bay: string;
+  active?: boolean;
+}
+
+/** Canonical form for comparing typed input against registry rows (which are stored canonical). */
+export function normalizeLocationValue(v: string): string {
+  return v.toUpperCase().trim().split(/\s+/).join(' ');
+}
+
 /**
  * A counted receive as the backend returns it, shared by every screen that lists or opens one.
  *

@@ -47,6 +47,7 @@ import LocationAuditStrip from './LocationAuditStrip';
 import TransferDialog, { type TransferSource } from './TransferDialog';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { springs } from '../../motion';
+import type { WarehouseLocationDef } from './receiveDraftTypes';
 
 interface LocationEntry {
   warehouseId: string | null;
@@ -55,16 +56,6 @@ interface LocationEntry {
   bay: string | null;
   itemCount: number;
   totalQuantity: number;
-}
-
-/** One defined put-away location (#632) - the registry every location write validates against. */
-interface WarehouseLocationDef {
-  id: string;
-  warehouseId: string;
-  aisle: string;
-  row: string;
-  bay: string;
-  active: boolean;
 }
 
 interface WarehouseOption {
@@ -830,7 +821,7 @@ export default function LocationsTab() {
         itemCount: 0,
         totalQuantity: 0,
         definedId: def.id,
-        active: def.active,
+        active: def.active ?? null,
         isEmpty: true,
       });
     }

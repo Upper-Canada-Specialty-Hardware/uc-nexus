@@ -23,6 +23,8 @@ from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.receiving import ReceiveRecord
 from app.repositories import warehouse as warehouse_repository
 
+from .inventory_fixtures import define_location
+
 
 def _make_project(session) -> Project:
     p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test")
@@ -59,6 +61,7 @@ def _make_po_with_line(session, project_id, *, status=POStatus.GP_REGISTERED, or
 
 
 def _receive(session, po, li, quantity, *, receipt_number=None, batch_number=None):
+    define_location(session)
     return warehouse_repository.create_receive(
         session,
         po.id,

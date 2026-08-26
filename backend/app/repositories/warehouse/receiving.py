@@ -21,7 +21,7 @@ from app.models.receiving import ReceiveRecord as ReceiveRecordModel
 from app.repositories import project_repository
 
 from .audit import _log_audit_event
-from .locations import _normalize_and_validate_location_fields, location_detail
+from .locations import _normalize_and_validate_location_fields, ensure_registered_location, location_detail
 
 
 def validate_receive_eligibility(
@@ -204,6 +204,7 @@ def create_receive(
                 loc["aisle"], loc["row"], loc["bay"] = _normalize_and_validate_location_fields(
                     loc["aisle"], loc["row"], loc["bay"]
                 )
+                ensure_registered_location(session, warehouse_id, loc["aisle"], loc["row"], loc["bay"])
 
     # 5. Execute in single transaction
     now = datetime.utcnow()

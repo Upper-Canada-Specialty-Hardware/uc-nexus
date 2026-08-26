@@ -42,6 +42,7 @@ import {
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
+import { type WarehouseLocationDef, normalizeLocationValue } from './receiveDraftTypes';
 
 // ---- Types ----
 
@@ -88,20 +89,6 @@ interface LocationInput {
   aisle: string;
   row: string;
   bay: string;
-}
-
-/** One defined put-away location (#632) - the registry every location write validates against. */
-interface WarehouseLocationDef {
-  id: string;
-  warehouseId: string;
-  aisle: string;
-  row: string;
-  bay: string;
-}
-
-/** Canonical form for comparing typed input against registry rows (which are stored canonical). */
-function normalizeLocationValue(v: string): string {
-  return v.toUpperCase().trim().split(/\s+/).join(' ');
 }
 
 // ---- Helpers ----
