@@ -41,7 +41,7 @@ REQUEST_FIELDS = """
 
 
 def _make_project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p
@@ -120,6 +120,9 @@ def as_manager(monkeypatch, db_session):
     """
     monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": _MANAGER_ID})
     monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [SHOP_ASSEMBLY_MANAGER_ROLE])
+    # #637: tenant_scope also resolves the caller's company; stub it the way roles are stubbed so the
+    # suite stays off the network, scoped to the company the fixtures build under.
+    monkeypatch.setattr(user_repository, "get_user_company", lambda user_id: "TUBC")
     monkeypatch.setattr(
         user_repository,
         "get_user",
@@ -358,6 +361,8 @@ def test_reading_a_request_stays_open_to_any_signed_in_user(monkeypatch, db_sess
     availability arithmetic is the same one every other screen already shows."""
     monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_test"})
     monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [])
+    # #637: the list is tenant-scoped, so even a roleless signed-in reader resolves a company.
+    monkeypatch.setattr(user_repository, "get_user_company", lambda user_id: "TUBC")
 
     result = _execute("{ shopAssemblyRequests { id } }")
 
