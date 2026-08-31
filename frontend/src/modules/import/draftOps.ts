@@ -3,14 +3,17 @@
  *
  * Held apart from the wizard (which just wraps each in a setDraftGroups) so the conservation
  * invariant - the quantities of a productKey summed across every draft stay constant under a move or
- * split, and a draft that still holds lines can never be removed - is unit-testable without rendering.
+ * split, and no draft is dropped while it still holds lines - is unit-testable without rendering.
+ * The converse holds since #639: a line operation that empties a draft drops the draft in the same
+ * pass, so the only empty card on screen is one the buyer created on purpose to move lines into.
  * Every reducer returns a new array; the untouched groups keep their identity.
  */
 import type { DraftAttachment, DraftAttachmentType, DraftGroup } from './types';
 
 /** Move `qty` units of a product line from one draft to another. The whole-line move passes the
  *  line's full quantity; a split passes a partial. A source line emptied to zero is dropped, so the
- *  per-productKey total across all drafts is unchanged. */
+ *  per-productKey total across all drafts is unchanged - and a source left holding nothing goes with
+ *  it (#639), since the move already carried its contents somewhere else. */
 export function moveLine(
   groups: DraftGroup[],
   fromId: string,
@@ -23,27 +26,30 @@ export function moveLine(
   const have = from?.lines.get(pk) ?? 0;
   const move = Math.max(0, Math.min(qty, have));
   if (move <= 0) return groups;
-  return groups.map((g) => {
-    if (g.id === fromId) {
-      const lines = new Map(g.lines);
-      const remainder = have - move;
-      if (remainder > 0) lines.set(pk, remainder);
-      else lines.delete(pk);
-      return { ...g, lines };
-    }
-    if (g.id === toId) {
-      const lines = new Map(g.lines);
-      lines.set(pk, (lines.get(pk) ?? 0) + move);
-      return { ...g, lines };
-    }
-    return g;
-  });
+  return groups
+    .map((g) => {
+      if (g.id === fromId) {
+        const lines = new Map(g.lines);
+        const remainder = have - move;
+        if (remainder > 0) lines.set(pk, remainder);
+        else lines.delete(pk);
+        return { ...g, lines };
+      }
+      if (g.id === toId) {
+        const lines = new Map(g.lines);
+        lines.set(pk, (lines.get(pk) ?? 0) + move);
+        return { ...g, lines };
+      }
+      return g;
+    })
+    .filter((g) => !(g.id === fromId && g.lines.size === 0));
 }
 
 /** Set a line's quantity directly (#632). The ceiling is the product's selection total minus what
  *  sibling drafts hold - moving quantity between drafts shares one pool, and raising beyond the
  *  selection is not offered here (the selection steps stay the place to widen scope). Lowering just
- *  proceeds with less: buildPoDrafts' cursor claims fewer openings. A line set to 0 is dropped. */
+ *  proceeds with less: buildPoDrafts' cursor claims fewer openings. A line set to 0 is dropped, and
+ *  the draft with it when that was its only line (#639). */
 export function updateLineQty(
   groups: DraftGroup[],
   id: string,
@@ -57,27 +63,32 @@ export function updateLineQty(
   const cap = Math.max(0, selectionTotal - heldByOthers);
   const next = Math.max(0, Math.min(Math.floor(qty), cap));
   if (next === target.lines.get(pk)) return groups;
-  return groups.map((g) => {
-    if (g.id !== id) return g;
-    const lines = new Map(g.lines);
-    if (next > 0) lines.set(pk, next);
-    else lines.delete(pk);
-    return { ...g, lines };
-  });
+  return groups
+    .map((g) => {
+      if (g.id !== id) return g;
+      const lines = new Map(g.lines);
+      if (next > 0) lines.set(pk, next);
+      else lines.delete(pk);
+      return { ...g, lines };
+    })
+    .filter((g) => !(g.id === id && g.lines.size === 0));
 }
 
 /** Drop a line from a draft outright (#632) - "we are not ordering this here". Unlike moveLine the
  *  quantity is not conserved; the product's openings are simply claimed by fewer drafts at finalize.
- *  A draft emptied to zero lines stays visible (buildPoDrafts drops refs-empty drafts itself). */
+ *  Dropping the draft's last line drops the draft too (#639) - an emptied card mints no PO and has
+ *  nothing left to organize. */
 export function removeLine(groups: DraftGroup[], id: string, pk: string): DraftGroup[] {
   const target = groups.find((g) => g.id === id);
   if (!target || !target.lines.has(pk)) return groups;
-  return groups.map((g) => {
-    if (g.id !== id) return g;
-    const lines = new Map(g.lines);
-    lines.delete(pk);
-    return { ...g, lines };
-  });
+  return groups
+    .map((g) => {
+      if (g.id !== id) return g;
+      const lines = new Map(g.lines);
+      lines.delete(pk);
+      return { ...g, lines };
+    })
+    .filter((g) => !(g.id === id && g.lines.size === 0));
 }
 
 /** Fold one draft's lines into another and drop it - the way to clear a non-empty draft. The target
@@ -101,7 +112,8 @@ export function mergeDraft(groups: DraftGroup[], fromId: string, intoId: string)
 }
 
 /** Append a new empty draft, checked so a buyer who made it on purpose does not have to also opt it
- *  in. The caller supplies a unique id. */
+ *  in. The caller supplies a unique id. This one persists empty - it is the move target, unlike a
+ *  draft emptied by a line operation, which #639 drops. */
 export function createDraft(groups: DraftGroup[], id: string, label = 'New PO'): DraftGroup[] {
   return [
     ...groups,

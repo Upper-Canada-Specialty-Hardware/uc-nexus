@@ -32,7 +32,8 @@ interface PurchaseOrdersStepProps {
   orderAsValues: Map<string, string>;
   /** #632: the per-product selection pool - Qty edits are capped at pool minus sibling holdings. */
   selectionTotals: Map<string, number>;
-  /** #632: per-line recon context (needed / on order / received / available) for the info popover. */
+  /** #632: per-line recon context (needed / on order / received / available), shown inline on each
+   *  ledger row as the Need / On Order / Rcvd / Avail columns (#639). */
   lineContextByPk: Map<string, LineContext>;
   onToggleIncluded: (id: string) => void;
   onRenameDraft: (id: string, label: string) => void;

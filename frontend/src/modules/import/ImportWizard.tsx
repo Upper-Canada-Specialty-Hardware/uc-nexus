@@ -1005,7 +1005,7 @@ export default function ImportWizard({
     [poSelectionTotals],
   );
 
-  // #632: drop a line outright - "not ordering this here". The emptied draft stays visible.
+  // #632: drop a line outright - "not ordering this here". #639: the draft goes with its last line.
   const removeLine = useCallback((draftId: string, pk: string) => {
     setDraftGroups((prev) => draftOps.removeLine(prev, draftId, pk));
   }, []);
