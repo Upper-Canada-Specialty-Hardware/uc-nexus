@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
-  Badge,
   Box,
   Button,
   CircularProgress,
@@ -9,8 +8,6 @@ import {
   Skeleton,
   Stack,
   Typography,
-  useMediaQuery,
-  useTheme,
 } from '@mui/material';
 import { ShoppingCart } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -36,6 +33,7 @@ import {
   totalUnits,
   type CartLine,
 } from './requestCart';
+import { plural } from '../../../utils/plural';
 import RequestWorkspaceScheduleTab from './RequestWorkspaceScheduleTab';
 import RequestWorkspaceInventoryTab from './RequestWorkspaceInventoryTab';
 import RequestWorkspaceCartRail from './RequestWorkspaceCartRail';
@@ -55,7 +53,9 @@ interface SeededRequest {
   items: SeededItem[];
 }
 
-const RAIL_WIDTH = 340;
+const CART_WIDTH = 340;
+/** The app bar is sticky, so the cart drawer starts under it rather than sliding across it. */
+const BAR_HEIGHT = { xs: 56, sm: 64 };
 const cartStorageKey = (projectId: string) => `shipping-request-cart:${projectId}`;
 
 /**
@@ -182,12 +182,9 @@ function Composer({
   mode: 'create' | 'edit';
   request?: SeededRequest;
 }) {
-  const theme = useTheme();
-  const wide = useMediaQuery(theme.breakpoints.up('md'));
   const navigate = useNavigate();
   const { showToast } = useToast();
 
-  const [drawerOpen, setDrawerOpen] = useState(false);
   // Which products the picked openings still owe, lifted from the catalog so the extras lane below can
   // nudge a loose add toward the door it is scheduled for (#610).
   const [scheduledByProduct, setScheduledByProduct] = useState<Map<string, string[]>>(() => new Map());
@@ -209,6 +206,55 @@ function Composer({
       return [];
     }
   });
+
+  // #649: the cart is a drawer now, opened on demand so the tables get the whole width. It starts
+  // open when there is already a request to look at - an edit, or a resumed draft - and opens itself
+  // the moment an empty cart takes its first line, so the first add is never silent. Dismissing it
+  // sticks: adds after that leave it closed.
+  const [cartOpen, setCartOpen] = useState(cart.length > 0);
+  const updateCart = (next: CartLine[]) => {
+    if (cart.length === 0 && next.length > 0) setCartOpen(true);
+    setCart(next);
+  };
+
+  // Focus follows only an EXPLICIT open or close. The launcher unmounts when the drawer takes over
+  // and the drawer's controls go invisible when it slides away, so without a handoff the keyboard is
+  // dropped on <body>. The auto-open on first add stays hands-off - stealing focus from the table
+  // mid-composition would be worse than the silence it fixes - and an Escape pressed while working
+  // the tables leaves focus right where it is.
+  const launcherRef = useRef<HTMLButtonElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const drawerPaperRef = useRef<HTMLElement | null>(null);
+  const pendingFocus = useRef<'drawer' | 'launcher' | null>(null);
+
+  const openCart = () => {
+    pendingFocus.current = 'drawer';
+    setCartOpen(true);
+  };
+  const closeCart = useCallback(() => {
+    if (drawerPaperRef.current?.contains(document.activeElement)) pendingFocus.current = 'launcher';
+    setCartOpen(false);
+  }, []);
+
+  useEffect(() => {
+    const target = pendingFocus.current;
+    if (!target) return;
+    pendingFocus.current = null;
+    if (target === 'drawer' && cartOpen) closeButtonRef.current?.focus();
+    if (target === 'launcher' && !cartOpen) launcherRef.current?.focus();
+  }, [cartOpen]);
+
+  // Escape closes it. The drawer is deliberately non-modal - quantities in the tables behind it stay
+  // live - so nothing else would answer the key. (MUI's own overlays stop propagation when they take
+  // an Escape, so a menu closing never takes the cart with it.)
+  useEffect(() => {
+    if (!cartOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeCart();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [cartOpen, closeCart]);
 
   // Create-mode drafts persist per project; an edit never does, so a background refetch cannot
   // overwrite a half-made edit.
@@ -324,87 +370,97 @@ function Composer({
     );
   }
 
-  const rail = (
-    <RequestWorkspaceCartRail
-      cart={cart}
-      headroom={headroom}
-      onCartChange={setCart}
-      onSubmit={submit}
-      submitting={submitting}
-      mode={mode}
-      onClear={mode === 'create' ? () => setCart([]) : undefined}
-    />
-  );
+  const units = totalUnits(cart);
+  const products = new Set(cart.map(productKey)).size;
 
   // Openings-first (#610): the schedule catalog is the spine, every ship-out line tagged to an opening
   // by default. The extras lane renders under it in every view - source gate included - so a request
   // that is only unscheduled stock never has to pass the gate or pick an opening.
-  const catalog = (
-    <Stack spacing={3} sx={{ minWidth: 0 }}>
-      <RequestWorkspaceScheduleTab
-        projectId={project.id}
-        cart={cart}
-        headroom={headroom}
-        onCartChange={setCart}
-        onScheduledProductsChange={setScheduledByProduct}
-      />
-      <RequestWorkspaceInventoryTab
-        cart={cart}
-        headroom={headroom}
-        onCartChange={setCart}
-        rows={availabilityRows}
-        loading={availabilityLoading}
-        error={availabilityRows.length === 0 && !!availabilityError}
-        scheduledByProduct={scheduledByProduct}
-      />
-    </Stack>
-  );
-
-  if (wide) {
-    return (
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: `minmax(0, 1fr) ${RAIL_WIDTH}px`,
-          gap: 2,
-          alignItems: 'start',
-        }}
-      >
-        {catalog}
-        <Box sx={{ position: 'sticky', top: 16, height: 'calc(100vh - 32px)', minWidth: 0 }}>{rail}</Box>
-      </Box>
-    );
-  }
-
-  // Narrow: the rail collapses to a summary chip that opens it as a drawer.
   return (
-    <Box sx={{ minWidth: 0 }}>
-      {catalog}
-      <Box
+    <Box sx={{ minWidth: 0, pb: 8 /* room for the last rows to scroll clear of the launcher */ }}>
+      {/* On md+ the tables yield the drawer's width instead of losing their right edge - the Add
+          column - under it; a lane too wide for what is left scrolls inside its own container.
+          Below md the drawer overlays, as the old temporary drawer did. */}
+      <Stack
+        spacing={3}
         sx={{
-          position: 'sticky',
-          bottom: 0,
-          py: 1.5,
-          bgcolor: 'background.default',
-          borderTop: '1px solid',
-          borderColor: 'divider',
+          minWidth: 0,
+          mr: { md: cartOpen ? `${CART_WIDTH}px` : 0 },
+          transition: (t) =>
+            t.transitions.create('margin', {
+              easing: cartOpen ? t.transitions.easing.easeOut : t.transitions.easing.sharp,
+              duration: cartOpen ? t.transitions.duration.enteringScreen : t.transitions.duration.leavingScreen,
+            }),
         }}
       >
-        <Button
-          fullWidth
-          variant="outlined"
-          startIcon={
-            <Badge badgeContent={totalUnits(cart)} color="primary">
-              <ShoppingCart size={18} strokeWidth={1.75} />
-            </Badge>
-          }
-          onClick={() => setDrawerOpen(true)}
-        >
-          Review request
-        </Button>
-      </Box>
-      <Drawer anchor="right" open={drawerOpen} onClose={() => setDrawerOpen(false)}>
-        <Box sx={{ width: Math.min(RAIL_WIDTH, 360), height: '100%' }}>{rail}</Box>
+        <RequestWorkspaceScheduleTab
+          projectId={project.id}
+          cart={cart}
+          headroom={headroom}
+          onCartChange={updateCart}
+          onScheduledProductsChange={setScheduledByProduct}
+        />
+        <RequestWorkspaceInventoryTab
+          cart={cart}
+          headroom={headroom}
+          onCartChange={updateCart}
+          rows={availabilityRows}
+          loading={availabilityLoading}
+          error={availabilityRows.length === 0 && !!availabilityError}
+          scheduledByProduct={scheduledByProduct}
+        />
+      </Stack>
+
+      {/* The cart stays one click away wherever the page is scrolled. It hides while the drawer is
+          open, where the drawer's own header carries the totals and the way out. */}
+      {!cartOpen && (
+        <Box sx={{ position: 'fixed', right: 24, bottom: 24, zIndex: (t) => t.zIndex.drawer - 1 }}>
+          <Button
+            ref={launcherRef}
+            variant="contained"
+            onClick={openCart}
+            aria-label={`Open the request cart - ${plural(products, 'product')}, ${plural(units, 'unit')}`}
+            startIcon={<ShoppingCart size={18} strokeWidth={1.75} />}
+            sx={{ boxShadow: 6, pl: 2, pr: 2.5 }}
+          >
+            {cart.length === 0
+              ? 'Request'
+              : `${plural(products, 'product')} · ${plural(units, 'unit')}`}
+          </Button>
+        </Box>
+      )}
+
+      {/* Persistent, not modal: the tables behind it stay live, so a quantity can be trimmed in the
+          cart and the Free column answers in the same breath. */}
+      <Drawer
+        anchor="right"
+        variant="persistent"
+        open={cartOpen}
+        slotProps={{
+          paper: {
+            ref: drawerPaperRef,
+            component: 'aside',
+            'aria-label': 'Request cart',
+            sx: {
+              width: { xs: 'min(100vw - 32px, 340px)', sm: CART_WIDTH },
+              top: BAR_HEIGHT,
+              height: { xs: 'calc(100% - 56px)', sm: 'calc(100% - 64px)' },
+              borderTop: 'none',
+            },
+          },
+        }}
+      >
+        <RequestWorkspaceCartRail
+          cart={cart}
+          headroom={headroom}
+          onCartChange={setCart}
+          onSubmit={submit}
+          submitting={submitting}
+          mode={mode}
+          onClear={mode === 'create' ? () => setCart([]) : undefined}
+          onClose={closeCart}
+          closeButtonRef={closeButtonRef}
+        />
       </Drawer>
     </Box>
   );
