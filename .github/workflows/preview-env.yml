@@ -40,6 +40,14 @@ name: preview-env
 #      nothing ever overwrites it. The key-hash upsert now always skips the var-triggered deploy and
 #      redeploys explicitly once, and after the readiness gate passes the run overwrites any settled
 #      non-success "UC Nexus - *" status on the head commit.
+#   6. Railway's per-push deployment rows can be READ while still in a pre-settle working status and
+#      later resolve to SKIPPED under root-directory change filtering, so the facts read below sees
+#      "in flight", the force-deploy guarantee stands down, and nothing ever builds - on pr-635 both
+#      the backend and frontend settled to SKIPPED shortly after the read and the run polled 404s for
+#      ~18 min against an environment with zero replicas (#636). The force-deploy decision block now
+#      waits for an inflight-with-no-success service to settle and force-deploys when it settles to
+#      anything but SUCCESS (SKIPPED, CANCELLED, FAILED, CRASHED, REMOVED), and the readiness rescue
+#      (mode 3) also fires on a SKIPPED latest deployment.
 #
 # The workflow only ever ADDS deploys: when Railway built a service itself this push, it has a success
 # in history and this just health-checks it. Everything runs against the Railway public GraphQL API
@@ -184,7 +192,10 @@ jobs:
             # Brief settle so Railway's OWN deploys for this push register as QUEUED/BUILDING before
             # the facts read below - otherwise a service Railway is about to build (a fresh PR) reads
             # as never-built-and-idle and gets a duplicate force-deploy. A service Railway will not
-            # build (unchanged on a docs-only PR) already carries its SKIPPED record here.
+            # build (unchanged on a docs-only PR) is headed for a SKIPPED record, but that record may
+            # not have settled by 25s in: it can still read as a working status here and only resolve
+            # to SKIPPED afterward (#636), so the force-deploy decision block settles an
+            # inflight-with-no-success read before honoring it.
             sleep 25
           fi
 
@@ -200,7 +211,9 @@ jobs:
 
           # --- deployment facts per service --------------------------------------------------------
           # "<hasSuccess> <inFlight>": hasSuccess = a SUCCESS in the recent window; inFlight = the latest
-          # deployment is still working. needs-force-deploy = no success AND nothing in flight. The
+          # deployment is still working. no success AND nothing in flight = a definite force-deploy; no
+          # success but in flight is only provisional - the read can catch a pre-settle row that later
+          # resolves to SKIPPED (#636), so the decision block settles that case before trusting it. The
           # inFlight half (latest of ALL statuses) keeps this from stomping a build Railway - or the
           # variable change below - already started.
           # first:100 not first:5, and not the status.successfulOnly filter (the API rejects that shape):
@@ -270,11 +283,36 @@ jobs:
               echo "  $label deployment: ${status:-UNKNOWN} (${waited}s)"
               case "$status" in
                 SUCCESS) return 0 ;;
-                FAILED|CRASHED|REMOVED) return 1 ;;
+                # SKIPPED joins the terminal-failure set: a latest deployment settled at SKIPPED will
+                # never become SUCCESS on its own (#636), so waiting the timeout out is pointless.
+                FAILED|CRASHED|REMOVED|SKIPPED) return 1 ;;
               esac
               sleep 15; waited=$((waited+15))
             done
             return 1
+          }
+          # settle_status waits for an inflight deployment to LEAVE the working set before a force-deploy
+          # decision trusts the "in flight" read. deploy_facts (and pg_bringup) can catch Railway's
+          # per-push deployment row in a pre-settle working status that later resolves to SKIPPED under
+          # root-directory change filtering (#636) - so "in flight" is not yet proof a build is coming.
+          # Poll the latest status every 15s until it leaves the working set (same set as deploy_facts);
+          # print the settled status, or the last-seen working status on timeout (the readiness wait then
+          # absorbs a genuine build). Poll progress goes to stderr so the printed status stays clean.
+          settle_status() {  # $1 service id, $2 label, $3 timeout seconds -> prints the settled status
+            local sid="$1" label="$2" timeout="$3" waited=0 status
+            while [ "$waited" -lt "$timeout" ]; do
+              status=$(latest_deployment "$sid" "status")
+              status="${status:-NONE}"
+              echo "  $label settling: $status (${waited}s)" >&2
+              case "$status" in
+                # NONE is a transient read failure, not a state: the row existed when the facts were
+                # read, so keep polling rather than mistake one API blip for a settled deployment.
+                BUILDING|DEPLOYING|QUEUED|WAITING|INITIALIZING|NEEDS_APPROVAL|NONE) ;;
+                *) printf '%s' "$status"; return 0 ;;
+              esac
+              sleep 15; waited=$((waited+15))
+            done
+            printf '%s' "$status"
           }
 
           # --- 2.5 session key choice + Postgres-first bring-up ------------------------------------
@@ -324,7 +362,21 @@ jobs:
             [ -n "$hits" ] && [ "$hits" != "0" ]
           }
           pg_bringup() {  # -> 0 Postgres up with volume; 1 volumeless-stranded; 2 other failure
-            local dep_id
+            local dep_id pg_settled
+            # Same pre-settle hole as the backend/frontend decision (#636): a Postgres deployment row
+            # read mid-push can sit in a working status that later resolves to SKIPPED, so an "in
+            # flight" read is not yet proof a build is coming. Settle it before the deploy decision
+            # below trusts it - settled SUCCESS means it is up, a terminal non-success drops PG_INFL so
+            # the branch below deploys it, and a timeout leaves it in flight for the readiness wait.
+            if [ "$PG_HAS" = "false" ] && [ "$PG_INFL" = "true" ]; then
+              pg_settled=$(settle_status "$PG_ID" "Postgres" 300)
+              echo "Postgres inflight deployment settled to $pg_settled"
+              case "$pg_settled" in
+                SUCCESS) PG_HAS=true; PG_INFL=false ;;
+                BUILDING|DEPLOYING|QUEUED|WAITING|INITIALIZING|NEEDS_APPROVAL) ;;
+                *) PG_INFL=false ;;
+              esac
+            fi
             if [ "$PG_HAS" = "false" ] && [ "$PG_INFL" = "false" ]; then
               echo "Postgres has no successful deployment; deploying it"
               dep_id=$(deploy_service_instance "$PG_ID") || { echo "::error::could not deploy the Postgres service instance"; exit 1; }
@@ -435,7 +487,36 @@ jobs:
 
           # --- decide which services need a force-deploy (after provisioning, so a var-triggered ----
           # backend redeploy already reads as in flight and is not triggered twice) ------------------
+          # An inflight-with-no-success read is not yet trustworthy: deploy_facts can have caught
+          # Railway's per-push deployment row in a pre-settle working status that later resolves to
+          # SKIPPED (never built here) under root-directory change filtering (#636). SKIPPED never
+          # re-fires on its own, so settle that read before honoring it - settled SUCCESS is a real
+          # build (no force-deploy), any terminal non-success (SKIPPED/CANCELLED/FAILED/CRASHED/REMOVED)
+          # means nothing built and we force-deploy, and a still-working timeout is left to the
+          # readiness wait. Only the HAS=false && INFL=true case is settled here; the key-apply redeploy
+          # path (HAS=true) is a real in-flight build and stays untouched. Backend then frontend
+          # sequentially - on the same push the second settles near-instantly once the first has.
           BE_DEPLOY=false; FE_DEPLOY=false
+          if [ "$BE_HAS" = "false" ] && [ "$BE_INFL" = "true" ]; then
+            be_settled=$(settle_status "$BE_ID" "backend" 300)
+            echo "backend inflight deployment settled to $be_settled"
+            case "$be_settled" in
+              SUCCESS) echo "  backend settled to SUCCESS; no force-deploy" ;;
+              BUILDING|DEPLOYING|QUEUED|WAITING|INITIALIZING|NEEDS_APPROVAL)
+                echo "  backend still working after the settle bound; leaving it to the readiness wait" ;;
+              *) echo "  backend settled to a terminal non-success ($be_settled); force-deploying it"; BE_DEPLOY=true ;;
+            esac
+          fi
+          if [ "$FE_HAS" = "false" ] && [ "$FE_INFL" = "true" ]; then
+            fe_settled=$(settle_status "$FE_ID" "frontend" 300)
+            echo "frontend inflight deployment settled to $fe_settled"
+            case "$fe_settled" in
+              SUCCESS) echo "  frontend settled to SUCCESS; no force-deploy" ;;
+              BUILDING|DEPLOYING|QUEUED|WAITING|INITIALIZING|NEEDS_APPROVAL)
+                echo "  frontend still working after the settle bound; leaving it to the readiness wait" ;;
+              *) echo "  frontend settled to a terminal non-success ($fe_settled); force-deploying it"; FE_DEPLOY=true ;;
+            esac
+          fi
           [ "$BE_HAS" = "false" ] && [ "$BE_INFL" = "false" ] && BE_DEPLOY=true
           [ "$FE_HAS" = "false" ] && [ "$FE_INFL" = "false" ] && FE_DEPLOY=true
           [ "$BE_DEPLOY" = "true" ] && BE_RETRY_ELIGIBLE=true
@@ -489,7 +570,12 @@ jobs:
                 if [ "$status" = "SUCCESS" ]; then
                   echo "  $label: deployment reports SUCCESS but the domain has 404'd for ${streak}s - success with no build behind it (#625); triggering a from-source deploy"
                   if redeploy_service "$sid"; then rescued=true; streak=0; waited=0; fi
+                elif [ "$status" = "SKIPPED" ]; then
+                  echo "  $label: latest deployment is SKIPPED and the domain has 404'd for ${streak}s - Railway never built this service in this environment (#636); triggering a from-source deploy"
+                  if redeploy_service "$sid"; then rescued=true; streak=0; waited=0; fi
                 fi
+                # FAILED/CRASHED are deliberately NOT rescued: rebuilding a genuinely failing build just
+                # burns the wait budget.
               fi
               sleep 15; waited=$((waited+15))
             done
