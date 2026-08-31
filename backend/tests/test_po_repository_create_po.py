@@ -209,6 +209,29 @@ def test_create_po_still_rejects_when_order_as_and_product_code_both_missing(db_
     assert exc.value.field == "order_as"
 
 
+# --- #640: no PO is ever created with zero line items ---------------------------------------------
+# A line-less PO can never be registered, received or closed, but it shows in the register as a live
+# request forever. The guard sits ahead of every write in create_po, so a refused call leaves no row
+# and burns no request number.
+
+
+def test_create_po_rejects_an_empty_line_item_list(db_session):
+    with pytest.raises(ValidationError) as exc:
+        po_repository.create_po(db_session, line_items=[])
+    assert exc.value.field == "line_items"
+
+
+def test_create_po_rejects_an_empty_line_item_list_without_writing_a_po(db_session):
+    from sqlalchemy import func, select
+
+    from app.models.purchase_order import PurchaseOrder
+
+    before = db_session.scalar(select(func.count()).select_from(PurchaseOrder))
+    with pytest.raises(ValidationError):
+        po_repository.create_po(db_session, line_items=[], notes="would-be blank")
+    assert db_session.scalar(select(func.count()).select_from(PurchaseOrder)) == before
+
+
 def test_create_po_blank_order_as_payload_falls_back_to_product_code(db_session):
     # The GP payload uses product_code as the item number when order_as is blank.
     payload = build_create_po_payload(

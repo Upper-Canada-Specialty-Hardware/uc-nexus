@@ -20,6 +20,7 @@ from app.models.project import Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.repositories import import_repository
 from app.repositories.import_repository import plan_po_claims
+from app.repositories.po_repository import generate_next_request_number
 
 # ---------------------------------------------------------------------------
 # plan_po_claims - pure, no database
@@ -399,3 +400,83 @@ def test_a_draft_dict_that_predates_the_vendor_key_still_finalizes(db_session):
     )
 
     assert po.vendor_name_snapshot is None
+
+
+# --- #640: an empty draft group must never become a blank PO --------------------------------------
+# A PO with no line items can never be registered, received or closed, yet it sits in the register as a
+# live request forever. Finalize skips such a group instead of failing the whole import: the openings,
+# schedule and requests in the same payload are still exactly what the user asked for.
+
+
+def _finalize_drafts(db_session, project, drafts, *, item_quantity=2):
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=item_quantity)],
+            "po_drafts": drafts,
+        },
+    )
+    db_session.flush()
+    return db_session.scalars(select(PurchaseOrder).where(PurchaseOrder.project_id == project.id)).all()
+
+
+def test_a_draft_with_no_refs_creates_no_po(db_session):
+    project = _make_project(db_session)
+    db_session.commit()
+
+    pos = _finalize_drafts(db_session, project, [_po_draft([], po_number="PO-EMPTY")])
+
+    assert pos == []
+    # Nothing was claimed, so the whole schedule falls through to AVAILABLE as if no draft existed.
+    items = db_session.scalars(select(HardwareItem).where(HardwareItem.project_id == project.id)).all()
+    assert [(hi.state, hi.item_quantity) for hi in items] == [(HardwareItemState.AVAILABLE, 2)]
+
+
+def test_a_draft_whose_refs_claim_zero_units_creates_no_po(db_session):
+    """Refs are present but claim nothing, so the draft still has no lines to build - same blank PO."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    pos = _finalize_drafts(
+        db_session,
+        project,
+        [
+            _po_draft(
+                [{"opening_number": "A01", "product_code": "HG-100", "hardware_category": "HINGE", "quantity": 0}],
+                po_number="PO-EMPTY",
+            )
+        ],
+    )
+
+    assert pos == []
+
+
+def test_an_empty_draft_beside_a_real_one_skips_only_the_empty(db_session):
+    project = _make_project(db_session)
+    db_session.commit()
+
+    pos = _finalize_drafts(
+        db_session,
+        project,
+        [_po_draft([], po_number="PO-EMPTY"), _po_draft(_one_ref(), po_number="PO-REAL")],
+    )
+
+    assert [po.po_number for po in pos] == ["PO-REAL"]
+    assert len(pos[0].line_items) == 1
+
+
+def test_a_skipped_empty_draft_does_not_burn_a_request_number(db_session):
+    """The skip lands before the number is minted, so PO-REQ-NNN stays gapless."""
+    project = _make_project(db_session)
+    db_session.commit()
+    expected = generate_next_request_number(db_session)
+
+    pos = _finalize_drafts(
+        db_session,
+        project,
+        [_po_draft([], po_number="PO-EMPTY"), _po_draft(_one_ref(), po_number="PO-REAL")],
+    )
+
+    assert [po.request_number for po in pos] == [expected]
