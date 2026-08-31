@@ -100,9 +100,51 @@ class ReceiveDraftStatus(str, enum.Enum):
 
 
 class ShopAssemblyRequestStatus(str, enum.Enum):
+    """Whether a shop-assembly request still has openings waiting on the Shop Assembly Manager.
+
+    Since #646 a request is a FLAG the PM raises - "these openings need assembling as soon as the
+    hardware is there" - and the manager works it in batches over however long that takes. So the
+    three values describe how much of it is left rather than a single accept/reject decision:
+
+    PENDING   at least one opening has been neither batched nor dismissed. It is on the manager's
+              board. A cancelled batch puts its openings back here, so a request can return to
+              PENDING after having been closed.
+    APPROVED  worked to conclusion: every opening is on a batch or was dismissed. The name is kept
+              (the column, the GraphQL enum and the Accepted tab all read it) and its meaning is
+              widened - "the manager is done with this request", not "one accept happened".
+    REJECTED  turned down whole, which is only possible while no batch exists. Nothing was reserved
+              before the first batch, so a rejection releases nothing.
+    """
+
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+
+
+class ShopAssemblyOpeningStatus(str, enum.Enum):
+    """Where one flagged opening on a shop-assembly request has got to (#646).
+
+    The opening, not the request, is the unit the manager decides about. BATCHED is terminal for the
+    opening even when the batch took less than the whole of what it was owed: the batch IS the
+    decision for that opening, and the remainder is forfeited rather than left as a silent backlog
+    row nobody works. Cancelling the batch's pull is the one way back to PENDING.
+    """
+
+    PENDING = "PENDING"
+    BATCHED = "BATCHED"
+    DISMISSED = "DISMISSED"
+
+
+class ShopAssemblyBatchStatus(str, enum.Enum):
+    """A batch is live until the pull it minted is cancelled.
+
+    There is no DISCARDED: discarding an un-started batch hard-deletes it along with its pull, the
+    same way the #325 reopen hard-deleted the pull it was undoing, because the pull's request_number
+    is unique among live pulls and a later batch has to be free to re-mint one.
+    """
+
+    ACTIVE = "ACTIVE"
+    CANCELLED = "CANCELLED"
 
 
 class ShippingOutRequestStatus(str, enum.Enum):
@@ -131,11 +173,17 @@ class ShipmentStatus(str, enum.Enum):
 
 
 class ReservationSource(str, enum.Enum):
-    """Which kind of request an InventoryReservation is held for (#342). The discriminator is
-    explicit rather than inferred from whichever FK is populated, so a query can filter on it
-    without an OR over nullable columns."""
+    """Which holder an InventoryReservation is held for (#342). The discriminator is explicit rather
+    than inferred from whichever FK is populated, so a query can filter on it without an OR over
+    nullable columns.
 
-    SHOP_ASSEMBLY_REQUEST = "SHOP_ASSEMBLY_REQUEST"
+    SHOP_ASSEMBLY_BATCH replaced SHOP_ASSEMBLY_REQUEST in #646. A shop-assembly request reserves
+    nothing - it is a flag, not a claim - and the claim is minted per batch, which is also the unit a
+    pull cancellation releases. Holding it at request level would make cancelling one batch's pull
+    drop its sibling batches' claims too, since release is whole-holder.
+    """
+
+    SHOP_ASSEMBLY_BATCH = "SHOP_ASSEMBLY_BATCH"
     SHIPPING_OUT_REQUEST = "SHIPPING_OUT_REQUEST"
 
 

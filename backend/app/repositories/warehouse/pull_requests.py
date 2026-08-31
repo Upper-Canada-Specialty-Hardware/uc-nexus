@@ -25,7 +25,6 @@ from app.models.enums import (
     PullRequestStatus,
     ReservationSource,
     ShippingOutRequestStatus,
-    ShopAssemblyRequestStatus,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.pull_pick_line import PullPickLine as PullPickLineModel
@@ -34,6 +33,7 @@ from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.shipping_out_request import ShippingOutRequest as ShippingOutRequestModel
+from app.models.shop_assembly import ShopAssemblyBatch as ShopAssemblyBatchModel
 from app.models.shop_assembly import ShopAssemblyRequest as ShopAssemblyRequestModel
 from app.models.warehouse import Warehouse as WarehouseModel
 from app.services import notification_service
@@ -252,22 +252,22 @@ def gate_on_available_inventory(
 def find_reservation_holder(session: Session, pr: PullRequestModel) -> tuple[ReservationSource, uuid.UUID] | None:
     """Whose reservations this pull is going to spend, or None if it has none (#342).
 
-    Both request types stamp `pull_request_id` on themselves at accept, so each hop is a single
-    indexed lookup.
+    Each holder stamps `pull_request_id` on itself when it mints the pull - a shipping-out request at
+    accept, a shop-assembly BATCH at batching (#646) - so each hop is a single indexed lookup.
 
     None is the honest answer for two cases, and they behave identically downstream (the pull is
     checked against on-hand minus *everyone's* reservations, and consumes nothing):
 
-    - a pull whose source request was **rejected/reopened** after the accept - the claim is gone by
-      design.
+    - a pull whose holder gave the claim up after minting it - a reopened shipping request, or a
+      discarded batch.
     - a **legacy pull** minted before this table existed, or one created directly by a non-UI caller.
     """
     if pr.source == PullRequestSource.SHOP_ASSEMBLY:
-        sar_id = session.scalar(
-            select(ShopAssemblyRequestModel.id).where(ShopAssemblyRequestModel.pull_request_id == pr.id)
+        batch_id = session.scalar(
+            select(ShopAssemblyBatchModel.id).where(ShopAssemblyBatchModel.pull_request_id == pr.id)
         )
-        if sar_id is not None:
-            return (ReservationSource.SHOP_ASSEMBLY_REQUEST, sar_id)
+        if batch_id is not None:
+            return (ReservationSource.SHOP_ASSEMBLY_BATCH, batch_id)
     elif pr.source == PullRequestSource.SHIPPING_OUT:
         sor_id = session.scalar(
             select(ShippingOutRequestModel.id).where(ShippingOutRequestModel.pull_request_id == pr.id)
@@ -1494,13 +1494,18 @@ def cancel_pull_request(
     a pull cancelled before its pick returns nothing, because nothing left. See
     `_restock_cancelled_pull`.
 
-    **The source request goes back to PENDING**, with its reservation re-created from what it will
-    need on re-acceptance - its full requirement, not what happened to come back - and re-checked
-    against availability first. Any claim the pull still holds is released before that, because since
-    #367 a cancellable pull may still be holding one. If stock was written off or condemned in the
-    meantime the re-check comes up short, and rather than write a partial claim that reads as
-    covered, the request is left unreserved and flagged via `integrity_note` - the same
-    honest-and-flagged shape the #342 backfill uses.
+    **The work goes back to PENDING.** Any claim the pull still holds is released first, because
+    since #367 a cancellable pull may still be holding one. What happens next depends on which
+    holder minted it:
+
+    - **shipping out**: the whole request returns to PENDING and its reservation is re-created from
+      what it will need on re-acceptance - its full requirement, not what happened to come back - and
+      re-checked against availability first. If stock was written off or condemned in the meantime
+      the re-check comes up short, and rather than write a partial claim that reads as covered, the
+      request is left unreserved and flagged via `integrity_note`.
+    - **shop assembly** (#646): the cancelled BATCH's openings go back to pending on their request,
+      its siblings untouched, and **nothing is re-reserved** - a pending opening holds no claim by
+      design, so the restocked units return to the free pool for the next batch to compete for.
     """
     if not cancelled_by:
         raise ValidationError("cancelled_by is required", field="cancelled_by")
@@ -1570,17 +1575,22 @@ def cancel_pull_request(
         )
     )
 
-    # 4. Hand the source request back, and re-claim the hardware for it if it is still free.
-    #    The availability check runs *after* the restock, so the units just returned count towards it,
-    #    and `needs_by_combo` is what the request will need again on re-acceptance - not what came
-    #    back, which on a short-picked pull is less.
-    source_request, source_reservation = _find_source_request(session, pr)
+    # 4. Hand the source work back, and - for shipping out only - re-claim the hardware for it if it
+    #    is still free. The availability check runs *after* the restock, so the units just returned
+    #    count towards it, and `needs_by_combo` is what the request will need again on re-acceptance -
+    #    not what came back, which on a short-picked pull is less.
+    #
+    #    A shop-assembly request re-claims NOTHING (#646). Its openings hold no reservation while
+    #    they are pending, by design: the request is a flag that may sit for months, and the claim is
+    #    minted per batch. Re-reserving here would put a claim behind openings nobody has decided to
+    #    dispatch yet - which is exactly the creation-time gate that slice removed.
+    source_request, source_reservation, source_batch = _find_source_request(session, pr)
     returned_to_pending = False
     reservations_recreated = False
     integrity_note: str | None = None
     if source_request is not None:
-        returned_to_pending = _return_source_request_to_pending(session, pr, source_request)
-        if needs_by_combo:
+        returned_to_pending = _return_source_request_to_pending(session, pr, source_request, source_batch)
+        if needs_by_combo and source_reservation is ReservationSource.SHIPPING_OUT_REQUEST:
             result = check_inventory_sufficiency(
                 session,
                 pr.project_id,
@@ -1624,6 +1634,9 @@ def cancel_pull_request(
                 for r in restocked
             ],
             "sourceRequestId": str(source_request.id) if source_request is not None else None,
+            # The batch this pull was dispatched under, on a shop-assembly cancel (#646). Null for a
+            # shipping-out pull, which has no layer between the request and the pull.
+            "sourceBatchId": str(source_batch.id) if source_batch is not None else None,
             "sourceRequestReturnedToPending": returned_to_pending,
             "reservationsRecreated": reservations_recreated,
             "integrityNote": integrity_note,
@@ -1654,40 +1667,44 @@ def cancel_pull_request(
 
 
 def _find_source_request(session: Session, pr: PullRequestModel):
-    """The request this pull was minted from, and the reservation discriminator it claims under.
+    """What this pull was minted from: the row cancellation has to write to, the reservation
+    discriminator it claims under, and - for shop assembly - the batch in between.
 
-    The same hop `find_reservation_holder` uses, returning the row rather than its id because
-    cancellation has to write to it. `(None, None)` for a legacy pull, or one whose request was
-    already rejected.
+    The same hop `find_reservation_holder` uses, returning the rows rather than ids. `(None, None,
+    None)` for a legacy pull, or one whose holder is already gone.
     """
     if pr.source == PullRequestSource.SHOP_ASSEMBLY:
-        sar = session.scalar(select(ShopAssemblyRequestModel).where(ShopAssemblyRequestModel.pull_request_id == pr.id))
-        if sar is not None:
-            return (sar, ReservationSource.SHOP_ASSEMBLY_REQUEST)
+        batch = session.scalar(select(ShopAssemblyBatchModel).where(ShopAssemblyBatchModel.pull_request_id == pr.id))
+        if batch is not None:
+            sar = session.get(ShopAssemblyRequestModel, batch.shop_assembly_request_id)
+            if sar is not None:
+                return (sar, ReservationSource.SHOP_ASSEMBLY_BATCH, batch)
     elif pr.source == PullRequestSource.SHIPPING_OUT:
         sor = session.scalar(select(ShippingOutRequestModel).where(ShippingOutRequestModel.pull_request_id == pr.id))
         if sor is not None:
-            return (sor, ReservationSource.SHIPPING_OUT_REQUEST)
-    return (None, None)
+            return (sor, ReservationSource.SHIPPING_OUT_REQUEST, None)
+    return (None, None, None)
 
 
-def _return_source_request_to_pending(session: Session, pr: PullRequestModel, source_request) -> bool:
-    """Undo the accept on the cancelled pull's source request so it can be re-accepted or rejected.
+def _return_source_request_to_pending(session: Session, pr: PullRequestModel, source_request, batch) -> bool:
+    """Hand the cancelled pull's work back so it can be re-dispatched or written off.
 
     Deliberately PENDING and not REJECTED: cancelling a pull says the *pull* was wrong, not that the
-    hardware is no longer wanted, and the request is the record of a decision somebody made. Sending
-    it back to the queue is also what gives the re-created reservation something to hang off. A
-    request that is not APPROVED (already rejected, or reopened by hand while the pull was live) is
-    left exactly as it is.
+    hardware is no longer wanted, and the request is the record of a decision somebody made.
+
+    Shop assembly (#646) returns exactly the cancelled BATCH's openings to pending, leaving sibling
+    batches - and any opening already dismissed - untouched, and puts the request back on the
+    manager's board if it had closed out. Shipping out returns the whole request, which is all it
+    has: one accept, one pull.
     """
-    if isinstance(source_request, ShopAssemblyRequestModel):
-        if source_request.status != ShopAssemblyRequestStatus.APPROVED:
-            return False
-        source_request.status = ShopAssemblyRequestStatus.PENDING
-    else:
-        if source_request.status != ShippingOutRequestStatus.APPROVED:
-            return False
-        source_request.status = ShippingOutRequestStatus.PENDING
+    if batch is not None:
+        from app.repositories import shop_assembly_repository
+
+        return shop_assembly_repository.return_batch_to_pending(session, batch)
+
+    if source_request.status != ShippingOutRequestStatus.APPROVED:
+        return False
+    source_request.status = ShippingOutRequestStatus.PENDING
     source_request.approved_by = None
     source_request.approved_at = None
     # Deliberately kept pointing at the now-CANCELLED pull, not nulled. That pointer is the only
@@ -1697,6 +1714,7 @@ def _return_source_request_to_pending(session: Session, pr: PullRequestModel, so
     # inspects the pull's status keys off PullRequestStatus, which is CANCELLED here, and a PENDING
     # request is "live" on its own status regardless. A re-accept overwrites this column with the
     # fresh pull it mints (clearing the note); reopen is only reachable from APPROVED and nulls it.
+    # The shop-assembly twin of this record is the CANCELLED batch row itself.
     return True
 
 

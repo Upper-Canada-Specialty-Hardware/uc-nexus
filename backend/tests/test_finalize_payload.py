@@ -90,12 +90,13 @@ def test_shop_assembly_items_flatten_with_their_opening_tag():
                     quantity=4,
                     allocated_quantity=3,
                 ),
-                # A line raised straight off inventory carries no opening.
-                SARItemInput(opening_number=None, hardware_category="Locks", product_code="AD8406", quantity=1),
+                SARItemInput(opening_number="0002-EX", hardware_category="Locks", product_code="AD8406", quantity=1),
             ],
         ),
         created_by_user_id="u",
     )
+    # `allocated_quantity` still round-trips so a pre-#646 tab's payload maps unchanged; the
+    # repository ignores it, because nothing is allocated until a batch says so.
     assert payload["shop_assembly_items"] == [
         {
             "opening_number": "0001-EX",
@@ -105,11 +106,10 @@ def test_shop_assembly_items_flatten_with_their_opening_tag():
             "allocated_quantity": 3,
         },
         {
-            "opening_number": None,
+            "opening_number": "0002-EX",
             "hardware_category": "Locks",
             "product_code": "AD8406",
             "quantity": 1,
-            # None survives as None: the repository reads that as "fully allocated".
             "allocated_quantity": None,
         },
     ]

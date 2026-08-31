@@ -1,31 +1,153 @@
 # Shop Assembly Module SDL Reference
 # Source of truth: Strawberry resolvers in app/schemas/
 
+# A PM's flag that these openings need assembling as soon as the hardware is there (#646). It
+# allocates nothing, reserves nothing and mints nothing at creation; the Shop Assembly Manager works
+# it in batches, and each batch is what gates on stock, reserves it and mints a warehouse pull.
 type ShopAssemblyRequest {
   id: ID!
   request_number: String!
   project_id: ID!
   status: ShopAssemblyRequestStatus!
   created_by: String!
+  # Who finished the request off (last batch or dismissal) and when. There is no single accept.
   approved_by: String
+  approved_at: DateTime
   rejected_by: String
   rejection_reason: String
   created_at: DateTime!
-  approved_at: DateTime
   rejected_at: DateTime
-  # Something happened to this request after it was created that the acceptor must know about
-  # (#342): a schedule re-upload landed under it, or the reservations backfill could not cover it.
+  # A schedule re-upload landed under this request after it was raised (#342), so its bill of
+  # hardware may no longer match the schedule.
   integrity_note: String
-  # A PENDING request whose minted pull was cancelled was returned by that cancellation (#613).
+  # A PENDING request one of whose batches was cancelled was returned by that cancellation (#613).
   # Human-readable explanation of the reappearance, else null. Derived, never stored.
   return_note: String
-  openings: [ShopAssemblyOpening!]!
+  stage: RequestStage!
+  items: [ShopAssemblyRequestItem!]!
+  openings: [ShopAssemblyRequestOpening!]!
+  batches: [ShopAssemblyBatch!]!
 }
 
 enum ShopAssemblyRequestStatus {
+  # At least one opening is neither batched nor dismissed - it is on the manager's board.
   PENDING
+  # Worked to conclusion: every opening is on a batch or was dismissed. The name is kept and its
+  # meaning widened (#646) - "the manager is done", not "one accept happened".
   APPROVED
+  # Turned down whole, which is only possible while no batch exists. Releases nothing.
   REJECTED
+}
+
+# What one opening was still owed of one product when the request was raised - the composer's
+# `owed - sent - claimed`, not the schedule's raw figure. No allocated quantity: nothing is
+# allocated at creation, and a column reading 0 on every fresh line would say the opposite of what
+# is true.
+type ShopAssemblyRequestItem {
+  id: ID!
+  shop_assembly_request_id: ID!
+  # Null only on lines that predate #646.
+  opening_number: String
+  hardware_category: String!
+  product_code: String!
+  requested_quantity: Int!
+}
+
+type ShopAssemblyRequestOpening {
+  id: ID!
+  shop_assembly_request_id: ID!
+  opening_number: String!
+  status: ShopAssemblyOpeningStatus!
+  # The batch that consumed this opening, while it is BATCHED.
+  batch_id: ID
+  dismissed_by: String
+  dismissed_at: DateTime
+  dismissal_reason: String
+}
+
+enum ShopAssemblyOpeningStatus {
+  PENDING
+  # Terminal for the opening even when the batch took less than it was owed: the batch IS the
+  # decision, and the remainder is forfeited rather than left as a backlog row nobody works.
+  # Cancelling the batch's pull is the one way back to PENDING.
+  BATCHED
+  DISMISSED
+}
+
+# One dispatch off a request: a subset of its openings, allocated, reserved and on a pull (#646).
+type ShopAssemblyBatch {
+  id: ID!
+  shop_assembly_request_id: ID!
+  sequence: Int!
+  # `{request_number}-B{sequence}`, which the pull carries as its own request number.
+  batch_number: String!
+  status: ShopAssemblyBatchStatus!
+  created_by: String!
+  created_at: DateTime!
+  pull_request_id: ID
+  # Resolved by the list resolver in one query for the whole page, never per batch.
+  pull_status: PullRequestStatus
+  items: [ShopAssemblyBatchItem!]!
+}
+
+enum ShopAssemblyBatchStatus {
+  ACTIVE
+  # Its pull was cancelled; its openings went back to Pending on the request.
+  CANCELLED
+}
+
+type ShopAssemblyBatchItem {
+  id: ID!
+  shop_assembly_batch_id: ID!
+  opening_number: String!
+  hardware_category: String!
+  product_code: String!
+  # Equal to what is reserved and to what the pull asks for. A line allocated nothing is absent.
+  allocated_quantity: Int!
+}
+
+# What the manager needs to compose a batch (#643/#644).
+type ShopAssemblyAllocationReview {
+  request_id: ID!
+  request_number: String!
+  project_id: ID!
+  status: ShopAssemblyRequestStatus!
+  created_by: String!
+  created_at: DateTime!
+  integrity_note: String
+  # Still-pending openings only, in opening order.
+  openings: [ShopAssemblyAllocationOpening!]!
+}
+
+type ShopAssemblyAllocationOpening {
+  opening_number: String!
+  lines: [ShopAssemblyAllocationLine!]!
+}
+
+type ShopAssemblyAllocationLine {
+  opening_number: String!
+  hardware_category: String!
+  product_code: String!
+  requested_quantity: Int!
+  # `on-hand - deficient - every active reservation` project-wide for this product - the same figure
+  # the batch gate applies. NOT split per opening: two openings wanting the same hinge compete for
+  # one pool, and the review shows that rather than hiding it behind a pre-split number.
+  available_quantity: Int!
+}
+
+input ShopAssemblyBatchLineInput {
+  opening_number: String!
+  hardware_category: String!
+  product_code: String!
+  # 1..(what the opening is owed). Leave a line off entirely to allocate it nothing.
+  allocated_quantity: Int!
+}
+
+input CreateShopAssemblyBatchInput {
+  request_id: ID!
+  # The batch's openings are whichever ones these name, so an opening with nothing allocatable
+  # cannot be batched - it stays pending for the next one.
+  lines: [ShopAssemblyBatchLineInput!]!
 }
 
 type ShopAssemblyOpening {
@@ -286,8 +408,14 @@ type Query {
   # to one assembler's My Work - the opening keeps the assignment it was completed under, so this
   # needs no new assignment concept. Rows whose leaf has shipped are included on purpose.
   replacementWork(assignedToUserId: String, projectId: ID): [ReplacementWorkItem!]!
-  # reopenableOnly (#325): keep only requests whose minted PR is still PENDING (the Approved/reopen view).
+  # reopenableOnly: keep only requests carrying a batch whose pull is still PENDING - the ones a
+  # discard can still act on (the Accepted view).
   shopAssemblyRequests(projectId: ID, status: ShopAssemblyRequestStatus, reopenableOnly: Boolean! = false): [ShopAssemblyRequest!]!
+  # One request with its openings and batches. NOT_FOUND if it does not exist.
+  shopAssemblyRequest(id: ID!): ShopAssemblyRequest!
+  # The manager's batch-composition read (#643): still-pending openings, their owed lines, and the
+  # reservation-aware free stock behind them. Read-only, so signed-in; batching is role-gated.
+  shopAssemblyAllocationReview(requestId: ID!): ShopAssemblyAllocationReview!
   # Manager assignment picker (#330). Manager-gated (Shop Assembly Manager). ClerkUser is in user.graphql.
   shopAssemblyMembers: [ClerkUser!]!
 }
@@ -316,14 +444,22 @@ type Mutation {
   # VALIDATION_ERROR if more than has arrived; INVALID_STATE_TRANSITION if the leaf is still on the
   # bench (record it as progress instead) or has already shipped (that is reallocation's problem).
   installReplacement(input: InstallReplacementInput!): OpeningItem!
-  # Accept gate (#293). Any signed-in user. Accept mints the warehouse PullRequest and
-  # is a **pure human gate** since #342: the hardware was reserved when the request was created, so
-  # nothing is re-checked here. Reject is what releases that reservation. The approval is recorded
-  # against the Clerk-authenticated caller (#427). The acceptedBy/rejectedBy arguments lingered as
-  # ignored @deprecated no-ops for one deploy so stale tabs still validated, and came out in #438.
-  acceptShopAssemblyRequest(id: ID!): ShopAssemblyRequest!
+  # The Shop Assembly Manager's board (#646). All four require the Shop Assembly Manager or
+  # Admin/Manager role (an any-of, not an admin bypass) and are recorded against the
+  # Clerk-authenticated caller (#427); `acceptShopAssemblyRequest` and `reopenShopAssemblyRequest`
+  # were replaced by the first and the last of them.
+  #
+  # Batching is what the accept became: it gates on available inventory for exactly its allocations,
+  # reserves them, and mints the warehouse PullRequest under the batch number. Partial is fine, but
+  # batching an opening CONSUMES it - the remainder is forfeited.
+  createShopAssemblyBatch(input: CreateShopAssemblyBatchInput!): ShopAssemblyRequest!
+  # Write off pending openings. Omit openingNumbers to dismiss everything still pending, which is
+  # how a request that has had what it is going to get is finished off. Releases nothing.
+  dismissShopAssemblyOpenings(requestId: ID!, openingNumbers: [String!], reason: String): ShopAssemblyRequest!
+  # Turn the whole request down. INVALID_STATE_TRANSITION once it has been batched.
   rejectShopAssemblyRequest(id: ID!, reason: String): ShopAssemblyRequest!
-  # Reopen (#325). Undoes an erroneous accept: APPROVED -> PENDING, hard-deletes the minted
-  # PullRequest and re-points the openings off it. Refused if the warehouse has already worked the pull.
-  reopenShopAssemblyRequest(id: ID!): ShopAssemblyRequest!
+  # Undo a batch the warehouse has not started - the #325 reopen at batch granularity. Hard-deletes
+  # the pull, releases the claim, hands the batch's openings back to Pending. Refused once the
+  # warehouse has started that pull; cancel the pull instead.
+  discardShopAssemblyBatch(batchId: ID!): ShopAssemblyRequest!
 }

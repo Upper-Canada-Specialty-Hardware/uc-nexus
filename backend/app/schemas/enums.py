@@ -60,6 +60,12 @@ from app.models.enums import (
     ShippingOutRequestStatus as ShippingOutRequestStatusDB,
 )
 from app.models.enums import (
+    ShopAssemblyBatchStatus as ShopAssemblyBatchStatusDB,
+)
+from app.models.enums import (
+    ShopAssemblyOpeningStatus as ShopAssemblyOpeningStatusDB,
+)
+from app.models.enums import (
     ShopAssemblyRequestStatus as ShopAssemblyRequestStatusDB,
 )
 
@@ -74,6 +80,8 @@ PullRequestSource = strawberry.enum(PullRequestSourceDB)
 PullRequestStatus = strawberry.enum(PullRequestStatusDB)
 PullPickLineState = strawberry.enum(PullPickLineStateDB)
 ShopAssemblyRequestStatus = strawberry.enum(ShopAssemblyRequestStatusDB)
+ShopAssemblyOpeningStatus = strawberry.enum(ShopAssemblyOpeningStatusDB)
+ShopAssemblyBatchStatus = strawberry.enum(ShopAssemblyBatchStatusDB)
 ShippingOutRequestStatus = strawberry.enum(ShippingOutRequestStatusDB)
 ShipmentStatus = strawberry.enum(ShipmentStatusDB)
 ShipmentContainerType = strawberry.enum(ShipmentContainerTypeDB)
@@ -123,20 +131,25 @@ class PickOutcome(enum.Enum):
 class RequestStage(enum.Enum):
     """Where one request sits on the ladder the requests list draws as columns.
 
-    Derived from the request's own status and the state of the pull it minted - no column stores it.
-    REJECTED is off the ladder rather than on the end of it: it is how a request leaves without ever
-    being pulled, and reading it as "further along than PULLING" would be nonsense.
+    Derived from the request's own status and the state of the pull(s) it minted - no column stores
+    it. REJECTED is off the ladder rather than on the end of it: it is how a request leaves without
+    ever being pulled, and reading it as "further along than PULLING" would be nonsense.
+
+    A shop-assembly request has many pulls, one per batch (#646), so the three middle rungs read the
+    LEAST advanced of its live batches - what is holding it up, not its best news.
     """
 
-    # The request exists and is waiting for a reviewer to accept it. No pull has been minted.
+    # Somebody still has to act on this request. For shop assembly that means at least one opening is
+    # neither batched nor dismissed, however many batches are already out on the floor.
     REQUESTED = "REQUESTED"
-    # Accepted: the warehouse pull exists but nobody has started picking it.
+    # Dispatched: the warehouse pull exists but nobody has started picking it.
     ACCEPTED = "ACCEPTED"
     # The pull is being picked.
     PULLING = "PULLING"
-    # The pull completed. That is the last thing v1 records about this hardware.
+    # Every pull completed. That is the last thing v1 records about this hardware. A shop-assembly
+    # request finished entirely by dismissal lands here too - there is nothing left to wait for.
     DONE = "DONE"
-    # The request was rejected, which released its claim on inventory.
+    # The request was rejected before anything was dispatched.
     REJECTED = "REJECTED"
 
 

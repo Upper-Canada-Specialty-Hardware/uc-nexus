@@ -33,9 +33,10 @@ from app.models.project import Project
 from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.shop_assembly import ShopAssemblyRequest
 from app.models.stock_item import StockItem
-from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
+from app.repositories import import_repository, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
 from tests.pick_helpers import pick_pull
+from tests.shop_assembly_helpers import batch_request
 
 
 def _make_project(session) -> Project:
@@ -155,7 +156,7 @@ def test_helper_aggregates_duplicate_combos(db_session):
     assert result.shortfalls[0].short == 1
 
 
-# --- gate 1: creating a shop-assembly request (#342) -----------------------------------------
+# --- gate 1: dispatching a shop-assembly batch (#342 gate, moved by #646) --------------------
 
 
 def _finalize_shop_assembly(session, project, *, code, qty):
@@ -195,17 +196,37 @@ def _finalize_shop_assembly(session, project, *, code, qty):
     )
 
 
-def test_gate1_creation_refuses_when_short_and_creates_nothing(db_session):
-    """#342: the gate is at creation. A selection that does not fit available inventory is refused
-    whole, naming the shorted combo, and nothing at all is written - the creator refines the
-    selection, which is the only point in the flow where that is still cheap."""
+def test_gate1_raising_a_request_is_not_gated_at_all(db_session):
+    """#646 moved the gate off creation. The PM flags openings the shop needs - possibly long before
+    the hardware is bought - so refusing that would be refusing to record a fact."""
+    project = _make_project(db_session)
+    project_id = project.id
+    _seed_inventory(db_session, project_id, quantity=1)  # the request asks for 3
+    db_session.commit()
+
+    _finalize_shop_assembly(db_session, project, code="HG-100", qty=3)
+    db_session.flush()
+
+    assert db_session.scalars(select(ShopAssemblyRequest).where(ShopAssemblyRequest.project_id == project_id)).all()
+    assert (
+        db_session.scalars(select(InventoryReservation).where(InventoryReservation.project_id == project_id)).all()
+        == []
+    )
+
+
+def test_gate1_batching_refuses_when_short_and_dispatches_nothing(db_session):
+    """The gate landed on the batch. An allocation that does not fit available inventory is refused
+    whole, naming the shorted combo, and nothing is written - the manager lowers the allocation,
+    which is the point in the flow where they are actually looking at the numbers."""
     project = _make_project(db_session)
     project_id = project.id
     _seed_inventory(db_session, project_id, quantity=1)  # need 3, only 1 available
     db_session.commit()
+    sar = _finalize_shop_assembly(db_session, project, code="HG-100", qty=3)["shop_assembly_request"]
+    db_session.flush()
 
     with pytest.raises(InventoryShortfallError) as excinfo:
-        _finalize_shop_assembly(db_session, project, code="HG-100", qty=3)
+        batch_request(db_session, sar.id)
 
     err = excinfo.value
     assert err.project_id == project_id
@@ -214,7 +235,13 @@ def test_gate1_creation_refuses_when_short_and_creates_nothing(db_session):
 
     db_session.rollback()
     assert (
-        db_session.scalars(select(ShopAssemblyRequest).where(ShopAssemblyRequest.project_id == project_id)).all() == []
+        db_session.scalars(
+            select(PullRequest).where(
+                PullRequest.project_id == project_id,
+                PullRequest.source == PullRequestSource.SHOP_ASSEMBLY,
+            )
+        ).all()
+        == []
     )
     assert (
         db_session.scalars(select(InventoryReservation).where(InventoryReservation.project_id == project_id)).all()
@@ -222,11 +249,13 @@ def test_gate1_creation_refuses_when_short_and_creates_nothing(db_session):
     )
 
 
-def test_gate1_creation_reserves_what_it_takes(db_session):
-    """A covered creation writes the claim, and the claim is what later readers see as unavailable."""
+def test_gate1_batching_reserves_what_it_takes(db_session):
+    """A covered batch writes the claim, and the claim is what later readers see as unavailable."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=5)
-    result = _finalize_shop_assembly(db_session, project, code="HG-100", qty=3)
+    sar = _finalize_shop_assembly(db_session, project, code="HG-100", qty=3)["shop_assembly_request"]
+    db_session.flush()
+    batch = batch_request(db_session, sar.id)
     db_session.flush()
 
     reservations = db_session.scalars(
@@ -234,8 +263,8 @@ def test_gate1_creation_reserves_what_it_takes(db_session):
     ).all()
     assert len(reservations) == 1
     assert reservations[0].quantity == 3
-    assert reservations[0].source == ReservationSource.SHOP_ASSEMBLY_REQUEST
-    assert reservations[0].shop_assembly_request_id == result["shop_assembly_request"].id
+    assert reservations[0].source == ReservationSource.SHOP_ASSEMBLY_BATCH
+    assert reservations[0].shop_assembly_batch_id == batch.id
 
     # 5 on hand, 3 claimed -> 2 left for anyone else.
     check = warehouse_repository.check_inventory_sufficiency(
@@ -245,44 +274,18 @@ def test_gate1_creation_reserves_what_it_takes(db_session):
     assert (check.shortfalls[0].available, check.shortfalls[0].reserved) == (2, 3)
 
 
-def test_gate1_accept_no_longer_rechecks_inventory(db_session):
-    """Accept is a pure human gate (#342). Even if stock is written off after creation, the accept
-    still mints the PR - the request holds a reservation, and the place that decision was made was
-    creation. (The warehouse approve is what would then surface the discrepancy.)"""
-    project = _make_project(db_session)
-    il = _seed_inventory(db_session, project.id, quantity=3)
-    result = _finalize_shop_assembly(db_session, project, code="HG-100", qty=3)
-    sar_id = result["shop_assembly_request"].id
-    db_session.flush()
-
-    il.quantity = 0  # an admin write-off under a live claim
-    db_session.flush()
-
-    sar = shop_assembly_repository.accept_shop_assembly_request(db_session, sar_id, "acceptor")
-    db_session.flush()
-
-    assert sar.status == ShopAssemblyRequestStatus.APPROVED
-    assert db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number)) is not None
-    # Accepting neither spends nor releases the claim.
-    assert (
-        len(db_session.scalars(select(InventoryReservation).where(InventoryReservation.project_id == project.id)).all())
-        == 1
-    )
-
-
-def test_gate1_accept_mints_pr_when_covered(db_session):
+def test_gate1_batching_mints_the_pull_under_the_batch_number(db_session):
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=3)  # need 3, exactly covered
-    result = _finalize_shop_assembly(db_session, project, code="HG-100", qty=3)
+    sar = _finalize_shop_assembly(db_session, project, code="HG-100", qty=3)["shop_assembly_request"]
     db_session.flush()
 
-    sar = shop_assembly_repository.accept_shop_assembly_request(
-        db_session, result["shop_assembly_request"].id, "acceptor"
-    )
+    batch = batch_request(db_session, sar.id, created_by="manager")
     db_session.flush()
+    db_session.refresh(sar)
 
-    assert sar.status == ShopAssemblyRequestStatus.APPROVED
-    assert sar.approved_by == "acceptor"
+    assert sar.status == ShopAssemblyRequestStatus.APPROVED  # nothing left pending
+    assert sar.approved_by == "manager"
 
     pr = db_session.scalar(
         select(PullRequest).where(
@@ -292,7 +295,7 @@ def test_gate1_accept_mints_pr_when_covered(db_session):
     )
     assert pr is not None
     assert pr.status == PullRequestStatus.PENDING
-    assert pr.request_number == sar.request_number
+    assert pr.request_number == batch.batch_number
 
 
 # --- gate 2: the warehouse pick (#367) ---------------------------------------------------------

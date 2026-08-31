@@ -64,8 +64,14 @@ from .types import (
     ShipmentReturnItem,
     ShippingOutRequest,
     ShippingOutRequestItem,
+    ShopAssemblyAllocationLine,
+    ShopAssemblyAllocationOpening,
+    ShopAssemblyAllocationReview,
+    ShopAssemblyBatch,
+    ShopAssemblyBatchItem,
     ShopAssemblyRequest,
     ShopAssemblyRequestItem,
+    ShopAssemblyRequestOpening,
     StockItem,
     Warehouse,
     WarehouseLocation,
@@ -596,21 +602,66 @@ def shop_assembly_request_item_to_type(item) -> ShopAssemblyRequestItem:
         opening_number=item.opening_number,
         hardware_category=item.hardware_category,
         product_code=item.product_code,
-        quantity=item.quantity,
+        requested_quantity=item.requested_quantity,
+    )
+
+
+def shop_assembly_request_opening_to_type(opening) -> ShopAssemblyRequestOpening:
+    return ShopAssemblyRequestOpening(
+        id=strawberry.ID(str(opening.id)),
+        shop_assembly_request_id=strawberry.ID(str(opening.shop_assembly_request_id)),
+        opening_number=opening.opening_number,
+        status=opening.status,
+        batch_id=strawberry.ID(str(opening.batch_id)) if opening.batch_id else None,
+        dismissed_by=opening.dismissed_by,
+        dismissed_at=opening.dismissed_at,
+        dismissal_reason=opening.dismissal_reason,
+    )
+
+
+def shop_assembly_batch_item_to_type(item) -> ShopAssemblyBatchItem:
+    return ShopAssemblyBatchItem(
+        id=strawberry.ID(str(item.id)),
+        shop_assembly_batch_id=strawberry.ID(str(item.shop_assembly_batch_id)),
+        opening_number=item.opening_number,
+        hardware_category=item.hardware_category,
+        product_code=item.product_code,
         allocated_quantity=item.allocated_quantity,
     )
 
 
+def shop_assembly_batch_to_type(batch, *, pull_status=None) -> ShopAssemblyBatch:
+    """Model -> type. `pull_status` is resolved by the *caller* in one query for the whole list, for
+    the same reason the stage is (CLAUDE.md perf rules)."""
+    return ShopAssemblyBatch(
+        id=strawberry.ID(str(batch.id)),
+        shop_assembly_request_id=strawberry.ID(str(batch.shop_assembly_request_id)),
+        sequence=batch.sequence,
+        batch_number=batch.batch_number,
+        status=batch.status,
+        created_by=batch.created_by,
+        created_at=batch.created_at,
+        pull_request_id=strawberry.ID(str(batch.pull_request_id)) if batch.pull_request_id else None,
+        pull_status=pull_status,
+        items=[shop_assembly_batch_item_to_type(i) for i in sorted(batch.items, key=lambda i: i.opening_number)],
+    )
+
+
 def shop_assembly_request_to_type(
-    sar, *, stage: str | None = None, return_note: str | None = None
+    sar,
+    *,
+    stage: str | None = None,
+    return_note: str | None = None,
+    pull_status_by_id: dict | None = None,
 ) -> ShopAssemblyRequest:
-    """Model -> type. `stage` and `return_note` are resolved by the *caller* in one query for the
-    whole list.
+    """Model -> type. `stage`, `return_note` and the batches' pull statuses are resolved by the
+    *caller* in one query for the whole list.
 
     Passed in rather than derived here for the same reason `pull_request_to_type` takes its
     staging counts: a converter that queries is an N+1 waiting to happen on a list page
     (CLAUDE.md perf rules).
     """
+    statuses = pull_status_by_id or {}
     return ShopAssemblyRequest(
         id=strawberry.ID(str(sar.id)),
         request_number=sar.request_number,
@@ -624,8 +675,14 @@ def shop_assembly_request_to_type(
         approved_at=sar.approved_at,
         rejected_at=sar.rejected_at,
         integrity_note=sar.integrity_note,
-        pull_request_id=strawberry.ID(str(sar.pull_request_id)) if sar.pull_request_id else None,
         items=[shop_assembly_request_item_to_type(i) for i in sar.items],
+        openings=[
+            shop_assembly_request_opening_to_type(o) for o in sorted(sar.openings, key=lambda o: o.opening_number)
+        ],
+        batches=[
+            shop_assembly_batch_to_type(b, pull_status=statuses.get(b.pull_request_id))
+            for b in sorted(sar.batches, key=lambda b: b.sequence)
+        ],
         stage=RequestStage(stage or _fallback_stage(sar)),
         return_note=return_note,
     )
@@ -633,12 +690,34 @@ def shop_assembly_request_to_type(
 
 def _fallback_stage(sar) -> str:
     """The stage a caller that did not resolve one would have got. Never guesses past ACCEPTED:
-    without the pull's status there is no evidence the pull has been started or finished."""
+    without the pulls' statuses there is no evidence any of them has been started or finished."""
     if sar.status == ShopAssemblyRequestStatusDB.REJECTED:
         return "REJECTED"
-    if sar.status == ShopAssemblyRequestStatusDB.PENDING or sar.pull_request_id is None:
+    if sar.status == ShopAssemblyRequestStatusDB.PENDING:
         return "REQUESTED"
-    return "ACCEPTED"
+    return "ACCEPTED" if sar.batches else "DONE"
+
+
+def shop_assembly_allocation_review_to_type(review: dict) -> ShopAssemblyAllocationReview:
+    """The manager's batch-composition read (#643). The repository already did the two aggregates;
+    this only reshapes them."""
+    request = review["request"]
+    return ShopAssemblyAllocationReview(
+        request_id=strawberry.ID(str(request.id)),
+        request_number=request.request_number,
+        project_id=strawberry.ID(str(request.project_id)),
+        status=request.status,
+        created_by=request.created_by,
+        created_at=request.created_at,
+        integrity_note=request.integrity_note,
+        openings=[
+            ShopAssemblyAllocationOpening(
+                opening_number=opening["opening_number"],
+                lines=[ShopAssemblyAllocationLine(**line) for line in opening["lines"]],
+            )
+            for opening in review["openings"]
+        ],
+    )
 
 
 def shipping_out_request_item_to_type(item) -> ShippingOutRequestItem:
