@@ -29,6 +29,8 @@ from app.models.enums import (
     PullRequestStatus,
     ShipmentStatus,
     ShippingOutRequestStatus,
+    ShopAssemblyBatchStatus,
+    ShopAssemblyOpeningStatus,
     ShopAssemblyRequestStatus,
 )
 from app.models.hardware import HardwareItem
@@ -38,7 +40,12 @@ from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.shipping import PackingSlip, PackingSlipItem
 from app.models.shipping_out_request import ShippingOutRequest, ShippingOutRequestItem
-from app.models.shop_assembly import ShopAssemblyRequest, ShopAssemblyRequestItem
+from app.models.shop_assembly import (
+    ShopAssemblyBatch,
+    ShopAssemblyRequest,
+    ShopAssemblyRequestItem,
+    ShopAssemblyRequestOpening,
+)
 from app.models.stock_item import StockItem
 from app.repositories import request_composer, warehouse_admin_repository
 
@@ -133,6 +140,8 @@ def _slip(session, project, *, lines):
 
 
 def _pending_sar(session, project, *, opening_number, quantity):
+    """A shop-assembly request with one pending opening. The opening ROW is what the claimed term
+    joins to since #646 - a batched or dismissed opening claims nothing here."""
     req = ShopAssemblyRequest(
         id=uuid.uuid4(),
         request_number=f"SA-{uuid.uuid4().hex[:6]}",
@@ -149,12 +158,44 @@ def _pending_sar(session, project, *, opening_number, quantity):
             opening_number=opening_number,
             hardware_category=CAT,
             product_code=CODE,
-            quantity=quantity,
-            allocated_quantity=quantity,
+            requested_quantity=quantity,
+        )
+    )
+    session.add(
+        ShopAssemblyRequestOpening(
+            id=uuid.uuid4(),
+            shop_assembly_request_id=req.id,
+            opening_number=opening_number,
+            status=ShopAssemblyOpeningStatus.PENDING,
         )
     )
     session.flush()
     return req
+
+
+def _batch_the_opening(session, req, pull, *, opening_number):
+    """Mark the request's opening as dispatched under `pull`, the way batching does."""
+    batch = ShopAssemblyBatch(
+        id=uuid.uuid4(),
+        shop_assembly_request_id=req.id,
+        sequence=1,
+        batch_number=f"{req.request_number}-B1",
+        status=ShopAssemblyBatchStatus.ACTIVE,
+        created_by="manager",
+        pull_request_id=pull.id,
+    )
+    session.add(batch)
+    session.flush()
+    opening = session.scalar(
+        select(ShopAssemblyRequestOpening).where(
+            ShopAssemblyRequestOpening.shop_assembly_request_id == req.id,
+            ShopAssemblyRequestOpening.opening_number == opening_number,
+        )
+    )
+    opening.status = ShopAssemblyOpeningStatus.BATCHED
+    opening.batch_id = batch.id
+    session.flush()
+    return batch
 
 
 def _pending_sor(session, project, *, opening_number, quantity):
@@ -419,9 +460,10 @@ def test_a_live_pull_is_a_claim(db_session):
     assert (row["sent_quantity"], row["claimed_quantity"], row["suggested_quantity"]) == (0, 4, 2)
 
 
-def test_an_accepted_request_is_counted_once_through_its_pull(db_session):
-    """The double-count case. Accept copies the request's lines onto a pull, so a term that read
-    both would charge the opening 8 for a request that asked for 4."""
+def test_a_batched_opening_is_counted_once_through_its_pull(db_session):
+    """The double-count case. Batching copies the opening's lines onto a pull, so a term that read
+    both would charge the opening 8 for a request that asked for 4. The join to the opening's own
+    row is what keeps it to one."""
     project = _project(db_session)
     opening = _opening(db_session, project)
     _owe(db_session, project, opening, 10)
@@ -433,13 +475,76 @@ def test_an_accepted_request_is_counted_once_through_its_pull(db_session):
         status=PullRequestStatus.PENDING,
         lines=[("A01", 4)],
     )
+    _batch_the_opening(db_session, req, pull, opening_number="A01")
     req.status = ShopAssemblyRequestStatus.APPROVED
-    req.pull_request_id = pull.id
     db_session.flush()
 
     row = _row(db_session, project)
     assert row["claimed_quantity"] == 4
     assert row["suggested_quantity"] == 6
+
+
+def test_a_part_batched_request_counts_its_pending_openings_and_its_pull(db_session):
+    """A request can be half dispatched and half waiting (#646), so the two halves of `claimed` have
+    to add up without overlapping."""
+    project = _project(db_session)
+    first = _opening(db_session, project, "A01")
+    second = _opening(db_session, project, "A02")
+    _owe(db_session, project, first, 10)
+    _owe(db_session, project, second, 10)
+    req = _pending_sar(db_session, project, opening_number="A01", quantity=4)
+    db_session.add(
+        ShopAssemblyRequestItem(
+            id=uuid.uuid4(),
+            shop_assembly_request_id=req.id,
+            opening_number="A02",
+            hardware_category=CAT,
+            product_code=CODE,
+            requested_quantity=3,
+        )
+    )
+    db_session.add(
+        ShopAssemblyRequestOpening(
+            id=uuid.uuid4(),
+            shop_assembly_request_id=req.id,
+            opening_number="A02",
+            status=ShopAssemblyOpeningStatus.PENDING,
+        )
+    )
+    db_session.flush()
+
+    pull = _pull(
+        db_session,
+        project,
+        source=PullRequestSource.SHOP_ASSEMBLY,
+        status=PullRequestStatus.PENDING,
+        lines=[("A01", 4)],
+    )
+    _batch_the_opening(db_session, req, pull, opening_number="A01")
+
+    rows = {
+        r["opening_number"]: r
+        for r in request_composer.get_request_coverage(db_session, project.id, ["A01", "A02"])
+        if r["product_code"] == CODE
+    }
+    assert rows["A01"]["claimed_quantity"] == 4  # through the pull only
+    assert rows["A02"]["claimed_quantity"] == 3  # through the still-pending opening only
+
+
+def test_a_dismissed_opening_claims_nothing(db_session):
+    """A dismissal is a statement that the shop is not getting this hardware through this request, so
+    it stops holding the opening's demand off everyone else's composer."""
+    project = _project(db_session)
+    opening = _opening(db_session, project)
+    _owe(db_session, project, opening, 6)
+    req = _pending_sar(db_session, project, opening_number="A01", quantity=4)
+    row = db_session.scalar(
+        select(ShopAssemblyRequestOpening).where(ShopAssemblyRequestOpening.shop_assembly_request_id == req.id)
+    )
+    row.status = ShopAssemblyOpeningStatus.DISMISSED
+    db_session.flush()
+
+    assert _row(db_session, project)["claimed_quantity"] == 0
 
 
 def test_a_completed_pull_leaves_claimed_and_enters_sent_in_one_step(db_session):
@@ -456,8 +561,8 @@ def test_a_completed_pull_leaves_claimed_and_enters_sent_in_one_step(db_session)
         status=PullRequestStatus.PENDING,
         lines=[("A01", 4)],
     )
+    _batch_the_opening(db_session, req, pull, opening_number="A01")
     req.status = ShopAssemblyRequestStatus.APPROVED
-    req.pull_request_id = pull.id
     db_session.flush()
 
     pull.status = PullRequestStatus.COMPLETED

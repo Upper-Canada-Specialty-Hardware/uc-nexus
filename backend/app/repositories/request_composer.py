@@ -24,10 +24,12 @@ the moment of both:
 
 **Claimed** is hardware spoken for but not yet gone: lines on PENDING requests, plus lines on pulls
 that are live (approved or being picked) but not completed. Read off the *pull* rather than the
-accepted request behind it, because accept copies the request's lines onto the pull - counting both
-would double the claim. A completed pull leaves this term and enters `sent` in the same instant, so
-it is counted once and only once. Cancelled pulls and rejected requests appear in neither: they put
-the hardware back.
+request behind it, because dispatching copies the request's lines onto the pull - counting both
+would double the claim. For shop assembly that split is per OPENING (#646): a part-batched request
+has some openings on a live pull and some still waiting, and only the waiting ones are counted here.
+A completed pull leaves this term and enters `sent` in the same instant, so it is counted once and
+only once. Cancelled pulls, rejected requests and dismissed openings appear in neither: they put the
+hardware back, or never held it.
 
 Two consequences worth being explicit about, because they are the point rather than accidents:
 
@@ -47,7 +49,7 @@ the on-order aggregate.
 
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from app.models.enums import (
@@ -56,6 +58,7 @@ from app.models.enums import (
     PullRequestSource,
     PullRequestStatus,
     ShippingOutRequestStatus,
+    ShopAssemblyOpeningStatus,
     ShopAssemblyRequestStatus,
 )
 from app.models.hardware import HardwareItem as HardwareItemModel
@@ -66,7 +69,7 @@ from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as PurchaseOrderModel
 from app.models.shipping import PackingSlip, PackingSlipItem
 from app.models.shipping_out_request import ShippingOutRequest, ShippingOutRequestItem
-from app.models.shop_assembly import ShopAssemblyRequest, ShopAssemblyRequestItem
+from app.models.shop_assembly import ShopAssemblyRequest, ShopAssemblyRequestItem, ShopAssemblyRequestOpening
 
 # A PO counts as "on the way" once it has been placed with the vendor and until it is closed out.
 # DRAFT is excluded on purpose: nobody has ordered it, so promising it to a requester would be a lie.
@@ -292,8 +295,9 @@ def _claimed_quantities(
 ) -> dict[str, dict[_ComboKey, int]]:
     """Units somebody else is already holding, per {opening: {(cat, code): quantity}}.
 
-    Two reads, arranged so an accepted request is never counted alongside the pull it minted: live
-    pulls (the accepted half), and PENDING requests of both kinds (the half that has no pull yet).
+    Three reads, arranged so nothing is counted alongside the pull it minted: live pulls (the
+    dispatched half), a PENDING shop-assembly request's openings that are still pending (the half
+    with no pull yet, #646), and PENDING shipping-out requests.
     """
     if not opening_numbers:
         return {}
@@ -326,17 +330,29 @@ def _claimed_quantities(
     ).all():
         add(opening_number, category, code, quantity)
 
+    # Shop assembly claims per OPENING, not per request (#646): a request can be part-batched, and
+    # the openings it already dispatched are on a live pull that the read above counts. Joining to
+    # the opening's own row and keeping only the still-PENDING ones is what stops those being
+    # charged twice, and it drops a dismissed opening - which is owed nothing by anybody - for free.
     for opening_number, category, code, quantity in session.execute(
         select(
             ShopAssemblyRequestItem.opening_number,
             ShopAssemblyRequestItem.hardware_category,
             ShopAssemblyRequestItem.product_code,
-            func.sum(ShopAssemblyRequestItem.allocated_quantity),
+            func.sum(ShopAssemblyRequestItem.requested_quantity),
         )
         .join(ShopAssemblyRequest, ShopAssemblyRequestItem.shop_assembly_request_id == ShopAssemblyRequest.id)
+        .join(
+            ShopAssemblyRequestOpening,
+            and_(
+                ShopAssemblyRequestOpening.shop_assembly_request_id == ShopAssemblyRequestItem.shop_assembly_request_id,
+                ShopAssemblyRequestOpening.opening_number == ShopAssemblyRequestItem.opening_number,
+            ),
+        )
         .where(
             ShopAssemblyRequest.project_id == project_id,
             ShopAssemblyRequest.status == ShopAssemblyRequestStatus.PENDING,
+            ShopAssemblyRequestOpening.status == ShopAssemblyOpeningStatus.PENDING,
             ShopAssemblyRequestItem.opening_number.in_(opening_numbers),
         )
         .group_by(

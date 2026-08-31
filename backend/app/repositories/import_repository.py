@@ -18,6 +18,8 @@ from app.models.enums import (
     PullRequestStatus,
     ReservationSource,
     ShippingOutRequestStatus,
+    ShopAssemblyBatchStatus,
+    ShopAssemblyOpeningStatus,
     ShopAssemblyRequestStatus,
 )
 from app.models.hardware import HardwareItem as HardwareItemModel
@@ -36,10 +38,16 @@ from app.models.shipping_out_request import (
     ShippingOutRequestItem as ShippingOutRequestItemModel,
 )
 from app.models.shop_assembly import (
+    ShopAssemblyBatch as SARBatchModel,
+)
+from app.models.shop_assembly import (
     ShopAssemblyRequest as SARModel,
 )
 from app.models.shop_assembly import (
     ShopAssemblyRequestItem as SARItemModel,
+)
+from app.models.shop_assembly import (
+    ShopAssemblyRequestOpening as SAROpeningModel,
 )
 from app.repositories import project_repository
 from app.repositories import shipping_requests as _shipping_requests
@@ -397,37 +405,39 @@ def _gate_on_available_inventory(
     )
 
 
-def _allocated_quantity(item_input: dict) -> int:
-    """What a request line actually claims out of inventory.
-
-    A missing / null `allocated_quantity` means **fully allocated**. That default keeps every caller
-    that predates the composer - tests, scripts, a browser tab loaded before the deploy - on the old
-    all-or-nothing behaviour: it asks for the whole line, and the availability gate bounces the
-    finalize if the whole line does not fit. The composer always sends the number.
-    """
-    allocated = item_input.get("allocated_quantity")
-    return item_input["quantity"] if allocated is None else allocated
-
-
 def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> list[SARModel]:
-    """Shop-assembly requests in a project that are still in flight: PENDING, or APPROVED while the
-    pull they minted has not been worked (PENDING). Once the warehouse approves the pull, inventory
-    has moved and the request is no longer something a re-upload may quietly rewrite."""
+    """Shop-assembly requests in a project that are still in flight (#646).
+
+    PENDING is always in flight - it has openings waiting on the manager. A closed-out (APPROVED)
+    request is in flight only while every batch it dispatched is still an unworked PENDING pull;
+    once the warehouse starts one, inventory has moved and the request is no longer something a
+    re-upload may quietly rewrite. Either way the rewrite below only touches PENDING openings; a
+    closed-out request just gets the flag.
+    """
+    worked_batch = (
+        select(SARBatchModel.id)
+        .join(PullRequestModel, SARBatchModel.pull_request_id == PullRequestModel.id)
+        .where(
+            SARBatchModel.shop_assembly_request_id == SARModel.id,
+            SARBatchModel.status == ShopAssemblyBatchStatus.ACTIVE,
+            PullRequestModel.status != PullRequestStatus.PENDING,
+        )
+    )
     return list(
         session.scalars(
             select(SARModel)
-            .options(selectinload(SARModel.items))
-            .outerjoin(PullRequestModel, SARModel.pull_request_id == PullRequestModel.id)
+            .options(
+                selectinload(SARModel.items),
+                selectinload(SARModel.openings),
+                selectinload(SARModel.batches),
+            )
             .where(
                 SARModel.project_id == project_id,
                 or_(
                     SARModel.status == ShopAssemblyRequestStatus.PENDING,
                     and_(
                         SARModel.status == ShopAssemblyRequestStatus.APPROVED,
-                        or_(
-                            PullRequestModel.id.is_(None),
-                            PullRequestModel.status == PullRequestStatus.PENDING,
-                        ),
+                        ~worked_batch.exists(),
                     ),
                 ),
             )
@@ -476,14 +486,17 @@ def _handle_schedule_replacement(
     warehouse - the wrong way round. Instead the requests are made to tell the truth about
     themselves:
 
-    - **PENDING requests are rewritten to what survived.** Work units and lines whose opening is
-      gone are deleted, and the request's reservations are rebuilt from what is left - which
-      releases exactly the claim the vanished openings were holding, no more. A request left with
-      nothing at all is auto-REJECTED (which releases the rest by the ordinary reject path), because
-      an empty request is not something anybody can accept.
-    - **APPROVED requests are left alone.** Their pull already exists and is the authority on what
-      the warehouse will hand over; silently shrinking it underneath the puller would be worse than
-      a stale bill of hardware.
+    - **PENDING requests are rewritten to what survived.** Lines whose opening is gone are deleted,
+      and for shipping out the reservations are rebuilt from what is left - which releases exactly
+      the claim the vanished openings were holding, no more. A shop-assembly request rebuilds
+      nothing, because its pending openings never held a claim (#646). A request left with nothing at
+      all is auto-REJECTED (which for shipping out releases the rest by the ordinary reject path),
+      because an empty request is not something anybody can work; a part-batched shop-assembly one
+      closes out instead, since some of it genuinely happened.
+    - **Openings already dispatched or dismissed are left alone.** A batched opening is on a pull
+      that is the authority on what the warehouse will hand over, and silently shrinking it
+      underneath the puller would be worse than a stale bill of hardware; a dismissed one is a
+      decision somebody made.
     - **Every live request is flagged** with `integrity_note`, not just the ones that lost openings,
       because a full-schedule replacement can change the hardware on an opening it kept. The
       acceptor sees the flag and can reject-and-recreate.
@@ -498,37 +511,48 @@ def _handle_schedule_replacement(
 
     for sar in _live_shop_assembly_requests(session, project.id):
         pending = sar.status == ShopAssemblyRequestStatus.PENDING
-        lost = [i for i in sar.items if i.opening_number in vanished_numbers] if pending else []
-        if lost:
-            session.execute(delete(SARItemModel).where(SARItemModel.id.in_([i.id for i in lost])))
+        # Only openings still waiting on the manager may be rewritten. A batched one is on a pull the
+        # warehouse is working, and a dismissed one is a decision somebody made - neither is the
+        # re-upload's to revise. Nothing here releases a reservation, because a pending opening has
+        # never held one (#646).
+        lost_openings = (
+            [
+                o
+                for o in sar.openings
+                if o.status == ShopAssemblyOpeningStatus.PENDING and o.opening_number in vanished_numbers
+            ]
+            if pending
+            else []
+        )
+        if lost_openings:
+            gone = {o.opening_number for o in lost_openings}
+            session.execute(
+                delete(SARItemModel).where(
+                    SARItemModel.shop_assembly_request_id == sar.id,
+                    SARItemModel.opening_number.in_(gone),
+                )
+            )
+            session.execute(delete(SAROpeningModel).where(SAROpeningModel.id.in_([o.id for o in lost_openings])))
             session.flush()
-            session.refresh(sar, attribute_names=["items"])
+            session.refresh(sar, attribute_names=["items", "openings"])
 
-        if pending and not sar.items:
-            # Nothing left to assemble: reject it (which releases every remaining reservation) rather
-            # than leave an empty request on the accept board.
-            sar.status = ShopAssemblyRequestStatus.REJECTED
-            sar.rejected_by = "Hardware Schedule Import"
-            sar.rejection_reason = "All of this request's lines were removed by a hardware schedule re-upload."
-            sar.rejected_at = datetime.utcnow()
-            warehouse_repository.release_reservations(session, ReservationSource.SHOP_ASSEMBLY_REQUEST, sar.id)
+        if pending and not any(o.status == ShopAssemblyOpeningStatus.PENDING for o in sar.openings):
+            if sar.batches:
+                # Part-worked: the batches that already went out are the record of what happened, so
+                # the request closes out rather than being rejected as though nothing had.
+                sar.status = ShopAssemblyRequestStatus.APPROVED
+                sar.approved_by = "Hardware Schedule Import"
+                sar.approved_at = datetime.utcnow()
+            else:
+                # Nothing left to assemble and nothing ever dispatched: reject it rather than leave an
+                # empty request on the manager's board.
+                sar.status = ShopAssemblyRequestStatus.REJECTED
+                sar.rejected_by = "Hardware Schedule Import"
+                sar.rejection_reason = "All of this request's openings were removed by a hardware schedule re-upload."
+                sar.rejected_at = datetime.utcnow()
             continue
 
-        if lost:
-            # Rebuild from what survived. Replace-in-place rather than a per-line decrement: the
-            # reservation rows are aggregates over the whole request, so "what it should hold now" is
-            # the only number that is unambiguous.
-            warehouse_repository.release_reservations(session, ReservationSource.SHOP_ASSEMBLY_REQUEST, sar.id)
-            warehouse_repository.create_reservations(
-                session,
-                sar.project_id,
-                ReservationSource.SHOP_ASSEMBLY_REQUEST,
-                sar.id,
-                # Allocated, not owed: the claim it held was minted from the allocation, and rebuilding
-                # from `quantity` would inflate it into a claim on hardware this request never had.
-                [(i.hardware_category, i.product_code, i.allocated_quantity) for i in sar.items],
-            )
-        sar.integrity_note = SCHEDULE_CHANGED_DROPPED_NOTE if lost else SCHEDULE_CHANGED_NOTE
+        sar.integrity_note = SCHEDULE_CHANGED_DROPPED_NOTE if lost_openings else SCHEDULE_CHANGED_NOTE
 
     for req in _live_shipping_out_requests(session, project.id):
         pending = req.status == ShippingOutRequestStatus.PENDING
@@ -1033,10 +1057,11 @@ def finalize_import_session(
         created_by="Hardware Schedule Import",
     )
 
-    # 7. Shop-assembly request (#293)
-    # Start a Request mints a PENDING ShopAssemblyRequest and no PullRequest; a reviewer accepting it
-    # is what mints the pull. Since #342 the inventory gate lives at creation and creating the request
-    # reserves the hardware, so accept is a pure human gate that re-checks nothing.
+    # 7. Shop-assembly request (#646)
+    # The PM is flagging openings, not composing a pull: this mints a PENDING ShopAssemblyRequest
+    # with the openings and what each is still owed, and nothing else - no availability gate, no
+    # reservation, no pull. The Shop Assembly Manager batches it later, and each batch is what gates,
+    # reserves and mints.
     #
     # There is no duplicate-opening guard any more. Two requests naming the same opening are both
     # legitimate - the opening genuinely may be owed hardware twice - and the composer is what stops
@@ -1065,8 +1090,10 @@ def finalize_import_session(
                     "opening_number": item_input.get("opening_number"),
                     "hardware_category": item_input["hardware_category"],
                     "product_code": item_input["product_code"],
-                    "quantity": item_input["quantity"],
-                    "allocated_quantity": _allocated_quantity(item_input),
+                    # `quantity` is what a pre-#646 tab called the composer's suggestion, which is
+                    # exactly what a request line is owed. Any `allocated_quantity` such a tab also
+                    # sends is ignored - nothing is allocated at creation any more.
+                    "requested_quantity": item_input["quantity"],
                 }
                 for item_input in sar_items_input
             ],

@@ -9,15 +9,19 @@ from .enums import ReservationSource
 
 
 class InventoryReservation(Base):
-    """A request's claim on a quantity of one product in one project, held from the moment the
-    request is created until the pull that spends it is approved (#342).
+    """A claim on a quantity of one product in one project, held from the moment somebody commits to
+    pulling it until the pull that spends it is picked (#342).
 
-    Creating a shop-assembly or shipping-out request reserves the hardware it needs, so
-    **available = on-hand - deficient - active reservations**. That is what makes the creator abide
-    by what is really free at creation time (they refine the selection when it does not fit) instead
-    of discovering a shortfall at accept, and it is what removed the accept-vs-pull TOCTOU race: by
-    the time the warehouse approves the pull, the units it is about to deduct were already spoken
-    for by this very request.
+    Two holders raise one, and they commit at different moments:
+
+    - a **shipping-out request**, at creation. The composer is held to what is really free, so a
+      shortfall is refined away there rather than discovered at accept.
+    - a **shop-assembly batch**, at batching (#646). The request that batch came off reserves
+      nothing - it is a flag the PM raised, possibly months before the hardware exists - so the
+      claim is minted when the Shop Assembly Manager actually allocates.
+
+    Either way **available = on-hand - deficient - active reservations**, and by the time the
+    warehouse picks the pull the units it is about to deduct were already spoken for by this holder.
 
     Note what is NOT here, deliberately:
 
@@ -29,9 +33,8 @@ class InventoryReservation(Base):
       deduction, which stays exactly as it was: at approval the pull walks the project's rows
       oldest-first, and the reservation only ever governed *how much* was free, never *which* row.
 
-    Exactly one of `shop_assembly_request_id` / `shipping_out_request_id` is set, matching `source`.
-    Every claim has a request behind it: a reservation is created when a request is composed and
-    spent when the pull that request minted is approved.
+    Exactly one of `shop_assembly_batch_id` / `shipping_out_request_id` is set, matching `source`.
+    Every claim has a holder behind it, and the holder is the thing a cancellation releases.
     """
 
     __tablename__ = "inventory_reservations"
@@ -44,8 +47,8 @@ class InventoryReservation(Base):
             "hardware_category",
             "product_code",
         ),
-        # Release and consumption are both "every reservation of this request".
-        Index("ix_inventory_reservations_shop_assembly_request", "shop_assembly_request_id"),
+        # Release and consumption are both "every reservation of this holder".
+        Index("ix_inventory_reservations_shop_assembly_batch", "shop_assembly_batch_id"),
         Index("ix_inventory_reservations_shipping_out_request", "shipping_out_request_id"),
         CheckConstraint("quantity >= 1", name="ck_inventory_reservations_quantity_positive"),
         # The discriminator and the FK cannot disagree, and a reservation can never be orphaned from
@@ -53,12 +56,13 @@ class InventoryReservation(Base):
         # requires exactly its own FK and nulls the other.
         #
         # `source::text` rather than a bare enum comparison, so a migration that changes the labels
-        # never has to touch the enum type inside the same transaction that rewrites this.
+        # never has to touch the enum type inside the same transaction that rewrites this - which is
+        # exactly what #646 did when SHOP_ASSEMBLY_REQUEST became SHOP_ASSEMBLY_BATCH.
         CheckConstraint(
-            "(source::text = 'SHOP_ASSEMBLY_REQUEST' AND shop_assembly_request_id IS NOT NULL "
+            "(source::text = 'SHOP_ASSEMBLY_BATCH' AND shop_assembly_batch_id IS NOT NULL "
             "AND shipping_out_request_id IS NULL) "
             "OR (source::text = 'SHIPPING_OUT_REQUEST' AND shipping_out_request_id IS NOT NULL "
-            "AND shop_assembly_request_id IS NULL)",
+            "AND shop_assembly_batch_id IS NULL)",
             name="ck_inventory_reservations_source_matches_request",
         ),
     )
@@ -72,8 +76,8 @@ class InventoryReservation(Base):
         Enum(ReservationSource, name="reservation_source", create_constraint=True),
         nullable=False,
     )
-    shop_assembly_request_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("shop_assembly_requests.id", ondelete="CASCADE"), nullable=True
+    shop_assembly_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("shop_assembly_batches.id", ondelete="CASCADE"), nullable=True
     )
     shipping_out_request_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("shipping_out_requests.id", ondelete="CASCADE"), nullable=True

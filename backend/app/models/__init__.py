@@ -52,8 +52,11 @@ from .shipping_out_request import (  # noqa: E402, F401
     ShippingOutRequestItem,
 )
 from .shop_assembly import (  # noqa: E402, F401
+    ShopAssemblyBatch,
+    ShopAssemblyBatchItem,
     ShopAssemblyRequest,
     ShopAssemblyRequestItem,
+    ShopAssemblyRequestOpening,
 )
 from .stock_item import StockItem  # noqa: E402, F401
 from .warehouse import Warehouse  # noqa: E402, F401

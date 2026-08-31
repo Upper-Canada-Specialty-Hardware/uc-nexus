@@ -8,21 +8,31 @@ from app.auth import current_user, resolve_display_name
 from app.database import SessionLocal
 from app.repositories import shop_assembly_repository
 
-from .converters import shop_assembly_request_to_type
+from .converters import shop_assembly_allocation_review_to_type, shop_assembly_request_to_type
 from .enums import ShopAssemblyRequestStatus
-from .types import ShopAssemblyRequest
+from .inputs import CreateShopAssemblyBatchInput
+from .types import ShopAssemblyAllocationReview, ShopAssemblyRequest
 
 
 def _requests_to_types(session, reqs) -> list[ShopAssemblyRequest]:
-    """Requests with their derived stage, in ONE extra query for the whole list.
+    """Requests with their derived stage, return note and per-batch pull status, in THREE extra
+    queries for the whole list however long it is.
 
-    The stage is what the requests page draws as columns, so it is resolved here rather than as a
-    field resolver: a per-row lookup over Railway's network hop is the N+1 this codebase keeps
-    paying for (CLAUDE.md perf rules).
+    All three are resolved here rather than as field resolvers: a per-row lookup over Railway's
+    network hop is the N+1 this codebase keeps paying for (CLAUDE.md perf rules).
     """
+    pull_statuses = shop_assembly_repository.get_pull_statuses(session, reqs)
     stages = shop_assembly_repository.get_request_stages(session, reqs)
     notes = shop_assembly_repository.get_return_notes(session, reqs)
-    return [shop_assembly_request_to_type(r, stage=stages.get(r.id), return_note=notes.get(r.id)) for r in reqs]
+    return [
+        shop_assembly_request_to_type(
+            r,
+            stage=stages.get(r.id),
+            return_note=notes.get(r.id),
+            pull_status_by_id=pull_statuses,
+        )
+        for r in reqs
+    ]
 
 
 @strawberry.type
@@ -35,10 +45,11 @@ class ShopAssemblyQueries:
         status: ShopAssemblyRequestStatus | None = None,
         reopenable_only: bool = False,
     ) -> list[ShopAssemblyRequest]:
-        """Shop-assembly requests for a project, PENDING by default (#293).
+        """Shop-assembly requests for a project, PENDING by default.
 
-        reopenableOnly (#325) keeps only requests whose minted pull is still PENDING - the Approved
-        view uses it so it lists only requests Reopen can still act on. Open to any signed-in user.
+        reopenableOnly keeps only requests carrying a batch whose pull is still PENDING - the
+        Accepted view uses it so it lists only requests a discard can still act on. Open to any
+        signed-in user.
         """
         with SessionLocal() as session:
             reqs = shop_assembly_repository.get_shop_assembly_requests(
@@ -46,36 +57,99 @@ class ShopAssemblyQueries:
             )
             return _requests_to_types(session, reqs)
 
+    @strawberry.field
+    def shop_assembly_request(self, info: strawberry.Info, id: strawberry.ID) -> ShopAssemblyRequest:
+        """One request with its openings and batches. NOT_FOUND if it does not exist."""
+        with SessionLocal() as session:
+            req = shop_assembly_repository.get_shop_assembly_request(session, uuid.UUID(str(id)))
+            return _requests_to_types(session, [req])[0]
+
+    @strawberry.field
+    def shop_assembly_allocation_review(
+        self, info: strawberry.Info, request_id: strawberry.ID
+    ) -> ShopAssemblyAllocationReview:
+        """What the Shop Assembly Manager needs to compose a batch (#643): the request's still-pending
+        openings, each opening's owed lines, and the reservation-aware free stock behind them.
+
+        Read-only and open to any signed-in user - it is the same availability arithmetic every other
+        screen shows. Creating the batch is what is role-gated.
+        """
+        with SessionLocal() as session:
+            review = shop_assembly_repository.get_allocation_review(session, uuid.UUID(str(request_id)))
+            return shop_assembly_allocation_review_to_type(review)
+
 
 @strawberry.type
 class ShopAssemblyMutations:
     @strawberry.mutation
-    def accept_shop_assembly_request(self, info: strawberry.Info, id: strawberry.ID) -> ShopAssemblyRequest:
-        """Accept a PENDING shop-assembly request (#293). Open to any signed-in user.
+    def create_shop_assembly_batch(
+        self, info: strawberry.Info, input: CreateShopAssemblyBatchInput
+    ) -> ShopAssemblyRequest:
+        """Dispatch a subset of a pending request's openings at the quantities the manager allocated
+        (#646). This is what the accept gate became.
 
-        A pure human approval gate since #342: it mints the warehouse PullRequest and approves the
-        request, and re-checks nothing. The hardware was reserved when the request was created, so
-        it already belongs to this request - there is no shortfall left for the acceptor to be shown
-        and nothing they could do about one if there were.
+        It gates on available inventory for exactly these allocations, reserves them, and mints the
+        warehouse PullRequest. Partial is fine - a batch may take less than an opening is owed - but
+        batching an opening CONSUMES it: the remainder is forfeited, because the batch is the
+        decision for that opening.
 
-        The approval is recorded against the Clerk-authenticated caller (#427). It is the whole
-        content of the gate: an approval attributable to anyone the client names is not an approval.
-        The name also becomes the minted pull's `requestedBy`."""
+        Recorded against the Clerk-authenticated caller (#427), whose name also becomes the minted
+        pull's `requestedBy`. Role-gated in ROOT_FIELD_POLICY: this one commits real inventory.
+        """
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
-        request_id = uuid.UUID(str(id))
+        request_id = uuid.UUID(str(input.request_id))
         with SessionLocal() as session:
-            shop_assembly_repository.accept_shop_assembly_request(session, request_id, actor)
+            shop_assembly_repository.create_shop_assembly_batch(
+                session,
+                request_id,
+                [
+                    {
+                        "opening_number": line.opening_number,
+                        "hardware_category": line.hardware_category,
+                        "product_code": line.product_code,
+                        "allocated_quantity": line.allocated_quantity,
+                    }
+                    for line in input.lines
+                ],
+                created_by=actor,
+            )
             session.commit()
             reqs = [shop_assembly_repository.get_shop_assembly_request(session, request_id)]
+            return _requests_to_types(session, reqs)[0]
+
+    @strawberry.mutation
+    def dismiss_shop_assembly_openings(
+        self,
+        info: strawberry.Info,
+        request_id: strawberry.ID,
+        opening_numbers: list[str] | None = None,
+        reason: str | None = None,
+    ) -> ShopAssemblyRequest:
+        """Write off pending openings the manager is not going to batch (#646).
+
+        Omit `openingNumbers` to dismiss every opening still pending, which is how a request that has
+        had what it is going to get is finished off. Releases nothing - a pending opening never held
+        a claim. Recorded against the Clerk-authenticated caller.
+        """
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
+        rid = uuid.UUID(str(request_id))
+        with SessionLocal() as session:
+            shop_assembly_repository.dismiss_shop_assembly_openings(
+                session, rid, opening_numbers, dismissed_by=actor, reason=reason
+            )
+            session.commit()
+            reqs = [shop_assembly_repository.get_shop_assembly_request(session, rid)]
             return _requests_to_types(session, reqs)[0]
 
     @strawberry.mutation
     def reject_shop_assembly_request(
         self, info: strawberry.Info, id: strawberry.ID, reason: str | None = None
     ) -> ShopAssemblyRequest:
-        """Reject a PENDING shop-assembly request (#293). Open to any signed-in user. Recorded
-        against the Clerk-authenticated caller (#427), same reasoning as the accept."""
+        """Turn a whole shop-assembly request down. Refused once it has been batched (#646) - by then
+        part of it has happened, and the honest ways out are cancelling the pull and dismissing the
+        rest. Recorded against the Clerk-authenticated caller (#427)."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(id))
@@ -86,15 +160,15 @@ class ShopAssemblyMutations:
             return _requests_to_types(session, reqs)[0]
 
     @strawberry.mutation
-    def reopen_shop_assembly_request(self, info: strawberry.Info, id: strawberry.ID) -> ShopAssemblyRequest:
-        """Reopen an APPROVED shop-assembly request back to PENDING (#325).
+    def discard_shop_assembly_batch(self, info: strawberry.Info, batch_id: strawberry.ID) -> ShopAssemblyRequest:
+        """Undo a batch the warehouse has not started (#646) - the #325 reopen, at batch granularity.
 
-        Undoes an erroneous accept: hard-deletes the warehouse PullRequest the accept minted and
-        flips the request to PENDING so it can be re-accepted or rejected. Refused if the warehouse
-        has already started the pull. Open to any signed-in user."""
-        request_id = uuid.UUID(str(id))
+        Hard-deletes the pull the batch minted, releases the claim it was holding, and hands its
+        openings back to Pending. Refused if the warehouse has already started that pull; cancel the
+        pull instead. Returns the batch's request."""
         with SessionLocal() as session:
-            shop_assembly_repository.reopen_shop_assembly_request(session, request_id)
+            request = shop_assembly_repository.discard_shop_assembly_batch(session, uuid.UUID(str(batch_id)))
+            request_id = request.id
             session.commit()
             reqs = [shop_assembly_repository.get_shop_assembly_request(session, request_id)]
             return _requests_to_types(session, reqs)[0]

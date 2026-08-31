@@ -157,10 +157,8 @@ def test_rejecting_a_receive_draft_takes_either_manager_role(field, monkeypatch,
     There is no implicit admin bypass in this codebase, so Admin/Manager has to be named in the set
     to hold; a warehouse account that only counts trucks must not hold it either way.
 
-    Since v1 dropped door management this is also the only place the table names a role that is not
-    Admin/Manager, so it carries the proof that an arbitrary Clerk role name is expressible at all.
-    `shopAssemblyMembers` used to hold that on its own; the Shop Assembly Manager role stays defined
-    in Clerk but no longer gates any field.
+    The shop-assembly manager's board names the other non-Admin role in the table since #646 (see
+    test_shop_assembly_batch_schema.py); this is the warehouse half of the same shape.
 
     `approveReceiveDraft` is not pinned here. Its table entry is SIGNED_IN and the real role check is
     `_authorize_draft_approval` inside the resolver - a plain Admin/Manager gate, exercised in
