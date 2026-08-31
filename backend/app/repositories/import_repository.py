@@ -379,9 +379,12 @@ SCHEDULE_CHANGED_NOTE = (
     "may no longer match the schedule. Review it before accepting."
 )
 SCHEDULE_CHANGED_DROPPED_NOTE = (
+    # "any claim they were holding" rather than a flat "their reservations were released", because
+    # since #646 that is only true of a shipping-out request: a pending shop-assembly opening has
+    # never held one, and telling its manager stock was just freed would be a lie.
     "The hardware schedule was re-uploaded after this request was created and some of its openings "
-    "no longer exist; those were dropped and their inventory reservations released. Review what is "
-    "left before accepting."
+    "no longer exist; those were dropped, along with any claim they were holding on inventory. "
+    "Review what is left before accepting."
 )
 
 
@@ -441,6 +444,12 @@ def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> lis
                     ),
                 ),
             )
+            # A finalize can dispatch a batch and then replace the schedule in the same transaction,
+            # and without this the identity-mapped request comes back carrying the empty `batches`
+            # collection its first load saw - which reads as "never dispatched" and would auto-REJECT
+            # a request that has real hardware on the warehouse floor. Same reasoning as the readers
+            # in shop_assembly_repository.
+            .execution_options(populate_existing=True)
         )
         .unique()
         .all()

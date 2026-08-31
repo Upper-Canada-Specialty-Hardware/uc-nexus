@@ -103,6 +103,14 @@ def _execute(query: str, variables: dict | None = None):
     )
 
 
+# This file's own Clerk subject, not the `u_test` the other schema suites use. `resolve_display_name`
+# memoises name-by-user-id in a module-level TTL cache, so two files stubbing `get_user` differently
+# for the SAME id race: whichever runs first wins, and the other's actor stamps come out as its
+# neighbour's name. A distinct id plus the invalidate below makes the actor assertions this file
+# makes - which are the whole point of recording an actor - independent of test order.
+_MANAGER_ID = "u_shop_assembly_manager"
+
+
 @pytest.fixture
 def as_manager(monkeypatch, db_session):
     """A Shop Assembly Manager whose resolvers run against the test's own session.
@@ -110,13 +118,14 @@ def as_manager(monkeypatch, db_session):
     Resolvers open their own SessionLocal and commit; here that session is the fixture's, and commit
     is turned into flush so the fixture's outer-transaction rollback still isolates the test.
     """
-    monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_test"})
+    monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": _MANAGER_ID})
     monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [SHOP_ASSEMBLY_MANAGER_ROLE])
     monkeypatch.setattr(
         user_repository,
         "get_user",
         lambda user_id: {"first_name": "Morgan", "last_name": "Shop", "email": ""},
     )
+    auth.invalidate_display_name(_MANAGER_ID)
 
     class _Borrowed:
         def __enter__(self):
@@ -127,7 +136,10 @@ def as_manager(monkeypatch, db_session):
 
     monkeypatch.setattr(shop_assembly_module, "SessionLocal", _Borrowed)
     monkeypatch.setattr(db_session, "commit", db_session.flush)
-    return db_session
+    yield db_session
+    # The cache outlives the monkeypatch, so a name stubbed here must not be handed to whatever runs
+    # next under the same id.
+    auth.invalidate_display_name(_MANAGER_ID)
 
 
 # --- the allocation review the manager's screen is built on ------------------------------------

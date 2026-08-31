@@ -169,6 +169,21 @@ def _validated_line(item: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Reads
 # ---------------------------------------------------------------------------
+#
+# Both readers below run with `populate_existing=True`, and it is load-bearing rather than defensive.
+#
+# A request is worked in several steps within ONE transaction - batch it, then dismiss what is left;
+# batch it, then re-read it to build the mutation's response - and every step re-reads the request
+# through these functions. Without `populate_existing` the second read returns the identity-mapped
+# instance from the first with its eagerly-loaded collections UNTOUCHED: SQLAlchemy will not
+# overwrite loaded attributes on an object it already has. So a batch added and flushed a line
+# earlier is simply absent from `request.batches`, and every reading derived from that collection is
+# wrong in the same direction - `reject_shop_assembly_request` lets a batched request through,
+# `_stage_for` sees no live batches and answers DONE, and the mutation's own response carries an
+# empty `batches` list back to the client.
+#
+# `populate_existing` re-populates those collections from the row the query just read. Autoflush
+# writes any pending state before the SELECT, so nothing in flight is lost by the refresh.
 
 
 def get_shop_assembly_requests(
@@ -193,6 +208,7 @@ def get_shop_assembly_requests(
         )
         .where(ShopAssemblyRequest.status == effective_status)
         .order_by(ShopAssemblyRequest.created_at.asc())
+        .execution_options(populate_existing=True)
     )
     if project_id is not None:
         stmt = stmt.where(ShopAssemblyRequest.project_id == project_id)
@@ -221,6 +237,7 @@ def get_shop_assembly_request(session: Session, request_id: uuid.UUID) -> ShopAs
                 selectinload(ShopAssemblyRequest.batches).selectinload(ShopAssemblyBatch.items),
             )
             .where(ShopAssemblyRequest.id == request_id)
+            .execution_options(populate_existing=True)
         )
         .unique()
         .first()
@@ -696,10 +713,15 @@ def discard_shop_assembly_batch(session: Session, batch_id: uuid.UUID) -> ShopAs
             opening.status = ShopAssemblyOpeningStatus.PENDING
             opening.batch_id = None
     _reopen_to_pending(request)
+
+    # Detach before discarding, so deleting the pull does not trip THIS row's foreign key - the same
+    # ordering the #325 reopen used for the request's own pointer. Flushed on its own, because the
+    # DELETE below runs as SQL and cannot see a pending attribute change.
+    batch.pull_request_id = None
     session.flush()
 
     # Guards that the pull is unworked and rolls the whole transaction back if it is not, so the
-    # release and the opening flips above are undone with it.
+    # release, the detach and the opening flips above are all undone with it.
     warehouse_repository.discard_pending_pull_request(session, pull_id)
 
     session.execute(delete(ShopAssemblyBatchItem).where(ShopAssemblyBatchItem.shop_assembly_batch_id == batch.id))
