@@ -13,6 +13,7 @@ import {
   TableHead,
   TableRow,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import { ArrowLeft, ChevronDown, ChevronRight, FileText, Upload } from 'lucide-react';
@@ -36,7 +37,7 @@ import {
   type Headroom,
   type ProductCoverage,
 } from './requestCart';
-import { classificationChip, isShopClassified, SHOP_FRAMING, shopRowTintSx } from './classificationChip';
+import { isShopClassified, SHOP_FRAMING } from './classificationChip';
 import { monoSx, microLabelSx, tabularSx } from '../../../theme';
 
 /** The thin projectOpenings row the picker reads (#608 review): opening fields + the two source-card
@@ -72,8 +73,57 @@ interface Props {
   onScheduledProductsChange?: (scheduled: Map<string, string[]>) => void;
 }
 
-const numCol = { ...tabularSx, width: 1, whiteSpace: 'nowrap' } as const;
+const numCol = { ...tabularSx, width: 1, whiteSpace: 'nowrap', fontSize: '0.8125rem' } as const;
 const contextCol = { ...numCol, color: 'text.secondary' } as const;
+
+/**
+ * #647: the coverage tables have to fit a 1366px laptop without the page ever scrolling sideways, so
+ * cells run on tight padding and headers wrap to two lines instead of holding one long line. Child
+ * combinators keep this off the per-opening table nested inside a cell, which sets its own padding.
+ */
+const denseTableSx = {
+  '& > thead > tr > th': {
+    px: 0.75,
+    py: 0.75,
+    whiteSpace: 'normal',
+    lineHeight: 1.25,
+    verticalAlign: 'bottom',
+  },
+  '& > tbody > tr > td': { px: 0.75, py: 0.5 },
+} as const;
+
+/**
+ * #647: what each numeric column counts, in one plain line.
+ *
+ * Read off the coverage resolver (`backend/app/repositories/request_composer.py`) and the cart's
+ * headroom arithmetic (`requestCart.ts`) rather than from the column name - a definition that is
+ * subtly wrong is worse than no tooltip at all.
+ */
+const PRODUCT_HINTS = {
+  required:
+    'What the hardware schedule says the selected openings take of this product, counted across every leaf.',
+  assembled: 'Already left for these openings by way of the shop bench - a completed shop-assembly pull.',
+  shipped:
+    'Already gone to site for these openings - completed shipping pulls and the packing slips cut from them.',
+  claimed:
+    'Already held for these openings by somebody else - pending requests, and accepted pulls not yet completed.',
+  free: 'Free to add right now: unreserved project stock for this product, less everything this cart already holds of it.',
+  suggested: 'Still owed: required, less what has already left and what others hold. Never below zero.',
+  onOrder:
+    'On a purchase order and not received yet. Counted project-wide for the product, not promised to these openings.',
+  add: 'Units this request will ask for. The number spreads across the selected openings in opening order, each capped at what that opening still needs.',
+} as const;
+
+/** The same columns read per opening rather than summed, so the sub-table says "this door" out loud. */
+const OPENING_HINTS = {
+  required: 'What the hardware schedule says this opening takes of this product, counted across every leaf.',
+  assembled: 'Already left this opening by way of the shop bench - a completed shop-assembly pull.',
+  shipped: 'Already gone to site for this opening - completed shipping pulls and the packing slips cut from them.',
+  claimed:
+    'Already held for this opening by somebody else - pending requests, and accepted pulls not yet completed.',
+  suggested: 'Still owed to this opening: required, less what has already left and what others hold. Never below zero.',
+  add: 'Units this request will ask for on this opening, capped by what is still free in the pool.',
+} as const;
 
 // Trimmed to the fields the thin query carries - toggling a column never reveals a blank the way the
 // wizard's full column set would here. Int/Ext and Keying start hidden; they read as overflow detail.
@@ -92,6 +142,33 @@ const OPENING_COLUMNS: GridColDef<PanelRow>[] = [
 const OPENING_COLUMN_VISIBILITY = { interior_exterior: false, keying: false };
 
 /**
+ * A column header that carries its own definition (#647 - "what does claimed mean again").
+ *
+ * The hint hangs off a dotted underline rather than the info icon the admin grids use: every numeric
+ * column here needs one, and eight icons would cost more width than the numbers they annotate - which
+ * is the very truncation #647 is about. Focusable, so the definition is reachable from the keyboard.
+ */
+function HeaderHint({ label, hint }: { label: string; hint: string }) {
+  return (
+    <Tooltip arrow enterTouchDelay={0} title={hint}>
+      <Box
+        component="span"
+        tabIndex={0}
+        sx={{
+          cursor: 'help',
+          textDecoration: 'underline dotted',
+          textDecorationColor: (t) => t.vars?.palette.divider ?? t.palette.divider,
+          textUnderlineOffset: '3px',
+          '&:focus-visible': { outline: '2px solid', outlineColor: 'secondary.main', outlineOffset: 2 },
+        }}
+      >
+        {label}
+      </Box>
+    </Tooltip>
+  );
+}
+
+/**
  * The openings-first catalog: pick openings, and the schedule says what each still has coming.
  *
  * It opens on a source gate mirroring the import wizard's upload step (#608 follow-up): use the
@@ -104,6 +181,11 @@ const OPENING_COLUMN_VISIBILITY = { interior_exterior: false, keying: false };
  * with no classification gate - shop hardware is offered here too, because a completed shop-assembly
  * pull is a terminal exit and nothing tells this screen which exit a unit takes. A suggested-zero row
  * stays, muted: a schedule lowered below what already shipped still has a story to tell.
+ *
+ * #647 splits the offer into two tables - site hardware and shop hardware - because the two are
+ * loaded, staged and questioned separately, and reading them off one interleaved list meant scanning
+ * a chip column to tell them apart. Both are driven by the same opening selection and share one
+ * nothing-to-add expander.
  *
  * Each row also carries the live Free remainder (#610): the product's ceiling less what the rest of
  * the cart already holds of it, so two selected openings competing for one short pool show it drain
@@ -170,8 +252,8 @@ export default function RequestWorkspaceScheduleTab({
     fetchPolicy: 'cache-and-network',
   });
 
-  // #632: ONE product-level table summed across the selected openings, in category/product order.
-  // The per-opening rows live behind each product's expander.
+  // #632: product-level rows summed across the selected openings, in category/product order. The
+  // per-opening rows live behind each product's expander.
   const aggregates = useMemo(
     () => aggregateCoverageByProduct(coverageData?.requestCoverage ?? []),
     [coverageData],
@@ -203,16 +285,18 @@ export default function RequestWorkspaceScheduleTab({
       return next;
     });
 
-  // Products the global add-all actually contributes to: a suggestion AND a pool behind it.
-  const contributingProducts = useMemo(
-    () =>
-      aggregates.filter((agg) => agg.suggestedQuantity > 0 && (headroom.get(agg.key) ?? 0) > 0).length,
-    [aggregates, headroom],
-  );
+  // #647: which lane a product belongs to. SHOP_HARDWARE is shop; everything else - site-tagged, and
+  // anything the schedule never classified - reads as site, which the site lane's note says out loud.
+  const laneOf = (agg: ProductCoverage) => (isShopClassified(agg.classification) ? 'shop' : 'site');
 
-  const addAllSuggested = () => {
+  // #648: the add-all buttons act per lane, and each counts only the products it would actually
+  // contribute to - a suggestion AND a pool behind it.
+  const contributing = (aggs: ProductCoverage[]) =>
+    aggs.filter((agg) => agg.suggestedQuantity > 0 && (headroom.get(agg.key) ?? 0) > 0).length;
+
+  const addAllSuggested = (aggs: ProductCoverage[]) => {
     let next = cart;
-    for (const agg of aggregates) {
+    for (const agg of aggs) {
       if (agg.suggestedQuantity <= 0) continue;
       next = setProductQuantity(next, agg.rows, agg.suggestedQuantity, headroom);
     }
@@ -339,19 +423,13 @@ export default function RequestWorkspaceScheduleTab({
             None of the selected openings has anything on the schedule.
           </Alert>
         ) : (
-          <Stack spacing={1.5}>
-            <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Button
-                size="small"
-                variant="outlined"
-                disabled={contributingProducts === 0}
-                onClick={addAllSuggested}
-              >
-                Add all suggested - {contributingProducts} product{contributingProducts === 1 ? '' : 's'}
-              </Button>
-            </Box>
+          <Stack spacing={2}>
             {(() => {
               const shownAggs = showDeadRows ? aggregates : visibleAggs;
+              const shownSite = shownAggs.filter((agg) => laneOf(agg) === 'site');
+              const shownShop = shownAggs.filter((agg) => laneOf(agg) === 'shop');
+              const allSite = aggregates.filter((agg) => laneOf(agg) === 'site');
+              const allShop = aggregates.filter((agg) => laneOf(agg) === 'shop');
               const awaiting = hiddenAggs.filter((a) => a.suggestedQuantity > 0);
               const covered = hiddenAggs.length - awaiting.length;
               const onOrderUnits = awaiting.reduce((sum, a) => sum + a.onOrderQuantity, 0);
@@ -365,173 +443,274 @@ export default function RequestWorkspaceScheduleTab({
                 .filter(Boolean)
                 .join(' · ');
               return (
-                <Box sx={{ minWidth: 0 }}>
-                  {shownAggs.length > 0 && (
-                    <TableContainer
-                      sx={{ overflowX: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}
-                    >
-                      <Table size="small">
-                        <TableHead>
-                          <TableRow>
-                            <TableCell sx={{ width: 36, px: 0.5 }} />
-                            <TableCell>Product</TableCell>
-                            <TableCell>Category</TableCell>
-                            <TableCell />
-                            <TableCell align="right">Required by hardware schedule</TableCell>
-                            <TableCell align="right">Through shop</TableCell>
-                            <TableCell align="right">Shipped out</TableCell>
-                            <TableCell align="right">Claimed</TableCell>
-                            <TableCell align="right">Free</TableCell>
-                            <TableCell align="right">Suggested</TableCell>
-                            <TableCell align="right">On order</TableCell>
-                            <TableCell align="right">Add</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {shownAggs.map((agg) => {
-                            const inCart = productLinesQuantity(cart, agg.rows);
-                            const muted = agg.suggestedQuantity === 0 && inCart === 0;
-                            // The live free pool for this product right now - every cart line of it
-                            // (these openings, other openings, the loose lane) already deducted.
-                            const freeNow = remainingForProduct(cart, agg.key, headroom);
-                            // A suggestion the pool cannot cover in full: the lines still go and
-                            // claim what stock can, so this is a flag, not a block.
-                            const short = agg.suggestedQuantity > 0 && freeNow + inCart < agg.suggestedQuantity;
-                            const shop = isShopClassified(agg.classification);
-                            const expanded = expandedProducts.has(agg.key);
-                            return (
-                              <Fragment key={agg.key}>
-                                <TableRow
-                                  hover
-                                  sx={{ opacity: muted ? 0.5 : 1, ...(shop ? shopRowTintSx : null) }}
-                                >
-                                  <TableCell sx={{ px: 0.5 }}>
-                                    <Button
-                                      size="small"
-                                      variant="text"
-                                      onClick={() => toggleProduct(agg.key)}
-                                      aria-label={`${expanded ? 'Hide' : 'Show'} per-opening breakdown for ${agg.productCode}`}
-                                      sx={{ minWidth: 0, p: 0.5, color: 'text.secondary' }}
-                                    >
-                                      {expanded ? (
-                                        <ChevronDown size={16} strokeWidth={1.75} />
-                                      ) : (
-                                        <ChevronRight size={16} strokeWidth={1.75} />
-                                      )}
-                                    </Button>
-                                  </TableCell>
-                                  <TableCell sx={monoSx}>{agg.productCode}</TableCell>
-                                  <TableCell>{agg.hardwareCategory}</TableCell>
-                                  <TableCell>{classificationChip(agg.classification)}</TableCell>
-                                  <TableCell align="right" sx={contextCol}>
-                                    {agg.requiredQuantity}
-                                  </TableCell>
-                                  <TableCell align="right" sx={contextCol}>
-                                    {agg.assembledQuantity}
-                                  </TableCell>
-                                  <TableCell align="right" sx={contextCol}>
-                                    {agg.shippedQuantity}
-                                  </TableCell>
-                                  <TableCell align="right" sx={contextCol}>
-                                    {agg.claimedQuantity}
-                                  </TableCell>
-                                  <TableCell align="right" sx={numCol}>
-                                    {freeNow}
-                                  </TableCell>
-                                  <TableCell
-                                    align="right"
-                                    sx={short ? { ...numCol, color: 'warning.main' } : numCol}
-                                  >
-                                    {agg.suggestedQuantity}
-                                  </TableCell>
-                                  <TableCell align="right" sx={contextCol}>
-                                    {agg.onOrderQuantity}
-                                  </TableCell>
-                                  <TableCell align="right" sx={{ width: 1, whiteSpace: 'nowrap' }}>
-                                    {inCart > 0 ? (
-                                      <TextField
-                                        size="small"
-                                        type="number"
-                                        value={inCart}
-                                        onChange={(e) =>
-                                          onCartChange(
-                                            setProductQuantity(
-                                              cart,
-                                              agg.rows,
-                                              Number.parseInt(e.target.value, 10),
-                                              headroom,
-                                            ),
-                                          )
-                                        }
-                                        slotProps={{
-                                          htmlInput: {
-                                            min: 0,
-                                            'aria-label': `Quantity of ${agg.productCode} across selected openings`,
-                                          },
-                                        }}
-                                        sx={{ width: 76, '& input': { textAlign: 'right' } }}
-                                      />
-                                    ) : (
-                                      <Button
-                                        size="small"
-                                        variant="outlined"
-                                        disabled={agg.suggestedQuantity === 0 || freeNow === 0}
-                                        onClick={() =>
-                                          onCartChange(
-                                            setProductQuantity(cart, agg.rows, agg.suggestedQuantity, headroom),
-                                          )
-                                        }
-                                      >
-                                        Add
-                                      </Button>
-                                    )}
-                                  </TableCell>
-                                </TableRow>
-                                {expanded && (
-                                  <TableRow>
-                                    <TableCell colSpan={12} sx={{ py: 0, bgcolor: 'action.hover' }}>
-                                      <ProductOpeningBreakdown
-                                        agg={agg}
-                                        cart={cart}
-                                        headroom={headroom}
-                                        onCartChange={onCartChange}
-                                        openingMeta={openingMeta}
-                                      />
-                                    </TableCell>
-                                  </TableRow>
-                                )}
-                              </Fragment>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
+                <Stack spacing={2} sx={{ minWidth: 0 }}>
+                  {shownSite.length > 0 && (
+                    <LaneTable
+                      lane="site"
+                      aggs={shownSite}
+                      contributing={contributing(allSite)}
+                      onAddAll={() => addAllSuggested(allSite)}
+                      cart={cart}
+                      headroom={headroom}
+                      onCartChange={onCartChange}
+                      openingMeta={openingMeta}
+                      expandedProducts={expandedProducts}
+                      onToggleProduct={toggleProduct}
+                    />
+                  )}
+                  {shownShop.length > 0 && (
+                    <LaneTable
+                      lane="shop"
+                      aggs={shownShop}
+                      contributing={contributing(allShop)}
+                      onAddAll={() => addAllSuggested(allShop)}
+                      cart={cart}
+                      headroom={headroom}
+                      onCartChange={onCartChange}
+                      openingMeta={openingMeta}
+                      expandedProducts={expandedProducts}
+                      onToggleProduct={toggleProduct}
+                    />
+                  )}
+                  {/* One lane empty is worth saying once, rather than standing an empty table up to
+                      say it - the other lane keeps the full width. */}
+                  {allShop.length === 0 && (
+                    <Typography variant="caption" color="text.secondary">
+                      No shop hardware on the selected openings.
+                    </Typography>
+                  )}
+                  {allSite.length === 0 && (
+                    <Typography variant="caption" color="text.secondary">
+                      No site hardware on the selected openings.
+                    </Typography>
                   )}
                   {hiddenAggs.length > 0 && (
                     <Button
                       size="small"
                       variant="text"
                       onClick={() => setShowDeadRows((prev) => !prev)}
-                      sx={{ mt: 0.25, color: 'text.secondary', fontWeight: 400 }}
+                      sx={{ alignSelf: 'flex-start', color: 'text.secondary', fontWeight: 400 }}
                     >
                       {expanderLabel} - {showDeadRows ? 'hide' : 'show'}
                     </Button>
                   )}
-                </Box>
+                </Stack>
               );
             })()}
-            <Typography component="div" sx={microLabelSx}>
-              A short line still goes - it claims what stock can cover. Quantities spread across the
-              selected openings in opening order, each capped at what that opening still needs.
+            {/* Prose, so it speaks in the caption voice, not the stencil micro-label one. The
+                spreading rule lives on the Add column's own hint; this line only explains the
+                amber shortfall flag. */}
+            <Typography variant="caption" color="text.secondary">
+              A line short of free stock still goes - it claims what stock can cover.
             </Typography>
-            {aggregates.some((agg) => agg.rows.some((r) => isShopClassified(r.classification))) && (
-              <Typography variant="caption" color="text.secondary">
-                {SHOP_FRAMING}
-              </Typography>
-            )}
           </Stack>
         )}
       </Box>
+    </Box>
+  );
+}
+
+interface LaneTableProps {
+  lane: 'site' | 'shop';
+  /** The rows to show in this lane - already filtered by the nothing-to-add expander. */
+  aggs: ProductCoverage[];
+  /** Products the lane's add-all would actually contribute to, counted over the WHOLE lane. */
+  contributing: number;
+  onAddAll: () => void;
+  cart: CartLine[];
+  headroom: Headroom;
+  onCartChange: (next: CartLine[]) => void;
+  openingMeta: Map<string, { building: string | null; floor: string | null }>;
+  expandedProducts: Set<string>;
+  onToggleProduct: (key: string) => void;
+}
+
+/**
+ * #647: one lane of the offer - site hardware or shop hardware - as its own table.
+ *
+ * Both lanes read identically and share the openings picked above; the split is only about not making
+ * a person sort two kinds of hardware out of one interleaved list. The classification chip and the row
+ * tint that used to carry that job are gone: the table a row sits in is the answer, and the two
+ * columns they cost are two columns the 1366px case cannot spare.
+ */
+function LaneTable({
+  lane,
+  aggs,
+  contributing,
+  onAddAll,
+  cart,
+  headroom,
+  onCartChange,
+  openingMeta,
+  expandedProducts,
+  onToggleProduct,
+}: LaneTableProps) {
+  return (
+    <Box sx={{ minWidth: 0 }}>
+      <Stack
+        direction="row"
+        alignItems="flex-start"
+        justifyContent="space-between"
+        gap={1}
+        sx={{ mb: 0.75 }}
+      >
+        <Box sx={{ minWidth: 0 }}>
+          <Typography sx={{ fontWeight: 600 }}>
+            {lane === 'shop' ? 'Shop hardware' : 'Site hardware'}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            {lane === 'shop' ? SHOP_FRAMING : 'Everything the schedule did not tag SHOP.'}
+          </Typography>
+        </Box>
+        <Button
+          size="small"
+          variant="outlined"
+          disabled={contributing === 0}
+          onClick={onAddAll}
+          sx={{ flexShrink: 0 }}
+        >
+          Add all suggested - {lane} ({contributing})
+        </Button>
+      </Stack>
+      <TableContainer sx={{ overflowX: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
+        <Table size="small" sx={denseTableSx}>
+          <TableHead>
+            <TableRow>
+              <TableCell sx={{ width: 32 }} />
+              <TableCell>Product</TableCell>
+              <TableCell>Category</TableCell>
+              <TableCell align="right">
+                <HeaderHint label="Required" hint={PRODUCT_HINTS.required} />
+              </TableCell>
+              <TableCell align="right">
+                <HeaderHint label="Through shop" hint={PRODUCT_HINTS.assembled} />
+              </TableCell>
+              <TableCell align="right">
+                <HeaderHint label="Shipped out" hint={PRODUCT_HINTS.shipped} />
+              </TableCell>
+              <TableCell align="right">
+                <HeaderHint label="Claimed" hint={PRODUCT_HINTS.claimed} />
+              </TableCell>
+              <TableCell align="right">
+                <HeaderHint label="Free" hint={PRODUCT_HINTS.free} />
+              </TableCell>
+              <TableCell align="right">
+                <HeaderHint label="Suggested" hint={PRODUCT_HINTS.suggested} />
+              </TableCell>
+              <TableCell align="right">
+                <HeaderHint label="On order" hint={PRODUCT_HINTS.onOrder} />
+              </TableCell>
+              <TableCell align="right">
+                <HeaderHint label="Add" hint={PRODUCT_HINTS.add} />
+              </TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {aggs.map((agg) => {
+              const inCart = productLinesQuantity(cart, agg.rows);
+              const muted = agg.suggestedQuantity === 0 && inCart === 0;
+              // The live free pool for this product right now - every cart line of it (these
+              // openings, other openings, the loose lane) already deducted.
+              const freeNow = remainingForProduct(cart, agg.key, headroom);
+              // A suggestion the pool cannot cover in full: the lines still go and claim what stock
+              // can, so this is a flag, not a block.
+              const short = agg.suggestedQuantity > 0 && freeNow + inCart < agg.suggestedQuantity;
+              const expanded = expandedProducts.has(agg.key);
+              return (
+                <Fragment key={agg.key}>
+                  <TableRow hover sx={{ opacity: muted ? 0.5 : 1 }}>
+                    <TableCell>
+                      <Button
+                        size="small"
+                        variant="text"
+                        onClick={() => onToggleProduct(agg.key)}
+                        aria-label={`${expanded ? 'Hide' : 'Show'} per-opening breakdown for ${agg.productCode}`}
+                        sx={{ minWidth: 0, p: 0.25, color: 'text.secondary' }}
+                      >
+                        {expanded ? (
+                          <ChevronDown size={16} strokeWidth={1.75} />
+                        ) : (
+                          <ChevronRight size={16} strokeWidth={1.75} />
+                        )}
+                      </Button>
+                    </TableCell>
+                    <TableCell sx={{ ...monoSx, overflowWrap: 'anywhere' }}>{agg.productCode}</TableCell>
+                    <TableCell sx={{ fontSize: '0.8125rem' }}>{agg.hardwareCategory}</TableCell>
+                    <TableCell align="right" sx={contextCol}>
+                      {agg.requiredQuantity}
+                    </TableCell>
+                    <TableCell align="right" sx={contextCol}>
+                      {agg.assembledQuantity}
+                    </TableCell>
+                    <TableCell align="right" sx={contextCol}>
+                      {agg.shippedQuantity}
+                    </TableCell>
+                    <TableCell align="right" sx={contextCol}>
+                      {agg.claimedQuantity}
+                    </TableCell>
+                    <TableCell align="right" sx={numCol}>
+                      {freeNow}
+                    </TableCell>
+                    <TableCell align="right" sx={short ? { ...numCol, color: 'warning.main' } : numCol}>
+                      {agg.suggestedQuantity}
+                    </TableCell>
+                    <TableCell align="right" sx={contextCol}>
+                      {agg.onOrderQuantity}
+                    </TableCell>
+                    <TableCell align="right" sx={{ width: 1, whiteSpace: 'nowrap' }}>
+                      {inCart > 0 ? (
+                        <TextField
+                          size="small"
+                          type="number"
+                          value={inCart}
+                          onChange={(e) =>
+                            onCartChange(
+                              setProductQuantity(cart, agg.rows, Number.parseInt(e.target.value, 10), headroom),
+                            )
+                          }
+                          slotProps={{
+                            htmlInput: {
+                              min: 0,
+                              'aria-label': `Quantity of ${agg.productCode} across selected openings`,
+                            },
+                          }}
+                          sx={{ width: 68, '& input': { textAlign: 'right', px: 1 } }}
+                        />
+                      ) : (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          disabled={agg.suggestedQuantity === 0 || freeNow === 0}
+                          onClick={() =>
+                            onCartChange(setProductQuantity(cart, agg.rows, agg.suggestedQuantity, headroom))
+                          }
+                        >
+                          Add
+                        </Button>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                  {expanded && (
+                    <TableRow>
+                      {/* The lane table's own padding rule outranks a plain cell sx, so the
+                          breakdown's flush edge is doubled to win it. */}
+                      <TableCell colSpan={11} sx={{ '&&': { p: 0 }, bgcolor: 'action.hover' }}>
+                        <ProductOpeningBreakdown
+                          agg={agg}
+                          cart={cart}
+                          headroom={headroom}
+                          onCartChange={onCartChange}
+                          openingMeta={openingMeta}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </Fragment>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
     </Box>
   );
 }
@@ -550,27 +729,27 @@ interface ProductOpeningBreakdownProps {
 function ProductOpeningBreakdown({ agg, cart, headroom, onCartChange, openingMeta }: ProductOpeningBreakdownProps) {
   return (
     <Box sx={{ py: 1, minWidth: 0 }}>
-      <Table size="small" sx={{ '& td, & th': { border: 0, py: 0.4 } }}>
+      <Table size="small" sx={{ '& td, & th': { border: 0, px: 0.75, py: 0.4 } }}>
         <TableHead>
           <TableRow>
             <TableCell sx={microLabelSx}>Opening</TableCell>
             <TableCell sx={microLabelSx} align="right">
-              Required
+              <HeaderHint label="Required" hint={OPENING_HINTS.required} />
             </TableCell>
             <TableCell sx={microLabelSx} align="right">
-              Through shop
+              <HeaderHint label="Through shop" hint={OPENING_HINTS.assembled} />
             </TableCell>
             <TableCell sx={microLabelSx} align="right">
-              Shipped out
+              <HeaderHint label="Shipped out" hint={OPENING_HINTS.shipped} />
             </TableCell>
             <TableCell sx={microLabelSx} align="right">
-              Claimed
+              <HeaderHint label="Claimed" hint={OPENING_HINTS.claimed} />
             </TableCell>
             <TableCell sx={microLabelSx} align="right">
-              Suggested
+              <HeaderHint label="Suggested" hint={OPENING_HINTS.suggested} />
             </TableCell>
             <TableCell sx={microLabelSx} align="right">
-              Add
+              <HeaderHint label="Add" hint={OPENING_HINTS.add} />
             </TableCell>
           </TableRow>
         </TableHead>
@@ -633,7 +812,7 @@ function ProductOpeningBreakdown({ agg, cart, headroom, onCartChange, openingMet
                           'aria-label': `Quantity of ${row.productCode} for ${row.openingNumber}`,
                         },
                       }}
-                      sx={{ width: 76, '& input': { textAlign: 'right' } }}
+                      sx={{ width: 68, '& input': { textAlign: 'right', px: 1 } }}
                     />
                   ) : (
                     <Button

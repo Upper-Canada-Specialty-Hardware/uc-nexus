@@ -289,10 +289,11 @@ describe('from-schedule source gate', () => {
     // Free is the openings-first addition (#610): the live pool remainder for the product.
     expect(screen.getByText('Free')).toBeInTheDocument();
     const cells = within(productCell.closest('tr') as HTMLElement).getAllByRole('cell');
-    // #632: expander / Product / Category / chip / Required / Through shop / Shipped out / Claimed /
+    // #632/#647: expander / Product / Category / Required / Through shop / Shipped out / Claimed /
     // Free / Suggested / On order / Add - one row per PRODUCT, summed over the selected openings.
-    expect(cells[8]).toHaveTextContent('10'); // Free = availability (10), nothing in the cart yet
-    expect(cells[9]).toHaveTextContent('4'); // Suggested
+    // The classification chip column went with the lane split (#647): the table a row sits in says it.
+    expect(cells[7]).toHaveTextContent('10'); // Free = availability (10), nothing in the cart yet
+    expect(cells[8]).toHaveTextContent('4'); // Suggested
   });
 
   it('flags a suggestion the free pool cannot cover, but still offers the add', async () => {
@@ -309,10 +310,10 @@ describe('from-schedule source gate', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Filter' }));
     const productCell = await screen.findByText('HG-100', {}, SLOW);
     const cells = within(productCell.closest('tr') as HTMLElement).getAllByRole('cell');
-    expect(cells[8]).toHaveTextContent('2'); // Free clamped to what stock can cover
-    expect(cells[9]).toHaveTextContent('4'); // Suggested still the full owed figure
+    expect(cells[7]).toHaveTextContent('2'); // Free clamped to what stock can cover
+    expect(cells[8]).toHaveTextContent('4'); // Suggested still the full owed figure
     // A shortfall does not block the add - the line goes and claims what stock can cover.
-    expect(within(cells[11]).getByRole('button', { name: 'Add' })).toBeEnabled();
+    expect(within(cells[10]).getByRole('button', { name: 'Add' })).toBeEnabled();
   });
 });
 
@@ -344,10 +345,10 @@ function coverageMockRows(rows: Array<Record<string, unknown>>): MockedResponse 
   };
 }
 
-async function reachCoverage(extraMocks: MockedResponse[]) {
+async function reachCoverage(extraMocks: MockedResponse[], availability: MockedResponse = availabilityMock()) {
   renderAt('/app/shipping/requests/new?projectId=proj-1', [
     projectsMock(),
-    availabilityMock(),
+    availability,
     scheduleOpeningsMock(),
     ...extraMocks,
   ]);
@@ -418,6 +419,152 @@ describe('composer collapse', () => {
     // The per-opening breakdown behind the expander still names the door the units are owed to.
     fireEvent.click(screen.getByRole('button', { name: 'Show per-opening breakdown for HG-100' }));
     expect(await screen.findByRole('spinbutton', { name: 'Quantity of HG-100 for 101' }, SLOW)).toHaveValue(2);
+  });
+});
+
+// #647: the offer splits into a site table and a shop table, both driven by the openings picked
+// above. #648: each lane owns its own add-all button.
+
+/** Two pools, so a shop-classified product has stock behind it and is not collapsed as dead. */
+function twoLaneAvailabilityMock(): MockedResponse {
+  return {
+    request: { query: GET_PROJECT_INVENTORY_AVAILABILITY, variables: { projectId: 'proj-1' } },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+    result: {
+      data: {
+        projectInventoryAvailability: [
+          {
+            hardwareCategory: 'HINGE',
+            productCode: 'HG-100',
+            onHandQuantity: 10,
+            deficientQuantity: 0,
+            reservedQuantity: 0,
+            availableQuantity: 10,
+            classification: null,
+          },
+          {
+            hardwareCategory: 'CLOSER',
+            productCode: 'CL-500',
+            onHandQuantity: 6,
+            deficientQuantity: 0,
+            reservedQuantity: 0,
+            availableQuantity: 6,
+            classification: 'SHOP_HARDWARE',
+          },
+        ],
+      },
+    },
+  };
+}
+
+const shopRow = () =>
+  coverageRow({
+    hardwareCategory: 'CLOSER',
+    productCode: 'CL-500',
+    classification: 'SHOP_HARDWARE',
+    owedQuantity: 2,
+    suggestedQuantity: 2,
+  });
+
+async function reachTwoLanes() {
+  await reachCoverage(
+    [coverageMockRows([coverageRow(), shopRow()])],
+    twoLaneAvailabilityMock(),
+  );
+  await screen.findByText('HG-100', {}, SLOW);
+}
+
+describe('site / shop lanes', () => {
+  it('puts each product in its own lane table', async () => {
+    await reachTwoLanes();
+    expect(screen.getByText('Site hardware')).toBeInTheDocument();
+    expect(screen.getByText('Shop hardware')).toBeInTheDocument();
+
+    const [site, shop] = screen.getAllByRole('table');
+    expect(within(site).getByText('HG-100')).toBeInTheDocument();
+    expect(within(site).queryByText('CL-500')).not.toBeInTheDocument();
+    expect(within(shop).getByText('CL-500')).toBeInTheDocument();
+    expect(within(shop).queryByText('HG-100')).not.toBeInTheDocument();
+  });
+
+  it('says so in one line rather than standing an empty lane table up', async () => {
+    await reachCoverage([coverageMockRows([coverageRow()])]);
+    await screen.findByText('HG-100', {}, SLOW);
+    expect(screen.getAllByRole('table')).toHaveLength(1);
+    expect(screen.getByText('No shop hardware on the selected openings.')).toBeInTheDocument();
+  });
+
+  it('adds all suggested for one lane only', async () => {
+    await reachTwoLanes();
+    fireEvent.click(screen.getByRole('button', { name: 'Add all suggested - shop (1)' }));
+
+    expect(
+      await screen.findByRole('spinbutton', { name: 'Quantity of CL-500 across selected openings' }, SLOW),
+    ).toHaveValue(2);
+    // The site lane is untouched: its row still offers the add rather than a quantity.
+    expect(
+      screen.queryByRole('spinbutton', { name: 'Quantity of HG-100 across selected openings' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add all suggested - site (1)' })).toBeEnabled();
+  });
+
+  it('disables a lane add-all with no product behind it', async () => {
+    // The shop product is suggested but has no pool, so it is not a product the button can serve.
+    await reachCoverage([coverageMockRows([coverageRow(), shopRow()])]);
+    await screen.findByText('HG-100', {}, SLOW);
+    fireEvent.click(screen.getByRole('button', { name: /with nothing to add/ }));
+    expect(await screen.findByText('CL-500', {}, SLOW)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add all suggested - shop (0)' })).toBeDisabled();
+  });
+});
+
+// #647: every numeric column carries its own definition, because "claimed" cannot be guessed at.
+
+describe('column definitions', () => {
+  it('defines a numeric column on hover', async () => {
+    await reachCoverage([coverageMock()]);
+    await screen.findByText('HG-100', {}, SLOW);
+    fireEvent.mouseOver(screen.getByText('Claimed'));
+    const tip = await screen.findByRole('tooltip', {}, SLOW);
+    expect(tip).toHaveTextContent(/pending requests/i);
+  });
+});
+
+// #649: the cart lives in a drawer opened on demand, with a launcher carrying its live totals.
+
+describe('cart drawer', () => {
+  it('opens itself on the first add and reopens from the launcher', async () => {
+    await reachCoverage([coverageMock()]);
+    await screen.findByText('HG-100', {}, SLOW);
+
+    const launcher = screen.getByRole('button', { name: /Open the request cart/i });
+    expect(launcher).toHaveTextContent('Request');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    // The drawer takes over: its own header carries the totals, so the launcher stands down.
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /Open the request cart/i })).not.toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close the request cart' }));
+    expect(await screen.findByRole('button', { name: /Open the request cart/i }, SLOW)).toHaveTextContent(
+      '1 product · 4 units',
+    );
+  });
+
+  it('opens on mount for an edit, submit button and all', async () => {
+    renderAt('/app/shipping/requests/req-1/edit', [
+      projectsMock(),
+      availabilityMock(),
+      openingsMock(),
+      requestMock(),
+    ]);
+    // The seeded request is what the drawer is for, so it starts open - no launcher in the way.
+    expect(await screen.findByRole('button', { name: 'Save request' }, SLOW)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Open the request cart/i })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('spinbutton', { name: 'Cart quantity of HG-100 loose' }),
+    ).toHaveValue(2);
   });
 });
 

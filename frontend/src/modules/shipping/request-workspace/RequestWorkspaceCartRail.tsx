@@ -1,5 +1,5 @@
 import { Box, Button, Chip, IconButton, LinearProgress, Stack, TextField, Tooltip, Typography } from '@mui/material';
-import { Trash2 } from 'lucide-react';
+import { Trash2, X } from 'lucide-react';
 import {
   cartGroups,
   removeLine,
@@ -20,6 +20,10 @@ interface Props {
   mode: 'create' | 'edit';
   /** Empty the whole cart (create mode only - an edit seeds from the request and cannot be blanked). */
   onClear?: () => void;
+  /** Dismiss the drawer the rail lives in (#649). */
+  onClose?: () => void;
+  /** The close button, so the workspace can land keyboard focus on it when the launcher opens the drawer. */
+  closeButtonRef?: React.Ref<HTMLButtonElement>;
 }
 
 /**
@@ -30,6 +34,10 @@ interface Props {
  * loose line for the same product sit in the same group under one ceiling, because the pool they
  * draw from does not care which tab added them. There is no request-number field: the server mints
  * the number from the project's counter (#493), so a typed one was only ever discarded.
+ *
+ * #649 moved it into an on-demand drawer, so it draws no frame of its own - the drawer paper is the
+ * frame - and its controls name themselves "cart" so they never collide with the identically shaped
+ * quantity fields in the tables behind it.
  */
 export default function RequestWorkspaceCartRail({
   cart,
@@ -39,6 +47,8 @@ export default function RequestWorkspaceCartRail({
   submitting,
   mode,
   onClear,
+  onClose,
+  closeButtonRef,
 }: Props) {
   const groups = cartGroups(cart, headroom);
   const units = totalUnits(cart);
@@ -52,20 +62,27 @@ export default function RequestWorkspaceCartRail({
         flexDirection: 'column',
         height: '100%',
         minWidth: 0,
-        border: '1px solid',
-        borderColor: 'divider',
-        borderRadius: 1,
-        bgcolor: 'background.paper',
       }}
     >
       <Box sx={{ px: 2, py: 1.5, borderBottom: '1px solid', borderColor: 'divider' }}>
-        <Stack direction="row" alignItems="baseline" justifyContent="space-between" gap={1}>
+        <Stack direction="row" alignItems="center" gap={1}>
           <Typography variant="subtitle2">Request</Typography>
-          <Typography variant="caption" color="text.secondary" sx={tabularSx}>
+          <Typography variant="caption" color="text.secondary" sx={{ ...tabularSx, ml: 'auto' }}>
             {cart.length === 0
               ? 'empty'
               : `${plural(groups.length, 'product')} · ${plural(units, 'unit')}`}
           </Typography>
+          {onClose && (
+            <IconButton
+              ref={closeButtonRef}
+              size="small"
+              aria-label="Close the request cart"
+              onClick={onClose}
+              edge="end"
+            >
+              <X size={16} strokeWidth={1.75} />
+            </IconButton>
+          )}
         </Stack>
       </Box>
 
@@ -73,8 +90,8 @@ export default function RequestWorkspaceCartRail({
         {groups.length === 0 ? (
           <Box sx={{ p: 2 }}>
             <Typography variant="body2" color="text.secondary">
-              Nothing added yet. Pick openings on the From Schedule tab, or take stock off the From
-              Inventory tab.
+              Nothing added yet. Pick openings to see what the schedule still owes them, or take stock
+              from the extras lane.
             </Typography>
           </Box>
         ) : (
@@ -117,7 +134,12 @@ export default function RequestWorkspaceCartRail({
                               {line.openingNumber}
                             </Typography>
                           ) : (
-                            <Chip label="no opening" size="small" variant="outlined" sx={{ height: 18, fontSize: '0.65rem' }} />
+                            <Chip
+                              label="no opening"
+                              size="small"
+                              variant="outlined"
+                              sx={{ height: 18, fontSize: '0.6875rem' }}
+                            />
                           )}
                         </Box>
                         <TextField
@@ -137,7 +159,7 @@ export default function RequestWorkspaceCartRail({
                           slotProps={{
                             htmlInput: {
                               min: 0,
-                              'aria-label': `Quantity of ${line.productCode}${line.openingNumber ? ` for ${line.openingNumber}` : ' loose'}`,
+                              'aria-label': `Cart quantity of ${line.productCode}${line.openingNumber ? ` for ${line.openingNumber}` : ' loose'}`,
                             },
                           }}
                           sx={{ width: 72, '& input': { textAlign: 'right' } }}
@@ -145,7 +167,7 @@ export default function RequestWorkspaceCartRail({
                         <Tooltip title="Remove" arrow>
                           <IconButton
                             size="small"
-                            aria-label={`Remove ${line.productCode}${line.openingNumber ? ` for ${line.openingNumber}` : ' loose'}`}
+                            aria-label={`Remove ${line.productCode}${line.openingNumber ? ` for ${line.openingNumber}` : ' loose'} from the request`}
                             onClick={() => onCartChange(removeLine(cart, line))}
                           >
                             <Trash2 size={16} strokeWidth={1.75} />
