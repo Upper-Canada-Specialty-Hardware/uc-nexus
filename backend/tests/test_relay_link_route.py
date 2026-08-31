@@ -49,7 +49,7 @@ def _enroll_committed(label: str, company: str, secret: str) -> str:
     """Enroll an install and COMMIT it: the route opens its own SessionLocal(), so it only sees
     committed rows, not this test's transaction. Returns the install id for cleanup."""
     with SessionLocal() as session:
-        _, token = relay_repository.provision_install(session, label=label, company=company)
+        _, token = relay_repository.provision_install(session, label=label, companies=[company])
         enrolled = relay_repository.enroll_install(session, token, hostname=label, secret=secret)
         install_id = enrolled.id
         session.commit()

@@ -277,9 +277,11 @@ interface POTableRowProps {
   onOpen: () => void;
   // #353 PR E: this PO has a GP write on the outbox. Joined client-side, not a per-row resolver.
   gpWriteQueued: boolean;
+  // #637: only Admin/Manager sees more than one company's POs here, so only they get the column.
+  showCompany: boolean;
 }
 
-function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued }: POTableRowProps) {
+function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, showCompany }: POTableRowProps) {
   const hugSx = { width: '1%', whiteSpace: 'nowrap' as const };
   return (
     <TableRow
@@ -305,6 +307,9 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued }: P
           </Typography>
         )}
       </TableCell>
+      {showCompany && (
+        <TableCell sx={{ ...hugSx, ...monoSx, color: 'text.secondary' }}>{po.gpCompany || '-'}</TableCell>
+      )}
       <TableCell sx={hugSx}>
         {po.poNumber ? (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
@@ -405,7 +410,11 @@ function POListPage() {
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  const { connected: relayConnected } = useRelayStatus();
+  const relay = useRelayStatus();
+  const relayConnected = relay.connected;
+  // #637: the register is the combined view for an admin - every company's POs at once - so the row
+  // has to say which company's it is. A scoped caller only ever gets their own; no column needed.
+  const columnCount = isAdmin ? PO_TABLE_COLUMN_COUNT + 1 : PO_TABLE_COLUMN_COUNT;
 
   // #353 PR E: which POs have a GP write still on the outbox, joined onto rows client-side on
   // entityKey (`po:<id>`) rather than as a per-row resolver (which would be an N+1).
@@ -546,7 +555,7 @@ function POListPage() {
         <Typography variant="h5" sx={{ flex: 1 }}>
           Purchase Orders
         </Typography>
-        <RelayStatusChip connected={relayConnected} />
+        <RelayStatusChip connected={relayConnected} companies={relay.companies} />
         {isAdmin && (
           <Button
             variant="outlined"
@@ -696,6 +705,7 @@ function POListPage() {
           <TableHead>
             <TableRow>
               <TableCell sx={{ width: '1%', whiteSpace: 'nowrap' }}>Project</TableCell>
+              {isAdmin && <TableCell sx={{ width: '1%', whiteSpace: 'nowrap' }}>Company</TableCell>}
               <SortHeader field="poNumber" label="PO / Request #" sortState={sort} onSort={handleSortClick} />
               <SortHeader field="status" label="Status" sortState={sort} onSort={handleSortClick} />
               <SortHeader field="vendor" label="Vendor" hug={false} sortState={sort} onSort={handleSortClick} />
@@ -711,14 +721,14 @@ function POListPage() {
           <TableBody>
             {pageLoading && (
               <TableRow>
-                <TableCell colSpan={PO_TABLE_COLUMN_COUNT} align="center" sx={{ py: 4 }}>
+                <TableCell colSpan={columnCount} align="center" sx={{ py: 4 }}>
                   <CircularProgress size={24} />
                 </TableCell>
               </TableRow>
             )}
             {!pageLoading && rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={PO_TABLE_COLUMN_COUNT} align="center" sx={{ py: 4 }}>
+                <TableCell colSpan={columnCount} align="center" sx={{ py: 4 }}>
                   <Typography variant="body2" color="text.secondary">
                     No purchase orders match the current filters.
                   </Typography>
@@ -734,6 +744,7 @@ function POListPage() {
                   projectName={projectNameOf(po)}
                   onOpen={() => handleOpenPO(po.id)}
                   gpWriteQueued={queuedPoIds.has(po.id)}
+                  showCompany={isAdmin}
                 />
               ))}
           </TableBody>

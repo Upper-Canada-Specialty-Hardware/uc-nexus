@@ -33,7 +33,7 @@ from .inventory_fixtures import make_stock_item
 
 
 def _make_project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p
@@ -46,6 +46,7 @@ def _po(session, project, status, lines):
         request_number=f"PO-REQ-{uuid.uuid4().hex[:6]}",
         project_id=project.id,
         status=status,
+        company="TUBC",
     )
     session.add(po)
     session.flush()

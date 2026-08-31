@@ -1,16 +1,20 @@
-import { useState, useCallback } from 'react';
-import { Button, Stack, TextField, FormControlLabel, Checkbox, Typography } from '@mui/material';
+import { useState, useCallback, useMemo } from 'react';
+import { Button, MenuItem, Stack, TextField, FormControlLabel, Checkbox, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { CREATE_WAREHOUSE, UPDATE_WAREHOUSE } from '../../graphql/admin';
 import { GET_WAREHOUSES } from '../../graphql/shared';
-import { FONT_MONO, microLabelSx } from '../../theme';
+import { useRelayStatus } from '../../relay/useRelayStatus';
+import { useCompanyChoice } from '../../relay/useCompanyChoice';
+import { FONT_MONO, microLabelSx, monoSx } from '../../theme';
 
 export interface WarehouseFormValue {
   id?: string;
   name: string;
   code: string;
+  /** #637: the GP company that owns the building. */
+  company: string;
   address: string | null;
   city: string | null;
   province: string | null;
@@ -29,6 +33,7 @@ interface WarehouseEditDialogProps {
 const EMPTY: WarehouseFormValue = {
   name: '',
   code: '',
+  company: '',
   address: '',
   city: '',
   province: '',
@@ -51,6 +56,7 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
           id: initialWarehouse.id,
           name: initialWarehouse.name,
           code: initialWarehouse.code,
+          company: initialWarehouse.company,
           address: initialWarehouse.address ?? '',
           city: initialWarehouse.city ?? '',
           province: initialWarehouse.province ?? '',
@@ -61,6 +67,18 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
       : EMPTY,
   );
   const [fieldError, setFieldError] = useState('');
+
+  // #637: a warehouse belongs to a GP company. New buildings default to the caller's own; an
+  // existing row keeps whatever it holds even if the relay serving that company is between runs.
+  const relay = useRelayStatus();
+  const choice = useCompanyChoice(relay.companies);
+  const company = form.company || choice.company;
+  const companyOptions = useMemo(() => {
+    const list = [...choice.options];
+    if (company && !list.includes(company)) list.push(company);
+    return list;
+  }, [choice.options, company]);
+  const companyLocked = companyOptions.length <= 1;
 
   const onError = (err: { message: string }) => {
     if (err.message.toLowerCase().includes('already exists')) {
@@ -109,9 +127,14 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
       setFieldError('Warehouse code is required');
       return;
     }
+    if (!company) {
+      setFieldError('A GP company is required. Connect the relay to pick one.');
+      return;
+    }
     const payload = {
       name: trimmedName,
       code: trimmedCode,
+      company,
       address: form.address?.trim() || null,
       city: form.city?.trim() || null,
       province: form.province?.trim() || null,
@@ -124,7 +147,7 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
     } else {
       createWarehouse({ variables: { input: payload } });
     }
-  }, [form, createWarehouse, updateWarehouse]);
+  }, [form, company, createWarehouse, updateWarehouse]);
 
   const actions = (
     <Stack direction="row" spacing={1}>
@@ -167,6 +190,24 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
             sx={{ width: 140, '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
             inputProps={{ maxLength: 20 }}
           />
+          {/* #637: which GP company owns the building. Read-only when there is nothing to pick -
+              one company on the relay, or the relay is down and the row keeps what it has. */}
+          <TextField
+            select={!companyLocked}
+            label="Company"
+            value={companyLocked ? company || '—' : company}
+            onChange={(e) => setForm((f) => ({ ...f, company: e.target.value }))}
+            required
+            size="small"
+            disabled={companyLocked}
+            sx={{ width: 140, '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
+          >
+            {companyOptions.map((c) => (
+              <MenuItem key={c} value={c} sx={monoSx}>
+                {c}
+              </MenuItem>
+            ))}
+          </TextField>
         </Stack>
         <Typography component="div" sx={{ ...microLabelSx, pt: 0.5 }}>
           Address

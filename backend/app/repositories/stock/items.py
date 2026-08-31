@@ -22,6 +22,8 @@ def get_stock_items(
     only_deficient: bool = False,
     warehouse_id: uuid.UUID | None = None,
     only_unlocated: bool = False,
+    *,
+    company: str | None = None,
 ) -> list[StockItem]:
     """List stock_items optionally filtered by product code, category, aisle, deficient-only, or
     unlocated-only (no aisle - the rows the Put Away stock section works through).
@@ -51,6 +53,11 @@ def get_stock_items(
         stmt = stmt.where(StockItem.warehouse_id == warehouse_id)
     if only_unlocated:
         stmt = stmt.where(StockItem.aisle.is_(None))
+    if company is not None:
+        from app.repositories import tenancy
+
+        # Stock is jobless, so it scopes through its warehouse rather than a project (#637).
+        stmt = stmt.where(StockItem.warehouse_id.in_(tenancy.warehouse_ids_for(company)))
     return list(session.scalars(stmt).all())
 
 

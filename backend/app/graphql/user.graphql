@@ -31,6 +31,10 @@ type ClerkUser {
   # the picker, not this mutation: updateUserGpBuyerId still accepts any string, and rows written as
   # free text before #409 are unmigrated, which is why the Buyers grid flags unregistered ids.
   gp_buyer_id: String
+  # The GP company this account belongs to - its tenant (#637), from Clerk publicMetadata.company.
+  # Null means unassigned. An Admin/Manager is unscoped whatever this says; everyone else reads and
+  # writes only rows belonging to this company, and an unassigned non-admin reads nothing.
+  company: String
   image_url: String!
 }
 
@@ -50,4 +54,7 @@ type Mutation {
   updateUserName(userId: String!, firstName: String!, lastName: String!): ClerkUser!
   # Link a UC Nexus account to the GP BUYERID it acts as (#216); null clears it.
   updateUserGpBuyerId(userId: String!, gpBuyerId: String): ClerkUser!
+  # Assign the account's GP company - its tenant (#637); null clears it. Decides which company's
+  # rows the account can read and write at all, so it sits at the same bar as updateUserRoles.
+  updateUserCompany(userId: String!, company: String): ClerkUser!
 }

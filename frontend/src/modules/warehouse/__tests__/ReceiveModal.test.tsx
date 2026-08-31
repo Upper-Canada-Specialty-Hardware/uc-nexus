@@ -42,6 +42,7 @@ function warehousesMock(): MockedResponse {
             id: 'wh-1',
             name: 'Main',
             code: 'MAIN',
+            company: 'TUBC',
             address: null,
             city: null,
             province: null,

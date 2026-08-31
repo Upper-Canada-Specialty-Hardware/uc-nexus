@@ -51,6 +51,8 @@ def get_pull_requests(
     source=None,
     status=None,
     statuses=None,
+    *,
+    company: str | None = None,
 ) -> list[PullRequestModel]:
     """
     Query PullRequest WHERE deleted_at IS NULL, optionally filtered by project_id.
@@ -75,6 +77,10 @@ def get_pull_requests(
         stmt = stmt.where(PullRequestModel.status == status)
     if statuses:
         stmt = stmt.where(PullRequestModel.status.in_(statuses))
+    if company is not None:
+        from app.repositories import tenancy
+
+        stmt = stmt.where(PullRequestModel.project_id.in_(tenancy.project_ids_for(company)))
     stmt = stmt.order_by(PullRequestModel.created_at.asc())
     return list(session.scalars(stmt).unique().all())
 

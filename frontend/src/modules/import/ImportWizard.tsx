@@ -422,11 +422,13 @@ export default function ImportWizard({
   // #490/#627: the GP job's cost codes, read once for the whole PO step. Lifted here from
   // PurchaseOrdersStep so the Next gate can require a cost code when the list loaded, while the step
   // renders the alert and the DraftCard renders the required select from the same source. Cost codes
-  // are per GP job, so the read is keyed on the job number and the connected relay's company. Scoped to
+  // are per GP job, so the read is keyed on the job number and the company that holds it. Scoped to
   // the PO purpose: only that path reads cost codes, so the openings/assembly/schedule paths must not
   // run the 10s relay poll for nothing.
+  // #637: the company comes off the PROJECT, not the relay - the relay can serve several now, and
+  // the only one this job's cost codes live in is the one that owns the job.
   const relay = useRelayStatus({ skip: !open || purpose !== 'po' });
-  const relayCompany = relay.company ?? '';
+  const relayCompany = project.company ?? '';
   const gpJobNumber = project.projectId ?? null;
   const {
     data: costCodesData,

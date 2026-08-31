@@ -280,14 +280,18 @@ async def run_forever() -> None:
     logger.info("gp outbox worker started")
     while True:
         try:
-            # No relay, or a relay for another company: nothing claimable, so do not even open a
-            # transaction. This is the steady state during an outage and must be cheap.
-            company = relay_gateway.company if relay_gateway.connected else None
-            if company is not None:
+            # No relay: nothing claimable, so do not even open a transaction. This is the steady
+            # state during an outage and must be cheap. With a relay connected, each company it
+            # serves is claimed for in turn (#637) - the queue is keyed by company, so a write for
+            # one must not sit behind another company having nothing to drain.
+            drained = False
+            for company in relay_gateway.companies if relay_gateway.connected else []:
                 row_id = await asyncio.to_thread(_claim, company)
                 if row_id is not None:
                     await _drain_one(row_id)
-                    continue  # keep draining while there is work
+                    drained = True
+            if drained:
+                continue  # keep draining while there is work
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001

@@ -25,9 +25,10 @@ of being inserted as NULL.
 One table cannot be restored by row. `buyer_assignment_projects` is keyed on `projects.id`, and
 projects do not survive a reset - they are re-adopted from GP afterwards with **new** UUIDs, so every
 snapshotted `project_id` is stale the moment the schema drops. It is snapshotted as
-`(buyer_assignment_id, GP job number)` pairs instead and re-linked by job number once the GP sync has
-re-adopted the projects. The left side stays valid because `buyer_assignments` rows do come back with
-their original UUIDs.
+`(buyer_assignment_id, company, GP job number)` triples instead and re-linked on that pair once the GP
+sync has re-adopted the projects - the company is half of a job's identity since #637, so a job number
+alone would re-attach the buyer to whichever company's project of that number came back last. The left
+side stays valid because `buyer_assignments` rows do come back with their original UUIDs.
 """
 
 import logging
@@ -77,7 +78,8 @@ class ResetSnapshot:
     # Table name -> the rows to put back, as plain dicts. Plain on purpose: the ORM model is about to
     # have its table dropped, so nothing here may hold a live identity-mapped instance.
     rows: dict[str, list[dict]] = field(default_factory=dict)
-    # (buyer_assignment_id, job_number) pairs - see the module docstring for why these are not rows.
+    # (buyer_assignment_id, company, job_number) triples - see the module docstring for why these are
+    # not rows, and #637 for why the company rides along.
     buyer_project_pairs: list[dict] = field(default_factory=list)
 
     @property
@@ -139,7 +141,11 @@ def snapshot(conn: Connection) -> ResetSnapshot:
         projects = Project.__table__
         pairs = select(
             buyer_assignment_projects.c.buyer_assignment_id,
-            # projects.project_id IS the GP job number; there is no schedule_id column.
+            # projects.project_id IS the GP job number; there is no schedule_id column. The company
+            # travels with it since #637, because a job number is only unique within one - without it
+            # a relink would re-attach the buyer to whichever company's project of that number the
+            # sync happened to re-adopt last.
+            projects.c.company,
             projects.c.project_id.label("job_number"),
         ).select_from(buyer_assignment_projects.join(projects, projects.c.id == buyer_assignment_projects.c.project_id))
         snap.buyer_project_pairs = [dict(r) for r in conn.execute(pairs).mappings()]
@@ -192,14 +198,22 @@ def relink_buyer_projects(conn: Connection, pairs: list[dict]) -> tuple[int, int
         return 0, 0
 
     projects = Project.__table__
-    by_job = {row.project_id: row.id for row in conn.execute(select(projects.c.project_id, projects.c.id))}
+    # Keyed by (company, job number) since #637: a job number alone is no longer an identity, and a
+    # single-column map would silently re-attach the buyer to another company's project.
+    by_job = {
+        (row.company, row.project_id): row.id
+        for row in conn.execute(select(projects.c.company, projects.c.project_id, projects.c.id))
+    }
     # A buyer whose own row failed to restore has nothing to hang the link on; inserting anyway would
     # fail the FK and 500 the reset after the schema is already rebuilt and committed.
     live_buyers = {row.id for row in conn.execute(select(BuyerAssignment.__table__.c.id))}
     rows = [
-        {"buyer_assignment_id": pair["buyer_assignment_id"], "project_id": by_job[pair["job_number"]]}
+        {
+            "buyer_assignment_id": pair["buyer_assignment_id"],
+            "project_id": by_job[(pair["company"], pair["job_number"])],
+        }
         for pair in pairs
-        if pair["job_number"] in by_job and pair["buyer_assignment_id"] in live_buyers
+        if (pair["company"], pair["job_number"]) in by_job and pair["buyer_assignment_id"] in live_buyers
     ]
     if rows:
         conn.execute(insert(buyer_assignment_projects), rows)

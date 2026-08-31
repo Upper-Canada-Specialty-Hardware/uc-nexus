@@ -23,6 +23,7 @@ def _make_po(session, *, buyer_id: str | None = None):
             }
         ],
         buyer_id=buyer_id,
+        company="TUBC",
     )
 
 

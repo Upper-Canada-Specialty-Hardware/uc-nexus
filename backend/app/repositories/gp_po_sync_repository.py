@@ -303,6 +303,10 @@ def upsert_mirrored_po(
             po_number=po_number,
             request_number=None,
             origin=POOrigin.GP,
+            # The tenant (#637) and the GP company are the same value on a mirrored PO, and are still
+            # two columns: `company` is never null and is what every scoped read filters on, while
+            # `gp_company` stays the record of where in GP the PO actually lives.
+            company=company,
             gp_company=company,
             project_id=project_id,
             gp_vendor_id=vendor_id,

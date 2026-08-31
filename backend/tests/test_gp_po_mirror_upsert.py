@@ -44,7 +44,7 @@ def _po(po_number, lines, *, source="work", vendor_id="V1", vendor_name="Acme", 
 
 @pytest.fixture
 def project(db_session):
-    p = Project(id=uuid.uuid4(), project_id="J1", description="Job One")
+    p = Project(id=uuid.uuid4(), project_id="J1", description="Job One", company="TUBC")
     db_session.add(p)
     db_session.flush()
     return p
@@ -134,6 +134,7 @@ def test_converges_into_nexus_row_without_touching_overlay(db_session, project):
         cost_code="210-200-2",
         notes="hand-typed note",
         vendor_quote_number="Q-999",
+        company="TUBC",
     )
     db_session.add(nexus)
     db_session.flush()
@@ -180,6 +181,7 @@ def test_status_below_registration_preserves_vendor_confirmed(db_session, projec
         gp_company=COMPANY,
         project_id=project.id,
         status=POStatus.VENDOR_CONFIRMED,
+        company="TUBC",
     )
     db_session.add(nexus)
     db_session.flush()
@@ -194,7 +196,7 @@ def test_status_below_registration_preserves_vendor_confirmed(db_session, projec
 
 def test_gp_origin_project_is_write_once_never_repointed(db_session, project):
     # A second project the PO's job could later match.
-    other = Project(id=uuid.uuid4(), project_id="J9", description="Job Nine")
+    other = Project(id=uuid.uuid4(), project_id="J9", description="Job Nine", company="TUBC")
     db_session.add(other)
     db_session.flush()
 
@@ -221,7 +223,7 @@ def test_write_once_fills_a_null_project_when_the_job_appears_later(db_session, 
     db_session.flush()
     assert _get(db_session, "PO301").project_id is None
     # The project gets adopted later; the next pass fills the still-NULL project.
-    late = Project(id=uuid.uuid4(), project_id="J-LATE", description="Adopted later")
+    late = Project(id=uuid.uuid4(), project_id="J-LATE", description="Adopted later", company="TUBC")
     db_session.add(late)
     db_session.flush()
     sync_repo.upsert_mirrored_po(
@@ -321,6 +323,7 @@ def test_legacy_null_company_row_converges_instead_of_duplicating(db_session, pr
         gp_company=None,
         project_id=project.id,
         status=POStatus.GP_REGISTERED,
+        company="TUBC",
     )
     db_session.add(legacy)
     db_session.flush()

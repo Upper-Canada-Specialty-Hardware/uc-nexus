@@ -29,6 +29,21 @@ beforeAll(() => {
   }
 });
 
+// #637: the project picker badges the company for an admin, so it reads identity. Stubbed rather
+// than mounting a Clerk provider this file has no other use for.
+vi.mock('../../../../hooks/useIdentity', () => ({
+  useIdentity: () => ({
+    displayName: 'Me',
+    userId: 'me',
+    roles: [],
+    hasRole: () => false,
+    isAdmin: false,
+    gpBuyerId: null,
+    company: 'TUBC',
+    user: null,
+  }),
+}));
+
 /** Renders the current URL so a test can assert where the "upload a newer schedule" hand-off went. */
 function LocationProbe() {
   const loc = useLocation();
@@ -56,6 +71,7 @@ function projectsMock(): MockedResponse {
             client: null,
             jobSiteName: null,
             scheduleFilename: null,
+            company: 'TUBC',
             openingCount: 4,
             gpSetupOk: true,
             gpSetupCheckedAt: null,

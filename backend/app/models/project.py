@@ -9,10 +9,20 @@ from . import Base
 
 class Project(Base):
     __tablename__ = "projects"
-    __table_args__ = (UniqueConstraint("project_id", name="uq_projects_project_id"),)
+    # A GP job number is only unique WITHIN a company (#637): TUBC and UCSH can both hold job 1001 and
+    # they are two different projects. The single-column constraint migration 024 added would let the
+    # first company to adopt a number lock every other company out of it.
+    __table_args__ = (UniqueConstraint("company", "project_id", name="uq_projects_company_project_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # The GP company that owns this project - the tenant (#637). Stamped from the relay install the
+    # sync/create ran against; every non-admin read and write is filtered on it.
+    company: Mapped[str] = mapped_column(String(15), nullable=False, index=True)
     project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # Hidden from the project picker every module reads, and from nothing else (#637). Archiving is a
+    # visibility decision, not a lifecycle one: POs, inventory and shipments on an archived project
+    # keep working exactly as they did.
+    archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     description: Mapped[str | None] = mapped_column(String, nullable=True)
     client: Mapped[str | None] = mapped_column(String, nullable=True)
     job_site_name: Mapped[str | None] = mapped_column(String, nullable=True)

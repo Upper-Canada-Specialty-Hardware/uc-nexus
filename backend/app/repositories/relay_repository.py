@@ -26,21 +26,38 @@ def list_installs(session: Session) -> list[RelayInstall]:
     return list(session.scalars(select(RelayInstall).order_by(RelayInstall.created_at.desc())).all())
 
 
-def provision_install(session: Session, label: str, company: str) -> tuple[RelayInstall, str]:
+def normalize_companies(companies: list[str] | None) -> list[str]:
+    """The GP companies an install may serve, cleaned for storage (#637): trimmed, uppercased,
+    de-duplicated, order preserved. Raises rather than storing an empty or over-long code - the list is
+    what relay_call's membership check is made against, so a blank entry there would be a company
+    nothing could ever match and a silent hole in the install's reach."""
+    cleaned: list[str] = []
+    for raw in companies or []:
+        code = (raw or "").strip().upper()
+        if not code:
+            continue
+        if len(code) > 15:
+            raise ValidationError(f"GP company '{code}' is longer than 15 characters", field="companies")
+        if code not in cleaned:
+            cleaned.append(code)
+    if not cleaned:
+        raise ValidationError("at least one GP company is required", field="companies")
+    return cleaned
+
+
+def provision_install(session: Session, label: str, companies: list[str]) -> tuple[RelayInstall, str]:
     """Create an install row + a one-time enrollment token. Returns (install, raw_token); the raw token
     is shown to the admin ONCE and only its hash is stored."""
     label = (label or "").strip()
-    company = (company or "").strip()
     if not label:
         raise ValidationError("label is required", field="label")
-    if not company:
-        raise ValidationError("company is required", field="company")
+    cleaned_companies = normalize_companies(companies)
 
     token = secrets.token_urlsafe(32)
     install = RelayInstall(
         id=uuid.uuid4(),
         label=label,
-        company=company,
+        companies=cleaned_companies,
         enrollment_token_hash=hash_token(token),
         enrollment_token_expires_at=datetime.utcnow() + _ENROLLMENT_TTL,
     )
@@ -132,7 +149,7 @@ def delete_install(session: Session, install_id: uuid.UUID) -> dict | None:
     snapshot = {
         "id": str(install.id),
         "label": install.label,
-        "company": install.company,
+        "companies": list(install.companies or []),
         "hostname": install.hostname,
         "enrolled_at": install.enrolled_at.isoformat() if install.enrolled_at else None,
     }

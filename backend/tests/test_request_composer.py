@@ -49,7 +49,7 @@ CAT, CODE = "HINGE", "HG-100"
 
 
 def _project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p
@@ -608,6 +608,7 @@ def test_on_order_counts_placed_pos_and_nets_off_what_arrived(db_session):
         request_number=f"REQ-{uuid.uuid4().hex[:6]}",
         project_id=project.id,
         status=POStatus.PARTIALLY_RECEIVED,
+        company="TUBC",
     )
     db_session.add(po)
     db_session.flush()
@@ -639,6 +640,7 @@ def test_a_draft_po_is_not_on_order(db_session):
         request_number=f"REQ-{uuid.uuid4().hex[:6]}",
         project_id=project.id,
         status=POStatus.DRAFT,
+        company="TUBC",
     )
     db_session.add(po)
     db_session.flush()

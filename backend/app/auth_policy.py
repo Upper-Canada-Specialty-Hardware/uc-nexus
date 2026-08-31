@@ -159,11 +159,16 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "updatePoLineItemUnitCost": SIGNED_IN,
     "uploadPoDocument": SIGNED_IN,
     # --- project.py -----------------------------------------------------------------------
+    # `adminProjectDetail` is admin for the same reason `adminProjects` is: it is the other half of
+    # the admin Projects page, and its three rollups span a project's whole purchasing, inventory and
+    # shipping state. `setProjectArchived` decides what every module's picker offers.
+    "adminProjectDetail": ADMIN_ROLE,
     "adminProjects": ADMIN_ROLE,
     "projectByScheduleId": SIGNED_IN,
     "projectShipTo": SIGNED_IN,
     "projects": SIGNED_IN,
     "createGpJob": ADMIN_ROLE,
+    "setProjectArchived": ADMIN_ROLE,
     "syncGpJobs": ADMIN_ROLE,
     "syncGpPos": ADMIN_ROLE,
     "updateProject": ADMIN_ROLE,
@@ -273,6 +278,9 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # Admin/Manager, the role every other admin entry in this table is gated on, so an open copy is a
     # self-service escalation into all of them.
     "users": ADMIN_ROLE,
+    # `updateUserCompany` decides which company's rows an account can read and write at all (#637),
+    # so it sits at the same bar as `updateUserRoles` beside it.
+    "updateUserCompany": ADMIN_ROLE,
     "updateUserGpBuyerId": ADMIN_ROLE,
     "updateUserName": ADMIN_ROLE,
     "updateUserRoles": ADMIN_ROLE,

@@ -12,9 +12,10 @@ import uuid
 
 import strawberry
 
-from app.auth import current_user, resolve_display_name
+from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
 from app.repositories import stock as stock_repository
+from app.repositories import tenancy
 
 from .converters import (
     deficiency_review_to_type,
@@ -66,6 +67,7 @@ class StockQueries:
                 only_deficient=only_deficient,
                 warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
                 only_unlocated=only_unlocated,
+                company=tenant_scope(info),
             )
             return [stock_item_to_type(r) for r in rows]
 
@@ -73,6 +75,7 @@ class StockQueries:
     def stock_item(self, info: strawberry.Info, id: strawberry.ID) -> StockItem | None:
         with SessionLocal() as session:
             try:
+                tenancy.require_stock_item_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
                 row = stock_repository.get_stock_item(session, uuid.UUID(str(id)))
             except Exception:
                 return None
@@ -86,10 +89,14 @@ class StockQueries:
         source: DeficientItemSource | None = None,
     ) -> list[DeficientItemRow]:
         with SessionLocal() as session:
+            scope = tenant_scope(info)
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            tenancy.require_project_in_scope(session, pid, scope)
             rows = stock_repository.get_deficient_items(
                 session,
-                project_id=uuid.UUID(str(project_id)) if project_id else None,
+                project_id=pid,
                 source=source,
+                company=scope,
             )
             return [deficient_item_row_to_type(r) for r in rows]
 
@@ -102,11 +109,15 @@ class StockQueries:
         project_id: strawberry.ID | None = None,
     ) -> list[DeficiencyReview]:
         with SessionLocal() as session:
+            scope = tenant_scope(info)
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            tenancy.require_project_in_scope(session, pid, scope)
             rows = stock_repository.get_deficiency_reviews(
                 session,
                 inventory_location_id=(uuid.UUID(str(inventory_location_id)) if inventory_location_id else None),
                 stock_item_id=uuid.UUID(str(stock_item_id)) if stock_item_id else None,
-                project_id=uuid.UUID(str(project_id)) if project_id else None,
+                project_id=pid,
+                company=scope,
             )
             return [deficiency_review_to_type(r) for r in rows]
 
@@ -118,6 +129,9 @@ class StockMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_inventory_location_in_scope(
+                session, uuid.UUID(str(input.inventory_location_id)), tenant_scope(info)
+            )
             result = stock_repository.destock_inventory(
                 session,
                 inventory_location_id=uuid.UUID(str(input.inventory_location_id)),
@@ -138,10 +152,17 @@ class StockMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            scope = tenant_scope(info)
+            source_id = uuid.UUID(str(input.source_id))
+            if input.source_type.value == "STOCK_ITEM":
+                tenancy.require_stock_item_in_scope(session, source_id, scope)
+            else:
+                tenancy.require_inventory_location_in_scope(session, source_id, scope)
+            tenancy.require_warehouse_in_scope(session, uuid.UUID(str(input.dest_warehouse_id)), scope)
             result = stock_repository.transfer_inventory(
                 session,
                 source_type=input.source_type.value,
-                source_id=uuid.UUID(str(input.source_id)),
+                source_id=source_id,
                 quantity=input.quantity,
                 dest_warehouse_id=uuid.UUID(str(input.dest_warehouse_id)),
                 dest_aisle=input.dest_aisle,
@@ -161,6 +182,9 @@ class StockMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            scope = tenant_scope(info)
+            tenancy.require_stock_item_in_scope(session, uuid.UUID(str(input.stock_item_id)), scope)
+            tenancy.require_project_in_scope(session, uuid.UUID(str(input.project_id)), scope)
             result = stock_repository.allocate_stock_to_project(
                 session,
                 stock_item_id=uuid.UUID(str(input.stock_item_id)),
@@ -182,6 +206,7 @@ class StockMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_stock_item_in_scope(session, uuid.UUID(str(input.stock_item_id)), tenant_scope(info))
             result = stock_repository.adjust_stock_quantity(
                 session,
                 stock_item_id=uuid.UUID(str(input.stock_item_id)),
@@ -198,6 +223,7 @@ class StockMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_stock_item_in_scope(session, uuid.UUID(str(input.stock_item_id)), tenant_scope(info))
             result = stock_repository.move_stock_location(
                 session,
                 stock_item_id=uuid.UUID(str(input.stock_item_id)),
@@ -222,6 +248,7 @@ class StockMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_stock_item_in_scope(session, uuid.UUID(str(stock_item_id)), tenant_scope(info))
             result = stock_repository.assign_stock_item_location(
                 session,
                 stock_item_id=uuid.UUID(str(stock_item_id)),
@@ -239,6 +266,7 @@ class StockMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_stock_item_in_scope(session, uuid.UUID(str(stock_item_id)), tenant_scope(info))
             result = stock_repository.mark_stock_item_unlocated(
                 session,
                 stock_item_id=uuid.UUID(str(stock_item_id)),
@@ -253,6 +281,7 @@ class StockMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_stock_item_in_scope(session, uuid.UUID(str(input.stock_item_id)), tenant_scope(info))
             new_row, original = stock_repository.reclassify_stock_item(
                 session,
                 stock_item_id=uuid.UUID(str(input.stock_item_id)),
@@ -280,6 +309,9 @@ class StockMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_inventory_location_in_scope(
+                session, uuid.UUID(str(input.inventory_location_id)), tenant_scope(info)
+            )
             il = stock_repository.report_inventory_deficiency(
                 session,
                 inventory_location_id=uuid.UUID(str(input.inventory_location_id)),
@@ -298,6 +330,7 @@ class StockMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_stock_item_in_scope(session, uuid.UUID(str(input.stock_item_id)), tenant_scope(info))
             si = stock_repository.report_stock_deficiency(
                 session,
                 stock_item_id=uuid.UUID(str(input.stock_item_id)),
@@ -316,6 +349,11 @@ class StockMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            scope = tenant_scope(info)
+            if input.inventory_location_id:
+                tenancy.require_inventory_location_in_scope(session, uuid.UUID(str(input.inventory_location_id)), scope)
+            if input.stock_item_id:
+                tenancy.require_stock_item_in_scope(session, uuid.UUID(str(input.stock_item_id)), scope)
             review = stock_repository.resolve_deficiency(
                 session,
                 inventory_location_id=(

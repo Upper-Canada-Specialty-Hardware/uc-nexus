@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import strawberry
 
-from app.auth import current_user
+from app.auth import current_user, tenant_scope
 from app.database import SessionLocal
 from app.errors import InventoryShortfallError
 from app.repositories import (
@@ -14,6 +14,7 @@ from app.repositories import (
     project_repository,
     shipping_repository,
     shop_assembly_repository,
+    tenancy,
 )
 from app.services import notification_service
 
@@ -42,6 +43,7 @@ class ImportQueries:
         self, info: strawberry.Info, project_id: strawberry.ID
     ) -> ProjectHardwareSchedule | None:
         with SessionLocal() as session:
+            tenancy.require_project_in_scope(session, uuid.UUID(str(project_id)), tenant_scope(info))
             data = import_repository.get_project_hardware_schedule(session, uuid.UUID(str(project_id)))
             if data is None:
                 return None
@@ -53,6 +55,7 @@ class ImportQueries:
         its source card shows. The thin counterpart to `project_hardware_schedule` above (#608 review):
         it never materializes the HardwareItem rows a three-field selection does not read."""
         with SessionLocal() as session:
+            tenancy.require_project_in_scope(session, uuid.UUID(str(project_id)), tenant_scope(info))
             data = import_repository.get_project_openings(session, uuid.UUID(str(project_id)))
             return ProjectOpenings(
                 openings=[ProjectOpeningRow(**row) for row in data["openings"]],
@@ -76,6 +79,7 @@ class ImportQueries:
             for item in items
         ]
         with SessionLocal() as session:
+            tenancy.require_project_in_scope(session, uuid.UUID(str(project_id)), tenant_scope(info))
             results = import_repository.reconcile_schedule(session, uuid.UUID(str(project_id)), items_data)
             return [
                 ReconciliationResult(
@@ -91,6 +95,7 @@ class ImportQueries:
     @strawberry.field
     def project_excluded_items(self, info: strawberry.Info, project_id: strawberry.ID) -> list[ProjectExcludedItem]:
         with SessionLocal() as session:
+            tenancy.require_project_in_scope(session, uuid.UUID(str(project_id)), tenant_scope(info))
             rows = import_repository.list_excluded_items(session, uuid.UUID(str(project_id)))
             return [
                 ProjectExcludedItem(
@@ -260,6 +265,7 @@ class ImportMutations:
         input_data = finalize_payload(input, created_by_user_id=current_user(info)["user_id"])
 
         with SessionLocal() as session:
+            tenancy.require_project_in_scope(session, uuid.UUID(str(input.project_id)), tenant_scope(info))
             # #342: creating a shop-assembly or shipping-out request gates on available inventory
             # (on-hand - deficient - other requests' reservations) and reserves what it takes. A
             # short selection raises InventoryShortfallError and nothing is written, so the creator

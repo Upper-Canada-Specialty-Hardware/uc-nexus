@@ -5,7 +5,7 @@ import uuid
 
 import strawberry
 
-from app.auth import current_user
+from app.auth import current_user, tenant_scope
 from app.database import SessionLocal
 from app.errors import (
     ConflictError,
@@ -18,6 +18,7 @@ from app.errors import (
 from app.models.relay_install import RelayInstall
 from app.repositories import relay_repository
 from app.services import relay_adopt
+from app.services import relay_gateway as relay_gateway_module
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import (
@@ -77,6 +78,54 @@ _GP_ADDRESS_FIELDS = (
 )
 
 
+def _sole_relay_company() -> str:
+    """The connected relay's company when it serves exactly one, for the two GP writes that predate
+    multi-company and take no company of their own (#637).
+
+    An install serving several has no default and says so: guessing which GP company a buyer or a
+    customer address is written into is not a mistake that can be undone from here."""
+    available = relay_gateway.companies
+    if len(available) == 1:
+        return available[0]
+    if not available:
+        raise RelayUnavailableError(
+            "The GP relay is not connected, so this cannot be written to GP. Start the relay and try again."
+        )
+    raise ValidationError(
+        f"The connected relay serves several GP companies ({', '.join(available)}); name the one to use.",
+        field="company",
+    )
+
+
+def resolve_gp_company(info: strawberry.Info, company: str) -> str:
+    """The GP company a passthrough read may actually be made for (#637).
+
+    Two gates, and both matter. The relay one is old: a company the live install does not serve fails
+    every read anyway, so refusing here turns a 30s round trip into a message naming what IS available.
+    The tenant one is new: `gpJobs(company: "UCSH")` is a read of another company's job master, and
+    nothing about the relay stops a UCSH-less user asking for it - only the caller's own scope does.
+    Admin/Manager is unscoped and may ask for any company the relay serves."""
+    requested = relay_gateway_module.normalize_company(company)
+    if not requested:
+        raise ValidationError("A GP company is required.", field="company")
+
+    available = relay_gateway.companies
+    if not available:
+        raise RelayUnavailableError(
+            "The GP relay is not connected, so GP cannot be read. Start the relay and try again."
+        )
+    if requested not in available:
+        raise ValidationError(
+            f"The connected relay does not serve {requested}. It is enrolled for {', '.join(available)}.",
+            field="company",
+        )
+
+    scope = tenant_scope(info)
+    if scope is not None and requested != scope:
+        raise ValidationError(f"Your account can only read GP company {scope}.", field="company")
+    return requested
+
+
 @strawberry.type
 class RelayQueries:
     @strawberry.field
@@ -101,12 +150,12 @@ class RelayQueries:
 
     @strawberry.field
     def relay_status(self, info: strawberry.Info) -> RelayStatus:
-        """Whether the outbound relay WS channel is currently connected (and, if so, the GP company it is
-        enrolled for), for the relay status chip and the company-aware PO/receive/adopt dialogs."""
+        """Whether the outbound relay WS channel is currently connected (and, if so, the GP companies it
+        is enrolled for), for the relay status chip and the company-aware PO/receive/adopt dialogs."""
         live_install = relay_gateway.install_id
         return RelayStatus(
             connected=relay_gateway.connected,
-            company=relay_gateway.company,
+            companies=relay_gateway.companies,
             build=relay_gateway.build,
             install_id=strawberry.ID(str(live_install)) if live_install else None,
         )
@@ -114,19 +163,19 @@ class RelayQueries:
     @strawberry.field
     async def gp_jobs(self, info: strawberry.Info, company: str) -> list[GpJob]:
         """Live job master (JC00102) via the connected relay."""
-        result = await relay_gateway.relay_call(company, "list_jobs")
+        result = await relay_gateway.relay_call(resolve_gp_company(info, company), "list_jobs")
         return [gp_job_to_type(j) for j in result["jobs"]]
 
     @strawberry.field
     async def gp_vendors(self, info: strawberry.Info, company: str) -> list[GpVendor]:
         """Live active vendor list (PM00200) via the connected relay."""
-        result = await relay_gateway.relay_call(company, "list_vendors")
+        result = await relay_gateway.relay_call(resolve_gp_company(info, company), "list_vendors")
         return [gp_vendor_to_type(v) for v in result["vendors"]]
 
     @strawberry.field
     async def gp_buyers(self, info: strawberry.Info, company: str) -> list[str]:
         """Registered GP buyers (POP00101) via the connected relay, for the Create PO buyer dropdown."""
-        result = await relay_gateway.relay_call(company, "list_buyers")
+        result = await relay_gateway.relay_call(resolve_gp_company(info, company), "list_buyers")
         return result["buyers"]
 
     @strawberry.field
@@ -138,13 +187,13 @@ class RelayQueries:
         list is ordinary working data every PO creator needs, but the descriptions are a staff roster
         by another name ('Don Roberton', and in the production company every buyer's email), and the
         only consumers are admin-only screens."""
-        result = await relay_gateway.relay_call(company, "list_buyers_detailed")
+        result = await relay_gateway.relay_call(resolve_gp_company(info, company), "list_buyers_detailed")
         return [gp_buyer_to_type(b) for b in result["buyers"]]
 
     @strawberry.field
     async def gp_cost_codes(self, info: strawberry.Info, company: str, job: str) -> list[GpCostCode]:
         """Active per-job cost codes (JC00701) via the connected relay, for the Create PO cost-code dropdown."""
-        result = await relay_gateway.relay_call(company, "list_cost_codes", {"job": job})
+        result = await relay_gateway.relay_call(resolve_gp_company(info, company), "list_cost_codes", {"job": job})
         return [gp_cost_code_to_type(c) for c in result["cost_codes"]]
 
     @strawberry.field
@@ -163,21 +212,23 @@ class RelayQueries:
         usable account for comes back mapped=false for the picker to render disabled rather than hide.
         Hiding it would leave the user hunting for a code they can see in GP; disabling it says the
         division is what needs fixing."""
-        result = await relay_gateway.relay_call(company, "list_cost_code_master", {"division": division})
+        result = await relay_gateway.relay_call(
+            resolve_gp_company(info, company), "list_cost_code_master", {"division": division}
+        )
         return [gp_cost_code_master_entry_to_type(c) for c in result["cost_codes"]]
 
     @strawberry.field
     async def gp_tax_details(self, info: strawberry.Info, company: str) -> list[GpTaxDetail]:
         """Live GP purchase tax details (TX00201, TXDTLTYP=2) via the connected relay, for the
         register-PO tax-detail dropdown (issue #257)."""
-        result = await relay_gateway.relay_call(company, "list_tax_details")
+        result = await relay_gateway.relay_call(resolve_gp_company(info, company), "list_tax_details")
         return [gp_tax_detail_to_type(t) for t in result["tax_details"]]
 
     @strawberry.field
     async def gp_customers(self, info: strawberry.Info, company: str) -> list[GpCustomer]:
         """Live customer master (RM00101) via the connected relay, for the create-job customer picker
         (#380)."""
-        result = await relay_gateway.relay_call(company, "list_customers")
+        result = await relay_gateway.relay_call(resolve_gp_company(info, company), "list_customers")
         return [gp_customer_to_type(c) for c in result["customers"]]
 
     @strawberry.field
@@ -187,7 +238,9 @@ class RelayQueries:
         """One customer's address codes (RM00102) via the connected relay, for the create-job job and
         bill-to address pickers (#380). Scoped to the customer because the job proc validates the codes
         against that customer's addresses."""
-        result = await relay_gateway.relay_call(company, "list_customer_addresses", {"customer": customer})
+        result = await relay_gateway.relay_call(
+            resolve_gp_company(info, company), "list_customer_addresses", {"customer": customer}
+        )
         return [gp_customer_address_to_type(a) for a in result["addresses"]]
 
     @strawberry.field
@@ -200,14 +253,14 @@ class RelayQueries:
         its only consumer is create_gp_job's dialog, which is already admin-only - so gating it at
         merely signed-in would hand the staff list to every warehouse and assembly user for no
         benefit. A vendor or customer list is ordinary working data; a payroll master is not."""
-        result = await relay_gateway.relay_call(company, "list_employees")
+        result = await relay_gateway.relay_call(resolve_gp_company(info, company), "list_employees")
         return [gp_employee_to_type(e) for e in result["employees"]]
 
     @strawberry.field
     async def gp_tax_schedules(self, info: strawberry.Info, company: str) -> list[GpTaxSchedule]:
         """Live tax schedule master (TX00101) via the connected relay, for the create-job tax-schedule
         and use-tax-schedule pickers (#380). Not gpTaxDetails, which reads TX00201 details."""
-        result = await relay_gateway.relay_call(company, "list_tax_schedules")
+        result = await relay_gateway.relay_call(resolve_gp_company(info, company), "list_tax_schedules")
         return [gp_tax_schedule_to_type(s) for s in result["tax_schedules"]]
 
     @strawberry.field
@@ -215,14 +268,16 @@ class RelayQueries:
         """WennSoft divisions that have division accounts set up, via the connected relay, for the
         create-job division picker (#380). Bare strings, like gpBuyers: the division code is the only
         label GP has for it."""
-        result = await relay_gateway.relay_call(company, "list_divisions")
+        result = await relay_gateway.relay_call(resolve_gp_company(info, company), "list_divisions")
         return result["divisions"]
 
     @strawberry.field
     async def gp_po_totals(self, info: strawberry.Info, company: str, po_number: str) -> GpPoTotals | None:
         """GP-computed header totals (POP10100) for a PO, read live via the connected relay - auto-fills
         the generated PO document (issue #230). Returns null if the PO isn't found in GP."""
-        result = await relay_gateway.relay_call(company, "read_po_totals", {"po_number": po_number})
+        result = await relay_gateway.relay_call(
+            resolve_gp_company(info, company), "read_po_totals", {"po_number": po_number}
+        )
         if result is None or result.get("totals") is None:
             return None
         t = result["totals"]
@@ -266,7 +321,7 @@ class RelayQueries:
                     ],
                 )
 
-        result = await relay_gateway.relay_call(gp_company, "list_vendors")
+        result = await relay_gateway.relay_call(resolve_gp_company(info, gp_company), "list_vendors")
         ranked = manufacturer_match.rank_vendors(manufacturer, result["vendors"])
         return VendorSuggestion(
             manufacturer=manufacturer,
@@ -294,19 +349,15 @@ class RelayMutations:
         now that id had to already exist - so onboarding a new buyer meant opening GP locally to add
         one. This is the same registration GP's Buyer Maintenance window performs.
 
-        `company` defaults to whatever the connected relay is enrolled for, which is the only company
-        it could be written to anyway; passing it explicitly is for symmetry with the gp_* reads.
+        `company` defaults to the connected relay's single company, which since #637 only holds when
+        the install serves exactly one - an install serving several has no default and the caller must
+        say which, because writing a buyer into the wrong GP company is not a recoverable mistake.
 
         Admin-only, and writing to the accounting system of record - the same bar create_gp_job sets.
         Note there is no delete counterpart: eConnect exposes no proc for it, and removing a buyer
         rows-deep in POP00101 by hand would bypass the business logic that rule exists to protect."""
 
-        target = company or relay_gateway.company
-        if not target:
-            raise RelayUnavailableError(
-                "The GP relay is not connected, so this buyer cannot be registered in GP. "
-                "Start the relay and try again."
-            )
+        target = resolve_gp_company(info, company or _sole_relay_company())
 
         # Bounded here as well as in the relay's CreateBuyerRequest: an over-length id would otherwise
         # travel a full round-trip to come back as a generic invalid_payload, and GP's char widths are
@@ -351,9 +402,9 @@ class RelayMutations:
         told about meant abandoning the dialog, opening GP to add the address, and starting over. This
         is the write half of that picker, and its only consumer.
 
-        No company argument, unlike createGpBuyer: the connected relay is enrolled for exactly one GP
-        company, which is the only one this could be written to anyway, and that is how createGpJob
-        resolves it in the dialog this feeds.
+        `input.company` is optional and falls back to the relay's single company, which is unambiguous
+        only while the install serves exactly one (#637). The create-job dialog this feeds chooses a
+        company explicitly and should send the same one.
 
         Nothing is persisted in Nexus. The address lives in GP, and gpCustomerAddresses is how it comes
         back - which is why the answer here is GP's own stored row rather than the input echoed back.
@@ -362,11 +413,7 @@ class RelayMutations:
         this can never overwrite an address accounting maintains in GP.
         """
 
-        company = relay_gateway.company
-        if not company:
-            raise RelayUnavailableError(
-                "The GP relay is not connected, so this address cannot be created in GP. Start the relay and try again."
-            )
+        company = resolve_gp_company(info, input.company or _sole_relay_company())
 
         # Trimmed and bounded here as well as in the relay's CreateCustomerAddressRequest, for the
         # reason create_gp_buyer gives above: the relay's model is the server-side truth, but it can
@@ -421,16 +468,20 @@ class RelayMutations:
         return gp_customer_address_to_type(result["address"])
 
     @strawberry.mutation
-    def provision_relay_install(self, info: strawberry.Info, label: str, company: str) -> RelayInstallProvision:
+    def provision_relay_install(self, info: strawberry.Info, label: str, companies: list[str]) -> RelayInstallProvision:
         """Admin: create a relay install + a one-time enrollment token shown ONCE. The relay uses the
-        token during setup to register its self-generated Bearer secret (which never comes back here)."""
+        token during setup to register its self-generated Bearer secret (which never comes back here).
+
+        `companies` is every GP company this install may be called for (#637) - the relay's own
+        allowed_companies list, recorded on the backend side. Non-empty, each code uppercased and
+        bounded at GP's char(15)."""
         with SessionLocal() as session:
-            install, token = relay_repository.provision_install(session, label=label, company=company)
+            install, token = relay_repository.provision_install(session, label=label, companies=companies)
             session.commit()
             return RelayInstallProvision(
                 install_id=strawberry.ID(str(install.id)),
                 label=install.label,
-                company=install.company,
+                companies=list(install.companies),
                 enrollment_token=token,
                 enrollment_token_expires_at=install.enrollment_token_expires_at,
             )
@@ -484,10 +535,10 @@ class RelayMutations:
         # The row is gone, so this log is the only remaining record of it - and revoking a relay
         # credential is exactly the kind of act worth being able to grep for afterwards.
         logger.warning(
-            "relay install deleted: %s (label=%s company=%s hostname=%s enrolled_at=%s) by %s",
+            "relay install deleted: %s (label=%s companies=%s hostname=%s enrolled_at=%s) by %s",
             snapshot["id"],
             snapshot["label"],
-            snapshot["company"],
+            snapshot["companies"],
             snapshot["hostname"],
             snapshot["enrolled_at"],
             identity["user_id"],

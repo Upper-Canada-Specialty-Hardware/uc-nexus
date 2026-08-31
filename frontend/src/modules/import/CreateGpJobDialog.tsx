@@ -35,6 +35,7 @@ import GpErrorAlert from '../../components/GpErrorAlert';
 import { extractGpError, isRelayOpUnsupported, type GpError } from '../../graphql/gpError';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
+import { useCompanyChoice } from '../../relay/useCompanyChoice';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import AddCustomerAddressDialog, { type CreatedGpCustomerAddress } from './AddCustomerAddressDialog';
@@ -248,10 +249,12 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
   const [gpError, setGpError] = useState<GpError | null>(null);
   const [fieldError, setFieldError] = useState<string | null>(null);
 
-  // The connected relay is enrolled for exactly one company, so the company is the relay's, shown
-  // read-only rather than picked. skip: !open so a hidden dialog doesn't poll.
+  // #637: the relay can be enrolled for several companies, so which one the job is created in is a
+  // pick - defaulted to the caller's own, and read-only when there is only one to have.
+  // skip: !open so a hidden dialog doesn't poll.
   const relay = useRelayStatus({ skip: !open });
-  const company = relay.company ?? '';
+  const companyChoice = useCompanyChoice(relay.companies);
+  const company = companyChoice.company;
   const relayConnected = relay.connected === true;
 
   const readsSkipped = !open || !relayConnected || !company;
@@ -614,6 +617,9 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
       const response = await createGpJob({
         variables: {
           input: {
+            // #637: which GP company the job is created in. The server no longer infers it from a
+            // single-company relay, so it travels with the request.
+            company,
             jobNumber: jobNumber.trim(),
             jobName: jobName.trim(),
             division,
@@ -678,6 +684,7 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
   }, [
     requiredComplete,
     customer,
+    company,
     createGpJob,
     jobNumber,
     jobName,
@@ -723,16 +730,24 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
           {fieldError && <Alert severity="warning">{fieldError}</Alert>}
 
           <Stack direction="row" spacing={2} alignItems="center">
-            {/* The connected relay is enrolled for exactly one company, so this is read-only, not a pick. */}
+            {/* #637: which company the job is created in. Read-only when there is nothing to pick. */}
             <TextField
+              select={!companyChoice.locked}
               label="GP company"
-              value={company || '—'}
+              value={companyChoice.locked ? company || '—' : company}
+              onChange={(e) => companyChoice.setCompany(e.target.value)}
               size="small"
-              disabled
+              disabled={companyChoice.locked}
               sx={{ minWidth: 140 }}
               slotProps={{ input: { sx: monoSx } }}
-            />
-            <RelayStatusChip connected={relayConnected} />
+            >
+              {companyChoice.options.map((c) => (
+                <MenuItem key={c} value={c} sx={monoSx}>
+                  {c}
+                </MenuItem>
+              ))}
+            </TextField>
+            <RelayStatusChip connected={relayConnected} companies={relay.companies} />
             <IconButton
               size="small"
               aria-label="Refresh GP data"

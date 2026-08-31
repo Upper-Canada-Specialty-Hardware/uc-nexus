@@ -7,18 +7,21 @@ issues a query here."""
 
 import asyncio
 
+from app.auth import ADMIN_ROLE
 from app.repositories import manufacturer_vendor_map_repository as map_repo
 from app.schemas import relay as relay_module
 from app.schemas.queries import Query
 
 
 class FakeInfo:
-    context = {"request": None}
+    # An ADMIN caller, seeded into the per-request role memo so `tenant_scope` (#637) answers None.
+    context = {"request": None, "_auth_roles": [ADMIN_ROLE]}
 
 
 class FakeGateway:
-    def __init__(self, result):
+    def __init__(self, result, companies=("TUBC",)):
         self.result = result
+        self.companies = list(companies)
         self.calls: list[tuple] = []
 
     async def relay_call(self, company, op, payload=None, timeout=None):

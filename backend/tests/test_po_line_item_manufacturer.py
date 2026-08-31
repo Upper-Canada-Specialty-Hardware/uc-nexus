@@ -13,7 +13,7 @@ from app.schemas.converters import po_line_item_to_type
 def _make_project(session) -> PurchaseOrder:
     from app.models.project import Project
 
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:6]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:6]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p

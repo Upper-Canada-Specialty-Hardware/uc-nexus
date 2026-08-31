@@ -49,13 +49,51 @@ def test_relay_call_for_a_different_company_raises_unavailable():
     asyncio.run(run())
 
 
-def test_try_register_exposes_connected_and_company():
+def test_try_register_exposes_connected_and_companies():
     gateway = RelayGateway()
     assert gateway.connected is False
-    assert gateway.company is None
-    assert gateway.try_register("TUBC", FakeWebSocket()) is True
+    # Empty rather than None when nothing is connected (#637): RelayStatus.companies is a list, and
+    # the dialogs read it as "the companies you may pick from".
+    assert gateway.companies == []
+    assert gateway.try_register(["TUBC"], FakeWebSocket()) is True
     assert gateway.connected is True
-    assert gateway.company == "TUBC"
+    assert gateway.companies == ["TUBC"]
+
+
+def test_an_install_can_serve_several_companies():
+    """#637: the relay always carried `company` per call and kept its own allowed_companies list; the
+    single value the backend held was the only thing making an install one-company."""
+    gateway = RelayGateway()
+    gateway.try_register(["ucsh", " tubc "], FakeWebSocket())
+    # Trimmed, uppercased and sorted, so the answer is stable and matches GP's own spelling.
+    assert gateway.companies == ["TUBC", "UCSH"]
+
+
+def test_a_bare_company_string_is_taken_as_the_one_company_case():
+    """A str IS a Sequence[str], so iterating it would register the set of its CHARACTERS and reject
+    every real company. Normalized instead of silently wrong."""
+    gateway = RelayGateway()
+    gateway.try_register("TUBC", FakeWebSocket())
+    assert gateway.companies == ["TUBC"]
+
+
+def test_relay_call_is_allowed_for_any_company_the_install_serves():
+    async def run():
+        gateway = RelayGateway()
+        ws = FakeWebSocket()
+        gateway.try_register(["TUBC", "UCSH"], ws)
+
+        async def responder():
+            while not ws.sent:
+                await asyncio.sleep(0)
+            gateway.resolve({"id": ws.sent[0]["id"], "ok": True, "result": {"vendors": []}})
+
+        responder_task = asyncio.create_task(responder())
+        result = await gateway.relay_call("UCSH", "list_vendors", timeout=1)
+        await responder_task
+        assert result == {"vendors": []}
+
+    asyncio.run(run())
 
 
 def test_relay_call_resolves_with_the_matching_reply():
@@ -429,7 +467,7 @@ def test_unregister_logs_the_disconnect_with_the_identity_and_how_long_it_was_he
     assert "relay-v0.1.0-build.30" in record.getMessage()
     assert "held_seconds=" in record.getMessage()
     assert record.install_id == str(install_id)
-    assert record.company == "TUBC"
+    assert record.companies == ["TUBC"]
     assert record.build == "relay-v0.1.0-build.30"
     assert record.held_seconds >= 0
 
@@ -530,7 +568,7 @@ def test_unregistering_a_refused_socket_leaves_the_incumbent_alone(caplog):
 
     assert _records(caplog, logging.WARNING) == []  # nothing was disconnected
     assert gateway.connected is True
-    assert gateway.company == "TUBC"
+    assert gateway.companies == ["TUBC"]
     assert gateway.install_id == install_id
     assert gateway.build == "relay-v0.1.0-build.30"
 

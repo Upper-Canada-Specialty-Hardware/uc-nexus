@@ -76,7 +76,7 @@ def define_location(
 
 
 def make_project(session: Session, description: str = "Test") -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description=description)
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description=description, company="TUBC")
     session.add(p)
     session.flush()
     return p

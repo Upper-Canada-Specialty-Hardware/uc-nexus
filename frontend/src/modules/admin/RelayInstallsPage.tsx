@@ -9,7 +9,9 @@ import {
   DialogContent,
   DialogActions,
   TextField,
-  MenuItem,
+  Checkbox,
+  FormGroup,
+  FormControlLabel,
   Alert,
   AlertTitle,
   Chip,
@@ -38,13 +40,14 @@ import { FadeIn } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
 
 // The GP companies a relay may be provisioned for. Matches the relay's baked KNOWN_COMPANIES; the relay's
-// own Setup tab must be set to the same company as the token it enrolls with.
+// own Setup tab must list the same companies as the token it enrolls with.
 const COMPANIES = ['TUBC', 'TUCSH', 'UBC', 'UCSH'];
 
 interface RelayInstall {
   id: string;
   label: string;
-  company: string;
+  // #637: one relay can serve several GP companies, so this is a list rather than a single value.
+  companies: string[];
   hostname: string | null;
   enrolled: boolean;
   enrolledAt: string | null;
@@ -58,7 +61,7 @@ interface RelayInstall {
 interface Provisioned {
   installId: string;
   label: string;
-  company: string;
+  companies: string[];
   enrollmentToken: string;
   enrollmentTokenExpiresAt: string;
 }
@@ -110,7 +113,7 @@ export default function RelayInstallsPage() {
 
   const [provisionOpen, setProvisionOpen] = useState(false);
   const [label, setLabel] = useState('');
-  const [company, setCompany] = useState('TUBC');
+  const [companies, setCompanies] = useState<string[]>(['TUBC']);
   const [provisioned, setProvisioned] = useState<Provisioned | null>(null);
 
   const { data, loading } = useQuery<{ relayInstalls: RelayInstall[] }>(RELAY_INSTALLS, {
@@ -193,13 +196,22 @@ export default function RelayInstallsPage() {
     },
   );
 
+  const toggleCompany = useCallback((c: string) => {
+    setCompanies((prev) => (prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]));
+  }, []);
+
   const handleProvision = useCallback(() => {
     if (!label.trim()) {
       showToast('Label is required', 'error');
       return;
     }
-    provision({ variables: { label: label.trim(), company } });
-  }, [label, company, provision, showToast]);
+    // A token enrolled for no company would connect and serve nothing.
+    if (companies.length === 0) {
+      showToast('Pick at least one GP company', 'error');
+      return;
+    }
+    provision({ variables: { label: label.trim(), companies } });
+  }, [label, companies, provision, showToast]);
 
   // The relay's own Setup tab is the primary enroll path (it knows the backend URL); this CLI line is the
   // alternative. VITE_GRAPHQL_URL is the backend the frontend talks to.
@@ -233,13 +245,17 @@ export default function RelayInstallsPage() {
         ),
       },
       {
-        field: 'company',
-        headerName: 'Company',
-        width: 100,
+        // #637: the companies this install serves. A designation, not a system state - ink tags.
+        field: 'companies',
+        headerName: 'Companies',
+        width: 190,
+        sortable: false,
         renderCell: (p) => (
-          <Box component="span" sx={monoSx}>
-            {p.row.company}
-          </Box>
+          <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ py: 0.5 }}>
+            {(p.row.companies as string[]).map((c) => (
+              <Chip key={c} label={c} size="small" variant="outlined" sx={{ fontFamily: FONT_MONO }} />
+            ))}
+          </Stack>
         ),
       },
       {
@@ -397,7 +413,7 @@ export default function RelayInstallsPage() {
             </Typography>
           </Box>
           <Stack direction="row" spacing={2} alignItems="center">
-            <RelayStatusChip connected={relay.connected} />
+            <RelayStatusChip connected={relay.connected} companies={relay.companies} />
             {/* Issue #315: show the live relay build so an out-of-date relay is visible at a glance. A
                 connected relay too old to advertise its build (pre-hello-frame) reports null -> 'build
                 unknown', itself a signal it needs updating. */}
@@ -446,7 +462,7 @@ export default function RelayInstallsPage() {
       {provisioned && (
         <Alert severity="success" onClose={() => setProvisioned(null)} sx={{ mb: 2 }}>
           <AlertTitle>
-            Enrollment token for {provisioned.label} ({provisioned.company})
+            Enrollment token for {provisioned.label} ({provisioned.companies.join(', ')})
           </AlertTitle>
           <Typography variant="body2" sx={{ mb: 1 }}>
             Shown once. Expires {fmtDate(provisioned.enrollmentTokenExpiresAt)}. Copy it now.
@@ -531,20 +547,32 @@ export default function RelayInstallsPage() {
               fullWidth
               autoFocus
             />
-            <TextField
-              select
-              label="GP company"
-              value={company}
-              onChange={(e) => setCompany(e.target.value)}
-              fullWidth
-              helperText="The relay's Setup tab must be set to this same company."
-            >
-              {COMPANIES.map((c) => (
-                <MenuItem key={c} value={c}>
-                  {c}
-                </MenuItem>
-              ))}
-            </TextField>
+            {/* #637: one install can serve several companies, so this is a set rather than a pick.
+                Four options, ever - checkboxes in a row read faster than a multi-select and cost
+                the dialog no extra height. */}
+            <Box>
+              <Typography component="div" sx={{ ...microLabelSx, mb: 0.5 }}>
+                GP companies
+              </Typography>
+              <FormGroup row sx={{ gap: 0.5 }}>
+                {COMPANIES.map((c) => (
+                  <FormControlLabel
+                    key={c}
+                    control={
+                      <Checkbox size="small" checked={companies.includes(c)} onChange={() => toggleCompany(c)} />
+                    }
+                    label={
+                      <Box component="span" sx={monoSx}>
+                        {c}
+                      </Box>
+                    }
+                  />
+                ))}
+              </FormGroup>
+              <Typography variant="caption" color="text.secondary">
+                The relay's Setup tab must be set to these same companies.
+              </Typography>
+            </Box>
           </Stack>
         </DialogContent>
         <DialogActions>

@@ -1,11 +1,12 @@
 import { useMemo } from 'react';
-import { Autocomplete, Box, TextField, Typography } from '@mui/material';
+import { Autocomplete, Box, Chip, TextField, Typography } from '@mui/material';
 import type { SxProps, Theme } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import { GET_PROJECTS } from '../graphql/shared';
 import type { Project } from '../types/project';
 import { GpSetupBadge } from './GpSetupQuarantineBanner';
-import { monoSx } from '../theme';
+import { useIdentity } from '../hooks/useIdentity';
+import { FONT_MONO, monoSx } from '../theme';
 
 interface Props {
   value: Project | null;
@@ -37,6 +38,9 @@ export default function ProjectPicker({
 }: Props) {
   const { data, loading } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const options = useMemo(() => data?.projects ?? [], [data?.projects]);
+  // #637: only Admin/Manager sees more than one company's projects here, so only they need the row
+  // told apart by company. A scoped user's list is all one tenant - a chip on every row would be noise.
+  const { isAdmin } = useIdentity();
 
   return (
     <Autocomplete<Project>
@@ -70,6 +74,14 @@ export default function ProjectPicker({
                 </Typography>
               )}
             </Box>
+            {isAdmin && p.company && (
+              <Chip
+                label={p.company}
+                size="small"
+                variant="outlined"
+                sx={{ height: 20, fontSize: '0.7rem', fontFamily: FONT_MONO, flexShrink: 0 }}
+              />
+            )}
             <GpSetupBadge project={p} />
           </Box>
         );

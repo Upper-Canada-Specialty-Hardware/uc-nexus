@@ -36,7 +36,9 @@ from app.models.stock_item import StockItem
 # --- types ---------------------------------------------------------------------------------
 
 
-def get_item_types(session: Session, *, active_only: bool = False) -> list[InventoryItemType]:
+def get_item_types(
+    session: Session, *, active_only: bool = False, company: str | None = None
+) -> list[InventoryItemType]:
     """The type list, in the order every screen shows it, with attributes eagerly loaded.
 
     `selectinload` is not optional here: `_item_type_to_type` walks `.attributes` for every row, and
@@ -52,6 +54,8 @@ def get_item_types(session: Session, *, active_only: bool = False) -> list[Inven
     )
     if active_only:
         stmt = stmt.where(InventoryItemType.is_active.is_(True))
+    if company is not None:
+        stmt = stmt.where(InventoryItemType.company == company)
     return list(session.scalars(stmt).unique().all())
 
 
@@ -77,7 +81,7 @@ def get_item_type(session: Session, type_id: uuid.UUID) -> InventoryItemType:
     return item_type
 
 
-def create_item_type(session: Session, *, name: str, code: str | None = None, sort_order: int = 0):
+def create_item_type(session: Session, *, name: str, code: str | None = None, sort_order: int = 0, company: str):
     """Add a type. `code` defaults to one derived from the name, and can never be changed afterwards.
 
     The derivation is deliberately dumb - uppercase, non-alphanumerics to underscores - because the
@@ -85,18 +89,22 @@ def create_item_type(session: Session, *, name: str, code: str | None = None, so
     Sweeps" should get DOOR_SWEEPS rather than something they cannot predict.
     """
     name = (name or "").strip()
+    company = (company or "").strip().upper()
     if not name:
         raise ValidationError("An inventory item type needs a name.", field="name")
+    if not company:
+        raise ValidationError("A GP company is required for an inventory item type.", field="company")
 
     code = _normalize_code(code or name)
     if not code:
         raise ValidationError("An inventory item type needs a code.", field="code")
 
-    _check_type_name_free(session, name)
-    _check_code_free(session, code)
+    _check_type_name_free(session, name, company)
+    _check_code_free(session, code, company)
 
     item_type = InventoryItemType(
         id=uuid.uuid4(),
+        company=company,
         code=code,
         name=name,
         is_active=True,
@@ -130,7 +138,7 @@ def update_item_type(
         if not name:
             raise ValidationError("An inventory item type needs a name.", field="name")
         if name.lower() != item_type.name.lower():
-            _check_type_name_free(session, name)
+            _check_type_name_free(session, name, item_type.company)
         item_type.name = name
     if is_active is not None:
         item_type.is_active = is_active
@@ -204,6 +212,7 @@ def get_items(
     type_id: uuid.UUID | None = None,
     product_code_contains: str | None = None,
     active_only: bool = False,
+    company: str | None = None,
 ) -> list[CustomInventoryItem]:
     """The catalog, filtered the way the two callers need it.
 
@@ -224,6 +233,10 @@ def get_items(
         stmt = stmt.where(CustomInventoryItem.type_id == type_id)
     if active_only:
         stmt = stmt.where(CustomInventoryItem.is_active.is_(True))
+    if company is not None:
+        stmt = stmt.where(
+            CustomInventoryItem.type_id.in_(select(InventoryItemType.id).where(InventoryItemType.company == company))
+        )
     if product_code_contains:
         # Escaped: an unescaped % or _ from the caller turns "find FR_1" into a wildcard search that
         # quietly returns rows the user did not ask for.
@@ -397,9 +410,11 @@ def _normalize_code(raw: str) -> str:
     return code[:50]
 
 
-def _check_type_name_free(session: Session, name: str) -> None:
+def _check_type_name_free(session: Session, name: str, company: str) -> None:
     existing = session.scalars(
-        select(InventoryItemType).where(func.lower(InventoryItemType.name) == name.lower())
+        select(InventoryItemType).where(
+            func.lower(InventoryItemType.name) == name.lower(), InventoryItemType.company == company
+        )
     ).first()
     if existing is not None:
         raise ConflictError(f"An inventory item type named {existing.name} already exists", field="name")
@@ -416,8 +431,15 @@ def _check_attribute_name_free(session: Session, type_id: uuid.UUID, name: str) 
         raise ConflictError(f"This type already has an attribute named {existing.name}", field="name")
 
 
-def _check_code_free(session: Session, code: str) -> None:
+def _check_code_free(session: Session, code: str, company: str) -> None:
     """Refuse a code that is already in play - as another type's, or as a hardware category on stock.
+
+    The type half is per-company (#637): each tenant keeps its own catalog, so TUBC owning FRAME must
+    not stop UCSH defining one. The in-use half deliberately is NOT: `hardware_category` is free text
+    stamped onto rows that carry no company of their own, and a check that scoped it would have to
+    join four tables through two different roots to say something the pair is not keyed on anyway.
+    A cross-company false positive here refuses a code somebody else's stock already uses, which is
+    conservative in the right direction.
 
     The second half is the one that matters. Hardware categories come off the TITAN schedule and are
     never registered anywhere, so the only way to know HINGE is taken is to look at what has been
@@ -429,7 +451,9 @@ def _check_code_free(session: Session, code: str) -> None:
     be imported long before anything is ordered against it, and checking only the downstream tables
     would happily hand out a code that the next PO raised off that schedule will collide with.
     """
-    existing = session.scalars(select(InventoryItemType).where(InventoryItemType.code == code)).first()
+    existing = session.scalars(
+        select(InventoryItemType).where(InventoryItemType.code == code, InventoryItemType.company == company)
+    ).first()
     if existing is not None:
         raise ConflictError(f"The code {code} is already used by the type {existing.name}", field="code")
 

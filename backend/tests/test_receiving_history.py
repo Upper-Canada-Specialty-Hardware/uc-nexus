@@ -27,7 +27,7 @@ from .inventory_fixtures import define_location
 
 
 def _make_project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p
@@ -42,6 +42,7 @@ def _make_po_with_line(session, project_id, *, status=POStatus.GP_REGISTERED, or
         po_number=f"PO{uuid.uuid4().hex[:6]}",
         gp_company="TEST",
         vendor_name_snapshot=vendor_name,
+        company="TUBC",
     )
     session.add(po)
     session.flush()

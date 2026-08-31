@@ -4,9 +4,9 @@ import uuid
 
 import strawberry
 
-from app.auth import current_user
+from app.auth import current_user, tenant_scope
 from app.database import SessionLocal
-from app.repositories import buyer_repository, user_repository
+from app.repositories import buyer_repository, tenancy, user_repository
 
 from .converters import buyer_assignment_to_type
 from .types import BuyerAssignment
@@ -48,7 +48,10 @@ class BuyerQueries:
         page that genuinely needs all of them is admin-only anyway, so the whole-table read is gated
         to match."""
         with SessionLocal() as session:
-            return [buyer_assignment_to_type(a) for a in buyer_repository.list_assignments(session)]
+            return [
+                buyer_assignment_to_type(a)
+                for a in buyer_repository.list_assignments(session, company=tenant_scope(info))
+            ]
 
 
 @strawberry.type
@@ -62,11 +65,11 @@ class BuyerMutations:
     ) -> BuyerAssignment:
         """Issue #216: upsert a buyer's whole assignment (the projects they may order for). Admin."""
         with SessionLocal() as session:
-            assignment = buyer_repository.save_assignment(
-                session,
-                buyer_id,
-                [uuid.UUID(str(pid)) for pid in project_ids],
-            )
+            scope = tenant_scope(info)
+            ids = [uuid.UUID(str(pid)) for pid in project_ids]
+            for pid in ids:
+                tenancy.require_project_in_scope(session, pid, scope)
+            assignment = buyer_repository.save_assignment(session, buyer_id, ids)
             session.commit()
             refreshed = buyer_repository.get_assignment(session, assignment.buyer_id)
             return buyer_assignment_to_type(refreshed)

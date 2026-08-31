@@ -12,6 +12,7 @@ def _make_project(session) -> ProjectModel:
         session,
         job_number=f"PRJ-{uuid.uuid4().hex[:6]}",
         job_name="orig desc",
+        company="TUBC",
     )
     project.client = "orig client"
     session.flush()

@@ -125,12 +125,12 @@ def seed_from_env(session: Session, *, environment_name: str, secret_hash: str) 
 
     existing = session.scalars(select(RelayInstall).where(RelayInstall.secret_hash == secret_hash)).first()
     if existing is not None:
-        # Deliberately untouched, company included. See the docstring.
-        if existing.company != SEED_COMPANY:
+        # Deliberately untouched, companies included. See the docstring.
+        if SEED_COMPANY not in (existing.companies or []):
             logger.warning(
-                "an install already carries the seed hash but is not on the sandbox company; leaving it "
-                "as it is. relay_call will refuse any company that does not match it.",
-                extra={"install_id": str(existing.id), "company": existing.company},
+                "an install already carries the seed hash but does not list the sandbox company; leaving "
+                "it as it is. relay_call will refuse any company it does not list.",
+                extra={"install_id": str(existing.id), "companies": list(existing.companies or [])},
             )
         return existing
 
@@ -151,7 +151,7 @@ def seed_from_env(session: Session, *, environment_name: str, secret_hash: str) 
     install = RelayInstall(
         id=uuid.uuid4(),
         label=label,
-        company=SEED_COMPANY,
+        companies=[SEED_COMPANY],
         secret_hash=secret_hash,
         # Marked enrolled on creation: there is no enrollment token and none is wanted - the relay
         # already holds the matching secret. Leaving this null would show the row as "pending" on
@@ -162,7 +162,7 @@ def seed_from_env(session: Session, *, environment_name: str, secret_hash: str) 
     session.flush()
     logger.info(
         "seeded a trusted relay install for this non-production environment",
-        extra={"install_id": str(install.id), "label": install.label, "company": install.company},
+        extra={"install_id": str(install.id), "label": install.label, "companies": list(install.companies)},
     )
     return install
 

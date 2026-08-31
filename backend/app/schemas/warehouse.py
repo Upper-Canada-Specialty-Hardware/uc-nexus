@@ -12,10 +12,11 @@ from app.auth import (
     caller_roles,
     current_user,
     resolve_display_name,
+    tenant_scope,
 )
 from app.database import SessionLocal
 from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
-from app.repositories import custom_items_repository, warehouse_admin_repository
+from app.repositories import custom_items_repository, tenancy, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
 from app.services import gp_idempotency, gp_outbox_enqueue, gp_po
 from app.services.relay_gateway import gateway as relay_gateway
@@ -135,7 +136,7 @@ def _prepare_create_receive(*, po_id, received_by, line_items_data, warehouse_id
         po_number, gp_company, receipt_line_items = warehouse_repository.validate_receive_eligibility(
             session, po_id, received_by, line_items_data
         )
-        warehouse_code = _warehouse_code(session, warehouse_id)
+        warehouse_code = _warehouse_code(session, warehouse_id, gp_company)
     payload = gp_po.build_create_receipt_payload(
         po_number=po_number,
         received_by=received_by,
@@ -145,12 +146,16 @@ def _prepare_create_receive(*, po_id, received_by, line_items_data, warehouse_id
     return gp_company, payload
 
 
-def _warehouse_code(session, warehouse_id) -> str | None:
-    """The receiving warehouse's code, falling back to the primary one the booking will use."""
+def _warehouse_code(session, warehouse_id, company: str | None = None) -> str | None:
+    """The receiving warehouse's code, falling back to the primary one the booking will use.
+
+    The fallback is scoped to the PO's company (#637) so it picks the same building `create_receive`
+    will book into - `is_primary` is one global flag, so an unscoped fallback would tell GP a
+    warehouse code from another company."""
     from app.models.warehouse import Warehouse as WarehouseModel
 
     if warehouse_id is None:
-        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
+        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session, company=company)
     warehouse = session.get(WarehouseModel, warehouse_id)
     return warehouse.code if warehouse else None
 
@@ -272,14 +277,18 @@ def _authorize_draft_approval(info, user_id: str, draft_id: uuid.UUID) -> None:
     raise ForbiddenError("Only a Warehouse Manager can approve this receive.")
 
 
-def _claim_draft_for_approval(draft_id, reviewer_user_id, reviewer_name, key):
+def _claim_draft_for_approval(draft_id, reviewer_user_id, reviewer_name, key, scope=None):
     """Take the approval claim and COMMIT it, before anything talks to GP.
 
     Committing here rather than at the end is the whole point: the claim has to be visible to another
     request while this one is waiting on the relay, which is exactly the window a second approver
     would otherwise post a duplicate GP receipt in.
+
+    The tenant check (#637) runs first, inside the same session, so a cross-company approval is
+    refused before it can take a claim it would then have to release.
     """
     with SessionLocal() as session:
+        tenancy.require_receive_draft_in_scope(session, draft_id, scope)
         ctx = warehouse_repository.claim_for_approval(session, draft_id, reviewer_user_id, reviewer_name, key)
         session.commit()
     return ctx
@@ -319,7 +328,9 @@ class WarehouseQueries:
     @strawberry.field
     def po_receiving_details(self, info: strawberry.Info, po_id: strawberry.ID) -> PurchaseOrder:
         with SessionLocal() as session:
-            po, receive_records = warehouse_repository.get_po_receiving_details(session, uuid.UUID(str(po_id)))
+            po, receive_records = warehouse_repository.get_po_receiving_details(
+                session, uuid.UUID(str(po_id)), company=tenant_scope(info)
+            )
             return po_to_type(po, receive_records)
 
     @strawberry.field
@@ -345,12 +356,14 @@ class WarehouseQueries:
                 status=ReceiveDraftStatusDB(status.value) if status is not None else None,
                 po_id=uuid.UUID(str(po_id)) if po_id else None,
                 created_by_user_id=user["user_id"] if mine else None,
+                company=tenant_scope(info),
             )
             return [receive_draft_to_type(draft, po) for draft, po in rows]
 
     @strawberry.field
     def receive_draft(self, info: strawberry.Info, id: strawberry.ID) -> ReceiveDraft:
         with SessionLocal() as session:
+            tenancy.require_receive_draft_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             draft, po = warehouse_repository.get_receive_draft(session, uuid.UUID(str(id)))
             return receive_draft_to_type(draft, po)
 
@@ -372,6 +385,7 @@ class WarehouseQueries:
         rows; a product the schedule never named reads null."""
         with SessionLocal() as session:
             pid = uuid.UUID(str(project_id))
+            tenancy.require_project_in_scope(session, pid, tenant_scope(info))
             rows = warehouse_repository.get_project_availability(session, pid)
             classifications = warehouse_repository.get_scheduled_classifications(session, pid)
             return [
@@ -426,6 +440,7 @@ class WarehouseQueries:
                     offset=offset,
                     project_id=uuid.UUID(str(project_id)) if project_id else None,
                     po_search=po_search,
+                    company=tenant_scope(info),
                 )
             ]
 
@@ -439,7 +454,10 @@ class WarehouseQueries:
         """Flat inventory, one row per stocked location (#506). Replaces the accordion the Hardware
         Items tab used to render; one query, no per-row lazy loads."""
         with SessionLocal() as session:
+            scope = tenant_scope(info)
             pid = uuid.UUID(str(project_id)) if project_id else None
+            tenancy.require_project_in_scope(session, pid, scope)
+            tenancy.require_warehouse_in_scope(session, uuid.UUID(str(warehouse_id)) if warehouse_id else None, scope)
             # One extra query for the whole response, only when the view is scoped to a project.
             # Unscoped, "on the schedule" has no meaning - the rows span projects - so every row
             # keeps the permissive default rather than being flagged against a schedule it was
@@ -450,7 +468,9 @@ class WarehouseQueries:
             # measuring them against one would flag all of it forever. One small query, and it is
             # what makes the flag mean "should be on a schedule and is not" rather than "is not on
             # a schedule".
-            non_schedule_codes = {t.code for t in custom_items_repository.get_item_types(session, active_only=True)}
+            non_schedule_codes = {
+                t.code for t in custom_items_repository.get_item_types(session, active_only=True, company=scope)
+            }
 
             def _matches(category: str, code: str) -> bool:
                 if category in non_schedule_codes:
@@ -476,6 +496,7 @@ class WarehouseQueries:
                     session,
                     pid,
                     uuid.UUID(str(warehouse_id)) if warehouse_id else None,
+                    company=scope,
                 )
             ]
 
@@ -491,6 +512,7 @@ class WarehouseQueries:
                 session,
                 uuid.UUID(str(project_id)) if project_id else None,
                 uuid.UUID(str(warehouse_id)) if warehouse_id else None,
+                company=tenant_scope(info),
             )
             return [
                 InventoryItemDetail(
@@ -505,7 +527,7 @@ class WarehouseQueries:
     @strawberry.field
     def recent_receive_records(self, info: strawberry.Info, limit: int = 10) -> list[RecentReceiveRecord]:
         with SessionLocal() as session:
-            rows = warehouse_repository.get_recent_receive_records(session, limit)
+            rows = warehouse_repository.get_recent_receive_records(session, limit, company=tenant_scope(info))
             return [
                 RecentReceiveRecord(
                     receive_record=receive_record_to_type(rr),
@@ -541,7 +563,7 @@ class WarehouseQueries:
                     receive_count=row["receive_count"],
                     last_received_at=row["last_received_at"],
                 )
-                for row in warehouse_repository.get_receiving_history_pos(session, pid)
+                for row in warehouse_repository.get_receiving_history_pos(session, pid, company=tenant_scope(info))
             ]
 
     @strawberry.field
@@ -564,6 +586,7 @@ class WarehouseQueries:
                 source,
                 status,
                 statuses,
+                company=tenant_scope(info),
             )
             # One grouped read for the whole page, never one query per row (#367 / CLAUDE.md perf
             # rules): the queue draws a phase cell on every row. Narrowed to un-picked pulls, which
@@ -582,6 +605,7 @@ class WarehouseQueries:
     @strawberry.field
     def pull_request_details(self, info: strawberry.Info, id: strawberry.ID) -> PullRequest:
         with SessionLocal() as session:
+            tenancy.require_pull_request_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             pr = warehouse_repository.get_pull_request_details(session, uuid.UUID(str(id)))
             partial = (
                 pr.id in warehouse_repository.get_partially_picked_pull_ids(session, [pr.id])
@@ -601,6 +625,7 @@ class WarehouseQueries:
         Open to any signed-in user. It exposes real per-location inventory for one project, which is
         the same shape of information the warehouse inventory views already carry."""
         with SessionLocal() as session:
+            tenancy.require_pull_request_in_scope(session, uuid.UUID(str(pull_request_id)), tenant_scope(info))
             sheet = warehouse_repository.get_pick_sheet(session, uuid.UUID(str(pull_request_id)))
             pr = sheet.pull_request
             partial = (
@@ -616,7 +641,7 @@ class WarehouseQueries:
     ) -> list[BackOrderedItem]:
         with SessionLocal() as session:
             items = warehouse_repository.get_back_ordered_items(
-                session, uuid.UUID(str(project_id)) if project_id else None
+                session, uuid.UUID(str(project_id)) if project_id else None, company=tenant_scope(info)
             )
             return [
                 BackOrderedItem(
@@ -637,7 +662,7 @@ class WarehouseQueries:
     @strawberry.field
     def warehouse_dashboard(self, info: strawberry.Info) -> WarehouseDashboard:
         with SessionLocal() as session:
-            d = warehouse_repository.get_warehouse_dashboard(session)
+            d = warehouse_repository.get_warehouse_dashboard(session, company=tenant_scope(info))
             return WarehouseDashboard(
                 total_item_count=d["total_item_count"],
                 total_value=d["total_value"],
@@ -658,6 +683,7 @@ class WarehouseQueries:
         self, info: strawberry.Info, project_id: strawberry.ID
     ) -> list[ProjectProgressByProduct]:
         with SessionLocal() as session:
+            tenancy.require_project_in_scope(session, uuid.UUID(str(project_id)), tenant_scope(info))
             rows = warehouse_repository.get_project_progress_by_product(session, uuid.UUID(str(project_id)))
             return [
                 ProjectProgressByProduct(
@@ -681,9 +707,11 @@ class WarehouseQueries:
         across the selected projects. All nine grouped queries run in one session here rather than
         per-row (CLAUDE.md perf rules)."""
         with SessionLocal() as session:
-            rows = warehouse_repository.get_hardware_status_by_product(
-                session, [uuid.UUID(str(pid)) for pid in project_ids]
-            )
+            scope = tenant_scope(info)
+            ids = [uuid.UUID(str(pid)) for pid in project_ids]
+            for pid in ids:
+                tenancy.require_project_in_scope(session, pid, scope)
+            rows = warehouse_repository.get_hardware_status_by_product(session, ids)
             return [
                 HardwareStatusByProduct(
                     hardware_category=row["hardware_category"],
@@ -713,7 +741,12 @@ class WarehouseQueries:
     ) -> LocationContents:
         with SessionLocal() as session:
             data = warehouse_repository.get_location_contents(
-                session, aisle, row, bay, uuid.UUID(str(warehouse_id)) if warehouse_id else None
+                session,
+                aisle,
+                row,
+                bay,
+                uuid.UUID(str(warehouse_id)) if warehouse_id else None,
+                company=tenant_scope(info),
             )
             return LocationContents(
                 inventory_items=[
@@ -746,6 +779,7 @@ class WarehouseQueries:
                 bay,
                 limit=limit,
                 warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
+                company=tenant_scope(info),
             )
             return [
                 AuditLogEntry(
@@ -764,7 +798,7 @@ class WarehouseQueries:
     @strawberry.field
     def location_distinct_values(self, info: strawberry.Info) -> LocationDistinctValues:
         with SessionLocal() as session:
-            values = warehouse_repository.get_distinct_location_values(session)
+            values = warehouse_repository.get_distinct_location_values(session, company=tenant_scope(info))
             return LocationDistinctValues(
                 aisles=values["aisles"],
                 rows=values["rows"],
@@ -776,7 +810,7 @@ class WarehouseQueries:
         """Admin-gated (#415): the admin Location Cleanup page is the only reader, and it is the
         list `mergeLocations` acts on."""
         with SessionLocal() as session:
-            groups = warehouse_repository.get_location_duplicates(session)
+            groups = warehouse_repository.get_location_duplicates(session, company=tenant_scope(info))
             return [
                 LocationDuplicateGroup(
                     warehouse_id=strawberry.ID(str(g["warehouse_id"])) if g["warehouse_id"] else None,
@@ -795,7 +829,7 @@ class WarehouseQueries:
     ) -> list[LocationUtilizationEntry]:
         with SessionLocal() as session:
             rows = warehouse_repository.get_location_utilization(
-                session, uuid.UUID(str(warehouse_id)) if warehouse_id else None
+                session, uuid.UUID(str(warehouse_id)) if warehouse_id else None, company=tenant_scope(info)
             )
             return [
                 LocationUtilizationEntry(
@@ -827,6 +861,7 @@ class WarehouseQueries:
                 project_id=uuid.UUID(str(project_id)) if project_id else None,
                 limit=limit,
                 offset=offset,
+                company=tenant_scope(info),
             )
             return [
                 AuditLogEntry(
@@ -849,14 +884,19 @@ class WarehouseQueries:
         with SessionLocal() as session:
             return [
                 warehouse_to_type(w)
-                for w in warehouse_admin_repository.list_warehouses(session, include_inactive=include_inactive)
+                for w in warehouse_admin_repository.list_warehouses(
+                    session, include_inactive=include_inactive, company=tenant_scope(info)
+                )
             ]
 
     @strawberry.field
     def warehouse(self, info: strawberry.Info, id: strawberry.ID) -> Warehouse | None:
         with SessionLocal() as session:
+            scope = tenant_scope(info)
             w = warehouse_admin_repository.find_warehouse(session, uuid.UUID(str(id)))
-            return warehouse_to_type(w) if w is not None else None
+            if w is None or (scope is not None and w.company != scope):
+                return None
+            return warehouse_to_type(w)
 
     @strawberry.field
     def warehouse_locations(
@@ -871,6 +911,7 @@ class WarehouseQueries:
                     session,
                     warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
                     active_only=active_only,
+                    company=tenant_scope(info),
                 )
             ]
 
@@ -894,6 +935,11 @@ class WarehouseMutations:
         user = current_user(info)
         author_name = resolve_display_name(user["user_id"])
         with SessionLocal() as session:
+            scope = tenant_scope(info)
+            tenancy.require_po_in_scope(session, uuid.UUID(str(input.po_id)), scope)
+            tenancy.require_warehouse_in_scope(
+                session, uuid.UUID(str(input.warehouse_id)) if input.warehouse_id else None, scope
+            )
             draft = warehouse_repository.create_receive_draft(
                 session,
                 uuid.UUID(str(input.po_id)),
@@ -918,6 +964,11 @@ class WarehouseMutations:
         user = current_user(info)
         draft_id = uuid.UUID(str(input.draft_id))
         with SessionLocal() as session:
+            scope = tenant_scope(info)
+            tenancy.require_receive_draft_in_scope(session, draft_id, scope)
+            tenancy.require_warehouse_in_scope(
+                session, uuid.UUID(str(input.warehouse_id)) if input.warehouse_id else None, scope
+            )
             warehouse_repository.update_receive_draft(
                 session,
                 draft_id,
@@ -936,6 +987,7 @@ class WarehouseMutations:
         user = current_user(info)
         draft_id = uuid.UUID(str(id))
         with SessionLocal() as session:
+            tenancy.require_receive_draft_in_scope(session, draft_id, tenant_scope(info))
             warehouse_repository.resubmit_receive_draft(session, draft_id, user["user_id"])
             session.commit()
         return _load_draft_type(draft_id)
@@ -948,6 +1000,7 @@ class WarehouseMutations:
         reviewer_name = resolve_display_name(user["user_id"])
         draft_id = uuid.UUID(str(input.draft_id))
         with SessionLocal() as session:
+            tenancy.require_receive_draft_in_scope(session, draft_id, tenant_scope(info))
             warehouse_repository.reject_receive_draft(session, draft_id, input.reason, user["user_id"], reviewer_name)
             session.commit()
         return _load_draft_type(draft_id)
@@ -957,6 +1010,7 @@ class WarehouseMutations:
         """Throw away a count that should not have been entered. Refused once approval has started."""
         user = current_user(info)
         with SessionLocal() as session:
+            tenancy.require_receive_draft_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             warehouse_repository.delete_receive_draft(
                 session, uuid.UUID(str(id)), user["user_id"], _is_warehouse_manager(info)
             )
@@ -1007,7 +1061,10 @@ class WarehouseMutations:
             return ApproveReceiveDraftResult(queued=False, outbox_entry_id=None, receive_record=record, draft=draft)
 
         reviewer_name = await asyncio.to_thread(resolve_display_name, user["user_id"])
-        ctx = await asyncio.to_thread(_claim_draft_for_approval, draft_id, user["user_id"], reviewer_name, key)
+        # Off the event loop like every other Clerk-touching call on this path: resolving the caller's
+        # company is a Clerk round trip the first time a request asks for it.
+        scope = await asyncio.to_thread(tenant_scope, info)
+        ctx = await asyncio.to_thread(_claim_draft_for_approval, draft_id, user["user_id"], reviewer_name, key, scope)
         # GP has ALREADY run under this key and only the persist is outstanding. Re-validating here
         # would be re-asking a question GP has answered: the world can have moved since (another
         # receive against the line), and a refusal would release the claim for a receipt that is
@@ -1116,6 +1173,7 @@ class WarehouseMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_pull_request_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             pr = warehouse_repository.start_pull_request_pick(session, uuid.UUID(str(id)), actor)
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, pr.id)
@@ -1140,6 +1198,7 @@ class WarehouseMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_pull_request_in_scope(session, uuid.UUID(str(pull_request_id)), tenant_scope(info))
             sheet = warehouse_repository.save_pick_draft(
                 session,
                 uuid.UUID(str(pull_request_id)),
@@ -1182,6 +1241,7 @@ class WarehouseMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_pull_request_in_scope(session, uuid.UUID(str(pull_request_id)), tenant_scope(info))
             result = warehouse_repository.confirm_pick(
                 session,
                 uuid.UUID(str(pull_request_id)),
@@ -1231,6 +1291,7 @@ class WarehouseMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_pull_request_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             pr = warehouse_repository.complete_pull_request(session, uuid.UUID(str(id)), completed_by=actor)
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, pr.id)
@@ -1252,6 +1313,7 @@ class WarehouseMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_pull_request_in_scope(session, uuid.UUID(str(input.id)), tenant_scope(info))
             result = warehouse_repository.cancel_pull_request(
                 session,
                 uuid.UUID(str(input.id)),
@@ -1296,6 +1358,9 @@ class WarehouseMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_inventory_location_in_scope(
+                session, uuid.UUID(str(inventory_location_id)), tenant_scope(info)
+            )
             result = warehouse_repository.adjust_inventory_quantity(
                 session,
                 uuid.UUID(str(inventory_location_id)),
@@ -1322,6 +1387,9 @@ class WarehouseMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_inventory_location_in_scope(
+                session, uuid.UUID(str(input.inventory_location_id)), tenant_scope(info)
+            )
             result = warehouse_repository.override_inventory_quantity(
                 session,
                 inv_id=uuid.UUID(str(input.inventory_location_id)),
@@ -1350,6 +1418,9 @@ class WarehouseMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_inventory_location_in_scope(
+                session, uuid.UUID(str(inventory_location_id)), tenant_scope(info)
+            )
             result = warehouse_repository.move_inventory_location(
                 session, uuid.UUID(str(inventory_location_id)), new_aisle, new_row, new_bay, performed_by=actor
             )
@@ -1366,6 +1437,9 @@ class WarehouseMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_inventory_location_in_scope(
+                session, uuid.UUID(str(inventory_location_id)), tenant_scope(info)
+            )
             result = warehouse_repository.mark_inventory_unlocated(
                 session, uuid.UUID(str(inventory_location_id)), performed_by=actor
             )
@@ -1386,6 +1460,9 @@ class WarehouseMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_inventory_location_in_scope(
+                session, uuid.UUID(str(inventory_location_id)), tenant_scope(info)
+            )
             result = warehouse_repository.assign_inventory_location(
                 session, uuid.UUID(str(inventory_location_id)), aisle, row, bay, performed_by=actor
             )
@@ -1408,6 +1485,9 @@ class WarehouseMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_inventory_location_in_scope(
+                session, uuid.UUID(str(inventory_location_id)), tenant_scope(info)
+            )
             original, remainder = warehouse_repository.split_inventory_location(
                 session, uuid.UUID(str(inventory_location_id)), quantity, performed_by=actor
             )
@@ -1437,6 +1517,7 @@ class WarehouseMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_warehouse_in_scope(session, uuid.UUID(str(warehouse_id)), tenant_scope(info))
             counts = warehouse_repository.merge_locations(
                 session,
                 warehouse_id=uuid.UUID(str(warehouse_id)),
@@ -1461,6 +1542,7 @@ class WarehouseMutations:
     ) -> WarehouseLocation:
         """Define a put-away location. Re-defining a deactivated one reactivates it."""
         with SessionLocal() as session:
+            tenancy.require_warehouse_in_scope(session, uuid.UUID(str(warehouse_id)), tenant_scope(info))
             wl = warehouse_repository.create_warehouse_location(session, uuid.UUID(str(warehouse_id)), aisle, row, bay)
             session.commit()
             session.refresh(wl)
@@ -1470,6 +1552,7 @@ class WarehouseMutations:
     def deactivate_warehouse_location(self, info: strawberry.Info, id: strawberry.ID) -> WarehouseLocation:
         """Retire a location from the put-away pickers. Hardware already there stays put."""
         with SessionLocal() as session:
+            tenancy.require_warehouse_location_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             wl = warehouse_repository.deactivate_warehouse_location(session, uuid.UUID(str(id)))
             session.commit()
             session.refresh(wl)
@@ -1483,6 +1566,9 @@ class WarehouseMutations:
                 session,
                 name=input.name,
                 code=input.code,
+                # A warehouse belongs to a company (#637). A scoped caller can only raise one for
+                # their own; an Admin/Manager is unscoped and names it on the input.
+                company=tenant_scope(info) or input.company or "",
                 address=input.address,
                 city=input.city,
                 province=input.province,
@@ -1497,11 +1583,15 @@ class WarehouseMutations:
     @strawberry.mutation
     def update_warehouse(self, info: strawberry.Info, id: strawberry.ID, input: UpdateWarehouseInput) -> Warehouse:
         with SessionLocal() as session:
+            tenancy.require_warehouse_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             wh = warehouse_admin_repository.update_warehouse(
                 session,
                 uuid.UUID(str(id)),
                 name=input.name,
                 code=input.code,
+                # #637: admin-only, like the mutation. A scoped caller never reaches this with a
+                # different company - the scope check above already refused them the row.
+                company=input.company,
                 address=input.address,
                 city=input.city,
                 province=input.province,
@@ -1516,6 +1606,7 @@ class WarehouseMutations:
     @strawberry.mutation
     def delete_warehouse(self, info: strawberry.Info, id: strawberry.ID) -> bool:
         with SessionLocal() as session:
+            tenancy.require_warehouse_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             warehouse_admin_repository.delete_warehouse(session, uuid.UUID(str(id)))
             session.commit()
             return True

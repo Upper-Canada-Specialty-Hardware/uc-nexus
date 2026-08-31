@@ -32,6 +32,7 @@ def _project(session, *, ok=None, detail=None, job=None):
         gp_setup_ok=ok,
         gp_setup_detail=detail,
         gp_setup_checked_at=datetime.utcnow() if ok is not None else None,
+        company="TUBC",
     )
     session.add(project)
     session.flush()
@@ -151,6 +152,7 @@ def test_stamping_records_the_verdict_and_the_detail(db_session):
                 "issues": [{"cost_code": "210-200-2", "account_index": 1617}],
             }
         },
+        "TUBC",
     )
 
     db_session.refresh(project)
@@ -164,7 +166,7 @@ def test_a_healthy_verdict_clears_the_detail(db_session):
     leaving it would keep the banner naming codes that are now fine."""
     project = _project(db_session, ok=False, detail=_BROKEN)
 
-    project_repository.stamp_gp_setup_health(db_session, {project.project_id: {"ok": True, "issues": []}})
+    project_repository.stamp_gp_setup_health(db_session, {project.project_id: {"ok": True, "issues": []}}, "TUBC")
 
     db_session.refresh(project)
     assert project.gp_setup_ok is True
@@ -177,7 +179,7 @@ def test_a_project_gp_did_not_report_is_left_alone(db_session):
     untouched = _project(db_session, ok=False, detail=_BROKEN)
     reported = _project(db_session)
 
-    project_repository.stamp_gp_setup_health(db_session, {reported.project_id: {"ok": True, "issues": []}})
+    project_repository.stamp_gp_setup_health(db_session, {reported.project_id: {"ok": True, "issues": []}}, "TUBC")
 
     db_session.refresh(untouched)
     assert untouched.gp_setup_ok is False
@@ -186,6 +188,6 @@ def test_a_project_gp_did_not_report_is_left_alone(db_session):
 
 def test_stamping_an_empty_verdict_map_touches_nothing(db_session):
     project = _project(db_session, ok=True)
-    assert project_repository.stamp_gp_setup_health(db_session, {}) == 0
+    assert project_repository.stamp_gp_setup_health(db_session, {}, "TUBC") == 0
     db_session.refresh(project)
     assert project.gp_setup_ok is True

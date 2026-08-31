@@ -17,6 +17,10 @@ class Warehouse(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # The GP company that owns this building - the tenant (#637). Everything warehouse-linked
+    # (locations, stock items, receive drafts) inherits its scope from here rather than carrying a
+    # column of its own.
+    company: Mapped[str] = mapped_column(String(15), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
     code: Mapped[str] = mapped_column(String(20), nullable=False)
     address: Mapped[str | None] = mapped_column(String, nullable=True)

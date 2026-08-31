@@ -16,7 +16,7 @@ def _line_item() -> dict:
 
 
 def test_create_po_stores_cost_code(db_session):
-    po = po_repository.create_po(db_session, line_items=[_line_item()], cost_code="  210-200-2  ")
+    po = po_repository.create_po(db_session, line_items=[_line_item()], cost_code="  210-200-2  ", company="TUBC")
     db_session.refresh(po)
     assert po.cost_code == "210-200-2"
 
@@ -34,6 +34,7 @@ def test_create_po_with_gp_fields_lands_gp_registered(db_session):
         gp_company="TUBC",
         gp_vendor_id="GPV1",
         vendor_name_snapshot="Acme",
+        company="TUBC",
     )
     db_session.refresh(po)
     assert po.po_number == "PO123456"
@@ -43,7 +44,7 @@ def test_create_po_with_gp_fields_lands_gp_registered(db_session):
 
 
 def test_create_po_without_gp_fields_stays_draft(db_session):
-    po = po_repository.create_po(db_session, line_items=[_line_item()])
+    po = po_repository.create_po(db_session, line_items=[_line_item()], company="TUBC")
     db_session.refresh(po)
     assert po.po_number is None
     assert po.gp_company is None
@@ -60,6 +61,7 @@ def test_create_po_stores_gp_vendor_snapshot(db_session):
         gp_company="TUBC",
         gp_vendor_id="  GPV42  ",
         vendor_name_snapshot="  Ingersoll Hardware  ",
+        company="TUBC",
     )
     db_session.refresh(po)
     assert po.gp_vendor_id == "GPV42"
@@ -82,7 +84,7 @@ def test_no_mutation_can_fake_a_gp_registered_po(db_session):
     holding a GP result."""
     assert not hasattr(po_repository, "mark_po_as_ordered")
 
-    draft = po_repository.create_po(db_session, line_items=[_line_item()])
+    draft = po_repository.create_po(db_session, line_items=[_line_item()], company="TUBC")
     po_repository.update_po(db_session, draft.id, po_number="PO777001")
     db_session.flush()
     db_session.refresh(draft)

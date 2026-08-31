@@ -3,7 +3,7 @@
 import httpx
 
 from app.config import CLERK_SECRET_KEY
-from app.errors import AppError
+from app.errors import AppError, ValidationError
 
 CLERK_API_BASE = "https://api.clerk.com/v1"
 
@@ -59,6 +59,9 @@ def _user_summary(u: dict) -> dict:
         "email": _primary_email(u),
         "roles": metadata.get("roles", []),
         "gp_buyer_id": metadata.get("gpBuyerId") or None,
+        # #637: the GP company this account belongs to - its tenant. Same storage pattern as
+        # gpBuyerId: one publicMetadata key, null until an admin assigns it.
+        "company": metadata.get("company") or None,
         "image_url": u.get("image_url") or "",
     }
 
@@ -171,6 +174,35 @@ def update_user_gp_buyer_id(user_id: str, gp_buyer_id: str | None) -> dict:
 
 def get_user_gp_buyer_id(user_id: str) -> str | None:
     """Issue #216: the caller's GP buyer identity from Clerk publicMetadata, or None if unset."""
+    return _public_metadata(user_id).get("gpBuyerId") or None
+
+
+def normalize_company(company: str | None) -> str | None:
+    """#637: a GP company code as it is stored on a Clerk account - trimmed, uppercased, or None to
+    clear. Raises on an over-long code; GP's own company id is char(15)."""
+    cleaned = (company or "").strip().upper()
+    if not cleaned:
+        return None
+    if len(cleaned) > 15:
+        raise ValidationError("A GP company code is at most 15 characters.", field="company")
+    return cleaned
+
+
+def update_user_company(user_id: str, company: str | None) -> dict:
+    """#637: set (or clear, with None) the GP company this UC Nexus account belongs to. This is the
+    account's tenant - every non-admin read and write is filtered on it - so it is admin-only, and the
+    same merge-not-replace metadata write `updateUserGpBuyerId` uses."""
+    return _merge_public_metadata(user_id, {"company": normalize_company(company)})
+
+
+def get_user_company(user_id: str) -> str | None:
+    """#637: the caller's GP company (their tenant) from Clerk publicMetadata, or None if unassigned."""
+    return normalize_company(_public_metadata(user_id).get("company"))
+
+
+def _public_metadata(user_id: str) -> dict:
+    """One Clerk user's publicMetadata. The HTTP failure is mapped rather than surfaced raw, for the
+    reason `get_user` gives: an opaque 500 couples every caller to Clerk's availability."""
     try:
         resp = _client.get(f"/users/{user_id}", headers=_headers())
         resp.raise_for_status()
@@ -179,5 +211,4 @@ def get_user_gp_buyer_id(user_id: str) -> str | None:
         raise AppError(
             "Could not load your user profile from Clerk; please try again.", code="CLERK_UNAVAILABLE"
         ) from e
-    metadata = u.get("public_metadata") or {}
-    return metadata.get("gpBuyerId") or None
+    return u.get("public_metadata") or {}

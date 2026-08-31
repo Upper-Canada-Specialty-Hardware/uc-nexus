@@ -72,6 +72,7 @@ function projectsMock(): MockedResponse {
             client: null,
             jobSiteName: null,
             scheduleFilename: null,
+            company: 'TUBC',
             openingCount: 4,
             gpSetupOk: true,
             gpSetupIssues: null,

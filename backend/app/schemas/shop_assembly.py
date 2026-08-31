@@ -4,9 +4,9 @@ import uuid
 
 import strawberry
 
-from app.auth import current_user, resolve_display_name
+from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
-from app.repositories import shop_assembly_repository
+from app.repositories import shop_assembly_repository, tenancy
 
 from .converters import shop_assembly_request_to_type
 from .enums import ShopAssemblyRequestStatus
@@ -41,8 +41,11 @@ class ShopAssemblyQueries:
         view uses it so it lists only requests Reopen can still act on. Open to any signed-in user.
         """
         with SessionLocal() as session:
+            scope = tenant_scope(info)
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            tenancy.require_project_in_scope(session, pid, scope)
             reqs = shop_assembly_repository.get_shop_assembly_requests(
-                session, uuid.UUID(str(project_id)) if project_id else None, status, reopenable_only
+                session, pid, status, reopenable_only, company=scope
             )
             return _requests_to_types(session, reqs)
 
@@ -65,6 +68,7 @@ class ShopAssemblyMutations:
         actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
+            tenancy.require_shop_assembly_request_in_scope(session, request_id, tenant_scope(info))
             shop_assembly_repository.accept_shop_assembly_request(session, request_id, actor)
             session.commit()
             reqs = [shop_assembly_repository.get_shop_assembly_request(session, request_id)]
@@ -80,6 +84,7 @@ class ShopAssemblyMutations:
         actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
+            tenancy.require_shop_assembly_request_in_scope(session, request_id, tenant_scope(info))
             shop_assembly_repository.reject_shop_assembly_request(session, request_id, actor, reason)
             session.commit()
             reqs = [shop_assembly_repository.get_shop_assembly_request(session, request_id)]
@@ -94,6 +99,7 @@ class ShopAssemblyMutations:
         has already started the pull. Open to any signed-in user."""
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
+            tenancy.require_shop_assembly_request_in_scope(session, request_id, tenant_scope(info))
             shop_assembly_repository.reopen_shop_assembly_request(session, request_id)
             session.commit()
             reqs = [shop_assembly_repository.get_shop_assembly_request(session, request_id)]

@@ -32,6 +32,7 @@ vi.mock('../../../hooks/useIdentity', () => ({
     hasRole: () => true,
     isAdmin: true,
     gpBuyerId: null,
+    company: null,
     user: null,
   }),
 }));
@@ -44,7 +45,7 @@ function relayStatusMock(connected: boolean): MockedResponse {
       data: {
         relayStatus: {
           connected,
-          company: connected ? COMPANY : null,
+          companies: connected ? [COMPANY] : [],
           build: connected ? 'relay-v0.1.0-build.40' : null,
           installId: connected ? 'install-1' : null,
           __typename: 'RelayStatus',

@@ -3,6 +3,7 @@ import { useQuery } from '@apollo/client/react';
 import { GET_GP_BUYERS_DETAILED } from '../../graphql/admin';
 import { isRelayOpUnsupported } from '../../graphql/gpError';
 import { useRelayStatus } from '../../relay/useRelayStatus';
+import { useCompanyChoice } from '../../relay/useCompanyChoice';
 
 export interface GpBuyerOption {
   buyerId: string;
@@ -12,8 +13,10 @@ export interface GpBuyerOption {
 export interface GpBuyersState {
   buyers: GpBuyerOption[];
   loading: boolean;
-  /** The connected relay is enrolled for exactly one GP company; '' while disconnected. */
+  /** The GP company the list was read for; '' while disconnected or when none applies. */
   company: string;
+  /** #637: every company the live relay serves, for screens that assign one. Empty while down. */
+  companies: string[];
   relayConnected: boolean;
   /** null while the first relay-status check is in flight, so "not yet known" isn't shown as "down". */
   relayStatus: boolean | null;
@@ -37,10 +40,13 @@ export interface GpBuyersState {
  * that errored must not read as "this company has no buyers", which is the state that would let a
  * blank dropdown look like an answer.
  */
-export function useGpBuyers(options?: { skip?: boolean }): GpBuyersState {
+export function useGpBuyers(options?: { skip?: boolean; company?: string | null }): GpBuyersState {
   const skip = options?.skip ?? false;
   const relay = useRelayStatus({ skip });
-  const company = relay.company ?? '';
+  const choice = useCompanyChoice(relay.companies);
+  // #637: the buyer master is per company. A caller that knows which one it means - the company of
+  // the user being edited - says so; otherwise the caller's own company is what the list is read for.
+  const company = options?.company || choice.company;
   const relayConnected = relay.connected === true;
 
   const { data, loading, error, refetch } = useQuery<{ gpBuyersDetailed: GpBuyerOption[] }>(
@@ -59,6 +65,7 @@ export function useGpBuyers(options?: { skip?: boolean }): GpBuyersState {
     buyers,
     loading,
     company,
+    companies: relay.companies,
     relayConnected,
     relayStatus: relay.connected,
     unsupported,

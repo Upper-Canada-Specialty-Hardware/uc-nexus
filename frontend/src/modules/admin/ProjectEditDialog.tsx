@@ -13,6 +13,10 @@ export interface ProjectFormValue {
   description: string | null;
   client: string | null;
   jobSiteName: string | null;
+  // #637: the GP company that owns the job, and whether it has been archived out of the pickers.
+  // Both are read-only here - the company comes from GP, and archiving has its own action.
+  company: string;
+  archived: boolean;
   address: string | null;
   city: string | null;
   state: string | null;
@@ -29,6 +33,7 @@ export interface ProjectFormValue {
   submittalAssignmentCount: number | null;
   estimatorCode: string | null;
   titanUserId: string | null;
+  openingCount: number;
   // GP job setup verdict (#425), read-only and stamped by the sync. Present so the admin project grid
   // can badge a quarantined job; the edit form never writes it.
   gpSetupOk?: boolean | null;

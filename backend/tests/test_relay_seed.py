@@ -126,7 +126,7 @@ def test_a_database_holding_a_real_enrolled_relay_is_never_seeded(db_session):
     real = RelayInstall(
         id=uuid.uuid4(),
         label="TAGGING3W10",
-        company="UCSH",
+        companies=["UCSH"],
         hostname="Tagging3W10",
         secret_hash="c" * 64,
         enrolled_at=datetime.utcnow(),
@@ -142,7 +142,7 @@ def test_a_database_holding_a_real_enrolled_relay_is_never_seeded(db_session):
 def test_an_existing_row_carrying_the_hash_is_left_completely_alone(db_session):
     # An earlier draft "repaired" the company here. On a live install that silently repoints a real
     # credential from UBC/UCSH to TUBC, with the original value surviving only in a log line.
-    real = RelayInstall(id=uuid.uuid4(), label="hand-made", company="UCSH", secret_hash=HASH)
+    real = RelayInstall(id=uuid.uuid4(), label="hand-made", companies=["UCSH"], secret_hash=HASH)
     db_session.add(real)
     db_session.flush()
 
@@ -166,7 +166,7 @@ def test_rotating_the_hash_removes_the_superseded_seed_row(db_session):
 
 
 def test_rotation_only_removes_this_environments_own_seed_row(db_session):
-    other = RelayInstall(id=uuid.uuid4(), label="seed:pr-999", company="TUBC", secret_hash="e" * 64)
+    other = RelayInstall(id=uuid.uuid4(), label="seed:pr-999", companies=["TUBC"], secret_hash="e" * 64)
     db_session.add(other)
     db_session.flush()
 

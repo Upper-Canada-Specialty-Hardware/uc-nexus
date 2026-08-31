@@ -33,14 +33,14 @@ from app.repositories import warehouse as warehouse_repository
 
 
 def _project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p
 
 
-def _type(session, name=None, **kwargs):
-    return catalog.create_item_type(session, name=name or f"Type {uuid.uuid4().hex[:6]}", **kwargs)
+def _type(session, name=None, company="TUBC", **kwargs):
+    return catalog.create_item_type(session, name=name or f"Type {uuid.uuid4().hex[:6]}", company=company, **kwargs)
 
 
 # --- the seeded three -------------------------------------------------------------------------
@@ -82,7 +82,9 @@ def test_a_code_already_carrying_hardware_is_refused(db_session):
     """The check that earns its keep. Hardware categories come off the TITAN schedule and are
     registered nowhere, so the only evidence HINGE is taken is that something was bought under it.
     A type created on such a code would show every hinge in the building as one of its own items."""
-    po = PurchaseOrder(id=uuid.uuid4(), request_number=f"REQ-{uuid.uuid4().hex[:6]}", status=POStatus.DRAFT)
+    po = PurchaseOrder(
+        id=uuid.uuid4(), request_number=f"REQ-{uuid.uuid4().hex[:6]}", status=POStatus.DRAFT, company="TUBC"
+    )
     db_session.add(po)
     db_session.flush()
     db_session.add(
@@ -162,7 +164,7 @@ def test_retiring_a_type_hides_it_from_pickers_but_not_from_management(db_sessio
 
 def test_a_blank_name_is_refused(db_session):
     with pytest.raises(ValidationError):
-        catalog.create_item_type(db_session, name="   ")
+        catalog.create_item_type(db_session, name="   ", company="TUBC")
 
 
 # --- attributes -------------------------------------------------------------------------------
@@ -417,6 +419,7 @@ def test_a_frame_travels_the_hardware_pipeline_untouched(db_session):
         status=POStatus.GP_REGISTERED,
         po_number=f"PO{uuid.uuid4().hex[:6]}",
         gp_company="TEST",
+        company="TUBC",
     )
     db_session.add(po)
     db_session.flush()

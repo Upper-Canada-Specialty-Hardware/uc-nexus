@@ -69,10 +69,17 @@ def wake() -> None:
             logger.exception("gp po sync: failed to signal the worker")
 
 
-def _load_project_map(session) -> dict:
-    """{GP job number -> Nexus project.id} for job matching. A mirrored PO whose lines agree on one job
-    that is in here receives into that project's inventory; anything else is stock."""
-    rows = session.execute(select(ProjectModel.project_id, ProjectModel.id)).all()
+def _load_project_map(session, company: str) -> dict:
+    """{GP job number -> Nexus project.id} for job matching, WITHIN one company (#637). A mirrored PO
+    whose lines agree on one job that is in here receives into that project's inventory; anything else
+    is stock.
+
+    Scoped because a job number is only unique within a company: an unscoped map would attribute a
+    UCSH purchase order to the TUBC project that happens to share its job number, receiving another
+    company's hardware into it."""
+    rows = session.execute(
+        select(ProjectModel.project_id, ProjectModel.id).where(ProjectModel.company == company)
+    ).all()
     return {job: pid for job, pid in rows}
 
 
@@ -93,7 +100,7 @@ def _persist_page(company: str, pos: list[dict], next_cursor: str | None, *, is_
     all_persisted = True
     last_persisted_cursor: str | None = None
     with SessionLocal() as session:
-        project_map = _load_project_map(session)
+        project_map = _load_project_map(session, company)
         pending_registration = sync_repo.po_numbers_pending_registration(session, company)
         for po in pos:
             po_number = (po.get("po_number") or "").strip()
@@ -229,29 +236,66 @@ def _backfill_done(company: str) -> bool:
 
 
 async def run_once(*, backfill_max_pages: int = BACKFILL_MAX_PAGES_PER_PASS) -> dict:
-    """One sync pass: backfill a batch of pages if history is not fully mirrored yet, otherwise run one
-    incremental pass. Returns a result dict (mode, counts, backfill_done, stalled).
+    """One sync pass PER COMPANY the connected relay serves (#637): backfill a batch of pages if that
+    company's history is not fully mirrored yet, otherwise run one incremental pass for it. Returns an
+    aggregate result dict (mode, counts, backfill_done, stalled).
 
-    backfill_max_pages bounds how many backfill pages a single call drains. The background loop passes
-    its full budget; the admin syncGpPos mutation passes a small cap so it returns promptly (and wakes
-    the loop to drain the rest) rather than holding one GraphQL request open across the whole history.
+    gp_po_sync_state was always one row per company, so each company keeps its own cursor, watermark
+    and backfill phase - one company still draining history does not hold another's incremental pass.
+    The aggregate `mode` reads 'backfill' while ANY company is still backfilling, which is what the
+    loop keys its no-wait continue off; `backfill_done` is true only once every company is done.
+
+    backfill_max_pages bounds how many backfill pages a single call drains PER COMPANY. The background
+    loop passes its full budget; the admin syncGpPos mutation passes a small cap so it returns promptly
+    (and wakes the loop to drain the rest) rather than holding one GraphQL request open across the
+    whole history.
 
     Raises RelayUnavailableError if no relay is connected. Returns a no-op result (mode 'unsupported')
     when the connected relay is too old to serve sync_pos, so the admin button and the loop both
     degrade cleanly until the relay updates."""
-    company = relay_gateway.company
-    if not company:
+    companies = relay_gateway.companies
+    if not companies:
         raise RelayUnavailableError(
             "The GP relay is not connected, so purchase orders cannot be mirrored from GP. "
             "Start the relay and try again."
         )
-    try:
-        if await asyncio.to_thread(_backfill_done, company):
-            return await _run_incremental(company)
-        return await _run_backfill(company, max_pages=backfill_max_pages)
-    except RelayOpUnsupportedError:
-        logger.info("gp po sync: connected relay does not support sync_pos yet; skipping until it updates")
-        return {"mode": "unsupported", "backfill_done": False, "created": 0, "updated": 0, "pos": 0}
+
+    created = updated = skipped = pos_seen = 0
+    modes: list[str] = []
+    all_done = True
+    any_stalled = False
+    for company in companies:
+        try:
+            if await asyncio.to_thread(_backfill_done, company):
+                result = await _run_incremental(company)
+            else:
+                result = await _run_backfill(company, max_pages=backfill_max_pages)
+        except RelayOpUnsupportedError:
+            logger.info("gp po sync: connected relay does not support sync_pos yet; skipping until it updates")
+            return {"mode": "unsupported", "backfill_done": False, "created": 0, "updated": 0, "pos": 0}
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - one company must not cost every other company its pass
+            logger.info("gp po sync: pass for %s failed (%s); other companies continue", company, e)
+            all_done = False
+            continue
+        created += result.get("created", 0)
+        updated += result.get("updated", 0)
+        skipped += result.get("skipped", 0)
+        pos_seen += result.get("pos", 0)
+        modes.append(result["mode"])
+        all_done = all_done and bool(result.get("backfill_done"))
+        any_stalled = any_stalled or bool(result.get("stalled"))
+
+    return {
+        "mode": "backfill" if "backfill" in modes else "incremental",
+        "backfill_done": all_done,
+        "stalled": any_stalled,
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "pos": pos_seen,
+    }
 
 
 async def run_forever() -> None:
@@ -265,7 +309,7 @@ async def run_forever() -> None:
         while True:
             backfilling = False
             try:
-                if relay_gateway.connected and relay_gateway.company:
+                if relay_gateway.connected and relay_gateway.companies:
                     result = await run_once()
                     if result.get("created") or result.get("updated"):
                         logger.info(

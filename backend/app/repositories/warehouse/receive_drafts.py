@@ -232,6 +232,8 @@ def get_receive_drafts(
     status: ReceiveDraftStatus | None = None,
     po_id: uuid.UUID | None = None,
     created_by_user_id: str | None = None,
+    *,
+    company: str | None = None,
 ) -> list[tuple]:
     """Drafts with the PO they are against, newest first.
 
@@ -251,6 +253,10 @@ def get_receive_drafts(
         stmt = stmt.where(ReceiveDraftModel.po_id == po_id)
     if created_by_user_id is not None:
         stmt = stmt.where(ReceiveDraftModel.created_by_user_id == created_by_user_id)
+    if company is not None:
+        # Through the PO, which is already joined: a draft has a nullable warehouse but always a PO,
+        # and the PO is what the receive is for.
+        stmt = stmt.where(POModel.company == company)
     return [(draft, po) for draft, po in session.execute(stmt).unique().all()]
 
 
@@ -261,16 +267,17 @@ def get_receive_draft(session: Session, draft_id: uuid.UUID):
     return draft, po
 
 
-def count_pending_drafts(session: Session) -> int:
-    """How many drafts are waiting on a manager - the approvals badge."""
-    return int(
-        session.scalar(
-            select(func.count())
-            .select_from(ReceiveDraftModel)
-            .where(ReceiveDraftModel.status == ReceiveDraftStatus.PENDING_APPROVAL)
-        )
-        or 0
+def count_pending_drafts(session: Session, *, company: str | None = None) -> int:
+    """How many drafts are waiting on a manager - the approvals badge, within the caller's
+    company (#637)."""
+    stmt = (
+        select(func.count())
+        .select_from(ReceiveDraftModel)
+        .where(ReceiveDraftModel.status == ReceiveDraftStatus.PENDING_APPROVAL)
     )
+    if company is not None:
+        stmt = stmt.join(POModel, POModel.id == ReceiveDraftModel.po_id).where(POModel.company == company)
+    return int(session.scalar(stmt) or 0)
 
 
 def _assert_can_edit(draft: ReceiveDraftModel, actor_user_id: str, actor_is_manager: bool) -> None:

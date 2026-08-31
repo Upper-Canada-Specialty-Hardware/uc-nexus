@@ -95,3 +95,13 @@ class UserMutations:
         """Issue #216: link a UC Nexus account to the GP BUYERID it acts as (null clears). The PO
         dialog auto-uses the caller's identity and createPo/registerPoInGp enforce it."""
         return clerk_user_to_type(user_repository.update_user_gp_buyer_id(user_id, gp_buyer_id))
+
+    @strawberry.mutation
+    def update_user_company(self, info: strawberry.Info, user_id: str, company: str | None = None) -> ClerkUser:
+        """#637: assign the GP company this account belongs to - its tenant (null clears).
+
+        Admin-only, and the most consequential of the three writes here after `updateUserRoles`: this
+        is what decides which company's projects, POs, inventory and shipments the account can see at
+        all. An Admin/Manager is deliberately unscoped by it (`tenant_scope` returns None for them),
+        so setting a company on an admin records the affiliation without narrowing what they read."""
+        return clerk_user_to_type(user_repository.update_user_company(user_id, company))

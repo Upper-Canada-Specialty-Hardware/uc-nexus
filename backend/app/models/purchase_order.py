@@ -58,6 +58,10 @@ class PurchaseOrder(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # The GP company that owns this PO - the tenant (#637). Distinct from `gp_company` below, which is
+    # nullable and only recorded once a PO has actually been pushed to (or mirrored from) GP: a DRAFT
+    # has a tenant from the moment it is raised, and every non-admin read filters on this.
+    company: Mapped[str] = mapped_column(String(15), nullable=False, index=True)
     po_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     # The PO-REQ-NNN a Nexus-drafted PO was raised from. Null on a mirrored (GP-origin) PO, which was
     # never requested through Nexus - the register falls back to po_number for the display id there.

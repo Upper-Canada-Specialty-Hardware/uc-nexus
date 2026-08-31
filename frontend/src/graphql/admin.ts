@@ -1,37 +1,77 @@
 import { gql } from '@apollo/client/core';
 
+// One project row as the admin screens read it. Shared by the grid, the edit mutation and the detail
+// page so the three can never drift into normalizing the same Project with different fields.
+// #637: company + archived ride along - adminProjects returns every company's jobs, archived included.
+const ADMIN_PROJECT_FIELDS = `
+  id
+  projectId
+  description
+  client
+  jobSiteName
+  company
+  archived
+  address
+  city
+  state
+  zip
+  contractor
+  projectManager
+  application
+  gcContactName
+  gcPhone
+  gcEmail
+  offSiteStorageAgreement
+  submittalJobNo
+  submittalAssignmentCount
+  estimatorCode
+  titanUserId
+  openingCount
+  createdAt
+  updatedAt
+  gpSetupOk
+  gpSetupCheckedAt
+  gpSetupIssues {
+    costCode
+    accountIndex
+  }
+`;
+
+// #637: company is the tenant this account is scoped to. Every user mutation returns it so a save
+// cannot leave the grid showing the pre-save company.
+const CLERK_USER_FIELDS = `
+  id
+  firstName
+  lastName
+  email
+  roles
+  gpBuyerId
+  company
+  imageUrl
+`;
+
 export const GET_ADMIN_PROJECTS = gql`
   query GetAdminProjects {
     adminProjects {
-      id
-      projectId
-      description
-      client
-      jobSiteName
-      address
-      city
-      state
-      zip
-      contractor
-      projectManager
-      application
-      gcContactName
-      gcPhone
-      gcEmail
-      offSiteStorageAgreement
-      submittalJobNo
-      submittalAssignmentCount
-      estimatorCode
-      titanUserId
-      openingCount
-      createdAt
-      updatedAt
-      gpSetupOk
-      gpSetupCheckedAt
-      gpSetupIssues {
-        costCode
-        accountIndex
+      ${ADMIN_PROJECT_FIELDS}
+    }
+  }
+`;
+
+// One project's at-a-glance state for the admin detail page (#637). The counts are computed
+// server-side - the page must not walk relationships to add them up.
+export const GET_ADMIN_PROJECT_DETAIL = gql`
+  query GetAdminProjectDetail($id: ID!) {
+    adminProjectDetail(id: $id) {
+      project {
+        ${ADMIN_PROJECT_FIELDS}
       }
+      poCountsByStatus {
+        status
+        count
+      }
+      inventoryOnHand
+      openShippingRequestCount
     }
   }
 `;
@@ -39,13 +79,7 @@ export const GET_ADMIN_PROJECTS = gql`
 export const GET_USERS = gql`
   query GetUsers {
     users {
-      id
-      firstName
-      lastName
-      email
-      roles
-      gpBuyerId
-      imageUrl
+      ${CLERK_USER_FIELDS}
     }
   }
 `;
@@ -55,7 +89,7 @@ export const RELAY_INSTALLS = gql`
     relayInstalls {
       id
       label
-      company
+      companies
       hostname
       enrolled
       enrolledAt
@@ -197,35 +231,18 @@ export const OVERRIDE_INVENTORY_QUANTITY = gql`
 export const UPDATE_PROJECT = gql`
   mutation UpdateProject($id: ID!, $input: UpdateProjectInput!) {
     updateProject(id: $id, input: $input) {
+      ${ADMIN_PROJECT_FIELDS}
+    }
+  }
+`;
+
+// #637: archiving hides a finished job from every project picker without deleting anything it owns.
+// Only id + archived come back - the normalized cache patches the row the grid and detail page hold.
+export const SET_PROJECT_ARCHIVED = gql`
+  mutation SetProjectArchived($id: ID!, $archived: Boolean!) {
+    setProjectArchived(id: $id, archived: $archived) {
       id
-      projectId
-      description
-      client
-      jobSiteName
-      address
-      city
-      state
-      zip
-      contractor
-      projectManager
-      application
-      gcContactName
-      gcPhone
-      gcEmail
-      offSiteStorageAgreement
-      submittalJobNo
-      submittalAssignmentCount
-      estimatorCode
-      titanUserId
-      openingCount
-      createdAt
-      updatedAt
-      gpSetupOk
-      gpSetupCheckedAt
-      gpSetupIssues {
-        costCode
-        accountIndex
-      }
+      archived
     }
   }
 `;
@@ -233,13 +250,7 @@ export const UPDATE_PROJECT = gql`
 export const UPDATE_USER_ROLES = gql`
   mutation UpdateUserRoles($userId: String!, $roles: [String!]!) {
     updateUserRoles(userId: $userId, roles: $roles) {
-      id
-      firstName
-      lastName
-      email
-      roles
-      gpBuyerId
-      imageUrl
+      ${CLERK_USER_FIELDS}
     }
   }
 `;
@@ -248,6 +259,7 @@ const WAREHOUSE_FIELDS = `
   id
   name
   code
+  company
   address
   city
   province
@@ -298,11 +310,11 @@ export const MERGE_LOCATIONS = gql`
 `;
 
 export const PROVISION_RELAY_INSTALL = gql`
-  mutation ProvisionRelayInstall($label: String!, $company: String!) {
-    provisionRelayInstall(label: $label, company: $company) {
+  mutation ProvisionRelayInstall($label: String!, $companies: [String!]!) {
+    provisionRelayInstall(label: $label, companies: $companies) {
       installId
       label
-      company
+      companies
       enrollmentToken
       enrollmentTokenExpiresAt
     }
@@ -312,13 +324,7 @@ export const PROVISION_RELAY_INSTALL = gql`
 export const UPDATE_USER_NAME = gql`
   mutation UpdateUserName($userId: String!, $firstName: String!, $lastName: String!) {
     updateUserName(userId: $userId, firstName: $firstName, lastName: $lastName) {
-      id
-      firstName
-      lastName
-      email
-      roles
-      gpBuyerId
-      imageUrl
+      ${CLERK_USER_FIELDS}
     }
   }
 `;
@@ -326,13 +332,17 @@ export const UPDATE_USER_NAME = gql`
 export const UPDATE_USER_GP_BUYER_ID = gql`
   mutation UpdateUserGpBuyerId($userId: String!, $gpBuyerId: String) {
     updateUserGpBuyerId(userId: $userId, gpBuyerId: $gpBuyerId) {
-      id
-      firstName
-      lastName
-      email
-      roles
-      gpBuyerId
-      imageUrl
+      ${CLERK_USER_FIELDS}
+    }
+  }
+`;
+
+// #637: which tenant this account belongs to. null clears it, which puts the user back behind the
+// "no company assigned" notice rather than silently showing them nothing.
+export const UPDATE_USER_COMPANY = gql`
+  mutation UpdateUserCompany($userId: String!, $company: String) {
+    updateUserCompany(userId: $userId, company: $company) {
+      ${CLERK_USER_FIELDS}
     }
   }
 `;

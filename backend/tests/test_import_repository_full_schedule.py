@@ -57,6 +57,7 @@ def _make_project(session, project_id: str = "PROJ-001") -> Project:
         id=uuid.uuid4(),
         project_id=f"{project_id}-{uuid.uuid4().hex[:6]}",
         description="Test",
+        company="TUBC",
     )
     session.add(p)
     session.flush()

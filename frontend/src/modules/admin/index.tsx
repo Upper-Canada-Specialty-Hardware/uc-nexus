@@ -5,6 +5,7 @@ import UserManagementPage from './UserManagementPage';
 import BuyersPage from './BuyersPage';
 import WarehousesPage from './WarehousesPage';
 import ProjectsPage from './ProjectsPage';
+import ProjectDetailPage from './ProjectDetailPage';
 import LocationCleanupPage from './LocationCleanupPage';
 import RelayInstallsPage from './RelayInstallsPage';
 import SharePointMigrationPage from './SharePointMigrationPage';
@@ -21,6 +22,7 @@ export default function AdminModule() {
       <Route path="hardware-status" element={<HardwareStatusPage />} />
       <Route path="warehouses" element={<WarehousesPage />} />
       <Route path="projects" element={<ProjectsPage />} />
+      <Route path="projects/:id" element={<ProjectDetailPage />} />
       <Route path="users" element={<UserManagementPage />} />
       <Route path="buyers" element={<BuyersPage />} />
       <Route path="relay-installs" element={<RelayInstallsPage />} />

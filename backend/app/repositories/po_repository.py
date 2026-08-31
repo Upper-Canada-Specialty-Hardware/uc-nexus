@@ -156,8 +156,13 @@ def create_po(
     preferred_delivery_date=None,
     created_by_user_id: str | None = None,
     vendor_quote_number: str | None = None,
+    company: str | None = None,
 ) -> PurchaseOrder:
     """Create a manual PO with line items. No hardware items are created.
+
+    `company` is the tenant (#637). A PO on a project takes the PROJECT's company, always - a PO and
+    the job it is raised against cannot belong to different tenants - so the argument only decides a
+    stock PO, which has no project to inherit from.
 
     Issue #256: the manual path creates a plain DRAFT (no po_number/gp_company) - registering it
     into GP is a separate, conscious user action (register_po_in_gp). The GP-first stamping branch
@@ -172,12 +177,16 @@ def create_po(
         raise ValidationError("At least one line item is required", field="line_items")
 
     # Validate project exists if provided
+    company = (company or "").strip().upper() or None
     if project_id is not None:
         from app.models.project import Project as ProjectModel
 
         project = session.get(ProjectModel, project_id)
         if project is None:
             raise NotFoundError(f"Project {project_id} not found")
+        company = project.company
+    if not company:
+        raise ValidationError("A GP company is required for a purchase order", field="company")
 
     request_number = generate_next_request_number(session)
 
@@ -185,6 +194,7 @@ def create_po(
 
     po = PurchaseOrder(
         id=uuid.uuid4(),
+        company=company,
         request_number=request_number,
         project_id=project_id,
         status=POStatus.DRAFT,
@@ -316,8 +326,17 @@ def register_po_in_gp(
     if project_id is not None and po.project_id is None:
         from app.models.project import Project as ProjectModel
 
-        if session.get(ProjectModel, project_id) is None:
+        project = session.get(ProjectModel, project_id)
+        if project is None:
             raise NotFoundError(f"Project {project_id} not found")
+        # #637: a PO and the job it is raised against belong to one tenant. A stock draft can only
+        # adopt a project of its OWN company - otherwise registering would move the PO between
+        # companies through a side door, past the scope check the resolver already made.
+        if project.company != po.company:
+            raise ValidationError(
+                f"Project {project.project_id} belongs to {project.company}, not {po.company}",
+                field="project_id",
+            )
         po.project_id = project_id
 
     cleaned_gp_vendor_id = gp_vendor_id.strip() if gp_vendor_id else ""
@@ -330,9 +349,18 @@ def register_po_in_gp(
     cleaned_po_number = po_number.strip() if po_number else ""
     if not cleaned_po_number:
         raise ValidationError("GP PO number is required to register a PO", field="po_number")
-    cleaned_company = gp_company.strip() if gp_company else ""
+    cleaned_company = gp_company.strip().upper() if gp_company else ""
     if not cleaned_company:
         raise ValidationError("GP company is required to register a PO", field="gp_company")
+    # #637: a PO registers into its OWN tenant's GP company and no other. The two columns are the same
+    # value from here on - `company` is the tenant every scoped read filters on, `gp_company` is where
+    # in GP the PO lives - and letting them diverge would put a row in one company's register that
+    # only exists in another company's GP.
+    if cleaned_company != po.company:
+        raise ValidationError(
+            f"This purchase order belongs to {po.company} and cannot be registered in {cleaned_company}",
+            field="gp_company",
+        )
     # Surface a duplicate GP number as a clean field error rather than a raw IntegrityError at commit.
     _assert_po_number_available(session, cleaned_po_number, project_id=po.project_id, exclude_po_id=po.id)
 
@@ -434,9 +462,14 @@ def register_po_in_gp(
 
 
 def get_purchase_orders(
-    session: Session, project_id: uuid.UUID | None = None, status: POStatus | None = None
+    session: Session,
+    project_id: uuid.UUID | None = None,
+    status: POStatus | None = None,
+    *,
+    company: str | None = None,
 ) -> list[PurchaseOrder]:
-    """Filter by optional project_id + status + deleted_at IS NULL; eagerly load line_items, documents."""
+    """Filter by optional project_id + status + company + deleted_at IS NULL; eagerly load line_items,
+    documents. `company` is the caller's tenant scope (#637); None is the admin answer, unfiltered."""
     stmt = (
         select(PurchaseOrder)
         .options(
@@ -453,10 +486,12 @@ def get_purchase_orders(
         stmt = stmt.where(PurchaseOrder.project_id == project_id)
     if status is not None:
         stmt = stmt.where(PurchaseOrder.status == status)
+    if company is not None:
+        stmt = stmt.where(PurchaseOrder.company == company)
     return list(session.scalars(stmt).unique().all())
 
 
-def get_purchase_order(session: Session, po_id: uuid.UUID) -> PurchaseOrder | None:
+def get_purchase_order(session: Session, po_id: uuid.UUID, *, company: str | None = None) -> PurchaseOrder | None:
     """Single PO by id + deleted_at IS NULL, eagerly load line_items, documents."""
     stmt = (
         select(PurchaseOrder)
@@ -472,10 +507,14 @@ def get_purchase_order(session: Session, po_id: uuid.UUID) -> PurchaseOrder | No
             PurchaseOrder.deleted_at.is_(None),
         )
     )
+    if company is not None:
+        stmt = stmt.where(PurchaseOrder.company == company)
     return session.scalars(stmt).unique().first()
 
 
-def get_open_pos(session: Session, project_id: uuid.UUID | None = None) -> list[PurchaseOrder]:
+def get_open_pos(
+    session: Session, project_id: uuid.UUID | None = None, *, company: str | None = None
+) -> list[PurchaseOrder]:
     """Open POs (GP-Registered / Vendor-Confirmed / Partially-Received), oldest ordered_at first, for
     the receiving picker. Lean load - line_items/documents only, no nested hardware_items and no
     document_data (the derived line manufacturer resolves to None here by design)."""
@@ -499,6 +538,8 @@ def get_open_pos(session: Session, project_id: uuid.UUID | None = None) -> list[
     )
     if project_id is not None:
         stmt = stmt.where(PurchaseOrder.project_id == project_id)
+    if company is not None:
+        stmt = stmt.where(PurchaseOrder.company == company)
     return list(session.scalars(stmt).unique().all())
 
 
@@ -581,7 +622,7 @@ def link_schedule_to_mirrored_po(session: Session, po_id: uuid.UUID, links: list
 
 
 def get_open_pos_summary(
-    session: Session, project_id: uuid.UUID | None = None
+    session: Session, project_id: uuid.UUID | None = None, *, company: str | None = None
 ) -> tuple[list[PurchaseOrder], dict[uuid.UUID, tuple[int, int]]]:
     """Open POs for the receiving picker, as lean rows plus a {po_id: (pending_qty, pending_lines)}
     map (gp-owned-po mirror). Company-wide open POs are hundreds of rows; the receiving page only needs
@@ -597,6 +638,8 @@ def get_open_pos_summary(
     )
     if project_id is not None:
         stmt = stmt.where(PurchaseOrder.project_id == project_id)
+    if company is not None:
+        stmt = stmt.where(PurchaseOrder.company == company)
     rows = list(session.scalars(stmt).all())
 
     has_outstanding = POLineItem.ordered_quantity > POLineItem.received_quantity
@@ -646,7 +689,7 @@ def get_receive_records_for_po(session: Session, po_id: uuid.UUID) -> list[Recei
     return list(session.scalars(stmt).unique().all())
 
 
-def get_po_statistics(session: Session, project_id: uuid.UUID | None = None) -> dict:
+def get_po_statistics(session: Session, project_id: uuid.UUID | None = None, *, company: str | None = None) -> dict:
     """COUNT grouped by status WHERE optional project_id AND deleted_at IS NULL.
     Return dict with keys: total, draft, gp_registered, vendor_confirmed, partially_received, closed,
     cancelled."""
@@ -657,6 +700,8 @@ def get_po_statistics(session: Session, project_id: uuid.UUID | None = None) -> 
     )
     if project_id is not None:
         stmt = stmt.where(PurchaseOrder.project_id == project_id)
+    if company is not None:
+        stmt = stmt.where(PurchaseOrder.company == company)
     rows = session.execute(stmt).all()
 
     counts = {
@@ -704,6 +749,7 @@ def get_purchase_orders_page(
     statuses: list[POStatus] | None = None,
     origin: POOrigin | None = None,
     project_id: uuid.UUID | None = None,
+    company: str | None = None,
     sort_field: str = "createdAt",
     sort_dir: str = "desc",
     limit: int = 50,
@@ -715,6 +761,8 @@ def get_purchase_orders_page(
     grouped query over the page's ids, honoring the N+1 rules - list rows carry a scalar, not a
     collection. Detail/expand loads lines through the existing purchaseOrder(id) query."""
     filters = [PurchaseOrder.deleted_at.is_(None)]
+    if company is not None:
+        filters.append(PurchaseOrder.company == company)
     if statuses:
         filters.append(PurchaseOrder.status.in_(statuses))
     if origin is not None:
@@ -966,6 +1014,8 @@ def get_prior_order_as_values(
     session: Session,
     project_id: uuid.UUID | None,
     product_codes: list[str],
+    *,
+    company: str | None = None,
 ) -> dict[str, list[str]]:
     """
     For a project + set of product codes, return distinct non-empty `order_as` values from
@@ -985,7 +1035,9 @@ def get_prior_order_as_values(
     A project scope also bounds the query: the wizard fires it once per manufacturer card, and
     without a scope every one of those is a full scan of every PO line ever written.
 
-    project_id=None scopes to project-less (stock) POs, which is what a stock PO should see.
+    project_id=None scopes to project-less (stock) POs, which is what a stock PO should see - and
+    `company` narrows THAT to the caller's own tenant (#637), which is the one case here where the
+    project scope does not already do it.
 
     Excludes CANCELLED POs and soft-deleted POs. Caps each list at 20.
     """
@@ -1007,6 +1059,8 @@ def get_prior_order_as_values(
         .group_by(POLineItem.product_code, POLineItem.order_as)
         .order_by(POLineItem.product_code, last_used.desc())
     )
+    if company is not None:
+        stmt = stmt.where(PurchaseOrder.company == company)
     rows = session.execute(stmt).all()
 
     result: dict[str, list[str]] = {}

@@ -25,8 +25,17 @@ def _clean_buyer_id(buyer_id: str) -> str:
     return cleaned
 
 
-def list_assignments(session: Session) -> list[BuyerAssignment]:
+def list_assignments(session: Session, *, company: str | None = None) -> list[BuyerAssignment]:
+    """Every buyer assignment, or only those touching one company's projects (#637).
+
+    A buyer row itself has no company - it is a GP BUYERID - so the scope is applied through the
+    projects it names: a scoped caller sees the buyers who can order for their jobs. The projects
+    hanging off each returned row are NOT filtered, because an assignment is one buyer's whole
+    authorization and showing half of it would read as "these are the only jobs they may order for",
+    which is false."""
     stmt = select(BuyerAssignment).options(selectinload(BuyerAssignment.projects)).order_by(BuyerAssignment.buyer_id)
+    if company is not None:
+        stmt = stmt.where(BuyerAssignment.projects.any(Project.company == company))
     return list(session.scalars(stmt).unique().all())
 
 

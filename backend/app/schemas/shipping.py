@@ -4,7 +4,7 @@ import uuid
 
 import strawberry
 
-from app.auth import current_user, resolve_display_name
+from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
 from app.repositories import (
     request_composer,
@@ -12,6 +12,7 @@ from app.repositories import (
     shipment_method_repository,
     shipping_repository,
     shipping_requests,
+    tenancy,
 )
 
 from .converters import (
@@ -97,7 +98,10 @@ class ShippingQueries:
     @strawberry.field
     def ship_ready_items(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> ShipReadyItems:
         with SessionLocal() as session:
-            data = shipping_repository.get_ship_ready_items(session, uuid.UUID(str(project_id)) if project_id else None)
+            scope = tenant_scope(info)
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            tenancy.require_project_in_scope(session, pid, scope)
+            data = shipping_repository.get_ship_ready_items(session, pid, company=scope)
             return ShipReadyItems(
                 loose_items=[
                     ShipReadyLooseItem(
@@ -113,7 +117,10 @@ class ShippingQueries:
     @strawberry.field
     def packing_slips(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[PackingSlip]:
         with SessionLocal() as session:
-            slips = shipping_repository.list_packing_slips(session, uuid.UUID(str(project_id)) if project_id else None)
+            scope = tenant_scope(info)
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            tenancy.require_project_in_scope(session, pid, scope)
+            slips = shipping_repository.list_packing_slips(session, pid, company=scope)
             return [packing_slip_to_type(ps) for ps in slips]
 
     @strawberry.field
@@ -128,9 +135,10 @@ class ShippingQueries:
         (#325) keeps only requests whose minted pull request is still PENDING - the Approved/reopen
         view uses it so it lists only requests Reopen can still act on."""
         with SessionLocal() as session:
-            reqs = shipping_repository.get_shipping_out_requests(
-                session, uuid.UUID(str(project_id)) if project_id else None, status, reopenable_only
-            )
+            scope = tenant_scope(info)
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            tenancy.require_project_in_scope(session, pid, scope)
+            reqs = shipping_repository.get_shipping_out_requests(session, pid, status, reopenable_only, company=scope)
             return _requests_to_types(session, reqs)
 
     @strawberry.field
@@ -143,8 +151,12 @@ class ShippingQueries:
         matches nothing.
         """
         with SessionLocal() as session:
+            scope = tenant_scope(info)
             req = shipping_repository.get_shipping_out_request(session, uuid.UUID(str(id)))
-            return shipping_out_request_to_type(req) if req else None
+            if req is None:
+                return None
+            tenancy.require_shipping_out_request_in_scope(session, req.id, scope)
+            return shipping_out_request_to_type(req)
 
     @strawberry.field
     def request_coverage(
@@ -159,6 +171,7 @@ class ShippingQueries:
         composition time. See `app.repositories.request_composer` for how each term is derived.
         """
         with SessionLocal() as session:
+            tenancy.require_project_in_scope(session, uuid.UUID(str(project_id)), tenant_scope(info))
             rows = request_composer.get_request_coverage(session, uuid.UUID(str(project_id)), opening_numbers)
             return [
                 RequestCoverageLine(
@@ -187,6 +200,7 @@ class ShippingQueries:
         """
         pid = uuid.UUID(str(project_id))
         with SessionLocal() as session:
+            tenancy.require_project_in_scope(session, pid, tenant_scope(info))
             # Both reads are done here and handed to the pool builder, which would otherwise repeat
             # them internally - `get_ship_ready_items` alone is three statements plus a selectinload,
             # and this is the workspace's main read (CLAUDE.md perf rules).
@@ -215,12 +229,15 @@ class ShippingQueries:
         with SessionLocal() as session:
             return [
                 _shipment_method_to_type(m)
-                for m in shipment_method_repository.get_shipment_methods(session, active_only=active_only)
+                for m in shipment_method_repository.get_shipment_methods(
+                    session, active_only=active_only, company=tenant_scope(info)
+                )
             ]
 
     @strawberry.field
     def returnable_lines(self, info: strawberry.Info, packing_slip_id: strawberry.ID) -> list[ReturnableLine]:
         with SessionLocal() as session:
+            tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(packing_slip_id)), tenant_scope(info))
             lines = shipping_repository.get_returnable_lines(session, uuid.UUID(str(packing_slip_id)))
             return [
                 ReturnableLine(
@@ -268,6 +285,7 @@ class ShippingMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_project_in_scope(session, uuid.UUID(str(input.project_id)), tenant_scope(info))
             created = shipping_requests.create_shipping_out_requests(
                 session,
                 uuid.UUID(str(input.project_id)),
@@ -292,6 +310,7 @@ class ShippingMutations:
         released first - so reducing a line is never refused for stock it already holds.
         """
         with SessionLocal() as session:
+            tenancy.require_shipping_out_request_in_scope(session, uuid.UUID(str(input.id)), tenant_scope(info))
             req = shipping_requests.replace_shipping_out_request_items(
                 session,
                 uuid.UUID(str(input.id)),
@@ -314,6 +333,7 @@ class ShippingMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_project_in_scope(session, uuid.UUID(str(project_id)), tenant_scope(info))
             container = shipment_containers.create_container(
                 session,
                 uuid.UUID(str(project_id)),
@@ -329,6 +349,7 @@ class ShippingMutations:
     def rename_shipment_container(self, info: strawberry.Info, id: strawberry.ID, name: str) -> ShipmentContainer:
         """Relabel an open container. Refused once it has shipped."""
         with SessionLocal() as session:
+            tenancy.require_container_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             container = shipment_containers.rename_container(session, uuid.UUID(str(id)), name)
             session.commit()
             session.refresh(container)
@@ -338,6 +359,7 @@ class ShippingMutations:
     def delete_shipment_container(self, info: strawberry.Info, id: strawberry.ID) -> bool:
         """Break an open container back down; its contents return to the unplaced pool."""
         with SessionLocal() as session:
+            tenancy.require_container_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             shipment_containers.delete_container(session, uuid.UUID(str(id)))
             session.commit()
             return True
@@ -349,6 +371,7 @@ class ShippingMutations:
         The order IS the stacking order, so a drag-and-drop reorder is the same call as a placement.
         Gated on what is genuinely staged and unplaced."""
         with SessionLocal() as session:
+            tenancy.require_container_in_scope(session, uuid.UUID(str(input.container_id)), tenant_scope(info))
             updated = shipment_containers.set_container_items(
                 session,
                 uuid.UUID(str(input.container_id)),
@@ -371,6 +394,7 @@ class ShippingMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_project_in_scope(session, uuid.UUID(str(input.project_id)), tenant_scope(info))
             slip = shipment_containers.confirm_shipment_from_containers(
                 session,
                 uuid.UUID(str(input.project_id)),
@@ -383,11 +407,20 @@ class ShippingMutations:
             return packing_slip_to_type(refreshed)
 
     @strawberry.mutation
-    def create_shipment_method(self, info: strawberry.Info, name: str, sort_order: int = 0) -> ShipmentMethod:
+    def create_shipment_method(
+        self, info: strawberry.Info, name: str, sort_order: int = 0, company: str | None = None
+    ) -> ShipmentMethod:
         """Add a way a load can travel (#451). Names are unique case-insensitively, so the list
         cannot grow two spellings of the same carrier."""
         with SessionLocal() as session:
-            method = shipment_method_repository.create_shipment_method(session, name=name, sort_order=sort_order)
+            method = shipment_method_repository.create_shipment_method(
+                session,
+                name=name,
+                sort_order=sort_order,
+                # A scoped caller can only add one to their own list; an Admin/Manager is unscoped and
+                # names the company (#637).
+                company=tenant_scope(info) or (company or ""),
+            )
             session.commit()
             session.refresh(method)
             return _shipment_method_to_type(method)
@@ -406,6 +439,7 @@ class ShippingMutations:
         A rename does not touch the shipments that already went out under the old name - each one
         holds its own copy - so this only changes what future shipments are offered."""
         with SessionLocal() as session:
+            tenancy.require_shipment_method_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             method = shipment_method_repository.update_shipment_method(
                 session, uuid.UUID(str(id)), name=name, is_active=is_active, sort_order=sort_order
             )
@@ -421,6 +455,7 @@ class ShippingMutations:
         what can be picked next and never what was picked before. Retiring is the better move for a
         carrier that may come back; this is for a row that was a mistake."""
         with SessionLocal() as session:
+            tenancy.require_shipment_method_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             shipment_method_repository.delete_shipment_method(session, uuid.UUID(str(id)))
             session.commit()
             return True
@@ -437,6 +472,7 @@ class ShippingMutations:
         actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
+            tenancy.require_shipping_out_request_in_scope(session, request_id, tenant_scope(info))
             shipping_repository.accept_shipping_out_request(session, request_id, actor)
             session.commit()
             refreshed = shipping_repository.get_shipping_out_request(session, request_id)
@@ -452,6 +488,7 @@ class ShippingMutations:
         actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
+            tenancy.require_shipping_out_request_in_scope(session, request_id, tenant_scope(info))
             shipping_repository.reject_shipping_out_request(session, request_id, actor, reason)
             session.commit()
             refreshed = shipping_repository.get_shipping_out_request(session, request_id)
@@ -465,6 +502,7 @@ class ShippingMutations:
         any signed-in user."""
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
+            tenancy.require_shipping_out_request_in_scope(session, request_id, tenant_scope(info))
             shipping_repository.reopen_shipping_out_request(session, request_id)
             session.commit()
             refreshed = shipping_repository.get_shipping_out_request(session, request_id)
@@ -499,6 +537,7 @@ class ShippingMutations:
         ]
 
         with SessionLocal() as session:
+            tenancy.require_project_in_scope(session, project_id, tenant_scope(info))
             ps = shipping_repository.confirm_shipment(
                 session,
                 project_id,
@@ -520,6 +559,7 @@ class ShippingMutations:
         Full replace over the header - a field sent as null is cleared. Nothing about what shipped is
         touched."""
         with SessionLocal() as session:
+            tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(input.id)), tenant_scope(info))
             ps = shipping_repository.update_shipment_details(
                 session,
                 uuid.UUID(str(input.id)),
@@ -539,6 +579,7 @@ class ShippingMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             ps = shipping_repository.mark_shipment_picked_up(session, uuid.UUID(str(id)), actor)
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)
@@ -553,6 +594,7 @@ class ShippingMutations:
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
+            tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             ps = shipping_repository.mark_shipment_delivered(session, uuid.UUID(str(id)), actor)
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)
@@ -578,6 +620,9 @@ class ShippingMutations:
         ]
 
         with SessionLocal() as session:
+            scope = tenant_scope(info)
+            tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(input.packing_slip_id)), scope)
+            tenancy.require_warehouse_in_scope(session, uuid.UUID(str(input.warehouse_id)), scope)
             sr = shipping_repository.create_shipment_return(
                 session,
                 packing_slip_id=uuid.UUID(str(input.packing_slip_id)),
