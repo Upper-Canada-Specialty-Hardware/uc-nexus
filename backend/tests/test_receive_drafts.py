@@ -57,6 +57,11 @@ def _make_po(session, project_id, *, ordered=10, status=POStatus.GP_REGISTERED):
         project_id=project_id,
         status=status,
         po_number=f"PO{uuid.uuid4().hex[:6]}",
+        # Deliberately NOT the same value as `company` below (#637). `gp_company` is which GP database
+        # the PO lives in and is what the relay call must be addressed to; `company` is the tenant that
+        # owns the warehouses. Keeping them different here is what proves the receive path reads the
+        # right one for each - a pre-flight that looked up the building by `gp_company` would find no
+        # warehouse at all and fail before ever reaching GP.
         gp_company="TEST",
         vendor_name_snapshot="Acme",
         company="TUBC",

@@ -738,6 +738,48 @@ def test_a_stock_po_takes_the_callers_company(db_session):
     assert po.project_id is None
 
 
+def test_the_import_wizard_stamps_the_projects_company_on_every_draft_it_raises(db_session, two_companies):
+    """The wizard's finalize builds its draft POs directly rather than through `create_po`, so it is
+    its own place where the tenant has to be stamped - and it was the one path that missed it, which
+    only showed up as a NOT NULL violation against a real database."""
+    from sqlalchemy import select
+
+    from app.repositories import import_repository
+
+    project = two_companies["theirs"]
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [{"opening_number": "A01"}],
+            "hardware_items": [
+                {
+                    "opening_number": "A01",
+                    "product_code": "HG-100",
+                    "hardware_category": "HINGE",
+                    "item_quantity": 1,
+                }
+            ],
+            "po_drafts": [
+                {
+                    "po_number": None,
+                    "notes": None,
+                    "hardware_item_refs": [
+                        {"opening_number": "A01", "product_code": "HG-100", "hardware_category": "HINGE"}
+                    ],
+                    "line_item_aliases": [],
+                }
+            ],
+        },
+    )
+    db_session.flush()
+
+    raised = db_session.scalars(select(PurchaseOrder).where(PurchaseOrder.project_id == project.id)).all()
+    assert raised, "the wizard raised no draft to check"
+    # The PROJECT's company, not a default and not the caller's - a PO and its job are one tenant.
+    assert {po.company for po in raised} == {OTHER}
+
+
 def test_a_project_po_takes_the_projects_company_whatever_was_asked_for(db_session, two_companies):
     """A PO and the job it is raised against cannot belong to different tenants, so the project wins."""
     po = po_repository.create_po(

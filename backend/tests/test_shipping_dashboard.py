@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime
 
 from app import auth
+from app.auth import ADMIN_ROLE
 from app.models.enums import (
     ShipmentContainerType,
     ShipmentStatus,
@@ -121,7 +122,7 @@ def _camel(name: str) -> str:
 
 def test_the_resolver_carries_every_field_the_repository_returns(db_session, monkeypatch):
     monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_shipping"})
-    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [])
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [ADMIN_ROLE])
 
     class _BorrowedSession:
         def __enter__(self):
@@ -134,7 +135,17 @@ def test_the_resolver_carries_every_field_the_repository_returns(db_session, mon
 
     field_names = list(schema._schema.type_map["ShippingStats"].fields)
     query = f"query {{ shippingStats {{ {' '.join(field_names)} }} }}"
-    result = asyncio.run(schema.execute(query, context_value={"request": _FakeRequest("tok")}))
+    # An ADMIN caller, with the auth memos pre-filled so nothing here reaches Clerk (#637). Admin is
+    # deliberate rather than incidental: `tenant_scope` answers None for one, so the resolver makes
+    # exactly the unscoped repository call this test compares it against. A scoped caller would be
+    # comparing two different queries and could agree by accident.
+    context = {
+        "request": _FakeRequest("tok"),
+        "_auth_user_id": "u_shipping",
+        "_auth_roles": [ADMIN_ROLE],
+        "_auth_company": None,
+    }
+    result = asyncio.run(schema.execute(query, context_value=context))
 
     assert result.errors is None, result.errors
     expected = dashboard_repository.get_shipping_stats(db_session)

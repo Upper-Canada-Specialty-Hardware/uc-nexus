@@ -132,11 +132,22 @@ def _prepare_create_receive(*, po_id, received_by, line_items_data, warehouse_id
 
     The warehouse code rides along because put-away happens after approval now (#501): a line
     normally has no bin yet, and the warehouse is what GP gets told instead of nothing."""
+    from sqlalchemy import select
+
+    from app.models.purchase_order import PurchaseOrder as POModel
+
     with SessionLocal() as session:
         po_number, gp_company, receipt_line_items = warehouse_repository.validate_receive_eligibility(
             session, po_id, received_by, line_items_data
         )
-        warehouse_code = _warehouse_code(session, warehouse_id, gp_company)
+        # The TENANT, not `gp_company` (#637). They carry the same value on a PO registered through
+        # Nexus - `register_po_in_gp` refuses a mismatch - but they answer two different questions,
+        # and the warehouse lookup is asking the tenant one: `company` is who owns the buildings,
+        # `gp_company` is which GP database the PO lives in. Reading the wrong one lets this pre-flight
+        # name a building to GP that `create_receive` will not book into, because that scopes its own
+        # primary-warehouse fallback by `po.company`.
+        company = session.scalar(select(POModel.company).where(POModel.id == po_id))
+        warehouse_code = _warehouse_code(session, warehouse_id, company)
     payload = gp_po.build_create_receipt_payload(
         po_number=po_number,
         received_by=received_by,
@@ -149,9 +160,9 @@ def _prepare_create_receive(*, po_id, received_by, line_items_data, warehouse_id
 def _warehouse_code(session, warehouse_id, company: str | None = None) -> str | None:
     """The receiving warehouse's code, falling back to the primary one the booking will use.
 
-    The fallback is scoped to the PO's company (#637) so it picks the same building `create_receive`
-    will book into - `is_primary` is one global flag, so an unscoped fallback would tell GP a
-    warehouse code from another company."""
+    The fallback is scoped to the PO's TENANT (`purchase_orders.company`, #637) so it picks the same
+    building `create_receive` will book into - `is_primary` is one global flag, so an unscoped
+    fallback would tell GP a warehouse code from another company."""
     from app.models.warehouse import Warehouse as WarehouseModel
 
     if warehouse_id is None:

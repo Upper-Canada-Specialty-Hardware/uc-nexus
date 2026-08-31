@@ -2,7 +2,7 @@
 path, which the PR that introduced it did not exercise in CI ("channel connect path not exercised").
 
 The route authenticated the relay's secret inside a `with SessionLocal()` block that ran
-session.commit() and then closed, which expired + detached the RelayInstall. Reading install.company
+session.commit() and then closed, which expired + detached the RelayInstall. Reading install.companies
 afterwards (right after websocket.accept()) raised DetachedInstanceError, tearing down every accepted
 relay socket, so no relay ever registered and relayStatus stayed false. These tests drive the real
 route so that failure mode can't come back unnoticed.
@@ -79,7 +79,7 @@ def test_relay_link_handshake_registers_the_company(_migrate_database):
             with client.websocket_connect("/relay-link", headers={"Authorization": f"Bearer {secret}"}) as ws:
                 _wait_until(lambda: gateway.connected)
                 assert gateway.connected is True
-                assert gateway.company == "TUBC"
+                assert gateway.companies == ["TUBC"]
                 # Close client-side and let the route's finally unregister BEFORE leaving the context, so
                 # the app task has already returned when the test client tears its portal down. Now that
                 # the route also runs a background heartbeat task, its disconnect teardown yields once,
@@ -301,7 +301,7 @@ def test_relay_link_adopts_an_unknown_secret_while_a_window_is_armed(_migrate_da
                 ws.send_json({"type": "hello", "build": "relay-v0.1.0-build.42", "ops": ["list_vendors"]})
                 _wait_until(lambda: gateway.connected)
                 assert gateway.connected is True
-                assert gateway.company == "TUBC"
+                assert gateway.companies == ["TUBC"]
                 _wait_until(lambda: gateway.build == "relay-v0.1.0-build.42")
                 assert gateway.build == "relay-v0.1.0-build.42"
                 ws.close()
@@ -416,7 +416,7 @@ class _FakeInfo:
 def test_delete_refuses_the_install_holding_the_live_connection(_migrate_database):
     """Revoking the secret under a running relay would take GP down mid-write, so the resolver refuses
     it. This drives the real route because the id it compares against is set by the route - reading
-    install.id in the same pre-commit block as install.company, per the DetachedInstanceError rule."""
+    install.id in the same pre-commit block as install.companies, per the DetachedInstanceError rule."""
     from app.errors import ConflictError
     from app.schemas.relay import RelayMutations
 
