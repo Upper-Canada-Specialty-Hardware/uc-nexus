@@ -31,6 +31,7 @@ from app.models.notification import Notification
 from app.models.project import Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.receive_draft import ReceiveDraft
+from app.repositories import po_repository
 from app.repositories import warehouse as warehouse_repository
 from app.schemas import warehouse as warehouse_module
 
@@ -180,7 +181,11 @@ def test_submitting_a_draft_tells_the_manager_audience(db_session):
 
 
 def test_resubmitting_the_same_key_returns_the_first_draft(db_session):
-    """A network retry must not leave two counts of one delivery in the queue."""
+    """A network retry must not leave two counts of one delivery in the queue.
+
+    The key is checked BEFORE the one-pending-draft rule (#641), so a retry of the submission that
+    wrote the pending draft gets that draft back rather than conflicting with itself.
+    """
     project = _make_project(db_session)
     po, li = _make_po(db_session, project.id)
 
@@ -207,6 +212,106 @@ def test_resubmitting_the_same_key_returns_the_first_draft(db_session):
 
     assert first.id == second.id
     assert db_session.query(ReceiveDraft).filter(ReceiveDraft.po_id == po.id).count() == 1
+
+
+# --- one pending count per PO (#641) --------------------------------------------------------------
+#
+# A pending draft is the claim on a delivery. It used to be advisory - the receiving queue still
+# offered the PO and the modal only warned - so two people counting the same truck produced two
+# drafts, and the second one's author found out at approval time or not at all. The draft is now
+# tracked state on both sides: the PO leaves the queue while the draft stands, and a second
+# submission against it is refused.
+
+
+def _open_po_ids(session) -> set:
+    rows, _pending = po_repository.get_open_pos_summary(session)
+    return {r.id for r in rows}
+
+
+def test_a_pending_count_takes_the_po_off_the_receiving_queue(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+
+    assert po.id in _open_po_ids(db_session)
+    assert po.id in {p.id for p in po_repository.get_open_pos(db_session)}
+
+    draft = _draft(db_session, po, li, 3)
+    db_session.flush()
+
+    assert po.id not in _open_po_ids(db_session), "a counted delivery is not owed a second count"
+    assert po.id not in {p.id for p in po_repository.get_open_pos(db_session)}
+
+    # Rejected: the count was wrong, so the PO is owed again the moment the manager says so.
+    warehouse_repository.reject_receive_draft(db_session, draft.id, "recount it", MANAGER, MANAGER_NAME)
+    db_session.flush()
+
+    assert po.id in _open_po_ids(db_session)
+
+
+def test_an_approved_count_puts_the_po_back_on_the_queue(db_session):
+    """The exclusion keys on PENDING_APPROVAL alone - nothing has to clear a flag to undo it.
+
+    An approved draft's units are on their way into `received_quantity`, and whatever is still owed
+    after that is a live back order somebody has to be able to receive.
+    """
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id, ordered=10)
+    draft = _draft(db_session, po, li, 3)
+    db_session.flush()
+    assert po.id not in _open_po_ids(db_session)
+
+    warehouse_repository.mark_approved(db_session, draft.id, receive_record_id=None)
+    db_session.flush()
+
+    assert po.id in _open_po_ids(db_session)
+
+
+def test_a_second_count_against_a_pending_po_is_refused(db_session):
+    """The half of #641 the queue exclusion cannot cover: a stale tab, a bookmarked PO, or two people
+    on the dock at once still reach the mutation."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id, ordered=10)
+    _draft(db_session, po, li, 3)
+    db_session.flush()
+
+    with pytest.raises(AppError) as excinfo:
+        _draft(db_session, po, li, 2)
+
+    assert excinfo.value.code == "CONFLICT"
+    assert "already pending approval" in excinfo.value.message
+    assert db_session.query(ReceiveDraft).filter(ReceiveDraft.po_id == po.id).count() == 1
+
+
+def test_a_rejected_count_can_be_recounted_from_scratch(db_session):
+    """The refusal is not a lock on the PO. Once the pending one is answered, a fresh count is the
+    ordinary way a rejected delivery gets re-submitted by somebody other than its author."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id, ordered=10)
+    first = _draft(db_session, po, li, 3)
+    warehouse_repository.reject_receive_draft(db_session, first.id, "recount it", MANAGER, MANAGER_NAME)
+    db_session.flush()
+
+    second = _draft(db_session, po, li, 4)
+
+    assert second.id != first.id
+    assert second.status == ReceiveDraftStatus.PENDING_APPROVAL
+
+
+def test_a_rejected_draft_cannot_be_resubmitted_underneath_a_newer_pending_one(db_session):
+    """A resubmission is a submission, and two pending drafts on one PO is the state #641 forbids."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id, ordered=10)
+    rejected = _draft(db_session, po, li, 3)
+    warehouse_repository.reject_receive_draft(db_session, rejected.id, "recount it", MANAGER, MANAGER_NAME)
+    db_session.flush()
+    _draft(db_session, po, li, 4, author_user_id="u_other", author_name="Other Counter")
+    db_session.flush()
+
+    with pytest.raises(AppError) as excinfo:
+        warehouse_repository.resubmit_receive_draft(db_session, rejected.id, AUTHOR)
+
+    assert excinfo.value.code == "CONFLICT"
+    assert "already pending approval" in excinfo.value.message
 
 
 def test_a_manager_may_correct_a_pending_draft_and_the_author_keeps_the_receive(db_session):
@@ -347,13 +452,19 @@ def test_a_second_draft_cannot_be_claimed_when_the_first_already_spoke_for_the_p
     Both drafts were legal when written - each was within the PO's pending quantity - and neither can
     see the other. The claim is where they meet, which is the last point before GP that refusing is
     still free.
+
+    The second draft is written AFTER the first is claimed, because since #641 that is the only way
+    this state is reachable: a PO with a PENDING_APPROVAL draft refuses a second submission outright.
+    Once the first is APPROVING the PO is back on the receiving queue - the approval may still be
+    queued on the outbox for hours - and the units it speaks for are not in `received_quantity` yet,
+    which is exactly the blind spot this guard covers.
     """
     project = _make_project(db_session)
     po, li = _make_po(db_session, project.id, ordered=5)
     first = _draft(db_session, po, li, 3)
-    second = _draft(db_session, po, li, 3)
 
     warehouse_repository.claim_for_approval(db_session, first.id, MANAGER, MANAGER_NAME, "key-1")
+    second = _draft(db_session, po, li, 3)
 
     with pytest.raises(AppError) as excinfo:
         warehouse_repository.claim_for_approval(db_session, second.id, MANAGER, MANAGER_NAME, "key-2")

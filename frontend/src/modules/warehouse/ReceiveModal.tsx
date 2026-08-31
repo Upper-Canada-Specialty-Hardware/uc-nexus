@@ -39,8 +39,9 @@ interface ReceiveModalProps {
   open: boolean;
   onClose: () => void;
   poIds: string[];
-  /** Drafts already awaiting approval, keyed by PO id. Used only to warn - two deliveries against
-   *  one PO before the first is approved is legitimate. */
+  /** Drafts already awaiting approval, keyed by PO id. A PO with one is HELD OUT of the count (#641):
+   *  the server refuses a second submission against it, so offering the lines would only invite a
+   *  count that cannot be submitted. */
   pendingDraftsByPoId?: Map<string, { id: string; totalQuantity: number }[]>;
 }
 
@@ -180,9 +181,37 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     [poIds, poDetailsMap],
   );
 
+  // #641: a PO whose count is already in the approvals queue is out of this batch entirely. It used
+  // to be a warning, on the reading that two deliveries against one PO before the first is approved
+  // are legitimate - but the server now refuses the second submission, so a warning would just let
+  // somebody type a count that bounces. Held rather than blocking the whole dialog: nothing the user
+  // can do here releases the hold (a Warehouse Manager approving or rejecting the draft does), and
+  // the rest of a multi-PO batch is still receivable.
+  const heldPoIds = useMemo(
+    () => new Set(poIds.filter((id) => (pendingDraftsByPoId?.get(id)?.length ?? 0) > 0)),
+    [poIds, pendingDraftsByPoId],
+  );
+
+  const heldPos = useMemo(
+    () =>
+      [...heldPoIds].map((id) => ({
+        id,
+        poNumber: poDetailsMap[id]?.poNumber ?? null,
+        drafts: pendingDraftsByPoId?.get(id) ?? [],
+      })),
+    [heldPoIds, poDetailsMap, pendingDraftsByPoId],
+  );
+
+  // Everything below counts, validates and submits off THIS list, so a held PO contributes no lines,
+  // no packing-slip slot and no notes field - there is one place the hold is applied.
+  const receivablePoDetailsList = useMemo(
+    () => poDetailsList.filter((d) => !heldPoIds.has(d.id)),
+    [poDetailsList, heldPoIds],
+  );
+
   const lineItemsToReceive = useMemo(() => {
     const items: PODetailLineItem[] = [];
-    for (const details of poDetailsList) {
+    for (const details of receivablePoDetailsList) {
       for (const li of details.lineItems) {
         const pending = li.orderedQuantity - li.receivedQuantity;
         const receiveNow = receiveQuantities[li.id] ?? 0;
@@ -192,11 +221,19 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
       }
     }
     return items;
-  }, [poDetailsList, receiveQuantities]);
+  }, [receivablePoDetailsList, receiveQuantities]);
 
   const totalItemsToReceive = useMemo(
     () => lineItemsToReceive.reduce((sum, li) => sum + (receiveQuantities[li.id] ?? 0), 0),
     [lineItemsToReceive, receiveQuantities],
+  );
+
+  // The POs a submit would actually write a draft for. Not poIds.length - a held PO, or one nobody
+  // counted anything against, is not part of what is being submitted and must not be counted in the
+  // confirmation.
+  const poCountToSubmit = useMemo(
+    () => new Set(lineItemsToReceive.map((li) => li.poId)).size,
+    [lineItemsToReceive],
   );
 
   const handleQuantityChange = useCallback((lineId: string, value: number) => {
@@ -206,14 +243,14 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   // ---- Validation ----
 
   const hasQuantityErrors = useMemo(() => {
-    for (const details of poDetailsList) {
+    for (const details of receivablePoDetailsList) {
       for (const li of details.lineItems) {
         const pending = li.orderedQuantity - li.receivedQuantity;
         if ((receiveQuantities[li.id] ?? 0) > pending) return true;
       }
     }
     return false;
-  }, [poDetailsList, receiveQuantities]);
+  }, [receivablePoDetailsList, receiveQuantities]);
 
   // #504: a slip per PO being drafted. Only POs actually carrying a counted line need one - the
   // submit loop skips the rest, so demanding a slip for them would block on paper nobody needs.
@@ -225,17 +262,23 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     [poIds, lineItemsToReceive, packingSlips],
   );
 
+  // Whether anything has been TYPED, which is what the escape-key guard is about - not whether the
+  // batch is submittable. A quantity typed against a PO that then went on hold is still unsaved
+  // entry the user would lose.
   const hasAnyReceiveQuantity = useMemo(
     () => Object.values(receiveQuantities).some((v) => v > 0),
     [receiveQuantities],
   );
 
+  // What submit is gated on: a counted line on a PO that is actually receivable.
+  const hasCountedLines = lineItemsToReceive.length > 0;
+
   // POs in this batch that can't be received because they aren't GP-registered (issue #177: the
   // approval posts a GP receipt, so it needs a GP PO number + company). Still a hard block at draft
   // time - such a draft could never be approved, and pushing the PO to GP is somebody else's job.
   const blockedPos = useMemo(
-    () => poDetailsList.filter((d) => !isPoGpRegistered(d)),
-    [poDetailsList],
+    () => receivablePoDetailsList.filter((d) => !isPoGpRegistered(d)),
+    [receivablePoDetailsList],
   );
 
   // #425: POs whose project's GP job setup is broken. A WARNING here, not a block: the point of
@@ -244,19 +287,26 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   const quarantinedProjects = useMemo(() => {
     const byId = new Map(projects.map((p) => [p.id, p]));
     const seen = new Map<string, Project>();
-    for (const details of poDetailsList) {
+    for (const details of receivablePoDetailsList) {
       if (!details.projectId) continue;
       const project = byId.get(details.projectId);
       if (project && isGpSetupBroken(project)) seen.set(details.projectId, project);
     }
     return [...seen.values()];
-  }, [poDetailsList, projects]);
+  }, [receivablePoDetailsList, projects]);
 
   // Why Submit is grey, named beside it - the FIRST unmet requirement in the disable chain, so the
   // user is never left reverse-engineering a dead button. blockedPos gets a caption too even though
   // it has its own alert: a tall modal can scroll that alert out of view while the button stays.
   const submitBlockedReason = useMemo(() => {
-    if (!hasAnyReceiveQuantity) return 'Enter a received quantity';
+    // Ahead of "enter a quantity", because when every PO in the batch is on hold there is no
+    // quantity field to enter one into and that reason would send the user looking for one.
+    if (poDetailsList.length > 0 && receivablePoDetailsList.length === 0) {
+      return heldPoIds.size === 1
+        ? 'This PO already has a receive awaiting approval'
+        : 'Every selected PO already has a receive awaiting approval';
+    }
+    if (!hasCountedLines) return 'Enter a received quantity';
     if (hasQuantityErrors) return 'Fix the highlighted quantities';
     if (!allPackingSlipsAttached) {
       const missing = poIds.find(
@@ -272,7 +322,10 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     }
     return null;
   }, [
-    hasAnyReceiveQuantity,
+    poDetailsList,
+    receivablePoDetailsList,
+    heldPoIds,
+    hasCountedLines,
     hasQuantityErrors,
     allPackingSlipsAttached,
     poIds,
@@ -281,17 +334,6 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     poDetailsMap,
     blockedPos,
   ]);
-
-  // Two deliveries against one PO before the first is approved is legitimate, so this only warns.
-  // The backend is the enforcement point: the approval claim refuses the second when the two would
-  // together over-receive the PO.
-  const posWithPendingDrafts = useMemo(() => {
-    if (!pendingDraftsByPoId) return [];
-    return poDetailsList
-      .map((d) => ({ details: d, drafts: pendingDraftsByPoId.get(d.id) ?? [] }))
-      .filter((x) => x.drafts.length > 0);
-  }, [poDetailsList, pendingDraftsByPoId]);
-
 
   // ---- Handlers ----
 
@@ -439,6 +481,9 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   // the approval, #501), and nothing is recoverable once handleClose resets it.
   const hasUnsavedEntry = !succeeded && hasAnyReceiveQuantity;
   const showForm = !poDetailsLoading && !poDetailsError && !succeeded;
+  // Every PO in the batch is held (#641). The alert above says so; a warehouse picker, an empty
+  // packing-slip header and an empty lines table below it would be four regions saying nothing.
+  const showEntry = showForm && receivablePoDetailsList.length > 0;
 
   const actions = succeeded ? (
     <>
@@ -462,7 +507,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
       <Button
         variant="contained"
         disabled={
-          !hasAnyReceiveQuantity ||
+          !hasCountedLines ||
           hasQuantityErrors ||
           !allPackingSlipsAttached ||
           blockedPos.length > 0 ||
@@ -525,20 +570,27 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
               : `${blockedPos.length} of the selected POs aren't registered in GP yet, so they can't be received. Create or push them to GP first.`}
           </Alert>
         )}
-        {showForm && posWithPendingDrafts.length > 0 && (
-          <Alert severity="info" sx={{ mb: 2 }}>
-            {posWithPendingDrafts.map(({ details, drafts }) => {
+        {/* #641: one alert for the whole held set, with the "why it isn't here" said once at the
+            bottom rather than repeated on every row. */}
+        {showForm && heldPos.length > 0 && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            {heldPos.map(({ id, poNumber, drafts }) => {
               const units = drafts.reduce((s, d) => s + d.totalQuantity, 0);
               return (
-                <Typography key={details.id} variant="body2">
-                  {details.poNumber ?? 'This PO'} already has {drafts.length === 1 ? 'a receive' : `${drafts.length} receives`}{' '}
+                <Typography key={id} variant="body2">
+                  {poNumber ?? 'This PO'} already has {drafts.length === 1 ? 'a receive' : `${drafts.length} receives`}{' '}
                   awaiting approval ({units} {units === 1 ? 'unit' : 'units'}).
                 </Typography>
               );
             })}
+            <Typography variant="body2" sx={{ mt: 0.5 }}>
+              {heldPos.length === 1
+                ? 'It is not in this count - it returns to the receiving queue once a Warehouse Manager approves or rejects the receive.'
+                : 'They are not in this count - they return to the receiving queue once a Warehouse Manager approves or rejects the receive.'}
+            </Typography>
           </Alert>
         )}
-        {showForm && (
+        {showEntry && (
           <FormControl size="small" sx={{ minWidth: 240, mb: 2 }}>
             <InputLabel id="receive-warehouse-label">Receive into warehouse</InputLabel>
             <Select
@@ -555,9 +607,9 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
             </Select>
           </FormControl>
         )}
-        {showForm && (
+        {showEntry && (
           <PackingSlipPicker
-            poDetailsList={poDetailsList}
+            poDetailsList={receivablePoDetailsList}
             files={packingSlips}
             onChange={setPackingSlips}
             showPoHeaders={poIds.length > 1}
@@ -565,9 +617,9 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
         )}
         {/* #632: an optional remark per draft (one draft per PO), shown to the approver and carried
             onto the receive record - "box crushed", "short 2 per slip". */}
-        {showForm && (
+        {showEntry && (
           <Box sx={{ mb: 2, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-            {poDetailsList.map((details) => (
+            {receivablePoDetailsList.map((details) => (
               <TextField
                 key={details.id}
                 label={
@@ -589,9 +641,9 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
             ))}
           </Box>
         )}
-        {showForm && (
+        {showEntry && (
           <ReceiveLinesEditor
-            poDetailsList={poDetailsList}
+            poDetailsList={receivablePoDetailsList}
             receiveQuantities={receiveQuantities}
             onQuantityChange={handleQuantityChange}
             showPoHeaders={poIds.length > 1}
@@ -602,7 +654,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
       <ConfirmDialog
         open={confirmOpen}
         title="Submit for Approval"
-        message={`Submit ${totalItemsToReceive} items across ${poIds.length} PO${poIds.length > 1 ? 's' : ''} for a Warehouse Manager to review? Nothing posts to GP or lands in inventory until it is approved.`}
+        message={`Submit ${totalItemsToReceive} items across ${poCountToSubmit} PO${poCountToSubmit > 1 ? 's' : ''} for a Warehouse Manager to review? Nothing posts to GP or lands in inventory until it is approved.`}
         confirmLabel="Submit"
         onConfirm={handleSubmit}
         onCancel={() => setConfirmOpen(false)}

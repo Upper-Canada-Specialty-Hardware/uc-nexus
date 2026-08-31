@@ -168,6 +168,41 @@ def _validate_packing_slip(session: Session, po_id: uuid.UUID, document_id: uuid
         )
 
 
+def _assert_no_pending_draft(
+    session: Session,
+    po_id: uuid.UUID,
+    *,
+    exclude_draft_id: uuid.UUID | None = None,
+) -> None:
+    """One counted delivery per PO at a time (#641).
+
+    This used to be a warning on the frontend, on the reading that two deliveries against one PO
+    before the first is approved are legitimate. They are - but the second submission is almost never
+    that; it is somebody re-counting a delivery that is already in the approvals queue, and until now
+    nothing said so. Now the pending draft holds the PO out of the receiving queue
+    (`_pending_receive_draft_exists`) and holds this door shut, so the state is tracked in one place
+    rather than described in an alert.
+
+    The PO row is locked FOR UPDATE first: without it two submissions racing each other both read
+    "nothing pending" under READ COMMITTED and both write a draft. An idempotent retry never reaches
+    here - the create key short-circuits above it - so the lock only ever serialises genuinely
+    distinct submissions.
+    """
+    lock_rows(session, POModel, [po_id])
+    stmt = select(ReceiveDraftModel.id).where(
+        ReceiveDraftModel.po_id == po_id,
+        ReceiveDraftModel.status == ReceiveDraftStatus.PENDING_APPROVAL,
+    )
+    if exclude_draft_id is not None:
+        stmt = stmt.where(ReceiveDraftModel.id != exclude_draft_id)
+    if session.scalars(stmt).first() is not None:
+        raise ConflictError(
+            "A receive for this PO is already pending approval - these quantities are awaiting "
+            "review. The PO comes back to the receiving queue once a Warehouse Manager approves or "
+            "rejects it."
+        )
+
+
 def create_receive_draft(
     session: Session,
     po_id: uuid.UUID,
@@ -186,6 +221,9 @@ def create_receive_draft(
     closed PO is refused in front of the person holding the packing slip rather than surfacing hours
     later to whoever opens the queue. Approval re-validates anyway - the world can move underneath a
     draft - but a draft nobody could ever approve is not worth creating.
+
+    Refused outright if the PO already has a draft awaiting approval (#641) - see
+    `_assert_no_pending_draft`.
     """
     _validate_packing_slip(session, po_id, packing_slip_document_id)
 
@@ -197,6 +235,10 @@ def create_receive_draft(
         ).first()
         if existing is not None:
             return existing
+
+    # After the idempotency short-circuit, never before it: a retry of the submission that wrote the
+    # pending draft must get that draft back, not a conflict with itself.
+    _assert_no_pending_draft(session, po_id)
 
     validate_receive_eligibility(session, po_id, author_name, line_items_input)
 
@@ -345,6 +387,12 @@ def resubmit_receive_draft(session: Session, draft_id: uuid.UUID, actor_user_id:
         raise InvalidStateTransitionError(f"Only a rejected draft can be resubmitted, got {draft.status.value}")
     if draft.created_by_user_id != actor_user_id:
         raise ConflictError("Only the person who submitted this draft can resubmit it")
+
+    # A resubmission is a submission: it puts a draft back into PENDING_APPROVAL, so it is held to the
+    # same one-per-PO rule a fresh count is (#641). Somebody counted this delivery again while the
+    # rejection sat unanswered, and two pending drafts on one PO is the state that rule exists to
+    # prevent.
+    _assert_no_pending_draft(session, draft.po_id, exclude_draft_id=draft.id)
 
     validate_receive_eligibility(session, draft.po_id, draft.created_by_name, _line_items_data(draft))
 

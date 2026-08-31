@@ -451,18 +451,47 @@ describe('ReceiveModal', () => {
     expect(keys[1]).toBe(keys[0]);
   });
 
-  it('warns without blocking when a PO already has a draft awaiting approval', async () => {
-    // Two deliveries against one PO is ordinary; re-counting the same one is not. The backend's
-    // approval claim is the enforcement point, so this only has to be visible.
+  it('holds a PO that already has a draft awaiting approval out of the count', async () => {
+    // #641: this used to warn and let the count through, on the reading that two deliveries against
+    // one PO is ordinary. The server refuses the second submission now, so the lines are not offered
+    // at all - a count that can only bounce is worse than no count field.
     const pending = new Map([['po-1', [{ id: 'draft-9', totalQuantity: 2 }]]]);
     renderModal([poDetailsMock()], ['po-1'], pending);
-    await screen.findByText('HG-100', undefined, SLOW);
 
-    expect(screen.getByText(/already has a receive awaiting approval \(2 units\)/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/already has a receive awaiting approval \(2 units\)/, undefined, SLOW),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/returns to the receiving queue once a Warehouse Manager/)).toBeInTheDocument();
 
-    setReceiveQty('3');
-    attachPackingSlips();
-    expect(submitButton()).toBeEnabled();
+    // No lines, no slip slot, no way to submit.
+    expect(screen.queryByText('HG-100')).toBeNull();
+    expect(screen.queryByLabelText(/^Packing slip for /)).toBeNull();
+    expect(submitButton()).toBeDisabled();
+    expect(screen.getByText('This PO already has a receive awaiting approval')).toBeInTheDocument();
+  });
+
+  it('holds one PO of a batch without sinking the rest', async () => {
+    // The whole point of holding rather than blocking: PO-456 is a different truck and is still
+    // receivable while PO-123's count waits on a manager.
+    const seen: string[] = [];
+    const draftMock: MockedResponse<Record<string, unknown>, CreateDraftVars> = {
+      request: { query: CREATE_RECEIVE_DRAFT, variables: () => true },
+      result: (vars) => {
+        seen.push(vars.input.poId);
+        return { data: draftResultData() };
+      },
+    };
+    const pending = new Map([['po-1', [{ id: 'draft-9', totalQuantity: 2 }]]]);
+    renderModal([poDetailsMock(), secondPoDetailsMock(), draftMock], ['po-1', 'po-2'], pending);
+
+    await screen.findByText('CL-300', undefined, SLOW);
+    expect(screen.queryByText('HG-100')).toBeNull();
+
+    setReceiveQty('4');
+    await submitViaConfirm();
+
+    await screen.findByText(/Submitted for approval\. 4 items across 1 PO/, undefined, SLOW);
+    expect(seen).toEqual(['po-2']);
   });
 
   it('blocks receiving a PO that is not GP-registered', async () => {
