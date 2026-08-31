@@ -240,8 +240,8 @@ def finalize_payload(input: FinalizeImportSessionInput, *, created_by_user_id: s
                 "hardware_category": item.hardware_category,
                 "product_code": item.product_code,
                 "quantity": item.quantity,
-                # None is forwarded as-is; the repository resolves it to `quantity` (fully
-                # allocated), which is what keeps every non-composer caller on the old behaviour.
+                # Forwarded so the payload still round-trips what a pre-#646 tab sent, and ignored
+                # by the repository: a shop-assembly request allocates nothing at creation.
                 "allocated_quantity": item.allocated_quantity,
             }
             for item in (input.shop_assembly_items or [])

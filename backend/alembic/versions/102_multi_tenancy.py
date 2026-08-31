@@ -1,7 +1,7 @@
 """Multi-tenancy: a GP company owns every project, warehouse, PO and catalog list (#637)
 
-Revision ID: 101
-Revises: 100
+Revision ID: 102
+Revises: 101
 Create Date: 2026-08-31
 
 A tenant IS a GP company (TUBC, UCSH, UBC). The relay protocol already carried `company` on every
@@ -29,8 +29,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "101"
-down_revision = "100"
+revision = "102"
+down_revision = "101"
 branch_labels = None
 depends_on = None
 

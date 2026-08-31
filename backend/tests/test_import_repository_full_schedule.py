@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.models.enums import (
     HardwareItemState,
+    ShopAssemblyOpeningStatus,
     ShopAssemblyRequestStatus,
 )
 from app.models.hardware import HardwareItem
@@ -275,9 +276,9 @@ def test_replace_schedule_wipes_all_hardware_items(db_session):
 
 
 def test_shop_assembly_request_created_pending(db_session):
-    """finalize mints a PENDING ShopAssemblyRequest (#293): NO PullRequest yet, flat lines hanging
-    off the request with their opening tag captured.
-    Creation gates on available inventory and reserves it (#342), so the stock has to be there."""
+    """finalize raises a PENDING ShopAssemblyRequest (#646): NO PullRequest, NO reservation and NO
+    availability gate - flat lines hanging off the request with their opening tag captured, plus one
+    opening row per opening for the manager to work."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=10)
     db_session.commit()
@@ -312,19 +313,19 @@ def test_shop_assembly_request_created_pending(db_session):
     assert sar.project_id == project.id
     assert result["shop_assembly_request"].id == sar.id
 
-    # No PullRequest exists yet - it is minted only at accept.
+    # No PullRequest exists yet - one is minted per batch, and no batch has been dispatched.
     assert db_session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number)) is None
+    assert sar.batches == []
 
-    # The request holds flat lines, each tagged with its opening, and no pull yet.
-    assert sar.pull_request_id is None
+    # The request holds flat lines, each tagged with its opening, and an opening row per opening.
     lines = db_session.scalars(
         select(ShopAssemblyRequestItem).where(ShopAssemblyRequestItem.shop_assembly_request_id == sar.id)
     ).all()
     assert len(lines) == 1
     assert lines[0].opening_number == "A01"
     assert lines[0].product_code == "HG-100"
-    assert lines[0].quantity == 2
-    assert lines[0].allocated_quantity == 2
+    assert lines[0].requested_quantity == 2
+    assert [(o.opening_number, o.status) for o in sar.openings] == [("A01", ShopAssemblyOpeningStatus.PENDING)]
 
 
 def test_existing_openings_updated_on_replace(db_session):

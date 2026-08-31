@@ -291,19 +291,48 @@ class EditShippingOutRequestInput:
 
 @strawberry.input
 class SARItemInput:
-    """One flat line of a shop-assembly request, tagged with the opening it is owed to."""
+    """One flat line of a shop-assembly request: what one opening is still owed of one product."""
 
-    # Null on a line raised straight off inventory - shelf stock carries no opening.
+    # Required since #646 - a request IS a list of openings, and a line naming none of them could
+    # never be batched. Still typed nullable so a pre-#646 tab gets a field error naming the opening
+    # rather than a schema-level rejection of the whole finalize.
     opening_number: str | None = None
     hardware_category: str = ""
     product_code: str = ""
-    # What the schedule says this opening is owed. Never reduced by scarcity.
+    # What this opening is still owed: the composer's `owed - sent - claimed`. Never reduced by
+    # scarcity - scarcity is the manager's problem at batching time, not the PM's here.
     quantity: int = 1
-    # What the composer could actually claim out of available inventory, 0..quantity. The composer
-    # always sends it explicitly. **None means "fully allocated" (= quantity)**, which is what keeps
-    # every non-wizard caller - tests, scripts, a stale tab - on the pre-composer behaviour: ask for
-    # the whole line, and fail the availability gate if it does not fit.
-    allocated_quantity: int | None = None
+    allocated_quantity: int | None = strawberry.field(
+        default=None,
+        deprecation_reason=(
+            "Ignored since #646: a shop-assembly request allocates nothing at creation. Allocation "
+            "happens per batch, in createShopAssemblyBatch."
+        ),
+    )
+
+
+@strawberry.input
+class ShopAssemblyBatchLineInput:
+    """One allocation on a batch: this many units of this product, for this opening (#646)."""
+
+    opening_number: str
+    hardware_category: str
+    product_code: str
+    # 1..(what the opening is owed). A line the manager allocated nothing to is left off the batch
+    # entirely rather than sent as a zero - a zero would put a pick on the sheet nobody can fill.
+    allocated_quantity: int
+
+
+@strawberry.input
+class CreateShopAssemblyBatchInput:
+    """One dispatch off a pending shop-assembly request (#646).
+
+    The batch's openings are whichever ones the lines name, so an opening with nothing allocatable
+    simply cannot be on a batch - it stays pending and comes back on the next one.
+    """
+
+    request_id: strawberry.ID
+    lines: list[ShopAssemblyBatchLineInput] = strawberry.field(default_factory=list)
 
 
 @strawberry.input

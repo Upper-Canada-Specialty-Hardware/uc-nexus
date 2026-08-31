@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import { Card, CardActionArea } from '@mui/material';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
-import { GET_SHOP_ASSEMBLY_STATS, GET_SHOP_ASSEMBLY_REQUESTS } from '../../graphql/shop-assembly';
+import { GET_SHOP_ASSEMBLY_STATS, GET_SHOP_ASSEMBLY_REQUEST_STAGES } from '../../graphql/shop-assembly';
 import { tabularSx } from '../../theme';
 import { FadeIn, StaggerList, StaggerItem } from '../../motion';
 import { STAGE_LABEL, STAGE_ORDER, type RequestStage } from './requestStages';
@@ -28,12 +28,12 @@ export default function ShopAssemblyLanding() {
   const { data, loading } = useQuery<ShopAssemblyStatsData>(GET_SHOP_ASSEMBLY_STATS, {
     fetchPolicy: 'cache-and-network',
   });
-  // The same query the requests page runs for its Pending view, read cache-first: landing on the
-  // module after visiting it costs nothing, and the one fetch it does make warms the cache for
-  // where the user is about to go. Deliberately not cache-and-network - the landing page must never
-  // race the page it is about to hand off to.
+  // Ids and rungs only, read cache-first: landing on the module after visiting it costs nothing.
+  // Deliberately not the requests page's own document - that one carries every request's lines,
+  // openings and batches, and none of it is on this screen. Deliberately not cache-and-network
+  // either: the landing page must never race the page it is about to hand off to.
   const { data: pendingData } = useQuery<{ shopAssemblyRequests: LandingRequest[] }>(
-    GET_SHOP_ASSEMBLY_REQUESTS,
+    GET_SHOP_ASSEMBLY_REQUEST_STAGES,
     { variables: { status: 'PENDING' }, fetchPolicy: 'cache-first' },
   );
 

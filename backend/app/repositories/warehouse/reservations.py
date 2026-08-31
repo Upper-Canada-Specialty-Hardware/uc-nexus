@@ -1,12 +1,15 @@
-"""Inventory reservations: the claim a request holds on stock between creation and the pull (#342).
+"""Inventory reservations: the claim a holder has on stock between committing to it and the pull
+that spends it (#342).
 
-Creating a shop-assembly or shipping-out request reserves what it needs, so
+Creating a shipping-out request reserves what it needs; so does creating a shop-assembly BATCH
+(#646 - the request behind it reserves nothing, because it is a flag rather than a claim). Either
+way
 
     available = on-hand - deficient - active reservations
 
-and the creator is held to what is genuinely free at creation time. Confirming the pull's pick
-*consumes* the source request's reservations and deducts the dictated rows in the same transaction
-(#367 moved that moment from approval); every other way a request can die *releases* them.
+and whoever writes the claim is held to what is genuinely free at that moment. Confirming the pull's
+pick *consumes* the holder's reservations and deducts the dictated rows in the same transaction
+(#367 moved that moment from approval); every other way a holder can die *releases* them.
 
 Consumption is per combo and partial (`consume_reservations`), because a pick can be confirmed
 short and the un-picked remainder is still owed. Release is whole-holder (`release_reservations`,
@@ -28,7 +31,7 @@ from app.models.inventory_reservation import InventoryReservation as InventoryRe
 
 # The FK column each source discriminator writes to / filters on.
 _SOURCE_COLUMN = {
-    ReservationSource.SHOP_ASSEMBLY_REQUEST: InventoryReservationModel.shop_assembly_request_id,
+    ReservationSource.SHOP_ASSEMBLY_BATCH: InventoryReservationModel.shop_assembly_batch_id,
     ReservationSource.SHIPPING_OUT_REQUEST: InventoryReservationModel.shipping_out_request_id,
 }
 
@@ -84,9 +87,9 @@ def get_reserved_quantities(
     if combo_clause is not None:
         stmt = stmt.where(combo_clause)
     if exclude_source is not None and exclude_request_id is not None:
-        # Exclude exactly one row set: the given request's own claims. It has to be written as a
+        # Exclude exactly one row set: the given holder's own claims. It has to be written as a
         # negated conjunction, not as `column != id`, because that column is NULL on every row of the
-        # *other* source - a shipping-out reservation has no `shop_assembly_request_id` - and
+        # *other* source - a shipping-out reservation has no `shop_assembly_batch_id` - and
         # `NULL != <id>` is NULL, which SQL drops. Written the naive way this silently subtracted
         # every opposite-source claim in the project from the aggregate, so the cross-type guarantee
         # the reservation table exists for was void on the one path that matters (pull approval).
@@ -269,35 +272,39 @@ def _new_reservation(
         product_code=product_code,
         quantity=quantity,
         source=source,
-        shop_assembly_request_id=(holder_id if source is ReservationSource.SHOP_ASSEMBLY_REQUEST else None),
+        shop_assembly_batch_id=(holder_id if source is ReservationSource.SHOP_ASSEMBLY_BATCH else None),
         shipping_out_request_id=(holder_id if source is ReservationSource.SHIPPING_OUT_REQUEST else None),
     )
 
 
 def release_reservations(session: Session, source: ReservationSource, request_id: uuid.UUID) -> int:
-    """Drop every reservation a request holds and return how many rows went. Idempotent.
+    """Drop every reservation a holder has and return how many rows went. Idempotent.
 
-    This is the single exit from the reservation table, and every path a request can leave the
+    This is the single exit from the reservation table, and every path a holder can leave the
     in-flight state on goes through it:
 
-    | Path                                     | Effect                                            |
-    | ---------------------------------------- | ------------------------------------------------- |
-    | Reject (either request type)             | release - the request is dead, the claim dies too |
-    | Reject after a reopen                    | release - same call, same result                  |
-    | Reopen an accepted request (#325)        | **no release** - see below                        |
-    | Pick confirmation (the reserved path)    | consume - per combo, for what was picked (#367)    |
-    | Pick confirmed short                     | **partial consume** - the remainder stays claimed  |
-    | Cancelling a pull                        | release, then re-create what it will need again    |
-    | Re-upload drops the request's openings    | release, by rebuilding from what survived         |
-    | Re-upload leaves the request empty       | auto-reject, which releases                       |
-    | Discard a PENDING replacement pull       | release - the pull is hard-deleted, so is its claim |
+    | Path                                          | Effect                                        |
+    | --------------------------------------------- | --------------------------------------------- |
+    | Reject a shipping-out request                 | release - it is dead, the claim dies too      |
+    | Reject after a reopen                         | release - same call, same result              |
+    | Reopen an accepted shipping-out request       | **no release** - see below                    |
+    | Pick confirmation (the reserved path)         | consume - per combo, for what was picked      |
+    | Pick confirmed short                          | **partial consume** - the rest stays claimed  |
+    | Cancelling a pull                             | release; shipping-out re-creates its need     |
+    | Discarding a shop-assembly batch (#646)       | release - batch and pull are hard-deleted     |
+    | Re-upload drops a shipping request's openings | release, by rebuilding from what survived     |
+    | Re-upload leaves a shipping request empty     | auto-reject, which releases                   |
+    | Discard a PENDING replacement pull            | release - the pull is gone, so is its claim   |
 
     **Reopen deliberately does not release.** A reopen undoes the *accept*, not the *creation*: the
-    request goes back to PENDING and is still a live claim on stock, exactly as it was between
-    creation and the accept it is unwinding. Releasing here would let a second request grab the
-    hardware while the first is still on the board waiting to be re-accepted - which is the
-    accept-time shortfall this whole slice removes, reintroduced through the back door. Rejecting
-    it afterwards is what finally releases, and that path is unchanged.
+    shipping-out request goes back to PENDING and is still a live claim on stock, exactly as it was
+    between creation and the accept it is unwinding. Releasing here would let a second request grab
+    the hardware while the first is still on the board waiting to be re-accepted - which is the
+    accept-time shortfall that slice removes, reintroduced through the back door. Rejecting it
+    afterwards is what finally releases, and that path is unchanged.
+
+    A **rejected shop-assembly request releases nothing**, and that is not an omission (#646): a
+    request with no batches never held a claim, and one with batches cannot be rejected at all.
 
     Bulk DELETE in one statement (not a load + per-row delete). The ORM's default synchronisation
     evaluates the criteria against the identity map, so any of these rows the session had already

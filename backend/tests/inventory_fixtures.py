@@ -17,12 +17,13 @@ from app.models.enums import (
     ReservationSource,
     ReturnDisposition,
     ShipmentStatus,
+    ShopAssemblyBatchStatus,
     ShopAssemblyRequestStatus,
 )
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
 from app.models.shipping import PackingSlip, PackingSlipItem, ShipmentReturn, ShipmentReturnItem
-from app.models.shop_assembly import ShopAssemblyRequest
+from app.models.shop_assembly import ShopAssemblyBatch, ShopAssemblyRequest
 from app.models.stock_item import StockItem
 from app.models.warehouse_location import WarehouseLocation
 from app.repositories import warehouse as warehouse_repository
@@ -221,12 +222,16 @@ def make_reservation(
     quantity: int,
     category: str = "HINGE",
     code: str = "HG-100",
-) -> ShopAssemblyRequest:
+) -> ShopAssemblyBatch:
     """An active shop-assembly reservation claiming `quantity` of one combo in a project.
 
-    Mints a real PENDING ShopAssemblyRequest to hang the claim off - the reservation CHECK constraint
-    requires a request FK - and writes the claim through the same repository call request creation
-    uses. Returns the request so a caller can release it if it wants to.
+    Mints a real request and a dispatched BATCH to hang the claim off - since #646 the holder is the
+    batch, and the reservation CHECK constraint requires its FK - then writes the claim through the
+    same repository call batching uses. Returns the batch so a caller can release it if it wants to.
+
+    Deliberately no pull: nothing here is testing the warehouse floor, and a batch with a null
+    `pull_request_id` is the same shape one has for the instant between being created and minting its
+    pull. What these callers need is a live claim on stock, which this is.
     """
     sar = ShopAssemblyRequest(
         id=uuid.uuid4(),
@@ -237,11 +242,21 @@ def make_reservation(
     )
     session.add(sar)
     session.flush()
+    batch = ShopAssemblyBatch(
+        id=uuid.uuid4(),
+        shop_assembly_request_id=sar.id,
+        sequence=1,
+        batch_number=f"{sar.request_number}-B1",
+        status=ShopAssemblyBatchStatus.ACTIVE,
+        created_by="tester",
+    )
+    session.add(batch)
+    session.flush()
     warehouse_repository.create_reservations(
         session,
         project.id,
-        ReservationSource.SHOP_ASSEMBLY_REQUEST,
-        sar.id,
+        ReservationSource.SHOP_ASSEMBLY_BATCH,
+        batch.id,
         [(category, code, quantity)],
     )
-    return sar
+    return batch

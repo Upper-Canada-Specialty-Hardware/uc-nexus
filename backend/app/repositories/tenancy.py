@@ -201,6 +201,22 @@ def require_shop_assembly_request_in_scope(session: Session, request_id: uuid.UU
     )
 
 
+def require_shop_assembly_batch_in_scope(session: Session, batch_id: uuid.UUID, scope: str | None) -> None:
+    """A batch (#660) scopes through its request's project, like the request itself."""
+    from app.models.shop_assembly import ShopAssemblyBatch
+
+    _require(
+        session,
+        select(Project.company)
+        .join(ShopAssemblyRequest, ShopAssemblyRequest.project_id == Project.id)
+        .join(ShopAssemblyBatch, ShopAssemblyBatch.shop_assembly_request_id == ShopAssemblyRequest.id)
+        .where(ShopAssemblyBatch.id == batch_id),
+        scope,
+        "Shop assembly batch",
+        batch_id,
+    )
+
+
 def require_packing_slip_in_scope(session: Session, packing_slip_id: uuid.UUID, scope: str | None) -> None:
     _require(
         session,

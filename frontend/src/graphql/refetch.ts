@@ -105,9 +105,13 @@ export const PICK_CONFIRM_STALE_ROOT_FIELDS = [
   'shipReadyItems',
 ];
 
-// What creating, accepting, rejecting or reopening a request invalidates (#342). Creating a request
-// RESERVES inventory, so every one of these moments changes `available = on-hand - deficient -
-// reservations` for the whole project.
+// What raising, dispatching, accepting, rejecting or discarding a request invalidates (#342). Each
+// of those moments moves either the reservation book or the composer's `claimed` term, so
+// `available = on-hand - deficient - reservations` changes for the whole project.
+//
+// Which moment reserves depends on the request type since #646: a shipping-out request reserves at
+// creation, a shop-assembly one only when the manager dispatches a BATCH. Raising a shop-assembly
+// request still moves `claimed`, which is why both fields are here for every one of these writes.
 //
 // Evicted, not refetched, and there is nothing paired to refetch by name: the reader is the Start a
 // Task wizard, which is a full-screen dialog in another module and is by definition NOT mounted when

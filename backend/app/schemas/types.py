@@ -24,6 +24,8 @@ from .enums import (
     ShipmentContainerType,
     ShipmentStatus,
     ShippingOutRequestStatus,
+    ShopAssemblyBatchStatus,
+    ShopAssemblyOpeningStatus,
     ShopAssemblyRequestStatus,
 )
 
@@ -800,18 +802,64 @@ class PullRequest:
 
 @strawberry.type
 class ShopAssemblyRequestItem:
-    """One flat line on a shop-assembly request, tagged with the opening it is owed to."""
+    """One flat line on a shop-assembly request: what one opening was still owed of one product when
+    the PM raised it. No allocated quantity - nothing is allocated until a batch says so (#646)."""
 
     id: strawberry.ID
     shop_assembly_request_id: strawberry.ID
-    # Null on a line raised straight off inventory - shelf stock carries no opening.
+    # Null only on lines that predate #646; every line written since carries its opening.
     opening_number: str | None
     hardware_category: str
     product_code: str
-    # What the schedule owed, and what the composer could actually claim. Short is the difference,
-    # derived and never stored.
-    quantity: int
+    requested_quantity: int
+
+
+@strawberry.type
+class ShopAssemblyRequestOpening:
+    """One flagged opening's own state on the request (#646) - the unit the manager decides about."""
+
+    id: strawberry.ID
+    shop_assembly_request_id: strawberry.ID
+    opening_number: str
+    status: ShopAssemblyOpeningStatus
+    # The batch that consumed this opening, while it is BATCHED. Cleared when that batch's pull is
+    # cancelled and the opening comes back to PENDING.
+    batch_id: strawberry.ID | None
+    dismissed_by: str | None
+    dismissed_at: datetime | None
+    dismissal_reason: str | None
+
+
+@strawberry.type
+class ShopAssemblyBatchItem:
+    """What one batch allocated on one line - equal to what is reserved and what the pull asks for."""
+
+    id: strawberry.ID
+    shop_assembly_batch_id: strawberry.ID
+    opening_number: str
+    hardware_category: str
+    product_code: str
     allocated_quantity: int
+
+
+@strawberry.type
+class ShopAssemblyBatch:
+    """One dispatch off a shop-assembly request (#646): a subset of its openings, allocated, reserved
+    and on a warehouse pull."""
+
+    id: strawberry.ID
+    shop_assembly_request_id: strawberry.ID
+    sequence: int
+    # What the pull carries as its request number, so the pick sheet reads as this dispatch.
+    batch_number: str
+    status: ShopAssemblyBatchStatus
+    created_by: str
+    created_at: datetime
+    pull_request_id: strawberry.ID | None
+    # Resolved by the caller in one query for the whole list (CLAUDE.md perf rules), so a list page
+    # never pays a lookup per batch. Null when the pull could not be read.
+    pull_status: PullRequestStatus | None
+    items: list[ShopAssemblyBatchItem]
 
 
 @strawberry.type
@@ -819,28 +867,66 @@ class ShopAssemblyRequest:
     id: strawberry.ID
     request_number: str
     project_id: strawberry.ID
+    # PENDING while any opening is still waiting on the manager; APPROVED once every opening is
+    # batched or dismissed; REJECTED if it was turned down before anything was dispatched (#646).
     status: ShopAssemblyRequestStatus
     created_by: str
+    # Who finished the request off (last batch or dismissal) and when. There is no single accept.
     approved_by: str | None
+    approved_at: datetime | None
     rejected_by: str | None
     rejection_reason: str | None
     created_at: datetime
-    approved_at: datetime | None
     rejected_at: datetime | None
-    # Something happened to this request after it was created that the acceptor has to know about
-    # (#342): a schedule re-upload landed under it, or the reservations backfill could not cover it.
-    # Null means nothing has.
+    # A schedule re-upload landed under this request after it was raised (#342), so its bill of
+    # hardware may no longer match the schedule. Null means nothing has happened to it.
     integrity_note: str | None
-    # The warehouse pull this request minted at accept. Null while it is still PENDING.
-    pull_request_id: strawberry.ID | None
     items: list[ShopAssemblyRequestItem]
+    openings: list[ShopAssemblyRequestOpening]
+    batches: list[ShopAssemblyBatch]
     # Where the request sits on the ladder the requests list draws as columns. Derived from the
-    # request's status and its pull's, never stored.
+    # request's status and its batches' pulls, never stored.
     stage: RequestStage
-    # A PENDING request whose minted pull was cancelled was returned by that cancellation (#343):
-    # the hardware went back and the request came back for re-acceptance. Human-readable explanation
-    # of that reappearance in the queue, else null. Derived, never stored.
+    # A PENDING request one of whose batches was cancelled was returned by that cancellation (#613):
+    # the hardware went back and its openings came back to the board. Human-readable explanation of
+    # that reappearance, else null. Derived, never stored.
     return_note: str | None
+
+
+@strawberry.type
+class ShopAssemblyAllocationLine:
+    """One owed line on a pending opening, with the free stock the manager may allocate from."""
+
+    opening_number: str
+    hardware_category: str
+    product_code: str
+    # What this opening was still owed when the request was raised.
+    requested_quantity: int
+    # `on-hand - deficient - every active reservation` for this product across the project - the same
+    # figure the batch gate applies. Project-wide and NOT split per opening: two openings wanting the
+    # same hinge compete for one pool, and the review has to show that rather than hide it.
+    available_quantity: int
+
+
+@strawberry.type
+class ShopAssemblyAllocationOpening:
+    opening_number: str
+    lines: list[ShopAssemblyAllocationLine]
+
+
+@strawberry.type
+class ShopAssemblyAllocationReview:
+    """What the Shop Assembly Manager needs to compose a batch (#643): the request's still-pending
+    openings, each opening's owed lines, and what is free right now."""
+
+    request_id: strawberry.ID
+    request_number: str
+    project_id: strawberry.ID
+    status: ShopAssemblyRequestStatus
+    created_by: str
+    created_at: datetime
+    integrity_note: str | None
+    openings: list[ShopAssemblyAllocationOpening]
 
 
 @strawberry.type

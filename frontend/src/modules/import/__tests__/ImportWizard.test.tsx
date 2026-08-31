@@ -219,43 +219,7 @@ const reimportBaseMocks: MockedResponse[] = [
 
 const reimportMocks: MockedResponse[] = [...reimportBaseMocks];
 
-// --- Compose-step fixtures ---
-
-// O-1's hinges were consumed into two assembled door leaves; O-2's lock is still loose stock.
-const reconcileMock: MockedResponse = {
-  request: {
-    query: RECONCILE_SCHEDULE,
-    variables: {
-      projectId: 'proj-1',
-      items: [
-        { openingNumber: 'O-1', hardwareCategory: 'Hinges', productCode: 'HNG-100', quantityNeeded: 3 },
-        { openingNumber: 'O-2', hardwareCategory: 'Locks', productCode: 'LCK-200', quantityNeeded: 1 },
-      ],
-    },
-  },
-  result: {
-    data: {
-      reconcileSchedule: [
-        {
-          __typename: 'ReconciliationResult',
-          openingNumber: 'O-1',
-          hardwareCategory: 'Hinges',
-          productCode: 'HNG-100',
-          quantity: 3,
-          status: 'ASSEMBLED',
-        },
-        {
-          __typename: 'ReconciliationResult',
-          openingNumber: 'O-2',
-          hardwareCategory: 'Locks',
-          productCode: 'LCK-200',
-          quantity: 1,
-          status: 'RECEIVED',
-        },
-      ],
-    },
-  },
-};
+// --- Shop-assembly request fixtures ---
 
 /** One row of the composer's answer. */
 function coverageLine(overrides: Record<string, unknown> = {}) {
@@ -384,6 +348,11 @@ const PO_REIMPORT_STEPS = [
   'Organize PO Drafts',
   'Finalize',
 ];
+// #646: the assembly pathway is the same on a first import and a re-import, because neither of the
+// two steps in between is its business any more. It never composed a batch (that is the Shop
+// Assembly Manager's screen) and it never reconciles (that is about ordering). Raising a request is
+// pure opening-flagging.
+const ASSEMBLY_STEPS = ['Upload File', 'Select Openings', 'Finalize'];
 
 beforeEach(() => {
   mockedUseParser.mockReset();
@@ -428,26 +397,29 @@ describe('ImportWizard step transitions', () => {
   // #492: the assembly flow used to carry a Classification step. It asked the user to re-answer a
   // question the persisted schedule already holds, and a different answer than the original import
   // is the drift. Only the PO purpose classifies now.
-  it('assembly purpose (re-import) inserts only the Shop Assembly step', async () => {
+  //
+  // #646: it lost its compose step AND its Reconciliation step. Raising a request is pure
+  // opening-flagging - what is on the shelf and what has been ordered are both the Shop Assembly
+  // Manager's questions, at batching time - so the flow is Upload, Select Openings, Finalize even on
+  // a re-import.
+  it('assembly purpose is upload, openings and finalize with nothing in between', async () => {
     renderWizard({ project: reimportProject, mocks: reimportMocks, purpose: 'assembly' });
     await flushApollo();
 
-    expect(stepLabels()).toEqual([
-      'Upload File',
-      'Select Openings',
-      'Reconciliation',
-      'Shop Assembly',
-      'Finalize',
-    ]);
+    expect(stepLabels()).toEqual(ASSEMBLY_STEPS);
+    // The claim is about the PURPOSE, not the project: this is the same re-import that gets
+    // Reconciliation under `po` (see PO_REIMPORT_STEPS below).
+    expect(stepLabels()).not.toContain('Reconciliation');
   });
 
-  // The composer is the whole of the shop-assembly step now, so what is worth walking is that the
-  // offer reaches the screen and that its SHOP filter holds: the shop hardware is offered, the site
-  // lock the bench never touches is not.
-  it('offers only the shop hardware the selected openings still have coming', async () => {
+  // Nothing is composed any more, but the request's LINES still come off the coverage answer with
+  // its SHOP filter - so what is worth walking is that a selection reaches Finalize carrying the
+  // shop hardware and not the site lock the bench never touches.
+  it('carries the shop hardware the selected openings still have coming to finalize', async () => {
     renderWizard({
       project: reimportProject,
-      mocks: [...reimportBaseMocks, reconcileMock, requestCoverageMock],
+      // No reconcile mock: the assembly pathway never asks for one now.
+      mocks: [...reimportBaseMocks, requestCoverageMock],
       purpose: 'assembly',
     });
     await flushApollo();
@@ -456,14 +428,10 @@ describe('ImportWizard step transitions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
     clickNext();
     await flushApollo();
-    clickNext();
-    await flushApollo();
 
-    expect(screen.getByRole('heading', { name: 'Shop Assembly' })).toBeInTheDocument();
-    // O-1's hinge is shop hardware still owed to the bench; O-2's lock is site hardware, which the
-    // shop-assembly composer never offers. Twice: once in the reserve summary, once on the line.
-    expect(screen.getAllByText('HNG-100')).toHaveLength(2);
-    expect(screen.queryByText('LCK-200')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Review & Finalize' })).toBeInTheDocument();
+    // One line: O-1's hinge. O-2's lock is site hardware, which shop assembly never asks for.
+    expect(screen.getByText(/1 Shop Assembly Request across 1 line/)).toBeInTheDocument();
   });
 
   it('blocks Next on Select Openings until at least one opening is selected', () => {
@@ -829,39 +797,26 @@ describe('ImportWizard AppBar nav', () => {
     expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled();
   });
 
-  it('reflects the disabled-Next reason under the AppBar on a compose step with no offer', async () => {
-    // An empty coverage answer: nothing is owed, so Next stays disabled and the AppBar says why
-    // instead of the reason sitting beside a bottom button that no longer exists.
-    const emptyCoverage: MockedResponse = {
-      request: {
-        query: GET_REQUEST_COVERAGE,
-        variables: { projectId: 'proj-1', openingNumbers: ['O-1', 'O-2'] },
-      },
-      maxUsageCount: Number.POSITIVE_INFINITY,
-      result: { data: { requestCoverage: [] } },
-    };
+  it('reflects the disabled-Next reason under the AppBar when no openings are picked', async () => {
+    // Select Openings is the assembly flow's only gate since #646 - there is no compose step left to
+    // refuse on - and the AppBar is where Next says why, rather than beside a bottom button that no
+    // longer exists.
     renderWizard({
       project: reimportProject,
-      mocks: [...reimportBaseMocks, reconcileMock, emptyCoverage],
+      mocks: [...reimportBaseMocks, requestCoverageMock],
       purpose: 'assembly',
     });
     await flushApollo();
     clickNext();
-    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
-    clickNext();
-    await flushApollo();
-    clickNext();
-    await flushApollo();
 
-    expect(screen.getByRole('heading', { name: 'Shop Assembly' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Openings' })).toBeInTheDocument();
     expect(nextButton()).toBeDisabled();
-    expect(screen.getByText('There is nothing to request for these openings.')).toBeInTheDocument();
   });
 
   it('drops Next and keeps only Back on the finalize step, alongside the in-content CTA', async () => {
     renderWizard({
       project: reimportProject,
-      mocks: [...reimportBaseMocks, reconcileMock, requestCoverageMock],
+      mocks: [...reimportBaseMocks, requestCoverageMock],
       purpose: 'assembly',
     });
     await flushApollo();
@@ -869,18 +824,10 @@ describe('ImportWizard AppBar nav', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
     clickNext();
     await flushApollo();
-    clickNext();
-    await flushApollo();
-
-    // The compose step auto-assigns the one owed line, so Next is live and carries us to finalize.
-    expect(screen.getByRole('heading', { name: 'Shop Assembly' })).toBeInTheDocument();
-    expect(nextButton()).toBeEnabled();
-    clickNext();
-    await flushApollo();
 
     expect(screen.getByRole('heading', { name: 'Review & Finalize' })).toBeInTheDocument();
-    // upload / openings / reconciliation / shop-assembly / finalize
-    expect(screen.getByText('Step 5 of 5')).toBeInTheDocument();
+    // upload / openings / finalize
+    expect(screen.getByText('Step 3 of 3')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Next' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Finish Import Session/i })).toBeInTheDocument();
@@ -954,7 +901,7 @@ describe('ImportWizard deep link', () => {
     clickNext();
 
     expect(screen.getByRole('heading', { name: 'Openings' })).toBeInTheDocument();
-    expect(stepLabels()).toContain('Shop Assembly');
+    expect(stepLabels()).toEqual(ASSEMBLY_STEPS);
     expect(stepLabels()).not.toContain('Purpose');
   });
 

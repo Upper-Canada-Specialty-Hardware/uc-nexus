@@ -18,7 +18,6 @@ import {
 } from '@mui/material';
 import { CheckCircle2, CloudUpload, FileText, FileUp, History, X } from 'lucide-react';
 import { useLazyQuery, useMutation, useQuery } from '@apollo/client/react';
-import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import { useWizard } from '../../contexts/WizardContext';
 import { useToast } from '../../components/Toast';
 import ConfirmDialog from '../../components/ConfirmDialog';
@@ -62,6 +61,7 @@ import { buildPoDrafts, toPoDraftInput } from './poDrafts';
 import * as draftOps from './draftOps';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import { plural } from '../../utils/plural';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
 import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
@@ -72,25 +72,15 @@ import ReconciliationStep from './ReconciliationStep';
 import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
 import type { GpCostCode } from './DraftOrganizer';
-import ComposeRequestStep from './ComposeRequestStep';
 import WizardNav from './WizardNav';
 import OverOrderWarningModal from './OverOrderWarningModal';
 import { buildProductReconRows, type ProductReconRow } from './reconciliation';
-import {
-  autoAllocate,
-  buildRequestLines,
-  composableRows,
-  composeRequestGate,
-  lineKey,
-  offerSignature,
-  type Allocation,
-  type CoverageRow,
-} from './composer';
+import { buildFlagLines, composableRows, type CoverageRow } from './composer';
 
 // ---- Local Types ----
 
 type StepId = 'upload' | 'openings' | 'hardware' | 'reconciliation'
-  | 'classification' | 'purchase-orders' | 'shop-assembly' | 'finalize';
+  | 'classification' | 'purchase-orders' | 'finalize';
 
 interface StepDescriptor {
   id: StepId;
@@ -106,17 +96,6 @@ const WIZARD_TITLES: Record<ImportPurpose, string> = {
   assembly: 'Create Shop Assembly Request',
   schedule: 'Import Hardware Schedule',
 };
-
-/**
- * Did the finalize bounce because stock was not available? On a shop-assembly finalize that can only
- * be a race now - the allocation never asks for more than was free when it was built - so it is the
- * signal to refetch and rebuild rather than an error to show and leave the user staring at.
- */
-function isInventoryShortfall(err: unknown): boolean {
-  return (
-    CombinedGraphQLErrors.is(err) && err.errors?.[0]?.extensions?.code === 'INVENTORY_SHORTFALL'
-  );
-}
 
 // ---- Helpers ----
 
@@ -227,20 +206,6 @@ export default function ImportWizard({
   // creation. Same classificationKey keying as `classifications` (which holds scope for PO purpose).
   const [siteShopClassifications, setSiteShopClassifications] = useState<Map<string, string>>(new Map());
   const [orderAsValues, setOrderAsValues] = useState<Map<string, string>>(new Map());
-  const [sarRequestNumber, setSarRequestNumber] = useState('');
-  // How much of each offered line this request actually claims, and which lines are being sent.
-  // One pair for both purposes: only one of them is ever the active step. Held here rather than
-  // inside the step so stepping back and forward does not silently re-run auto-assign over the
-  // user's manual moves.
-  const [allocation, setAllocation] = useState<Allocation>(new Map());
-  const [includedKeys, setIncludedKeys] = useState<Set<string>>(new Set());
-  // The offer signature the allocation above was seeded from. Held here, not in the step, because
-  // the step unmounts whenever the user is on another step - a flag inside it would reset on the way
-  // back and auto-assign would overwrite whatever they had moved by hand.
-  const [seededSignature, setSeededSignature] = useState<string | null>(null);
-  // The server refused the finalize because availability moved under the allocation (#342 race).
-  // The step says so and shows the rebuilt numbers rather than letting the user resend the stale set.
-  const [allocationStale, setAllocationStale] = useState(false);
   const [selectedReconItems, setSelectedReconItems] = useState<Set<string>>(new Set());
   // #567: over-ordering past the project need no longer blocks Next; it opens a confirm modal when
   // the user leaves the reconciliation step with a selection that pushes a product past its total.
@@ -273,7 +238,10 @@ export default function ImportWizard({
     // reconcile against.
     // #608: a schedule replace wipes and re-persists the whole file, so there is nothing to
     // reconcile against - it skips the step even though it is a re-import.
-    if (isReimport && purpose !== 'schedule') {
+    // #646: so does a shop-assembly request. Reconciliation is about what has been ORDERED, and the
+    // PM raising a request is not deciding anything about purchasing - they are flagging the doors
+    // the shop needs. What is available is the Shop Assembly Manager's question, at batching time.
+    if (isReimport && purpose !== 'schedule' && purpose !== 'assembly') {
       base.push({ id: 'reconciliation', label: 'Reconciliation' });
     }
     // #492: the PO purpose asks so it can order in/out of scope. A shop-assembly request runs against
@@ -285,7 +253,9 @@ export default function ImportWizard({
       base.push({ id: 'classification', label: 'Classification' });
     }
     if (purpose === 'po') base.push({ id: 'purchase-orders', label: 'Organize PO Drafts' });
-    if (purpose === 'assembly') base.push({ id: 'shop-assembly', label: 'Shop Assembly' });
+    // #646: the assembly purpose has no compose step any more. Raising a request is pure
+    // opening-flagging - Upload, Select Openings, Finalize - and the allocation that used to happen
+    // here moved to the Shop Assembly Manager's board, where somebody is actually looking at stock.
     base.push({ id: 'finalize', label: 'Finalize' });
     return base;
   }, [purpose, isReimport, isHardwareMode]);
@@ -542,18 +512,18 @@ export default function ImportWizard({
 
   // ---- Reservation-aware availability (#342) ----
 
-  // Creating a request RESERVES the hardware it needs, and the server gates creation on
-  // `on-hand - deficient - other requests' reservations`. Read the same numbers here so the wizard
-  // can refuse an over-selection with per-combo detail instead of letting the whole finalize bounce.
-  // Defined above the shop-assembly re-import filter because that filter now reads it.
-  // #632: a PO re-import reads it too - step 6's per-line recon context shows "available in
-  // inventory" from the same reservation-aware number the composers and the server gate use.
-  const requestPurposeActive = open && (purpose === 'assembly' || (purpose === 'po' && isReimport));
+  // #632: step 6's per-line recon context shows "available in inventory" from the reservation-aware
+  // `on-hand - deficient - active reservations` number, the same one the server's gates apply.
+  //
+  // #646: the shop-assembly purpose no longer reads it. Raising a request reserves nothing and is
+  // gated on nothing, so pricing the PM's selection against today's shelf would be showing them a
+  // number that decides nothing - and inviting them to trim a request over stock that may well
+  // arrive before the shop needs it. Availability belongs to the manager's batch screen now.
+  const requestPurposeActive = open && purpose === 'po' && isReimport;
   const {
     data: availabilityData,
     loading: availabilityLoading,
     error: availabilityError,
-    refetch: refetchAvailability,
   } = useQuery<{ projectInventoryAvailability: InventoryAvailabilityRow[] }>(
     GET_PROJECT_INVENTORY_AVAILABILITY,
     {
@@ -591,15 +561,11 @@ export default function ImportWizard({
       return selectedHardwareItems.filter((hi) => selectedReconItems.has(aggregationKey(hi)));
     }
 
-    // Shop assembly composes off real reservation-aware availability, product-level - the same source
-    // the step's eligibility gate uses. The recon RECEIVED bucket this used to read is PO-chain only
-    // and never saw off-PO inventory (migrated stock), so it wrongly filtered those items out.
-    if (purpose === 'assembly') {
-      return selectedHardwareItems.filter((hi) => (availableByProduct.get(itemGroupKey(hi)) ?? 0) > 0);
-    }
-
+    // #646: shop assembly no longer filters by availability. What is on the shelf today decides
+    // nothing about which openings the shop needs assembled, and the request records the demand
+    // whole so the manager can batch against it whenever the hardware lands.
     return selectedHardwareItems;
-  }, [selectedHardwareItems, selectedReconItems, purpose, isReimport, availableByProduct]);
+  }, [selectedHardwareItems, selectedReconItems, purpose, isReimport]);
 
   const aggregatedHardwareItems = useMemo<AggregatedHardwareItem[]>(() => {
     const map = new Map<string, AggregatedHardwareItem>();
@@ -624,11 +590,7 @@ export default function ImportWizard({
   // composition moved to the shipping request workspace.
   const requestPurpose = purpose === 'assembly';
   const coverageActive = open && requestPurpose && !!existingProjectId && selectedOpenings.size > 0;
-  const {
-    data: coverageData,
-    loading: coverageLoading,
-    error: coverageError,
-  } = useQuery<{ requestCoverage: CoverageRow[] }>(GET_REQUEST_COVERAGE, {
+  const { data: coverageData } = useQuery<{ requestCoverage: CoverageRow[] }>(GET_REQUEST_COVERAGE, {
     variables: { projectId: existingProjectId, openingNumbers: Array.from(selectedOpenings) },
     skip: !coverageActive,
     fetchPolicy: 'cache-and-network',
@@ -645,18 +607,16 @@ export default function ImportWizard({
     return [];
   }, [purpose, coverageData]);
 
-  // #492: with no Classification step for this purpose, an item nobody ever classified has no
-  // SITE/SHOP answer anywhere - it is silently not shop work. Counting them here lets the step say
-  // so rather than leaving the user to wonder why an opening they picked produced nothing.
   // #492: with no Classification step for the assembly purpose, the Site/Shop answer comes off the
-  // persisted item - the value a PO request wrote. Resolved at the read site rather than seeded into
-  // state, so the wizard's own map (the exclusion table's BY_OTHERS entries) still wins and no
-  // effect has to write state during render.
-  // The exact lines this request would send, from the same allocation the step renders - so what
-  // the user was held to is by construction what gets submitted.
+  // persisted item - the value a PO request wrote - which is what `composableRows(rows, 'SHOP')`
+  // above filters on. An item nobody ever classified is silently not shop work, and is not offered.
+  //
+  // #646: the request is a flag, so the lines are simply what the selected openings are still owed.
+  // There is no allocation to make here and nothing to leave out: what is available, and how much of
+  // it each door gets, is the Shop Assembly Manager's decision at batching time.
   const requestLines = useMemo(
-    () => (requestPurpose ? buildRequestLines(composerRows, allocation, includedKeys) : []),
-    [requestPurpose, composerRows, allocation, includedKeys],
+    () => (requestPurpose ? buildFlagLines(composerRows) : []),
+    [requestPurpose, composerRows],
   );
 
   // Classification rows for DataGrid (one row per aggregated hardware item)
@@ -865,11 +825,6 @@ export default function ImportWizard({
     setOrderAsValues(new Map());
     setClassifications(new Map());
     setSiteShopClassifications(new Map());
-    setSarRequestNumber('');
-    setAllocation(new Map());
-    setIncludedKeys(new Set());
-    setSeededSignature(null);
-    setAllocationStale(false);
     setSelectedReconItems(new Set());
     setMutationError(null);
     setFinalizeResult(null);
@@ -1207,7 +1162,7 @@ export default function ImportWizard({
       // numbers per line, and already minus the excluded and unallocated ones.
       shopAssemblyItems: purpose === 'assembly' ? requestLines : null,
     };
-  }, [parsed, project.id, purpose, poDraftBuild, unitCostOverrides, classifications, siteShopClassifications, requestLines, sarRequestNumber, canStartFromLatest, hydratedFromPersisted, uploadedFileName]);
+  }, [parsed, project.id, purpose, poDraftBuild, unitCostOverrides, classifications, siteShopClassifications, requestLines, canStartFromLatest, hydratedFromPersisted, uploadedFileName]);
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
@@ -1220,7 +1175,6 @@ export default function ImportWizard({
     try {
       const result = await finalizeImport({ variables: { input } });
       const data = result.data?.finalizeImportSession as FinalizeResultData;
-      setAllocationStale(false);
 
       // #588: the request(s) are created; now land each draft's pre-attached documents on its PO.
       // Positional map: data.purchaseOrders[i] is poDraftBuild[i]'s PO (both in included-draft
@@ -1273,46 +1227,13 @@ export default function ImportWizard({
       }
       setPostSuccessOpen(true);
     } catch (err: unknown) {
+      // #646: a shop-assembly finalize can no longer bounce on availability - it reserves nothing -
+      // so there is no rebuild-and-retry path left here. The message stands and the user decides.
       const message = err instanceof Error ? err.message : 'An unknown error occurred';
       setMutationError(message);
       setFinalizeLoading(false);
-      // INVENTORY_SHORTFALL on a shop-assembly finalize now means one thing only: availability moved
-      // between building the allocation and sending it, because the allocation itself never asks for
-      // more than was free when it was built. Refetch, rebuild from the current numbers and send the
-      // user back to review - resending the stale allocation would just bounce again.
-      if (requestPurpose && isInventoryShortfall(err)) {
-        setAllocationStale(true);
-        setActiveStepId('shop-assembly');
-        const refreshed = await refetchAvailability().catch(() => null);
-        const rows = refreshed?.data?.projectInventoryAvailability;
-        // A failed refetch means the numbers are unknown, not zero. Rebuilding from an empty map
-        // would allocate nothing to everything and read as "no stock anywhere", which is a worse lie
-        // than the stale allocation the user already has in front of them. Leave it alone and let
-        // the stale banner stand.
-        if (!rows) return;
-        const fresh = new Map<string, number>();
-        for (const row of rows) {
-          fresh.set(
-            itemGroupKey({ hardware_category: row.hardwareCategory, product_code: row.productCode }),
-            row.availableQuantity,
-          );
-        }
-        const next = autoAllocate(composerRows, fresh);
-        setAllocation(next);
-        // Re-seeding must not silently put back a line the user chose to leave out. Only lines that
-        // were in the request keep their place; the rest of the rebuild is the allocator's.
-        setIncludedKeys((previous) => {
-          const seeded = previous.size === 0;
-          return new Set(
-            composerRows
-              .filter((row) => (next.get(lineKey(row)) ?? 0) > 0 && (seeded || previous.has(lineKey(row))))
-              .map(lineKey),
-          );
-        });
-        setSeededSignature(offerSignature(composerRows));
-      }
     }
-  }, [buildFinalizeInput, finalizeImport, showToast, purpose, requestPurpose, refetchAvailability, composerRows, poDraftBuild, draftGroups, uploadPoDocument, returnTo, onClose, navigate]);
+  }, [buildFinalizeInput, finalizeImport, showToast, poDraftBuild, draftGroups, uploadPoDocument, returnTo, onClose, navigate]);
 
   const handlePostAction = useCallback(
     (action: 'po' | 'inventory' | 'home') => {
@@ -1354,22 +1275,13 @@ export default function ImportWizard({
   const canProceedHardware = selectedProductKeys.size > 0;
   // #567: over-ordering no longer gates Next - it warns at the modal (see reconOverOrderProducts and
   // handleNext). The PO purpose only requires a non-empty selection here.
+  // Only the PO purpose reaches this step at all now: the schedule replace and the shop-assembly
+  // flag (#646) both skip reconciliation, because neither is deciding anything about ordering.
   const canProceedStep3 = useMemo(() => {
     if (!isReimport) return true;
     if (purpose === 'po') return selectedReconItems.size > 0;
-    // Shop assembly pulls existing stock, so it gates on real reservation-aware availability
-    // (on-hand - deficient - reserved) - the same number the compose step and the server creation
-    // gate apply. The recon RECEIVED bucket this used to read is derived from the PO chain and never
-    // saw inventory that arrived off-PO, so a project with received stock but no matching PO receipt
-    // was wrongly told nothing was available. Product-level here; the compose step does the exact
-    // per-opening netting.
-    if (purpose === 'assembly') {
-      return reconciliationRows.some(
-        (r) => (availableByProduct.get(`${r.hardwareCategory}|${r.productCode}`) ?? 0) > 0,
-      );
-    }
     return true;
-  }, [purpose, isReimport, selectedReconItems, reconciliationRows, availableByProduct]);
+  }, [purpose, isReimport, selectedReconItems]);
 
   // #566: classification Next gate, lifted out of ClassificationStep. `classificationRows` is built
   // here, so the same rows the grid renders decide whether Next is live. The PO purpose needs both a
@@ -1397,35 +1309,6 @@ export default function ImportWizard({
   );
   const canProceedPurchaseOrders =
     includedDraftCount > 0 && (!costCodesRequired || includedDraftsMissingCostCode === 0);
-
-  // #566: the compose step's loading/error flags, computed once so the AppBar Next and the step body
-  // read the identical numbers. These exact expressions are what the step is handed as props below.
-  const composeCoverageLoading = coverageLoading && coverageData === undefined;
-  const composeCoverageError = coverageError !== undefined;
-  const composeAvailabilityLoading = availabilityLoading && availabilityData === undefined;
-  const composeAvailabilityError = availabilityError !== undefined;
-
-  const composeGate = useMemo(
-    () =>
-      composeRequestGate({
-        rows: composerRows,
-        allocation,
-        includedKeys,
-        coverageLoading: composeCoverageLoading,
-        coverageError: composeCoverageError,
-        availabilityLoading: composeAvailabilityLoading,
-        availabilityError: composeAvailabilityError,
-      }),
-    [
-      composerRows,
-      allocation,
-      includedKeys,
-      composeCoverageLoading,
-      composeCoverageError,
-      composeAvailabilityLoading,
-      composeAvailabilityError,
-    ],
-  );
 
   // ---- AppBar nav (#566) ----
   // One fixed forward/back cluster in the AppBar toolbar, never moving with content height. Every
@@ -1471,10 +1354,6 @@ export default function ImportWizard({
             ? 'A cost code is required on the included PO draft.'
             : 'A cost code is required on each included PO draft.';
       }
-      break;
-    case 'shop-assembly':
-      canProceedCurrentStep = composeGate.canProceed;
-      navHint = composeGate.blockedReason;
       break;
     case 'finalize':
       break;
@@ -1841,28 +1720,6 @@ export default function ImportWizard({
             />
           )}
 
-          {/* ============ Step: Shop Assembly ============ */}
-          {effectiveStepId === 'shop-assembly' && (
-            <ComposeRequestStep
-              title="Shop Assembly"
-              description="What the selected openings still have coming of their Shop Hardware: what the schedule owes, minus what has already gone out, minus what another live request is holding. Creating the request reserves what you assign here, so a line can only claim hardware that is genuinely free. Lines that come up short still go - assign what you can and send them, or leave them out."
-              emptyMessage="None of the selected openings has Shop Hardware still owed. Either it has all been sent, another live request is holding it, or nothing on them was ever classified as Shop."
-              rows={composerRows}
-              availabilityByCombo={availabilityByCombo}
-              allocation={allocation}
-              onAllocationChange={setAllocation}
-              includedKeys={includedKeys}
-              onIncludedKeysChange={setIncludedKeys}
-              seededSignature={seededSignature}
-              onSeeded={setSeededSignature}
-              coverageLoading={composeCoverageLoading}
-              coverageError={composeCoverageError}
-              availabilityLoading={composeAvailabilityLoading}
-              availabilityError={composeAvailabilityError}
-              allocationStale={allocationStale}
-            />
-          )}
-
           {/* ============ Step: Finalize ============ */}
           {effectiveStepId === 'finalize' && (
             <Box>
@@ -1914,8 +1771,14 @@ export default function ImportWizard({
                 {purpose === 'assembly' && (
                   <Box sx={{ mb: 1 }}>
                     <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                      1 Shop Assembly Request across {requestLines.length} line(s) (number assigned on
-                      finalize)
+                      1 Shop Assembly Request across {plural(requestLines.length, 'line')} (number
+                      assigned on finalize)
+                    </Typography>
+                    {/* #646: the one place the PM commits, so the new model is stated here - the old
+                        flow reserved hardware at this exact moment, and this one does not. */}
+                    <Typography variant="caption" color="text.secondary">
+                      A flag, not a reservation - the Shop Assembly Manager batches these openings
+                      against free stock, and that creates the warehouse pull.
                     </Typography>
                   </Box>
                 )}
@@ -1976,7 +1839,9 @@ export default function ImportWizard({
               // neither truthfully. Source-neutral "this file": the schedule here was either just
               // uploaded or loaded from the last upload, and this branch covers both.
               ? "This will save this file as the project's hardware schedule. Continue?"
-              : 'This will create the selected purchase orders and assembly requests. Continue?'
+              : purpose === 'assembly'
+                ? 'This raises the shop assembly request. Nothing is reserved - the Shop Assembly Manager batches it against free stock. Continue?'
+                : 'This will create the selected purchase orders. Continue?'
         }
         confirmLabel={canStartFromLatest && !hydratedFromPersisted ? 'Replace Schedule' : 'Finalize'}
         onConfirm={handleFinalize}

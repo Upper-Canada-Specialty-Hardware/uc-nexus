@@ -1,9 +1,11 @@
 """Where a shipping-out request sits on the ladder, and the note a cancelled pull leaves on it (#613).
 
-The stage twin mirrors `shop_assembly_repository.get_request_stages`, and the return-note is derived
-the same way for both request types (`app.repositories.request_return_notes`). Both are read by the
-accept board so a request that reappears there after a cancel explains itself instead of looking like
-a bug.
+The stage answers the same question `shop_assembly_repository.get_request_stages` does, and the
+return-note the same one its `get_return_notes` does - but the two derivations diverged at #646,
+because a shop-assembly request has many pulls (one per batch) and no `pull_request_id` of its own.
+This file is the shipping-out half, off `app.repositories.request_return_notes`; the shop-assembly
+half is in test_accept_requests.py and test_pick_flow.py. Both are read by the accept board so a
+request that reappears there after a cancel explains itself instead of looking like a bug.
 """
 
 import uuid

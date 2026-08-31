@@ -30,6 +30,9 @@ from app.models.enums import (
     PullRequestSource,
     PullRequestStatus,
     ReservationSource,
+    ShopAssemblyBatchStatus,
+    ShopAssemblyOpeningStatus,
+    ShopAssemblyRequestStatus,
 )
 from app.models.inventory import InventoryLocation
 from app.models.notification import Notification
@@ -40,6 +43,7 @@ from app.models.stock_item import StockItem
 from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
 from tests.pick_helpers import pick_pull
+from tests.shop_assembly_helpers import batch_request
 
 HINGE = ("HINGE", "HG-100")
 
@@ -179,12 +183,14 @@ def _two_opening_request(session, project, *, qty=2, code=HINGE[1]):
 
 
 def _accepted_pull(session, project, *, qty=2):
-    """Create the request and accept it. Returns (sar, pr) with the pull still PENDING."""
+    """Raise the request and dispatch it whole (#646). Returns (batch, pr) with the pull PENDING -
+    the batch, because since #646 the batch is what holds the reservations, not the request."""
     sar = _two_opening_request(session, project, qty=qty)["shop_assembly_request"]
-    shop_assembly_repository.accept_shop_assembly_request(session, sar.id, "acceptor")
     session.flush()
-    pr = session.scalar(select(PullRequest).where(PullRequest.request_number == sar.request_number))
-    return sar, pr
+    batch = batch_request(session, sar.id)
+    session.flush()
+    pr = session.scalar(select(PullRequest).where(PullRequest.id == batch.pull_request_id))
+    return batch, pr
 
 
 # --- starting the pick -------------------------------------------------------------------------
@@ -469,8 +475,8 @@ def test_contention_is_only_blamed_when_it_is_the_whole_obstacle(db_session):
     project = _make_project(db_session)
     row = _seed_inventory(db_session, project.id, quantity=5)
     # A live claim on 4 of the 5, held by somebody else.
-    sar, _other = _accepted_pull(db_session, project, qty=2)
-    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_REQUEST, sar.id) == 4
+    batch, _other = _accepted_pull(db_session, project, qty=2)
+    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_BATCH, batch.id) == 4
     stranger = _started_pull(db_session, project.id, needs=[(*HINGE, 10, "A01")])
 
     # 10 wanted, 5 on hand: reservations are not what stops this, scarcity is.
@@ -489,8 +495,8 @@ def test_a_pull_cannot_pick_past_what_other_requests_have_left_free(db_session):
     project = _make_project(db_session)
     row = _seed_inventory(db_session, project.id, quantity=10)
     # A live claim on 8 of the 10, held by a request that is not this pull.
-    sar, _other_pull = _accepted_pull(db_session, project, qty=4)  # reserves 8 across two leaves
-    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_REQUEST, sar.id) == 8
+    batch, _other_pull = _accepted_pull(db_session, project, qty=4)  # reserves 8 across two leaves
+    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_BATCH, batch.id) == 8
 
     stranger = _started_pull(db_session, project.id, needs=[(*HINGE, 4, "A01")])
 
@@ -568,8 +574,8 @@ def test_the_sheet_says_how_much_is_claimable_before_the_walk(db_session):
     decides the refusal is on the sheet, so contention is visible up front."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=10)
-    sar, _other_pull = _accepted_pull(db_session, project, qty=4)  # claims 8
-    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_REQUEST, sar.id) == 8
+    batch, _other_pull = _accepted_pull(db_session, project, qty=4)  # claims 8
+    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_BATCH, batch.id) == 8
     stranger = _started_pull(db_session, project.id, needs=[(*HINGE, 4, "A01")])
 
     section = warehouse_repository.get_pick_sheet(db_session, stranger.id).sections[0]
@@ -693,7 +699,7 @@ def test_a_short_confirm_keeps_the_un_picked_part_of_the_claim(db_session):
     it to whoever asks next is the exact hole #342 closed."""
     project = _make_project(db_session)
     il = _seed_inventory(db_session, project.id, quantity=4)
-    sar, pr = _accepted_pull(db_session, project, qty=2)  # two leaves x 2 = 4 claimed
+    batch, pr = _accepted_pull(db_session, project, qty=2)  # two leaves x 2 = 4 claimed
 
     il.quantity = 3  # an admin override under the live claim
     db_session.flush()
@@ -701,7 +707,7 @@ def test_a_short_confirm_keeps_the_un_picked_part_of_the_claim(db_session):
     result = pick_pull(db_session, pr.id, "picker")
 
     assert result.outcome == "SHORT"
-    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_REQUEST, sar.id) == 1
+    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_BATCH, batch.id) == 1
 
 
 def test_a_short_confirm_on_a_reserved_pull_records_an_integrity_event(db_session):
@@ -709,7 +715,7 @@ def test_a_short_confirm_on_a_reserved_pull_records_an_integrity_event(db_sessio
     stays investigable rather than reading like the ordinary PR-REPL shortfall."""
     project = _make_project(db_session)
     il = _seed_inventory(db_session, project.id, quantity=4)
-    _sar, pr = _accepted_pull(db_session, project, qty=2)
+    _batch, pr = _accepted_pull(db_session, project, qty=2)
 
     il.quantity = 3
     db_session.flush()
@@ -741,7 +747,7 @@ def test_cancelling_returns_the_units_to_the_exact_rows_they_came_off(db_session
     twelve hinges back - which is what makes a physical recount agree with the system."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)  # so the accept's reservation fits
-    _sar, pr = _accepted_pull(db_session, project, qty=2)
+    _batch, pr = _accepted_pull(db_session, project, qty=2)
     older = db_session.scalar(select(InventoryLocation).where(InventoryLocation.project_id == project.id))
     newer = _seed_inventory(db_session, project.id, quantity=10, aisle="B", received_at=datetime(2030, 1, 1))
     warehouse_repository.start_pull_request_pick(db_session, pr.id, "picker")
@@ -762,7 +768,7 @@ def test_cancelling_returns_the_units_to_the_exact_rows_they_came_off(db_session
 def test_cancelling_before_the_pick_restocks_nothing(db_session):
     project = _make_project(db_session)
     row = _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr = _accepted_pull(db_session, project, qty=2)
+    _batch, pr = _accepted_pull(db_session, project, qty=2)
     warehouse_repository.start_pull_request_pick(db_session, pr.id, "picker")
     warehouse_repository.save_pick_draft(db_session, pr.id, [_line(row, 4)], "picker")
     db_session.flush()
@@ -776,25 +782,69 @@ def test_cancelling_before_the_pick_restocks_nothing(db_session):
     assert _pick_lines(db_session, pr.id) == []
 
 
-def test_cancelling_an_un_picked_pull_leaves_the_request_holding_one_claim(db_session):
+def test_cancelling_a_shop_assembly_pull_drops_its_claim_and_reopens_its_openings(db_session):
     """The claim is consumed at the pick now, so a pull cancelled before its pick still holds all of
-    it. Re-creating the request's full need on top of that would double-claim the same units."""
+    it - and the cancel releases it whole. Nothing is re-created (#646): the batch's openings go back
+    to pending on the request, and a pending opening holds no claim, so the restocked units return to
+    the free pool for the next batch to compete for."""
     project = _make_project(db_session)
     _seed_inventory(db_session, project.id, quantity=20)
-    sar, pr = _accepted_pull(db_session, project, qty=2)
+    batch, pr = _accepted_pull(db_session, project, qty=2)
+    request_id = batch.shop_assembly_request_id
     warehouse_repository.start_pull_request_pick(db_session, pr.id, "picker")
     db_session.flush()
 
     warehouse_repository.cancel_pull_request(db_session, pr.id, "manager")
     db_session.flush()
 
-    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_REQUEST, sar.id) == 4
+    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_BATCH, batch.id) == 0
+    assert batch.status == ShopAssemblyBatchStatus.CANCELLED
+
+    request = shop_assembly_repository.get_shop_assembly_request(db_session, request_id)
+    assert request.status == ShopAssemblyRequestStatus.PENDING
+    assert {o.status for o in request.openings} == {ShopAssemblyOpeningStatus.PENDING}
+    assert all(o.batch_id is None for o in request.openings)
+    # The reappearance explains itself on the manager's board.
+    note = shop_assembly_repository.get_return_notes(db_session, [request])[request_id]
+    assert note is not None
+    assert batch.batch_number in note
+
+    # And it can be dispatched again, from the units the cancel put back.
+    again = batch_request(db_session, request_id)
+    db_session.flush()
+    assert again.sequence == 2
+    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_BATCH, again.id) == 4
+
+
+def test_cancelling_one_batchs_pull_leaves_its_siblings_claim_standing(db_session):
+    """Release is whole-holder, which is exactly why the holder is the batch and not the request."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=20)
+    sar = _two_opening_request(db_session, project, qty=2)["shop_assembly_request"]
+    db_session.flush()
+    keep = batch_request(db_session, sar.id, openings=["A01"])
+    drop = batch_request(db_session, sar.id, openings=["A02"])
+    db_session.flush()
+    warehouse_repository.start_pull_request_pick(db_session, drop.pull_request_id, "picker")
+    db_session.flush()
+
+    warehouse_repository.cancel_pull_request(db_session, drop.pull_request_id, "manager")
+    db_session.flush()
+
+    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_BATCH, drop.id) == 0
+    assert warehouse_repository.get_reserved_total(db_session, ReservationSource.SHOP_ASSEMBLY_BATCH, keep.id) == 2
+
+    request = shop_assembly_repository.get_shop_assembly_request(db_session, sar.id)
+    assert {o.opening_number: o.status for o in request.openings} == {
+        "A01": ShopAssemblyOpeningStatus.BATCHED,
+        "A02": ShopAssemblyOpeningStatus.PENDING,
+    }
 
 
 def test_cancelling_a_short_picked_pull_returns_only_what_was_picked(db_session):
     project = _make_project(db_session)
     row = _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr = _accepted_pull(db_session, project, qty=2)
+    _batch, pr = _accepted_pull(db_session, project, qty=2)
     warehouse_repository.start_pull_request_pick(db_session, pr.id, "picker")
     db_session.flush()
     warehouse_repository.confirm_pick(db_session, pr.id, [_line(row, 1)], "picker")
@@ -813,7 +863,7 @@ def test_a_deleted_source_row_falls_back_to_the_per_combo_return(db_session):
     exists", which the restock reads as "fall back to the project's newest row"."""
     project = _make_project(db_session)
     row = _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr = _accepted_pull(db_session, project, qty=2)
+    _batch, pr = _accepted_pull(db_session, project, qty=2)
     warehouse_repository.start_pull_request_pick(db_session, pr.id, "picker")
     db_session.flush()
     warehouse_repository.confirm_pick(db_session, pr.id, [_line(row, 4)], "picker")
@@ -836,7 +886,7 @@ def test_a_legacy_pull_still_restocks_per_combo(db_session):
     reverse row by row and the per-combo return is the only honest answer."""
     project = _make_project(db_session)
     row = _seed_inventory(db_session, project.id, quantity=20)
-    _sar, pr = _accepted_pull(db_session, project, qty=2)
+    _batch, pr = _accepted_pull(db_session, project, qty=2)
     warehouse_repository.start_pull_request_pick(db_session, pr.id, "picker")
     # Hand-simulate the old approve: deduct, stamp picked, write no pick lines.
     row.quantity -= 4

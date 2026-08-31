@@ -30,6 +30,7 @@ import logging
 from app.auth import (
     ADMIN_ROLE,
     DB_ADMIN_ROLE,
+    SHOP_ASSEMBLY_MANAGER_ROLE,
     WAREHOUSE_MANAGER_ROLE,
     ForbiddenError,
     authenticated_user_id,
@@ -249,14 +250,21 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "markShipmentPickedUp": SIGNED_IN,
     "markShipmentDelivered": SIGNED_IN,
     # --- shop_assembly.py -----------------------------------------------------------------
-    # `assignOpenings` is SIGNED_IN here on purpose: its role requirement is CONDITIONAL. Anyone may
-    # self-assign from the "Assign to me" board; assigning to somebody else is Shop Assembly
-    # Manager-only, and that branch cannot be expressed as a field-level requirement, so the body
-    # keeps its own `require_role` call for it (#330).
+    # The reads are SIGNED_IN: they are the same availability and request-state arithmetic every
+    # other screen shows, and the PM raising a request has to be able to watch it.
+    #
+    # The four writes are the Shop Assembly Manager's board (#646). Batching commits real inventory
+    # (it reserves stock and puts a pull on the warehouse floor), and dismissing, rejecting and
+    # discarding are the same authority used the other way - so all four name the role the issue
+    # gives the decision to, with Admin/Manager beside it as an any-of rather than an implicit
+    # bypass. There is no implicit admin bypass anywhere in this table.
     "shopAssemblyRequests": SIGNED_IN,
-    "acceptShopAssemblyRequest": SIGNED_IN,
-    "rejectShopAssemblyRequest": SIGNED_IN,
-    "reopenShopAssemblyRequest": SIGNED_IN,
+    "shopAssemblyRequest": SIGNED_IN,
+    "shopAssemblyAllocationReview": SIGNED_IN,
+    "createShopAssemblyBatch": frozenset({ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE}),
+    "dismissShopAssemblyOpenings": frozenset({ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE}),
+    "rejectShopAssemblyRequest": frozenset({ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE}),
+    "discardShopAssemblyBatch": frozenset({ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE}),
     # --- stock.py -------------------------------------------------------------------------
     "deficiencyReviews": SIGNED_IN,
     "deficientItems": SIGNED_IN,
