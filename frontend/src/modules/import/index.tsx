@@ -11,9 +11,10 @@ import { GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
 import type { ImportPurpose, SelectionMode } from './types';
 
-/** How the wizard was opened, when something else chose for the user. */
+/** How the wizard was opened. Every field here is a lock, not a seed - the wizard has no controls
+ *  for any of them. */
 interface DeepLinkIntent {
-  purpose?: ImportPurpose;
+  purpose: ImportPurpose;
   // #565: which pathway the PO import runs - by opening (default) or by product. Carried through the
   // pick-a-project fall-through so the chooser's "by hardware" card survives when no project was named.
   selectionMode: SelectionMode;
@@ -24,6 +25,11 @@ interface DeepLinkIntent {
 }
 
 const PURPOSES: ImportPurpose[] = ['po', 'assembly', 'schedule'];
+
+// #642: a link with no `?purpose=` is the import module's own "Start a Request" - and this module IS
+// the hardware-schedule surface, so that is what the import is for. The PO and shop-assembly modules
+// name their purpose on the link.
+const DEFAULT_PURPOSE: ImportPurpose = 'schedule';
 
 export default function ImportModule() {
   const { isAdmin } = useIdentity();
@@ -80,7 +86,7 @@ export default function ImportModule() {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot open from the URL
       setSelectedProject(project);
       setIntent({
-        purpose: linkedPurpose ?? undefined,
+        purpose: linkedPurpose ?? DEFAULT_PURPOSE,
         selectionMode: linkedMode,
         fromLatest: sourceParam === 'latest',
         returnTo: returnToParam,
@@ -99,10 +105,15 @@ export default function ImportModule() {
   const handleSelect = (project: Project | null) => {
     if (!project) return;
     setSelectedProject(project);
-    // Seeds the Purpose step when the user arrived from a module's "Start a Request" button. Still a
-    // seed, not a lock: the step lets them change it. The selection mode, on the other hand, does
-    // lock the pathway - a "by hardware" link stays by-hardware once a project is chosen.
-    setIntent(pendingPurpose ? { purpose: pendingPurpose, selectionMode: pendingMode, fromLatest: false } : null);
+    // #642: the purpose the module's "Start a Request" button came with is a LOCK - the wizard has no
+    // Purpose step to change it on. Nothing held means the user started here, in the import module,
+    // so the import is for the hardware schedule. The selection mode locks the pathway the same way -
+    // a "by hardware" link stays by-hardware once a project is chosen.
+    setIntent({
+      purpose: pendingPurpose ?? DEFAULT_PURPOSE,
+      selectionMode: pendingMode,
+      fromLatest: false,
+    });
     setWizardOpen(true);
   };
 
@@ -142,7 +153,7 @@ export default function ImportModule() {
           open={wizardOpen}
           project={selectedProject}
           onClose={handleWizardClose}
-          initialPurpose={intent?.purpose}
+          purpose={intent?.purpose ?? DEFAULT_PURPOSE}
           initialSelectionMode={intent?.selectionMode}
           autoStartFromLatest={intent?.fromLatest}
           returnTo={intent?.returnTo}

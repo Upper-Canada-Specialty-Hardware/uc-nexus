@@ -13,14 +13,10 @@ import {
   Alert,
   CircularProgress,
   Paper,
-  Radio,
-  RadioGroup,
-  FormControlLabel,
   Chip,
   Divider,
-  Tooltip,
 } from '@mui/material';
-import { CheckCircle2, CloudUpload, FileText, FileUp, History, Info, X } from 'lucide-react';
+import { CheckCircle2, CloudUpload, FileText, FileUp, History, X } from 'lucide-react';
 import { useLazyQuery, useMutation, useQuery } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import { useWizard } from '../../contexts/WizardContext';
@@ -93,7 +89,7 @@ import {
 
 // ---- Local Types ----
 
-type StepId = 'upload' | 'purpose' | 'openings' | 'hardware' | 'reconciliation'
+type StepId = 'upload' | 'openings' | 'hardware' | 'reconciliation'
   | 'classification' | 'purchase-orders' | 'shop-assembly' | 'finalize';
 
 interface StepDescriptor {
@@ -101,44 +97,15 @@ interface StepDescriptor {
   label: string;
 }
 
-/**
- * The three things an import can be for, as option cards. The `label` strings are what the user (and
- * every flow that drives this screen) reads to tell them apart, so they are verbatim what the radios
- * always carried; `subtitle` is the plain-language gloss that used to live only in the tooltip.
- */
-const PURPOSE_OPTIONS: {
-  value: ImportPurpose;
-  label: string;
-  subtitle: string;
-  tooltip: string;
-  /** Pull requests need a project that already has received inventory. */
-  needsExisting: boolean;
-}[] = [
-  {
-    value: 'po',
-    label: 'Create Purchase Orders',
-    subtitle: 'Order hardware from vendors',
-    tooltip:
-      "What do I still need to order? Shows what's already committed (drafted, ordered, received) vs. what's not yet covered. Select which items to create POs for.",
-    needsExisting: false,
-  },
-  {
-    value: 'assembly',
-    label: 'Pull Request for Shop Assembly',
-    subtitle: 'Build door leaves in the shop',
-    tooltip:
-      'What can I pull from the warehouse to assemble? Creates a shop-assembly pull request. Only items with Received status can be included.',
-    needsExisting: true,
-  },
-  {
-    value: 'schedule',
-    label: 'Update Hardware Schedule',
-    subtitle: 'Replace the schedule with a newer file',
-    tooltip:
-      "Swap this project's hardware schedule for a newer TITAN export. Replace-only: no purchase orders and no requests. Existing orders, receiving, and inventory are kept; openings absent from the new file are removed.",
-    needsExisting: true,
-  },
-];
+/** #642: with the Purpose step gone the title is the one place the wizard names the job it was
+ *  opened for - the purpose is locked and invisible, so a generic title would leave the po and
+ *  assembly pathways unnamed until their step label deep in the stepper. Nouns match the entry
+ *  modules and the finalize summary. */
+const WIZARD_TITLES: Record<ImportPurpose, string> = {
+  po: 'Create Purchase Orders',
+  assembly: 'Create Shop Assembly Request',
+  schedule: 'Import Hardware Schedule',
+};
 
 /**
  * Did the finalize bounce because stock was not available? On a shop-assembly finalize that can only
@@ -169,12 +136,12 @@ interface ImportWizardProps {
   open: boolean;
   project: Project;
   onClose: () => void;
-  /** Preselect the purpose when the wizard was opened from somewhere that already knows it - the
-   *  keep-or-ship decision's "Ship out now" being the only such caller today. */
-  initialPurpose?: ImportPurpose;
-  /** #565: which PO pathway to run. 'hardware' hides the Purpose step (purpose is locked to po) and
-   *  swaps Select Openings for Select Hardware - the buyer picks products, not doors. Defaults to the
-   *  by-opening pathway. */
+  /** #642: what this import is for, decided by the module the user started from - PO, shop assembly,
+   *  or the import module's own job, the hardware schedule. There is no Purpose step and no in-wizard
+   *  control to change it. */
+  purpose: ImportPurpose;
+  /** #565: which PO pathway to run. 'hardware' pins the purpose to po and swaps Select Openings for
+   *  Select Hardware - the buyer picks products, not doors. Defaults to the by-opening pathway. */
   initialSelectionMode?: SelectionMode;
   /** Skip the upload step by loading the project's last persisted schedule, when there is one. Same
    *  caller: they came from a decision about hardware on an existing project, so the schedule that
@@ -200,7 +167,7 @@ export default function ImportWizard({
   open,
   project,
   onClose,
-  initialPurpose,
+  purpose: entryPurpose,
   initialSelectionMode,
   autoStartFromLatest,
   returnTo,
@@ -214,10 +181,14 @@ export default function ImportWizard({
   const [activeStepId, setActiveStepId] = useState<StepId>('upload');
 
   // #565: the pathway is fixed for the life of this open - the module remounts the wizard per entry,
-  // so a derived constant is enough and there is no in-wizard control to switch it. 'hardware' hides
-  // the Purpose step and swaps Select Openings for Select Hardware.
+  // so a derived constant is enough and there is no in-wizard control to switch it. 'hardware' swaps
+  // Select Openings for Select Hardware.
   const selectionMode: SelectionMode = initialSelectionMode ?? 'openings';
   const isHardwareMode = selectionMode === 'hardware';
+
+  // #642: the purpose is the entry point's, not a choice made in here. #565: the hardware pathway is a
+  // PO pathway by construction, so it pins po whatever rode in on the link.
+  const purpose: ImportPurpose = isHardwareMode ? 'po' : entryPurpose;
 
   // Selected project context (from prop)
   const existingProjectId = project.id;
@@ -225,11 +196,7 @@ export default function ImportWizard({
   const isReimport = project.openingCount > 0;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Step 2 state. #565: hardware mode locks the purpose to po (its step is hidden), so it seeds po
-  // rather than null - every downstream `purpose === 'po'` branch then holds without a Purpose step.
-  const [purpose, setPurpose] = useState<ImportPurpose | null>(isHardwareMode ? 'po' : null);
-
-  // Step 3 state. Openings mode selects by door; hardware mode (#565) selects by product, keyed by
+  // Selection state. Openings mode selects by door; hardware mode (#565) selects by product, keyed by
   // itemGroupKey (`hardware_category|product_code`). Only one is live per pathway.
   const [selectedOpenings, setSelectedOpenings] = useState<Set<string>>(new Set());
   const [selectedProductKeys, setSelectedProductKeys] = useState<Set<string>>(new Set());
@@ -290,23 +257,20 @@ export default function ImportWizard({
 
   const steps = useMemo<StepDescriptor[]>(() => {
     const base: StepDescriptor[] = [{ id: 'upload', label: 'Upload File' }];
-    // #565: hardware mode has no Purpose step (purpose is locked to po) and picks products instead of
-    // openings. The by-opening pathway keeps its Purpose then Select Openings pair.
+    // #565: the hardware pathway picks products instead of openings.
     if (isHardwareMode) {
       base.push({ id: 'hardware', label: 'Select Hardware' });
-    } else {
-      base.push({ id: 'purpose', label: 'Purpose' });
-      // #608: the schedule replace persists the whole file, so selecting openings would scope
+    } else if (purpose !== 'schedule') {
+      // #608: the schedule purpose persists the whole file, so selecting openings would scope
       // nothing - there is no Select Openings step. Every other by-opening purpose picks openings.
-      if (purpose !== 'schedule') base.push({ id: 'openings', label: 'Select Openings' });
+      base.push({ id: 'openings', label: 'Select Openings' });
     }
     // Reconciliation compares the incoming schedule against what the project has already committed,
     // so on a project with no persisted openings it has nothing to compare and rendered a single
     // "New project - all items will be ordered fresh" banner over an otherwise empty full-screen
     // step. That is a mandatory click carrying no decision, on the most-walked flow in the app.
     // `isReimport` is `openingCount > 0`, which is exactly the condition for having something to
-    // reconcile against - and a first import can only be the PO purpose anyway, since the other two
-    // require a project with received inventory.
+    // reconcile against.
     // #608: a schedule replace wipes and re-persists the whole file, so there is nothing to
     // reconcile against - it skips the step even though it is a re-import.
     if (isReimport && purpose !== 'schedule') {
@@ -326,19 +290,16 @@ export default function ImportWizard({
     return base;
   }, [purpose, isReimport, isHardwareMode]);
 
-  // Guard against orphaned step (e.g. user unchecks a purpose while on that step).
+  // Guard against an orphaned step. #642: with the purpose locked at open the stepper no longer
+  // reshapes mid-session, so this can only catch a stale id - it lands on whatever this pathway's
+  // step after Upload actually is rather than naming one that may not be in the stepper at all.
   // Derived via useMemo instead of a useEffect+setState to avoid cascading renders.
   const effectiveStepId = useMemo<StepId>(
-    () => {
-      // Falls back to the pathway's step-2 rather than 'reconciliation': reconciliation is
-      // conditional, so naming it here could orphan the orphan-guard itself on a first import.
-      // #565: in hardware mode 'openings' is not in the stepper at all, so the fallback is 'hardware'.
-      const fallback: StepId = isHardwareMode ? 'hardware' : 'openings';
-      return activeStepId !== 'upload' && !steps.find((s) => s.id === activeStepId)
-        ? fallback
-        : activeStepId;
-    },
-    [steps, activeStepId, isHardwareMode],
+    () =>
+      activeStepId === 'upload' || steps.some((s) => s.id === activeStepId)
+        ? activeStepId
+        : (steps[1]?.id ?? 'upload'),
+    [steps, activeStepId],
   );
 
   const activeStepIndex = useMemo(
@@ -521,12 +482,17 @@ export default function ImportWizard({
   // picked; hardware mode keeps the items whose product was picked. Everything downstream
   // (runReconcile, the recon rollup, classification rows, vendorGroups/draftGroups, finalize refs)
   // derives from this, so filtering by product instead of by opening is the whole of the difference.
+  // #642: the schedule purpose has no selection step at all - it persists the whole file - so every
+  // parsed item is in scope. Without this its Classification step would be handed an empty row set
+  // (there are no selected openings to filter by) and read "0 hardware lines across 0 openings".
   const selectedHardwareItems = useMemo(
     () =>
-      isHardwareMode
-        ? hardwareItems.filter((hi) => selectedProductKeys.has(itemGroupKey(hi)))
-        : hardwareItems.filter((hi) => selectedOpenings.has(hi.opening_number)),
-    [hardwareItems, selectedOpenings, selectedProductKeys, isHardwareMode],
+      purpose === 'schedule'
+        ? hardwareItems
+        : isHardwareMode
+          ? hardwareItems.filter((hi) => selectedProductKeys.has(itemGroupKey(hi)))
+          : hardwareItems.filter((hi) => selectedOpenings.has(hi.opening_number)),
+    [hardwareItems, selectedOpenings, selectedProductKeys, isHardwareMode, purpose],
   );
 
   // Pre-reconciliation aggregated items (for display in combined openings/hardware step)
@@ -848,31 +814,19 @@ export default function ImportWizard({
 
   // --- Deep link (keep-or-ship "Ship out now") ---
   //
-  // Three effects rather than one, because they wait on different things: the purpose can be set the
-  // moment the wizard opens, starting from the persisted schedule has to wait for the eager fetch
-  // above to answer, and skipping the upload step has to wait for the hydrate. Each is consumed
-  // once - a ref rather than a state flag, so re-running one cannot fight the user who has since
-  // walked back and chosen something else.
-  const seededPurposeRef = useRef(false);
+  // Two effects rather than one, because they wait on different things: starting from the persisted
+  // schedule has to wait for the eager fetch above to answer, and skipping the upload step has to
+  // wait for the hydrate. Each is consumed once - a ref rather than a state flag, so re-running one
+  // cannot fight the user who has since walked back.
   const autoStartedRef = useRef(false);
   const advancedRef = useRef(false);
 
   useEffect(() => {
     if (!open) {
-      seededPurposeRef.current = false;
       autoStartedRef.current = false;
       advancedRef.current = false;
-      return;
     }
-    if (seededPurposeRef.current || !initialPurpose) return;
-    // 'schedule' and 'assembly' both need an existing schedule. Silently setting one on a project
-    // that has none would land the user on a disabled radio with no explanation, so leave the step
-    // to explain itself instead.
-    if (initialPurpose !== 'po' && !isReimport) return;
-    seededPurposeRef.current = true;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot seed from the deep link
-    setPurpose(initialPurpose);
-  }, [open, initialPurpose, isReimport]);
+  }, [open]);
 
   useEffect(() => {
     if (!open || !autoStartFromLatest || autoStartedRef.current) return;
@@ -885,23 +839,22 @@ export default function ImportWizard({
   }, [open, autoStartFromLatest, canStartFromLatest, parser.state, handleLoadFromLatest]);
 
   useEffect(() => {
-    // Once hydrated with a purpose already chosen, both of the upload step's jobs are done - drop
-    // the user straight on the openings they came to pick.
+    // Once hydrated, the upload step's job is done - drop the user straight on the step after it,
+    // whichever one this pathway's purpose puts there.
     //
-    // One-shot, like its two siblings. Without the guard this fires again the moment the user walks
+    // One-shot, like its sibling. Without the guard this fires again the moment the user walks
     // Back to the upload step, bouncing them forward and making that step unreachable for the rest
     // of the session - which is the only place to choose a different schedule source.
-    if (!open || !autoStartFromLatest || !hydratedFromPersisted || !purpose) return;
+    if (!open || !autoStartFromLatest || !hydratedFromPersisted) return;
     if (advancedRef.current || activeStepId !== 'upload') return;
+    const nextStep = steps[1];
+    if (!nextStep) return;
     advancedRef.current = true;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- advance past the steps the deep link answered
-    setActiveStepId('openings');
-  }, [open, autoStartFromLatest, hydratedFromPersisted, purpose, activeStepId]);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- advance past the step the deep link answered
+    setActiveStepId(nextStep.id);
+  }, [open, autoStartFromLatest, hydratedFromPersisted, activeStepId, steps]);
 
   const resetDownstreamWizardState = useCallback(() => {
-    // #565: hardware mode has no Purpose step to re-answer, so a reset holds the locked po rather
-    // than dropping to null and stranding every `purpose === 'po'` branch downstream.
-    setPurpose(isHardwareMode ? 'po' : null);
     setSelectedOpenings(new Set());
     setSelectedProductKeys(new Set());
     setOrderQtyOverrides(new Map());
@@ -920,7 +873,7 @@ export default function ImportWizard({
     setSelectedReconItems(new Set());
     setMutationError(null);
     setFinalizeResult(null);
-  }, [isHardwareMode]);
+  }, []);
 
   const handleResetSource = useCallback(() => {
     parser.reset();
@@ -1396,7 +1349,6 @@ export default function ImportWizard({
   // ---- Step validations ----
 
   const canProceedStep0 = parser.state === 'done';
-  const canProceedStep1 = purpose !== null;
   const canProceedStep2 = selectedOpenings.size > 0;
   // #565: hardware mode's step-2 gate - at least one product picked.
   const canProceedHardware = selectedProductKeys.size > 0;
@@ -1487,9 +1439,6 @@ export default function ImportWizard({
     case 'upload':
       canProceedCurrentStep = canProceedStep0;
       break;
-    case 'purpose':
-      canProceedCurrentStep = canProceedStep1;
-      break;
     case 'openings':
       canProceedCurrentStep = canProceedStep2;
       break;
@@ -1543,7 +1492,7 @@ export default function ImportWizard({
               <X size={20} strokeWidth={1.75} />
             </IconButton>
             <Typography noWrap sx={{ flex: 1, minWidth: 0 }} variant="h6" component="div">
-              Import Hardware Schedule
+              {WIZARD_TITLES[purpose]}
             </Typography>
             <WizardNav
               currentStep={activeStepIndex + 1}
@@ -1808,82 +1757,6 @@ export default function ImportWizard({
             </Box>
           )}
 
-          {/* ============ Step: Select Purpose ============ */}
-          {effectiveStepId === 'purpose' && (
-            <Box>
-              <Typography variant="h6" sx={{ mb: 2 }}>
-                Select Import Purpose
-              </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-                Choose what you want to create from this import.
-              </Typography>
-
-              <RadioGroup
-                value={purpose ?? ''}
-                onChange={(e) => setPurpose(e.target.value as ImportPurpose)}
-              >
-                <StaggerList count={PURPOSE_OPTIONS.length}>
-                  {PURPOSE_OPTIONS.map((option) => {
-                    const disabled = option.needsExisting && !isReimport;
-                    const selected = purpose === option.value;
-                    return (
-                      <StaggerItem key={option.value}>
-                        <Paper
-                          variant="outlined"
-                          sx={{
-                            mb: 1.5,
-                            maxWidth: 640,
-                            opacity: disabled ? 0.55 : 1,
-                            borderColor: selected ? 'text.primary' : 'divider',
-                            boxShadow: selected ? (t) => `inset 3px 0 0 ${t.vars?.palette.secondary.main ?? t.palette.secondary.main}` : 'none',
-                            transition: 'border-color 0.2s ease, box-shadow 0.2s ease',
-                          }}
-                        >
-                          <FormControlLabel
-                            value={option.value}
-                            control={<Radio />}
-                            disabled={disabled}
-                            sx={{ m: 0, px: 1.5, py: 1.25, width: '100%', alignItems: 'flex-start' }}
-                            label={
-                              <Box sx={{ pt: 0.25 }}>
-                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                  <Typography sx={{ fontWeight: 600 }}>{option.label}</Typography>
-                                  <Tooltip arrow title={option.tooltip}>
-                                    <Box
-                                      component="span"
-                                      sx={{ display: 'inline-flex', color: 'text.secondary' }}
-                                    >
-                                      <Info size={16} strokeWidth={1.75} />
-                                    </Box>
-                                  </Tooltip>
-                                </Box>
-                                <Typography variant="body2" color="text.secondary">
-                                  {option.subtitle}
-                                </Typography>
-                              </Box>
-                            }
-                          />
-                        </Paper>
-                      </StaggerItem>
-                    );
-                  })}
-                </StaggerList>
-              </RadioGroup>
-
-              {!isReimport && (
-                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-                  Shop assembly pull requests require an existing project with received inventory.
-                </Typography>
-              )}
-
-              {isReimport && (
-                <Alert severity="info" sx={{ mt: 2 }}>
-                  This is a re-import. Reconciliation will show existing PO and processing status for selected items.
-                </Alert>
-              )}
-            </Box>
-          )}
-
           {/* ============ Step: Select Openings ============ */}
           {effectiveStepId === 'openings' && (
             <SelectOpeningsStep
@@ -1909,7 +1782,7 @@ export default function ImportWizard({
           {effectiveStepId === 'reconciliation' && (
             <ReconciliationStep
               isReimport={isReimport}
-              purpose={purpose!}
+              purpose={purpose}
               isHardwareMode={isHardwareMode}
               reconcileLoading={reconcileLoading}
               reconcileError={reconcileError?.message ?? null}
@@ -1933,7 +1806,7 @@ export default function ImportWizard({
               classificationRows={classificationRows}
               onClassify={classifyBatch}
               onClassifySiteShop={classifySiteShopBatch}
-              purpose={purpose!}
+              purpose={purpose}
               itemCount={aggregatedHardwareItems.length}
               isReimport={isReimport}
             />
@@ -2021,7 +1894,11 @@ export default function ImportWizard({
                 {purpose === 'schedule' && (
                   <Box sx={{ mb: 1 }}>
                     <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                      Replaces the project&rsquo;s hardware schedule
+                      {/* #642: a first import through this purpose replaces nothing - it is the
+                          project's first schedule, so saying "replaces" would be a lie. */}
+                      {isReimport
+                        ? 'Replaces the project’s hardware schedule'
+                        : 'Saves the project’s hardware schedule'}
                     </Typography>
                   </Box>
                 )}
@@ -2094,7 +1971,12 @@ export default function ImportWizard({
         message={
           canStartFromLatest && !hydratedFromPersisted
             ? "You're uploading a NEW hardware schedule that will REPLACE the previously stored one. Existing purchase orders, receiving records, shop assembly requests, and warehouse inventory will be preserved, but the per-opening source trail of prior POs will be lost. Openings absent from the new schedule will be removed. Continue?"
-            : 'This will create the selected purchase orders and assembly requests. Continue?'
+            : purpose === 'schedule'
+              // #642: the purpose creates no POs or requests, so the generic message would name
+              // neither truthfully. Source-neutral "this file": the schedule here was either just
+              // uploaded or loaded from the last upload, and this branch covers both.
+              ? "This will save this file as the project's hardware schedule. Continue?"
+              : 'This will create the selected purchase orders and assembly requests. Continue?'
         }
         confirmLabel={canStartFromLatest && !hydratedFromPersisted ? 'Replace Schedule' : 'Finalize'}
         onConfirm={handleFinalize}

@@ -6,8 +6,9 @@ import { GET_PROJECTS } from '../../../graphql/shared';
 
 // What the module screens' "Start a Request" buttons hand over (#471), and what the keep-or-ship
 // decision has handed over since #447. Both arrive as URL params, so this is about the seam between
-// the link and the wizard's props - the wizard's own handling of initialPurpose is pinned in
-// ImportWizard.test.tsx and deliberately not re-tested here.
+// the link and the wizard's props - the wizard's own handling of the purpose is pinned in
+// ImportWizard.test.tsx and deliberately not re-tested here. #642: the purpose is a lock now, and a
+// link that names none means the user started in the import module, whose job is the schedule.
 
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
@@ -27,21 +28,21 @@ vi.mock('../ImportWizard', () => ({
   default: ({
     open,
     project,
-    initialPurpose,
+    purpose,
     initialSelectionMode,
     autoStartFromLatest,
     returnTo,
   }: {
     open: boolean;
     project: { id: string };
-    initialPurpose?: string;
+    purpose: string;
     initialSelectionMode?: string;
     autoStartFromLatest?: boolean;
     returnTo?: string | null;
   }) =>
     open ? (
       <div data-testid="wizard">
-        {`project=${project.id} purpose=${initialPurpose ?? 'none'} latest=${String(!!autoStartFromLatest)} mode=${initialSelectionMode ?? 'openings'} returnTo=${returnTo ?? 'none'}`}
+        {`project=${project.id} purpose=${purpose} latest=${String(!!autoStartFromLatest)} mode=${initialSelectionMode ?? 'openings'} returnTo=${returnTo ?? 'none'}`}
       </div>
     ) : null,
 }));
@@ -198,14 +199,37 @@ describe('ImportModule deep links', () => {
     );
   });
 
-  it('ignores a purpose it does not recognise', async () => {
+  it('falls back to the schedule purpose for one it does not recognise', async () => {
     renderModule('/app/import?purpose=nonsense');
 
     await screen.findByText('Riverside Tower', undefined, SLOW);
     fireEvent.click(screen.getByRole('button', { name: /Riverside Tower/ }));
 
     expect(await screen.findByTestId('wizard', undefined, SLOW)).toHaveTextContent(
-      'project=proj-1 purpose=none latest=false',
+      'project=proj-1 purpose=schedule latest=false',
     );
+  });
+
+  // #642: the import module IS the hardware-schedule surface, so entering it with no link at all and
+  // picking a job runs the schedule purpose - the wizard has no step on which to ask.
+  it('runs the schedule purpose when the user started in the import module itself', async () => {
+    renderModule('/app/import');
+
+    await screen.findByText('Riverside Tower', undefined, SLOW);
+    fireEvent.click(screen.getByRole('button', { name: /Bay Mills/ }));
+
+    expect(await screen.findByTestId('wizard', undefined, SLOW)).toHaveTextContent(
+      'project=proj-2 purpose=schedule latest=false mode=openings',
+    );
+  });
+
+  // A link that names a project but no purpose is the same story - it came from the import module.
+  it('runs the schedule purpose on a project-only link', async () => {
+    renderModule('/app/import?projectId=proj-2');
+
+    expect(await screen.findByTestId('wizard', undefined, SLOW)).toHaveTextContent(
+      'project=proj-2 purpose=schedule latest=false mode=openings',
+    );
+    await expectParamsCleared();
   });
 });
