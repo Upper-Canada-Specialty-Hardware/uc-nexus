@@ -16,12 +16,13 @@ const catalog: Map<string, ProductMeta> = new Map([
   ['HG-100|HINGE', { productCode: 'HG-100', hardwareCategory: 'HINGE', unitCost: 5 }],
 ]);
 
-// Prior order-as memory is empty; one mock covers whichever card holds HG-100.
-const priorMock: MockedResponse = {
-  request: { query: GET_PRIOR_ORDER_AS_VALUES, variables: { projectId: 'proj-1', productCodes: ['HG-100'] } },
+// Prior order-as memory is empty; one mock per product-code set a card can ask for (the cards query
+// per their own lines, so a two-line draft and what it becomes after a removal each need one).
+const priorMocks: MockedResponse[] = [['HG-100'], ['HG-100', 'LK-9'], ['LK-9']].map((productCodes) => ({
+  request: { query: GET_PRIOR_ORDER_AS_VALUES, variables: { projectId: 'proj-1', productCodes } },
   maxUsageCount: Number.POSITIVE_INFINITY,
   result: { data: { priorOrderAsValues: [] } },
-};
+}));
 
 function makeDraft(id: string, label: string, lines: Record<string, number>, included = true): DraftGroup {
   return { id, label, included, info: { notes: '', preferredDeliveryDate: '', costCode: '' }, lines: new Map(Object.entries(lines)) };
@@ -55,7 +56,7 @@ function Harness({
   const [groups, setGroups] = useState(initial);
   const seq = useRef(0);
   return (
-    <MockedProvider mocks={[priorMock]}>
+    <MockedProvider mocks={priorMocks}>
       <PurchaseOrdersStep
         projectId="proj-1"
         costCodes={costCodes}
@@ -133,7 +134,7 @@ describe('PurchaseOrdersStep organizing', () => {
     expect(screen.getByText(/carried onto the created request/i)).toBeInTheDocument();
   });
 
-  it('moves a whole line to another draft via the row menu', () => {
+  it('moves a whole line to another draft via the row menu, dropping the emptied source (#639)', () => {
     render(
       <Harness
         initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 }), makeDraft('b', 'BOLT', {})]}
@@ -143,10 +144,12 @@ describe('PurchaseOrdersStep organizing', () => {
     fireEvent.click(screen.getByRole('button', { name: /Line actions for HG-100/i }));
     fireEvent.click(screen.getByRole('menuitem', { name: /Move all to BOLT/i }));
 
-    // ACME now has no lines; BOLT shows the product with qty 4.
-    expect(screen.getByText('No lines. Move some in from another draft.')).toBeInTheDocument();
+    // ACME held nothing else, so its card goes; BOLT is left holding the product at qty 4.
+    expect(screen.queryByDisplayValue('ACME')).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue('BOLT')).toBeInTheDocument();
     expect(screen.getByText('HG-100')).toBeInTheDocument();
     expect(screen.getByText('Line items (1)')).toBeInTheDocument();
+    expect(qtyInputs().map((i) => i.value)).toEqual(['4']);
   });
 
   it('splits a line by quantity into another draft', async () => {
@@ -254,28 +257,44 @@ describe('PurchaseOrdersStep organizing', () => {
     expect(qtyInputs().map((i) => i.value)).toEqual(['3', '2']);
   });
 
-  it('drops a line to zero through the row menu, leaving the draft in place', () => {
+  it('drops a line to zero through the row menu, taking the emptied draft with it (#639)', () => {
     render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
     // The row menu is reachable on a lone draft now - Remove line needs no second draft to move to.
     fireEvent.click(screen.getByRole('button', { name: /Line actions for HG-100/i }));
     expect(screen.queryByRole('menuitem', { name: /Split/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Remove line' }));
 
+    // The line was the draft's last, so the card goes with it rather than lingering empty.
     expect(screen.queryByText('HG-100')).not.toBeInTheDocument();
-    expect(screen.getByText('No lines. Move some in from another draft.')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('ACME')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('ACME')).not.toBeInTheDocument();
+    expect(screen.getByText(/^0 draft\(s\)/)).toBeInTheDocument();
   });
 
-  it('shows where the product already stands project-wide behind the row info icon', () => {
-    render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Reconciliation context for HG-100' }));
+  it('keeps a draft that still holds another line after a removal (#639)', () => {
+    render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4, 'LK-9|LOCK': 1 })]} />);
+    fireEvent.click(screen.getByRole('button', { name: /Line actions for HG-100/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove line' }));
 
-    for (const label of ['Needed by schedule', 'Already on order', 'Received', 'Available in inventory']) {
-      expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.queryByText('HG-100')).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue('ACME')).toBeInTheDocument();
+    expect(screen.getByText('Line items (1)')).toBeInTheDocument();
+  });
+
+  it('shows where the product already stands project-wide inline on the row (#639)', () => {
+    render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
+
+    // The columns replace the old per-row info popover outright.
+    expect(screen.queryByRole('button', { name: /Reconciliation context/i })).not.toBeInTheDocument();
+    for (const head of ['Need', 'On Order', 'Rcvd', 'Avail']) {
+      expect(screen.getByText(head)).toBeInTheDocument();
     }
-    const popover = screen.getByRole('presentation');
-    expect(within(popover).getByText('6')).toBeInTheDocument(); // on order
-    expect(within(popover).getByText('1')).toBeInTheDocument(); // available
+
+    // The four values sit between Total Cost and the row menu, in needed / onOrder / received /
+    // available order - LINE_CONTEXT's 4 / 6 / 2 / 1 for HG-100.
+    const row = (screen.getByText('HG-100').closest('.po-cell') as HTMLElement).parentElement as HTMLElement;
+    const cells = Array.from(row.children) as HTMLElement[];
+    expect(cells).toHaveLength(11);
+    expect(cells.slice(6, 10).map((c) => c.textContent)).toEqual(['4', '6', '2', '1']);
   });
 
   // ---- Cost code required (#627) ----

@@ -22,12 +22,21 @@ function total(groups: DraftGroup[], pk: string): number {
 }
 
 describe('draftOps.moveLine', () => {
-  it('moves a whole line and conserves the total', () => {
-    const before = [draft('a', { HG: 3 }), draft('b', {})];
+  it('moves a whole line and conserves the total, keeping a source that still holds lines', () => {
+    const before = [draft('a', { HG: 3, LK: 1 }), draft('b', {})];
     const after = draftOps.moveLine(before, 'a', 'HG', 3, 'b');
-    expect(after[0].lines.has('HG')).toBe(false); // source emptied, line dropped
+    expect(after.map((g) => g.id)).toEqual(['a', 'b']);
+    expect(after[0].lines.has('HG')).toBe(false); // source emptied of HG, line dropped
+    expect(after[0].lines.get('LK')).toBe(1);
     expect(after[1].lines.get('HG')).toBe(3);
     expect(total(after, 'HG')).toBe(3);
+  });
+
+  it('drops a source draft the move emptied, the quantity intact on the target (#639)', () => {
+    const after = draftOps.moveLine([draft('a', { HG: 3 }), draft('b', {})], 'a', 'HG', 3, 'b');
+    expect(after.map((g) => g.id)).toEqual(['b']);
+    expect(after[0].lines.get('HG')).toBe(3);
+    expect(total(after, 'HG')).toBe(3); // conservation survives the drop
   });
 
   it('splits a line, leaving the remainder in the source', () => {
@@ -38,14 +47,15 @@ describe('draftOps.moveLine', () => {
   });
 
   it('sums into an existing line on the target', () => {
-    const after = draftOps.moveLine([draft('a', { HG: 2 }), draft('b', { HG: 1 })], 'a', 'HG', 2, 'b');
+    const after = draftOps.moveLine([draft('a', { HG: 2, LK: 1 }), draft('b', { HG: 1 })], 'a', 'HG', 2, 'b');
     expect(after[0].lines.has('HG')).toBe(false);
     expect(after[1].lines.get('HG')).toBe(3);
   });
 
   it('clamps a move larger than the line and is a no-op for zero or same-draft', () => {
     const before = [draft('a', { HG: 2 }), draft('b', {})];
-    expect(draftOps.moveLine(before, 'a', 'HG', 99, 'b')[1].lines.get('HG')).toBe(2);
+    // The clamped move takes all of HG, so 'a' is emptied and dropped - 'b' is the only draft left.
+    expect(draftOps.moveLine(before, 'a', 'HG', 99, 'b')[0].lines.get('HG')).toBe(2);
     expect(draftOps.moveLine(before, 'a', 'HG', 0, 'b')).toBe(before);
     expect(draftOps.moveLine(before, 'a', 'HG', 1, 'a')).toBe(before);
   });
@@ -65,8 +75,17 @@ describe('draftOps.updateLineQty (#632)', () => {
   });
 
   it('drops the line at 0 and clamps negatives to 0', () => {
-    expect(draftOps.updateLineQty([draft('a', { HG: 3 })], 'a', 'HG', 0, 3)[0].lines.has('HG')).toBe(false);
-    expect(draftOps.updateLineQty([draft('a', { HG: 3 })], 'a', 'HG', -4, 3)[0].lines.has('HG')).toBe(false);
+    const groups = [draft('a', { HG: 3, LK: 1 })];
+    expect(draftOps.updateLineQty(groups, 'a', 'HG', 0, 3)[0].lines.has('HG')).toBe(false);
+    expect(draftOps.updateLineQty(groups, 'a', 'HG', -4, 3)[0].lines.has('HG')).toBe(false);
+    expect(draftOps.updateLineQty(groups, 'a', 'HG', 0, 3)[0].lines.get('LK')).toBe(1); // draft stays
+  });
+
+  it('drops the draft too when 0 empties its only line (#639)', () => {
+    expect(draftOps.updateLineQty([draft('a', { HG: 3 }), draft('b', { HG: 1 })], 'a', 'HG', 0, 4)).toHaveLength(
+      1,
+    );
+    expect(draftOps.updateLineQty([draft('a', { HG: 3 })], 'a', 'HG', 0, 3)).toEqual([]);
   });
 
   it('is a no-op for an unknown draft, an absent line, or an unchanged quantity', () => {
@@ -82,16 +101,16 @@ describe('draftOps.updateLineQty (#632)', () => {
 });
 
 describe('draftOps.removeLine (#632)', () => {
-  it('drops the line and leaves the rest of the draft', () => {
+  it('drops the line and leaves a draft that still holds another', () => {
     const after = draftOps.removeLine([draft('a', { HG: 3, LK: 1 })], 'a', 'HG');
+    expect(after).toHaveLength(1);
     expect(after[0].lines.has('HG')).toBe(false);
     expect(after[0].lines.get('LK')).toBe(1);
   });
 
-  it('leaves an emptied draft in place - buildPoDrafts drops refs-empty drafts at finalize', () => {
-    const after = draftOps.removeLine([draft('a', { HG: 3 })], 'a', 'HG');
-    expect(after).toHaveLength(1);
-    expect(after[0].lines.size).toBe(0);
+  it('drops the draft along with its last line (#639)', () => {
+    const after = draftOps.removeLine([draft('a', { HG: 3 }), draft('b', { LK: 2 })], 'a', 'HG');
+    expect(after.map((g) => g.id)).toEqual(['b']);
   });
 
   it('is a no-op for an unknown draft or an absent line', () => {
@@ -157,6 +176,16 @@ describe('draftOps.createDraft / removeDraft', () => {
     expect(after).toHaveLength(2);
     expect(after[1]).toMatchObject({ id: 'new:0', included: true });
     expect(after[1].lines.size).toBe(0);
+  });
+
+  it('keeps a deliberately created empty draft through line ops elsewhere (#639)', () => {
+    // The auto-remove is a line operation's doing, so it never reaches the move target sitting empty.
+    let groups = draftOps.createDraft([draft('a', { HG: 1, LK: 1 })], 'new:0');
+    groups = draftOps.removeLine(groups, 'a', 'HG');
+    expect(groups.map((g) => g.id)).toEqual(['a', 'new:0']);
+    groups = draftOps.removeLine(groups, 'a', 'LK'); // empties 'a', which goes
+    expect(groups.map((g) => g.id)).toEqual(['new:0']);
+    expect(groups[0].lines.size).toBe(0);
   });
 
   it('removes only an empty draft', () => {
