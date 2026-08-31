@@ -10,8 +10,16 @@ from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
-from app.models.enums import Classification, HardwareItemState, PODocumentType, POOrigin, POStatus
+from app.models.enums import (
+    Classification,
+    HardwareItemState,
+    PODocumentType,
+    POOrigin,
+    POStatus,
+    ReceiveDraftStatus,
+)
 from app.models.purchase_order import PODocument, PODocumentData, POLineItem, PurchaseOrder
+from app.models.receive_draft import ReceiveDraft
 from app.models.receiving import ReceiveRecord
 
 logger = logging.getLogger(__name__)
@@ -475,6 +483,27 @@ def get_purchase_order(session: Session, po_id: uuid.UUID) -> PurchaseOrder | No
     return session.scalars(stmt).unique().first()
 
 
+def _pending_receive_draft_exists():
+    """Correlated EXISTS for "somebody has already counted a delivery against this PO" (#641).
+
+    A pending draft is a claim on the delivery, so the PO leaves the receiving queue while it stands -
+    showing it again invites a second person to count the same truck, and `create_receive_draft`
+    refuses that submission anyway. Keyed strictly on PENDING_APPROVAL: approving or rejecting the
+    draft puts the PO straight back on the list without anything having to clear a flag.
+
+    An EXISTS on the same statement rather than a second query, so the queue stays one round trip
+    however many open POs the GP mirror holds (the perf rules in CLAUDE.md).
+    """
+    return (
+        select(ReceiveDraft.id)
+        .where(
+            ReceiveDraft.po_id == PurchaseOrder.id,
+            ReceiveDraft.status == ReceiveDraftStatus.PENDING_APPROVAL,
+        )
+        .exists()
+    )
+
+
 def get_open_pos(session: Session, project_id: uuid.UUID | None = None) -> list[PurchaseOrder]:
     """Open POs (GP-Registered / Vendor-Confirmed / Partially-Received), oldest ordered_at first, for
     the receiving picker. Lean load - line_items/documents only, no nested hardware_items and no
@@ -494,6 +523,7 @@ def get_open_pos(session: Session, project_id: uuid.UUID | None = None) -> list[
                     POStatus.PARTIALLY_RECEIVED,
                 ]
             ),
+            ~_pending_receive_draft_exists(),
         )
         .order_by(PurchaseOrder.ordered_at.asc())
     )
@@ -586,12 +616,16 @@ def get_open_pos_summary(
     """Open POs for the receiving picker, as lean rows plus a {po_id: (pending_qty, pending_lines)}
     map (gp-owned-po mirror). Company-wide open POs are hundreds of rows; the receiving page only needs
     two pending-quantity scalars per PO, which one grouped query supplies - no line collection is
-    loaded (the old query materialized every line for that math). Detail loads through poReceivingDetails."""
+    loaded (the old query materialized every line for that math). Detail loads through poReceivingDetails.
+
+    A PO whose count is already sitting in the approvals queue is not on this list (#641) - see
+    `_pending_receive_draft_exists`."""
     stmt = (
         select(PurchaseOrder)
         .where(
             PurchaseOrder.deleted_at.is_(None),
             PurchaseOrder.status.in_([POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
+            ~_pending_receive_draft_exists(),
         )
         .order_by(PurchaseOrder.ordered_at.asc(), PurchaseOrder.id)
     )
