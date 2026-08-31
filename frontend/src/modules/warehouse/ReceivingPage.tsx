@@ -344,8 +344,10 @@ export default function ReceivingPage() {
           return (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, height: '100%' }}>
               <Chip label={label} color={poStatusChipColor(status)} size="small" />
-              {/* Somebody has already counted a delivery against this PO. Not a block - two
-                  deliveries on one PO is ordinary - but re-counting the same one is not. */}
+              {/* #641: a PO with a pending draft is dropped from openPosSummary server-side, so this
+                  chip only shows in the window where the two queries disagree - the drafts query is
+                  cache-and-network and can land first. It is the row's warning that the PO is about
+                  to leave the list, not a state the user is meant to act on. */}
               {pendingDrafts > 0 && (
                 <Chip
                   label={pendingDrafts === 1 ? 'Draft pending' : `${pendingDrafts} drafts pending`}
@@ -436,7 +438,7 @@ export default function ReceivingPage() {
           </Typography>
           <Typography variant="body2" color="text.secondary">
             {view === 'receive' &&
-              'Count hardware off a purchase order and into a rack location, and see what is still owed. Receives are submitted as drafts and post to GP when a Warehouse Manager approves them.'}
+              'Count hardware off a purchase order and into a rack location, and see what is still owed. Receives are submitted as drafts and post to GP when a Warehouse Manager approves them; a PO leaves this list while its receive waits.'}
             {view === 'drafts' &&
               'Your counted receives, waiting on a Warehouse Manager. Nothing here has reached GP or inventory yet.'}
             {view === 'history' &&
@@ -504,6 +506,10 @@ export default function ReceivingPage() {
       {!openPOsLoading && !openPOsError && poRows.length === 0 && (
         <Alert severity="info" sx={{ mb: 3 }}>
           No purchase orders awaiting receipt.
+          {/* #641: an empty list with drafts in the queue is not the same as nothing to do, and the
+              difference is exactly what a receiver whose PO just vanished needs told. */}
+          {pendingDraftCount > 0 &&
+            ` ${pendingDraftCount} ${pendingDraftCount === 1 ? 'receive is' : 'receives are'} waiting on a Warehouse Manager.`}
         </Alert>
       )}
       {!openPOsLoading && !openPOsError && poRows.length > 0 && (
