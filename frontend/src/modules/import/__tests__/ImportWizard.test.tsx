@@ -307,13 +307,15 @@ function renderWizard(
   {
     project = firstImportProject,
     mocks = [],
-    initialPurpose,
+    // #642: the purpose is a locked prop now, handed over by whichever module the user started from.
+    // Most of these walks are the PO pathway, so that is the harness default.
+    purpose = 'po',
     initialSelectionMode,
     autoStartFromLatest,
   }: {
     project?: Project;
     mocks?: MockedResponse[];
-    initialPurpose?: 'po' | 'assembly';
+    purpose?: 'po' | 'assembly' | 'schedule';
     initialSelectionMode?: 'openings' | 'hardware';
     autoStartFromLatest?: boolean;
   } = {},
@@ -328,7 +330,7 @@ function renderWizard(
               open
               project={project}
               onClose={onClose}
-              initialPurpose={initialPurpose}
+              purpose={purpose}
               initialSelectionMode={initialSelectionMode}
               autoStartFromLatest={autoStartFromLatest}
             />
@@ -363,10 +365,24 @@ async function flushApollo() {
   });
 }
 
-// Reconciliation only exists when there is something to reconcile against - a project with persisted
-// openings. On a first import it has nothing to compare and is left out of the stepper entirely.
-const FIRST_IMPORT_STEPS = ['Upload File', 'Purpose', 'Select Openings'];
-const REIMPORT_STEPS = [...FIRST_IMPORT_STEPS, 'Reconciliation'];
+// #642: no Purpose step - the entry point decides, so the stepper opens on the pathway the purpose
+// prop names. Reconciliation only exists when there is something to reconcile against - a project
+// with persisted openings; on a first import it is left out of the stepper entirely.
+const PO_FIRST_IMPORT_STEPS = [
+  'Upload File',
+  'Select Openings',
+  'Classification',
+  'Organize PO Drafts',
+  'Finalize',
+];
+const PO_REIMPORT_STEPS = [
+  'Upload File',
+  'Select Openings',
+  'Reconciliation',
+  'Classification',
+  'Organize PO Drafts',
+  'Finalize',
+];
 
 beforeEach(() => {
   mockedUseParser.mockReset();
@@ -384,48 +400,44 @@ describe('ImportWizard step transitions', () => {
 
     expect(screen.getByRole('heading', { name: 'Hardware Schedule' })).toBeInTheDocument();
     expect(screen.getByText('Drag and drop an XML file here')).toBeInTheDocument();
-    expect(stepLabels()).toEqual([...FIRST_IMPORT_STEPS, 'Finalize']);
+    expect(stepLabels()).toEqual(PO_FIRST_IMPORT_STEPS);
     expect(nextButton()).toBeDisabled();
   });
 
-  it('advances to Purpose once parsed and blocks Next until a purpose is chosen', () => {
+  // #642: the purpose came in on the entry link, so Upload File leads straight into the pathway's
+  // own first step - there is nothing left to ask.
+  it('goes straight from Upload File to Select Openings, with no Purpose step', () => {
     renderWizard();
 
     expect(screen.getByText('File parsed successfully!')).toBeInTheDocument();
+    expect(stepLabels()).not.toContain('Purpose');
     expect(nextButton()).toBeEnabled();
     clickNext();
 
-    expect(screen.getByRole('heading', { name: 'Select Import Purpose' })).toBeInTheDocument();
-    expect(nextButton()).toBeDisabled();
-
-    // first import: the pull-request purpose needs existing received inventory
-    expect(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i })).toBeDisabled();
-
-    fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
-    expect(nextButton()).toBeEnabled();
+    expect(screen.getByRole('heading', { name: 'Openings' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Select Import Purpose' })).not.toBeInTheDocument();
   });
 
-  it('po purpose inserts Classification and Organize PO Drafts steps before Finalize', () => {
+  it('po purpose carries Classification and Organize PO Drafts before Finalize', () => {
     renderWizard();
-    clickNext();
 
-    expect(stepLabels()).toEqual([...FIRST_IMPORT_STEPS, 'Finalize']);
-    fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
-
-    expect(stepLabels()).toEqual([...FIRST_IMPORT_STEPS, 'Classification', 'Organize PO Drafts', 'Finalize']);
+    expect(stepLabels()).toEqual(PO_FIRST_IMPORT_STEPS);
   });
 
   // #492: the assembly flow used to carry a Classification step. It asked the user to re-answer a
   // question the persisted schedule already holds, and a different answer than the original import
   // is the drift. Only the PO purpose classifies now.
   it('assembly purpose (re-import) inserts only the Shop Assembly step', async () => {
-    renderWizard({ project: reimportProject, mocks: reimportMocks });
+    renderWizard({ project: reimportProject, mocks: reimportMocks, purpose: 'assembly' });
     await flushApollo();
-    clickNext();
 
-    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i }));
-
-    expect(stepLabels()).toEqual([...REIMPORT_STEPS, 'Shop Assembly', 'Finalize']);
+    expect(stepLabels()).toEqual([
+      'Upload File',
+      'Select Openings',
+      'Reconciliation',
+      'Shop Assembly',
+      'Finalize',
+    ]);
   });
 
   // The composer is the whole of the shop-assembly step now, so what is worth walking is that the
@@ -435,12 +447,11 @@ describe('ImportWizard step transitions', () => {
     renderWizard({
       project: reimportProject,
       mocks: [...reimportBaseMocks, reconcileMock, requestCoverageMock],
+      purpose: 'assembly',
     });
     await flushApollo();
     clickNext();
 
-    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i }));
-    clickNext();
     fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
     clickNext();
     await flushApollo();
@@ -457,8 +468,6 @@ describe('ImportWizard step transitions', () => {
   it('blocks Next on Select Openings until at least one opening is selected', () => {
     renderWizard();
     clickNext();
-    fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
-    clickNext();
 
     expect(screen.getByRole('heading', { name: 'Openings' })).toBeInTheDocument();
     expect(nextButton()).toBeDisabled();
@@ -468,16 +477,10 @@ describe('ImportWizard step transitions', () => {
     expect(nextButton()).toBeEnabled();
   });
 
-  it('Back returns to the previous step and keeps the chosen purpose', () => {
+  it('Back from the pathway step returns to Upload File, source intact', () => {
     renderWizard();
     clickNext();
-    fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
-    clickNext();
     expect(screen.getByRole('heading', { name: 'Openings' })).toBeInTheDocument();
-
-    clickBack();
-    expect(screen.getByRole('heading', { name: 'Select Import Purpose' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: /Create Purchase Orders/i })).toBeChecked();
 
     clickBack();
     expect(screen.getByRole('heading', { name: 'Hardware Schedule' })).toBeInTheDocument();
@@ -487,8 +490,6 @@ describe('ImportWizard step transitions', () => {
   // #335: an assembled leaf ships as itself, not as a request for the loose hardware bolted onto it.
   it('skips Reconciliation on a first import and lands on Classification', () => {
     renderWizard();
-    clickNext();
-    fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
     clickNext();
     fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
     clickNext();
@@ -503,8 +504,7 @@ describe('ImportWizard step transitions', () => {
   it('walks the po path through Reconciliation to Classification on a re-import', async () => {
     renderWizard({ project: reimportProject, mocks: reimportMocks });
     await flushApollo();
-    clickNext();
-    fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
+    expect(stepLabels()).toEqual(PO_REIMPORT_STEPS);
     clickNext();
     fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
     clickNext();
@@ -514,9 +514,58 @@ describe('ImportWizard step transitions', () => {
   });
 });
 
-// #565: the hardware pathway is the PO purpose reached by product rather than by door. The Purpose
-// step is gone (purpose is locked to po) and Select Openings is replaced by Select Hardware; every
-// downstream step is the same as the by-opening PO flow.
+// #642: the import module is the hardware-schedule surface, so entering it directly runs the
+// schedule purpose - on a project that has never been imported as much as on one being replaced.
+// It persists the whole file, so it has no selection step at all; every parsed line goes to
+// Classification and then straight to Finalize.
+describe('ImportWizard schedule purpose', () => {
+  const SCHEDULE_STEPS = ['Upload File', 'Classification', 'Finalize'];
+
+  it('has no selection step on a project with nothing persisted yet', () => {
+    renderWizard({ purpose: 'schedule' });
+
+    expect(stepLabels()).toEqual(SCHEDULE_STEPS);
+    expect(screen.queryByText('Select Openings')).not.toBeInTheDocument();
+  });
+
+  it('keeps the same three steps on a re-import, skipping Reconciliation', async () => {
+    renderWizard({ project: reimportProject, mocks: reimportMocks, purpose: 'schedule' });
+    await flushApollo();
+
+    expect(stepLabels()).toEqual(SCHEDULE_STEPS);
+  });
+
+  // The whole file is in scope, so Classification is handed every parsed line - there is no
+  // selection to filter by, and an empty grid here would leave the file persisted unclassified.
+  it('classifies the whole parsed file', () => {
+    renderWizard({ purpose: 'schedule' });
+    clickNext();
+
+    expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
+    expect(screen.getByText('2 hardware lines across 2 openings.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start classifying' })).toBeInTheDocument();
+    expect(nextButton()).toBeDisabled();
+  });
+
+  // A first import through this purpose replaces nothing, and the finalize summary says so.
+  it('says it saves the schedule on a first import, not that it replaces one', () => {
+    renderWizard({ purpose: 'schedule' });
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Start classifying' }));
+    // One card per manufacturer (the default grouping), and this purpose is single-axis, so one
+    // Site pick finishes each card.
+    fireEvent.click(screen.getByRole('button', { name: 'Site (s)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Site (s)' }));
+    clickNext();
+
+    expect(screen.getByRole('heading', { name: 'Review & Finalize' })).toBeInTheDocument();
+    expect(screen.getByText('Saves the project’s hardware schedule')).toBeInTheDocument();
+  });
+});
+
+// #565: the hardware pathway is the PO purpose reached by product rather than by door. Select
+// Openings is replaced by Select Hardware; every downstream step is the same as the by-opening PO
+// flow.
 describe('ImportWizard hardware mode', () => {
   const HARDWARE_FIRST_IMPORT_STEPS = [
     'Upload File',
@@ -526,16 +575,16 @@ describe('ImportWizard hardware mode', () => {
     'Finalize',
   ];
 
-  it('hides the Purpose step and swaps Select Openings for Select Hardware', () => {
+  it('swaps Select Openings for Select Hardware', () => {
     renderWizard({ initialSelectionMode: 'hardware' });
 
-    // No Purpose step, no Select Openings; the product picker takes their place. Classification and
-    // Classification and Organize PO Drafts still follow because the purpose is po.
+    // No Select Openings; the product picker takes its place. Classification and Organize PO Drafts
+    // still follow because the purpose is po.
     expect(stepLabels()).toEqual(HARDWARE_FIRST_IMPORT_STEPS);
     expect(screen.queryByText('Select Openings')).not.toBeInTheDocument();
   });
 
-  it('keeps Reconciliation on a re-import, still with no Purpose step', async () => {
+  it('keeps Reconciliation on a re-import', async () => {
     renderWizard({
       project: reimportProject,
       mocks: reimportMocks,
@@ -642,8 +691,6 @@ describe('ImportWizard reconciliation failure', () => {
     renderWizard({ project: reimportProject, mocks: [...reimportBaseMocks, ...mocks] });
     await flushApollo();
     clickNext();
-    fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
-    clickNext();
     fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
     clickNext();
     await flushApollo();
@@ -709,8 +756,6 @@ describe('ImportWizard over-order warning', () => {
     renderWizard({ project: reimportProject, mocks: [...reimportBaseMocks, overOrderReconcileMock] });
     await flushApollo();
     clickNext();
-    fireEvent.click(screen.getByRole('radio', { name: /Create Purchase Orders/i }));
-    clickNext();
     fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
     clickNext();
     await flushApollo();
@@ -766,20 +811,20 @@ describe('ImportWizard AppBar nav', () => {
   it('shows the step position and disables Back on the first step', () => {
     renderWizard();
 
-    // First import with no purpose chosen: upload / purpose / openings / finalize.
-    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+    // PO first import: upload / openings / classification / organize po drafts / finalize.
+    expect(screen.getByText('Step 1 of 5')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled();
     expect(nextButton()).toBeEnabled();
   });
 
   it('advances the step counter and enables Back once past the first step', () => {
     renderWizard();
-    expect(screen.getByText('Step 1 of 4')).toBeInTheDocument();
+    expect(screen.getByText('Step 1 of 5')).toBeInTheDocument();
 
     clickNext();
 
-    expect(screen.getByRole('heading', { name: 'Select Import Purpose' })).toBeInTheDocument();
-    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Openings' })).toBeInTheDocument();
+    expect(screen.getByText('Step 2 of 5')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Back' })).toBeEnabled();
   });
 
@@ -797,10 +842,9 @@ describe('ImportWizard AppBar nav', () => {
     renderWizard({
       project: reimportProject,
       mocks: [...reimportBaseMocks, reconcileMock, emptyCoverage],
+      purpose: 'assembly',
     });
     await flushApollo();
-    clickNext();
-    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i }));
     clickNext();
     fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
     clickNext();
@@ -817,10 +861,9 @@ describe('ImportWizard AppBar nav', () => {
     renderWizard({
       project: reimportProject,
       mocks: [...reimportBaseMocks, reconcileMock, requestCoverageMock],
+      purpose: 'assembly',
     });
     await flushApollo();
-    clickNext();
-    fireEvent.click(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i }));
     clickNext();
     fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
     clickNext();
@@ -835,17 +878,17 @@ describe('ImportWizard AppBar nav', () => {
     await flushApollo();
 
     expect(screen.getByRole('heading', { name: 'Review & Finalize' })).toBeInTheDocument();
-    // upload / purpose / openings / reconciliation / shop-assembly / finalize
-    expect(screen.getByText('Step 6 of 6')).toBeInTheDocument();
+    // upload / openings / reconciliation / shop-assembly / finalize
+    expect(screen.getByText('Step 5 of 5')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Next' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Finish Import Session/i })).toBeInTheDocument();
   });
 });
 
-// A module's "Start a Request" link into shop assembly lands here: the project is chosen and its
-// purpose is preselected, so the wizard opens with the purpose already answered. (Shipping-out
-// composition has left the wizard entirely - it lives on the request workspace now.)
+// A module's "Start a Request" link into shop assembly lands here: the project is chosen and the
+// purpose came with it, so the wizard opens on the pathway with nothing left to answer.
+// (Shipping-out composition has left the wizard entirely - it lives on the request workspace now.)
 describe('ImportWizard deep link', () => {
   // Enough of a persisted schedule for the hydrate to be legal: hardwareItems non-empty is what
   // makes `canStartFromLatest` true, and the project block is what the mapper reads first.
@@ -899,26 +942,19 @@ describe('ImportWizard deep link', () => {
     },
   };
 
-  it('preselects the assembly purpose on a re-import project', async () => {
+  // #642: the purpose is the link's, and there is no step on which to change it.
+  it('runs the assembly pathway outright, with nothing to answer about purpose', async () => {
     renderWizard({
       project: reimportProject,
       mocks: [...reimportMocks],
-      initialPurpose: 'assembly',
+      purpose: 'assembly',
     });
     await flushApollo();
     clickNext();
 
-    expect(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i })).toBeChecked();
-  });
-
-  it('leaves the purpose unset on a project with no schedule, rather than checking a disabled option', async () => {
-    // Shop assembly needs an existing schedule. Silently checking it on a first import would land the
-    // user on a radio they cannot use with nothing saying why.
-    renderWizard({ project: firstImportProject, initialPurpose: 'assembly' });
-    clickNext();
-
-    expect(screen.getByRole('radio', { name: /Pull Request for Shop Assembly/i })).not.toBeChecked();
-    expect(nextButton()).toBeDisabled();
+    expect(screen.getByRole('heading', { name: 'Openings' })).toBeInTheDocument();
+    expect(stepLabels()).toContain('Shop Assembly');
+    expect(stepLabels()).not.toContain('Purpose');
   });
 
   it('starts from the persisted schedule instead of asking for a file', async () => {
@@ -929,7 +965,7 @@ describe('ImportWizard deep link', () => {
     renderWizard({
       project: reimportProject,
       mocks: [availabilityMock, scheduleWithItems],
-      initialPurpose: 'assembly',
+      purpose: 'assembly',
       autoStartFromLatest: true,
     });
     await flushApollo();
@@ -945,7 +981,7 @@ describe('ImportWizard deep link', () => {
     renderWizard({
       project: reimportProject,
       mocks: reimportMocks, // projectHardwareSchedule: null
-      initialPurpose: 'assembly',
+      purpose: 'assembly',
       autoStartFromLatest: true,
     });
     await flushApollo();
