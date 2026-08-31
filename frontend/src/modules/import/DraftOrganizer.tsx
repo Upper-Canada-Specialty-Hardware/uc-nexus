@@ -22,11 +22,10 @@ import {
   InputAdornment,
   Menu,
   MenuItem,
-  Popover,
   TextField,
   Typography,
 } from '@mui/material';
-import { FileText, Info, MoreVertical, Paperclip, X } from 'lucide-react';
+import { FileText, MoreVertical, Paperclip, X } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
@@ -61,8 +60,9 @@ export interface SplitContext {
   maxQty: number;
 }
 
-/** #632: the per-line reconciliation context the info popover renders - where this product already
- *  stands project-wide, so the buyer can judge a quantity without leaving the step. */
+/** #632: the per-line reconciliation context - where this product already stands project-wide, so the
+ *  buyer can judge a quantity without leaving the step. #639 renders it inline on every ledger row
+ *  (Need / On Order / Rcvd / Avail) rather than behind a per-row info popover. */
 export interface LineContext {
   /** The selected quantity - what this wizard pass says the schedule needs of the product. */
   needed: number;
@@ -193,6 +193,13 @@ export function SplitLineDialog({ ctx, targets, onClose, onConfirm }: SplitLineD
 
 // ---- Draft card ----
 
+// #639: the ledger carries four more columns now, so its type is sized against the card rather than
+// fixed - cqw resolves against the grid's own size container, so the row shrinks to fit a narrow card
+// instead of pushing the page sideways. The mono ramp stays one step under the UI ramp, as elsewhere.
+const FS_CELL = 'clamp(0.7rem, 1.5cqw, 0.875rem)';
+const FS_MONO = 'clamp(0.66rem, 1.4cqw, 0.8125rem)';
+const FS_HEAD = 'clamp(0.5625rem, 1.1cqw, 0.6875rem)';
+
 export interface DraftCardProps {
   projectId: string;
   draft: DraftGroup;
@@ -270,12 +277,9 @@ export function DraftCard({
   const isEmpty = draft.lines.size === 0;
 
   // Card-level actions menu (merge / remove) and the per-row menu (move whole / split / remove), each
-  // a single anchored Menu; the row menu remembers which line it was opened for. The info popover
-  // (#632: per-line recon context) is likewise a single instance anchored at the row that opened it.
+  // a single anchored Menu; the row menu remembers which line it was opened for.
   const [cardMenuAnchor, setCardMenuAnchor] = useState<HTMLElement | null>(null);
   const [rowMenu, setRowMenu] = useState<{ anchor: HTMLElement; line: DraftLine } | null>(null);
-  const [infoPopover, setInfoPopover] = useState<{ anchor: HTMLElement; line: DraftLine } | null>(null);
-  const infoCtx = infoPopover ? lineContextByPk.get(infoPopover.line.pk) : undefined;
 
   return (
     <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 2, mb: 2, opacity: draft.included ? 1 : 0.6 }}>
@@ -462,133 +466,175 @@ export function DraftCard({
           No lines. Move some in from another draft.
         </Typography>
       ) : (
-        <Box
-          sx={{
-            display: 'grid',
-            gridTemplateColumns: '1.1fr 1.3fr 1.2fr 100px 0.8fr 0.8fr 32px 40px',
-            '& .po-head': {
-              ...microLabelSx,
-              px: 1,
-              py: 0.75,
-              borderBottom: '2px solid',
-              borderColor: 'text.primary',
-            },
-            '& .po-cell': {
-              px: 1,
-              py: 0.75,
-              borderBottom: '1px solid',
-              borderColor: 'divider',
-              display: 'flex',
-              alignItems: 'center',
-              minWidth: 0,
-            },
-            '& .po-cell-right': { justifyContent: 'flex-end' },
-          }}
-        >
-          <Box className="po-head">Order As</Box>
-          <Box className="po-head">Scheduled Part Number</Box>
-          <Box className="po-head">Hardware Category</Box>
-          <Box className="po-head" sx={{ textAlign: 'right' }}>
-            Qty
-          </Box>
-          <Box className="po-head" sx={{ textAlign: 'right' }}>
-            Unit Cost
-          </Box>
-          <Box className="po-head" sx={{ textAlign: 'right' }}>
-            Total Cost
-          </Box>
-          <Box className="po-head" />
-          <Box className="po-head" />
-
-          {lines.map((line) => (
-            <Box key={line.pk} sx={{ display: 'contents' }}>
-              <Box className="po-cell">
-                <OrderAsAutocomplete
-                  value={orderAsValues.get(line.pk) ?? ''}
-                  onChange={(next) => onUpdateOrderAs(line.pk, next)}
-                  options={priorMap.get(line.productCode) ?? []}
-                  placeholder="Order as"
-                />
-              </Box>
-              <Box className="po-cell">
-                <Typography variant="body2" sx={monoSx}>
-                  {line.productCode}
-                </Typography>
-              </Box>
-              <Box className="po-cell">
-                <Typography variant="body2">{line.hardwareCategory}</Typography>
-              </Box>
-              <Box className="po-cell po-cell-right">
-                {/* #632: Qty is editable in place, ceilinged at the product's selection pool minus
-                    what sibling drafts hold. Lowering proceeds with less; widening the scope stays
-                    the selection steps' job. */}
-                <TextField
-                  size="small"
-                  type="number"
-                  value={line.qty}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value, 10);
-                    if (!Number.isNaN(val)) onUpdateLineQty(draft.id, line.pk, val);
-                  }}
-                  slotProps={{
-                    input: { sx: tabularSx },
-                    htmlInput: {
-                      min: 0,
-                      max:
-                        (selectionTotals.get(line.pk) ?? line.qty) -
-                        ((heldByProduct.get(line.pk) ?? line.qty) - line.qty),
-                      step: 1,
-                      'aria-label': `Quantity of ${line.productCode}`,
-                    },
-                  }}
-                  sx={{ width: 84 }}
-                />
-              </Box>
-              <Box className="po-cell po-cell-right">
-                <TextField
-                  size="small"
-                  type="number"
-                  value={line.unitCost}
-                  onChange={(e) => {
-                    const val = parseFloat(e.target.value);
-                    if (!Number.isNaN(val) && val >= 0) onUpdateUnitCost(line.pk, val);
-                  }}
-                  slotProps={{
-                    input: {
-                      startAdornment: <InputAdornment position="start">$</InputAdornment>,
-                      sx: tabularSx,
-                    },
-                    htmlInput: { min: 0, step: 0.01 },
-                  }}
-                  sx={{ width: 110 }}
-                />
-              </Box>
-              <Box className="po-cell po-cell-right">
-                <Typography variant="body2" sx={tabularSx}>
-                  ${line.totalCost.toFixed(2)}
-                </Typography>
-              </Box>
-              <Box className="po-cell po-cell-right" sx={{ px: 0 }}>
-                {/* #632: per-line recon context - where this product already stands project-wide. */}
-                <IconButton
-                  size="small"
-                  aria-label={`Reconciliation context for ${line.productCode}`}
-                  onClick={(e) => setInfoPopover({ anchor: e.currentTarget, line })}
-                >
-                  <Info size={15} strokeWidth={1.75} />
-                </IconButton>
-              </Box>
-              <Box className="po-cell po-cell-right" sx={{ px: 0 }}>
-                <IconButton
-                  size="small"
-                  aria-label={`Line actions for ${line.productCode}`}
-                  onClick={(e) => setRowMenu({ anchor: e.currentTarget, line })}
-                >
-                  <MoreVertical size={16} strokeWidth={1.75} />
-                </IconButton>
-              </Box>
+        // Below the grid's workable minimum the ledger scrolls inside its own bounds - the sanctioned
+        // wide-data-grid affordance; the page itself never widens.
+        <Box sx={{ overflowX: 'auto' }}>
+          <Box
+            sx={{
+              display: 'grid',
+              minWidth: 640,
+              // #639: a size container, so the cqw type ramp above resolves against the card's width.
+              containerType: 'inline-size',
+              // The three text columns absorb the slack; every numeric track is content-sized, so the
+              // 1-4 digit recon columns spend only the width their header needs.
+              gridTemplateColumns:
+                'minmax(0, 1.15fr) minmax(0, 1.25fr) minmax(0, 1.05fr) clamp(54px, 7cqw, 86px) clamp(76px, 9.5cqw, 116px) auto auto auto auto auto 36px',
+              '& .po-head': {
+                ...microLabelSx,
+                fontSize: FS_HEAD,
+                px: 1,
+                py: 0.75,
+                borderBottom: '2px solid',
+                borderColor: 'text.primary',
+              },
+              '& .po-cell': {
+                px: 1,
+                py: 0.75,
+                fontSize: FS_CELL,
+                borderBottom: '1px solid',
+                borderColor: 'divider',
+                display: 'flex',
+                alignItems: 'center',
+                minWidth: 0,
+              },
+              '& .po-cell-right': { justifyContent: 'flex-end' },
+              // Numeric tracks: nowrap keeps a header off a second line (the track sizes to it), and the
+              // tighter padding keeps the digit columns compact.
+              '& .po-num': { whiteSpace: 'nowrap', textAlign: 'right', px: 0.75 },
+              '& .po-cell .MuiInputBase-root, & .po-cell .MuiInputBase-input': { fontSize: FS_CELL },
+              '& .po-cell .MuiInputAdornment-root .MuiTypography-root': { fontSize: FS_CELL },
+              '& .po-mono .MuiInputBase-input': { fontSize: FS_MONO },
+              // #639: a hairline sets the read-only project-wide block apart from the order columns.
+              '& .po-sep': { borderLeft: '1px solid', borderLeftColor: 'divider' },
+            }}
+          >
+            <Box className="po-head">Order As</Box>
+            <Box className="po-head">Scheduled Part Number</Box>
+            <Box className="po-head">Hardware Category</Box>
+            <Box className="po-head po-num">Qty</Box>
+            <Box className="po-head po-num">Unit Cost</Box>
+            <Box className="po-head po-num">Total Cost</Box>
+            <Box className="po-head po-num po-sep" title="Needed by schedule">
+              Need
             </Box>
-          ))}
+            <Box className="po-head po-num" title="Already on order project-wide">
+              On Order
+            </Box>
+            <Box className="po-head po-num" title="Received project-wide">
+              Rcvd
+            </Box>
+            <Box className="po-head po-num" title="Available in inventory">
+              Avail
+            </Box>
+            <Box className="po-head" />
+
+            {lines.map((line) => {
+              // #639: the recon numbers ride the row itself. Zeros are truthful on a fresh import, so an
+              // absent entry falls back to 0 rather than blanking the column.
+              const ctx = lineContextByPk.get(line.pk);
+              return (
+                <Box key={line.pk} sx={{ display: 'contents' }}>
+                  <Box className="po-cell po-mono">
+                    <OrderAsAutocomplete
+                      value={orderAsValues.get(line.pk) ?? ''}
+                      onChange={(next) => onUpdateOrderAs(line.pk, next)}
+                      options={priorMap.get(line.productCode) ?? []}
+                      placeholder="Order as"
+                    />
+                  </Box>
+                  <Box className="po-cell">
+                    <Typography variant="body2" sx={{ ...monoSx, fontSize: FS_MONO }}>
+                      {line.productCode}
+                    </Typography>
+                  </Box>
+                  <Box className="po-cell">
+                    <Typography variant="body2" sx={{ fontSize: FS_CELL }}>
+                      {line.hardwareCategory}
+                    </Typography>
+                  </Box>
+                  <Box className="po-cell po-cell-right po-num">
+                    {/* #632: Qty is editable in place, ceilinged at the product's selection pool minus
+                        what sibling drafts hold. Lowering proceeds with less; widening the scope stays
+                        the selection steps' job. */}
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={line.qty}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        if (!Number.isNaN(val)) onUpdateLineQty(draft.id, line.pk, val);
+                      }}
+                      slotProps={{
+                        input: { sx: tabularSx },
+                        htmlInput: {
+                          min: 0,
+                          max:
+                            (selectionTotals.get(line.pk) ?? line.qty) -
+                            ((heldByProduct.get(line.pk) ?? line.qty) - line.qty),
+                          step: 1,
+                          'aria-label': `Quantity of ${line.productCode}`,
+                        },
+                      }}
+                      sx={{ width: '100%' }}
+                    />
+                  </Box>
+                  <Box className="po-cell po-cell-right po-num">
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={line.unitCost}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (!Number.isNaN(val) && val >= 0) onUpdateUnitCost(line.pk, val);
+                      }}
+                      slotProps={{
+                        input: {
+                          startAdornment: <InputAdornment position="start">$</InputAdornment>,
+                          sx: tabularSx,
+                        },
+                        htmlInput: { min: 0, step: 0.01 },
+                      }}
+                      sx={{ width: '100%' }}
+                    />
+                  </Box>
+                  <Box className="po-cell po-cell-right po-num">
+                    <Typography variant="body2" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                      ${line.totalCost.toFixed(2)}
+                    </Typography>
+                  </Box>
+                  <Box className="po-cell po-cell-right po-num po-sep">
+                    <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                      {ctx?.needed ?? 0}
+                    </Typography>
+                  </Box>
+                  <Box className="po-cell po-cell-right po-num">
+                    <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                      {ctx?.onOrder ?? 0}
+                    </Typography>
+                  </Box>
+                  <Box className="po-cell po-cell-right po-num">
+                    <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                      {ctx?.received ?? 0}
+                    </Typography>
+                  </Box>
+                  <Box className="po-cell po-cell-right po-num">
+                    <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                      {ctx?.available ?? 0}
+                    </Typography>
+                  </Box>
+                  <Box className="po-cell po-cell-right" sx={{ px: 0 }}>
+                    <IconButton
+                      size="small"
+                      aria-label={`Line actions for ${line.productCode}`}
+                      onClick={(e) => setRowMenu({ anchor: e.currentTarget, line })}
+                    >
+                      <MoreVertical size={16} strokeWidth={1.75} />
+                    </IconButton>
+                  </Box>
+                </Box>
+              );
+            })}
+          </Box>
         </Box>
       )}
 
@@ -634,57 +680,6 @@ export function DraftCard({
           Remove line
         </MenuItem>
       </Menu>
-
-      {/* #632: the per-line recon context. Read-only numbers the wizard already holds - no query. */}
-      <Popover
-        open={infoPopover != null}
-        anchorEl={infoPopover?.anchor ?? null}
-        onClose={() => setInfoPopover(null)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-      >
-        {infoPopover && (
-          <Box sx={{ p: 1.5, minWidth: 230 }}>
-            <Typography variant="body2" sx={{ ...monoSx, mb: 1 }}>
-              {infoPopover.line.productCode}
-            </Typography>
-            <Box
-              sx={{
-                display: 'grid',
-                gridTemplateColumns: '1fr auto',
-                columnGap: 2,
-                rowGap: 0.5,
-                alignItems: 'baseline',
-              }}
-            >
-              <Typography variant="caption" color="text.secondary">
-                Needed by schedule
-              </Typography>
-              <Typography variant="body2" sx={{ ...tabularSx, textAlign: 'right' }}>
-                {infoCtx?.needed ?? 0}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                Already on order
-              </Typography>
-              <Typography variant="body2" sx={{ ...tabularSx, textAlign: 'right' }}>
-                {infoCtx?.onOrder ?? 0}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                Received
-              </Typography>
-              <Typography variant="body2" sx={{ ...tabularSx, textAlign: 'right' }}>
-                {infoCtx?.received ?? 0}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                Available in inventory
-              </Typography>
-              <Typography variant="body2" sx={{ ...tabularSx, textAlign: 'right' }}>
-                {infoCtx?.available ?? 0}
-              </Typography>
-            </Box>
-          </Box>
-        )}
-      </Popover>
     </Box>
   );
 }
