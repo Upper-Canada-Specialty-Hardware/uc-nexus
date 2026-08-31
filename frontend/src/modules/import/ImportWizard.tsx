@@ -20,7 +20,7 @@ import {
   Divider,
   Tooltip,
 } from '@mui/material';
-import { CheckCircle2, CloudUpload, FileUp, History, Info, X } from 'lucide-react';
+import { CheckCircle2, CloudUpload, FileText, FileUp, History, Info, X } from 'lucide-react';
 import { useLazyQuery, useMutation, useQuery } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import { useWizard } from '../../contexts/WizardContext';
@@ -1620,16 +1620,40 @@ export default function ImportWizard({
                     <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: persistedScheduleFilename ? 0.25 : 1 }}>
                       {persistedOpeningCount} openings, {persistedHardwareItemCount} hardware items.
                     </Typography>
-                    {/* #627: the file the persisted schedule was uploaded from. Omitted for projects
-                        imported before the name was captured. */}
+                    {/* #627/#638: the file the persisted schedule was uploaded from, rendered as a
+                        tinted file badge so it reads as the actual source and is not missed on first
+                        glance. Long names wrap inside the badge (minWidth:0 + overflowWrap) rather than
+                        widening the card. Omitted for projects imported before the name was captured. */}
                     {persistedScheduleFilename && (
-                      <Typography
-                        variant="caption"
-                        color="text.secondary"
-                        sx={{ ...monoSx, mb: 1, wordBreak: 'break-all' }}
+                      <Box
+                        title={persistedScheduleFilename}
+                        sx={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 0.75,
+                          maxWidth: '100%',
+                          minWidth: 0,
+                          mb: 1,
+                          px: 1,
+                          py: 0.5,
+                          borderRadius: '3px',
+                          border: '1px solid',
+                          borderColor: (t) =>
+                            t.vars ? `rgba(${t.vars.palette.primary.mainChannel} / 0.18)` : 'rgba(29, 27, 23, 0.18)',
+                          bgcolor: (t) =>
+                            t.vars ? `rgba(${t.vars.palette.primary.mainChannel} / 0.06)` : 'rgba(29, 27, 23, 0.06)',
+                        }}
                       >
-                        {persistedScheduleFilename}
-                      </Typography>
+                        <Box sx={{ color: 'text.secondary', display: 'flex', flexShrink: 0 }}>
+                          <FileText size={14} strokeWidth={1.75} />
+                        </Box>
+                        <Typography
+                          variant="caption"
+                          sx={{ ...monoSx, fontWeight: 600, color: 'text.primary', minWidth: 0, overflowWrap: 'anywhere' }}
+                        >
+                          {persistedScheduleFilename}
+                        </Typography>
+                      </Box>
                     )}
                     <Button variant="contained" onClick={handleLoadFromLatest} sx={{ mt: 'auto' }}>
                       Use last uploaded schedule
