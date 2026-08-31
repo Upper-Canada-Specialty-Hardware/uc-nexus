@@ -292,6 +292,29 @@ def test_register_rejects_blank_gp_vendor_id(db_session):
         )
 
 
+def test_register_rejects_an_empty_line_item_list(db_session):
+    # #640: registering with no lines would strip the draft down to a blank PO and stamp it
+    # GP_REGISTERED - unreceivable and unclosable. The draft must be left exactly as it was.
+    project = _make_project(db_session)
+    po = _import_draft_po(db_session, project)
+
+    with pytest.raises(ValidationError) as exc:
+        po_repository.register_po_in_gp(
+            db_session,
+            po.id,
+            gp_vendor_id="GPV1",
+            vendor_name_snapshot="GP Vendor",
+            po_number="PO0000201",
+            gp_company="TUBC",
+            line_items=[],
+        )
+
+    assert exc.value.field == "line_items"
+    db_session.refresh(po)
+    assert po.status == POStatus.DRAFT
+    assert len(po.line_items) == 2
+
+
 def test_register_rejects_duplicate_po_number_in_project(db_session):
     # a reused GP number must surface as a clean ValidationError before commit, not a raw
     # IntegrityError that aborts the txn and orphans the GP PO the relay already created.

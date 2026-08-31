@@ -831,6 +831,17 @@ def finalize_import_session(
         next_seq = int(next_request_number.replace("PO-REQ-", ""))
 
         for draft_idx, po_draft in enumerate(po_drafts):
+            # #640: a draft that claims nothing would persist as a PO with zero line items - a blank PO
+            # that can never be registered, received or closed, and that the register shows as a live
+            # request forever. The claims are the sole source of the line items built below, so an empty
+            # claim list is exactly "this PO would have no lines". Skipped rather than rejected: the
+            # openings, schedule and requests in the same finalize are still exactly what the user asked
+            # for, and a group with nothing in it has no order to lose. Skipping before the request
+            # number is minted also keeps PO-REQ-NNN gapless. The wizard drops empty groups client-side;
+            # this is the server's own guard.
+            if not per_draft_claims[draft_idx]:
+                continue
+
             # Validate PO number uniqueness within project if provided
             po_number = po_draft.get("po_number")
             if po_number and po_number.strip():
