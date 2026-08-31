@@ -466,170 +466,175 @@ export function DraftCard({
           No lines. Move some in from another draft.
         </Typography>
       ) : (
-        <Box
-          sx={{
-            display: 'grid',
-            // #639: a size container, so the cqw type ramp above resolves against the card's width.
-            containerType: 'inline-size',
-            // The three text columns absorb the slack; every numeric track is content-sized, so the
-            // 1-4 digit recon columns spend only the width their header needs.
-            gridTemplateColumns:
-              'minmax(0, 1.15fr) minmax(0, 1.25fr) minmax(0, 1.05fr) clamp(54px, 7cqw, 86px) clamp(76px, 9.5cqw, 116px) auto auto auto auto auto 36px',
-            '& .po-head': {
-              ...microLabelSx,
-              fontSize: FS_HEAD,
-              px: 1,
-              py: 0.75,
-              borderBottom: '2px solid',
-              borderColor: 'text.primary',
-            },
-            '& .po-cell': {
-              px: 1,
-              py: 0.75,
-              fontSize: FS_CELL,
-              borderBottom: '1px solid',
-              borderColor: 'divider',
-              display: 'flex',
-              alignItems: 'center',
-              minWidth: 0,
-            },
-            '& .po-cell-right': { justifyContent: 'flex-end' },
-            // Numeric tracks: nowrap keeps a header off a second line (the track sizes to it), and the
-            // tighter padding keeps the digit columns compact.
-            '& .po-num': { whiteSpace: 'nowrap', textAlign: 'right', px: 0.75 },
-            '& .po-cell .MuiInputBase-root, & .po-cell .MuiInputBase-input': { fontSize: FS_CELL },
-            '& .po-cell .MuiInputAdornment-root .MuiTypography-root': { fontSize: FS_CELL },
-            '& .po-mono .MuiInputBase-input': { fontSize: FS_MONO },
-            // #639: a hairline sets the read-only project-wide block apart from the order columns.
-            '& .po-sep': { borderLeft: '1px solid', borderLeftColor: 'divider' },
-          }}
-        >
-          <Box className="po-head">Order As</Box>
-          <Box className="po-head">Scheduled Part Number</Box>
-          <Box className="po-head">Hardware Category</Box>
-          <Box className="po-head po-num">Qty</Box>
-          <Box className="po-head po-num">Unit Cost</Box>
-          <Box className="po-head po-num">Total Cost</Box>
-          <Box className="po-head po-num po-sep" title="Needed by schedule">
-            Need
-          </Box>
-          <Box className="po-head po-num" title="Already on order project-wide">
-            On Order
-          </Box>
-          <Box className="po-head po-num" title="Received project-wide">
-            Rcvd
-          </Box>
-          <Box className="po-head po-num" title="Available in inventory">
-            Avail
-          </Box>
-          <Box className="po-head" />
+        // Below the grid's workable minimum the ledger scrolls inside its own bounds - the sanctioned
+        // wide-data-grid affordance; the page itself never widens.
+        <Box sx={{ overflowX: 'auto' }}>
+          <Box
+            sx={{
+              display: 'grid',
+              minWidth: 640,
+              // #639: a size container, so the cqw type ramp above resolves against the card's width.
+              containerType: 'inline-size',
+              // The three text columns absorb the slack; every numeric track is content-sized, so the
+              // 1-4 digit recon columns spend only the width their header needs.
+              gridTemplateColumns:
+                'minmax(0, 1.15fr) minmax(0, 1.25fr) minmax(0, 1.05fr) clamp(54px, 7cqw, 86px) clamp(76px, 9.5cqw, 116px) auto auto auto auto auto 36px',
+              '& .po-head': {
+                ...microLabelSx,
+                fontSize: FS_HEAD,
+                px: 1,
+                py: 0.75,
+                borderBottom: '2px solid',
+                borderColor: 'text.primary',
+              },
+              '& .po-cell': {
+                px: 1,
+                py: 0.75,
+                fontSize: FS_CELL,
+                borderBottom: '1px solid',
+                borderColor: 'divider',
+                display: 'flex',
+                alignItems: 'center',
+                minWidth: 0,
+              },
+              '& .po-cell-right': { justifyContent: 'flex-end' },
+              // Numeric tracks: nowrap keeps a header off a second line (the track sizes to it), and the
+              // tighter padding keeps the digit columns compact.
+              '& .po-num': { whiteSpace: 'nowrap', textAlign: 'right', px: 0.75 },
+              '& .po-cell .MuiInputBase-root, & .po-cell .MuiInputBase-input': { fontSize: FS_CELL },
+              '& .po-cell .MuiInputAdornment-root .MuiTypography-root': { fontSize: FS_CELL },
+              '& .po-mono .MuiInputBase-input': { fontSize: FS_MONO },
+              // #639: a hairline sets the read-only project-wide block apart from the order columns.
+              '& .po-sep': { borderLeft: '1px solid', borderLeftColor: 'divider' },
+            }}
+          >
+            <Box className="po-head">Order As</Box>
+            <Box className="po-head">Scheduled Part Number</Box>
+            <Box className="po-head">Hardware Category</Box>
+            <Box className="po-head po-num">Qty</Box>
+            <Box className="po-head po-num">Unit Cost</Box>
+            <Box className="po-head po-num">Total Cost</Box>
+            <Box className="po-head po-num po-sep" title="Needed by schedule">
+              Need
+            </Box>
+            <Box className="po-head po-num" title="Already on order project-wide">
+              On Order
+            </Box>
+            <Box className="po-head po-num" title="Received project-wide">
+              Rcvd
+            </Box>
+            <Box className="po-head po-num" title="Available in inventory">
+              Avail
+            </Box>
+            <Box className="po-head" />
 
-          {lines.map((line) => {
-            // #639: the recon numbers ride the row itself. Zeros are truthful on a fresh import, so an
-            // absent entry falls back to 0 rather than blanking the column.
-            const ctx = lineContextByPk.get(line.pk);
-            return (
-              <Box key={line.pk} sx={{ display: 'contents' }}>
-                <Box className="po-cell po-mono">
-                  <OrderAsAutocomplete
-                    value={orderAsValues.get(line.pk) ?? ''}
-                    onChange={(next) => onUpdateOrderAs(line.pk, next)}
-                    options={priorMap.get(line.productCode) ?? []}
-                    placeholder="Order as"
-                  />
+            {lines.map((line) => {
+              // #639: the recon numbers ride the row itself. Zeros are truthful on a fresh import, so an
+              // absent entry falls back to 0 rather than blanking the column.
+              const ctx = lineContextByPk.get(line.pk);
+              return (
+                <Box key={line.pk} sx={{ display: 'contents' }}>
+                  <Box className="po-cell po-mono">
+                    <OrderAsAutocomplete
+                      value={orderAsValues.get(line.pk) ?? ''}
+                      onChange={(next) => onUpdateOrderAs(line.pk, next)}
+                      options={priorMap.get(line.productCode) ?? []}
+                      placeholder="Order as"
+                    />
+                  </Box>
+                  <Box className="po-cell">
+                    <Typography variant="body2" sx={{ ...monoSx, fontSize: FS_MONO }}>
+                      {line.productCode}
+                    </Typography>
+                  </Box>
+                  <Box className="po-cell">
+                    <Typography variant="body2" sx={{ fontSize: FS_CELL }}>
+                      {line.hardwareCategory}
+                    </Typography>
+                  </Box>
+                  <Box className="po-cell po-cell-right po-num">
+                    {/* #632: Qty is editable in place, ceilinged at the product's selection pool minus
+                        what sibling drafts hold. Lowering proceeds with less; widening the scope stays
+                        the selection steps' job. */}
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={line.qty}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        if (!Number.isNaN(val)) onUpdateLineQty(draft.id, line.pk, val);
+                      }}
+                      slotProps={{
+                        input: { sx: tabularSx },
+                        htmlInput: {
+                          min: 0,
+                          max:
+                            (selectionTotals.get(line.pk) ?? line.qty) -
+                            ((heldByProduct.get(line.pk) ?? line.qty) - line.qty),
+                          step: 1,
+                          'aria-label': `Quantity of ${line.productCode}`,
+                        },
+                      }}
+                      sx={{ width: '100%' }}
+                    />
+                  </Box>
+                  <Box className="po-cell po-cell-right po-num">
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={line.unitCost}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (!Number.isNaN(val) && val >= 0) onUpdateUnitCost(line.pk, val);
+                      }}
+                      slotProps={{
+                        input: {
+                          startAdornment: <InputAdornment position="start">$</InputAdornment>,
+                          sx: tabularSx,
+                        },
+                        htmlInput: { min: 0, step: 0.01 },
+                      }}
+                      sx={{ width: '100%' }}
+                    />
+                  </Box>
+                  <Box className="po-cell po-cell-right po-num">
+                    <Typography variant="body2" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                      ${line.totalCost.toFixed(2)}
+                    </Typography>
+                  </Box>
+                  <Box className="po-cell po-cell-right po-num po-sep">
+                    <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                      {ctx?.needed ?? 0}
+                    </Typography>
+                  </Box>
+                  <Box className="po-cell po-cell-right po-num">
+                    <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                      {ctx?.onOrder ?? 0}
+                    </Typography>
+                  </Box>
+                  <Box className="po-cell po-cell-right po-num">
+                    <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                      {ctx?.received ?? 0}
+                    </Typography>
+                  </Box>
+                  <Box className="po-cell po-cell-right po-num">
+                    <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                      {ctx?.available ?? 0}
+                    </Typography>
+                  </Box>
+                  <Box className="po-cell po-cell-right" sx={{ px: 0 }}>
+                    <IconButton
+                      size="small"
+                      aria-label={`Line actions for ${line.productCode}`}
+                      onClick={(e) => setRowMenu({ anchor: e.currentTarget, line })}
+                    >
+                      <MoreVertical size={16} strokeWidth={1.75} />
+                    </IconButton>
+                  </Box>
                 </Box>
-                <Box className="po-cell">
-                  <Typography variant="body2" sx={{ ...monoSx, fontSize: FS_MONO }}>
-                    {line.productCode}
-                  </Typography>
-                </Box>
-                <Box className="po-cell">
-                  <Typography variant="body2" sx={{ fontSize: FS_CELL }}>
-                    {line.hardwareCategory}
-                  </Typography>
-                </Box>
-                <Box className="po-cell po-cell-right po-num">
-                  {/* #632: Qty is editable in place, ceilinged at the product's selection pool minus
-                      what sibling drafts hold. Lowering proceeds with less; widening the scope stays
-                      the selection steps' job. */}
-                  <TextField
-                    size="small"
-                    type="number"
-                    value={line.qty}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value, 10);
-                      if (!Number.isNaN(val)) onUpdateLineQty(draft.id, line.pk, val);
-                    }}
-                    slotProps={{
-                      input: { sx: tabularSx },
-                      htmlInput: {
-                        min: 0,
-                        max:
-                          (selectionTotals.get(line.pk) ?? line.qty) -
-                          ((heldByProduct.get(line.pk) ?? line.qty) - line.qty),
-                        step: 1,
-                        'aria-label': `Quantity of ${line.productCode}`,
-                      },
-                    }}
-                    sx={{ width: '100%' }}
-                  />
-                </Box>
-                <Box className="po-cell po-cell-right po-num">
-                  <TextField
-                    size="small"
-                    type="number"
-                    value={line.unitCost}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value);
-                      if (!Number.isNaN(val) && val >= 0) onUpdateUnitCost(line.pk, val);
-                    }}
-                    slotProps={{
-                      input: {
-                        startAdornment: <InputAdornment position="start">$</InputAdornment>,
-                        sx: tabularSx,
-                      },
-                      htmlInput: { min: 0, step: 0.01 },
-                    }}
-                    sx={{ width: '100%' }}
-                  />
-                </Box>
-                <Box className="po-cell po-cell-right po-num">
-                  <Typography variant="body2" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                    ${line.totalCost.toFixed(2)}
-                  </Typography>
-                </Box>
-                <Box className="po-cell po-cell-right po-num po-sep">
-                  <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                    {ctx?.needed ?? 0}
-                  </Typography>
-                </Box>
-                <Box className="po-cell po-cell-right po-num">
-                  <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                    {ctx?.onOrder ?? 0}
-                  </Typography>
-                </Box>
-                <Box className="po-cell po-cell-right po-num">
-                  <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                    {ctx?.received ?? 0}
-                  </Typography>
-                </Box>
-                <Box className="po-cell po-cell-right po-num">
-                  <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                    {ctx?.available ?? 0}
-                  </Typography>
-                </Box>
-                <Box className="po-cell po-cell-right" sx={{ px: 0 }}>
-                  <IconButton
-                    size="small"
-                    aria-label={`Line actions for ${line.productCode}`}
-                    onClick={(e) => setRowMenu({ anchor: e.currentTarget, line })}
-                  >
-                    <MoreVertical size={16} strokeWidth={1.75} />
-                  </IconButton>
-                </Box>
-              </Box>
-            );
-          })}
+              );
+            })}
+          </Box>
         </Box>
       )}
 
