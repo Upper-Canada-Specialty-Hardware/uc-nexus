@@ -33,6 +33,7 @@ vi.mock('../../../hooks/useIdentity', () => ({
     hasRole: () => false,
     isAdmin: false,
     gpBuyerId: identity.gpBuyerId,
+    company: null,
     user: null,
   }),
 }));
@@ -113,7 +114,7 @@ function baseMocks(
         data: {
           relayStatus: {
             connected,
-            company: connected ? 'UCS' : null,
+            companies: connected ? ['UCS'] : [],
             build: connected ? 'relay-v0.1.0-build.30' : null,
             installId: connected ? 'install-1' : null,
             __typename: 'RelayStatus',
@@ -133,6 +134,7 @@ function baseMocks(
               description: 'Main St Job',
               client: 'ACME',
               jobSiteName: 'Main St',
+              company: 'UCS',
               openingCount: 3,
               __typename: 'Project',
             },
@@ -143,6 +145,7 @@ function baseMocks(
               description: 'Elm St Job',
               client: 'ACME',
               jobSiteName: 'Elm St',
+              company: 'UCS',
               openingCount: 2,
               __typename: 'Project',
             },

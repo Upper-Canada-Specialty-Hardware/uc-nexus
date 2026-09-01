@@ -56,6 +56,7 @@ function project(id: string, description: string) {
     client: null,
     jobSiteName: null,
     scheduleFilename: null,
+    company: 'TUBC',
     openingCount: 4,
     gpSetupOk: true,
     gpSetupCheckedAt: null,

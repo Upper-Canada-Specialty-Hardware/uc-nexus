@@ -26,6 +26,8 @@ interface Warehouse {
   id: string;
   name: string;
   code: string;
+  // #637: the GP company that owns the building.
+  company: string;
   address: string | null;
   city: string | null;
   province: string | null;
@@ -68,6 +70,7 @@ export default function WarehousesPage() {
       id: r.id,
       name: r.name,
       code: r.code,
+      company: r.company,
       address: r.address,
       city: r.city,
       province: r.province,
@@ -109,6 +112,18 @@ export default function WarehousesPage() {
         renderCell: (params) => (
           <Box component="span" sx={monoSx}>
             {params.row.code}
+          </Box>
+        ),
+      },
+      {
+        // #637: which GP company the building belongs to. Admin/Manager sees every company's rows
+        // here, so without this the list reads as one estate when it is several.
+        field: 'company',
+        headerName: 'Company',
+        width: 110,
+        renderCell: (params) => (
+          <Box component="span" sx={monoSx}>
+            {params.row.company}
           </Box>
         ),
       },

@@ -7,7 +7,7 @@ from datetime import date
 
 import strawberry
 
-from app.auth import current_user, resolve_display_name
+from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
 from app.errors import (
     GpSetupInvalidError,
@@ -22,6 +22,7 @@ from app.repositories import (
     po_document_settings_repository,
     po_repository,
     project_repository,
+    tenancy,
     user_repository,
 )
 from app.services import email as email_service
@@ -163,6 +164,8 @@ def _prepare_register_po(
     miscellaneous=None,
     trade_discount=None,
     project_id=None,
+    scope=None,
+    gp_company=None,
 ) -> dict:
     """Read-only pre-flight for register_po_in_gp: confirm the PO is a registerable DRAFT, resolve the
     job number, pre-validate, and build the relay create_po payload (po_number=None; GP assigns it).
@@ -177,6 +180,17 @@ def _prepare_register_po(
         po = session.scalars(select(POModel).where(POModel.id == po_id, POModel.deleted_at.is_(None))).first()
         if po is None:
             raise NotFoundError(f"Purchase order {po_id} not found")
+        # #637: refused as NOT FOUND for a caller outside the PO's company, before anything reaches GP.
+        if scope is not None and po.company != scope:
+            raise NotFoundError(f"Purchase order {po_id} not found")
+        # A PO registers into its own company's GP and no other. Checked here, in the pre-flight, so a
+        # mismatch is refused BEFORE the relay push rather than by the persist afterwards - which would
+        # leave a PO in GP that Nexus never records.
+        if gp_company is not None and (gp_company or "").strip().upper() != po.company:
+            raise ValidationError(
+                f"This purchase order belongs to {po.company} and cannot be registered in {gp_company}",
+                field="gp_company",
+            )
         if po.status != POStatus.DRAFT:
             raise InvalidStateTransitionError(f"Only a Draft PO can be registered in GP; this one is {po.status.value}")
 
@@ -192,6 +206,13 @@ def _prepare_register_po(
             project = session.get(ProjectModel, effective_project_id)
             if project is None:
                 raise NotFoundError(f"Project {effective_project_id} not found")
+            # #637: a PO and the job it is raised against belong to one tenant, so a draft can only
+            # adopt a project of its own company. Refused before the GP push, not after it.
+            if project.company != po.company:
+                raise ValidationError(
+                    f"Project {project.project_id} belongs to {project.company}, not {po.company}",
+                    field="project_id",
+                )
             job_number = project.project_id
 
         # #425: the stamped quarantine gate. Runs here, in the pre-GP pre-flight, and NOT in
@@ -296,8 +317,10 @@ class POQueries:
         self, info: strawberry.Info, project_id: strawberry.ID | None = None, status: POStatus | None = None
     ) -> list[PurchaseOrder]:
         with SessionLocal() as session:
+            scope = tenant_scope(info)
             pid = uuid.UUID(str(project_id)) if project_id else None
-            pos = po_repository.get_purchase_orders(session, pid, status)
+            tenancy.require_project_in_scope(session, pid, scope)
+            pos = po_repository.get_purchase_orders(session, pid, status, company=scope)
             return [po_to_type(po) for po in pos]
 
     @strawberry.field
@@ -307,6 +330,7 @@ class POQueries:
         from app.services import storage
 
         with SessionLocal() as session:
+            tenancy.require_po_document_in_scope(session, uuid.UUID(str(document_id)), tenant_scope(info))
             doc = po_repository.get_po_document(session, uuid.UUID(str(document_id)))
             return storage.generate_presigned_url(doc.s3_key)
 
@@ -327,12 +351,14 @@ class POQueries:
         so the register scales to GP's full PO history. Rows carry a line_item_count scalar; the detail
         modal loads lines through purchaseOrder(id)."""
         with SessionLocal() as session:
+            scope = tenant_scope(info)
             rows, counts, total = po_repository.get_purchase_orders_page(
                 session,
                 search=search,
                 statuses=list(statuses) if statuses else None,
                 origin=origin,
                 project_id=uuid.UUID(str(project_id)) if project_id else None,
+                company=scope,
                 sort_field=sort_field,
                 sort_dir=sort_dir,
                 limit=limit,
@@ -363,7 +389,7 @@ class POQueries:
     @strawberry.field
     def purchase_order(self, info: strawberry.Info, id: strawberry.ID) -> PurchaseOrder | None:
         with SessionLocal() as session:
-            po = po_repository.get_purchase_order(session, uuid.UUID(str(id)))
+            po = po_repository.get_purchase_order(session, uuid.UUID(str(id)), company=tenant_scope(info))
             if po is None:
                 return None
             receive_records = po_repository.get_receive_records_for_po(session, po.id)
@@ -385,17 +411,24 @@ class POQueries:
         catalogue number while raising a PO for another. A null project_id means a stock PO and
         scopes to the other project-less POs."""
         with SessionLocal() as session:
+            scope = tenant_scope(info)
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            tenancy.require_project_in_scope(session, pid, scope)
             result = po_repository.get_prior_order_as_values(
                 session,
-                uuid.UUID(str(project_id)) if project_id else None,
+                pid,
                 product_codes,
+                company=scope,
             )
             return [PriorOrderAsForProduct(product_code=pc, values=vals) for pc, vals in result.items()]
 
     @strawberry.field
     def po_statistics(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> POStatistics:
         with SessionLocal() as session:
-            stats = po_repository.get_po_statistics(session, uuid.UUID(str(project_id)) if project_id else None)
+            scope = tenant_scope(info)
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            tenancy.require_project_in_scope(session, pid, scope)
+            stats = po_repository.get_po_statistics(session, pid, company=scope)
             return POStatistics(
                 total=stats["total"],
                 draft=stats["draft"],
@@ -414,7 +447,10 @@ class POQueries:
     )
     def open_p_os(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[PurchaseOrder]:
         with SessionLocal() as session:
-            pos = po_repository.get_open_pos(session, uuid.UUID(str(project_id)) if project_id else None)
+            scope = tenant_scope(info)
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            tenancy.require_project_in_scope(session, pid, scope)
+            pos = po_repository.get_open_pos(session, pid, company=scope)
             return [po_to_type(po) for po in pos]
 
     @strawberry.field
@@ -422,9 +458,10 @@ class POQueries:
         """The receiving picker's open-PO list at company scale (gp-owned-po mirror). Lean rows with two
         pending-quantity scalars from a grouped query, not the line collection."""
         with SessionLocal() as session:
-            rows, pending = po_repository.get_open_pos_summary(
-                session, uuid.UUID(str(project_id)) if project_id else None
-            )
+            scope = tenant_scope(info)
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            tenancy.require_project_in_scope(session, pid, scope)
+            rows, pending = po_repository.get_open_pos_summary(session, pid, company=scope)
             return [open_po_summary_to_type(r, *(pending.get(r.id, (0, 0)))) for r in rows]
 
     @strawberry.field
@@ -480,6 +517,7 @@ class POMutations:
             for link in input.links
         ]
         with SessionLocal() as session:
+            tenancy.require_po_in_scope(session, uuid.UUID(str(input.po_id)), tenant_scope(info))
             po, total = po_repository.link_schedule_to_mirrored_po(session, uuid.UUID(str(input.po_id)), links)
             session.commit()
             return LinkScheduleResult(
@@ -510,10 +548,13 @@ class POMutations:
             for li in input.line_items
         ]
         with SessionLocal() as session:
+            scope = tenant_scope(info)
+            pid = uuid.UUID(str(input.project_id)) if input.project_id else None
+            tenancy.require_project_in_scope(session, pid, scope)
             po = po_repository.create_po(
                 session,
                 line_items=line_items_data,
-                project_id=uuid.UUID(str(input.project_id)) if input.project_id else None,
+                project_id=pid,
                 notes=input.notes,
                 shipping_cost=input.shipping_cost,
                 tariff_amount=input.tariff_amount,
@@ -521,6 +562,9 @@ class POMutations:
                 created_by_user_id=auth["user_id"],
                 cost_code=input.cost_code,
                 vendor_quote_number=input.vendor_quote_number,
+                # A stock PO has no project to take a tenant from, so it takes the caller's. An admin
+                # (unscoped) raising one must say which company it is for - `company` on the input.
+                company=scope or input.company,
             )
             session.commit()
             return po_to_type(po_repository.reload_po(session, po.id))
@@ -540,7 +584,7 @@ class POMutations:
         current_user(info)
 
         with SessionLocal() as session:
-            po = po_repository.get_purchase_order(session, uuid.UUID(str(po_id)))
+            po = po_repository.get_purchase_order(session, uuid.UUID(str(po_id)), company=tenant_scope(info))
             if po is None:
                 raise NotFoundError(f"Purchase order {po_id} not found")
             if po.status == POStatus.DRAFT.value or po.gp_vendor_id is None or not po.gp_company:
@@ -662,6 +706,8 @@ class POMutations:
             miscellaneous=input.miscellaneous,
             trade_discount=input.trade_discount,
             project_id=register_project_id,
+            scope=tenant_scope(info),
+            gp_company=input.gp_company,
         )
 
         # #425 live re-check. The job number is read back off the payload rather than returned
@@ -768,6 +814,10 @@ class POMutations:
 
         pid = uuid.UUID(str(project_id)) if project_id else _UNSET
         with SessionLocal() as session:
+            scope = tenant_scope(info)
+            tenancy.require_po_in_scope(session, uuid.UUID(str(id)), scope)
+            if pid is not _UNSET:
+                tenancy.require_project_in_scope(session, pid, scope)
             po = po_repository.update_po(
                 session,
                 uuid.UUID(str(id)),
@@ -788,6 +838,7 @@ class POMutations:
         """Edit the PO's notes at any status (#632). Notes are a Nexus-only overlay, so the
         receive/status lock `updatePo` enforces on GP-authoritative fields does not apply."""
         with SessionLocal() as session:
+            tenancy.require_po_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             po = po_repository.update_po_notes(session, uuid.UUID(str(id)), notes)
             session.commit()
             return po_to_type(po_repository.reload_po(session, po.id))
@@ -795,6 +846,7 @@ class POMutations:
     @strawberry.mutation
     def cancel_po(self, info: strawberry.Info, id: strawberry.ID) -> PurchaseOrder:
         with SessionLocal() as session:
+            tenancy.require_po_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             po = po_repository.cancel_po(session, uuid.UUID(str(id)))
             session.commit()
             session.refresh(po)
@@ -805,6 +857,7 @@ class POMutations:
         self, info: strawberry.Info, id: strawberry.ID, order_as: str | None = None
     ) -> POLineItem:
         with SessionLocal() as session:
+            tenancy.require_po_line_item_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             poli = po_repository.update_line_item_order_as(session, uuid.UUID(str(id)), order_as)
             session.commit()
             session.refresh(poli)
@@ -813,6 +866,7 @@ class POMutations:
     @strawberry.mutation
     def update_po_line_item_unit_cost(self, info: strawberry.Info, id: strawberry.ID, unit_cost: float) -> POLineItem:
         with SessionLocal() as session:
+            tenancy.require_po_line_item_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             poli = po_repository.update_line_item_unit_cost(session, uuid.UUID(str(id)), unit_cost)
             session.commit()
             session.refresh(poli)
@@ -832,6 +886,7 @@ class POMutations:
         from app.models.enums import PODocumentType as PODocTypeDB
 
         with SessionLocal() as session:
+            tenancy.require_po_in_scope(session, uuid.UUID(str(po_id)), tenant_scope(info))
             doc = po_repository.upload_po_document(
                 session,
                 uuid.UUID(str(po_id)),
@@ -847,6 +902,7 @@ class POMutations:
     @strawberry.mutation
     def delete_po_document(self, info: strawberry.Info, document_id: strawberry.ID) -> bool:
         with SessionLocal() as session:
+            tenancy.require_po_document_in_scope(session, uuid.UUID(str(document_id)), tenant_scope(info))
             po_repository.delete_po_document(session, uuid.UUID(str(document_id)))
             session.commit()
             return True
@@ -890,6 +946,7 @@ class POMutations:
         documentData, so a re-open of the dialog pre-fills. Signed-in (any PO user generates)."""
         pid = uuid.UUID(str(po_id))
         with SessionLocal() as session:
+            tenancy.require_po_in_scope(session, pid, tenant_scope(info))
             po_repository.upsert_po_document_data(
                 session,
                 pid,

@@ -99,7 +99,7 @@ class RelayInstallProvision:
 
     install_id: strawberry.ID
     label: str
-    company: str
+    companies: list[str]
     enrollment_token: str
     enrollment_token_expires_at: datetime
 
@@ -114,7 +114,9 @@ class RelayEnrollResult:
 class RelayInstallInfo:
     id: strawberry.ID
     label: str
-    company: str
+    # Every GP company this install may be called for (#637). One install can serve several, which is
+    # what the relay's own allowed_companies list always allowed and the backend did not.
+    companies: list[str]
     hostname: str | None
     enrolled: bool
     enrolled_at: datetime | None
@@ -146,10 +148,11 @@ class RelayAdoptWindow:
 @strawberry.type
 class RelayStatus:
     connected: bool
-    # The GP company the connected relay is enrolled for (null when disconnected). The PO/receive/adopt
-    # dialogs drive their company selection from this so they never offer a company the live relay can't
-    # serve - a mismatch would fail every gp_* read and reject a submit as RelayUnavailable (issue #202 #6).
-    company: str | None = None
+    # Every GP company the connected relay is enrolled for; EMPTY when disconnected (#637). The
+    # PO/receive/adopt dialogs drive their company selection from this so they never offer a company the
+    # live relay can't serve - one it does not list fails every gp_* read and is rejected as
+    # RelayUnavailable (issue #202 #6).
+    companies: list[str] = strawberry.field(default_factory=list)
     # The connected relay's build tag from its hello frame (issue #315), e.g. 'relay-v0.1.0-build.30'.
     # Null when disconnected, or when an older relay that predates the hello frame is connected. Shown on
     # the Admin -> Relay Installs page so an out-of-date relay is visible before an op fails.
@@ -606,6 +609,9 @@ class GpSetupIssue:
 @strawberry.type
 class Project:
     id: strawberry.ID
+    # The GP company that owns this project - the tenant (#637). Non-admin callers only ever see their
+    # own, so this is mostly for the admin Projects page, which spans companies.
+    company: str
     project_id: str
     description: str | None
     client: str | None
@@ -640,8 +646,36 @@ class Project:
     gp_setup_ok: bool | None
     gp_setup_checked_at: datetime | None
     gp_setup_issues: list[GpSetupIssue]
+    # Hidden from the `projects` picker every module reads, and from nothing else (#637). The admin
+    # Projects page reads `adminProjects`, which includes archived rows so they stay manageable.
+    archived: bool
     openings: list[Opening]
     purchase_orders: list[PurchaseOrder]
+
+
+@strawberry.type
+class POStatusCount:
+    """How many of a project's purchase orders sit at one status - the admin project detail's PO
+    breakdown, from one grouped query rather than a walk of the relationship."""
+
+    status: POStatus
+    count: int
+
+
+@strawberry.type
+class AdminProjectDetail:
+    """Everything the admin Projects page shows when a row is opened (#637): the project itself plus
+    the three rollups that answer "is there anything live on this job" before somebody archives it.
+
+    Each stat is one grouped aggregate in the repository - no relationship is walked, so opening a
+    project costs four queries whatever its size."""
+
+    project: Project
+    po_counts_by_status: list[POStatusCount]
+    # Sum of the project's inventory location quantities: what is physically on a shelf for this job.
+    inventory_on_hand: int
+    # Shipping-out requests that have not reached a terminal status.
+    open_shipping_request_count: int
 
 
 @strawberry.type
@@ -1638,6 +1672,10 @@ class TransferResult:
 @strawberry.type
 class Warehouse:
     id: strawberry.ID
+    # The GP company that owns the building - the tenant (#637). Everything warehouse-linked (stock,
+    # locations, receive drafts) inherits its scope from here, so the admin Warehouses page shows and
+    # edits it; a non-admin only ever sees their own company's buildings anyway.
+    company: str
     name: str
     code: str
     address: str | None
@@ -1726,6 +1764,10 @@ class ClerkUser:
     roles: list[str]
     # Issue #216: the GP BUYERID this account acts as (Clerk publicMetadata.gpBuyerId), or null.
     gp_buyer_id: str | None
+    # The GP company this account belongs to - its tenant (#637), from Clerk publicMetadata.company.
+    # Null means unassigned: an Admin/Manager is unscoped and sees every company, anyone else with no
+    # company assigned can read nothing until an admin gives them one.
+    company: str | None
     image_url: str
 
 

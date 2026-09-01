@@ -30,12 +30,16 @@ import Sidebar, { NavRail } from './Sidebar';
 import { PageTransition } from '../motion';
 import { readAuthBridge } from '../authBridge';
 import { useIdentity } from '../hooks/useIdentity';
+import CompanyGate from './CompanyGate';
 
 /** Breadcrumb segments that the auto-capitalizer gets wrong. */
 const CRUMB_LABELS: Record<string, string> = {
   po: 'Purchase Orders',
   import: 'Start a Request',
 };
+
+/** A record id in the path (#637's /app/admin/projects/:id). Title-casing a uuid reads as garbage. */
+const UUID_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const RAIL_COLLAPSED_KEY = 'uc-nexus-rail-collapsed';
 
@@ -209,7 +213,9 @@ export default function AppLayout() {
                 const path = `/app/${pathSegments.slice(0, index + 1).join('/')}`;
                 const label =
                   CRUMB_LABELS[segment] ??
-                  segment.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+                  (UUID_SEGMENT.test(segment)
+                    ? 'Detail'
+                    : segment.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()));
                 const isLast = index === pathSegments.length - 1;
 
                 return isLast ? (
@@ -225,8 +231,12 @@ export default function AppLayout() {
             </Breadcrumbs>
           )}
 
+          {/* #637: a signed-in user with no company gets the notice here instead of the module
+              routes - the shell stays so they can still sign out. */}
           <PageTransition transitionKey={moduleKey}>
-            <Outlet />
+            <CompanyGate>
+              <Outlet />
+            </CompanyGate>
           </PageTransition>
         </Box>
       </Box>

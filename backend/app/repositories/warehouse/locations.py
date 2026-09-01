@@ -15,6 +15,7 @@ from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.stock_item import StockItem as StockItemModel
 from app.models.warehouse_location import WarehouseLocation as WarehouseLocationModel
+from app.repositories import tenancy
 
 from .audit import _log_audit_event
 
@@ -69,9 +70,14 @@ def ensure_registered_location(session: Session, warehouse_id: uuid.UUID, aisle:
 
 
 def get_warehouse_locations(
-    session: Session, warehouse_id: uuid.UUID | None = None, active_only: bool = False
+    session: Session,
+    warehouse_id: uuid.UUID | None = None,
+    active_only: bool = False,
+    *,
+    company: str | None = None,
 ) -> list[WarehouseLocationModel]:
-    """The registry, ordered for pickers and the Locations tab."""
+    """The registry, ordered for pickers and the Locations tab. Scoped to the caller's company
+    (#637) through the warehouse each location belongs to."""
     stmt = select(WarehouseLocationModel).order_by(
         WarehouseLocationModel.aisle, WarehouseLocationModel.row, WarehouseLocationModel.bay
     )
@@ -79,6 +85,8 @@ def get_warehouse_locations(
         stmt = stmt.where(WarehouseLocationModel.warehouse_id == warehouse_id)
     if active_only:
         stmt = stmt.where(WarehouseLocationModel.active.is_(True))
+    if company is not None:
+        stmt = stmt.where(WarehouseLocationModel.warehouse_id.in_(tenancy.warehouse_ids_for(company)))
     return list(session.scalars(stmt).all())
 
 
@@ -170,8 +178,12 @@ def get_location_contents(
     row_name: str | None = None,
     bay: str | None = None,
     warehouse_id: uuid.UUID | None = None,
+    *,
+    company: str | None = None,
 ) -> dict:
-    """Get all inventory and stock items at a given location, optionally scoped to one warehouse."""
+    """Get all inventory and stock items at a given location, optionally scoped to one warehouse
+    and, since #637, to the caller's company - inventory through its project, stock through its
+    warehouse."""
     # Inventory locations (project-bound)
     inv_stmt = (
         select(InventoryLocationModel, POLineItemModel.unit_cost, POModel.po_number)
@@ -185,6 +197,8 @@ def get_location_contents(
         inv_stmt = inv_stmt.where(InventoryLocationModel.bay == bay)
     if warehouse_id is not None:
         inv_stmt = inv_stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
+    if company is not None:
+        inv_stmt = inv_stmt.where(InventoryLocationModel.project_id.in_(tenancy.project_ids_for(company)))
     inv_rows = session.execute(inv_stmt).all()
 
     # Stock items (company-owned pool, not project-bound)
@@ -198,6 +212,8 @@ def get_location_contents(
         si_stmt = si_stmt.where(StockItemModel.bay == bay)
     if warehouse_id is not None:
         si_stmt = si_stmt.where(StockItemModel.warehouse_id == warehouse_id)
+    if company is not None:
+        si_stmt = si_stmt.where(StockItemModel.warehouse_id.in_(tenancy.warehouse_ids_for(company)))
     stock_items = list(session.scalars(si_stmt).all())
 
     def _unit_cost(il, po_unit_cost):
@@ -219,7 +235,9 @@ def get_location_contents(
     }
 
 
-def get_location_utilization(session: Session, warehouse_id: uuid.UUID | None = None) -> list[dict]:
+def get_location_utilization(
+    session: Session, warehouse_id: uuid.UUID | None = None, *, company: str | None = None
+) -> list[dict]:
     """Distinct (warehouse, aisle, row, bay) combos with item counts and total quantities from both sources.
 
     A location string is one physical place only within a warehouse, so rows are grouped by warehouse too.
@@ -274,6 +292,9 @@ def get_location_utilization(session: Session, warehouse_id: uuid.UUID | None = 
     if warehouse_id is not None:
         inv_stmt = inv_stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
         si_stmt = si_stmt.where(StockItemModel.warehouse_id == warehouse_id)
+    if company is not None:
+        inv_stmt = inv_stmt.where(InventoryLocationModel.project_id.in_(tenancy.project_ids_for(company)))
+        si_stmt = si_stmt.where(StockItemModel.warehouse_id.in_(tenancy.warehouse_ids_for(company)))
 
     for stmt in (inv_stmt, si_stmt):
         for r in session.execute(stmt).all():
@@ -292,6 +313,8 @@ def get_location_audit_history(
     bay: str | None = None,
     limit: int = 10,
     warehouse_id: uuid.UUID | None = None,
+    *,
+    company: str | None = None,
 ) -> list[InventoryAuditLog]:
     """Recent audit log entries whose detail.fromLocation or detail.toLocation matches the location.
 
@@ -327,21 +350,27 @@ def get_location_audit_history(
             ),
         )
         .order_by(InventoryAuditLog.created_at.desc())
-        .limit(limit)
     )
-    return list(session.scalars(stmt).all())
+    if company is not None:
+        # An audit row carries the project it happened on. A row with no project (a stock movement)
+        # drops out for a scoped caller rather than being shown to everyone: there is nothing on the
+        # row to attribute it with, and showing it would be a read of another company's shelf.
+        stmt = stmt.where(InventoryAuditLog.project_id.in_(tenancy.project_ids_for(company)))
+    return list(session.scalars(stmt.limit(limit)).all())
 
 
-def get_distinct_location_values(session: Session) -> dict[str, list[str]]:
-    """Return distinct aisle/row/bay values across inventory and stock tables for autocomplete."""
+def get_distinct_location_values(session: Session, *, company: str | None = None) -> dict[str, list[str]]:
+    """Return distinct aisle/row/bay values across inventory and stock tables for autocomplete,
+    within the caller's company (#637)."""
     aisles: set[str] = set()
     row_values: set[str] = set()
     bays: set[str] = set()
 
     for model in (InventoryLocationModel, StockItemModel):
-        records = session.execute(
-            select(model.aisle, model.row, model.bay).where(model.aisle.is_not(None)).distinct()
-        ).all()
+        stmt = select(model.aisle, model.row, model.bay).where(model.aisle.is_not(None)).distinct()
+        if company is not None:
+            stmt = stmt.where(model.warehouse_id.in_(tenancy.warehouse_ids_for(company)))
+        records = session.execute(stmt).all()
         for a, b, c in records:
             if a:
                 aisles.add(a)
@@ -357,7 +386,7 @@ def get_distinct_location_values(session: Session) -> dict[str, list[str]]:
     }
 
 
-def get_location_duplicates(session: Session) -> list[dict]:
+def get_location_duplicates(session: Session, *, company: str | None = None) -> list[dict]:
     """Group location triples that collide on case-insensitive equality, scoped per warehouse.
 
     A location string is one physical place only WITHIN a warehouse, so the same (aisle, row, bay)
@@ -370,10 +399,10 @@ def get_location_duplicates(session: Session) -> list[dict]:
 
     quads: set[tuple[uuid.UUID | None, str, str | None, str | None]] = set()
     for model in (InventoryLocationModel, StockItemModel):
-        records = session.execute(
-            select(model.warehouse_id, model.aisle, model.row, model.bay).where(model.aisle.is_not(None)).distinct()
-        ).all()
-        for wh, a, b, c in records:
+        stmt = select(model.warehouse_id, model.aisle, model.row, model.bay).where(model.aisle.is_not(None)).distinct()
+        if company is not None:
+            stmt = stmt.where(model.warehouse_id.in_(tenancy.warehouse_ids_for(company)))
+        for wh, a, b, c in session.execute(stmt).all():
             quads.add((wh, a, b, c))
 
     groups: dict[tuple, list[tuple[str, str | None, str | None]]] = defaultdict(list)

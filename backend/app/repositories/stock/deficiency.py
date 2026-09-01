@@ -261,13 +261,19 @@ def get_deficient_items(
     session: Session,
     project_id: uuid.UUID | None = None,
     source: DeficientItemSource | None = None,
+    *,
+    company: str | None = None,
 ) -> list[dict]:
+    from app.repositories import tenancy
+
     rows: list[dict] = []
 
     if source is None or source == DeficientItemSource.PROJECT_INVENTORY:
         il_stmt = select(InventoryLocationModel).where(InventoryLocationModel.deficient_quantity > 0)
         if project_id is not None:
             il_stmt = il_stmt.where(InventoryLocationModel.project_id == project_id)
+        if company is not None:
+            il_stmt = il_stmt.where(InventoryLocationModel.project_id.in_(tenancy.project_ids_for(company)))
         il_stmt = il_stmt.order_by(
             InventoryLocationModel.project_id,
             InventoryLocationModel.hardware_category,
@@ -295,6 +301,8 @@ def get_deficient_items(
             .where(StockItem.deficient_quantity > 0)
             .order_by(StockItem.hardware_category, StockItem.product_code)
         )
+        if company is not None:
+            si_stmt = si_stmt.where(StockItem.warehouse_id.in_(tenancy.warehouse_ids_for(company)))
         for si in session.scalars(si_stmt).all():
             rows.append(
                 {
@@ -318,8 +326,11 @@ def get_deficiency_reviews(
     inventory_location_id: uuid.UUID | None = None,
     stock_item_id: uuid.UUID | None = None,
     project_id: uuid.UUID | None = None,
+    *,
+    company: str | None = None,
 ) -> list:
     from app.models.deficiency_review import DeficiencyReview
+    from app.repositories import tenancy
 
     stmt = select(DeficiencyReview).order_by(DeficiencyReview.reviewed_at.desc())
     if inventory_location_id is not None:
@@ -334,6 +345,22 @@ def get_deficiency_reviews(
                 DeficiencyReview.inventory_location_id.in_(il_ids),
                 # also include any review whose resulting stock item came from a project row
                 # (covered by inventory_location_id above; pure stock-side reviews don't have a project)
+            )
+        )
+    if company is not None:
+        # A review hangs off either an inventory row (project-scoped) or a stock row
+        # (warehouse-scoped), so both sides are narrowed and a review that names neither drops out
+        # rather than being visible to every tenant (#637).
+        stmt = stmt.where(
+            or_(
+                DeficiencyReview.inventory_location_id.in_(
+                    select(InventoryLocationModel.id).where(
+                        InventoryLocationModel.project_id.in_(tenancy.project_ids_for(company))
+                    )
+                ),
+                DeficiencyReview.stock_item_id.in_(
+                    select(StockItem.id).where(StockItem.warehouse_id.in_(tenancy.warehouse_ids_for(company)))
+                ),
             )
         )
     return list(session.scalars(stmt).all())

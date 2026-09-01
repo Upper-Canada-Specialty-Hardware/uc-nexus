@@ -15,26 +15,48 @@ from app.models.project import Project as ProjectModel
 logger = logging.getLogger(__name__)
 
 
-def list_projects_with_opening_counts(session: Session) -> list[tuple[ProjectModel, int]]:
+def list_projects_with_opening_counts(
+    session: Session, *, company: str | None = None, include_archived: bool = True
+) -> list[tuple[ProjectModel, int]]:
     """All projects newest-first, each paired with its opening count from one grouped query -
-    list views never lazy-load the openings relationship."""
-    projects = list(session.scalars(select(ProjectModel).order_by(ProjectModel.created_at.desc())).unique().all())
+    list views never lazy-load the openings relationship.
+
+    `company` is the caller's tenant scope (#637); None means unscoped, which is the admin answer.
+    `include_archived` is False for the picker every module reads and True for the admin page, which
+    has to keep showing an archived project to un-archive it."""
+    stmt = select(ProjectModel).order_by(ProjectModel.created_at.desc())
+    if company is not None:
+        stmt = stmt.where(ProjectModel.company == company)
+    if not include_archived:
+        stmt = stmt.where(ProjectModel.archived.is_(False))
+    projects = list(session.scalars(stmt).unique().all())
     count_rows = session.execute(select(OpeningModel.project_id, func.count()).group_by(OpeningModel.project_id)).all()
     counts: dict[uuid.UUID, int] = {pid: c for pid, c in count_rows}
     return [(p, counts.get(p.id, 0)) for p in projects]
 
 
-def get_project(session: Session, project_uuid: uuid.UUID) -> ProjectModel | None:
-    return session.get(ProjectModel, project_uuid)
+def get_project(session: Session, project_uuid: uuid.UUID, *, company: str | None = None) -> ProjectModel | None:
+    project = session.get(ProjectModel, project_uuid)
+    if project is not None and company is not None and project.company != company:
+        return None
+    return project
 
 
-def get_project_by_schedule_id(session: Session, schedule_project_id: str) -> ProjectModel | None:
-    """Project by its TITAN schedule identity (the project_id column), openings eagerly loaded."""
+def get_project_by_schedule_id(
+    session: Session, schedule_project_id: str, *, company: str | None = None
+) -> ProjectModel | None:
+    """Project by its TITAN schedule identity (the project_id column), openings eagerly loaded.
+
+    A job number is only unique WITHIN a company since #637, so an unscoped lookup can now match more
+    than one row - it returns the first, which is only correct for an admin who asked without a
+    company. Every scoped caller passes one."""
     stmt = (
         select(ProjectModel)
         .options(selectinload(ProjectModel.openings))
         .where(ProjectModel.project_id == schedule_project_id)
     )
+    if company is not None:
+        stmt = stmt.where(ProjectModel.company == company)
     return session.scalars(stmt).unique().first()
 
 
@@ -43,25 +65,35 @@ def get_project_with_openings(session: Session, project_uuid: uuid.UUID) -> Proj
     return session.scalars(stmt).unique().first()
 
 
-def adopt_gp_job(session: Session, job_number: str, job_name: str | None) -> ProjectModel:
+def adopt_gp_job(session: Session, job_number: str, job_name: str | None, company: str) -> ProjectModel:
     """Adopt a live GP job (JC00102) as a project. job_number becomes the project's identity
     (project_id, immutable); job_name is a snapshot of GP's job description at adopt time, not
-    synced afterward. Raises ConflictError if this job has already been adopted."""
+    synced afterward. Raises ConflictError if this job has already been adopted.
+
+    `company` is the GP company the job was read from (#637) and is half of the project's identity:
+    the already-adopted check is against (company, job_number), so TUBC 1001 and UCSH 1001 adopt as
+    two projects rather than the second one being refused as a duplicate of the first."""
     # job_number is the project's identity, so normalize it (the old CreateProjectDialog trimmed
     # client-side; direct callers of this mutation don't). Blank/whitespace would create an
     # identity-less project, and an un-trimmed ' 1001 ' would dodge the already-adopted check.
     job_number = (job_number or "").strip()
     if not job_number:
         raise ValidationError("job_number is required", field="job_number")
-    existing = session.scalars(select(ProjectModel).where(ProjectModel.project_id == job_number)).first()
+    company = (company or "").strip().upper()
+    if not company:
+        raise ValidationError("company is required", field="company")
+    existing = session.scalars(
+        select(ProjectModel).where(ProjectModel.project_id == job_number, ProjectModel.company == company)
+    ).first()
     if existing is not None:
         raise ConflictError(
-            f"GP job {job_number} has already been adopted as a project",
+            f"GP job {job_number} has already been adopted as a project in {company}",
             field="job_number",
         )
 
     project = ProjectModel(
         id=uuid.uuid4(),
+        company=company,
         project_id=job_number,
         description=job_name,
     )
@@ -142,12 +174,14 @@ def require_gp_setup_ok(session: Session, project_id: uuid.UUID | None) -> None:
     )
 
 
-def stamp_gp_setup_health(session: Session, verdicts: dict[str, dict]) -> int:
+def stamp_gp_setup_health(session: Session, verdicts: dict[str, dict], company: str) -> int:
     """Record the relay's per-job GP setup verdict on every project it covers (#425). Returns how many
     projects were stamped. The caller commits.
 
     `verdicts` is keyed by GP job number, which is the project's `project_id`, and each value is the
-    relay's {ok, issues} for that job. Projects GP did not report are left ALONE rather than reset to
+    relay's {ok, issues} for that job. `company` scopes the update (#637): a job number is only unique
+    within a company, so an unscoped stamp would write one company's verdict onto another company's
+    project of the same number. Projects GP did not report are left ALONE rather than reset to
     null: a job filtered out of the answer (the single-job re-check, a job deleted in GP) says nothing
     about whether its setup was fine an hour ago, and blanking the verdict would silently un-quarantine
     a broken project.
@@ -158,7 +192,12 @@ def stamp_gp_setup_health(session: Session, verdicts: dict[str, dict]) -> int:
     stamped on every pass though, changed or not: "last confirmed" is the useful reading of it."""
     now = datetime.utcnow()
     stamped = 0
-    projects = session.scalars(select(ProjectModel).where(ProjectModel.project_id.in_(list(verdicts)))).all()
+    projects = session.scalars(
+        select(ProjectModel).where(
+            ProjectModel.project_id.in_(list(verdicts)),
+            ProjectModel.company == (company or "").strip().upper(),
+        )
+    ).all()
     for project in projects:
         verdict = verdicts.get(project.project_id)
         if verdict is None:
@@ -239,3 +278,68 @@ def update_project(
 
     session.flush()
     return project
+
+
+def set_project_archived(session: Session, project_id: uuid.UUID, archived: bool) -> ProjectModel:
+    """Hide a project from the picker every module reads, or bring it back (#637).
+
+    Deliberately the whole of what archiving does. Its POs, inventory, pull requests and shipments are
+    untouched and keep working - a job that is finished being STARTED is not a job whose history stops
+    being readable, and a flag that also disabled work would be a lifecycle change nobody asked for."""
+    project = session.get(ProjectModel, project_id)
+    if project is None:
+        raise NotFoundError(f"Project {project_id} not found")
+    project.archived = archived
+    session.flush()
+    return project
+
+
+def get_admin_project_detail(session: Session, project_id: uuid.UUID) -> dict | None:
+    """The project plus the three rollups the admin Projects page shows when a row is opened (#637).
+
+    One grouped aggregate per stat and no relationship walk (CLAUDE.md perf rules): a project with
+    9,000 openings and 400 POs costs the same four queries as an empty one. Returns None when the
+    project does not exist, which the resolver turns into a null.
+    """
+    from app.models.enums import PullRequestStatus, ShippingOutRequestStatus
+    from app.models.inventory import InventoryLocation
+    from app.models.pull_request import PullRequest
+    from app.models.purchase_order import PurchaseOrder
+    from app.models.shipping_out_request import ShippingOutRequest
+
+    project = session.get(ProjectModel, project_id)
+    if project is None:
+        return None
+
+    po_counts = session.execute(
+        select(PurchaseOrder.status, func.count())
+        .where(PurchaseOrder.project_id == project_id, PurchaseOrder.deleted_at.is_(None))
+        .group_by(PurchaseOrder.status)
+    ).all()
+
+    on_hand = session.scalar(
+        select(func.coalesce(func.sum(InventoryLocation.quantity), 0)).where(InventoryLocation.project_id == project_id)
+    )
+
+    # "Open" is the request AND the pull it minted: a rejected request is finished, and so is an
+    # accepted one whose pull has been completed or cancelled - counting those would make the number
+    # grow forever and say nothing about what is still in flight. One LEFT JOIN rather than a second
+    # query, so the whole detail is still four reads.
+    open_requests = session.scalar(
+        select(func.count())
+        .select_from(ShippingOutRequest)
+        .outerjoin(PullRequest, PullRequest.id == ShippingOutRequest.pull_request_id)
+        .where(
+            ShippingOutRequest.project_id == project_id,
+            ShippingOutRequest.status != ShippingOutRequestStatus.REJECTED,
+            (PullRequest.id.is_(None))
+            | (PullRequest.status.notin_([PullRequestStatus.COMPLETED, PullRequestStatus.CANCELLED])),
+        )
+    )
+
+    return {
+        "project": project,
+        "po_counts_by_status": [(status, count) for status, count in po_counts],
+        "inventory_on_hand": int(on_hand or 0),
+        "open_shipping_request_count": int(open_requests or 0),
+    }

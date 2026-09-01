@@ -22,7 +22,10 @@ from app.schemas.project import ProjectMutations
 
 
 class _FakeInfo:
-    context = {"request": None}
+    # An ADMIN caller, seeded straight into the per-request role memo. `tenant_scope` reads it (#637)
+    # and answers None for an admin, so these tests exercise the relay gating rather than tenancy -
+    # without the seed the lookup would try to verify a JWT off a request that is not there.
+    context = {"request": None, "_auth_roles": [ADMIN_ROLE]}
 
 
 @pytest.fixture
@@ -39,6 +42,7 @@ def _clean_up_test_projects(_migrate_database):
 
 def _input(**overrides):
     fields = {
+        "company": "TUBC",
         "job_number": "NEXUS-380-T1",
         "job_name": "Test job",
         "division": "VANCOUVER",
@@ -61,7 +65,13 @@ def _relay(monkeypatch, *, company="TUBC", result=None, raises=None):
             raise raises
         return result if result is not None else {"job_number": "NEXUS-380-T1", "job_name": "Test job"}
 
-    monkeypatch.setattr(type(project_module.relay_gateway), "company", property(lambda self: company))
+    # Patched on the CLASS so the singleton answers the same way wherever it is reached from -
+    # `resolve_gp_company` lives in schemas/relay.py and holds its own reference to it (#637).
+    monkeypatch.setattr(
+        type(project_module.relay_gateway),
+        "companies",
+        property(lambda self: [company] if company else []),
+    )
     monkeypatch.setattr(project_module.relay_gateway, "relay_call", _call)
     return calls
 
@@ -107,6 +117,33 @@ def test_refuses_when_no_relay_is_connected(monkeypatch):
 
     with pytest.raises(RelayUnavailableError):
         _create()
+
+
+def test_refuses_a_company_the_relay_does_not_serve(monkeypatch):
+    """#637: the job is created in the company named on the input, and a company the connected relay
+    is not enrolled for could only fail on the round trip - so it is refused here, naming what IS
+    available, rather than 30 seconds later as a generic relay error."""
+    _relay(monkeypatch, company="TUBC")
+
+    with pytest.raises(ValidationError) as e:
+        _create(company="UCSH")
+    assert "TUBC" in str(e.value)
+
+
+def test_stamps_the_named_company_on_the_persisted_project(monkeypatch):
+    """The project's tenant is the company the job was created in (#637), not a default."""
+    _no_persist(monkeypatch)
+    _relay(monkeypatch, company="TUBC")
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        project_module.project_repository,
+        "adopt_gp_job",
+        lambda session, **kwargs: seen.append(kwargs) or object(),
+    )
+
+    _create()
+
+    assert seen[0]["company"] == "TUBC"
 
 
 def test_gp_rejection_surfaces_the_procs_own_message(monkeypatch):
@@ -156,7 +193,7 @@ def test_a_job_already_in_gp_is_adopted_rather_than_dead_ending(monkeypatch):
         return (1, 1)
 
     monkeypatch.setattr(project_module.gp_job_sync, "run_once", _fake_sync)
-    monkeypatch.setattr(project_module, "_load_project", lambda job_number: f"project:{job_number}")
+    monkeypatch.setattr(project_module, "_load_project", lambda job_number, company: f"project:{job_number}")
 
     result = _create()
     assert result.project == "project:NEXUS-380-T1"
@@ -280,7 +317,7 @@ def test_the_sync_winning_the_race_is_not_an_error(monkeypatch):
         raise ConflictError("GP job NEXUS-380-T1 has already been adopted as a project")
 
     monkeypatch.setattr(project_module.project_repository, "adopt_gp_job", _already_there)
-    monkeypatch.setattr(project_module, "_load_project", lambda job_number: f"existing:{job_number}")
+    monkeypatch.setattr(project_module, "_load_project", lambda job_number, company: f"existing:{job_number}")
 
     result = _create()
     assert result.project == "existing:NEXUS-380-T1"

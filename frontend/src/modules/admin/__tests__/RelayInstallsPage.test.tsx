@@ -35,6 +35,7 @@ vi.mock('../../../hooks/useIdentity', () => ({
     hasRole: () => true,
     isAdmin: true,
     gpBuyerId: null,
+    company: null,
     user: null,
   }),
 }));
@@ -42,7 +43,7 @@ vi.mock('../../../hooks/useIdentity', () => ({
 const INSTALL = {
   id: 'install-1',
   label: 'TAGGING3W10',
-  company: 'TUBC',
+  companies: ['TUBC', 'UCSH'],
   hostname: 'Tagging3W10',
   enrolled: true,
   enrolledAt: '2026-07-24T22:54:27.662Z',
@@ -55,7 +56,7 @@ const INSTALL = {
 
 const statusMock: MockedResponse = {
   request: { query: GET_RELAY_STATUS },
-  result: { data: { relayStatus: { connected: false, company: null, build: null, installId: null } } },
+  result: { data: { relayStatus: { connected: false, companies: [], build: null, installId: null } } },
   maxUsageCount: Number.POSITIVE_INFINITY,
 };
 
@@ -64,7 +65,7 @@ const connectedStatusMock: MockedResponse = {
   request: { query: GET_RELAY_STATUS },
   result: {
     data: {
-      relayStatus: { connected: true, company: 'TUBC', build: 'relay-v0.1.0-build.36', installId: 'install-1' },
+      relayStatus: { connected: true, companies: ['TUBC'], build: 'relay-v0.1.0-build.36', installId: 'install-1' },
     },
   },
   maxUsageCount: Number.POSITIVE_INFINITY,

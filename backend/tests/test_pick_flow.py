@@ -52,7 +52,7 @@ HINGE = ("HINGE", "HG-100")
 
 
 def _make_project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p

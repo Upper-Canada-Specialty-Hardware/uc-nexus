@@ -128,7 +128,7 @@ def test_no_drafts_leaves_the_whole_schedule_as_remainder():
 
 
 def _make_project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:6]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:6]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p

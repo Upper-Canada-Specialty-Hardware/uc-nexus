@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, Integer, String
+from sqlalchemy import Boolean, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
@@ -26,9 +26,14 @@ class ShipmentMethod(Base):
     """
 
     __tablename__ = "shipment_methods"
+    # Unique per company (#637): the list is one shipping department's own, so two tenants both
+    # running "Our truck" is two rows, not a collision.
+    __table_args__ = (UniqueConstraint("company", "name", name="uq_shipment_methods_company_name"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    # The GP company that owns this method - the tenant (#637).
+    company: Mapped[str] = mapped_column(String(15), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     # Where it sits in the dropdown. The shipping department's most-used method should be first, and
     # alphabetical is not that order.

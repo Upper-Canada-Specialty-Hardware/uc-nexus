@@ -3,7 +3,7 @@
 import strawberry
 
 from app import config
-from app.auth import user_roster
+from app.auth import tenant_scope, user_roster
 from app.database import SessionLocal
 from app.repositories import dashboard_repository
 
@@ -15,7 +15,7 @@ class DashboardQueries:
     @strawberry.field
     def home_dashboard_stats(self, info: strawberry.Info) -> HomeDashboardStats:
         with SessionLocal() as session:
-            d = dashboard_repository.get_home_dashboard_stats(session)
+            d = dashboard_repository.get_home_dashboard_stats(session, company=tenant_scope(info))
             return HomeDashboardStats(
                 open_po_count=d["open_po_count"],
                 pending_pull_request_count=d["pending_pull_request_count"],
@@ -26,7 +26,7 @@ class DashboardQueries:
     @strawberry.field
     def shop_assembly_stats(self, info: strawberry.Info) -> ShopAssemblyStats:
         with SessionLocal() as session:
-            d = dashboard_repository.get_shop_assembly_stats(session)
+            d = dashboard_repository.get_shop_assembly_stats(session, company=tenant_scope(info))
             return ShopAssemblyStats(
                 active_pull_request_count=d["active_pull_request_count"],
             )
@@ -34,7 +34,7 @@ class DashboardQueries:
     @strawberry.field
     def shipping_stats(self, info: strawberry.Info) -> ShippingStats:
         with SessionLocal() as session:
-            d = dashboard_repository.get_shipping_stats(session)
+            d = dashboard_repository.get_shipping_stats(session, company=tenant_scope(info))
             return ShippingStats(
                 pending_request_count=d["pending_request_count"],
                 staging_container_count=d["staging_container_count"],

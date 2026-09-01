@@ -18,16 +18,16 @@ from app.repositories import shipment_method_repository as methods
 
 
 def _project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p
 
 
 def test_created_methods_come_back_in_dropdown_order(db_session):
-    methods.create_shipment_method(db_session, name="Courier", sort_order=2)
-    methods.create_shipment_method(db_session, name="Our truck", sort_order=1)
-    methods.create_shipment_method(db_session, name="Customer pickup", sort_order=1)
+    methods.create_shipment_method(db_session, name="Courier", sort_order=2, company="TUBC")
+    methods.create_shipment_method(db_session, name="Our truck", sort_order=1, company="TUBC")
+    methods.create_shipment_method(db_session, name="Customer pickup", sort_order=1, company="TUBC")
 
     # sort_order first, then name - so the department's most-used method leads and ties stay stable.
     assert [m.name for m in methods.get_shipment_methods(db_session)] == [
@@ -38,23 +38,23 @@ def test_created_methods_come_back_in_dropdown_order(db_session):
 
 
 def test_a_name_is_taken_case_insensitively(db_session):
-    methods.create_shipment_method(db_session, name="Flatbed")
+    methods.create_shipment_method(db_session, name="Flatbed", company="TUBC")
     with pytest.raises(ConflictError):
-        methods.create_shipment_method(db_session, name="flatbed")
+        methods.create_shipment_method(db_session, name="flatbed", company="TUBC")
 
 
 def test_a_blank_name_is_refused(db_session):
     with pytest.raises(ValidationError):
-        methods.create_shipment_method(db_session, name="   ")
+        methods.create_shipment_method(db_session, name="   ", company="TUBC")
 
 
 def test_names_are_trimmed(db_session):
-    method = methods.create_shipment_method(db_session, name="  Our truck  ")
+    method = methods.create_shipment_method(db_session, name="  Our truck  ", company="TUBC")
     assert method.name == "Our truck"
 
 
 def test_retiring_keeps_the_row_and_takes_it_out_of_the_form_list(db_session):
-    method = methods.create_shipment_method(db_session, name="Courier")
+    method = methods.create_shipment_method(db_session, name="Courier", company="TUBC")
     methods.update_shipment_method(db_session, method.id, is_active=False)
 
     # The management screen still sees it, so retirement is not a one-way door...
@@ -64,27 +64,27 @@ def test_retiring_keeps_the_row_and_takes_it_out_of_the_form_list(db_session):
 
 
 def test_a_retired_method_can_be_brought_back(db_session):
-    method = methods.create_shipment_method(db_session, name="Courier")
+    method = methods.create_shipment_method(db_session, name="Courier", company="TUBC")
     methods.update_shipment_method(db_session, method.id, is_active=False)
     methods.update_shipment_method(db_session, method.id, is_active=True)
     assert [m.name for m in methods.get_shipment_methods(db_session, active_only=True)] == ["Courier"]
 
 
 def test_renaming_onto_another_name_is_refused(db_session):
-    methods.create_shipment_method(db_session, name="Courier")
-    other = methods.create_shipment_method(db_session, name="Our truck")
+    methods.create_shipment_method(db_session, name="Courier", company="TUBC")
+    other = methods.create_shipment_method(db_session, name="Our truck", company="TUBC")
     with pytest.raises(ConflictError):
         methods.update_shipment_method(db_session, other.id, name="courier")
 
 
 def test_renaming_to_the_same_name_is_not_a_conflict_with_itself(db_session):
-    method = methods.create_shipment_method(db_session, name="Courier")
+    method = methods.create_shipment_method(db_session, name="Courier", company="TUBC")
     methods.update_shipment_method(db_session, method.id, name="Courier", sort_order=5)
     assert method.sort_order == 5
 
 
 def test_only_the_fields_sent_are_changed(db_session):
-    method = methods.create_shipment_method(db_session, name="Courier", sort_order=3)
+    method = methods.create_shipment_method(db_session, name="Courier", sort_order=3, company="TUBC")
     methods.update_shipment_method(db_session, method.id, is_active=False)
     assert (method.name, method.sort_order, method.is_active) == ("Courier", 3, False)
 
@@ -93,7 +93,7 @@ def test_renaming_does_not_touch_a_shipment_already_sent_under_the_old_name(db_s
     # The whole reason packing_slips.shipment_method is a string and not a foreign key: a reprint is
     # the copy pulled up in a site dispute, and it has to keep saying what the driver was told.
     project = _project(db_session)
-    method = methods.create_shipment_method(db_session, name="Courier")
+    method = methods.create_shipment_method(db_session, name="Courier", company="TUBC")
     slip = PackingSlip(
         id=uuid.uuid4(),
         packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
@@ -113,7 +113,7 @@ def test_renaming_does_not_touch_a_shipment_already_sent_under_the_old_name(db_s
 
 def test_deleting_leaves_a_shipment_that_used_it_readable(db_session):
     project = _project(db_session)
-    method = methods.create_shipment_method(db_session, name="Courier")
+    method = methods.create_shipment_method(db_session, name="Courier", company="TUBC")
     slip = PackingSlip(
         id=uuid.uuid4(),
         packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",

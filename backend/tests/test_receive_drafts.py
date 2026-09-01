@@ -24,6 +24,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.auth import ADMIN_ROLE
 from app.errors import AppError, RelayUnavailableError, ValidationError
 from app.models.enums import NotificationType, POStatus, ReceiveDraftStatus
 from app.models.notification import Notification
@@ -44,7 +45,7 @@ MANAGER_NAME = "Manny Manager"
 
 
 def _make_project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p
@@ -57,8 +58,14 @@ def _make_po(session, project_id, *, ordered=10, status=POStatus.GP_REGISTERED):
         project_id=project_id,
         status=status,
         po_number=f"PO{uuid.uuid4().hex[:6]}",
+        # Deliberately NOT the same value as `company` below (#637). `gp_company` is which GP database
+        # the PO lives in and is what the relay call must be addressed to; `company` is the tenant that
+        # owns the warehouses. Keeping them different here is what proves the receive path reads the
+        # right one for each - a pre-flight that looked up the building by `gp_company` would find no
+        # warehouse at all and fail before ever reaching GP.
         gp_company="TEST",
         vendor_name_snapshot="Acme",
+        company="TUBC",
     )
     session.add(po)
     session.flush()
@@ -503,7 +510,10 @@ class _StubRelay:
 
 class _Info:
     def __init__(self):
-        self.context = {}
+        # Seeded with the caller's roles, which is where `tenant_scope` reads them from (#637): a
+        # Warehouse Manager with no company assigned would otherwise be refused before the approval
+        # logic under test ran. ADMIN_ROLE makes the caller unscoped, which is what these are about.
+        self.context = {"_auth_roles": [ADMIN_ROLE, "Warehouse Manager"]}
 
 
 @pytest.fixture

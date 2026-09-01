@@ -152,7 +152,9 @@ def create_receive(
     if warehouse_id is None:
         from app.repositories import warehouse_admin_repository
 
-        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
+        # Scoped to the PO's own company (#637): `is_primary` is a single global flag, so an unscoped
+        # fallback would book one company's delivery into another company's building.
+        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session, company=po.company)
 
     # Validate PO status
     if po.status not in (POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED):
@@ -342,9 +344,14 @@ def create_receive(
     return receive_record
 
 
-def get_po_receiving_details(session: Session, po_id: uuid.UUID) -> tuple[POModel, list[ReceiveRecordModel]]:
+def get_po_receiving_details(
+    session: Session, po_id: uuid.UUID, *, company: str | None = None
+) -> tuple[POModel, list[ReceiveRecordModel]]:
     """
     Get PO with line_items and all ReceiveRecords for that PO.
+
+    `company` is the caller's tenant scope (#637). A PO in another company is reported as NOT FOUND
+    rather than forbidden, so an id probe cannot tell an existing row from an absent one.
 
     Returns:
         Tuple of (po, receive_records)
@@ -359,7 +366,7 @@ def get_po_receiving_details(session: Session, po_id: uuid.UUID) -> tuple[POMode
         .where(POModel.id == po_id)
     )
     po = session.scalars(stmt).unique().first()
-    if po is None or po.deleted_at is not None:
+    if po is None or po.deleted_at is not None or (company is not None and po.company != company):
         raise NotFoundError(f"Purchase order {po_id} not found")
 
     # Query ReceiveRecords for this PO
@@ -374,7 +381,9 @@ def get_po_receiving_details(session: Session, po_id: uuid.UUID) -> tuple[POMode
     return (po, receive_records)
 
 
-def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
+def get_back_ordered_items(
+    session: Session, project_id: uuid.UUID | None = None, *, company: str | None = None
+) -> list[dict]:
     """PO line items where received < ordered on active POs.
 
     The project is outer-joined because this feeds the Receiving page's back-order section, which is
@@ -402,6 +411,8 @@ def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None
     )
     if project_id is not None:
         stmt = stmt.where(POModel.project_id == project_id)
+    if company is not None:
+        stmt = stmt.where(POModel.company == company)
     rows = session.execute(stmt).all()
     return [
         {
@@ -426,7 +437,9 @@ def get_back_ordered_items(session: Session, project_id: uuid.UUID | None = None
 _RECEIVING_HISTORY_MAX_ROWS = 500
 
 
-def get_receiving_history_pos(session: Session, project_id: uuid.UUID | None = None) -> list[dict]:
+def get_receiving_history_pos(
+    session: Session, project_id: uuid.UUID | None = None, *, company: str | None = None
+) -> list[dict]:
     """Every PO that has reached GP, with how much of it has landed (#447). Capped at the
     _RECEIVING_HISTORY_MAX_ROWS most-recently-received rows (gp-owned-po mirror).
 
@@ -449,7 +462,15 @@ def get_receiving_history_pos(session: Session, project_id: uuid.UUID | None = N
     receive ever recorded against every other job. The cross-project call keeps the unfiltered shape,
     because there it genuinely wants all of it.
     """
-    project_po_ids = select(POModel.id).where(POModel.project_id == project_id) if project_id is not None else None
+    # The aggregate subqueries are narrowed by the same scope as the outer query, for the reason the
+    # docstring gives about the project filter: grouping the whole of po_line_items and then throwing
+    # another company's rows away costs the same as having no scope at all.
+    po_scope = []
+    if project_id is not None:
+        po_scope.append(POModel.project_id == project_id)
+    if company is not None:
+        po_scope.append(POModel.company == company)
+    project_po_ids = select(POModel.id).where(*po_scope) if po_scope else None
 
     line_totals_stmt = select(
         POLineItemModel.po_id.label("po_id"),
@@ -502,8 +523,8 @@ def get_receiving_history_pos(session: Session, project_id: uuid.UUID | None = N
         # about to receive goes looking, and it puts them at the top of that view.
         .order_by(receive_totals.c.last_received_at.desc().nulls_last(), POModel.po_number.desc())
     )
-    if project_id is not None:
-        stmt = stmt.where(POModel.project_id == project_id)
+    if po_scope:
+        stmt = stmt.where(*po_scope)
 
     stmt = stmt.limit(_RECEIVING_HISTORY_MAX_ROWS)
 
@@ -524,9 +545,9 @@ def get_receiving_history_pos(session: Session, project_id: uuid.UUID | None = N
     ]
 
 
-def get_recent_receive_records(session: Session, limit: int = 10) -> list[tuple]:
+def get_recent_receive_records(session: Session, limit: int = 10, *, company: str | None = None) -> list[tuple]:
     """
-    Get the most recent receive records across all POs.
+    Get the most recent receive records across all POs the caller's company owns (#637).
     Returns list of (ReceiveRecord, PurchaseOrder) tuples.
     """
     stmt = (
@@ -534,9 +555,10 @@ def get_recent_receive_records(session: Session, limit: int = 10) -> list[tuple]
         .join(POModel, ReceiveRecordModel.po_id == POModel.id)
         .options(selectinload(ReceiveRecordModel.line_items))
         .order_by(ReceiveRecordModel.received_at.desc())
-        .limit(limit)
     )
-    return list(session.execute(stmt).unique().all())
+    if company is not None:
+        stmt = stmt.where(POModel.company == company)
+    return list(session.execute(stmt.limit(limit)).unique().all())
 
 
 def get_all_receives(
@@ -546,6 +568,7 @@ def get_all_receives(
     offset: int = 0,
     project_id: uuid.UUID | None = None,
     po_search: str | None = None,
+    company: str | None = None,
 ) -> list[dict]:
     """Every receive entity, drafts and booked records interleaved, newest first (#505).
 
@@ -566,6 +589,8 @@ def get_all_receives(
     def _po_filters(stmt, po_alias):
         if project_id is not None:
             stmt = stmt.where(po_alias.project_id == project_id)
+        if company is not None:
+            stmt = stmt.where(po_alias.company == company)
         if po_search:
             stmt = stmt.where(po_alias.po_number.ilike(f"%{po_search.strip()}%"))
         return stmt

@@ -206,7 +206,7 @@ def relay_install_to_type(ri) -> RelayInstallInfo:
     return RelayInstallInfo(
         id=strawberry.ID(str(ri.id)),
         label=ri.label,
-        company=ri.company,
+        companies=list(ri.companies or []),
         hostname=ri.hostname,
         enrolled=ri.enrolled_at is not None,
         enrolled_at=ri.enrolled_at,
@@ -286,6 +286,7 @@ def gp_tax_schedule_to_type(s: dict) -> GpTaxSchedule:
 def warehouse_to_type(w) -> Warehouse:
     return Warehouse(
         id=strawberry.ID(str(w.id)),
+        company=w.company,
         name=w.name,
         code=w.code,
         address=w.address,
@@ -360,6 +361,7 @@ def clerk_user_to_type(u: dict) -> ClerkUser:
         email=u["email"],
         roles=u["roles"],
         gp_buyer_id=u.get("gp_buyer_id"),
+        company=u.get("company"),
         image_url=u["image_url"],
     )
 
@@ -502,6 +504,7 @@ def project_to_type(
         opening_count = len(openings_list) if include_openings else 0
     return Project(
         id=strawberry.ID(str(p.id)),
+        company=p.company,
         project_id=p.project_id,
         description=p.description,
         client=p.client,
@@ -534,6 +537,7 @@ def project_to_type(
             GpSetupIssue(cost_code=issue["cost_code"], account_index=issue["account_index"])
             for issue in project_repository.parse_gp_setup_issues(p.gp_setup_detail)
         ],
+        archived=p.archived,
         openings=openings_list,
         purchase_orders=[],  # Loaded on demand in later tickets
     )

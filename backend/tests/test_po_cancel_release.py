@@ -21,7 +21,7 @@ from app.repositories import po_repository
 
 
 def _make_project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:6]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:6]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p
@@ -33,6 +33,7 @@ def _po_with_schedule_item(session, project, *, status=POStatus.DRAFT):
         request_number=f"PO-REQ-{uuid.uuid4().hex[:6]}",
         project_id=project.id,
         status=status,
+        company="TUBC",
     )
     session.add(po)
     session.flush()

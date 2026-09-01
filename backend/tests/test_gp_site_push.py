@@ -25,7 +25,7 @@ def _project(**kwargs) -> Project:
         zip="V9L 1A1",
     )
     defaults.update(kwargs)
-    return Project(**defaults)
+    return Project(**defaults, company="TUBC")
 
 
 def test_the_push_carries_the_job_name_and_the_site_address():

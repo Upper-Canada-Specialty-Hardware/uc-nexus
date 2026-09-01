@@ -45,12 +45,17 @@ class InventoryItemType(Base):
     """
 
     __tablename__ = "inventory_item_types"
+    # Both keys are per-company (#637). A catalog is a tenant's own, so TUBC defining FRAME must not
+    # stop UCSH defining one - a globally unique code would make the second company's catalog
+    # unbuildable, not merely awkward.
     __table_args__ = (
-        UniqueConstraint("code", name="uq_inventory_item_types_code"),
-        UniqueConstraint("name", name="uq_inventory_item_types_name"),
+        UniqueConstraint("company", "code", name="uq_inventory_item_types_company_code"),
+        UniqueConstraint("company", "name", name="uq_inventory_item_types_company_name"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # The GP company that owns this catalog entry - the tenant (#637).
+    company: Mapped[str] = mapped_column(String(15), nullable=False, index=True)
     # Uppercase, immutable, and what gets written to `hardware_category` on every row this type's
     # items produce downstream.
     code: Mapped[str] = mapped_column(String(50), nullable=False)

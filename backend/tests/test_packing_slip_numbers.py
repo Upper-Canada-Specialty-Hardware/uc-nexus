@@ -23,7 +23,7 @@ def _next_value(session) -> int:
 
 
 def _project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p

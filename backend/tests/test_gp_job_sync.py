@@ -56,8 +56,9 @@ def _relay(monkeypatch, *, company="TUBC", jobs=None, raises=None, health=None, 
             raise raises
         return {"jobs": JOBS if jobs is None else jobs}
 
-    monkeypatch.setattr(type(gp_job_sync.relay_gateway), "company", property(lambda self: company))
-    monkeypatch.setattr(type(gp_job_sync.relay_gateway), "connected", property(lambda self: company is not None))
+    companies = [company] if isinstance(company, str) else list(company or [])
+    monkeypatch.setattr(type(gp_job_sync.relay_gateway), "companies", property(lambda self: companies))
+    monkeypatch.setattr(type(gp_job_sync.relay_gateway), "connected", property(lambda self: bool(companies)))
     monkeypatch.setattr(gp_job_sync.relay_gateway, "relay_call", _call)
     return calls
 
@@ -91,7 +92,7 @@ def test_a_second_pass_adopts_nothing(monkeypatch):
 
 def test_adopts_only_the_jobs_that_are_missing(monkeypatch):
     with SessionLocal() as session:
-        project_repository.adopt_gp_job(session, job_number="SYNC-380-A", job_name="Already here")
+        project_repository.adopt_gp_job(session, job_number="SYNC-380-A", job_name="Already here", company="TUBC")
         session.commit()
     _relay(monkeypatch)
 
@@ -111,10 +112,10 @@ def test_survives_a_job_it_cannot_adopt(monkeypatch):
     _relay(monkeypatch, jobs=[{"job_number": "SYNC-380-A", "job_name": "Fine"}, {"job_number": "SYNC-380-BAD"}])
     real_adopt = project_repository.adopt_gp_job
 
-    def _explode(session, *, job_number, job_name):
+    def _explode(session, *, job_number, job_name, company):
         if job_number == "SYNC-380-BAD":
             raise RuntimeError("whatever the database refuses this row for")
-        return real_adopt(session, job_number=job_number, job_name=job_name)
+        return real_adopt(session, job_number=job_number, job_name=job_name, company=company)
 
     monkeypatch.setattr(gp_job_sync.project_repository, "adopt_gp_job", _explode)
 
@@ -257,6 +258,43 @@ def test_the_health_op_is_asked_for_the_whole_company(monkeypatch):
     health_calls = [c for c in calls if c[1] == "job_setup_health"]
     assert len(health_calls) == 1
     assert health_calls[0][2] in (None, {})
+
+
+def test_a_pass_covers_every_company_the_relay_serves(monkeypatch):
+    """#637: one relay can be enrolled for several GP companies, and a job number is only unique
+    within one - so TUBC 1001 and UCSH 1001 are two projects, not a duplicate."""
+    calls = _relay(monkeypatch, company=["TUBC", "UCSH"], jobs=[{"job_number": "SYNC-380-A", "job_name": "Shared"}])
+
+    total, adopted = asyncio.run(gp_job_sync.run_once())
+
+    # The same job number was read from both companies and adopted twice - once per tenant.
+    assert (total, adopted) == (2, 2)
+    assert [c[0] for c in calls if c[1] == "list_jobs"] == ["TUBC", "UCSH"]
+    with SessionLocal() as session:
+        rows = session.query(ProjectModel).filter(ProjectModel.project_id == "SYNC-380-A").all()
+        assert sorted(r.company for r in rows) == ["TUBC", "UCSH"]
+
+
+def test_one_companys_failure_does_not_cost_the_others_their_pass(monkeypatch):
+    """#637: a company whose GP read fails must not leave every other company's new jobs unadopted."""
+
+    async def _call(company, op, payload=None, timeout=None):
+        if company == "TUBC" and op == "list_jobs":
+            raise RuntimeError("GP is down for this company")
+        if op == "job_setup_health":
+            return {"jobs": []}
+        return {"jobs": [{"job_number": "SYNC-380-B", "job_name": "Second job"}]}
+
+    monkeypatch.setattr(type(gp_job_sync.relay_gateway), "companies", property(lambda self: ["TUBC", "UCSH"]))
+    monkeypatch.setattr(type(gp_job_sync.relay_gateway), "connected", property(lambda self: True))
+    monkeypatch.setattr(gp_job_sync.relay_gateway, "relay_call", _call)
+
+    total, adopted = asyncio.run(gp_job_sync.run_once())
+
+    assert (total, adopted) == (1, 1)
+    with SessionLocal() as session:
+        rows = session.query(ProjectModel).filter(ProjectModel.project_id == "SYNC-380-B").all()
+        assert [r.company for r in rows] == ["UCSH"]
 
 
 def test_the_live_single_job_check_filters_to_that_job(monkeypatch):

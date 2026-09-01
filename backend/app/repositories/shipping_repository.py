@@ -47,11 +47,17 @@ from app.services.locking import lock_rows
 def get_ship_ready_items(
     session: Session,
     project_id: uuid.UUID | None = None,
+    *,
+    company: str | None = None,
 ) -> dict:
     """What a completed shipping-out pull has fulfilled but no slip has consumed yet.
 
     The staging pool: hardware that is off the shelf, on a cart, and waiting for a truck. Fulfilled
     minus shipped, per (opening, category, product).
+
+    Both halves take the same company scope (#637). Scoping only one of them would subtract another
+    company's shipments from this company's staged pool - the two aggregates have to see the same
+    set of projects or the arithmetic between them is meaningless.
     """
     # 1. Sum requested_quantity from completed Shipping_Out pulls
     fulfilled_stmt = (
@@ -74,6 +80,10 @@ def get_ship_ready_items(
     )
     if project_id is not None:
         fulfilled_stmt = fulfilled_stmt.where(PullRequestModel.project_id == project_id)
+    if company is not None:
+        from app.repositories import tenancy
+
+        fulfilled_stmt = fulfilled_stmt.where(PullRequestModel.project_id.in_(tenancy.project_ids_for(company)))
     fulfilled_rows = session.execute(fulfilled_stmt).all()
     fulfilled_map: dict[tuple, int] = {}
     for row in fulfilled_rows:
@@ -100,6 +110,10 @@ def get_ship_ready_items(
     )
     if project_id is not None:
         shipped_stmt = shipped_stmt.where(PackingSlip.project_id == project_id)
+    if company is not None:
+        from app.repositories import tenancy
+
+        shipped_stmt = shipped_stmt.where(PackingSlip.project_id.in_(tenancy.project_ids_for(company)))
     shipped_rows = session.execute(shipped_stmt).all()
     shipped_map: dict[tuple, int] = {}
     for row in shipped_rows:
@@ -417,6 +431,8 @@ def mark_shipment_delivered(
 def list_packing_slips(
     session: Session,
     project_id: uuid.UUID | None = None,
+    *,
+    company: str | None = None,
 ) -> list[PackingSlip]:
     """List confirmed packing slips (newest first), optionally scoped to one project.
 
@@ -434,6 +450,10 @@ def list_packing_slips(
     )
     if project_id is not None:
         stmt = stmt.where(PackingSlip.project_id == project_id)
+    if company is not None:
+        from app.repositories import tenancy
+
+        stmt = stmt.where(PackingSlip.project_id.in_(tenancy.project_ids_for(company)))
     return list(session.scalars(stmt).unique().all())
 
 
@@ -717,6 +737,8 @@ def get_shipping_out_requests(
     project_id: uuid.UUID | None = None,
     status: ShippingOutRequestStatus | None = None,
     reopenable_only: bool = False,
+    *,
+    company: str | None = None,
 ) -> list[ShippingOutRequest]:
     """List shipping-out requests for the accept UI (#293). Defaults to PENDING when no status is
     given. Items are eagerly loaded (shipping_out_request_to_type walks them).
@@ -733,6 +755,10 @@ def get_shipping_out_requests(
     )
     if project_id is not None:
         stmt = stmt.where(ShippingOutRequest.project_id == project_id)
+    if company is not None:
+        from app.repositories import tenancy
+
+        stmt = stmt.where(ShippingOutRequest.project_id.in_(tenancy.project_ids_for(company)))
     if reopenable_only:
         stmt = stmt.join(PullRequestModel, ShippingOutRequest.pull_request_id == PullRequestModel.id).where(
             PullRequestModel.status == PullRequestStatus.PENDING

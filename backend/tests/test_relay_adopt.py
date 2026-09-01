@@ -89,7 +89,7 @@ def test_disarm_reports_whether_a_window_was_open():
 
 def test_adopt_secret_binds_the_presented_secret_and_stamps_the_audit(db_session):
     # The whole point: after adoption, the secret the relay is ALREADY dialling with authenticates.
-    install, _token = relay_repository.provision_install(db_session, label="ADOPT-ME", company="TUBC")
+    install, _token = relay_repository.provision_install(db_session, label="ADOPT-ME", companies=["TUBC"])
     presented = "the-secret-the-relay-still-holds"
     assert relay_repository.authenticate_secret(db_session, presented) is None
 
@@ -110,7 +110,7 @@ def test_adopt_secret_returns_none_when_the_row_is_gone(db_session):
 def test_adopt_secret_replaces_an_existing_credential(db_session):
     # The recovery case: the row already holds a secret, but the running relay is presenting an older
     # one. Adoption must rebind to what is being presented, and the superseded secret must stop working.
-    install, token = relay_repository.provision_install(db_session, label="DRIFTED", company="TUBC")
+    install, token = relay_repository.provision_install(db_session, label="DRIFTED", companies=["TUBC"])
     relay_repository.enroll_install(db_session, token, hostname="DRIFTED", secret="new-but-unused")
     relay_repository.adopt_secret(db_session, install.id, "old-in-memory-secret", "user_admin")
 

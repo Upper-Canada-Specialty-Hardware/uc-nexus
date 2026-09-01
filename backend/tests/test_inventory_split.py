@@ -26,7 +26,7 @@ from app.repositories import warehouse_admin_repository
 
 
 def _row(session, *, quantity=10, deficient=0):
-    project = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Split")
+    project = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Split", company="TUBC")
     session.add(project)
     session.flush()
     warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)

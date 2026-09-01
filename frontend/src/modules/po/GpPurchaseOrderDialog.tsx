@@ -24,6 +24,7 @@ import GpSetupQuarantineBanner, { GpSetupBadge } from '../../components/GpSetupQ
 import type { PurchaseOrder } from './index';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
+import { useCompanyChoice } from '../../relay/useCompanyChoice';
 import { poVendorName } from './poVendorName';
 import { computeManufacturerVendorHint, type ManufacturerSuggestion } from './manufacturerVendorHint';
 import GpErrorAlert from '../../components/GpErrorAlert';
@@ -195,8 +196,11 @@ export default function GpPurchaseOrderDialog({
   // Issue #256: only register mode talks to GP - create mode is a plain draft and needs no relay.
   // #490: create mode reads the relay too - not to talk to GP, but to offer the job's cost codes
   // at request time. A draft still never touches GP.
+  // #637: the relay can be enrolled for several companies now, so the single read-only value became
+  // a pick - defaulted to the caller's own, and no pick at all for a scoped user (they have one).
   const relay = useRelayStatus({ skip: !open });
-  const company = relay.company ?? '';
+  const companyChoice = useCompanyChoice(relay.companies);
+  const company = companyChoice.company;
   const relayStatus: boolean | null = relayConnectedProp !== undefined ? relayConnectedProp : relay.connected;
   const relayConnected = relayStatus === true;
 
@@ -1026,17 +1030,26 @@ export default function GpPurchaseOrderDialog({
           <Typography component="h3" sx={microLabelSx}>
             GP purchase order
           </Typography>
-          <RelayStatusChip connected={relayStatus} />
+          <RelayStatusChip connected={relayStatus} companies={relay.companies} />
         </Stack>
         <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-start">
-          {/* The connected relay is enrolled for exactly one company, so this is read-only, not a pick. */}
+          {/* #637: a pick only when there is something to pick - one company (or a scoped caller,
+              who acts as their own and nothing else) keeps the field read-only. */}
           <TextField
+            select={!companyChoice.locked}
             label="GP company"
-            value={company || '—'}
+            value={companyChoice.locked ? company || '—' : company}
+            onChange={(e) => companyChoice.setCompany(e.target.value)}
             size="small"
             sx={{ minWidth: 140, ...MONO_FIELD_SX }}
-            disabled
-          />
+            disabled={companyChoice.locked}
+          >
+            {companyChoice.options.map((c) => (
+              <MenuItem key={c} value={c} sx={monoSx}>
+                {c}
+              </MenuItem>
+            ))}
+          </TextField>
           {/* Issue #216: the buyer IS the caller's GP identity - display only, never a pick. */}
           <TextField
             label="Buyer (you)"

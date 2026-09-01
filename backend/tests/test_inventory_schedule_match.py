@@ -9,6 +9,7 @@ units are unclaimable until someone reconciles the two. This flag is what surfac
 import uuid
 from datetime import datetime
 
+from app.auth import ADMIN_ROLE
 from app.models.enums import Classification, HardwareItemState
 from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
@@ -18,8 +19,15 @@ from app.repositories import warehouse as warehouse_repository
 from app.repositories import warehouse_admin_repository
 
 
+class _AdminInfo:
+    """An ADMIN caller. `tenant_scope` (#637) reads the per-request role memo and answers None for
+    one, so these reads span companies exactly as they did before tenancy existed."""
+
+    context = {"_auth_roles": [ADMIN_ROLE]}
+
+
 def _make_project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p
@@ -155,7 +163,7 @@ def test_resolver_flags_a_pair_absent_from_the_schedule(db_session, monkeypatch)
     _add_inventory(db_session, project, category="Washroom", code="GRAB-BAR-42")
     _borrow(monkeypatch, db_session)
 
-    flat = _flat(WarehouseQueries().inventory_rows(None, project_id=str(project.id)))
+    flat = _flat(WarehouseQueries().inventory_rows(_AdminInfo(), project_id=str(project.id)))
     assert flat[("Washroom", "GRAB-BAR-42")] is False
 
 
@@ -167,7 +175,7 @@ def test_resolver_does_not_flag_a_pair_the_schedule_names(db_session, monkeypatc
     _add_inventory(db_session, project, category="Hinge", code="BB1279")
     _borrow(monkeypatch, db_session)
 
-    flat = _flat(WarehouseQueries().inventory_rows(None, project_id=str(project.id)))
+    flat = _flat(WarehouseQueries().inventory_rows(_AdminInfo(), project_id=str(project.id)))
     assert flat[("Hinge", "BB1279")] is True
 
 
@@ -179,7 +187,7 @@ def test_unscoped_rows_never_flag(db_session, monkeypatch):
     _add_inventory(db_session, project, category="Washroom", code="GRAB-BAR-42")
     _borrow(monkeypatch, db_session)
 
-    rows = WarehouseQueries().inventory_rows(None, project_id=None)
+    rows = WarehouseQueries().inventory_rows(_AdminInfo(), project_id=None)
     assert rows
     assert all(r.matches_schedule for r in rows)
 
@@ -200,7 +208,7 @@ def test_non_schedule_type_codes_are_never_flagged(db_session, monkeypatch):
     _add_inventory(db_session, project, category="Washroom", code="GRAB-42")
     _borrow(monkeypatch, db_session)
 
-    flat = _flat(WarehouseQueries().inventory_rows(None, project_id=str(project.id)))
+    flat = _flat(WarehouseQueries().inventory_rows(_AdminInfo(), project_id=str(project.id)))
     assert flat[(item_type.code, "FR-101")] is True
     # An ordinary category still off the schedule is still flagged - the rule narrowed, not vanished.
     assert flat[("Washroom", "GRAB-42")] is False
@@ -278,7 +286,7 @@ def test_availability_resolver_carries_the_classification(db_session, monkeypatc
     _add_inventory(db_session, project, category="Hinge", code="BB1279")
     _borrow(monkeypatch, db_session)
 
-    rows = WarehouseQueries().project_inventory_availability(None, project_id=str(project.id))
+    rows = WarehouseQueries().project_inventory_availability(_AdminInfo(), project_id=str(project.id))
     by_combo = {(r.hardware_category, r.product_code): r.classification for r in rows}
     assert by_combo[("Hinge", "BB1279")] == Classification.SHOP_HARDWARE
 

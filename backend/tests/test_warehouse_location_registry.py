@@ -34,6 +34,7 @@ def _second_warehouse(session) -> uuid.UUID:
         name=f"WH-{uuid.uuid4().hex[:8]}",
         code=f"C{uuid.uuid4().hex[:6]}",
         is_primary=False,
+        company="TUBC",
     )
     session.flush()
     return wh.id

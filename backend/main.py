@@ -327,16 +327,18 @@ async def relay_link(websocket: WebSocket):
                     # to a plain rejection and let the rebind roll back with the session.
                     install = None
                     session.rollback()
-        # Read the company while the row is still bound to the session. session.commit() below expires
+        # Read the companies while the row is still bound to the session. session.commit() below expires
         # every attribute (expire_on_commit), and leaving the `with` block detaches `install` - so any
-        # later install.company access raises DetachedInstanceError. Because that access sat AFTER
+        # later install.companies access raises DetachedInstanceError. Because that access sat AFTER
         # websocket.accept(), the exception tore down every already-accepted relay socket, so no relay
         # could ever register (relayStatus stayed false).
-        company = install.company if install is not None else None
-        # Same rule for the id (#366): read it here, beside company, while the row is still attached.
+        companies = list(install.companies or []) if install is not None else None
+        # Same rule for the id (#366): read it here, beside the companies, while the row is attached.
         install_id = install.id if install is not None else None
         session.commit()
-    if company is None:
+    if not companies:
+        # No install matched, or one enrolled for no company at all - which could serve no GP call
+        # anyway, so it is refused at the handshake rather than holding the single slot uselessly.
         await websocket.close(code=4401)
         return
 
@@ -344,7 +346,7 @@ async def relay_link(websocket: WebSocket):
     # POC scope: one relay at a time, incumbent wins (issue #202 #6). If a relay is already connected,
     # reject this one rather than superseding - superseding could drop an in-flight reply for a GP write
     # that committed, and two enrolled relays would otherwise thrash by force-closing each other.
-    if not relay_gateway.try_register(company, websocket, install_id):
+    if not relay_gateway.try_register(companies, websocket, install_id):
         await websocket.close(code=4409)
         return
     # A relay just came back: drain anything that queued while it was gone, now, rather than up to a

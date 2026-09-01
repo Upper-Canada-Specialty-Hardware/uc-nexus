@@ -26,12 +26,34 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import Sequence
 
 from fastapi import WebSocket
 
 from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_company(company: str | None) -> str:
+    """A GP company code in the one form everything compares on: trimmed and uppercase.
+
+    GP's own codes are uppercase, and a company reaches this backend from three places that spell it
+    differently - a relay_installs row, a Clerk publicMetadata value an admin typed, and a GraphQL
+    argument - so the normalization has to happen somewhere shared or the membership checks quietly
+    fail on case alone."""
+    return (company or "").strip().upper()
+
+
+def _normalize_companies(companies: Sequence[str] | str | None) -> frozenset[str]:
+    """The allowed-company set for an install. A bare string is treated as the one-company case: a
+    str is itself a Sequence[str], so iterating it would yield characters."""
+    if companies is None:
+        return frozenset()
+    if isinstance(companies, str):
+        companies = [companies]
+    return frozenset(filter(None, (normalize_company(c) for c in companies)))
+
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
@@ -67,7 +89,10 @@ DISCONNECT_REASON_SHUTDOWN = "closed for server shutdown"
 class RelayGateway:
     def __init__(self) -> None:
         self._socket: WebSocket | None = None
-        self._company: str | None = None
+        # Every GP company the live install may be called for (#637). A frozenset because the only
+        # question relay_call asks of it is membership, and the relay has always been able to serve
+        # more than one company - the single value this replaces was a backend-side assumption.
+        self._companies: frozenset[str] = frozenset()
         # Which relay_installs row authenticated the live connection (#366). Without it the backend knows
         # a relay is connected but not WHICH install it is, so delete_relay_install cannot refuse to
         # revoke the credential currently holding the connection.
@@ -99,10 +124,11 @@ class RelayGateway:
         return self._socket is not None
 
     @property
-    def company(self) -> str | None:
-        """The GP company the currently-connected relay is enrolled for (None when disconnected).
-        Surfaced on RelayStatus so the PO/receive/adopt dialogs offer only that company (issue #202 #6)."""
-        return self._company
+    def companies(self) -> list[str]:
+        """The GP companies the currently-connected relay is enrolled for; empty when disconnected.
+        Surfaced on RelayStatus so the PO/receive/adopt dialogs offer only companies the live relay can
+        actually serve (issue #202 #6, widened to a list in #637). Sorted so the answer is stable."""
+        return sorted(self._companies)
 
     @property
     def install_id(self) -> uuid.UUID | None:
@@ -118,10 +144,15 @@ class RelayGateway:
         Admin -> Relay Installs page can show which build is live."""
         return self._build
 
-    def try_register(self, company: str, websocket: WebSocket, install_id: uuid.UUID | None = None) -> bool:
+    def try_register(self, companies: Sequence[str], websocket: WebSocket, install_id: uuid.UUID | None = None) -> bool:
         """Called by the /relay-link route once a connecting socket has authenticated. Returns True and
         takes the single connection slot when it's free; returns False (route closes the socket) when a
-        relay is already connected, so the incumbent's in-flight calls are never disturbed."""
+        relay is already connected, so the incumbent's in-flight calls are never disturbed.
+
+        `companies` is the install's whole allowed list (#637). A bare string is accepted as the
+        one-company case: a str is itself a Sequence[str], so without this it would silently register
+        the set of its CHARACTERS and reject every real company."""
+        incoming = _normalize_companies(companies)
         if self._socket is not None and self._socket is not websocket:
             # A refused reconnect is otherwise completely silent (issue #384), and it is exactly what a
             # zombie incumbent looks like from the outside: the real relay dialling back in every few
@@ -129,26 +160,26 @@ class RelayGateway:
             # reaps it up to HEARTBEAT_INTERVAL_SECONDS * HEARTBEAT_MAX_MISSED later. Name the incumbent
             # and how long it has held the slot so that window is readable in the logs.
             logger.warning(
-                "relay connection refused: slot already held (holder install=%s company=%s build=%s "
-                "held_seconds=%s, refused install=%s company=%s)",
+                "relay connection refused: slot already held (holder install=%s companies=%s build=%s "
+                "held_seconds=%s, refused install=%s companies=%s)",
                 self._install_id,
-                self._company,
+                self.companies,
                 self._build,
                 self._held_seconds(),
                 install_id,
-                company,
+                sorted(incoming),
                 extra={
                     "install_id": str(self._install_id) if self._install_id is not None else None,
-                    "company": self._company,
+                    "companies": self.companies,
                     "build": self._build,
                     "held_seconds": self._held_seconds(),
                     "refused_install_id": str(install_id) if install_id is not None else None,
-                    "refused_company": company,
+                    "refused_companies": sorted(incoming),
                 },
             )
             return False
         self._socket = websocket
-        self._company = company
+        self._companies = incoming
         self._install_id = install_id
         self._build = None
         self._ops = None
@@ -187,16 +218,16 @@ class RelayGateway:
         # for whenever a structured handler is configured, matching how the rest of the backend logs.
         logger.log(
             level,
-            "relay disconnected: %s (install=%s company=%s build=%s held_seconds=%s pending_calls=%d)",
+            "relay disconnected: %s (install=%s companies=%s build=%s held_seconds=%s pending_calls=%d)",
             reason,
             self._install_id,
-            self._company,
+            self.companies,
             self._build,
             self._held_seconds(),
             len(self._pending),
             extra={
                 "install_id": str(self._install_id) if self._install_id is not None else None,
-                "company": self._company,
+                "companies": self.companies,
                 "build": self._build,
                 "held_seconds": self._held_seconds(),
                 "reason": reason,
@@ -204,7 +235,7 @@ class RelayGateway:
             },
         )
         self._socket = None
-        self._company = None
+        self._companies = frozenset()
         self._install_id = None
         self._build = None
         self._ops = None
@@ -323,8 +354,8 @@ class RelayGateway:
         itself answered ok=false)."""
         if self._socket is None:
             raise RelayUnavailableError()
-        if self._company and company != self._company:
-            raise RelayUnavailableError(f"connected relay is enrolled for {self._company}, not {company}")
+        if self._companies and company not in self._companies:
+            raise RelayUnavailableError(f"connected relay is enrolled for {', '.join(self.companies)}, not {company}")
         # Proactive parity (issue #315): if the relay advertised its op-set on connect and this op isn't
         # in it, fail fast with a clear 'update the relay' error rather than a 30s round-trip. Skipped when
         # `_ops` is None (an older relay that sends no hello) - the reactive `unknown_op` mapping below

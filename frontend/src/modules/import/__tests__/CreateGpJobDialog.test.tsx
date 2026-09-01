@@ -18,6 +18,21 @@ import { GET_PROJECTS, GET_RELAY_STATUS } from '../../../graphql/shared';
 vi.setConfig({ testTimeout: 30_000 });
 configure({ asyncUtilTimeout: 10_000 });
 
+// #637: the dialog resolves which GP company to create the job in from the caller's identity, so
+// the hook is stubbed rather than reaching for a Clerk provider this file does not mount.
+vi.mock('../../../hooks/useIdentity', () => ({
+  useIdentity: () => ({
+    displayName: 'Admin',
+    userId: 'user_admin',
+    roles: ['Admin/Manager'],
+    hasRole: () => true,
+    isAdmin: true,
+    gpBuyerId: null,
+    company: null,
+    user: null,
+  }),
+}));
+
 const INFINITE = Number.POSITIVE_INFINITY;
 const COMPANY = 'TUBC';
 
@@ -29,7 +44,7 @@ function relayStatusMock(connected: boolean): MockedResponse {
       data: {
         relayStatus: {
           connected,
-          company: connected ? COMPANY : null,
+          companies: connected ? [COMPANY] : [],
           build: connected ? 'relay-v0.1.0-build.40' : null,
           installId: connected ? 'install-1' : null,
           __typename: 'RelayStatus',
@@ -304,6 +319,7 @@ test('an adopted job does not claim it was created', async () => {
       query: CREATE_GP_JOB,
       variables: {
         input: {
+          company: COMPANY,
           jobNumber: 'NEXUS-380-T1',
           jobName: 'Test job',
           division: 'VANCOUVER',
@@ -424,6 +440,7 @@ test("a GP rejection is shown in the proc's own words and the dialog stays open"
       query: CREATE_GP_JOB,
       variables: {
         input: {
+          company: COMPANY,
           jobNumber: 'NEXUS-380-T1',
           jobName: 'Test job',
           division: 'VANCOUVER',
@@ -475,6 +492,7 @@ test('a successful submit sends only the optional fields that were filled in', a
       query: CREATE_GP_JOB,
       variables: {
         input: {
+          company: COMPANY,
           jobNumber: 'NEXUS-380-T1',
           jobName: 'Test job',
           division: 'VANCOUVER',
@@ -906,6 +924,7 @@ function createJobMock(
       query: CREATE_GP_JOB,
       variables: {
         input: {
+          company: COMPANY,
           jobNumber: 'NEXUS-380-T1',
           jobName: 'Test job',
           division: 'VANCOUVER',

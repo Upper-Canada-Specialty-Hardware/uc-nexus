@@ -74,7 +74,7 @@ function relayMock(connected = true): MockedResponse {
         relayStatus: {
           __typename: 'RelayStatus',
           connected,
-          company: connected ? 'UCSH' : null,
+          companies: connected ? ['UCSH'] : [],
           build: null,
           installId: null,
         },
@@ -95,6 +95,7 @@ function warehousesMock(): MockedResponse {
             id: 'wh-1',
             name: 'Main',
             code: 'MAIN',
+            company: 'TUBC',
             address: null,
             city: null,
             province: null,

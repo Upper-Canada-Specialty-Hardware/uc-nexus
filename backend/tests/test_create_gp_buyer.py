@@ -19,7 +19,10 @@ from app.schemas.relay import RelayMutations
 
 
 class _FakeInfo:
-    context = {"request": None}
+    # An ADMIN caller, seeded straight into the per-request role memo. `tenant_scope` reads it (#637)
+    # and answers None for an admin, so these tests exercise the relay gating rather than tenancy -
+    # without the seed the lookup would try to verify a JWT off a request that is not there.
+    context = {"request": None, "_auth_roles": [ADMIN_ROLE]}
 
 
 def _relay(monkeypatch, *, company="TUBC", result=None, raises=None):
@@ -31,7 +34,11 @@ def _relay(monkeypatch, *, company="TUBC", result=None, raises=None):
             raise raises
         return result if result is not None else {"buyer_id": "newbuyer", "description": "New Buyer"}
 
-    monkeypatch.setattr(type(relay_module.relay_gateway), "company", property(lambda self: company))
+    monkeypatch.setattr(
+        type(relay_module.relay_gateway),
+        "companies",
+        property(lambda self: [company] if company else []),
+    )
     monkeypatch.setattr(relay_module.relay_gateway, "relay_call", _call)
     return calls
 
@@ -57,7 +64,7 @@ def test_no_relay_stops_before_gp(monkeypatch):
     async def _never(*a, **k):
         raise AssertionError("the relay must not be called when none is connected")
 
-    monkeypatch.setattr(type(relay_module.relay_gateway), "company", property(lambda self: None))
+    monkeypatch.setattr(type(relay_module.relay_gateway), "companies", property(lambda self: []))
     monkeypatch.setattr(relay_module.relay_gateway, "relay_call", _never)
 
     with pytest.raises(RelayUnavailableError):

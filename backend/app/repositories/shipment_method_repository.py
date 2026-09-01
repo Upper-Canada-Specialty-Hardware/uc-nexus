@@ -15,7 +15,9 @@ from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models.shipment_method import ShipmentMethod
 
 
-def get_shipment_methods(session: Session, *, active_only: bool = False) -> list[ShipmentMethod]:
+def get_shipment_methods(
+    session: Session, *, active_only: bool = False, company: str | None = None
+) -> list[ShipmentMethod]:
     """The list, in the order the dropdown shows it: sort_order, then name.
 
     `active_only` is what the Delivery Request form passes. The management screen leaves it off so a
@@ -25,15 +27,20 @@ def get_shipment_methods(session: Session, *, active_only: bool = False) -> list
     stmt = select(ShipmentMethod).order_by(ShipmentMethod.sort_order.asc(), ShipmentMethod.name.asc())
     if active_only:
         stmt = stmt.where(ShipmentMethod.is_active.is_(True))
+    if company is not None:
+        stmt = stmt.where(ShipmentMethod.company == company)
     return list(session.scalars(stmt).all())
 
 
-def create_shipment_method(session: Session, *, name: str, sort_order: int = 0) -> ShipmentMethod:
+def create_shipment_method(session: Session, *, name: str, sort_order: int = 0, company: str) -> ShipmentMethod:
     name = (name or "").strip()
+    company = (company or "").strip().upper()
     if not name:
         raise ValidationError("A shipment method needs a name.", field="name")
-    _check_name_free(session, name)
-    method = ShipmentMethod(id=uuid.uuid4(), name=name, is_active=True, sort_order=sort_order)
+    if not company:
+        raise ValidationError("A GP company is required for a shipment method.", field="company")
+    _check_name_free(session, name, company)
+    method = ShipmentMethod(id=uuid.uuid4(), company=company, name=name, is_active=True, sort_order=sort_order)
     session.add(method)
     session.flush()
     return method
@@ -62,7 +69,7 @@ def update_shipment_method(
         if not name:
             raise ValidationError("A shipment method needs a name.", field="name")
         if name != method.name:
-            _check_name_free(session, name)
+            _check_name_free(session, name, method.company)
             method.name = name
     if is_active is not None:
         method.is_active = is_active
@@ -87,8 +94,11 @@ def delete_shipment_method(session: Session, method_id: uuid.UUID) -> None:
     session.flush()
 
 
-def _check_name_free(session: Session, name: str) -> None:
-    """One spelling per carrier, case-insensitively - "Flatbed" and "flatbed" are the same answer."""
-    existing = session.scalars(select(ShipmentMethod).where(func.lower(ShipmentMethod.name) == name.lower())).first()
+def _check_name_free(session: Session, name: str, company: str) -> None:
+    """One spelling per carrier within a company, case-insensitively - "Flatbed" and "flatbed" are
+    the same answer, and two companies each running their own "Our truck" are two rows (#637)."""
+    existing = session.scalars(
+        select(ShipmentMethod).where(func.lower(ShipmentMethod.name) == name.lower(), ShipmentMethod.company == company)
+    ).first()
     if existing is not None:
         raise ConflictError(f"A shipment method named {existing.name} already exists", field="name")

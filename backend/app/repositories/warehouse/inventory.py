@@ -13,18 +13,24 @@ from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.project import Project as ProjectModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
+from app.repositories import tenancy
 
 from .audit import _log_audit_event
 from .locations import _normalize_and_validate_location_fields, clone_origin_fields, location_detail
 
 
 def get_unlocated_inventory(
-    session: Session, project_id: uuid.UUID | None = None, warehouse_id: uuid.UUID | None = None
+    session: Session,
+    project_id: uuid.UUID | None = None,
+    warehouse_id: uuid.UUID | None = None,
+    *,
+    company: str | None = None,
 ) -> list[dict]:
     """
     Query InventoryLocation rows where aisle, row, and bay are all NULL and quantity > 0.
     Joins to POLineItem for unit_cost/classification and PurchaseOrder for po_number.
-    Optionally scoped to one warehouse so put-away can work one building at a time.
+    Optionally scoped to one warehouse so put-away can work one building at a time, and to the
+    caller's company (#637), which it inherits through the row's project.
     """
     stmt = (
         select(InventoryLocationModel, POLineItemModel.classification, POModel.po_number, POLineItemModel.unit_cost)
@@ -41,6 +47,8 @@ def get_unlocated_inventory(
         stmt = stmt.where(InventoryLocationModel.project_id == project_id)
     if warehouse_id is not None:
         stmt = stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
+    if company is not None:
+        stmt = stmt.where(InventoryLocationModel.project_id.in_(tenancy.project_ids_for(company)))
     stmt = stmt.order_by(
         InventoryLocationModel.hardware_category,
         InventoryLocationModel.product_code,
@@ -432,7 +440,11 @@ def resolve_project_combo_cost(session: Session, project_id: uuid.UUID, hardware
 
 
 def get_inventory_rows(
-    session: Session, project_id: uuid.UUID | None = None, warehouse_id: uuid.UUID | None = None
+    session: Session,
+    project_id: uuid.UUID | None = None,
+    warehouse_id: uuid.UUID | None = None,
+    *,
+    company: str | None = None,
 ) -> list[dict]:
     """Every stocked InventoryLocation as a flat row (#506).
 
@@ -468,6 +480,8 @@ def get_inventory_rows(
         stmt = stmt.where(InventoryLocationModel.project_id == project_id)
     if warehouse_id is not None:
         stmt = stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
+    if company is not None:
+        stmt = stmt.where(ProjectModel.company == company)
     stmt = stmt.order_by(
         InventoryLocationModel.hardware_category,
         InventoryLocationModel.product_code,

@@ -47,6 +47,11 @@ class CreateGpJobInput:
     cost-code dropdown empty and quarantines the project on the next gp_job_sync stamp (rule one of
     the #425 setup check) until somebody adds codes in GP."""
 
+    # The GP company the job is created in - the tenant it becomes a project of (#637). Required
+    # because a job number is only unique within a company, so "which company" is part of the job's
+    # identity rather than a preference. Validated against the connected relay's enrolled companies
+    # and, for a non-admin caller, against their own.
+    company: str
     job_number: str
     job_name: str
     division: str
@@ -79,9 +84,6 @@ class CreateGpCustomerAddressInput:
     a job site nobody had entered in GP meant abandoning the dialog, opening GP to add the address, and
     starting over. This is the same record GP's Customer Address Maintenance window creates.
 
-    No company field: the connected relay is enrolled for exactly one GP company, which is the only one
-    this could be written to - the same resolution createGpJob uses.
-
     The four required fields are what makes the row an address anyone could ship hardware to. Server-side
     truth lives in the relay's CreateCustomerAddressRequest, which trims, uppercases the code and bounds
     every value against GP's own char widths (rejecting rather than truncating); these are plain strings
@@ -92,6 +94,10 @@ class CreateGpCustomerAddressInput:
     address1: str
     city: str
 
+    # Optional for compatibility: omitted it falls back to the connected relay's company, which is
+    # unambiguous only while the install serves exactly one (#637). The create-job dialog that feeds
+    # this now chooses a company explicitly, so it should send the same one here.
+    company: str | None = None
     address2: str | None = None
     state: str | None = None
     zip_code: str | None = None
@@ -394,6 +400,11 @@ class CreateDraftPOInput:
     # exists and is typed on the PO afterwards, but a buyer working from a quote in hand has nowhere
     # to put it at creation without this.
     vendor_quote_number: str | None = None
+    # #637: which GP company a STOCK draft (no project) belongs to. Ignored when project_id is set -
+    # a PO on a job always takes the job's company - and ignored for a scoped caller, who can only
+    # raise one for their own. It exists for an Admin/Manager, who is unscoped and therefore has no
+    # company of their own for a jobless PO to inherit.
+    company: str | None = None
 
 
 @strawberry.input
@@ -469,6 +480,9 @@ class TransferInventoryInput:
 class CreateWarehouseInput:
     name: str
     code: str
+    # #637: the GP company that owns the building. Ignored for a scoped caller, who can only create
+    # one for their own; an Admin/Manager is unscoped and has to name it.
+    company: str | None = None
     address: str | None = None
     city: str | None = None
     province: str | None = None
@@ -522,6 +536,11 @@ class SavePODocumentDataInput:
 class UpdateWarehouseInput:
     name: str | None = None
     code: str | None = None
+    # #637: move the building to another GP company. Omitted (or blank) leaves it where it is, like
+    # every other field here. Admin-only, because `updateWarehouse` is - and it has to be: the stock,
+    # locations and receive drafts in the building take their tenant from it, so this moves all of
+    # them at once.
+    company: str | None = None
     address: str | None = None
     city: str | None = None
     province: str | None = None

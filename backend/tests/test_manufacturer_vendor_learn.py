@@ -16,7 +16,7 @@ from app.services import manufacturer_match
 
 
 def _make_project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:6]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:6]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p
@@ -61,6 +61,7 @@ def _create_registered_po(session, project, *, gp_vendor_id="GPV1", vendor_name=
         gp_company="TUBC",
         gp_vendor_id=gp_vendor_id,
         vendor_name_snapshot=vendor_name,
+        company="TUBC",
     )
 
 
@@ -127,7 +128,9 @@ def test_plain_draft_does_not_learn(db_session):
     _make_hardware(db_session, project, category="HINGE", code="HG-100", manufacturer="Acme Inc")
 
     # No po_number/gp_company/gp_vendor -> stays DRAFT -> nothing learned.
-    draft = po_repository.create_po(db_session, line_items=[_line("HINGE", "HG-100")], project_id=project.id)
+    draft = po_repository.create_po(
+        db_session, line_items=[_line("HINGE", "HG-100")], project_id=project.id, company="TUBC"
+    )
     assert draft.status == POStatus.DRAFT
     assert map_repo.lookup(db_session, "TUBC", "ACME") is None
 

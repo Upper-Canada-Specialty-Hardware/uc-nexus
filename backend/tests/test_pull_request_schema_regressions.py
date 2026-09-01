@@ -40,7 +40,7 @@ from tests.pick_helpers import pick_pull
 
 
 def _make_project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p
@@ -119,10 +119,27 @@ class _FakeRequest:
         self.headers = {"authorization": f"Bearer {token}"}
 
 
+def _context(company: str | None = "TUBC"):
+    """A request context with the auth memos already filled.
+
+    `get_context` returns a bare {"request": ...} and the gate fills the rest from Clerk on first
+    ask. Seeding them here is what keeps these tests off the network: since #637 a resolver also
+    resolves the caller's COMPANY, and an unseeded one reaches Clerk and fails on the missing secret
+    key long before the behaviour under test runs. The memo keys are the ones app/auth.py reads, so
+    this stubs the caller without weakening `tenant_scope`.
+
+    Roles are empty and the company is the one the fixtures build under: the operations here are open
+    to any signed-in user, and the point is that such a user works inside their own tenant."""
+    return {
+        "request": _FakeRequest(),
+        "_auth_user_id": "u_test",
+        "_auth_roles": [],
+        "_auth_company": company,
+    }
+
+
 def _execute(query: str, variables: dict | None = None):
-    return asyncio.run(
-        schema.execute(query, variable_values=variables or {}, context_value={"request": _FakeRequest()})
-    )
+    return asyncio.run(schema.execute(query, variable_values=variables or {}, context_value=_context()))
 
 
 @pytest.fixture
@@ -136,6 +153,9 @@ def signed_in(monkeypatch, db_session):
     """
     monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_test"})
     monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [])
+    # #637: belt and braces beside the seeded memo in `_context` - a resolver that builds its own
+    # context must not reach Clerk either.
+    monkeypatch.setattr(user_repository, "get_user_company", lambda user_id: "TUBC")
     monkeypatch.setattr(
         user_repository,
         "get_user",
@@ -209,7 +229,7 @@ def test_cancel_result_no_longer_exposes_released_opening_ids():
         schema.execute(
             "mutation($input: CancelPullRequestInput!){ cancelPullRequest(input:$input){ releasedOpeningIds } }",
             variable_values={"input": {"id": str(uuid.uuid4()), "reason": ""}},
-            context_value={"request": _FakeRequest()},
+            context_value=_context(),
         )
     )
     assert result.errors is not None

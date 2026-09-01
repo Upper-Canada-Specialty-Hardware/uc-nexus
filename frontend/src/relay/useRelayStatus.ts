@@ -1,11 +1,16 @@
 import { useQuery } from '@apollo/client/react';
 import { GET_RELAY_STATUS } from '../graphql/shared';
 
+// One shared empty list so a disconnected relay keeps the same array identity across renders - a
+// fresh [] each poll would invalidate every consumer's memo for nothing.
+const NO_COMPANIES: string[] = [];
+
 export interface RelayStatusInfo {
   // null = the first relayStatus check is still in flight.
   connected: boolean | null;
-  // The GP company the connected relay is enrolled for; null when disconnected.
-  company: string | null;
+  // #637: the GP companies the connected relay is enrolled for; empty when disconnected. A relay
+  // serves one workstation but can be enrolled for several companies, and a tenant IS a company.
+  companies: string[];
   // The connected relay's build tag (issue #315), e.g. 'relay-v0.1.0-build.30'. null when disconnected
   // or when an older relay that predates the hello frame is connected.
   build: string | null;
@@ -19,7 +24,7 @@ export interface RelayStatusInfo {
 // doesn't poll, which keeps this to one live poller at a time.
 export function useRelayStatus(options?: { skip?: boolean }): RelayStatusInfo {
   const { data } = useQuery<{
-    relayStatus: { connected: boolean; company: string | null; build: string | null; installId: string | null };
+    relayStatus: { connected: boolean; companies: string[]; build: string | null; installId: string | null };
   }>(GET_RELAY_STATUS, {
     pollInterval: 10_000,
     fetchPolicy: 'cache-and-network',
@@ -27,7 +32,7 @@ export function useRelayStatus(options?: { skip?: boolean }): RelayStatusInfo {
   });
   return {
     connected: data ? data.relayStatus.connected : null,
-    company: data?.relayStatus.company ?? null,
+    companies: data?.relayStatus.companies ?? NO_COMPANIES,
     build: data?.relayStatus.build ?? null,
     installId: data?.relayStatus.installId ?? null,
   };

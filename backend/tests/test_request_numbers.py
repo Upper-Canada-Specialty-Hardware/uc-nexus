@@ -14,7 +14,7 @@ from app.repositories.request_numbers import mint_request_number
 
 
 def _project(session, project_id: str) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=project_id, description="Test")
+    p = Project(id=uuid.uuid4(), project_id=project_id, description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p

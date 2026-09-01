@@ -21,12 +21,31 @@ from app.models.shipping import ShipmentReturnItem as ShipmentReturnItemModel
 from app.models.stock_item import StockItem as StockItemModel
 
 
-def get_warehouse_dashboard(session: Session) -> dict:
-    """Compute cross-project warehouse dashboard statistics."""
+def get_warehouse_dashboard(session: Session, *, company: str | None = None) -> dict:
+    """Compute cross-project warehouse dashboard statistics, within the caller's company (#637).
+
+    Every tile is filtered through the root its rows hang off - project for inventory, pull requests
+    and receives, warehouse for the stock pool - so a scoped user's dashboard totals what they can
+    actually see rather than the whole database. `company` None is the admin answer and leaves every
+    aggregate exactly as it was."""
     from datetime import timedelta
+
+    from app.repositories import tenancy
 
     now = datetime.utcnow()
     seven_days_ago = now - timedelta(days=7)
+
+    # Prebuilt so each aggregate below can add the one predicate that applies to it. A None company
+    # yields an empty list, and `*[]` in a where() is a no-op - which is what keeps the admin path
+    # byte-for-byte the query it always was.
+    project_scope = (
+        [InventoryLocationModel.project_id.in_(tenancy.project_ids_for(company))] if company is not None else []
+    )
+    warehouse_scope = (
+        [StockItemModel.warehouse_id.in_(tenancy.warehouse_ids_for(company))] if company is not None else []
+    )
+    pull_scope = [PullRequestModel.project_id.in_(tenancy.project_ids_for(company))] if company is not None else []
+    po_scope = [POModel.company == company] if company is not None else []
 
     # Total inventory value and item count — LEFT JOIN since stock-allocated rows have no PO line.
     # Cost falls back to the row's own off-PO unit_cost (the SharePoint migration), so migrated stock
@@ -41,7 +60,9 @@ def get_warehouse_dashboard(session: Session) -> dict:
                 ),
                 0,
             ),
-        ).outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        )
+        .outerjoin(POLineItemModel, InventoryLocationModel.po_line_item_id == POLineItemModel.id)
+        .where(*project_scope)
     ).one()
 
     # Unlocated count
@@ -52,6 +73,7 @@ def get_warehouse_dashboard(session: Session) -> dict:
             .where(
                 InventoryLocationModel.aisle.is_(None),
                 InventoryLocationModel.quantity > 0,
+                *project_scope,
             )
         )
         or 0
@@ -62,10 +84,14 @@ def get_warehouse_dashboard(session: Session) -> dict:
     # side. stock_value prices the pool off the rows' own off-PO unit_cost (the SharePoint migration
     # writes it; PO-received pool stock carries none and counts 0) - without it a migration landing
     # mostly STOCK entries changed total inventory value by nothing.
-    stock_item_count = session.scalar(select(func.coalesce(func.sum(StockItemModel.quantity), 0))) or 0
+    stock_item_count = (
+        session.scalar(select(func.coalesce(func.sum(StockItemModel.quantity), 0)).where(*warehouse_scope)) or 0
+    )
     stock_value = (
         session.scalar(
-            select(func.coalesce(func.sum(StockItemModel.quantity * func.coalesce(StockItemModel.unit_cost, 0)), 0))
+            select(
+                func.coalesce(func.sum(StockItemModel.quantity * func.coalesce(StockItemModel.unit_cost, 0)), 0)
+            ).where(*warehouse_scope)
         )
         or 0
     )
@@ -76,6 +102,7 @@ def get_warehouse_dashboard(session: Session) -> dict:
             .where(
                 StockItemModel.aisle.is_(None),
                 StockItemModel.quantity > 0,
+                *warehouse_scope,
             )
         )
         or 0
@@ -90,6 +117,7 @@ def get_warehouse_dashboard(session: Session) -> dict:
                 PullRequestModel.status == PullRequestStatus.PENDING,
                 PullRequestModel.source == PullRequestSource.SHOP_ASSEMBLY,
                 PullRequestModel.deleted_at.is_(None),
+                *pull_scope,
             )
         )
         or 0
@@ -102,20 +130,27 @@ def get_warehouse_dashboard(session: Session) -> dict:
                 PullRequestModel.status == PullRequestStatus.PENDING,
                 PullRequestModel.source == PullRequestSource.SHIPPING_OUT,
                 PullRequestModel.deleted_at.is_(None),
+                *pull_scope,
             )
         )
         or 0
     )
 
     # Items received in last 7 days
-    received_recent = (
-        session.scalar(
-            select(func.coalesce(func.sum(ReceiveLineItemModel.quantity_received), 0)).where(
-                ReceiveLineItemModel.created_at >= seven_days_ago,
-            )
-        )
-        or 0
+    received_recent_stmt = select(func.coalesce(func.sum(ReceiveLineItemModel.quantity_received), 0)).where(
+        ReceiveLineItemModel.created_at >= seven_days_ago,
     )
+    if company is not None:
+        from app.models.receiving import ReceiveRecord as ReceiveRecordModel
+
+        received_recent_stmt = (
+            received_recent_stmt.join(
+                ReceiveRecordModel, ReceiveLineItemModel.receive_record_id == ReceiveRecordModel.id
+            )
+            .join(POModel, ReceiveRecordModel.po_id == POModel.id)
+            .where(POModel.company == company)
+        )
+    received_recent = session.scalar(received_recent_stmt) or 0
 
     # Back-ordered: count of active POs still owed anything (received < ordered on any line).
     back_ordered_po_count = (
@@ -126,6 +161,7 @@ def get_warehouse_dashboard(session: Session) -> dict:
                 POModel.status.in_([POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
                 POModel.deleted_at.is_(None),
                 POLineItemModel.ordered_quantity > POLineItemModel.received_quantity,
+                *po_scope,
             )
         )
         or 0
@@ -136,7 +172,7 @@ def get_warehouse_dashboard(session: Session) -> dict:
     deficient_project = (
         session.scalar(
             select(func.coalesce(func.sum(InventoryLocationModel.deficient_quantity), 0)).where(
-                InventoryLocationModel.deficient_quantity > 0
+                InventoryLocationModel.deficient_quantity > 0, *project_scope
             )
         )
         or 0
@@ -144,7 +180,7 @@ def get_warehouse_dashboard(session: Session) -> dict:
     deficient_stock = (
         session.scalar(
             select(func.coalesce(func.sum(StockItemModel.deficient_quantity), 0)).where(
-                StockItemModel.deficient_quantity > 0
+                StockItemModel.deficient_quantity > 0, *warehouse_scope
             )
         )
         or 0
@@ -153,7 +189,7 @@ def get_warehouse_dashboard(session: Session) -> dict:
     # Counted receives waiting on a Warehouse Manager - the approvals badge.
     from .receive_drafts import count_pending_drafts
 
-    pending_drafts = count_pending_drafts(session)
+    pending_drafts = count_pending_drafts(session, company=company)
 
     return {
         "total_item_count": int(inv_stats[0]),

@@ -191,6 +191,8 @@ def get_shop_assembly_requests(
     project_id: uuid.UUID | None = None,
     status: ShopAssemblyRequestStatus | None = None,
     reopenable_only: bool = False,
+    *,
+    company: str | None = None,
 ) -> list[ShopAssemblyRequest]:
     """List shop-assembly requests for the requests page. Defaults to PENDING.
 
@@ -212,6 +214,10 @@ def get_shop_assembly_requests(
     )
     if project_id is not None:
         stmt = stmt.where(ShopAssemblyRequest.project_id == project_id)
+    if company is not None:
+        from app.repositories import tenancy
+
+        stmt = stmt.where(ShopAssemblyRequest.project_id.in_(tenancy.project_ids_for(company)))
     if reopenable_only:
         discardable = (
             select(ShopAssemblyBatch.id)

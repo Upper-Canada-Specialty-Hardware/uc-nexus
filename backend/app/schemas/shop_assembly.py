@@ -4,9 +4,9 @@ import uuid
 
 import strawberry
 
-from app.auth import current_user, resolve_display_name
+from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
-from app.repositories import shop_assembly_repository
+from app.repositories import shop_assembly_repository, tenancy
 
 from .converters import shop_assembly_allocation_review_to_type, shop_assembly_request_to_type
 from .enums import ShopAssemblyRequestStatus
@@ -52,8 +52,11 @@ class ShopAssemblyQueries:
         signed-in user.
         """
         with SessionLocal() as session:
+            scope = tenant_scope(info)
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            tenancy.require_project_in_scope(session, pid, scope)
             reqs = shop_assembly_repository.get_shop_assembly_requests(
-                session, uuid.UUID(str(project_id)) if project_id else None, status, reopenable_only
+                session, pid, status, reopenable_only, company=scope
             )
             return _requests_to_types(session, reqs)
 
@@ -100,6 +103,7 @@ class ShopAssemblyMutations:
         actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(input.request_id))
         with SessionLocal() as session:
+            tenancy.require_shop_assembly_request_in_scope(session, request_id, tenant_scope(info))
             shop_assembly_repository.create_shop_assembly_batch(
                 session,
                 request_id,
@@ -136,6 +140,7 @@ class ShopAssemblyMutations:
         actor = resolve_display_name(auth["user_id"])
         rid = uuid.UUID(str(request_id))
         with SessionLocal() as session:
+            tenancy.require_shop_assembly_request_in_scope(session, rid, tenant_scope(info))
             shop_assembly_repository.dismiss_shop_assembly_openings(
                 session, rid, opening_numbers, dismissed_by=actor, reason=reason
             )
@@ -154,6 +159,7 @@ class ShopAssemblyMutations:
         actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
+            tenancy.require_shop_assembly_request_in_scope(session, request_id, tenant_scope(info))
             shop_assembly_repository.reject_shop_assembly_request(session, request_id, actor, reason)
             session.commit()
             reqs = [shop_assembly_repository.get_shop_assembly_request(session, request_id)]
@@ -167,6 +173,7 @@ class ShopAssemblyMutations:
         openings back to Pending. Refused if the warehouse has already started that pull; cancel the
         pull instead. Returns the batch's request."""
         with SessionLocal() as session:
+            tenancy.require_shop_assembly_batch_in_scope(session, uuid.UUID(str(batch_id)), tenant_scope(info))
             request = shop_assembly_repository.discard_shop_assembly_batch(session, uuid.UUID(str(batch_id)))
             request_id = request.id
             session.commit()

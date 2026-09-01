@@ -179,6 +179,11 @@ def _bearer_token(request) -> str | None:
 _IDENTITY_KEY = "_auth_user_id"
 _ROLES_KEY = "_auth_roles"
 _ROSTER_KEY = "_auth_user_roster"
+_COMPANY_KEY = "_auth_company"
+# Distinguishes "not looked up yet" from "looked up and there is none", which None cannot: an
+# unassigned account is the common case for a brand-new user and must not cost a Clerk call per root
+# field of every query it makes.
+_UNRESOLVED = object()
 
 
 def authenticated_user_id(context) -> str:
@@ -223,6 +228,39 @@ def caller_roles(context) -> list[str]:
     if roles is None:
         roles = context[_ROLES_KEY] = user_repository.get_user_roles(authenticated_user_id(context))
     return roles
+
+
+def caller_company(context) -> str | None:
+    """The caller's GP company (their tenant) from Clerk publicMetadata, looked up once per request.
+
+    Same storage and the same round trip as `caller_roles` - roles and company are two keys of one
+    metadata object - so this is memoised for the same reason: a query naming eight root fields would
+    otherwise make eight `GET /users/{id}` calls to answer the same question.
+    """
+    cached = context.get(_COMPANY_KEY, _UNRESOLVED)
+    if cached is _UNRESOLVED:
+        cached = context[_COMPANY_KEY] = user_repository.get_user_company(authenticated_user_id(context))
+    return cached
+
+
+def tenant_scope(info) -> str | None:
+    """The company every row this request may touch must belong to, or None for "no restriction".
+
+    None is the ADMIN answer and only the admin answer: Admin/Manager is deliberately unscoped, because
+    the admin surface (the Projects page, the relay installs, the outbox, user management) exists to
+    look across companies. Everybody else is pinned to their own, and a caller with no company at all
+    is refused rather than silently scoped to nothing - "sees an empty app" is indistinguishable from
+    "the data is gone" from the user's side, and this way the message names the fix.
+
+    The frontend gates an unassigned user at the app shell, so the raise here is the backstop for a
+    direct GraphQL call or a stale tab, not the primary UX.
+    """
+    if ADMIN_ROLE in caller_roles(info.context):
+        return None
+    company = caller_company(info.context)
+    if not company:
+        raise ForbiddenError("No company assigned to your account. Ask an admin to assign one.")
+    return company
 
 
 def user_roster(context) -> list[dict]:

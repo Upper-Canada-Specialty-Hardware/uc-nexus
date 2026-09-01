@@ -29,8 +29,17 @@ OPEN_PO_STATUSES = (
 )
 
 
-def get_home_dashboard_stats(session: Session) -> dict:
-    """Cross-app KPIs for the Home dashboard."""
+def get_home_dashboard_stats(session: Session, *, company: str | None = None) -> dict:
+    """Cross-app KPIs for the Home dashboard, computed WITHIN the caller's company (#637).
+
+    A landing page whose numbers count another tenant's work is worse than no numbers: it is the one
+    screen everybody reads, and there is no drill-down from it that would reveal the discrepancy."""
+    from app.repositories import tenancy
+
+    po_scope = [PurchaseOrder.company == company] if company is not None else []
+    pull_scope = [PullRequest.project_id.in_(tenancy.project_ids_for(company))] if company is not None else []
+    project_scope = [Project.company == company] if company is not None else []
+
     open_pos = (
         session.scalar(
             select(func.count())
@@ -38,6 +47,7 @@ def get_home_dashboard_stats(session: Session) -> dict:
             .where(
                 PurchaseOrder.deleted_at.is_(None),
                 PurchaseOrder.status.in_(OPEN_PO_STATUSES),
+                *po_scope,
             )
         )
         or 0
@@ -50,6 +60,7 @@ def get_home_dashboard_stats(session: Session) -> dict:
             .where(
                 PullRequest.deleted_at.is_(None),
                 PullRequest.status == PullRequestStatus.PENDING,
+                *pull_scope,
             )
         )
         or 0
@@ -64,12 +75,18 @@ def get_home_dashboard_stats(session: Session) -> dict:
                 PurchaseOrder.deleted_at.is_(None),
                 PurchaseOrder.status.in_(OPEN_PO_STATUSES),
                 POLineItem.ordered_quantity > POLineItem.received_quantity,
+                *po_scope,
             )
         )
         or 0
     )
 
-    project_count = session.scalar(select(func.count()).select_from(Project)) or 0
+    # Archived projects are excluded here as they are from the picker (#637): the tile answers
+    # "how many jobs are live", and an archived one is not.
+    project_count = (
+        session.scalar(select(func.count()).select_from(Project).where(Project.archived.is_(False), *project_scope))
+        or 0
+    )
 
     return {
         "open_po_count": int(open_pos),
@@ -79,8 +96,12 @@ def get_home_dashboard_stats(session: Session) -> dict:
     }
 
 
-def get_shop_assembly_stats(session: Session) -> dict:
-    """KPIs for the Shop Assembly landing."""
+def get_shop_assembly_stats(session: Session, *, company: str | None = None) -> dict:
+    """KPIs for the Shop Assembly landing, within the caller's company (#637)."""
+    from app.repositories import tenancy
+
+    pull_scope = [PullRequest.project_id.in_(tenancy.project_ids_for(company))] if company is not None else []
+
     active_shop_pulls = (
         session.scalar(
             select(func.count())
@@ -89,6 +110,7 @@ def get_shop_assembly_stats(session: Session) -> dict:
                 PullRequest.deleted_at.is_(None),
                 PullRequest.source == PullRequestSource.SHOP_ASSEMBLY,
                 PullRequest.status.in_((PullRequestStatus.PENDING, PullRequestStatus.IN_PROGRESS)),
+                *pull_scope,
             )
         )
         or 0
@@ -99,14 +121,21 @@ def get_shop_assembly_stats(session: Session) -> dict:
     }
 
 
-def get_shipping_stats(session: Session) -> dict:
-    """Pipeline gauges for the Shipping landing (#589). Every figure is a scalar count with no
-    relationship load, per the project's N+1 rules."""
+def get_shipping_stats(session: Session, *, company: str | None = None) -> dict:
+    """Pipeline gauges for the Shipping landing (#589), within the caller's company (#637). Every
+    figure is a scalar count with no relationship load, per the project's N+1 rules."""
+    from app.repositories import tenancy
+
+    projects = tenancy.project_ids_for(company) if company is not None else None
+    request_scope = [ShippingOutRequest.project_id.in_(projects)] if projects is not None else []
+    container_scope = [ShipmentContainer.project_id.in_(projects)] if projects is not None else []
+    slip_scope = [PackingSlip.project_id.in_(projects)] if projects is not None else []
+
     pending_requests = (
         session.scalar(
             select(func.count())
             .select_from(ShippingOutRequest)
-            .where(ShippingOutRequest.status == ShippingOutRequestStatus.PENDING)
+            .where(ShippingOutRequest.status == ShippingOutRequestStatus.PENDING, *request_scope)
         )
         or 0
     )
@@ -114,21 +143,27 @@ def get_shipping_stats(session: Session) -> dict:
     # Open containers: still being built, so no slip stamped on them yet (see ShipmentContainer).
     staging_containers = (
         session.scalar(
-            select(func.count()).select_from(ShipmentContainer).where(ShipmentContainer.packing_slip_id.is_(None))
+            select(func.count())
+            .select_from(ShipmentContainer)
+            .where(ShipmentContainer.packing_slip_id.is_(None), *container_scope)
         )
         or 0
     )
 
     scheduled_shipments = (
         session.scalar(
-            select(func.count()).select_from(PackingSlip).where(PackingSlip.status == ShipmentStatus.SCHEDULED)
+            select(func.count())
+            .select_from(PackingSlip)
+            .where(PackingSlip.status == ShipmentStatus.SCHEDULED, *slip_scope)
         )
         or 0
     )
 
     in_transit_shipments = (
         session.scalar(
-            select(func.count()).select_from(PackingSlip).where(PackingSlip.status == ShipmentStatus.PICKED_UP)
+            select(func.count())
+            .select_from(PackingSlip)
+            .where(PackingSlip.status == ShipmentStatus.PICKED_UP, *slip_scope)
         )
         or 0
     )

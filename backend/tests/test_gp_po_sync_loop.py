@@ -95,7 +95,7 @@ def test_backfill_is_bounded_by_max_pages(monkeypatch):
 
 
 def test_run_once_forwards_the_backfill_cap(monkeypatch):
-    monkeypatch.setattr(gp_po_sync.relay_gateway, "_company", "TUBC")
+    monkeypatch.setattr(gp_po_sync.relay_gateway, "_companies", frozenset({"TUBC"}))
     monkeypatch.setattr(gp_po_sync, "_backfill_done", lambda c: False)
     captured = {}
 

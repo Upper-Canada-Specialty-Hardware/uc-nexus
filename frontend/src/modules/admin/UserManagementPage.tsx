@@ -14,11 +14,18 @@ import {
   Avatar,
   Stack,
   TextField,
+  MenuItem,
   Chip,
 } from '@mui/material';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useQuery, useMutation } from '@apollo/client/react';
-import { GET_USERS, UPDATE_USER_GP_BUYER_ID, UPDATE_USER_NAME, UPDATE_USER_ROLES } from '../../graphql/admin';
+import {
+  GET_USERS,
+  UPDATE_USER_COMPANY,
+  UPDATE_USER_GP_BUYER_ID,
+  UPDATE_USER_NAME,
+  UPDATE_USER_ROLES,
+} from '../../graphql/admin';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import { microLabelSx, monoSx } from '../../theme';
@@ -52,8 +59,14 @@ interface ClerkUser {
   roles: string[];
   // Issue #216: the GP BUYERID this account acts as when creating POs, or null.
   gpBuyerId: string | null;
+  // #637: the GP company (tenant) this account is scoped to, or null - which leaves the holder
+  // behind the "no company assigned" notice with nothing to see.
+  company: string | null;
   imageUrl: string;
 }
+
+/** The clear option's value. '' rather than null so MUI's Select has something to match on. */
+const NO_COMPANY = '';
 
 const columns: GridColDef[] = [
   {
@@ -114,6 +127,22 @@ const columns: GridColDef[] = [
     },
   },
   {
+    // #637: which tenant the account belongs to. Unset is the state that matters most here - it is
+    // why that person sees an empty app - so it reads as a warning rather than a dash.
+    field: 'company',
+    headerName: 'Company',
+    width: 130,
+    valueGetter: (_value: unknown, row: ClerkUser) => row.company || '',
+    renderCell: (params) =>
+      params.row.company ? (
+        <Box component="span" sx={monoSx}>
+          {params.row.company}
+        </Box>
+      ) : (
+        <Chip label="Unassigned" size="small" color="warning" />
+      ),
+  },
+  {
     field: 'gpBuyerId',
     headerName: 'GP Buyer',
     width: 120,
@@ -132,6 +161,8 @@ export default function UserManagementPage() {
   const [selectedUser, setSelectedUser] = useState<ClerkUser | null>(null);
   const [editRoles, setEditRoles] = useState<string[]>([]);
   const [editGpBuyerId, setEditGpBuyerId] = useState<string | null>(null);
+  // #637: the tenant this account is scoped to. '' is the deliberate "no company" choice.
+  const [editCompany, setEditCompany] = useState<string>(NO_COMPANY);
   // Issue #240: admin-editable display name (Clerk first/last name).
   const [editFirstName, setEditFirstName] = useState('');
   const [editLastName, setEditLastName] = useState('');
@@ -142,11 +173,25 @@ export default function UserManagementPage() {
 
   // Issue #409: GP's live buyer master backs the buyer field below. Only polled while the edit dialog
   // is open - the grid shows whatever id is already stored and needs no GP round-trip for that.
-  const gpBuyers = useGpBuyers({ skip: !selectedUser });
+  // #637: read for the company being assigned, not the admin's own - buyer ids are per company, and
+  // offering another company's roster is how a PO gets rejected weeks later.
+  const gpBuyers = useGpBuyers({ skip: !selectedUser, company: editCompany || null });
+
+  // #637: the companies the live relay serves, plus whatever this user already holds - a stored
+  // company must not vanish from the list just because the relay that serves it is between runs.
+  const companyOptions = useMemo(() => {
+    const list = [...gpBuyers.companies];
+    if (editCompany && !list.includes(editCompany)) list.push(editCompany);
+    return list;
+  }, [gpBuyers.companies, editCompany]);
+  const companyLocked = gpBuyers.companies.length === 0;
 
   const [updateRoles] = useMutation(UPDATE_USER_ROLES);
   const [updateName] = useMutation(UPDATE_USER_NAME);
   const [updateGpBuyerId] = useMutation(UPDATE_USER_GP_BUYER_ID, {
+    refetchQueries: [{ query: GET_USERS }],
+  });
+  const [updateCompany] = useMutation(UPDATE_USER_COMPANY, {
     refetchQueries: [{ query: GET_USERS }],
   });
 
@@ -154,6 +199,7 @@ export default function UserManagementPage() {
     setSelectedUser(params.row);
     setEditRoles(params.row.roles);
     setEditGpBuyerId(params.row.gpBuyerId);
+    setEditCompany(params.row.company ?? NO_COMPANY);
     setEditFirstName(params.row.firstName ?? '');
     setEditLastName(params.row.lastName ?? '');
   }, []);
@@ -194,6 +240,11 @@ export default function UserManagementPage() {
       if (editGpBuyerId !== (selectedUser.gpBuyerId ?? null)) {
         await updateGpBuyerId({ variables: { userId: selectedUser.id, gpBuyerId: editGpBuyerId } });
       }
+      // #637: same only-when-changed rule. While the relay is down the field is read-only and still
+      // holds the stored company, so an unconditional write would re-PATCH Clerk on every save.
+      if ((editCompany || null) !== (selectedUser.company ?? null)) {
+        await updateCompany({ variables: { userId: selectedUser.id, company: editCompany || null } });
+      }
       showToast('User updated successfully', 'success');
       setSelectedUser(null);
     } catch (err: unknown) {
@@ -201,7 +252,19 @@ export default function UserManagementPage() {
     } finally {
       setSaving(false);
     }
-  }, [selectedUser, editRoles, editFirstName, editLastName, editGpBuyerId, updateRoles, updateName, updateGpBuyerId, showToast]);
+  }, [
+    selectedUser,
+    editRoles,
+    editFirstName,
+    editLastName,
+    editGpBuyerId,
+    editCompany,
+    updateRoles,
+    updateName,
+    updateGpBuyerId,
+    updateCompany,
+    showToast,
+  ]);
 
   if (!isAdmin) {
     return (
@@ -218,7 +281,8 @@ export default function UserManagementPage() {
           User Management
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Click a user to manage their roles and GP buyer identity.
+          Click a user to manage their company, roles and GP buyer identity. A user with no company
+          sees no data at all until one is assigned.
         </Typography>
       </FadeIn>
 
@@ -291,6 +355,47 @@ export default function UserManagementPage() {
               sx={{ flex: 1 }}
             />
           </Stack>
+          <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
+            Company
+          </Typography>
+          {/* #637: the tenant this account is scoped to. Every read the app makes on their behalf is
+              filtered to it, so an unset one is not a blank field - it is an account that can see
+              nothing. The options are the companies the live relay serves; with the relay down the
+              stored value still shows, read-only, rather than looking unset. */}
+          {companyLocked ? (
+            <TextField
+              label="Company"
+              value={editCompany || '—'}
+              size="small"
+              sx={{ width: 320, mb: 2 }}
+              disabled
+              helperText="The GP relay must be connected to change this."
+              slotProps={{ input: { sx: monoSx } }}
+            />
+          ) : (
+            <TextField
+              select
+              label="Company"
+              value={editCompany}
+              onChange={(e) => setEditCompany(e.target.value)}
+              size="small"
+              sx={{ width: 320, mb: 2 }}
+              helperText={
+                editCompany
+                  ? 'Every project, PO and inventory row this account sees is scoped to it.'
+                  : 'No company - this account sees no data until one is assigned.'
+              }
+            >
+              <MenuItem value={NO_COMPANY}>
+                <em>None</em>
+              </MenuItem>
+              {companyOptions.map((c) => (
+                <MenuItem key={c} value={c} sx={monoSx}>
+                  {c}
+                </MenuItem>
+              ))}
+            </TextField>
+          )}
           <Typography component="div" sx={{ ...microLabelSx, mb: 0.5 }}>
             Roles
           </Typography>

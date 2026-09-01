@@ -64,15 +64,22 @@ def wake() -> None:
             logger.exception("gp job sync: failed to signal the worker")
 
 
-def _persist_missing(jobs: list[dict]) -> tuple[int, int]:
-    """Create a project for every reported job that doesn't have one. Returns (total, adopted).
+def _persist_missing(jobs: list[dict], company: str) -> tuple[int, int]:
+    """Create a project for every reported job that doesn't have one IN THIS COMPANY. Returns
+    (total, adopted).
+
+    The existing-project set is per company (#637): a job number is only unique within one, so a set
+    built across all of them would silently skip adopting UCSH's job 1001 because TUBC already has a
+    project of that number.
 
     Committed per row rather than in one batch: one bad job (a number too long for the column, a
     duplicate racing a create) must not discard the other fourteen. A ConflictError means someone
     else - create_gp_job, or an earlier pass - got there first, which is the expected outcome on every
     pass after the first and not worth logging."""
     with SessionLocal() as session:
-        existing = {pid for pid in session.scalars(select(ProjectModel.project_id)).all()}
+        existing = {
+            pid for pid in session.scalars(select(ProjectModel.project_id).where(ProjectModel.company == company)).all()
+        }
 
         total = 0
         adopted = 0
@@ -88,19 +95,19 @@ def _persist_missing(jobs: list[dict]) -> tuple[int, int]:
 
             job_name = str(job.get("job_name") or "").strip() or None
             try:
-                project_repository.adopt_gp_job(session, job_number=job_number, job_name=job_name)
+                project_repository.adopt_gp_job(session, job_number=job_number, job_name=job_name, company=company)
                 session.commit()
                 adopted += 1
             except ConflictError:
                 session.rollback()
             except Exception:  # noqa: BLE001 - one unusable job must not stop the rest
                 session.rollback()
-                logger.exception("gp job sync: could not adopt job %s", job_number)
+                logger.exception("gp job sync: could not adopt job %s in %s", job_number, company)
 
     return total, adopted
 
 
-def _persist_health(jobs: list[dict]) -> int:
+def _persist_health(jobs: list[dict], company: str) -> int:
     """Stamp the relay's GP setup verdicts onto their projects (#425). Returns how many were stamped.
 
     Its own session and its own commit, separate from _persist_missing's, so a health stamp that fails
@@ -112,7 +119,7 @@ def _persist_health(jobs: list[dict]) -> int:
     if not verdicts:
         return 0
     with SessionLocal() as session:
-        stamped = project_repository.stamp_gp_setup_health(session, verdicts)
+        stamped = project_repository.stamp_gp_setup_health(session, verdicts, company)
         session.commit()
     return stamped
 
@@ -130,12 +137,16 @@ async def _stamp_setup_health(company: str) -> None:
     try:
         result = await relay_gateway.relay_call(company, "job_setup_health")
         jobs = (result or {}).get("jobs") or []
-        stamped = await asyncio.to_thread(_persist_health, jobs)
+        stamped = await asyncio.to_thread(_persist_health, jobs, company)
         unhealthy = sum(1 for job in jobs if not job.get("ok"))
         if unhealthy:
-            logger.info("gp job sync: %s of %s jobs have broken GP setup", unhealthy, stamped)
+            logger.info("gp job sync: %s of %s %s jobs have broken GP setup", unhealthy, stamped, company)
     except Exception as e:  # noqa: BLE001 - a health check must never break job adoption
-        logger.info("gp job sync: could not read GP setup health this pass (%s); stamps left as they were", e)
+        logger.info(
+            "gp job sync: could not read GP setup health for %s this pass (%s); stamps left as they were",
+            company,
+            e,
+        )
 
 
 async def check_job_setup_live(company: str, job_number: str) -> dict | None:
@@ -165,25 +176,49 @@ async def check_job_setup_live(company: str, job_number: str) -> dict | None:
 
 
 async def run_once() -> tuple[int, int]:
-    """One sync pass: read GP's job master through the relay and create the projects that are missing,
-    then stamp each project with its GP setup verdict (#425).
+    """One sync pass PER COMPANY the connected relay serves (#637): read GP's job master through the
+    relay and create the projects that are missing, then stamp each project with its GP setup verdict
+    (#425).
 
-    Returns (total, adopted). Raises RelayUnavailableError if no relay is connected - the admin
-    Sync from GP button surfaces that, while the loop below simply skips the pass.
+    Returns the (total, adopted) summed across companies. Raises RelayUnavailableError if no relay is
+    connected - the admin Sync from GP button surfaces that, while the loop below simply skips the pass.
 
-    The health check runs AFTER adoption, deliberately: a job GP has just started reporting gets its
-    project first and its verdict on the same pass, rather than a pass later."""
-    company = relay_gateway.company
-    if not company:
+    A company whose read fails does NOT abort the pass. One company's GP being unreachable or slow is
+    not a reason to leave every other company's new jobs unadopted, and the next pass retries it.
+
+    The health check runs AFTER adoption for each company, deliberately: a job GP has just started
+    reporting gets its project first and its verdict on the same pass, rather than a pass later."""
+    companies = relay_gateway.companies
+    if not companies:
         raise RelayUnavailableError(
             "The GP relay is not connected, so jobs cannot be synced from GP. Start the relay and try again."
         )
-    result = await relay_gateway.relay_call(company, "list_jobs")
-    jobs = (result or {}).get("jobs") or []
-    # Off the event loop: the /relay-link read loop runs on it and must not block on Postgres.
-    counts = await asyncio.to_thread(_persist_missing, jobs)
-    await _stamp_setup_health(company)
-    return counts
+
+    total = 0
+    adopted = 0
+    failures = 0
+    for company in companies:
+        try:
+            result = await relay_gateway.relay_call(company, "list_jobs")
+            jobs = (result or {}).get("jobs") or []
+            # Off the event loop: the /relay-link read loop runs on it and must not block on Postgres.
+            company_total, company_adopted = await asyncio.to_thread(_persist_missing, jobs, company)
+            total += company_total
+            adopted += company_adopted
+            await _stamp_setup_health(company)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - one company must not cost every other company its pass
+            failures += 1
+            logger.info("gp job sync: pass for %s failed (%s); other companies continue", company, e)
+
+    if failures and failures == len(companies):
+        # Nothing was read at all, which the admin Sync from GP button has to surface as a failure
+        # rather than as "0 of 0 jobs".
+        raise RelayUnavailableError(
+            "The GP relay could not read jobs for any company it serves. Check the relay and try again."
+        )
+    return total, adopted
 
 
 def run_once_blocking(timeout: float = RESET_SYNC_TIMEOUT_SECONDS) -> tuple[int, int] | None:
@@ -227,7 +262,7 @@ async def run_forever() -> None:
     try:
         while True:
             try:
-                if relay_gateway.connected and relay_gateway.company:
+                if relay_gateway.connected and relay_gateway.companies:
                     total, adopted = await run_once()
                     if adopted:
                         logger.info("gp job sync: adopted %s of %s GP jobs", adopted, total)

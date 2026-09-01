@@ -14,8 +14,9 @@ from datetime import datetime
 
 import strawberry
 
+from app.auth import tenant_scope
 from app.database import SessionLocal
-from app.repositories import custom_items_repository
+from app.repositories import custom_items_repository, tenancy
 
 
 @strawberry.type
@@ -147,7 +148,10 @@ class CustomItemQueries:
         does not, so a retired type stays visible to reactivate."""
         with SessionLocal() as session:
             return [
-                _item_type_to_type(t) for t in custom_items_repository.get_item_types(session, active_only=active_only)
+                _item_type_to_type(t)
+                for t in custom_items_repository.get_item_types(
+                    session, active_only=active_only, company=tenant_scope(info)
+                )
             ]
 
     @strawberry.field
@@ -160,11 +164,15 @@ class CustomItemQueries:
     ) -> list[CustomInventoryItem]:
         """The catalog, optionally narrowed to one type (#454)."""
         with SessionLocal() as session:
+            scope = tenant_scope(info)
+            if type_id:
+                tenancy.require_item_type_in_scope(session, uuid.UUID(str(type_id)), scope)
             rows = custom_items_repository.get_items(
                 session,
                 type_id=uuid.UUID(str(type_id)) if type_id else None,
                 product_code_contains=product_code_contains,
                 active_only=active_only,
+                company=scope,
             )
             return [_item_to_type(i) for i in rows]
 
@@ -178,6 +186,7 @@ class CustomItemMutations:
         name: str,
         code: str | None = None,
         sort_order: int = 0,
+        company: str | None = None,
     ) -> InventoryItemType:
         """Add a type of non-schedule inventory (#454).
 
@@ -185,7 +194,15 @@ class CustomItemMutations:
         `hardwareCategory` on every row this type's items produce. A code already in use, whether by
         another type or as a hardware category on existing stock, is refused."""
         with SessionLocal() as session:
-            item_type = custom_items_repository.create_item_type(session, name=name, code=code, sort_order=sort_order)
+            item_type = custom_items_repository.create_item_type(
+                session,
+                name=name,
+                code=code,
+                sort_order=sort_order,
+                # The catalog is one tenant's own (#637). A scoped caller can only add to theirs; an
+                # Admin/Manager is unscoped and names the company.
+                company=tenant_scope(info) or (company or ""),
+            )
             session.commit()
             return _item_type_to_type(custom_items_repository.get_item_type(session, item_type.id))
 
@@ -202,6 +219,7 @@ class CustomItemMutations:
         already on a shelf carries that code and cannot be found from here to be rewritten."""
         with SessionLocal() as session:
             type_id = uuid.UUID(str(id))
+            tenancy.require_item_type_in_scope(session, type_id, tenant_scope(info))
             custom_items_repository.update_item_type(
                 session, type_id, name=name, is_active=is_active, sort_order=sort_order
             )
@@ -220,6 +238,7 @@ class CustomItemMutations:
         column set from one round trip (#454)."""
         with SessionLocal() as session:
             parsed = uuid.UUID(str(type_id))
+            tenancy.require_item_type_in_scope(session, parsed, tenant_scope(info))
             custom_items_repository.create_attribute(session, type_id=parsed, name=name, sort_order=sort_order)
             session.commit()
             return _item_type_to_type(custom_items_repository.get_item_type(session, parsed))
@@ -236,6 +255,7 @@ class CustomItemMutations:
         """Rename, retire or reorder an attribute (#454). Values follow a rename and survive a
         retirement - they are keyed by the attribute's id, not its name."""
         with SessionLocal() as session:
+            tenancy.require_item_attribute_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             attribute = custom_items_repository.update_attribute(
                 session, uuid.UUID(str(id)), name=name, is_active=is_active, sort_order=sort_order
             )
@@ -257,6 +277,7 @@ class CustomItemMutations:
     ) -> CustomInventoryItem:
         """Catalog a product (#454). The values may cover any subset of the type's attributes."""
         with SessionLocal() as session:
+            tenancy.require_item_type_in_scope(session, uuid.UUID(str(type_id)), tenant_scope(info))
             item = custom_items_repository.create_item(
                 session,
                 type_id=uuid.UUID(str(type_id)),
@@ -283,6 +304,7 @@ class CustomItemMutations:
         already carry it. A blank value clears that attribute."""
         with SessionLocal() as session:
             item_id = uuid.UUID(str(id))
+            tenancy.require_custom_item_in_scope(session, item_id, tenant_scope(info))
             custom_items_repository.update_item(
                 session,
                 item_id,

@@ -14,7 +14,7 @@ from app.services.gp_po import build_create_po_payload
 
 
 def _make_project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:6]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:6]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p
@@ -133,6 +133,7 @@ def test_create_po_succeeds_with_order_as(db_session):
     po = po_repository.create_po(
         db_session,
         line_items=[_line_item("ML2010")],
+        company="TUBC",
     )
     db_session.refresh(po)
     assert len(po.line_items) == 1
@@ -143,6 +144,7 @@ def test_create_po_strips_order_as_whitespace(db_session):
     po = po_repository.create_po(
         db_session,
         line_items=[_line_item("  ML2010  ")],
+        company="TUBC",
     )
     db_session.refresh(po)
     assert po.line_items[0].order_as == "ML2010"
@@ -156,6 +158,7 @@ def test_create_po_allows_missing_order_as(db_session):
     po = po_repository.create_po(
         db_session,
         line_items=[_line_item(None)],
+        company="TUBC",
     )
     db_session.refresh(po)
     assert po.line_items[0].order_as is None
@@ -165,6 +168,7 @@ def test_create_po_allows_empty_order_as(db_session):
     po = po_repository.create_po(
         db_session,
         line_items=[_line_item("")],
+        company="TUBC",
     )
     db_session.refresh(po)
     assert po.line_items[0].order_as is None
@@ -174,6 +178,7 @@ def test_create_po_allows_whitespace_only_order_as(db_session):
     po = po_repository.create_po(
         db_session,
         line_items=[_line_item("   ")],
+        company="TUBC",
     )
     db_session.refresh(po)
     assert po.line_items[0].order_as is None
@@ -183,6 +188,7 @@ def test_create_po_allows_line_item_missing_order_as(db_session):
     po = po_repository.create_po(
         db_session,
         line_items=[_line_item("ML2010"), _line_item(None)],
+        company="TUBC",
     )
     db_session.refresh(po)
     assert {li.order_as for li in po.line_items} == {"ML2010", None}
@@ -199,7 +205,7 @@ def test_create_po_still_rejects_when_order_as_and_product_code_both_missing(db_
         "order_as": None,
     }
     with pytest.raises(ValidationError) as exc:
-        po_repository.create_po(db_session, line_items=[line])
+        po_repository.create_po(db_session, line_items=[line], company="TUBC")
     assert exc.value.field == "order_as"
 
 
@@ -249,7 +255,7 @@ def test_update_po_preferred_date_only_on_draft(db_session):
     from app.errors import InvalidStateTransitionError
     from app.models.enums import POStatus
 
-    po = po_repository.create_po(db_session, line_items=[_line_item("ML2010")])
+    po = po_repository.create_po(db_session, line_items=[_line_item("ML2010")], company="TUBC")
     db_session.flush()
 
     po_repository.update_po(db_session, po.id, preferred_delivery_date=date_cls(2026, 8, 1))
@@ -279,6 +285,7 @@ def test_create_po_persists_shipping_cost_and_tariff(db_session):
         line_items=[_line_item("ML2010")],
         shipping_cost=125.5,
         tariff_amount=0,
+        company="TUBC",
     )
     db_session.refresh(po)
     assert po.shipping_cost == Decimal("125.50")
@@ -290,6 +297,7 @@ def test_create_po_defaults_shipping_cost_and_tariff_to_null(db_session):
     po = po_repository.create_po(
         db_session,
         line_items=[_line_item("ML2010")],
+        company="TUBC",
     )
     db_session.refresh(po)
     assert po.shipping_cost is None
@@ -302,6 +310,7 @@ def test_create_po_rejects_negative_shipping_cost(db_session):
             db_session,
             line_items=[_line_item("ML2010")],
             shipping_cost=-1,
+            company="TUBC",
         )
     assert exc.value.field == "shipping_cost"
 
@@ -310,6 +319,7 @@ def test_update_po_rejects_negative_tariff(db_session):
     po = po_repository.create_po(
         db_session,
         line_items=[_line_item("ML2010")],
+        company="TUBC",
     )
     db_session.flush()
     with pytest.raises(ValidationError) as exc:
@@ -323,6 +333,7 @@ def test_update_po_sets_clears_and_leaves_shipping_cost_and_tariff(db_session):
     po = po_repository.create_po(
         db_session,
         line_items=[_line_item("ML2010")],
+        company="TUBC",
     )
     db_session.flush()
 
@@ -354,6 +365,7 @@ def test_update_po_rejects_changing_po_number_once_registered(db_session):
         gp_company="TUBC",
         gp_vendor_id="V1",
         vendor_name_snapshot="Acme",
+        company="TUBC",
     )
     db_session.flush()
     assert po.status == POStatus.GP_REGISTERED
@@ -370,7 +382,7 @@ def test_update_po_rejects_changing_po_number_once_registered(db_session):
 
 
 def test_update_po_still_allows_setting_po_number_on_a_draft(db_session):
-    po = po_repository.create_po(db_session, line_items=[_line_item("ML2010")])
+    po = po_repository.create_po(db_session, line_items=[_line_item("ML2010")], company="TUBC")
     db_session.flush()
     assert po.status == POStatus.DRAFT
     po_repository.update_po(db_session, po.id, po_number="PO-DRAFT-1")
@@ -393,6 +405,7 @@ def test_create_po_persists_a_vendor_quote_number(db_session):
             }
         ],
         vendor_quote_number="  Q-1234  ",
+        company="TUBC",
     )
 
     assert po.vendor_quote_number == "Q-1234"
@@ -412,6 +425,7 @@ def test_create_po_leaves_a_blank_vendor_quote_number_null(db_session, value):
             }
         ],
         vendor_quote_number=value,
+        company="TUBC",
     )
 
     assert po.vendor_quote_number is None
@@ -432,6 +446,7 @@ def test_create_po_with_a_quote_stays_a_draft(db_session):
             }
         ],
         vendor_quote_number="Q-1234",
+        company="TUBC",
     )
 
     assert po.status == POStatus.DRAFT
@@ -448,7 +463,7 @@ def _po_with_a_receive(session):
 
     from app.models.receiving import ReceiveRecord
 
-    po = po_repository.create_po(session, line_items=[_line_item("ML2010")])
+    po = po_repository.create_po(session, line_items=[_line_item("ML2010")], company="TUBC")
     session.flush()
     session.add(ReceiveRecord(id=uuid.uuid4(), po_id=po.id, received_at=datetime_cls.utcnow(), received_by="warehouse"))
     session.flush()
@@ -470,7 +485,7 @@ def test_notes_land_after_receiving_has_started_where_update_po_is_refused(db_se
 def test_notes_land_on_a_closed_po_where_update_po_is_refused(db_session):
     from app.errors import InvalidStateTransitionError
 
-    po = po_repository.create_po(db_session, line_items=[_line_item("ML2010")])
+    po = po_repository.create_po(db_session, line_items=[_line_item("ML2010")], company="TUBC")
     po.status = POStatus.CLOSED
     db_session.flush()
 
@@ -483,7 +498,7 @@ def test_notes_land_on_a_closed_po_where_update_po_is_refused(db_session):
 
 @pytest.mark.parametrize("blank", [None, "", "   "])
 def test_blank_notes_clear_the_column_rather_than_storing_whitespace(db_session, blank):
-    po = po_repository.create_po(db_session, line_items=[_line_item("ML2010")])
+    po = po_repository.create_po(db_session, line_items=[_line_item("ML2010")], company="TUBC")
     db_session.flush()
     po_repository.update_po_notes(db_session, po.id, "something worth saying")
     assert po.notes == "something worth saying"

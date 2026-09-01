@@ -907,6 +907,11 @@ def finalize_import_session(
                 request_number=request_number,
                 vendor_name_snapshot=(po_draft.get("vendor_name") or "").strip() or None,
                 project_id=project.id,
+                # The tenant, taken from the PROJECT rather than from the caller (#637). A PO and the
+                # job it is raised against always belong to one company, and the wizard is always
+                # working on a project - so there is no second answer to reconcile here, and none to
+                # thread down from the resolver.
+                company=project.company,
                 status=POStatus.DRAFT,
                 notes=po_draft.get("notes"),
                 # Issue #216: the PM's requested date, captured at PO-request creation.

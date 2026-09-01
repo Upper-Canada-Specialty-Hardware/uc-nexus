@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, Text
+from sqlalchemy import JSON, DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
@@ -17,7 +17,11 @@ class RelayInstall(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     label: Mapped[str] = mapped_column(String, nullable=False)
-    company: Mapped[str] = mapped_column(String, nullable=False)
+    # Every GP company this install may serve (#637). The relay protocol always carried `company` on
+    # each call and the relay itself has been multi-company capable (allowed_companies) - the single
+    # column this replaces was the only place the one-company assumption still lived. A JSON list of
+    # uppercase codes; the gateway turns it into the membership set relay_call checks against.
+    companies: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     hostname: Mapped[str | None] = mapped_column(String, nullable=True)  # filled by the relay at enrollment
     # SHA-256 hex of the relay's long-lived Bearer secret - the sole credential for any install
     # enrolled or adopted from migration 067 on. Indexed so a handshake is a single row fetch rather

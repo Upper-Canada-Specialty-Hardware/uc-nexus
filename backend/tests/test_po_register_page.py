@@ -7,6 +7,7 @@ search for the literal character, not fire a SQL LIKE wildcard that matches ever
 import uuid
 from decimal import Decimal
 
+from app.auth import ADMIN_ROLE
 from app.models.enums import POStatus
 from app.models.purchase_order import PurchaseOrder
 from app.repositories import po_repository
@@ -20,6 +21,7 @@ def _make_po(session, *, po_number, vendor="Acme"):
         status=POStatus.GP_REGISTERED,
         gp_company="TUBC",
         vendor_name_snapshot=vendor,
+        company="TUBC",
     )
     session.add(po)
     session.flush()
@@ -119,6 +121,13 @@ class _StubRow:
         self.buyer_id = buyer_id
 
 
+class _AdminInfo:
+    """An ADMIN caller, seeded into the per-request role memo so `tenant_scope` (#637) answers None
+    (unscoped) instead of trying to verify a JWT off a request that is not there."""
+
+    context = {"request": None, "_auth_roles": [ADMIN_ROLE]}
+
+
 class _NullSession:
     """The resolver opens its own session and hands it to a stubbed repository, so it never gets used."""
 
@@ -147,7 +156,7 @@ def _page(monkeypatch, rows, *, names=None, raises_for=()):
         return (names or {})[user_id]
 
     monkeypatch.setattr(po_module, "resolve_display_name", _resolve)
-    return po_module.POQueries().purchase_orders_page(None), lookups
+    return po_module.POQueries().purchase_orders_page(_AdminInfo()), lookups
 
 
 def test_a_nexus_request_shows_its_authors_display_name(monkeypatch):

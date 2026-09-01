@@ -8,20 +8,26 @@ Clerk. What each gp_* read REQUIRES is asserted against the policy table instead
 
 import asyncio
 
+import pytest
+
 from app.auth import ADMIN_ROLE
 from app.auth_policy import ROOT_FIELD_POLICY, SIGNED_IN
+from app.errors import ValidationError
 from app.schemas import relay as relay_module
 from app.schemas.queries import Query
 from app.services.relay_gateway import RelayGateway
 
 
 class FakeInfo:
-    context = {"request": None}
+    # An ADMIN caller, seeded into the per-request role memo so `tenant_scope` (#637) answers None -
+    # unscoped - without trying to verify a JWT off a request that is not there.
+    context = {"request": None, "_auth_roles": [ADMIN_ROLE]}
 
 
 class FakeGateway:
-    def __init__(self, result):
+    def __init__(self, result, companies=("TUBC",)):
         self.result = result
+        self.companies = list(companies)
         self.calls: list[tuple] = []
 
     async def relay_call(self, company, op, payload=None, timeout=None):
@@ -214,7 +220,40 @@ def test_gp_cost_code_master_requires_an_admin():
 def test_relay_status_resolver_reads_gateway_connected(monkeypatch):
     gateway = RelayGateway()
     monkeypatch.setattr(relay_module, "relay_gateway", gateway)
-    assert Query().relay_status(FakeInfo()).connected is False
+    status = Query().relay_status(FakeInfo())
+    assert status.connected is False
+    # #637: empty rather than null when nothing is connected - the dialogs read it as a list of
+    # companies they may offer, and there are none.
+    assert status.companies == []
+
+
+def test_a_read_for_a_company_the_relay_does_not_serve_is_refused(monkeypatch):
+    """#637: a relay enrolled for TUBC cannot answer for UCSH, so the request is refused here naming
+    what IS available rather than after a 30-second round trip."""
+    _install_fake_gateway(monkeypatch, {"jobs": []})
+
+    async def run():
+        return await Query().gp_jobs(FakeInfo(), company="UCSH")
+
+    with pytest.raises(ValidationError) as e:
+        asyncio.run(run())
+    assert "TUBC" in str(e.value)
+
+
+def test_a_scoped_caller_cannot_read_another_companys_gp(monkeypatch):
+    """#637: the relay serving a company is not enough - a non-admin may only ask for their own."""
+    fake = FakeGateway({"jobs": []}, companies=("TUBC", "UCSH"))
+    monkeypatch.setattr(relay_module, "relay_gateway", fake)
+
+    class ScopedInfo:
+        context = {"request": None, "_auth_roles": ["Warehouse Manager"], "_auth_company": "TUBC"}
+
+    async def run():
+        return await Query().gp_jobs(ScopedInfo(), company="UCSH")
+
+    with pytest.raises(ValidationError):
+        asyncio.run(run())
+    assert fake.calls == []
 
 
 # --- the create-job form's live reads (#380) ---

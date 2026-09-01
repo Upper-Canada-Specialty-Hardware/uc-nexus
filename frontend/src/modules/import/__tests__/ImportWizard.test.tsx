@@ -157,6 +157,7 @@ const firstImportProject: Project = {
   description: 'Test Project',
   client: null,
   jobSiteName: null,
+  company: 'TUBC',
   openingCount: 0,
 };
 

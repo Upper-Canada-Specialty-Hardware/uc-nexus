@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { GraphQLError } from 'graphql';
 import { ToastProvider } from '../../../components/Toast';
@@ -7,6 +7,7 @@ import {
   CREATE_GP_BUYER,
   GET_GP_BUYERS_DETAILED,
   GET_USERS,
+  UPDATE_USER_COMPANY,
   UPDATE_USER_GP_BUYER_ID,
   UPDATE_USER_ROLES,
 } from '../../../graphql/admin';
@@ -39,6 +40,7 @@ vi.mock('../../../hooks/useIdentity', () => ({
     hasRole: () => true,
     isAdmin: true,
     gpBuyerId: null,
+    company: null,
     user: null,
   }),
 }));
@@ -50,6 +52,7 @@ const USER = {
   email: 'jay@example.com',
   roles: ['PO User'],
   gpBuyerId: null as string | null,
+  company: null as string | null,
   imageUrl: '',
   __typename: 'ClerkUser',
 };
@@ -70,7 +73,7 @@ function relayStatusMock(connected: boolean): MockedResponse {
       data: {
         relayStatus: {
           connected,
-          company: connected ? COMPANY : null,
+          companies: connected ? [COMPANY, 'UCSH'] : [],
           build: connected ? 'relay-v0.1.0-build.40' : null,
           installId: connected ? 'install-1' : null,
           __typename: 'RelayStatus',
@@ -229,4 +232,90 @@ test('saving an unchanged buyer does not re-write it to Clerk', async () => {
 
   await waitFor(() => expect(screen.getByText(/User updated successfully/i)).toBeInTheDocument());
   expect(buyerWrites).toBe(0);
+});
+
+// --- company assignment (#637) -------------------------------------------------------------------
+
+test('the company field offers the companies the relay serves, plus a clear option', async () => {
+  // A tenant IS a GP company, so this field decides what the account can see at all. The options are
+  // the live relay's, not a hardcoded list that would drift the moment a company is added.
+  renderPage([relayStatusMock(true), usersMock(), buyersMock]);
+
+  await openEditDialog();
+  const field = await screen.findByRole('combobox', { name: /^Company$/i });
+  fireEvent.mouseDown(field);
+
+  const options = await screen.findByRole('listbox');
+  expect(within(options).getByRole('option', { name: 'TUBC' })).toBeInTheDocument();
+  expect(within(options).getByRole('option', { name: 'UCSH' })).toBeInTheDocument();
+  expect(within(options).getByRole('option', { name: /none/i })).toBeInTheDocument();
+});
+
+test('assigning a company writes it through updateUserCompany', async () => {
+  let written: string | null = null;
+  const companyWriteMock: MockedResponse = {
+    request: { query: UPDATE_USER_COMPANY, variables: { userId: 'user_1', company: 'UCSH' } },
+    maxUsageCount: INFINITE,
+    result: () => {
+      written = 'UCSH';
+      return { data: { updateUserCompany: { ...USER, company: 'UCSH' } } };
+    },
+  };
+  const rolesMock: MockedResponse = {
+    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: ['PO User'] } },
+    maxUsageCount: INFINITE,
+    result: { data: { updateUserRoles: USER } },
+  };
+  renderPage([relayStatusMock(true), usersMock(), buyersMock, rolesMock, companyWriteMock]);
+
+  await openEditDialog();
+  fireEvent.mouseDown(await screen.findByRole('combobox', { name: /^Company$/i }));
+  fireEvent.click(await screen.findByRole('option', { name: 'UCSH' }));
+  fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+  await waitFor(() => expect(written).toBe('UCSH'), GRID_TIMEOUT);
+});
+
+test('an unchanged company is not re-written to Clerk on save', async () => {
+  // Same rule as the buyer id: the mutation is a Clerk PATCH, and every save would otherwise fire it.
+  let companyWrites = 0;
+  const companyWriteMock: MockedResponse = {
+    request: { query: UPDATE_USER_COMPANY, variables: { userId: 'user_1', company: 'TUBC' } },
+    maxUsageCount: INFINITE,
+    result: () => {
+      companyWrites += 1;
+      return { data: { updateUserCompany: { ...USER, company: 'TUBC' } } };
+    },
+  };
+  const rolesMock: MockedResponse = {
+    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: ['PO User', 'Warehouse Staff'] } },
+    maxUsageCount: INFINITE,
+    result: { data: { updateUserRoles: { ...USER, company: 'TUBC' } } },
+  };
+  renderPage([
+    relayStatusMock(true),
+    usersMock({ ...USER, company: 'TUBC' }),
+    buyersMock,
+    rolesMock,
+    companyWriteMock,
+  ]);
+
+  await openEditDialog();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Warehouse Staff' }));
+  fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+  await waitFor(() => expect(screen.getByText(/User updated successfully/i)).toBeInTheDocument(), GRID_TIMEOUT);
+  expect(companyWrites).toBe(0);
+});
+
+test('with the relay down the stored company shows read-only, with the reason', async () => {
+  // An empty options list must not read as "no company set" - that is the state an admin would try
+  // to fix by assigning one, and there is nothing to assign from while the relay is down.
+  renderPage([relayStatusMock(false), usersMock({ ...USER, company: 'TUBC' })]);
+
+  await openEditDialog();
+  const field = (await screen.findByLabelText(/^Company$/i)) as HTMLInputElement;
+  expect(field).toBeDisabled();
+  expect(field.value).toBe('TUBC');
+  expect(screen.getByText(/relay must be connected to change this/i)).toBeInTheDocument();
 });

@@ -50,7 +50,7 @@ def test_the_production_check_ignores_case_and_padding(db_session, name):
 def test_a_pr_environment_gets_a_seeded_install(db_session):
     install = relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH)
     assert install is not None
-    assert install.company == relay_seed.SEED_COMPANY == "TUBC"
+    assert install.companies == [relay_seed.SEED_COMPANY] == ["TUBC"]
     assert install.secret_hash == HASH
     assert install.label == "seed:pr-414"
     # Enrolled on creation: there is no token and none is wanted, and a permanently "pending" row that
@@ -87,7 +87,7 @@ def test_the_seeded_row_authenticates_the_real_relay_secret(db_session):
     relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH)
     install = relay_repository.authenticate_secret(db_session, SECRET)
     assert install is not None
-    assert install.company == "TUBC"
+    assert install.companies == ["TUBC"]
 
 
 def test_a_local_environment_with_no_name_still_seeds(db_session):
@@ -126,7 +126,7 @@ def test_a_database_holding_a_real_enrolled_relay_is_never_seeded(db_session):
     real = RelayInstall(
         id=uuid.uuid4(),
         label="TAGGING3W10",
-        company="UCSH",
+        companies=["UCSH"],
         hostname="Tagging3W10",
         secret_hash="c" * 64,
         enrolled_at=datetime.utcnow(),
@@ -136,19 +136,20 @@ def test_a_database_holding_a_real_enrolled_relay_is_never_seeded(db_session):
 
     assert relay_seed.seed_from_env(db_session, environment_name="staging", secret_hash=HASH) is None
     assert db_session.query(RelayInstall).filter(RelayInstall.secret_hash == HASH).count() == 0
-    assert real.company == "UCSH"  # untouched
+    assert real.companies == ["UCSH"]  # untouched
 
 
 def test_an_existing_row_carrying_the_hash_is_left_completely_alone(db_session):
     # An earlier draft "repaired" the company here. On a live install that silently repoints a real
-    # credential from UBC/UCSH to TUBC, with the original value surviving only in a log line.
-    real = RelayInstall(id=uuid.uuid4(), label="hand-made", company="UCSH", secret_hash=HASH)
+    # credential from UBC/UCSH to TUBC, with the original value surviving only in a log line. Still
+    # true of the companies LIST (#637): seeding leaves a row carrying the hash completely alone.
+    real = RelayInstall(id=uuid.uuid4(), label="hand-made", companies=["UCSH"], secret_hash=HASH)
     db_session.add(real)
     db_session.flush()
 
     returned = relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH)
     assert returned.id == real.id
-    assert returned.company == "UCSH"  # NOT rewritten to TUBC
+    assert returned.companies == ["UCSH"]  # NOT rewritten to TUBC
     assert returned.label == "hand-made"
 
 
@@ -166,7 +167,7 @@ def test_rotating_the_hash_removes_the_superseded_seed_row(db_session):
 
 
 def test_rotation_only_removes_this_environments_own_seed_row(db_session):
-    other = RelayInstall(id=uuid.uuid4(), label="seed:pr-999", company="TUBC", secret_hash="e" * 64)
+    other = RelayInstall(id=uuid.uuid4(), label="seed:pr-999", companies=["TUBC"], secret_hash="e" * 64)
     db_session.add(other)
     db_session.flush()
 

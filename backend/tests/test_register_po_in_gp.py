@@ -23,7 +23,7 @@ def _assign_buyer(session, buyer_id, project):
 
 
 def _make_project(session) -> Project:
-    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:6]}", description="Test")
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:6]}", description="Test", company="TUBC")
     session.add(p)
     session.flush()
     return p
@@ -336,9 +336,10 @@ def test_register_rejects_duplicate_po_number_in_project(db_session):
         gp_company="TUBC",
         gp_vendor_id="GPV1",
         vendor_name_snapshot="GP Vendor",
+        company="TUBC",
     )
     # a second draft in the same project can't be registered under the same number
-    draft = po_repository.create_po(db_session, line_items=[line], project_id=project.id)
+    draft = po_repository.create_po(db_session, line_items=[line], project_id=project.id, company="TUBC")
     assert draft.status == POStatus.DRAFT
     draft_line = draft.line_items[0]
 
@@ -471,6 +472,7 @@ def test_prepare_register_po_attaches_manufacturer_per_line(monkeypatch, db_sess
         db_session,
         line_items=[_register_line("HINGE", "HG-100", "ALIAS-100"), _register_line("LOCK", "LK-200", "ALIAS-200")],
         project_id=project.id,
+        company="TUBC",
     )
     assert draft.status == POStatus.DRAFT
     _assign_buyer(db_session, "mira", project)
@@ -497,6 +499,7 @@ def test_prepare_register_po_accepts_any_cost_code(monkeypatch, db_session):
         db_session,
         line_items=[_register_line("HINGE", "HG-100", "ALIAS-100")],
         project_id=project.id,
+        company="TUBC",
     )
     _assign_buyer(db_session, "mira", project)
     _use_test_session(monkeypatch, db_session)
@@ -536,6 +539,7 @@ def test_prepare_register_po_disagreeing_items_take_first_non_null_and_log(monke
         db_session,
         line_items=[_register_line("HINGE", "HG-100", "ALIAS-100")],
         project_id=project.id,
+        company="TUBC",
     )
     _assign_buyer(db_session, "mira", project)
     _use_test_session(monkeypatch, db_session)
@@ -575,6 +579,7 @@ def _stock_draft_po(session) -> PurchaseOrder:
             }
         ],
         project_id=None,
+        company="TUBC",
     )
 
 

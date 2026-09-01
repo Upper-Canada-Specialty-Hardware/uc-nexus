@@ -17,6 +17,9 @@ export interface Project {
   /** #632: the XML the schedule on file came from (#627 capture). Null on projects last imported
    *  before it existed - the name records on the next fresh upload. */
   scheduleFilename?: string | null;
+  /** #637: the GP company (tenant) that owns this job. Every project has one; only Admin/Manager
+   *  ever sees more than their own, which is why the pickers badge it for them alone. */
+  company: string;
   openingCount: number;
   // GP job setup verdict (#425). null means the backend has never been able to check - no relay has
   // answered yet - and is NOT a quarantine. Only an explicit false is.
