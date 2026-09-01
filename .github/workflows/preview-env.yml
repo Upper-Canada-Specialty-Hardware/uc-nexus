@@ -206,12 +206,28 @@ jobs:
             fi
           }
 
-          # --- services in this environment --------------------------------------------------------
-          # Service instances are per-environment, so this is the only listing that can tell whether
-          # the stub exists HERE rather than anywhere in the project.
+          # --- services -----------------------------------------------------------------------------
+          # Postgres / backend / frontend are PROJECT-level services and their ids are the same in every
+          # environment, so they are resolved from the project. The per-environment instance listing
+          # is only for the stub, which exists in this environment alone - and that listing is EMPTY for
+          # the first seconds of an environment Railway just created (pr-663: env resolved, zero
+          # instances, "Postgres is not in the environment"), so it is polled rather than read once.
+          SVC_QUERY='query($id:String!){ project(id:$id){ services{ edges{ node{ id name } } } } }'
+          svc_data=""
+          load_project_services() { svc_data=$(rgql "$SVC_QUERY" "$(jq -cn --arg id "$PROJECT_ID" '{id:$id}')"); }
+          proj_svc_id() { printf '%s' "$svc_data" | jq -r --arg n "$1" '[.project.services.edges[]?|select(.node.name==$n)|.node.id][0] // empty'; }
           SI_QUERY='query($id:String!){ environment(id:$id){ serviceInstances{ edges{ node{ serviceId serviceName } } } } }'
           si_data=""
-          load_services() { si_data=$(rgql "$SI_QUERY" "$(jq -cn --arg id "$ENV_ID" '{id:$id}')"); }
+          load_services() {  # polls until the environment reports at least one instance (90s), then settles for what it has
+            local i
+            for i in $(seq 1 7); do
+              si_data=$(rgql "$SI_QUERY" "$(jq -cn --arg id "$ENV_ID" '{id:$id}')") || return 1
+              [ "$(printf '%s' "$si_data" | jq -r '[.environment.serviceInstances.edges[]?]|length')" != "0" ] && return 0
+              echo "  no service instances in $ENV_NAME yet; waiting for Railway to materialize them ($i/7)"
+              sleep 15
+            done
+            return 0
+          }
           svc_id() { printf '%s' "$si_data" | jq -r --arg n "$1" '[.environment.serviceInstances.edges[]?|select(.node.serviceName==$n)|.node.serviceId][0] // empty'; }
 
           ensure_stub() {
@@ -398,11 +414,12 @@ jobs:
             BE_FORCE=false; STUB_FORCE=false; STUB_ID=""
             ensure_env || { echo "::error::could not resolve or create environment $ENV_NAME (production env id: ${PROD_ENV_ID:-unresolved})"; exit 1; }
             align_triggers
-            load_services || { echo "::error::could not list the service instances in $ENV_NAME"; exit 1; }
-            PG_ID=$(svc_id "Postgres"); BE_ID=$(svc_id "backend"); FE_ID=$(svc_id "frontend")
+            load_project_services || { echo "::error::could not list the project's services"; exit 1; }
+            PG_ID=$(proj_svc_id "Postgres"); BE_ID=$(proj_svc_id "backend"); FE_ID=$(proj_svc_id "frontend")
             for pair in "Postgres=$PG_ID" "backend=$BE_ID" "frontend=$FE_ID"; do
-              if [ -z "${pair#*=}" ]; then echo "::error::service '${pair%%=*}' is not in $ENV_NAME"; exit 1; fi
+              if [ -z "${pair#*=}" ]; then echo "::error::service '${pair%%=*}' is not in the project"; exit 1; fi
             done
+            load_services || { echo "::error::could not list the service instances in $ENV_NAME"; exit 1; }
             echo "services: Postgres=$PG_ID backend=$BE_ID frontend=$FE_ID"
 
             be_vars=$(read_vars "$BE_ID"); [ -n "$be_vars" ] || be_vars='{}'
