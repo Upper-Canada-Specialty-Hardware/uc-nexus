@@ -11,7 +11,7 @@ from app.models.enums import ShopAssemblyRequestStatus as ShopAssemblyRequestSta
 from app.models.project import Project as ProjectModel
 from app.repositories import project_repository, shipping_repository
 
-from .enums import GpOutboxStatus, RequestStage
+from .enums import GpOutboxStatus, RelayEventKind, RequestStage
 from .types import (
     BuyerAssignment,
     BuyerAssignmentProject,
@@ -57,6 +57,7 @@ from .types import (
     ReceiveDraftLocation,
     ReceiveLineItem,
     ReceiveRecord,
+    RelayEvent,
     RelayInstallInfo,
     ShipmentContainer,
     ShipmentContainerItem,
@@ -215,6 +216,22 @@ def relay_install_to_type(ri) -> RelayInstallInfo:
         adopted_at=ri.adopted_at,
         adopted_by=ri.adopted_by,
         secret_hash=ri.secret_hash,
+    )
+
+
+def relay_event_to_type(e) -> RelayEvent:
+    # `kind` is stored as a plain string (String + CHECK, per migration 103), so it is mapped back
+    # through the enum here rather than handed to Strawberry raw - a value the enum does not know is a
+    # schema violation worth raising on, not a string to pass through.
+    return RelayEvent(
+        id=strawberry.ID(str(e.id)),
+        at=e.at,
+        kind=RelayEventKind(e.kind),
+        install_id=strawberry.ID(str(e.install_id)) if e.install_id else None,
+        install_label=e.install_label,
+        build=e.build,
+        companies=list(e.companies) if e.companies is not None else None,
+        reason=e.reason,
     )
 
 

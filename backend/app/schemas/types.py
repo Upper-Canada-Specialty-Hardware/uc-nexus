@@ -19,6 +19,7 @@ from .enums import (
     PullRequestStatus,
     ReceiveDraftStatus,
     ReconciliationStatus,
+    RelayEventKind,
     RequestStage,
     ReturnDisposition,
     ShipmentContainerType,
@@ -161,6 +162,38 @@ class RelayStatus:
     # infer this from company + last_seen_at; now it can say so outright, and it is what disables Remove
     # on the connected row.
     install_id: strawberry.ID | None = None
+    # When the slot was last claimed and last given up, and why it went (#654). These OUTLIVE the
+    # connection they describe: "nothing is connected" is the least useful half of the answer, and
+    # "it went 40 minutes ago, reaped after 2 missed pings" is the other half. In-memory on the
+    # gateway, so the status chip's poll never touches the database for them.
+    last_connected_at: datetime | None = None
+    last_disconnected_at: datetime | None = None
+    last_disconnect_reason: str | None = None
+    # What the connected WORKSTATION says it is configured for, from its hello frame - as opposed to
+    # `companies` above, which is what its install row here permits. Null for a relay that predates the
+    # field. Shown beside the enrolled list so a mismatch is visible before a GP call fails on it.
+    configured_companies: list[str] | None = None
+    # The preview backends this backend is telling the relay to also dial (#654). Non-empty only on
+    # production, which is the only environment that keeps a registry.
+    preview_channels: list[str] = strawberry.field(default_factory=list)
+
+
+@strawberry.type
+class RelayEvent:
+    """One transition of the relay's single connection slot - see RelayEventKind.
+
+    History, not state: relayStatus answers "is it up" from the live gateway, and this answers "what
+    has been happening", which the Railway log can only do for as long as it retains. `installLabel` is
+    a snapshot taken at write time, so a retired install's events still name it."""
+
+    id: strawberry.ID
+    at: datetime
+    kind: RelayEventKind
+    install_id: strawberry.ID | None
+    install_label: str | None
+    build: str | None
+    companies: list[str] | None
+    reason: str | None
 
 
 @strawberry.type

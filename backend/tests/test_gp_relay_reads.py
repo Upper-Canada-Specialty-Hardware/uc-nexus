@@ -7,6 +7,9 @@ Clerk. What each gp_* read REQUIRES is asserted against the policy table instead
 """
 
 import asyncio
+import uuid
+from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,7 +17,9 @@ from app.auth import ADMIN_ROLE
 from app.auth_policy import ROOT_FIELD_POLICY, SIGNED_IN
 from app.errors import ValidationError
 from app.schemas import relay as relay_module
+from app.schemas.enums import RelayEventKind
 from app.schemas.queries import Query
+from app.services import preview_registry
 from app.services.relay_gateway import RelayGateway
 
 
@@ -333,3 +338,117 @@ def test_gp_divisions_passes_through_the_relay_list(monkeypatch):
 
     assert asyncio.run(run()) == ["VANCOUVER"]
     assert fake.calls == [("TUBC", "list_divisions", None)]
+
+
+# --- relayStatus's connection history + relayEvents (#654) ----------------------------------------
+
+
+class _FakeSession:
+    """Stands in for SessionLocal() so a resolver that only forwards to a repository needs no database."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _no_database(monkeypatch):
+    monkeypatch.setattr(relay_module, "SessionLocal", _FakeSession)
+
+
+def test_relay_status_reports_the_last_connect_disconnect_and_reason(monkeypatch):
+    # The half of the answer that matters when nothing is connected: when it went, and why.
+    gateway = RelayGateway()
+    ws = object()
+    gateway.try_register(["TUBC"], ws)
+    gateway.note_hello("relay-v0.2.0", ["list_vendors"], ["TUBC", "TUCSH"], ["channels"])
+    monkeypatch.setattr(relay_module, "relay_gateway", gateway)
+
+    status = Query().relay_status(FakeInfo())
+    assert status.connected is True
+    assert status.last_connected_at is not None
+    assert status.last_disconnected_at is None
+    assert status.configured_companies == ["TUBC", "TUCSH"]
+
+    gateway.unregister(ws)
+    after = Query().relay_status(FakeInfo())
+    assert after.connected is False
+    assert after.last_connected_at == status.last_connected_at  # survives the disconnect
+    assert after.last_disconnected_at is not None
+    assert after.last_disconnect_reason
+
+
+def test_relay_status_carries_the_preview_channels_it_is_pushing(monkeypatch):
+    monkeypatch.setattr(relay_module, "relay_gateway", RelayGateway())
+    monkeypatch.setattr(
+        relay_module.preview_registry,
+        "channels",
+        lambda: ["wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"],
+    )
+    assert Query().relay_status(FakeInfo()).preview_channels == [
+        "wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"
+    ]
+
+
+def test_relay_status_preview_channels_is_empty_off_production(monkeypatch):
+    # The registry only ever fills on production; everywhere else this is the honest empty answer rather
+    # than a null the frontend has to special-case.
+    monkeypatch.setattr(relay_module, "relay_gateway", RelayGateway())
+    preview_registry.reset()
+    assert Query().relay_status(FakeInfo()).preview_channels == []
+
+
+def test_relay_events_returns_the_newest_first(monkeypatch):
+    _no_database(monkeypatch)
+    rows = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            at=datetime(2026, 9, 1, 12, 0, 0),
+            kind="DISCONNECTED",
+            install_id=uuid.uuid4(),
+            install_label="TAGGING3W10",
+            build="relay-v0.2.0",
+            companies=["TUBC"],
+            reason="peer closed or socket dropped",
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            at=datetime(2026, 9, 1, 11, 0, 0),
+            kind="CONNECTED",
+            install_id=None,
+            install_label=None,
+            build=None,
+            companies=None,
+            reason=None,
+        ),
+    ]
+    monkeypatch.setattr(relay_module.relay_event_repository, "list_events", lambda session, limit: rows)
+
+    events = Query().relay_events(FakeInfo())
+    assert [e.kind for e in events] == [RelayEventKind.DISCONNECTED, RelayEventKind.CONNECTED]
+    assert events[0].install_label == "TAGGING3W10"
+    assert events[0].reason == "peer closed or socket dropped"
+    # A row written before any hello arrived carries no build and no company list; null, not empty.
+    assert events[1].build is None
+    assert events[1].companies is None
+
+
+@pytest.mark.parametrize(("asked", "expected"), [(0, 1), (-5, 1), (10, 10), (5000, 500)])
+def test_relay_events_bounds_the_limit(monkeypatch, asked, expected):
+    # The argument reaches a LIMIT clause, so an unbounded one is a caller-controlled full table scan.
+    _no_database(monkeypatch)
+    seen: list[int] = []
+    monkeypatch.setattr(
+        relay_module.relay_event_repository,
+        "list_events",
+        lambda session, limit: seen.append(limit) or [],
+    )
+    Query().relay_events(FakeInfo(), limit=asked)
+    assert seen == [expected]
+
+
+def test_relay_events_is_gated_like_relay_installs():
+    """These rows name installs, builds and refused credentials - relay-credential territory, not
+    working data, so they sit at the same bar as the install list itself."""
+    assert ROOT_FIELD_POLICY["relayEvents"] == ROOT_FIELD_POLICY["relayInstalls"] == ADMIN_ROLE

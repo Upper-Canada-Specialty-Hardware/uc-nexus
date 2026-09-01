@@ -61,7 +61,16 @@ configure config.toml
   - `[gp] default_company` / `allowed_companies` (sandboxes only until prod sign-off; NEVER add UBC/UCSH
     here without it)
   - `[cors] allowed_origins` to the UC Nexus frontend origin
+  - `[update] channel` - `stable` (the default: full releases only) or `latest` (prereleases too). only
+    the one workstation that proves a build before it is promoted should be on `latest`.
 - leave `[auth] shared_secret` for the enroll step below.
+- there is nothing to configure for Railway PR environments. production pushes the current preview list
+  down the relay's own backend socket (a `{"type": "channels", "urls": [...]}` frame, re-sent whenever it
+  changes) and the relay dials the difference within about a second, dropping a channel when its PR
+  closes. it accepts only `wss://backend-uc-nexus-pr-<N>.up.railway.app/relay-link`, only from the
+  production channel, and every such channel is pinned to the sandbox companies. set
+  `[channel] accept_pushed_preview_backends = false` to refuse them and dial only what this file names;
+  `[channel] extra_backend_urls` still ADDS a backend production cannot know about (a local dev backend).
 
 enroll - sets the secret, DPAPI-encrypted (the normal path)
 - in UC Nexus an admin runs "provision relay install" and gets a one-time enrollment token. then on the
@@ -103,11 +112,25 @@ updating to a new build
   come up healthy the junction rolls back to the previous one, so a failed update leaves the relay running
   on the CURRENT build rather than looping or hanging. Stale `app-<build>\` folders are cleaned up on the
   next start.
+- which releases a workstation takes is `[update] channel`: `stable` (default) skips anything flagged
+  PRERELEASE on GitHub, `latest` takes it. that is how a build is proven before the fleet gets it - CI
+  publishes the release as a prerelease, the one workstation on `latest` installs and exercises it, and
+  `gh release edit <tag> --prerelease=false` promotes it to everyone else. highest build number still
+  wins and a downgrade is still never offered.
+- the first app start after an update lands verifies it: within five minutes `/health` has to report the
+  backend channel CONNECTED. the apply helper only proves the new build binds its HTTP port, which says
+  nothing about whether it can still reach UC Nexus. if the channel never comes up and a previous
+  `app-<build>\` folder is still there, the `current` junction is repointed back to it, the serve child
+  is restarted from that junction, and the ledger records `rolled_back` - the poller then refuses that
+  build until a higher one is published. with no previous version on disk the new build stays put (a
+  broken channel beats no relay). the check runs once per update, so a later offline boot cannot roll a
+  good build back.
 - update artifacts in the install dir (`%LOCALAPPDATA%\UCNexusRelay`):
   - `update.log` - the helper's step-by-step log (wait -> kill -> repoint -> relaunch); read this first if
     an update misbehaves.
   - `update-state.json` - the attempt ledger the Updates tab surfaces ("installed build N" / "update to
-    build N failed: <reason>"). status is one of staging/applying/success/failed/cancelled.
+    build N failed: <reason>"). status is one of staging/applying/success/failed/cancelled/rolled_back,
+    plus a `self_check` verdict once the post-update check has run.
   - `ucnexus-relay-download.zip` (the in-flight download) and superseded `app-<build>\` folders are
     transient; the download is deleted after extraction and old versions are cleaned on the next start.
 

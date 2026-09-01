@@ -25,11 +25,24 @@ from starlette.websockets import WebSocketDisconnect  # noqa: E402
 import main  # noqa: E402
 from app.auth import ADMIN_ROLE  # noqa: E402
 from app.database import SessionLocal  # noqa: E402
+from app.models.enums import RelayEventKind  # noqa: E402
 from app.models.relay_install import RelayInstall  # noqa: E402
 from app.repositories import relay_repository  # noqa: E402
 from app.services import relay_adopt  # noqa: E402
+from app.services import relay_gateway as relay_gateway_module  # noqa: E402
 from app.services.relay_gateway import gateway  # noqa: E402
 from main import app  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_gateway_event_writes(monkeypatch):
+    """Swallow the events the gateway emits on register/unregister.
+
+    They are covered in tests/test_relay_gateway.py and tests/test_relay_events.py; here they would be
+    a database write from a worker thread on every socket teardown, which is I/O these tests have no
+    need of. The route's OWN events (relay_events.write) are left alone - two tests below assert on
+    them."""
+    monkeypatch.setattr(relay_gateway_module.relay_events, "record", lambda *a, **k: None)
 
 
 @pytest.fixture(autouse=True)
@@ -463,3 +476,146 @@ def test_delete_allows_a_different_disconnected_install_while_one_is_live(_migra
     finally:
         _delete_install(live_id)
         _delete_install(other_id)
+
+
+# --- pushing the preview channel list down the socket (#654) ---------------------------------------
+
+
+def test_the_read_loop_pushes_the_preview_channels_after_a_hello(monkeypatch):
+    """The whole of #654's push: the relay learns which preview backends to also dial over the socket
+    it has already authenticated, instead of polling a second endpoint with a second copy of its
+    credential - the drift that left every fresh preview relay-dark."""
+    urls = ["wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"]
+    monkeypatch.setattr(main.preview_registry, "channels", lambda: urls)
+
+    async def run():
+        ws = _FakeRelaySocket(
+            [
+                {
+                    "type": "hello",
+                    "build": "relay-v0.2.0",
+                    "ops": ["list_vendors"],
+                    "companies": ["TUBC"],
+                    "features": ["channels"],
+                },
+                WebSocketDisconnect(),
+            ]
+        )
+        gateway.try_register("TUBC", ws)
+        try:
+            with pytest.raises(WebSocketDisconnect):
+                await main._relay_read_loop(ws)
+            assert ws.sent == [{"type": "channels", "urls": urls}]
+        finally:
+            gateway.unregister(ws)
+
+    asyncio.run(run())
+
+
+def test_a_relay_that_does_not_advertise_the_feature_is_pushed_nothing(monkeypatch):
+    # Every build before #654 sends {type, build, ops} and would read the frame as a job reply.
+    monkeypatch.setattr(
+        main.preview_registry, "channels", lambda: ["wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"]
+    )
+
+    async def run():
+        ws = _FakeRelaySocket(
+            [
+                {"type": "hello", "build": "relay-v0.1.0-build.30", "ops": ["list_vendors"]},
+                WebSocketDisconnect(),
+            ]
+        )
+        gateway.try_register("TUBC", ws)
+        try:
+            with pytest.raises(WebSocketDisconnect):
+                await main._relay_read_loop(ws)
+            assert ws.sent == []
+        finally:
+            gateway.unregister(ws)
+
+    asyncio.run(run())
+
+
+def test_an_adopted_socket_is_pushed_the_channels_too(monkeypatch):
+    # An adopted connection goes through _await_hello rather than the read loop, so the push has to be
+    # on both paths or a recovered relay silently stops learning about previews.
+    urls = ["wss://backend-uc-nexus-pr-554.up.railway.app/relay-link"]
+    monkeypatch.setattr(main.preview_registry, "channels", lambda: urls)
+
+    async def run():
+        ws = _FakeRelaySocket(
+            [
+                {"type": "hello", "build": "relay-v0.2.0", "ops": [], "companies": ["TUBC"], "features": ["channels"]},
+                WebSocketDisconnect(),
+            ]
+        )
+        gateway.try_register("TUBC", ws)
+        try:
+            with pytest.raises(WebSocketDisconnect):
+                await main._serve_relay_link(ws, require_hello=True)
+            assert {"type": "channels", "urls": urls} in ws.sent
+        finally:
+            gateway.unregister(ws)
+
+    asyncio.run(run())
+
+
+# --- what the handshake records (#654) -------------------------------------------------------------
+
+
+def test_an_unknown_secret_records_a_refused_secret_event(_migrate_database, monkeypatch):
+    """A drifted credential is otherwise invisible from this side: the relay retries forever and
+    nothing but a log line ever says so."""
+    written: list[dict] = []
+
+    async def _capture(kind, **fields):
+        written.append({"kind": kind, **fields})
+
+    monkeypatch.setattr(main.relay_events, "write", _capture)
+
+    with TestClient(app) as client:
+        try:
+            with client.websocket_connect("/relay-link", headers={"Authorization": "Bearer not-enrolled"}):
+                pass
+        except WebSocketDisconnect:
+            pass
+
+    assert [e["kind"] for e in written] == [RelayEventKind.REFUSED_SECRET]
+    assert written[0]["install_id"] is None
+
+
+def test_a_connection_records_the_build_the_hello_advertised(_migrate_database, monkeypatch):
+    # CONNECTED is written from a task that waits for the hello, so the row carries the relay build
+    # rather than recording every connection as an unknown one.
+    written: list[dict] = []
+
+    async def _capture(kind, **fields):
+        written.append({"kind": kind, **fields})
+
+    monkeypatch.setattr(main.relay_events, "write", _capture)
+
+    secret = "relay-link-connected-event-secret"
+    install_id = _enroll_committed("WS-CONNECTED-EVENT", "TUBC", secret)
+    try:
+        with TestClient(app) as client:
+            with client.websocket_connect("/relay-link", headers={"Authorization": f"Bearer {secret}"}) as ws:
+                _wait_until(lambda: gateway.connected)
+                ws.send_json(
+                    {
+                        "type": "hello",
+                        "build": "relay-v0.2.0",
+                        "ops": ["list_vendors"],
+                        "companies": ["TUBC"],
+                        "features": ["channels"],
+                    }
+                )
+                _wait_until(lambda: any(e["kind"] is RelayEventKind.CONNECTED for e in written))
+                ws.close()
+                _wait_until(lambda: not gateway.connected)
+    finally:
+        _delete_install(install_id)
+
+    connected = next(e for e in written if e["kind"] is RelayEventKind.CONNECTED)
+    assert connected["install_id"] == install_id
+    assert connected["build"] == "relay-v0.2.0"
+    assert connected["companies"] == ["TUBC"]

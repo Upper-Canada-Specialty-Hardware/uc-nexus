@@ -32,6 +32,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import layout
+from .logging_setup import get_logger
+
+logger = get_logger()
 
 REPO = "Upper-Canada-Specialty-Hardware/uc-nexus"
 _RELEASES_API = f"https://api.github.com/repos/{REPO}/releases?per_page=30"
@@ -78,9 +81,36 @@ def build_number(tag: str) -> int:
     return int(m.group(1)) if m else -1
 
 
-def latest_release() -> dict:
+def update_channel() -> str:
+    """Which releases this workstation installs: "stable" (full releases only) or "latest" (prereleases
+    too). Read from config rather than baked, because it is the one thing that differs between the
+    workstation a build is proven on and the rest of the fleet. Falls back to "stable" if config cannot
+    be read - the conservative half of "cannot tell"."""
+    try:
+        from .config import UPDATE_CHANNELS, get_settings
+
+        channel = (get_settings().update.channel or "stable").strip().lower()
+    except Exception:  # noqa: BLE001 - an unreadable/odd config must not stop update checks entirely
+        return "stable"
+    if channel not in UPDATE_CHANNELS:
+        logger.warning(
+            "unknown [update] channel %r in config.toml; treating it as stable (valid: %s)",
+            channel,
+            ", ".join(UPDATE_CHANNELS),
+        )
+        return "stable"
+    return channel
+
+
+def latest_release(channel: str | None = None) -> dict:
     """The relay-v* release with the HIGHEST build number that carries the bundle zip. GitHub's /releases
-    list is not reliably newest-first, so pick by build number rather than trusting list order. {} if none."""
+    list is not reliably newest-first, so pick by build number rather than trusting list order. {} if none.
+
+    On the "stable" channel a PRERELEASE is skipped (drafts never appear on an unauthenticated read, and
+    are skipped explicitly anyway). That is what makes the promote step meaningful: a release is cut as a
+    prerelease, the one workstation on "latest" installs and proves it, and
+    `gh release edit <tag> --prerelease=false` is what hands it to everyone else."""
+    channel = channel or update_channel()
     req = urllib.request.Request(_RELEASES_API, headers={"Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=15) as r:  # noqa: S310 (fixed public GitHub API URL)
         releases = json.loads(r.read().decode())
@@ -89,6 +119,10 @@ def latest_release() -> dict:
     for rel in releases:
         tag = rel.get("tag_name", "")
         if not tag.startswith("relay-v"):
+            continue
+        if rel.get("draft"):
+            continue
+        if rel.get("prerelease") and channel != "latest":
             continue
         asset = next((a for a in rel.get("assets", []) if a.get("name") == _RELEASE_ASSET), None)
         if not (asset and asset.get("browser_download_url")):
@@ -178,6 +212,30 @@ def _finish_ledger(install_dir: Path, status: str, error: str | None) -> None:
     ledger["status"] = status
     ledger["last_error"] = error
     ledger["updated_at"] = _now_iso()
+    _write_ledger(install_dir, ledger)
+
+
+def record_self_check(install_dir: str | Path, verdict: str) -> None:
+    """Stamp the post-update self-check's verdict on the ledger (see update_poller.self_check). It is
+    what makes that check run ONCE per update rather than on every app start: a workstation that boots
+    with no network would otherwise keep re-judging a build that has been fine for a week, and could
+    roll a good one back."""
+    install_dir = Path(install_dir)
+    ledger = read_ledger(install_dir)
+    if not ledger:
+        return
+    ledger["self_check"] = verdict
+    ledger["updated_at"] = _now_iso()
+    _write_ledger(install_dir, ledger)
+
+
+def mark_rolled_back(install_dir: str | Path, error: str) -> None:
+    """Record that a landed update was reverted by the post-update self-check. Terminal, like `failed`,
+    and `update_poller.should_stage` refuses the same target_build afterwards - reinstalling the build
+    that just proved it cannot reach the backend would loop the workstation through it forever."""
+    install_dir = Path(install_dir)
+    ledger = read_ledger(install_dir)
+    ledger.update(status="rolled_back", last_error=error, self_check="rolled_back", updated_at=_now_iso())
     _write_ledger(install_dir, ledger)
 
 

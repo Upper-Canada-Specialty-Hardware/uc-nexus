@@ -96,8 +96,8 @@ PG_DIRECT_DBNAME = os.getenv("PG_DIRECT_DBNAME", "railway")
 PG_DIRECT_SSLMODE = os.getenv("PG_DIRECT_SSLMODE", "require")
 
 # Railway names a per-PR preview environment "uc-nexus-pr-<N>". Anchored so a name that merely contains
-# the prefix does not match - the same shape relay_channels' PREVIEW_ENVIRONMENT_RE uses, kept local
-# here to avoid importing that module (and its httpx/threading weight) from config.
+# the prefix does not match - the same shape preview_registry's PREVIEW_ENVIRONMENT_RE uses, kept local
+# here to avoid importing that module from config.
 _PREVIEW_ENVIRONMENT_RE = re.compile(r"^uc-nexus-pr-(\d+)$")
 
 
@@ -112,7 +112,7 @@ def preview_frontend_origin() -> str:
     ``https://frontend-uc-nexus-pr-42.up.railway.app``.
 
     Derived from the environment name rather than looked up, exactly as
-    app/services/relay_channels.py derives the backend channel URL: Railway public hostnames are
+    app/services/preview_registry.py derives the backend channel URL: Railway public hostnames are
     ``<service>-<environment>.up.railway.app`` and the frontend service is ``frontend`` in every
     environment, so the derivation is total for any name matching the preview shape. GET
     /testing/session (its only caller) is gated on is_preview_environment() first, so this is never
@@ -155,25 +155,39 @@ def testing_sign_in_secret_hash() -> str:
 # to authenticate. relay_seed refuses to act on it in production regardless.
 RELAY_SEED_SECRET_HASH = os.getenv("RELAY_SEED_SECRET_HASH", "")
 
-# Railway injects the project this service belongs to. Empty off Railway.
-RAILWAY_PROJECT_ID = os.getenv("RAILWAY_PROJECT_ID", "")
+# The GP companies the seeded REAL-relay install is enrolled for, comma separated. Only ever read
+# together with RELAY_SEED_SECRET_HASH, i.e. when PREVIEW_REAL_RELAY is on. Defaults to the GP sandbox
+# alone: seeding a hash that the production workstation relay also answers to is only acceptable while
+# the reach of the resulting install is a sandbox company.
+RELAY_SEED_COMPANIES = os.getenv("RELAY_SEED_COMPANIES", "TUBC")
 
-# Railway API token, set ONLY on production. It lets /relay-channels tell the workstation relay which
-# preview environments exist right now, so adding a PR environment stops being a hand edit on that
-# machine (app/services/relay_channels.py). Blank disables discovery and the route answers an empty
-# list, which is the correct answer everywhere except production - a preview environment must not be
-# able to advertise other preview environments.
-#
-# Use a WORKSPACE token. Railway offers three kinds and only two of them are viable here: an account
-# token carries everything the account can reach, and a PROJECT token authenticates with a
-# `Project-Access-Token` header rather than `Authorization: Bearer` AND is scoped to a single
-# environment, so it could neither authenticate this call nor see its siblings. A workspace token is
-# the narrowest one that can list a project's environments over Bearer auth.
-#
-# Railway has no read-only scope on any of them, so this is a write-capable credential however
-# narrowly it is scoped. Nothing here ever issues a mutation, and it lives on production alone.
-RAILWAY_API_TOKEN = os.getenv("RAILWAY_API_TOKEN", "")
+# SHA-256 hex of the STUB relay's Bearer secret - the default relay credential for a preview
+# environment. A preview normally runs its own fixture-backed stub relay inside the environment rather
+# than borrowing the one GP-credentialed workstation, so nothing has to be dialled from an office
+# machine for a PR to be testable. Minted PER PREVIEW by the preview-env workflow, which sets this hash
+# on the preview's backend and the matching secret on the stub service, so the pair can never drift.
+# Never set on production: seeding never runs there and the stub does not exist there.
+RELAY_STUB_SECRET_HASH = os.getenv("RELAY_STUB_SECRET_HASH", "")
 
-# Overridable because Railway has served its public API from more than one host; a change there should
-# be a variable edit, not a redeploy of pinned code.
-RAILWAY_API_URL = os.getenv("RAILWAY_API_URL", "https://backboard.railway.com/graphql/v2")
+# The GP companies the seeded STUB install is enrolled for, comma separated. Wider than the real
+# relay's list on purpose: the stub answers from fixtures, so a second company costs nothing and lets
+# the multi-company screens (#637) be exercised in a preview at all.
+RELAY_STUB_COMPANIES = os.getenv("RELAY_STUB_COMPANIES", "TUBC,TUCSH")
+
+# Whether THIS preview environment wants the real workstation relay instead of the stub. Off by
+# default, which is the whole point: the default preview is self-contained. Turning it on does two
+# things at once - the seeded credential becomes RELAY_SEED_SECRET_HASH (the hash the workstation
+# relay's secret matches), and this backend announces itself to production so that relay is told to
+# dial it (app/services/preview_announce.py). Set per environment, never on production.
+PREVIEW_REAL_RELAY = os.getenv("PREVIEW_REAL_RELAY", "").lower() in ("true", "1", "yes")
+
+# The shared secret a preview presents to production's POST/DELETE /preview-channels, which is how
+# production learns a preview exists at all. Set on PRODUCTION - which both verifies it and is where a
+# new preview inherits its copy from at environment creation. Not a digest like the seed hashes: the
+# preview has to PRESENT it, so both sides need the value itself. Blank on either side closes the
+# route (401), which leaves the relay dialling nothing but production.
+PREVIEW_REGISTRY_SECRET = os.getenv("PREVIEW_REGISTRY_SECRET", "")
+
+# Where a preview announces itself. Constant in practice - production's public backend origin - and a
+# variable only so a fork or a renamed service is a variable edit rather than a code change.
+PRODUCTION_BACKEND_ORIGIN = os.getenv("PRODUCTION_BACKEND_ORIGIN", "https://backend-production-7866.up.railway.app")

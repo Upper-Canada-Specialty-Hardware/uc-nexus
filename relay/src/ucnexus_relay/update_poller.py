@@ -14,11 +14,15 @@ is testable without a network, a GUI, or GP. `run()` is the only part that touch
 
 import random
 import threading
+import time
+from pathlib import Path
 
-from . import updater
+from . import layout, updater
 from .logging_setup import get_logger
 
 logger = get_logger()
+
+_sleep = time.sleep  # module-level seam so the self-check's tests never sleep for real
 
 # First check well after start-up: a relay that just launched is usually a relay someone is watching
 # (or one that just came back from an update), and swapping the exe out from under that is startling.
@@ -38,6 +42,13 @@ MAX_DEFERRALS = 8
 # result and then persists the UC Nexus side of the write; killing the relay inside that window is
 # survivable but pointlessly risky when the alternative is waiting two minutes.
 BUSY_GRACE_SECONDS = 120
+
+# The post-update self-check: how long the freshly updated build gets to bring its backend channel up
+# before it is judged a bad build, and how often that is re-checked. Five minutes is far past a normal
+# connect (the channel dials seconds after serve binds and retries with backoff), so the only thing
+# that runs out this clock is a build that cannot connect at all.
+SELF_CHECK_SECONDS = 300.0
+SELF_CHECK_POLL_SECONDS = 15.0
 
 
 def should_stage(check: dict, ledger: dict, cancel_requested: bool) -> tuple[bool, str]:
@@ -73,6 +84,10 @@ def should_stage(check: dict, ledger: dict, cancel_requested: bool) -> tuple[boo
         and int(ledger.get("attempts") or 0) >= updater.MAX_ATTEMPTS
     ):
         return False, f"{latest} already failed {updater.MAX_ATTEMPTS} times; waiting for a newer build"
+    if status == "rolled_back" and ledger.get("target_build") == latest:
+        # It installed, ran, and could not reach the backend, so the self-check put the previous version
+        # back. Re-staging it would walk the workstation through the same 5 minutes offline every day.
+        return False, f"{latest} was rolled back after it could not reach the backend; waiting for a newer build"
     return True, f"update available: {latest}"
 
 
@@ -153,14 +168,133 @@ def run(app, stop: threading.Event, rng: random.Random | None = None) -> None:
             logger.exception("update poller: unexpected error; will retry on the next tick")
 
 
+# --- post-update self-check --------------------------------------------------------------------------
+# An update is only "applied" as far as the helper can see: it health-gates the relaunch, and /health
+# answers as soon as uvicorn binds - which says nothing about whether the new build can still reach the
+# backend. A build that starts cleanly and never connects therefore records `success` and leaves the
+# workstation dark, with no one on site to notice. This is the second gate: the channel has to actually
+# come up, or the previous version goes back.
+
+
+def channel_connected(health: dict) -> bool:
+    """Whether the serve child reports its PRIMARY backend channel connected. The top level of the
+    /health channel snapshot mirrors production, which is the connection that matters here."""
+    channel = health.get("channel") if isinstance(health, dict) else None
+    return bool(isinstance(channel, dict) and channel.get("connected"))
+
+
+def _has_channels(health: dict) -> bool:
+    """Whether serve is dialling anything at all. An unenrolled relay (no secret) runs no channel by
+    design, so there is nothing for the self-check to prove and nothing a rollback would fix."""
+    channel = health.get("channel") if isinstance(health, dict) else None
+    return bool(isinstance(channel, dict) and channel.get("channels"))
+
+
+def needs_self_check(ledger: dict) -> bool:
+    """Only right after an update landed: the ledger says success, that target is the build now running,
+    and no verdict has been recorded for it yet (see updater.record_self_check for why once)."""
+    target = ledger.get("target_build") or ""
+    if ledger.get("status") != "success" or not target or ledger.get("self_check"):
+        return False
+    return target == updater.current_build()
+
+
+def _previous_version_dir(install_dir):
+    """The highest-build app-<build>/ folder that is NOT the one `current` points at, or None if this
+    install has no earlier version left to fall back to (layout keeps two)."""
+    current = layout.current_target(install_dir)
+    for candidate in layout.version_dirs(install_dir):
+        if current is None or candidate.name != Path(current).name:
+            return candidate
+    return None
+
+
+def _restart_serve_from_current(install_dir) -> None:
+    """Bring the serve child back on whatever `current` now points at.
+
+    Deliberately NOT app.restart_serve(): that relaunches sys.executable, which in this path IS the
+    build being rolled back, so serve would come straight back up on it and the rollback would not
+    reach GP until the next logon. The desktop window stays on the new build until then either way -
+    serve is the process that holds the backend channel, and it is the one that has to move."""
+    from . import setup, single_instance
+
+    setup.stop_serve(install_dir)
+    _sleep(1.5)  # let port 7321 free before the rolled-back serve binds it
+    setup.start_serve(single_instance.installed_exe_path(install_dir), install_dir)
+
+
+def _roll_back(install_dir, target: str) -> str:
+    previous = _previous_version_dir(install_dir)
+    if previous is None:
+        # Nothing to go back to, so leave the relay on the build it has: a broken channel beats no relay.
+        logger.warning(
+            "update self-check: %s never connected to the backend, but there is no previous version to "
+            "roll back to; leaving it in place",
+            target,
+        )
+        updater.record_self_check(install_dir, "no_previous_version")
+        return "no_previous_version"
+    if not layout.repoint_current(install_dir, previous):
+        logger.warning("update self-check: could not repoint current back to %s; leaving %s in place", previous, target)
+        updater.record_self_check(install_dir, "rollback_failed")
+        return "rollback_failed"
+    logger.warning("update self-check: %s never connected to the backend; rolled back to %s", target, previous.name)
+    _restart_serve_from_current(install_dir)
+    updater.mark_rolled_back(
+        install_dir,
+        f"{target} started but its backend channel never connected within "
+        f"{int(SELF_CHECK_SECONDS)}s; rolled back to {previous.name}",
+    )
+    return "rolled_back"
+
+
+def _self_check(app, stop: threading.Event, monotonic) -> str | None:
+    install_dir = app._install_dir()
+    ledger = updater.read_ledger(install_dir)
+    if not needs_self_check(ledger):
+        return None
+    target = ledger.get("target_build") or ""
+    deadline = monotonic() + SELF_CHECK_SECONDS
+    while not stop.is_set():
+        health = _read_health()
+        if channel_connected(health):
+            logger.info("update self-check: %s is connected to the backend", target)
+            updater.record_self_check(install_dir, "connected")
+            return "connected"
+        if monotonic() >= deadline:
+            if not _has_channels(health):
+                # No channel is configured (an unenrolled relay), so "not connected" is not a verdict
+                # on this build.
+                updater.record_self_check(install_dir, "no_channel")
+                return "no_channel"
+            return _roll_back(install_dir, target)
+        stop.wait(SELF_CHECK_POLL_SECONDS)
+    return None
+
+
+def self_check(app, stop: threading.Event, monotonic=time.monotonic) -> str | None:
+    """Verify that the build a just-applied update installed can still reach the backend, and put the
+    previous version back if it cannot. Returns the verdict it recorded, or None when there was nothing
+    to check (no update landed, or the app is shutting down).
+
+    Wrapped whole: this runs in a background thread at app start, and a bug in it must never be the
+    reason a relay does not come up."""
+    try:
+        return _self_check(app, stop, monotonic)
+    except Exception:  # noqa: BLE001
+        logger.exception("update self-check: unexpected error; leaving the relay on the current build")
+        return None
+
+
 def start(app) -> threading.Event:
-    """Spawn the poll thread and hand back its stop event (set it first on teardown, so a poll cannot
-    begin staging an update while the app is already shutting down). Frozen builds only: a dev
+    """Spawn the poll + self-check threads and hand back their shared stop event (set it first on
+    teardown, so neither can act while the app is already shutting down). Frozen builds only: a dev
     checkout has no exe to swap."""
     stop = threading.Event()
     import sys
 
     if not getattr(sys, "frozen", False):
         return stop
+    threading.Thread(target=self_check, args=(app, stop), daemon=True, name="update-self-check").start()
     threading.Thread(target=run, args=(app, stop), daemon=True, name="update-poller").start()
     return stop

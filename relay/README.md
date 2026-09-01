@@ -130,15 +130,18 @@ still means exactly one channel), but overriding it means retyping production al
 the one way to express that mistake. the relay logs a WARNING at startup when no configured channel is
 the production one.
 
-the production channel is unrestricted. every other URL is pinned to `TUBC`
+the production channel is unrestricted. every other URL is pinned to the sandboxes `TUBC` and `TUCSH`
 (`config.NON_PRIMARY_ALLOWED_COMPANIES`) - reads AND writes are served there, since a PR touching GP
 has to be verifiable before it merges, and the company pin is the only thing making that safe. a job
-for any other company comes back `company_not_allowed_on_channel` before it reaches GP.
+for any other company comes back `company_not_allowed_on_channel` before it reaches GP. both sandboxes
+are in the pin because UCSH-side work is only reproducible against TUCSH, and the alternative is aiming
+a PR backend at live UCSH.
 
-**`TUBC` must also be in `[gp] allowed_companies`.** the channel pin decides what a test backend may
-ASK for; `ops.check_company_allowed` still decides what this workstation will serve, and it reads
-`[gp] allowed_companies` from config.toml. a workstation set up only for production companies refuses
-every PR-environment job with `company_not_allowed`. nothing checks the two lists intersect at startup.
+**the sandbox the PR is testing must also be in `[gp] allowed_companies`.** the channel pin decides what
+a test backend may ASK for; `ops.check_company_allowed` still decides what this workstation will serve,
+and it reads `[gp] allowed_companies` from config.toml. a workstation set up only for production
+companies refuses every PR-environment job with `company_not_allowed`. nothing checks the two lists
+intersect at startup.
 
 **the backend side of this - `RELAY_SEED_SECRET_HASH` - lives on the PRODUCTION backend service, and a
 PR environment inherits it only at creation (#431).** Railway clones a new PR environment from
@@ -157,12 +160,46 @@ production's channel is never touched either way. it used to need the app's Rest
 is a click nobody could automate - and since a preview environment's database is empty, nothing at all
 is testable there until the channel is up, because the project list comes from GP.
 
-still remove the URL when the PR closes: the channel goes away when you do, and until then a torn-down
-environment retries forever (quietly - a non-production channel logs a repeated failure once, then at
-DEBUG). the enrolled secret is re-read on every reconnect as before, and a config.toml caught mid-write
-kills neither: the channels keep dialling with the last good settings and the finished edit lands on the
-next tick. the setup wizard preserves a hand-added `[channel]` block, so re-running it will not silently
-drop the URL.
+a hand-added URL still has to be removed when you are done with it: the channel goes away when you do,
+and until then a torn-down environment retries forever (quietly - a non-production channel logs a
+repeated failure once, then at DEBUG). the enrolled secret is re-read on every reconnect as before, and
+a config.toml caught mid-write kills neither: the channels keep dialling with the last good settings and
+the finished edit lands on the next tick. the setup wizard preserves a hand-added `[channel]` block, so
+re-running it will not silently drop the URL.
+
+**a re-enrolment now takes effect on a live channel too.** `_run_channel` re-reads the secret before
+every dial, so a channel that is DOWN heals itself, but a CONNECTED one holds a socket authenticated
+with the old secret and would never dial again to find out - which reads as "enrolled fine, still not
+working". the supervisor records a hash of the secret each channel connected with, and restarts any
+channel whose hash no longer matches config.toml, logging a WARNING with `category: secret_changed`.
+
+preview environments (no longer configured here at all)
+
+**production pushes the preview list; nothing on this workstation names it.** production knows which
+Railway PR environments exist and pushes the full list down the socket it already holds, as a
+`{"type": "channels", "urls": [...]}` frame - once after the relay's hello, then again whenever the list
+changes. the relay unions it with whatever config.toml names and dials the difference within about a
+second. a URL that stops being listed has its channel cancelled, so a closed PR's environment stops
+being dialled without anyone touching this machine.
+
+what the relay will accept off that frame is narrow, on purpose - this process holds GP credentials, so
+"the backend said so" is not on its own a reason to dial a host:
+
+- only `wss://backend-uc-nexus-pr-<N>.up.railway.app/relay-link`, matched whole. anything else is
+  dropped with a WARNING naming it (`category: pushed_channels_rejected`)
+- only off the PRODUCTION channel. a preview backend that could name the next backend to dial would be
+  able to walk the relay onto a host of its choosing, so a frame from anywhere else is ignored
+- never production's own URL, so a pushed channel is always non-primary and always carries the sandbox
+  company pin
+
+`accept_pushed_preview_backends = false` under `[channel]` turns the whole thing off and the relay dials
+exactly what config.toml names. that key used to be `discover_preview_backends`, from when the relay
+polled production over https for the same list; the old name still loads and still means the same thing,
+so a config.toml written before the push model needs no edit. the relay advertises `features:
+["channels"]` on its hello frame, which is how the backend knows a build will understand a push at all.
+
+`extra_backend_urls` still works and still only ADDS. it is now for what production cannot know about: a
+local dev backend, or anything outside the Railway project.
 
 the ops newer than `create_po` / `create_receipt` are channel-only - they have no HTTP route, because
 the browser hop is no longer the live path.
@@ -200,3 +237,105 @@ minutes after the app starts, daily after that. a branch build therefore cannot 
 fleet's permanent build, but a long session can have the build swapped underneath it. if a run suddenly
 starts answering `RELAY_OP_UNSUPPORTED` again, check the build tag before anything else and re-install
 the branch zip.
+
+release channels
+
+each workstation takes one of two channels, set in `config.toml`:
+
+```toml
+[update]
+channel = "latest"   # this workstation proves a build before it is promoted; default is "stable"
+```
+
+- `stable` (the default) - full GitHub Releases only. a release flagged PRERELEASE is skipped even when
+  it is the higher build.
+- `latest` - prereleases too.
+
+that is the promote step, and the whole point of it: CI cuts a relay release as a prerelease, the one
+workstation on `latest` installs it and proves it against GP, and `gh release edit <tag>
+--prerelease=false` is what hands it to everyone else. nothing else about update selection changes -
+highest build number wins and a downgrade is never offered, so promoting is the only action that moves
+the fleet. an unknown channel value is read as `stable` with a WARNING in relay.log naming it, rather
+than refused - a typo in this one key must not make config.toml unreadable and keep serve from starting.
+
+post-update self-check and rollback
+
+the apply helper health-gates its relaunch, but `/health` answers as soon as uvicorn binds - which says
+nothing about whether the new build can still reach the backend. a build that starts cleanly and never
+connects would therefore record `success` and leave the workstation dark, with nobody on site to notice.
+
+so the first app start after an update lands watches for up to five minutes:
+
+- `/health` reports the backend channel connected -> the ledger is stamped and that is the end of it
+- it never connects, and a previous `app-<build>\` folder is still on disk -> the `current` junction is
+  repointed back to it, the serve child is restarted from that junction (not from the running exe, which
+  IS the build being rolled back), and `update-state.json` records `rolled_back` with the reason
+- it never connects and there is no previous version left -> the build stays; a broken channel beats no
+  relay at all
+
+after a rollback the poller refuses to stage that same build again, so the workstation does not walk
+through the same install and the same five minutes offline every day. publish a higher build to escape
+it, exactly as with a failed install.
+
+the check runs ONCE per update - its verdict is stamped on `update-state.json` - so a workstation that
+happens to boot offline a week later cannot roll a good build back. an unenrolled relay dials no channel
+by design, and that is recorded as `no_channel` rather than judged as a bad build.
+
+fixture mode / stub relay
+
+the relay can run with no GP at all, answering every channel op out of a checked-in snapshot of the
+TUBC and TUCSH sandbox companies (`src/ucnexus_relay/fixture_ops.py`, `fixtures/gp-snapshot.json`).
+that is what makes a Railway preview environment testable on its own: nothing relay-dependent works
+there until a relay dials it, and the workstation is a physical machine somebody has to be sitting at.
+in fixture mode the relay is a Linux container the preview environment brings up itself - no GP, no
+ODBC driver, no pyodbc.
+
+the op set is identical: same names, same result shapes, same error codes, so the backend cannot tell
+the difference and nothing backend-side is conditional on it. writes are real within the process -
+`create_po` reserves the next PO number in GP's shape (suffix rules included) and appends the PO,
+`create_receipt` moves the received quantities on it, and `sync_pos` / `read_po_totals` then see both.
+nothing is written back to the snapshot file, so a container restart is a clean company again.
+
+what it is NOT: a test of GP. no eConnect proc runs, so a change to the eConnect call path is not
+verified by anything a fixture relay does. that still needs the workstation - see "testing a PR that
+adds a new op" above.
+
+configuration is entirely environment variables, because a container has no config.toml to enroll and
+no DPAPI to decrypt with. each one wins over the file when there is one:
+
+- `UCNEXUS_RELAY_MODE` - `fixture`, or `sql` (the default) for the workstation relay, unchanged
+- `UCNEXUS_RELAY_FIXTURE_PATH` - the snapshot to serve; unset means the bundled `fixtures/gp-snapshot.json`
+- `UCNEXUS_RELAY_SHARED_SECRET` - the channel secret, PLAINTEXT. never DPAPI-decrypted, so an
+  `enc:dpapi:` value in a config.toml carried into the image is replaced rather than choked on
+- `UCNEXUS_RELAY_BACKEND_URL` - the `wss://.../relay-link` to dial
+- `UCNEXUS_RELAY_COMPANIES` - comma list; becomes `[gp] allowed_companies`, first entry is `default_company`
+- `UCNEXUS_RELAY_LOG_FILE` - `-` for stdout only, so nothing is written to an ephemeral filesystem
+
+```
+docker build -f Dockerfile -t ucnexus-relay-fixture .
+docker run --rm \
+  -e UCNEXUS_RELAY_BACKEND_URL=wss://backend-pr-999.up.railway.app/relay-link \
+  -e UCNEXUS_RELAY_SHARED_SECRET=<the secret that environment's RELAY_SEED_SECRET_HASH was seeded from> \
+  ucnexus-relay-fixture
+```
+
+the GP-touching HTTP routes (`/info`, `/vendors`, `/buyers`, `/tax-details`, `/cost-codes`, `/po`,
+`/po/next-number`, `/receipt`) answer `503` with error `fixture_mode` there. the outbound channel is
+the transport this mode serves, and the browser hop is no longer the live path anyway. `/health`
+answers normally.
+
+replacing the snapshot with real sandbox data
+
+the checked-in file is synthetic, hand-written so the container has something to serve on day one. to
+swap it for the real TUBC/TUCSH, run this on the workstation - the only machine that can reach GP -
+and commit what it writes:
+
+```
+poetry run python -m ucnexus_relay capture --companies TUBC,TUCSH --out fixtures/gp-snapshot.json
+```
+
+read-only throughout: every call is one of the `list_`/`read_` handlers the channel already serves.
+three things GP holds have no read op and are derived instead - a job's usable cost codes are stored at
+account index 0 while only the codes `job_setup_health` already calls broken keep their dangling index
+(so #425 still reproduces), PO lines are stored at index 0 and are therefore receivable, and the PO
+counter starts one past the highest number captured. `capture.py` says which is which.

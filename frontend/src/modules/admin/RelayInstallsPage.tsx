@@ -16,15 +16,23 @@ import {
   AlertTitle,
   Chip,
   IconButton,
+  Paper,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   Tooltip,
 } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
-import { Copy } from 'lucide-react';
+import { Copy, TriangleAlert } from 'lucide-react';
 import { useQuery, useMutation } from '@apollo/client/react';
 import {
   RELAY_INSTALLS,
   PROVISION_RELAY_INSTALL,
   RELAY_ADOPT_WINDOW,
+  RELAY_EVENTS,
   ARM_RELAY_ADOPT,
   DISARM_RELAY_ADOPT,
   DELETE_RELAY_INSTALL,
@@ -73,8 +81,58 @@ interface AdoptWindow {
   armedBy: string;
 }
 
+interface RelayEvent {
+  id: string;
+  at: string;
+  kind: string;
+  installId: string | null;
+  installLabel: string | null;
+  build: string | null;
+  companies: string[] | null;
+  reason: string | null;
+}
+
+// The connection log is the only thing on this page that changes without an admin acting, and it
+// changes at human pace - a relay reconnect, a refusal. Nothing else here polls.
+const EVENT_LIMIT = 50;
+const EVENTS_POLL_MS = 30_000;
+
+// A refusal is the row an admin is looking for, so it gets the loud colour; a disconnect on its own
+// is routine (the workstation rebooted) and stays neutral.
+const EVENT_KIND_COLOR: Record<string, 'default' | 'info' | 'success' | 'warning' | 'error'> = {
+  CONNECTED: 'success',
+  DISCONNECTED: 'default',
+  REFUSED_SLOT: 'warning',
+  REFUSED_SECRET: 'error',
+  ADOPTED: 'info',
+};
+
 function fmtDate(v: string | null | undefined): string {
   return v ? parseServerDate(v).toLocaleString() : '—';
+}
+
+function fmtRelative(v: string | null | undefined): string {
+  if (!v) return '—';
+  const date = parseServerDate(v);
+  const min = Math.floor((Date.now() - date.getTime()) / 60_000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d ago`;
+  return date.toLocaleDateString();
+}
+
+/** wss://uc-nexus-pr-661.up.railway.app/relay-link -> uc-nexus-pr-661. The full url is the tooltip. */
+function previewChannelName(url: string): string {
+  const m = /uc-nexus-pr-\d+/i.exec(url);
+  if (m) return m[0];
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
 }
 
 function fmtCountdown(expiresAt: string): string {
@@ -82,6 +140,29 @@ function fmtCountdown(expiresAt: string): string {
   if (ms <= 0) return 'expired';
   const total = Math.floor(ms / 1000);
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
+/** One label/value pair in the link strip. The tooltip carries the exact timestamp. */
+function StripField({ label, value, title }: { label: string; value: string; title?: string }) {
+  const body = (
+    <Box component="span" sx={{ ...monoSx, ...tabularSx }}>
+      {value}
+    </Box>
+  );
+  return (
+    <Stack direction="row" spacing={0.75} alignItems="baseline" sx={{ minWidth: 0 }}>
+      <Box component="span" sx={microLabelSx}>
+        {label}
+      </Box>
+      {title ? (
+        <Tooltip title={title} arrow>
+          {body}
+        </Tooltip>
+      ) : (
+        body
+      )}
+    </Stack>
+  );
 }
 
 const ADOPT_WARNING =
@@ -122,6 +203,14 @@ export default function RelayInstallsPage() {
   });
   const installs = useMemo(() => data?.relayInstalls ?? [], [data]);
 
+  const { data: eventsData } = useQuery<{ relayEvents: RelayEvent[] }>(RELAY_EVENTS, {
+    skip: !isAdmin,
+    variables: { limit: EVENT_LIMIT },
+    fetchPolicy: 'cache-and-network',
+    pollInterval: EVENTS_POLL_MS,
+  });
+  const events = useMemo(() => eventsData?.relayEvents ?? [], [eventsData]);
+
   const [provision, { loading: provisioning }] = useMutation<{ provisionRelayInstall: Provisioned }>(
     PROVISION_RELAY_INSTALL,
     {
@@ -148,6 +237,17 @@ export default function RelayInstallsPage() {
   const [deleteTarget, setDeleteTarget] = useState<RelayInstall | null>(null);
   const liveInstallId = relay.installId;
   const [, setTick] = useState(0);
+
+  // What the workstation is configured for decides what it can actually serve. An install enrolled
+  // for a company the relay was never set up for looks healthy here and quietly serves nothing, so
+  // name the gap rather than leaving it to a failed write to surface.
+  const missingCompanies = useMemo(() => {
+    if (!relay.connected || !relay.configuredCompanies) return [];
+    const live = installs.find((i) => i.id === liveInstallId);
+    if (!live) return [];
+    const configured = new Set(relay.configuredCompanies);
+    return live.companies.filter((c) => !configured.has(c));
+  }, [relay.connected, relay.configuredCompanies, installs, liveInstallId]);
 
   useEffect(() => {
     if (!adoptWindow) return;
@@ -432,6 +532,70 @@ export default function RelayInstallsPage() {
         </Stack>
       </FadeIn>
 
+      {/* Link health on one line: when it last came up, when it last went down and why, and the
+          config mismatches that make a "connected" relay serve nothing. */}
+      <Stack
+        direction="row"
+        spacing={2}
+        rowGap={1}
+        flexWrap="wrap"
+        useFlexGap
+        alignItems="center"
+        sx={{
+          mb: 2,
+          px: 2,
+          py: 1,
+          bgcolor: 'background.paper',
+          border: '1px solid',
+          borderColor: 'divider',
+          borderRadius: 1,
+          minWidth: 0,
+        }}
+      >
+        <StripField
+          label="Last connected"
+          value={fmtRelative(relay.lastConnectedAt)}
+          title={relay.lastConnectedAt ? fmtDate(relay.lastConnectedAt) : undefined}
+        />
+        <StripField
+          label="Last disconnected"
+          value={fmtRelative(relay.lastDisconnectedAt)}
+          title={relay.lastDisconnectedAt ? fmtDate(relay.lastDisconnectedAt) : undefined}
+        />
+        {relay.lastDisconnectReason && <StripField label="Reason" value={relay.lastDisconnectReason} />}
+        {/* The hue is carried by the icon, not the sentence: warning-on-paper prose would sit under
+            the 4.5:1 the rest of this app holds to. */}
+        {missingCompanies.length > 0 && (
+          <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
+            <Box component="span" sx={{ color: 'warning.main', display: 'flex' }}>
+              <TriangleAlert size={14} strokeWidth={2} />
+            </Box>
+            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+              workstation config lacks {missingCompanies.join(', ')}
+            </Typography>
+          </Stack>
+        )}
+        {/* Production only: the preview environments this relay is also dialling. Empty everywhere
+            else, and an empty group would be a labelled blank. */}
+        {relay.previewChannels.length > 0 && (
+          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
+            <Box component="span" sx={microLabelSx}>
+              Preview channels
+            </Box>
+            {relay.previewChannels.map((url) => (
+              <Tooltip key={url} title={url} arrow>
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={previewChannelName(url)}
+                  sx={{ fontFamily: FONT_MONO, textTransform: 'none' }}
+                />
+              </Tooltip>
+            ))}
+          </Stack>
+        )}
+      </Stack>
+
       {/* An open adopt window is real system state with a real security cost, which DESIGN.md reserves
           status colour for: it stays loud until it is consumed or cancelled. */}
       {adoptWindow && (
@@ -507,6 +671,70 @@ export default function RelayInstallsPage() {
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
         sx={{ '& .ts-cell': { ...monoSx, ...tabularSx, color: 'text.secondary' } }}
       />
+
+      {/* A refused or flapping relay leaves no trace on the grid above - the install row just never
+          goes live. The log is where that shows. */}
+      <Box sx={{ mt: 4 }}>
+        <Typography component="div" sx={{ ...microLabelSx, mb: 0.5 }}>
+          Connection events
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          The last {EVENT_LIMIT} relay-link connections, refusals included, newest first.
+        </Typography>
+        <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 320 }}>
+          {/* The theme paints table heads transparent for the ledger rule; a sticky head needs paper
+              behind it or rows scroll through the labels. */}
+          <Table size="small" stickyHeader sx={{ '& .MuiTableCell-stickyHeader': { bgcolor: 'background.paper' } }}>
+            <TableHead>
+              <TableRow>
+                <TableCell sx={{ whiteSpace: 'nowrap' }}>Time</TableCell>
+                <TableCell sx={{ whiteSpace: 'nowrap' }}>Event</TableCell>
+                <TableCell sx={{ whiteSpace: 'nowrap' }}>Install</TableCell>
+                <TableCell sx={{ whiteSpace: 'nowrap' }}>Build</TableCell>
+                <TableCell sx={{ whiteSpace: 'nowrap' }}>Companies</TableCell>
+                {/* The one column that can be long, so it takes the slack the fixed ones leave. */}
+                <TableCell sx={{ width: '100%' }}>Reason</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {events.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6}>
+                    <Typography variant="body2" color="text.secondary">
+                      No connection events recorded yet.
+                    </Typography>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                events.map((e) => (
+                  <TableRow key={e.id} hover>
+                    {/* Exact, not relative: this ledger exists to be lined up against a deploy log, and
+                        the installs grid beside it shows its timestamps the same way. */}
+                    <TableCell sx={{ ...monoSx, ...tabularSx, whiteSpace: 'nowrap', color: 'text.secondary' }}>
+                      {fmtDate(e.at)}
+                    </TableCell>
+                    <TableCell>
+                      <Chip
+                        size="small"
+                        label={e.kind.replace(/_/g, ' ')}
+                        color={EVENT_KIND_COLOR[e.kind] ?? 'default'}
+                      />
+                    </TableCell>
+                    <TableCell sx={{ ...monoSx, whiteSpace: 'nowrap' }}>{e.installLabel ?? '—'}</TableCell>
+                    <TableCell sx={{ ...monoSx, whiteSpace: 'nowrap', color: 'text.secondary' }}>
+                      {e.build ?? '—'}
+                    </TableCell>
+                    <TableCell sx={{ ...monoSx, whiteSpace: 'nowrap' }}>
+                      {e.companies && e.companies.length > 0 ? e.companies.join(', ') : '—'}
+                    </TableCell>
+                    <TableCell sx={{ color: 'text.secondary' }}>{e.reason ?? '—'}</TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Box>
 
       {/* #353 PR E: the GP writes that were accepted while the relay was down live here, next to the
           relay whose absence queued them. */}

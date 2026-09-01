@@ -299,3 +299,24 @@ class DeficiencyResolution(str, enum.Enum):
 class DeficientItemSource(str, enum.Enum):
     PROJECT_INVENTORY = "PROJECT_INVENTORY"
     STOCK_POOL = "STOCK_POOL"
+
+
+class RelayEventKind(str, enum.Enum):
+    """What happened to the relay's single connection slot (successor to issue #384's log lines).
+
+    #384 made every slot transition LOGGABLE, which was enough while somebody was watching Railway's
+    deploy log at the time. It is not enough afterwards: the log retains days, the questions are asked
+    weeks later ("how often does it drop?", "was it up when that PO failed?"), and a refusal is the
+    one transition that leaves no other trace at all.
+
+    REFUSED_SLOT is a relay turned away because another connection holds the slot - the signature of a
+    zombie incumbent. REFUSED_SECRET is a handshake whose Bearer secret matched no install, which is
+    what a drifted credential looks like from this side. ADOPTED is an admin-armed window binding a
+    presented secret, which weakens the auth boundary and therefore has to stay visible.
+    """
+
+    CONNECTED = "CONNECTED"
+    DISCONNECTED = "DISCONNECTED"
+    REFUSED_SLOT = "REFUSED_SLOT"
+    REFUSED_SECRET = "REFUSED_SECRET"
+    ADOPTED = "ADOPTED"

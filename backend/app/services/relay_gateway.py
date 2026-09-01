@@ -20,17 +20,24 @@ An absent disconnect line carries no information, so there was nothing to correl
 own logs. The gateway now names the disconnect and, crucially, says WHOSE fault it was: a heartbeat reap
 (we closed a relay that stopped answering) and a peer close (the socket went away under us) are different
 failures with different owners, and by the time unregister runs in the route's `finally` neither is
-distinguishable from the other."""
+distinguishable from the other.
+
+Those same transitions are also recorded durably in `relay_events` (app/services/relay_events.py). A log
+line answers "what is happening right now" for as long as Railway retains it; the table answers "how
+often does this happen" weeks later, which is the question that actually gets asked."""
 
 import asyncio
 import logging
 import time
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 
 from fastapi import WebSocket
 
 from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
+from app.models.enums import RelayEventKind
+from app.services import relay_events
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +92,11 @@ _SHUTDOWN_TIMEOUT_SECONDS = 2.0
 DISCONNECT_REASON_PEER = "peer closed or socket dropped"
 DISCONNECT_REASON_SHUTDOWN = "closed for server shutdown"
 
+# The hello feature flag a relay sets to say it understands a pushed {"type": "channels"} frame (#654).
+# Absent on every build that predates the push, which is why push_channels is a no-op without it: an
+# older relay would treat the frame as a job reply and log an uncorrelated id.
+CHANNELS_FEATURE = "channels"
+
 
 class RelayGateway:
     def __init__(self) -> None:
@@ -105,6 +117,20 @@ class RelayGateway:
         # clean RELAY_OP_UNSUPPORTED instead of a cryptic error.
         self._build: str | None = None
         self._ops: frozenset[str] | None = None
+        # The rest of the hello frame (#654). `_configured_companies` is what the WORKSTATION is set up
+        # to serve, which is not the same fact as `_companies` (what the install row here permits) - a
+        # mismatch between the two is the silent misconfiguration that makes a GP company unreachable
+        # while everything reports healthy. `_features` is the relay's own capability list; None means a
+        # build old enough not to advertise one, and every feature check reads that as "no".
+        self._configured_companies: list[str] | None = None
+        self._features: frozenset[str] | None = None
+        # One WARNING per connection for that mismatch: the relay reconnects on its own schedule, and a
+        # line per reconnect would be a line every few seconds while a relay is flapping.
+        self._companies_mismatch_logged = False
+        # Set when the hello lands, so the route can wait a moment for the relay's build before writing
+        # the CONNECTED event rather than recording every connection as an unknown build. Recreated per
+        # connection: a waiter from a previous one must not be woken by the next relay's hello.
+        self._hello_seen = asyncio.Event()
         # Heartbeat bookkeeping for the current connection (issue #277). `_unanswered_pings` counts pings
         # sent since the last pong; `_heartbeat_armed` only turns True after the relay answers its first
         # ping, so a relay build that doesn't speak the data heartbeat yet is never falsely reaped - it
@@ -118,6 +144,14 @@ class RelayGateway:
         # disconnect (see DISCONNECT_REASON_* above); None at unregister time means the peer did.
         self._registered_at: float | None = None
         self._disconnect_reason: str | None = None
+        # Wall-clock stamps for RelayStatus. These deliberately OUTLIVE the connection they describe -
+        # "it went at 14:02 and has not been back" is the answer somebody wants when nothing is
+        # connected, so unregister sets them rather than clearing them. Kept in memory: the status chip
+        # polls, and reading relay_events on every poll would be a database round trip per client per
+        # few seconds for a fact this object already knows.
+        self._last_connected_at: datetime | None = None
+        self._last_disconnected_at: datetime | None = None
+        self._last_disconnect_reason: str | None = None
 
     @property
     def connected(self) -> bool:
@@ -143,6 +177,38 @@ class RelayGateway:
         when an older relay that predates the hello frame is connected. Surfaced on RelayStatus so the
         Admin -> Relay Installs page can show which build is live."""
         return self._build
+
+    @property
+    def configured_companies(self) -> list[str] | None:
+        """The companies the connected WORKSTATION is configured for, from its hello frame (#654). None
+        when disconnected, or when the relay predates the field. Not `companies` above, which is what
+        the install row here permits - showing both side by side is what makes a mismatch visible."""
+        return list(self._configured_companies) if self._configured_companies is not None else None
+
+    @property
+    def last_connected_at(self) -> datetime | None:
+        """When the live socket claimed the slot, or when the last one did. Survives the disconnect."""
+        return self._last_connected_at
+
+    @property
+    def last_disconnected_at(self) -> datetime | None:
+        """When the slot was last given up; None if it never has been since this process started."""
+        return self._last_disconnected_at
+
+    @property
+    def last_disconnect_reason(self) -> str | None:
+        """The reason stamped on the last disconnect - see DISCONNECT_REASON_* and register_ping_miss."""
+        return self._last_disconnect_reason
+
+    def hello_seen(self) -> asyncio.Event:
+        """The event set when the current connection's hello frame arrives. The caller captures it
+        BEFORE awaiting, so a reconnect that replaces the event leaves the old waiter to time out -
+        which is the same answer as 'this relay sends no hello', and the right one either way."""
+        return self._hello_seen
+
+    def holds(self, websocket: WebSocket) -> bool:
+        """Whether `websocket` is the socket currently holding the connection slot."""
+        return self._socket is websocket
 
     def try_register(self, companies: Sequence[str], websocket: WebSocket, install_id: uuid.UUID | None = None) -> bool:
         """Called by the /relay-link route once a connecting socket has authenticated. Returns True and
@@ -177,15 +243,32 @@ class RelayGateway:
                     "refused_companies": sorted(incoming),
                 },
             )
+            relay_events.record(
+                RelayEventKind.REFUSED_SLOT,
+                install_id=install_id,
+                companies=sorted(incoming),
+                reason=f"the connection slot is held by install {self._install_id}",
+                detail={
+                    "holder_install_id": str(self._install_id) if self._install_id is not None else None,
+                    "holder_companies": self.companies,
+                    "holder_build": self._build,
+                    "holder_held_seconds": self._held_seconds(),
+                },
+            )
             return False
         self._socket = websocket
         self._companies = incoming
         self._install_id = install_id
         self._build = None
         self._ops = None
+        self._configured_companies = None
+        self._features = None
+        self._companies_mismatch_logged = False
+        self._hello_seen = asyncio.Event()
         self._unanswered_pings = 0
         self._heartbeat_armed = False
         self._registered_at = time.monotonic()
+        self._last_connected_at = datetime.utcnow()
         self._disconnect_reason = None
         return True
 
@@ -234,15 +317,28 @@ class RelayGateway:
                 "pending_calls": len(self._pending),
             },
         )
+        relay_events.record(
+            RelayEventKind.DISCONNECTED,
+            install_id=self._install_id,
+            build=self._build,
+            companies=self.companies,
+            reason=reason,
+            detail={"held_seconds": self._held_seconds(), "pending_calls": len(self._pending)},
+        )
         self._socket = None
         self._companies = frozenset()
         self._install_id = None
         self._build = None
         self._ops = None
+        self._configured_companies = None
+        self._features = None
+        self._companies_mismatch_logged = False
         self._unanswered_pings = 0
         self._heartbeat_armed = False
         self._registered_at = None
         self._disconnect_reason = None
+        self._last_disconnected_at = datetime.utcnow()
+        self._last_disconnect_reason = reason
         # The reason rides the error too: it lands on the failed GraphQL call and on any outbox row, so
         # the person looking at "relay unavailable" in the UI sees the same cause as the log line.
         self._fail_all(f"relay disconnected: {reason}")
@@ -254,19 +350,86 @@ class RelayGateway:
             return None
         return round(time.monotonic() - self._registered_at, 1)
 
-    def note_hello(self, build: object, ops: object) -> None:
-        """Called by the route's read loop for the relay's one {"type": "hello", build, ops} frame,
-        sent right after it connects (issue #315). Records the build tag and op-set so relay_call can
-        reject an unsupported op before the round-trip and RelayStatus can report the live build. Only
-        honoured for the currently-registered socket.
+    def note_hello(self, build: object, ops: object, companies: object = None, features: object = None) -> None:
+        """Called by the route's read loop for the relay's one
+        {"type": "hello", build, ops, companies, features} frame, sent right after it connects (issue
+        #315, widened in #654). Records the build tag and op-set so relay_call can reject an unsupported
+        op before the round-trip and RelayStatus can report the live build, plus the workstation's own
+        configured companies and its feature list. Only honoured for the currently-registered socket.
 
-        The frame is untrusted wire input, so both fields are shape-checked: only a str build and a
-        list-of-str op-set are accepted. A malformed op-set (a bare string would otherwise become a set
-        of characters and reject every real op; a non-iterable would raise inside the read loop) is
-        treated as 'unknown' (None), so relay_call falls back to the reactive unknown_op mapping."""
-        if self._socket is not None:
-            self._build = build if isinstance(build, str) else None
-            self._ops = frozenset(ops) if isinstance(ops, list) and all(isinstance(o, str) for o in ops) else None
+        The frame is untrusted wire input, so every field is shape-checked: only a str build and
+        list-of-str op-set / companies / features are accepted. A malformed list (a bare string would
+        otherwise become a set of characters and match nothing real; a non-iterable would raise inside
+        the read loop) is treated as 'unknown' (None). For the op-set that means relay_call falls back
+        to the reactive unknown_op mapping; for features it means no feature is advertised, which is
+        also what an older relay that sends neither field looks like."""
+        if self._socket is None:
+            return
+        self._build = build if isinstance(build, str) else None
+        self._ops = self._string_set(ops)
+        configured = self._string_set(companies)
+        self._configured_companies = (
+            sorted(filter(None, (normalize_company(c) for c in configured))) if configured is not None else None
+        )
+        self._features = self._string_set(features)
+        self._warn_on_company_mismatch()
+        self._hello_seen.set()
+
+    @staticmethod
+    def _string_set(value: object) -> frozenset[str] | None:
+        return frozenset(value) if isinstance(value, list) and all(isinstance(v, str) for v in value) else None
+
+    def _warn_on_company_mismatch(self) -> None:
+        """A company this install is enrolled for that the WORKSTATION is not configured to serve (#654).
+
+        Both sides have always had their own list and neither could see the other's, so the failure has
+        no symptom until somebody creates a PO: relay_call happily dispatches for a company the install
+        permits, and the relay answers that it does not serve it - a round trip and an error message
+        away from an answer this frame already contains. Once per connection, at WARNING, naming the
+        companies that are missing so the fix is a value to copy rather than a comparison to make."""
+        if self._configured_companies is None or self._companies_mismatch_logged:
+            return
+        missing = sorted(self._companies - set(self._configured_companies))
+        if not missing:
+            return
+        self._companies_mismatch_logged = True
+        logger.warning(
+            "relay company mismatch: this install is enrolled for %s but the connected workstation is "
+            "configured for %s, so calls for %s will be refused by the relay (install=%s build=%s)",
+            self.companies,
+            self._configured_companies,
+            missing,
+            self._install_id,
+            self._build,
+            extra={
+                "install_id": str(self._install_id) if self._install_id is not None else None,
+                "enrolled_companies": self.companies,
+                "configured_companies": list(self._configured_companies),
+                "missing_companies": missing,
+                "build": self._build,
+            },
+        )
+
+    async def push_channels(self, urls: Sequence[str]) -> None:
+        """Hand the connected relay the full list of preview backends it should ALSO be dialling (#654).
+
+        Sent right after a hello that advertises the `channels` feature, and again whenever the list
+        changes while the socket is up. Always the WHOLE list, never a delta: the relay reconciles what
+        it holds against what it was last told, so a lost frame costs one interval rather than leaving
+        the two sides permanently disagreeing, and an empty list is a meaningful answer (no previews).
+
+        A no-op with nothing connected or with a relay that predates the feature - an older build would
+        read the frame as a job reply and log an uncorrelated id. Failures are swallowed: a channel list
+        is an advisory, and the socket's own teardown path owns a genuinely dead connection."""
+        socket = self._socket
+        if socket is None:
+            return
+        if self._features is None or CHANNELS_FEATURE not in self._features:
+            return
+        try:
+            await socket.send_json({"type": "channels", "urls": list(urls)})
+        except Exception as e:
+            logger.warning("could not push preview channels to the relay: %s", e)
 
     def note_pong(self) -> None:
         """Called by the route's read loop for each {"type": "pong"} the relay sends. Clears the miss

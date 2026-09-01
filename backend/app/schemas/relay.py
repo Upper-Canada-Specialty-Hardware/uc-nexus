@@ -16,8 +16,8 @@ from app.errors import (
     validation_error_from_relay,
 )
 from app.models.relay_install import RelayInstall
-from app.repositories import relay_repository
-from app.services import relay_adopt
+from app.repositories import relay_event_repository, relay_repository
+from app.services import preview_registry, relay_adopt
 from app.services import relay_gateway as relay_gateway_module
 from app.services.relay_gateway import gateway as relay_gateway
 
@@ -32,6 +32,7 @@ from .converters import (
     gp_tax_detail_to_type,
     gp_tax_schedule_to_type,
     gp_vendor_to_type,
+    relay_event_to_type,
     relay_install_to_type,
 )
 from .inputs import CreateGpCustomerAddressInput, EnrollRelayInstallInput
@@ -49,6 +50,7 @@ from .types import (
     GpVendor,
     RelayAdoptWindow,
     RelayEnrollResult,
+    RelayEvent,
     RelayInstallInfo,
     RelayInstallProvision,
     RelayStatus,
@@ -151,14 +153,33 @@ class RelayQueries:
     @strawberry.field
     def relay_status(self, info: strawberry.Info) -> RelayStatus:
         """Whether the outbound relay WS channel is currently connected (and, if so, the GP companies it
-        is enrolled for), for the relay status chip and the company-aware PO/receive/adopt dialogs."""
+        is enrolled for), for the relay status chip and the company-aware PO/receive/adopt dialogs.
+
+        Answered entirely from the gateway's in-memory state plus the preview registry - no database
+        read at all. This is polled by every open tab, so it has to stay cheap enough to be, and the
+        gateway is the only thing that can be right about a live socket anyway (#654)."""
         live_install = relay_gateway.install_id
         return RelayStatus(
             connected=relay_gateway.connected,
             companies=relay_gateway.companies,
             build=relay_gateway.build,
             install_id=strawberry.ID(str(live_install)) if live_install else None,
+            last_connected_at=relay_gateway.last_connected_at,
+            last_disconnected_at=relay_gateway.last_disconnected_at,
+            last_disconnect_reason=relay_gateway.last_disconnect_reason,
+            configured_companies=relay_gateway.configured_companies,
+            preview_channels=preview_registry.channels(),
         )
+
+    @strawberry.field
+    def relay_events(self, info: strawberry.Info, limit: int = 50) -> list[RelayEvent]:
+        """The relay connection history, newest first (#654).
+
+        Admin-only, exactly like `relayInstalls`: these rows name installs, builds and refused
+        credentials, which is relay-credential territory rather than working data."""
+        capped = max(1, min(limit, 500))
+        with SessionLocal() as session:
+            return [relay_event_to_type(e) for e in relay_event_repository.list_events(session, capped)]
 
     @strawberry.field
     async def gp_jobs(self, info: strawberry.Info, company: str) -> list[GpJob]:

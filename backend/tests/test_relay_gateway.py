@@ -10,12 +10,35 @@ import uuid
 import pytest
 
 from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
+from app.models.enums import RelayEventKind
+from app.services import relay_gateway as relay_gateway_module
 from app.services.relay_gateway import (
     DISCONNECT_REASON_PEER,
     DISCONNECT_REASON_SHUTDOWN,
     HEARTBEAT_MAX_MISSED,
     RelayGateway,
 )
+
+
+@pytest.fixture(autouse=True)
+def recorded_events(monkeypatch):
+    """Capture the relay events the gateway emits instead of writing them.
+
+    Autouse because every register/unregister below emits one, and the real writer opens a database
+    connection from a worker thread - which is DB I/O these tests otherwise have no need of, and four
+    seconds per test wherever Postgres is not up. What each transition RECORDS is asserted against this
+    list; that the row actually lands is a DB test (tests/test_relay_events.py)."""
+    captured: list[dict] = []
+
+    def _record(kind, **fields):
+        captured.append({"kind": kind, **fields})
+
+    monkeypatch.setattr(relay_gateway_module.relay_events, "record", _record)
+    return captured
+
+
+def _kinds(captured) -> list[RelayEventKind]:
+    return [e["kind"] for e in captured]
 
 
 class FakeWebSocket:
@@ -609,3 +632,189 @@ def test_close_for_shutdown_does_not_log_the_relay_as_failed(caplog):
         assert infos[0].reason == DISCONNECT_REASON_SHUTDOWN
 
     asyncio.run(run())
+
+
+# --- the hello frame's companies + features, and the channels push (#654) -------------------------
+
+
+def test_note_hello_records_the_workstation_companies_and_features():
+    gateway = RelayGateway()
+    gateway.try_register(["TUBC"], FakeWebSocket())
+    gateway.note_hello("relay-v0.2.0", ["list_vendors"], [" tubc ", "tucsh"], ["channels"])
+
+    # Normalized the same way the enrolled list is, so the two are comparable at a glance.
+    assert gateway.configured_companies == ["TUBC", "TUCSH"]
+
+
+def test_a_relay_that_sends_no_companies_or_features_is_still_accepted():
+    # Every build before #654 sends {type, build, ops} and nothing else. It must keep connecting, keep
+    # reporting its build, and simply never be handed a channels frame.
+    gateway = RelayGateway()
+    gateway.try_register(["TUBC"], FakeWebSocket())
+    gateway.note_hello("relay-v0.1.0-build.30", ["list_vendors"])
+
+    assert gateway.build == "relay-v0.1.0-build.30"
+    assert gateway.configured_companies is None
+
+
+@pytest.mark.parametrize("value", ["TUBC", 42, {"TUBC": True}, ["TUBC", 7]])
+def test_a_malformed_companies_field_is_read_as_unknown(value):
+    # Wire input. A bare string would otherwise become the set of its characters and report a company
+    # mismatch against every real code.
+    gateway = RelayGateway()
+    gateway.try_register(["TUBC"], FakeWebSocket())
+    gateway.note_hello("relay-v0.2.0", ["list_vendors"], value, ["channels"])
+    assert gateway.configured_companies is None
+
+
+def test_a_company_the_workstation_is_not_configured_for_is_warned_about_once(caplog):
+    # The silent misconfiguration this exists for: the install here permits UCSH, the workstation is not
+    # set up for it, and nothing says so until somebody creates a PO and waits out a round trip.
+    gateway = RelayGateway()
+    gateway.try_register(["TUBC", "UCSH"], FakeWebSocket())
+
+    with caplog.at_level(logging.WARNING, logger="app.services.relay_gateway"):
+        gateway.note_hello("relay-v0.2.0", ["list_vendors"], ["TUBC"], ["channels"])
+        gateway.note_hello("relay-v0.2.0", ["list_vendors"], ["TUBC"], ["channels"])
+
+    warnings = _records(caplog, logging.WARNING)
+    assert len(warnings) == 1  # once per connection; a flapping relay would otherwise log every reconnect
+    assert "UCSH" in warnings[0].getMessage()
+    assert warnings[0].missing_companies == ["UCSH"]
+
+
+def test_no_warning_when_the_workstation_serves_everything_the_install_permits(caplog):
+    gateway = RelayGateway()
+    gateway.try_register(["TUBC"], FakeWebSocket())
+    with caplog.at_level(logging.WARNING, logger="app.services.relay_gateway"):
+        gateway.note_hello("relay-v0.2.0", ["list_vendors"], ["TUBC", "TUCSH"], ["channels"])
+    assert _records(caplog, logging.WARNING) == []
+
+
+def test_push_channels_sends_the_whole_list_to_a_relay_that_asked_for_it():
+    async def run():
+        gateway = RelayGateway()
+        ws = FakeWebSocket()
+        gateway.try_register(["TUBC"], ws)
+        gateway.note_hello("relay-v0.2.0", ["list_vendors"], ["TUBC"], ["channels"])
+
+        await gateway.push_channels(["wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"])
+
+        assert ws.sent == [{"type": "channels", "urls": ["wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"]}]
+
+    asyncio.run(run())
+
+
+def test_an_empty_channel_list_is_still_pushed():
+    # "There are no previews" and "we never told you" are different answers, and the relay retires a
+    # channel that stops being listed - so the empty list has to be sent, not skipped.
+    async def run():
+        gateway = RelayGateway()
+        ws = FakeWebSocket()
+        gateway.try_register(["TUBC"], ws)
+        gateway.note_hello("relay-v0.2.0", [], ["TUBC"], ["channels"])
+        await gateway.push_channels([])
+        assert ws.sent == [{"type": "channels", "urls": []}]
+
+    asyncio.run(run())
+
+
+def test_push_channels_is_a_no_op_for_a_relay_that_does_not_speak_it():
+    # An older build would read the frame as a job reply and log an uncorrelated id.
+    async def run():
+        gateway = RelayGateway()
+        ws = FakeWebSocket()
+        gateway.try_register(["TUBC"], ws)
+        gateway.note_hello("relay-v0.1.0-build.30", ["list_vendors"])
+        await gateway.push_channels(["wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"])
+        assert ws.sent == []
+
+    asyncio.run(run())
+
+
+def test_push_channels_is_a_no_op_with_nothing_connected():
+    async def run():
+        await RelayGateway().push_channels(["wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"])
+
+    asyncio.run(run())  # must not raise
+
+
+def test_a_failed_channel_push_does_not_reach_the_caller():
+    # A channel list is advisory; the socket's own teardown path owns a genuinely dead connection.
+    class _Broken(FakeWebSocket):
+        async def send_json(self, data):
+            raise RuntimeError("socket is gone")
+
+    async def run():
+        gateway = RelayGateway()
+        ws = _Broken()
+        gateway.try_register(["TUBC"], ws)
+        gateway.note_hello("relay-v0.2.0", [], ["TUBC"], ["channels"])
+        await gateway.push_channels([])
+
+    asyncio.run(run())  # must not raise
+
+
+# --- connection history: the in-memory stamps and the events written (#654) ------------------------
+
+
+def test_the_last_connect_and_disconnect_outlive_the_connection():
+    gateway = RelayGateway()
+    ws = FakeWebSocket()
+    assert gateway.last_connected_at is None
+
+    gateway.try_register(["TUBC"], ws)
+    connected_at = gateway.last_connected_at
+    assert connected_at is not None
+    assert gateway.last_disconnected_at is None
+
+    gateway.unregister(ws)
+    # Deliberately NOT cleared: "nothing is connected" is the least useful half of the answer.
+    assert gateway.last_connected_at == connected_at
+    assert gateway.last_disconnected_at is not None
+    assert gateway.last_disconnect_reason == DISCONNECT_REASON_PEER
+
+
+def test_a_disconnect_records_an_event_carrying_the_reason(recorded_events):
+    gateway = RelayGateway()
+    ws = FakeWebSocket()
+    install_id = uuid.uuid4()
+    gateway.try_register(["TUBC"], ws, install_id)
+    gateway.note_hello("relay-v0.2.0", [], ["TUBC"], ["channels"])
+    gateway.unregister(ws)
+
+    assert _kinds(recorded_events) == [RelayEventKind.DISCONNECTED]
+    event = recorded_events[0]
+    assert event["install_id"] == install_id
+    assert event["build"] == "relay-v0.2.0"
+    assert event["companies"] == ["TUBC"]
+    assert event["reason"] == DISCONNECT_REASON_PEER
+
+
+def test_a_refused_slot_records_an_event_naming_the_holder(recorded_events):
+    # The refusal is the transition with no other trace: it never reaches a route body, and the log line
+    # is gone as soon as Railway rotates it.
+    gateway = RelayGateway()
+    holder = uuid.uuid4()
+    refused = uuid.uuid4()
+    gateway.try_register(["TUBC"], FakeWebSocket(), holder)
+    assert gateway.try_register(["UCSH"], FakeWebSocket(), refused) is False
+
+    assert _kinds(recorded_events) == [RelayEventKind.REFUSED_SLOT]
+    event = recorded_events[0]
+    assert event["install_id"] == refused  # the one turned away, not the one holding the slot
+    assert event["companies"] == ["UCSH"]
+    assert event["detail"]["holder_install_id"] == str(holder)
+
+
+def test_tearing_down_a_refused_connection_records_nothing(recorded_events):
+    # The 4409 path shares this gateway with the live relay; its teardown must not look like the
+    # incumbent disconnecting, in the events any more than in the logs.
+    gateway = RelayGateway()
+    gateway.try_register(["TUBC"], FakeWebSocket(), uuid.uuid4())
+    refused_ws = FakeWebSocket()
+    gateway.try_register(["TUBC"], refused_ws, uuid.uuid4())
+    recorded_events.clear()
+
+    gateway.unregister(refused_ws)
+    assert recorded_events == []

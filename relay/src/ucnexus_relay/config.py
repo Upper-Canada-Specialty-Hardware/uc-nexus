@@ -6,7 +6,7 @@ import tomllib
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 from . import dpapi
 
@@ -23,6 +23,16 @@ def _default_config_path() -> Path:
 
 
 DEFAULT_CONFIG_PATH = _default_config_path()
+
+
+def _default_fixture_path() -> Path:
+    """The snapshot bundled with the source tree: <root>/fixtures/gp-snapshot.json, resolved relative to
+    this package (config.py is <root>/src/ucnexus_relay/config.py) so the Linux container finds it
+    wherever the image put the tree."""
+    return Path(__file__).resolve().parents[2] / "fixtures" / "gp-snapshot.json"
+
+
+DEFAULT_FIXTURE_PATH = _default_fixture_path()
 
 # The determined GP companies an operator may pick from in the Setup tab. Dev-determined - edit here to
 # change what's offered; allowed_companies + default_company in the wizard are chosen from this list.
@@ -78,6 +88,14 @@ class BuyersCfg(BaseModel):
 class GpCfg(BaseModel):
     default_company: str = "TUBC"
     allowed_companies: list[str] = ["TUBC"]
+    # How GP is reached. "sql" is the workstation relay: pyodbc to the real company databases. "fixture"
+    # serves every op out of a checked-in JSON snapshot instead, with writes kept in memory, so the relay
+    # can run in a Linux container (a Railway preview environment) with no GP and no ODBC at all - see
+    # fixture_ops.py. Env override: UCNEXUS_RELAY_MODE.
+    mode: str = "sql"
+    # Where that snapshot lives. None means the bundled one (_default_fixture_path). Env override:
+    # UCNEXUS_RELAY_FIXTURE_PATH.
+    fixture_path: str | None = None
     # company -> paired custom warehouse DB that holds WHRECLINE101 (the table the company dashboards
     # read). A company with no entry gets GP-only receipts (no WHRECLINE101 write). Sandboxes have none.
     # Baked dev default: the prod pairings (applied only when that company is also allowed).
@@ -96,10 +114,12 @@ PRODUCTION_BACKEND_URL = "wss://backend-production-7866.up.railway.app/relay-lin
 
 # What a NON-PRIMARY channel (a Railway PR environment, a local dev backend) may target. Reads AND
 # writes are served on those channels - that is the whole point, a PR that touches GP has to be
-# verifiable before it merges - but only against the sandbox company, so the worst a test backend can
-# do is write to TUBC. Baked deliberately: an operator-editable value here would be one typo away from
-# pointing a PR backend at a live GP company, which is the only thing making this safe (#414).
-NON_PRIMARY_ALLOWED_COMPANIES = ["TUBC"]
+# verifiable before it merges - but only against the sandbox companies, so the worst a test backend can
+# do is write to a sandbox. Baked deliberately: an operator-editable value here would be one typo away
+# from pointing a PR backend at a live GP company, which is the only thing making this safe (#414).
+# Both sandboxes are listed because UCSH-side work (a second company's job, cost codes, receipts) is
+# only reproducible against TUCSH, and testing it otherwise means aiming a PR backend at live UCSH.
+NON_PRIMARY_ALLOWED_COMPANIES = ["TUBC", "TUCSH"]
 
 
 def _normalize_url(url: str) -> str:
@@ -139,12 +159,17 @@ class ChannelCfg(BaseModel):
     # inherits the sandbox pin and every real UBC/UCSH job is refused. Listing only the extra URL here
     # cannot express that mistake, because production's URL comes from the baked default untouched.
     extra_backend_urls: list[str] = []
-    # Ask the production backend which Railway preview environments exist and dial those too, so a PR
-    # environment stops needing a hand edit on this machine. Only ADDS to the two keys above, only
-    # accepts the fixed preview hostname shape, and a discovered channel can never be the primary one -
-    # so it inherits the sandbox company pin like any other non-primary channel. Off means this relay
-    # dials exactly what is written here, which is what it did before #456's successor.
-    discover_preview_backends: bool = True
+    # Accept the preview-environment list the PRODUCTION backend pushes down the socket it already
+    # holds, and dial those too, so a PR environment stops needing a hand edit on this machine. Only
+    # ADDS to the two keys above, only accepts the fixed preview hostname shape, and a pushed channel
+    # can never be the primary one - so it inherits the sandbox company pin like any other non-primary
+    # channel. Off means this relay dials exactly what is written here. The old key name
+    # (discover_preview_backends, from when the relay polled for the list) still sets it, so a
+    # config.toml written before the push model keeps meaning what it said.
+    accept_pushed_preview_backends: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("accept_pushed_preview_backends", "discover_preview_backends"),
+    )
     # the `websockets` client's own ping_interval/ping_timeout default to 20s/20s, which already
     # satisfies the ~20s keepalive the channel needs to hold a corporate-proxy idle timeout open -
     # these just make that tunable without a code change.
@@ -172,6 +197,19 @@ class ChannelCfg(BaseModel):
         return urls
 
 
+UPDATE_CHANNELS = ("stable", "latest")
+
+
+class UpdateCfg(BaseModel):
+    # Which GitHub releases this workstation will install. "stable" takes only full releases; "latest"
+    # also takes prereleases, which is how a build is proven on one workstation before it is promoted
+    # (gh release edit <tag> --prerelease=false) to the rest of the fleet. Deliberately a plain string:
+    # a typo here must not make config.toml unreadable and keep serve from starting, which would take
+    # production's channel down over an update preference. updater.update_channel() treats anything
+    # but "latest" as "stable" and logs the unknown value so the promote step is not mistaken for broken.
+    channel: str = "stable"
+
+
 class Settings(BaseModel):
     server: ServerCfg = ServerCfg()
     auth: AuthCfg = AuthCfg()
@@ -180,21 +218,79 @@ class Settings(BaseModel):
     gp: GpCfg = GpCfg()
     logging: LoggingCfg = LoggingCfg()
     channel: ChannelCfg = ChannelCfg()
+    update: UpdateCfg = UpdateCfg()
+
+
+# Environment overrides, each winning over whatever config.toml holds. They exist for the one place a
+# config.toml cannot be written by hand: the relay running as a Linux container in a Railway preview
+# environment, serving GP out of a fixture snapshot (see fixture_ops.py). On a workstation nothing sets
+# these and config.toml is the only source, exactly as before.
+#
+#   UCNEXUS_RELAY_MODE          -> [gp] mode              "sql" (real GP over ODBC) or "fixture"
+#   UCNEXUS_RELAY_FIXTURE_PATH  -> [gp] fixture_path      snapshot to serve; unset = the bundled one
+#   UCNEXUS_RELAY_SHARED_SECRET -> [auth] shared_secret   PLAINTEXT; never DPAPI-decrypted
+#   UCNEXUS_RELAY_BACKEND_URL   -> [channel] backend_url  the single backend to dial
+#   UCNEXUS_RELAY_COMPANIES     -> [gp] allowed_companies comma list; the first entry is default_company
+#   UCNEXUS_RELAY_LOG_FILE      -> [logging] file         "-" means stdout only, no relay.log on disk
+
+
+def _section(data: dict, name: str) -> dict:
+    section = data.get(name)
+    if not isinstance(section, dict):
+        section = {}
+        data[name] = section
+    return section
+
+
+def _apply_env_overrides(data: dict) -> None:
+    """Fold the UCNEXUS_RELAY_* variables into the parsed config, in place."""
+    mode = os.environ.get("UCNEXUS_RELAY_MODE")
+    fixture_path = os.environ.get("UCNEXUS_RELAY_FIXTURE_PATH")
+    companies = os.environ.get("UCNEXUS_RELAY_COMPANIES")
+    if mode or fixture_path or companies:
+        gp = _section(data, "gp")
+        if mode:
+            gp["mode"] = mode.strip().lower()
+        if fixture_path:
+            gp["fixture_path"] = fixture_path
+        if companies:
+            names = [c.strip() for c in companies.split(",") if c.strip()]
+            if names:
+                gp["allowed_companies"] = names
+                gp["default_company"] = names[0]
+
+    backend_url = os.environ.get("UCNEXUS_RELAY_BACKEND_URL")
+    if backend_url:
+        _section(data, "channel")["backend_url"] = backend_url.strip()
+
+    log_file = os.environ.get("UCNEXUS_RELAY_LOG_FILE")
+    if log_file:
+        _section(data, "logging")["file"] = log_file.strip()
 
 
 @lru_cache
 def get_settings(path: str | None = None) -> Settings:
     cfg_path = Path(path) if path else DEFAULT_CONFIG_PATH
-    if not cfg_path.exists():
-        # First run / not yet enrolled: every setting except the secret is baked into the defaults above,
-        # so build from them with an empty secret rather than failing. The app opens Setup to enroll;
-        # serve runs its local HTTP server but brokers nothing until a config with a secret exists.
-        return Settings()
-    with open(cfg_path, "rb") as f:
-        data = tomllib.load(f)
-    # the shared_secret is DPAPI-encrypted at rest (see ucnexus_relay.dpapi); decrypt on read so the
-    # rest of the app only ever sees the plaintext. a plaintext (dev) value passes through unchanged.
-    auth = data.get("auth")
-    if isinstance(auth, dict) and isinstance(auth.get("shared_secret"), str):
-        auth["shared_secret"] = dpapi.unprotect(auth["shared_secret"])
+    data: dict = {}
+    if cfg_path.exists():
+        with open(cfg_path, "rb") as f:
+            data = tomllib.load(f)
+    # A missing file is first run / not yet enrolled, and now also the container: every setting except the
+    # secret is baked into the defaults above, so build from them with an empty secret rather than
+    # failing. The app opens Setup to enroll; serve runs its local HTTP server but brokers nothing until
+    # a config with a secret exists.
+    #
+    # The env secret is taken VERBATIM and replaces the file's, deliberately ahead of the decrypt below:
+    # it is plaintext by definition (a container has no DPAPI), and an enrolled config.toml carried into
+    # a non-Windows image would otherwise fail the decrypt on a value the environment was about to
+    # override anyway. The file's own value still decrypts as it always has - dpapi.unprotect passes a
+    # plaintext (dev) value through untouched and only demands Windows for a real enc:dpapi: blob.
+    env_secret = os.environ.get("UCNEXUS_RELAY_SHARED_SECRET")
+    if env_secret is not None:
+        _section(data, "auth")["shared_secret"] = env_secret
+    else:
+        auth = data.get("auth")
+        if isinstance(auth, dict) and isinstance(auth.get("shared_secret"), str):
+            auth["shared_secret"] = dpapi.unprotect(auth["shared_secret"])
+    _apply_env_overrides(data)
     return Settings(**data)

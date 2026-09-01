@@ -1,28 +1,41 @@
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import inspect
 import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 
 import strawberry
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from graphql import GraphQLError, GraphQLResolveInfo
 from strawberry.extensions import SchemaExtension
 from strawberry.fastapi import GraphQLRouter
 
+from app import config
 from app.auth import get_context, require_admin_request
 from app.auth_policy import enforce_root_field
 from app.database import SessionLocal
 from app.errors import AppError
+from app.models.enums import RelayEventKind
 from app.repositories import relay_repository
 from app.schemas.mutations import Mutation
 from app.schemas.queries import Query
-from app.services import gp_job_sync, gp_outbox_worker, gp_po_sync, relay_adopt, relay_seed
-from app.services import relay_channels as relay_channels_service
+from app.services import (
+    gp_job_sync,
+    gp_outbox_worker,
+    gp_po_sync,
+    preview_announce,
+    preview_registry,
+    relay_adopt,
+    relay_events,
+    relay_seed,
+)
 from app.services.relay_gateway import HEARTBEAT_INTERVAL_SECONDS
 from app.services.relay_gateway import gateway as relay_gateway
 
@@ -32,6 +45,15 @@ logger = logging.getLogger(__name__)
 # legitimate relay always sends {"type": "hello"} as its first frame (channel.py `_run_once` sends it
 # before entering the read loop), so a short wait for one costs a real relay nothing.
 ADOPT_HELLO_TIMEOUT_SECONDS = 5.0
+
+# How long the CONNECTED event waits for the hello frame before recording the connection without a
+# build. The hello is the relay's first frame, so this is only ever spent on a relay old enough not to
+# send one - and recording that connection late, with an unknown build, still beats not recording it.
+CONNECTED_EVENT_HELLO_GRACE_SECONDS = 5.0
+
+# The header a preview presents on /preview-channels. Not Authorization: this is not a relay
+# credential and must not be confusable with one on either side.
+PREVIEW_REGISTRY_HEADER = "x-preview-registry-secret"
 
 
 class ResolverGuardExtension(SchemaExtension):
@@ -127,8 +149,8 @@ async def lifespan(_app: FastAPI):
     Started here rather than lazily on first use so a queue that filled during a deploy starts
     draining as soon as the new container is up, with nobody having to visit a page. Under
     TestClient(app) this runs too, and is harmless: with no relay registered neither loop queries."""
-    # Ahead of the workers, so a PR environment can accept the relay's very first reconnect rather
-    # than 4403-ing it until someone hits a page (#414). A no-op unless RELAY_SEED_SECRET_HASH is set,
+    # Ahead of the workers, so a PR environment can accept its relay's very first connection rather
+    # than 4403-ing it until someone hits a page (#414). A no-op unless a stub or seed hash is set,
     # and refused outright in production.
     relay_seed.seed_on_startup()
     tasks: list[asyncio.Task] = []
@@ -138,9 +160,19 @@ async def lifespan(_app: FastAPI):
         tasks.append(asyncio.create_task(gp_job_sync.run_forever()))
     if gp_po_sync.enabled():
         tasks.append(asyncio.create_task(gp_po_sync.run_forever()))
+    # Production ages out preview announcements; a preview that wants the real workstation relay
+    # announces itself to production. Neither runs anywhere else (#654).
+    if preview_registry.enabled():
+        tasks.append(asyncio.create_task(preview_registry.run_prune_forever()))
+    if preview_announce.enabled():
+        tasks.append(asyncio.create_task(preview_announce.run_forever()))
     try:
         yield
     finally:
+        # Before the socket closes and before the tasks are cancelled: production should stop offering
+        # this preview as a channel as soon as it is going away, rather than a TTL later.
+        if preview_announce.enabled():
+            await preview_announce.withdraw_once()
         # Close the relay socket cleanly BEFORE stopping the workers (#353 PR F). The relay then knows
         # this is a restart rather than a blip and reconnects at once; anything it was about to send
         # will queue on the outbox and drain when it does.
@@ -167,17 +199,38 @@ app.include_router(graphql_app, prefix="/graphql")
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """Liveness, plus the one fact worth asking a backend without a session: is the relay up.
+
+    Deliberately unauthenticated and database-free - it is what Railway's healthcheck calls, and what
+    somebody curls when a GP-dependent page is failing. The relay facts come from the gateway's
+    in-memory state, so this stays a constant-cost answer even when the database is the thing that is
+    unwell."""
+    return {
+        "status": "ok",
+        "relay_connected": relay_gateway.connected,
+        "relay_companies": relay_gateway.companies,
+    }
 
 
 async def _relay_read_loop(websocket: WebSocket) -> None:
-    """Feed each frame the relay sends to relay_gateway: a {"type": "hello"} advertises the relay's build
-    and op-set on connect (issue #315), a {"type": "pong"} answers the heartbeat (issue #277), anything
-    else is a {id, ok, result|error} job reply to correlate with relay_call()."""
+    """Feed each frame the relay sends to relay_gateway: a {"type": "hello"} advertises the relay's build,
+    op-set, configured companies and features on connect (issue #315, #654), a {"type": "pong"} answers
+    the heartbeat (issue #277), anything else is a {id, ok, result|error} job reply to correlate with
+    relay_call().
+
+    A hello is answered with the current preview channel list, which is the whole of #654's push: the
+    relay learns which preview backends to also dial over the socket it has already authenticated,
+    instead of polling a second endpoint with a second copy of its credential."""
     while True:
         message = await websocket.receive_json()
         if isinstance(message, dict) and message.get("type") == "hello":
-            relay_gateway.note_hello(message.get("build"), message.get("ops"))
+            relay_gateway.note_hello(
+                message.get("build"),
+                message.get("ops"),
+                message.get("companies"),
+                message.get("features"),
+            )
+            await relay_gateway.push_channels(preview_registry.channels())
         elif isinstance(message, dict) and message.get("type") == "pong":
             relay_gateway.note_pong()
         else:
@@ -224,7 +277,13 @@ async def _await_hello(websocket: WebSocket) -> bool:
         except Exception:
             pass
         return False
-    relay_gateway.note_hello(message.get("build"), message.get("ops"))
+    relay_gateway.note_hello(
+        message.get("build"),
+        message.get("ops"),
+        message.get("companies"),
+        message.get("features"),
+    )
+    await relay_gateway.push_channels(preview_registry.channels())
     return True
 
 
@@ -259,32 +318,91 @@ async def _serve_relay_link(websocket: WebSocket, require_hello: bool = False) -
             raise exc
 
 
-@app.get("/relay-channels")
-def relay_channels(request: Request):
-    """Which preview backends the calling relay should ALSO be dialling.
+# Strong references to the in-flight CONNECTED writers below; asyncio only holds a weak one.
+_connected_event_tasks: set[asyncio.Task] = set()
 
-    Authenticated by the same enrolled Bearer secret the relay presents on /relay-link, so this adds
-    no credential and no new trust relationship: a caller that could read this could already open the
-    channel. Answers `{"urls": [...]}`, empty wherever discovery is off - which is everywhere except
-    production, and production only when RAILWAY_API_TOKEN is set.
 
-    The relay unions this with its own config file rather than replacing it, and re-validates every URL
-    against the preview hostname pattern before dialling. So the worst a wrong answer here can do is
-    offer a channel the relay declines, and a discovered channel can never become the primary one.
-    """
-    auth_header = request.headers.get("authorization") or ""
-    scheme, _, secret = auth_header.partition(" ")
-    if scheme.lower() != "bearer" or not secret.strip():
-        raise HTTPException(status_code=401, detail="relay credential required")
+async def _record_connected(websocket: WebSocket, install_id, connected_at: datetime) -> None:
+    """Write the CONNECTED event once the hello frame has told us which relay build this is.
 
-    with SessionLocal() as session:
-        install = relay_repository.authenticate_secret(session, secret.strip())
-        authenticated = install is not None
-        session.commit()
-    if not authenticated:
-        raise HTTPException(status_code=401, detail="relay credential required")
+    Stamped with the moment the slot was claimed, not the moment this runs, so the row still orders
+    correctly against the DISCONNECTED that may already have been written for a connection that lasted
+    less than the grace period."""
+    hello = relay_gateway.hello_seen()
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(hello.wait(), timeout=CONNECTED_EVENT_HELLO_GRACE_SECONDS)
+    # Only report a build and companies while THIS socket still holds the slot: a relay that dropped and
+    # was replaced inside the grace window would otherwise stamp its successor's identity on this row.
+    live = relay_gateway.holds(websocket)
+    await relay_events.write(
+        RelayEventKind.CONNECTED,
+        at=connected_at,
+        install_id=install_id,
+        build=relay_gateway.build if live else None,
+        companies=(relay_gateway.configured_companies or relay_gateway.companies) if live else None,
+    )
 
-    return {"urls": relay_channels_service.discover_preview_channels()}
+
+def _authorize_preview_registry(request: Request) -> None:
+    """The gate on both /preview-channels routes (#654).
+
+    Ordered so a failing gate never leaks how the next one would have answered, the same rule
+    /testing/session follows. The environment check is FIRST: anywhere but production these routes do
+    not exist at all, whatever credential is presented, because a preview that could register channels
+    could advertise other previews to the workstation relay. Only then is the secret compared, and only
+    then is the environment name validated.
+
+    Compared as SHA-256 digests in constant time. Both sides hold the secret itself here (a preview has
+    to present it), so unlike the seed hashes this is a real shared credential - hashing before the
+    compare keeps the comparison a fixed length regardless of what was presented."""
+    if not config.is_production_environment():
+        raise HTTPException(status_code=404, detail="Not Found")
+    expected = (config.PREVIEW_REGISTRY_SECRET or "").strip()
+    presented = (request.headers.get(PREVIEW_REGISTRY_HEADER) or "").strip()
+    if not expected or not presented:
+        raise HTTPException(status_code=401, detail="preview registry secret required")
+    if not hmac.compare_digest(
+        hashlib.sha256(presented.encode("utf-8")).digest(), hashlib.sha256(expected.encode("utf-8")).digest()
+    ):
+        raise HTTPException(status_code=401, detail="preview registry secret required")
+
+
+def _validated_environment(name: object) -> str:
+    """A `uc-nexus-pr-<N>` name, or a 400. This is the only thing standing between "something authorized
+    posted a string" and "the relay dials the host that string names", so it is anchored, not a
+    prefix test."""
+    if not isinstance(name, str) or not preview_registry.is_preview_environment_name(name):
+        raise HTTPException(status_code=400, detail="environment must be a uc-nexus-pr-<N> name")
+    return name.strip()
+
+
+@app.post("/preview-channels", status_code=204)
+async def register_preview_channel(request: Request):
+    """A preview environment announcing that it exists and wants the workstation relay to dial it.
+
+    Called at that preview's startup and every two minutes after (app/services/preview_announce.py).
+    The repeat is the liveness signal: production expires an environment that stops calling, which is
+    how a torn-down PR stops being dialled without anything having to notice the PR closed."""
+    _authorize_preview_registry(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    environment = _validated_environment((body or {}).get("environment") if isinstance(body, dict) else None)
+    if preview_registry.note_announcement(environment):
+        await preview_registry.publish()
+    return Response(status_code=204)
+
+
+@app.delete("/preview-channels/{environment}", status_code=204)
+async def unregister_preview_channel(request: Request, environment: str):
+    """A preview saying goodbye on a clean shutdown. Idempotent: withdrawing something already expired
+    is a success, because the caller's intent - stop dialling me - is satisfied either way."""
+    _authorize_preview_registry(request)
+    name = _validated_environment(environment)
+    if preview_registry.forget(name):
+        await preview_registry.publish()
+    return Response(status_code=204)
 
 
 @app.websocket("/relay-link")
@@ -301,6 +419,7 @@ async def relay_link(websocket: WebSocket):
         return
 
     adopted = False
+    adopted_by: str | None = None
     with SessionLocal() as session:
         install = relay_repository.authenticate_secret(session, secret.strip())
         if install is None:
@@ -313,6 +432,7 @@ async def relay_link(websocket: WebSocket):
                 install = relay_repository.adopt_secret(session, window.install_id, secret.strip(), window.armed_by)
                 if install is not None and relay_adopt.consume(window.install_id):
                     adopted = True
+                    adopted_by = window.armed_by
                     logger.warning(
                         "relay adopt: presented secret bound to install",
                         extra={
@@ -339,6 +459,18 @@ async def relay_link(websocket: WebSocket):
     if not companies:
         # No install matched, or one enrolled for no company at all - which could serve no GP call
         # anyway, so it is refused at the handshake rather than holding the single slot uselessly.
+        # Recorded because a drifted credential is otherwise invisible from this side: the relay retries
+        # forever and nothing but a log line ever says so (throttled inside relay_events).
+        await relay_events.write(
+            RelayEventKind.REFUSED_SECRET,
+            install_id=install_id,
+            companies=companies,
+            reason=(
+                "the presented secret matched no relay install"
+                if install_id is None
+                else "the matched install is enrolled for no GP company"
+            ),
+        )
         await websocket.close(code=4401)
         return
 
@@ -349,6 +481,21 @@ async def relay_link(websocket: WebSocket):
     if not relay_gateway.try_register(companies, websocket, install_id):
         await websocket.close(code=4409)
         return
+    connected_at = datetime.utcnow()
+    if adopted:
+        await relay_events.write(
+            RelayEventKind.ADOPTED,
+            at=connected_at,
+            install_id=install_id,
+            companies=companies,
+            reason="an armed adopt window bound the presented secret to this install",
+            detail={"armed_by": adopted_by},
+        )
+    # CONNECTED is written from a task rather than here so the hello frame - the relay's first, and the
+    # only source of its build tag - has a moment to land. Nothing waits on it either way.
+    connected_task = asyncio.create_task(_record_connected(websocket, install_id, connected_at))
+    _connected_event_tasks.add(connected_task)
+    connected_task.add_done_callback(_connected_event_tasks.discard)
     # A relay just came back: drain anything that queued while it was gone, now, rather than up to a
     # poll interval later (#353 PR E), and pick up any GP job created while it was away (#380).
     gp_outbox_worker.wake()

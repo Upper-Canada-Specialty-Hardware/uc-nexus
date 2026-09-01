@@ -1,10 +1,12 @@
-"""Relay credential seeding for non-production environments (issue #414).
+"""Relay credential seeding for non-production environments (#414, #654).
 
-A Railway PR environment gets a fresh Postgres with an empty relay_installs, so the relay's handshake
-is refused and every GP-dependent page is dead there. Seeding the hash production already stores lets
-the one workstation relay authenticate against a PR backend with the secret it already holds.
+A Railway PR environment gets a fresh Postgres with an empty relay_installs, so a relay's handshake is
+refused and every GP-dependent page is dead there. Seeding a hash lets the relay that holds its
+preimage authenticate with the secret it already has.
 
-The tests that matter most are the refusals: this writes a working credential into a database, and the
+WHICH hash is seeded is #654's change: the default is a stub relay running inside the preview, and
+PREVIEW_REAL_RELAY opts back into the workstation relay. Exactly one is ever seeded, and the tests
+that matter most are still the refusals - this writes a working credential into a database, and the
 only things keeping that acceptable are the production kill-switch and the sandbox company pin.
 """
 
@@ -21,14 +23,50 @@ from app.services import relay_seed
 
 SECRET = "a-relay-generated-token-urlsafe-32-value"
 HASH = hash_secret(SECRET)
+STUB_HASH = hash_secret("the-stub-relays-own-secret")
+
+
+def _seed(session, *, environment_name="pr-414", secret_hash=HASH, companies=None, label_prefix=None):
+    return relay_seed.seed_from_env(
+        session,
+        environment_name=environment_name,
+        secret_hash=secret_hash,
+        companies=companies if companies is not None else ["TUBC"],
+        label_prefix=label_prefix or relay_seed.SEED_LABEL_PREFIX,
+    )
+
+
+def _owned_rows(session) -> list[str]:
+    """The labels of the rows seeding owns for pr-414 - both kinds. Scoped to those two rather than
+    counting the whole table: other suites commit relay installs of their own."""
+    return sorted(
+        label
+        for (label,) in session.query(RelayInstall.label)
+        .filter(RelayInstall.label.in_(["seed:pr-414", "stub:pr-414"]))
+        .all()
+    )
 
 
 def test_production_is_refused_outright(db_session):
-    # Railway clones a PR environment from production, so the variable is SET in production by design
+    # Railway clones a PR environment from production, so the variables are SET in production by design
     # (#431) and will always be visible here. The guard is the reason that is survivable - it must not
-    # depend on the variable being absent.
-    assert relay_seed.seed_from_env(db_session, environment_name="production", secret_hash=HASH) is None
+    # depend on them being absent.
+    assert _seed(db_session, environment_name="production") is None
     assert db_session.query(RelayInstall).filter(RelayInstall.secret_hash == HASH).count() == 0
+
+
+def test_production_refuses_the_stub_hash_too(db_session):
+    assert (
+        _seed(
+            db_session,
+            environment_name="production",
+            secret_hash=STUB_HASH,
+            companies=["TUBC", "TUCSH"],
+            label_prefix=relay_seed.STUB_LABEL_PREFIX,
+        )
+        is None
+    )
+    assert db_session.query(RelayInstall).filter(RelayInstall.secret_hash == STUB_HASH).count() == 0
 
 
 def test_the_production_refusal_reads_as_expected_not_as_a_misconfiguration(db_session, caplog):
@@ -36,21 +74,21 @@ def test_the_production_refusal_reads_as_expected_not_as_a_misconfiguration(db_s
     # production. Following it breaks every PR environment created afterwards, because production is
     # the only place a new one can inherit the variable from.
     with caplog.at_level(logging.INFO, logger=relay_seed.__name__):
-        assert relay_seed.seed_from_env(db_session, environment_name="production", secret_hash=HASH) is None
-    record = next(r for r in caplog.records if "RELAY_SEED_SECRET_HASH" in r.getMessage())
+        assert _seed(db_session, environment_name="production") is None
+    record = next(r for r in caplog.records if "seeding never" in r.getMessage())
     assert record.levelno == logging.INFO
     assert "remove" not in record.getMessage().lower()
 
 
 @pytest.mark.parametrize("name", ["Production", "  PRODUCTION  "])
 def test_the_production_check_ignores_case_and_padding(db_session, name):
-    assert relay_seed.seed_from_env(db_session, environment_name=name, secret_hash=HASH) is None
+    assert _seed(db_session, environment_name=name) is None
 
 
 def test_a_pr_environment_gets_a_seeded_install(db_session):
-    install = relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH)
+    install = _seed(db_session)
     assert install is not None
-    assert install.companies == [relay_seed.SEED_COMPANY] == ["TUBC"]
+    assert install.companies == ["TUBC"]
     assert install.secret_hash == HASH
     assert install.label == "seed:pr-414"
     # Enrolled on creation: there is no token and none is wanted, and a permanently "pending" row that
@@ -58,9 +96,22 @@ def test_a_pr_environment_gets_a_seeded_install(db_session):
     assert install.enrolled_at is not None
 
 
+def test_the_stub_install_is_labelled_as_one_and_can_serve_several_companies(db_session):
+    install = _seed(
+        db_session,
+        secret_hash=STUB_HASH,
+        companies=["TUBC", "TUCSH"],
+        label_prefix=relay_seed.STUB_LABEL_PREFIX,
+    )
+    assert install.label == "stub:pr-414"
+    # Wider than the real relay's list on purpose: the stub answers from fixtures, so a second company
+    # costs nothing and is what lets the multi-company screens be exercised in a preview at all.
+    assert install.companies == ["TUBC", "TUCSH"]
+
+
 def test_seeding_is_idempotent_across_restarts(db_session):
-    first = relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH)
-    second = relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH)
+    first = _seed(db_session)
+    second = _seed(db_session)
     assert second.id == first.id
     assert db_session.query(RelayInstall).filter(RelayInstall.secret_hash == HASH).count() == 1
 
@@ -70,21 +121,28 @@ def test_seeding_is_idempotent_across_restarts(db_session):
     ["", "   ", "not-a-hash", "abc123", HASH[:-1], HASH + "0", "z" * 64],
 )
 def test_a_malformed_hash_is_skipped_not_stored(db_session, value):
-    assert relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=value) is None
+    assert _seed(db_session, secret_hash=value) is None
+    assert db_session.query(RelayInstall).filter(RelayInstall.secret_hash == HASH).count() == 0
+
+
+def test_an_install_with_no_companies_is_not_created(db_session):
+    # It could serve no call and would be refused at the handshake, so a misconfigured company list is
+    # a skipped seed rather than a row that looks healthy in the grid.
+    assert _seed(db_session, companies=[]) is None
     assert db_session.query(RelayInstall).filter(RelayInstall.secret_hash == HASH).count() == 0
 
 
 def test_an_uppercase_hash_is_accepted_and_normalised(db_session):
     # Copy/paste out of a SQL client can arrive uppercase; the stored digest is lowercase hex, so a
     # verbatim insert would silently never match on the handshake.
-    install = relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH.upper())
+    install = _seed(db_session, secret_hash=HASH.upper())
     assert install.secret_hash == HASH
 
 
 def test_the_seeded_row_authenticates_the_real_relay_secret(db_session):
-    # The end-to-end point of the whole feature: the workstation relay presents the secret it already
-    # holds, and a PR backend accepts it without any enrollment having happened there.
-    relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH)
+    # The end-to-end point of the whole feature: the relay presents the secret it already holds, and a
+    # PR backend accepts it without any enrollment having happened there.
+    _seed(db_session)
     install = relay_repository.authenticate_secret(db_session, SECRET)
     assert install is not None
     assert install.companies == ["TUBC"]
@@ -93,29 +151,9 @@ def test_the_seeded_row_authenticates_the_real_relay_secret(db_session):
 def test_a_local_environment_with_no_name_still_seeds(db_session):
     # Off Railway RAILWAY_ENVIRONMENT_NAME is empty. That is not production, and a developer running
     # against a local DB is exactly who else benefits from this.
-    install = relay_seed.seed_from_env(db_session, environment_name="", secret_hash=HASH)
+    install = _seed(db_session, environment_name="")
     assert install is not None
     assert install.label == "seed:local"
-
-
-def test_seed_on_startup_does_nothing_without_the_variable(monkeypatch):
-    monkeypatch.setattr(relay_seed, "RELAY_SEED_SECRET_HASH", "")
-    called = []
-    monkeypatch.setattr(relay_seed, "seed_from_env", lambda *a, **k: called.append(a))
-    relay_seed.seed_on_startup()
-    assert called == []
-
-
-def test_seed_on_startup_never_raises(monkeypatch):
-    # A backend that cannot seed must still boot: the failure mode is "relay pages don't work in this
-    # PR environment", which is exactly where things stood before this existed.
-    monkeypatch.setattr(relay_seed, "RELAY_SEED_SECRET_HASH", HASH)
-
-    def boom(*a, **k):
-        raise RuntimeError("database is on fire")
-
-    monkeypatch.setattr(relay_seed, "seed_from_env", boom)
-    relay_seed.seed_on_startup()  # must not raise
 
 
 def test_a_database_holding_a_real_enrolled_relay_is_never_seeded(db_session):
@@ -134,7 +172,7 @@ def test_a_database_holding_a_real_enrolled_relay_is_never_seeded(db_session):
     db_session.add(real)
     db_session.flush()
 
-    assert relay_seed.seed_from_env(db_session, environment_name="staging", secret_hash=HASH) is None
+    assert _seed(db_session, environment_name="staging") is None
     assert db_session.query(RelayInstall).filter(RelayInstall.secret_hash == HASH).count() == 0
     assert real.companies == ["UCSH"]  # untouched
 
@@ -147,7 +185,7 @@ def test_an_existing_row_carrying_the_hash_is_left_completely_alone(db_session):
     db_session.add(real)
     db_session.flush()
 
-    returned = relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH)
+    returned = _seed(db_session)
     assert returned.id == real.id
     assert returned.companies == ["UCSH"]  # NOT rewritten to TUBC
     assert returned.label == "hand-made"
@@ -156,10 +194,10 @@ def test_an_existing_row_carrying_the_hash_is_left_completely_alone(db_session):
 def test_rotating_the_hash_removes_the_superseded_seed_row(db_session):
     # Otherwise the old secret keeps authenticating in that environment forever, and the grid grows a
     # row per rotation.
-    first = relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH)
+    first = _seed(db_session)
     first_id = first.id
     rotated = "d" * 64
-    second = relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=rotated)
+    second = _seed(db_session, secret_hash=rotated)
 
     assert second.id != first_id
     assert db_session.query(RelayInstall).filter(RelayInstall.secret_hash == HASH).count() == 0
@@ -171,5 +209,149 @@ def test_rotation_only_removes_this_environments_own_seed_row(db_session):
     db_session.add(other)
     db_session.flush()
 
-    relay_seed.seed_from_env(db_session, environment_name="pr-414", secret_hash=HASH)
+    _seed(db_session)
     assert db_session.query(RelayInstall).filter(RelayInstall.label == "seed:pr-999").count() == 1
+
+
+# --- one kind at a time: flipping PREVIEW_REAL_RELAY (#654) ----------------------------------------
+
+
+def test_flipping_to_the_real_relay_removes_the_stub_row(db_session):
+    """Two live credentials on one environment means the connection slot goes to whichever relay dials
+    first, which is not a decision anybody made."""
+    _seed(
+        db_session,
+        secret_hash=STUB_HASH,
+        companies=["TUBC", "TUCSH"],
+        label_prefix=relay_seed.STUB_LABEL_PREFIX,
+    )
+    real = _seed(db_session)
+
+    assert real.label == "seed:pr-414"
+    assert _owned_rows(db_session) == ["seed:pr-414"]
+
+
+def test_flipping_back_to_the_stub_removes_the_real_row(db_session):
+    _seed(db_session)
+    stub = _seed(
+        db_session,
+        secret_hash=STUB_HASH,
+        companies=["TUBC", "TUCSH"],
+        label_prefix=relay_seed.STUB_LABEL_PREFIX,
+    )
+
+    assert stub.label == "stub:pr-414"
+    assert _owned_rows(db_session) == ["stub:pr-414"]
+
+
+def test_the_flip_only_touches_this_environments_rows(db_session):
+    other = RelayInstall(id=uuid.uuid4(), label="stub:pr-999", companies=["TUBC"], secret_hash="f" * 64)
+    db_session.add(other)
+    db_session.flush()
+
+    _seed(db_session)
+    assert db_session.query(RelayInstall).filter(RelayInstall.label == "stub:pr-999").count() == 1
+
+
+# --- which credential seed_on_startup chooses ------------------------------------------------------
+
+
+class _FakeSession:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def commit(self):
+        return None
+
+
+@pytest.fixture
+def startup_call(monkeypatch):
+    """Run seed_on_startup against no database and report the arguments it chose."""
+    captured: list[dict] = []
+    monkeypatch.setattr(relay_seed, "SessionLocal", _FakeSession)
+    monkeypatch.setattr(relay_seed, "seed_from_env", lambda session, **kwargs: captured.append(kwargs))
+    return captured
+
+
+def test_the_stub_is_what_a_preview_seeds_by_default(monkeypatch, startup_call):
+    # The default preview is self-contained: nothing depends on an office workstation being switched on
+    # for a PR to be testable.
+    monkeypatch.setattr(relay_seed, "PREVIEW_REAL_RELAY", False)
+    monkeypatch.setattr(relay_seed, "RELAY_SEED_SECRET_HASH", HASH)
+    monkeypatch.setattr(relay_seed, "RELAY_STUB_SECRET_HASH", STUB_HASH)
+    monkeypatch.setattr(relay_seed, "RELAY_STUB_COMPANIES", "TUBC,TUCSH")
+
+    relay_seed.seed_on_startup()
+
+    assert startup_call == [
+        {
+            "environment_name": relay_seed.RAILWAY_ENVIRONMENT_NAME,
+            "secret_hash": STUB_HASH,
+            "companies": ["TUBC", "TUCSH"],
+            "label_prefix": relay_seed.STUB_LABEL_PREFIX,
+        }
+    ]
+
+
+def test_the_real_relay_hash_is_seeded_when_the_flag_is_on(monkeypatch, startup_call):
+    monkeypatch.setattr(relay_seed, "PREVIEW_REAL_RELAY", True)
+    monkeypatch.setattr(relay_seed, "RELAY_SEED_SECRET_HASH", HASH)
+    monkeypatch.setattr(relay_seed, "RELAY_STUB_SECRET_HASH", STUB_HASH)
+    monkeypatch.setattr(relay_seed, "RELAY_SEED_COMPANIES", "TUBC")
+
+    relay_seed.seed_on_startup()
+
+    assert startup_call[0]["secret_hash"] == HASH
+    assert startup_call[0]["companies"] == ["TUBC"]
+    assert startup_call[0]["label_prefix"] == relay_seed.SEED_LABEL_PREFIX
+
+
+def test_seed_on_startup_does_nothing_without_either_variable(monkeypatch, startup_call):
+    monkeypatch.setattr(relay_seed, "RELAY_SEED_SECRET_HASH", "")
+    monkeypatch.setattr(relay_seed, "RELAY_STUB_SECRET_HASH", "")
+    relay_seed.seed_on_startup()
+    assert startup_call == []
+
+
+def test_a_missing_hash_for_the_chosen_kind_says_so(monkeypatch, startup_call, caplog):
+    # The flag is on but the hash it selects is unset - the environment gets no credential, and the
+    # reason has to be readable in the deploy log rather than looking like a silent no-op.
+    monkeypatch.setattr(relay_seed, "PREVIEW_REAL_RELAY", True)
+    monkeypatch.setattr(relay_seed, "RELAY_SEED_SECRET_HASH", "")
+    monkeypatch.setattr(relay_seed, "RELAY_STUB_SECRET_HASH", STUB_HASH)
+
+    with caplog.at_level(logging.WARNING, logger=relay_seed.__name__):
+        relay_seed.seed_on_startup()
+
+    assert startup_call == []
+    assert "RELAY_SEED_SECRET_HASH" in caplog.records[-1].getMessage()
+
+
+def test_seed_on_startup_never_raises(monkeypatch):
+    # A backend that cannot seed must still boot: the failure mode is "relay pages don't work in this
+    # PR environment", which is exactly where things stood before this existed.
+    monkeypatch.setattr(relay_seed, "PREVIEW_REAL_RELAY", False)
+    monkeypatch.setattr(relay_seed, "RELAY_STUB_SECRET_HASH", STUB_HASH)
+
+    def boom(*a, **k):
+        raise RuntimeError("database is on fire")
+
+    monkeypatch.setattr(relay_seed, "SessionLocal", boom)
+    relay_seed.seed_on_startup()  # must not raise
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("TUBC", ["TUBC"]),
+        ("TUBC,TUCSH", ["TUBC", "TUCSH"]),
+        (" tubc , tucsh ", ["TUBC", "TUCSH"]),
+        ("TUBC,,TUBC", ["TUBC"]),
+        ("", []),
+    ],
+)
+def test_configured_companies_are_parsed_the_way_the_column_stores_them(raw, expected):
+    assert relay_seed.parse_companies(raw) == expected

@@ -14,7 +14,6 @@ crypt32 directly through ctypes to avoid adding a pywin32 dependency.
 import base64
 import ctypes
 import sys
-from ctypes import wintypes
 
 ENC_PREFIX = "enc:dpapi:"
 
@@ -23,12 +22,16 @@ ENC_PREFIX = "enc:dpapi:"
 # default CurrentUser scope applies.
 _CRYPTPROTECT_UI_FORBIDDEN = 0x1
 
-
-class _DataBlob(ctypes.Structure):
-    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
-
-
+# ctypes.wintypes cannot even be IMPORTED off Windows, and the blob struct is built out of it - so the
+# whole crypt32 binding lives behind the platform check rather than just the calls that use it. That is
+# what lets this module import on Linux, where the fixture-mode container reads a plaintext secret from
+# the environment and never decrypts anything (protect/unprotect below still refuse a real blob there).
 if sys.platform == "win32":
+    from ctypes import wintypes
+
+    class _DataBlob(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
     _crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
@@ -56,7 +59,7 @@ def is_encrypted(value: str) -> bool:
     return value.startswith(ENC_PREFIX)
 
 
-def _in_blob(data: bytes) -> tuple[_DataBlob, ctypes.Array]:
+def _in_blob(data: bytes) -> "tuple[_DataBlob, ctypes.Array]":
     # The buffer must outlive the call, so hand it back to the caller to keep a reference.
     buf = ctypes.create_string_buffer(data, len(data))
     return _DataBlob(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char))), buf
