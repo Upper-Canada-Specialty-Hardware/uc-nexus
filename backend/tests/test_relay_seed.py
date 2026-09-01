@@ -316,6 +316,23 @@ def test_seed_on_startup_does_nothing_without_either_variable(monkeypatch, start
     assert startup_call == []
 
 
+def test_production_skips_quietly_before_choosing_a_kind(monkeypatch, startup_call, caplog):
+    # Production holds the real relay's hash for previews to inherit and never the stub hash, so the
+    # kind-selection below would otherwise warn that relay pages will not work on the one environment
+    # where they do. Seen on the first deploy of the stub-default seeding.
+    monkeypatch.setattr(relay_seed, "RAILWAY_ENVIRONMENT_NAME", "production")
+    monkeypatch.setattr(relay_seed, "PREVIEW_REAL_RELAY", False)
+    monkeypatch.setattr(relay_seed, "RELAY_SEED_SECRET_HASH", HASH)
+    monkeypatch.setattr(relay_seed, "RELAY_STUB_SECRET_HASH", "")
+
+    with caplog.at_level(logging.INFO, logger=relay_seed.__name__):
+        relay_seed.seed_on_startup()
+
+    assert startup_call == []
+    assert all(r.levelno < logging.WARNING for r in caplog.records)
+    assert "seeding never runs in production" in caplog.records[-1].getMessage()
+
+
 def test_a_missing_hash_for_the_chosen_kind_says_so(monkeypatch, startup_call, caplog):
     # The flag is on but the hash it selects is unset - the environment gets no credential, and the
     # reason has to be readable in the deploy log rather than looking like a silent no-op.
