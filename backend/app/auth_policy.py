@@ -193,6 +193,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "gpTaxSchedules": SIGNED_IN,
     "gpVendors": SIGNED_IN,
     "relayAdoptWindow": ADMIN_ROLE,
+    "relayEvents": ADMIN_ROLE,
     "relayInstalls": ADMIN_ROLE,
     "relayStatus": SIGNED_IN,
     "suggestVendorForManufacturer": SIGNED_IN,

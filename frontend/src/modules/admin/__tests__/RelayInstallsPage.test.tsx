@@ -2,10 +2,19 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import RelayInstallsPage from '../RelayInstallsPage';
-import { RELAY_INSTALLS, RELAY_ADOPT_WINDOW, ARM_RELAY_ADOPT, DELETE_RELAY_INSTALL } from '../../../graphql/admin';
+import {
+  RELAY_INSTALLS,
+  RELAY_ADOPT_WINDOW,
+  RELAY_EVENTS,
+  ARM_RELAY_ADOPT,
+  DELETE_RELAY_INSTALL,
+} from '../../../graphql/admin';
 import { GET_RELAY_STATUS } from '../../../graphql/shared';
 
-vi.setConfig({ testTimeout: 30_000 });
+// A single DataGrid assertion in this file costs 5-40s: jsdom re-renders the whole un-virtualized
+// grid on every query result, and each findByRole walks that tree. The 30s budget this file used to
+// carry was already borderline, and the events table added a fourth query to the page.
+vi.setConfig({ testTimeout: 90_000 });
 
 // Testing Library's 1s default is not enough for a DataGrid row to mount once vitest is running test
 // files in parallel workers: this file passed on its own and failed whenever anything ran alongside
@@ -54,28 +63,62 @@ const INSTALL = {
   secretHash: '231a2314ff30d343fdea3f67436d4010efbc0272c59df346d48de909369e779d',
 };
 
-const statusMock: MockedResponse = {
-  request: { query: GET_RELAY_STATUS },
-  result: { data: { relayStatus: { connected: false, companies: [], build: null, installId: null } } },
-  maxUsageCount: Number.POSITIVE_INFINITY,
+interface RelayStatusShape {
+  connected: boolean;
+  companies: string[];
+  build: string | null;
+  installId: string | null;
+  lastConnectedAt: string | null;
+  lastDisconnectedAt: string | null;
+  lastDisconnectReason: string | null;
+  configuredCompanies: string[] | null;
+  previewChannels: string[];
+}
+
+const DISCONNECTED_STATUS: RelayStatusShape = {
+  connected: false,
+  companies: [],
+  build: null,
+  installId: null,
+  lastConnectedAt: null,
+  lastDisconnectedAt: null,
+  lastDisconnectReason: null,
+  configuredCompanies: null,
+  previewChannels: [],
 };
 
+function relayStatusMock(overrides: Partial<RelayStatusShape> = {}): MockedResponse {
+  return {
+    request: { query: GET_RELAY_STATUS },
+    result: { data: { relayStatus: { ...DISCONNECTED_STATUS, ...overrides } } },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+  };
+}
+
+const statusMock = relayStatusMock();
+
 // The same status, but with INSTALL holding the live connection (#366) - which is what disables Remove.
-const connectedStatusMock: MockedResponse = {
-  request: { query: GET_RELAY_STATUS },
-  result: {
-    data: {
-      relayStatus: { connected: true, companies: ['TUBC'], build: 'relay-v0.1.0-build.36', installId: 'install-1' },
-    },
-  },
-  maxUsageCount: Number.POSITIVE_INFINITY,
-};
+const connectedStatusMock = relayStatusMock({
+  connected: true,
+  companies: ['TUBC'],
+  build: 'relay-v0.1.0-build.36',
+  installId: 'install-1',
+  configuredCompanies: ['TUBC', 'UCSH'],
+});
 
 const installsMock: MockedResponse = {
   request: { query: RELAY_INSTALLS },
   result: { data: { relayInstalls: [INSTALL] } },
   maxUsageCount: Number.POSITIVE_INFINITY,
 };
+
+function eventsMock(events: unknown[]): MockedResponse {
+  return {
+    request: { query: RELAY_EVENTS, variables: { limit: 50 } },
+    result: { data: { relayEvents: events } },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+  };
+}
 
 function windowMock(armed: unknown): MockedResponse {
   return {
@@ -85,9 +128,10 @@ function windowMock(armed: unknown): MockedResponse {
   };
 }
 
+// The empty event log goes last so a test that supplies its own log is matched first.
 function renderPage(mocks: MockedResponse[]) {
   return render(
-    <MockedProvider mocks={mocks}>
+    <MockedProvider mocks={[...mocks, eventsMock([])]}>
       <ToastProvider>
         <RelayInstallsPage />
       </ToastProvider>
@@ -229,4 +273,120 @@ it('shows no seed hash for an install that has not enrolled yet', async () => {
 
   await screen.findByRole('button', { name: /adopt next connection/i }, GRID_TIMEOUT);
   expect(screen.queryByRole('button', { name: /copy seed hash/i })).toBeNull();
+});
+
+// --- link health strip -------------------------------------------------------------------------
+
+it('reports when the link last came up and went down, with the exact instant behind the relative one', async () => {
+  const connectedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+  const disconnectedAt = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+  renderPage([
+    relayStatusMock({
+      lastConnectedAt: connectedAt,
+      lastDisconnectedAt: disconnectedAt,
+      lastDisconnectReason: 'socket closed 1006',
+    }),
+    installsMock,
+    windowMock(null),
+  ]);
+
+  expect(await screen.findByText('5m ago', {}, GRID_TIMEOUT)).toBeTruthy();
+  expect(screen.getByText('2h ago')).toBeTruthy();
+  // A disconnect without its reason is half a story - "it dropped" is never the question.
+  expect(screen.getByText('socket closed 1006')).toBeTruthy();
+
+  // The relative reading is what gets scanned; the instant it stands for is a hover away.
+  fireEvent.mouseOver(screen.getByText('5m ago'));
+  const tip = await screen.findByRole('tooltip', {}, GRID_TIMEOUT);
+  expect(tip.textContent).toContain(new Date(connectedAt).toLocaleString());
+});
+
+it('names the companies the workstation is not configured for', async () => {
+  // The install is enrolled for TUBC + UCSH but the relay was only set up for TUBC, so every UCSH
+  // write it is trusted with silently goes nowhere. Connected is not the same as working.
+  renderPage([
+    relayStatusMock({
+      connected: true,
+      companies: ['TUBC'],
+      installId: 'install-1',
+      configuredCompanies: ['TUBC'],
+    }),
+    installsMock,
+    windowMock(null),
+  ]);
+
+  expect(await screen.findByText(/workstation config lacks UCSH/i, {}, GRID_TIMEOUT)).toBeTruthy();
+});
+
+it('shows no config warning when the workstation covers every company the install is enrolled for', async () => {
+  renderPage([connectedStatusMock, installsMock, windowMock(null)]);
+  await screen.findByRole('button', { name: /adopt next connection/i }, GRID_TIMEOUT);
+  expect(screen.queryByText(/workstation config lacks/i)).toBeNull();
+});
+
+it('names each preview channel by its environment, with the socket url in a tooltip', async () => {
+  const url = 'wss://uc-nexus-pr-661.up.railway.app/relay-link';
+  renderPage([
+    relayStatusMock({ connected: true, companies: ['TUBC'], installId: 'install-1', previewChannels: [url] }),
+    installsMock,
+    windowMock(null),
+  ]);
+
+  const chip = await screen.findByText('uc-nexus-pr-661', {}, GRID_TIMEOUT);
+  expect(screen.getByText(/preview channels/i)).toBeTruthy();
+  fireEvent.mouseOver(chip);
+  expect((await screen.findByRole('tooltip', {}, GRID_TIMEOUT)).textContent).toContain(url);
+});
+
+it('hides the preview channel block when the relay is dialling none', async () => {
+  // Production-only state: everywhere else the list is empty, and a labelled empty group is noise.
+  renderPage([statusMock, installsMock, windowMock(null)]);
+  await screen.findByRole('button', { name: /adopt next connection/i }, GRID_TIMEOUT);
+  expect(screen.queryByText(/preview channels/i)).toBeNull();
+});
+
+// --- connection events -------------------------------------------------------------------------
+
+it('lists the connection log newest first, refusals included', async () => {
+  // A refused relay never reaches the installs grid - the row just never goes live - so the log is
+  // the only place the attempt is visible at all.
+  const events = [
+    {
+      id: 'e2',
+      at: new Date(Date.now() - 60_000).toISOString(),
+      kind: 'REFUSED_SECRET',
+      installId: null,
+      installLabel: 'TAGGING3W10',
+      build: 'relay-v0.1.0-build.36',
+      companies: ['TUBC'],
+      reason: 'secret did not match',
+    },
+    {
+      id: 'e1',
+      at: new Date(Date.now() - 3 * 60 * 60_000).toISOString(),
+      kind: 'CONNECTED',
+      installId: 'install-1',
+      installLabel: 'TAGGING3W10',
+      build: 'relay-v0.1.0-build.36',
+      companies: ['TUBC', 'UCSH'],
+      reason: null,
+    },
+  ];
+
+  renderPage([statusMock, installsMock, windowMock(null), eventsMock(events)]);
+
+  // The tag reads as words, not as the wire enum - the theme supplies the stencil caps.
+  const refused = await screen.findByText('REFUSED SECRET', {}, GRID_TIMEOUT);
+  const connected = screen.getByText('CONNECTED');
+  expect(screen.getByText('secret did not match')).toBeTruthy();
+  expect(screen.getByText('TUBC, UCSH')).toBeTruthy();
+  // Exact instants in the log, so a row lines up against a deploy log line.
+  expect(screen.getByText(new Date(events[1].at).toLocaleString())).toBeTruthy();
+  // The server returns them newest first; the table must not reorder what it is handed.
+  expect(refused.compareDocumentPosition(connected) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+it('says the connection log is empty rather than rendering an empty table', async () => {
+  renderPage([statusMock, installsMock, windowMock(null)]);
+  expect(await screen.findByText(/no connection events recorded yet/i, {}, GRID_TIMEOUT)).toBeTruthy();
 });

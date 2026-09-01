@@ -102,6 +102,23 @@ export const RELAY_INSTALLS = gql`
   }
 `;
 
+// The relay-link connection log, newest first. A refused connection leaves no other trace, so this
+// is the only place an admin can see that a relay is dialling in and being turned away.
+export const RELAY_EVENTS = gql`
+  query RelayEvents($limit: Int) {
+    relayEvents(limit: $limit) {
+      id
+      at
+      kind
+      installId
+      installLabel
+      build
+      companies
+      reason
+    }
+  }
+`;
+
 // The admin-armed "adopt next relay connection" window (#353). While one is open, the next relay to
 // dial /relay-link is accepted with whatever secret it presents - the only way to recover a relay
 // whose in-memory secret has drifted when nobody can reach the workstation.

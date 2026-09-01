@@ -3,7 +3,7 @@ import { GET_RELAY_STATUS } from '../graphql/shared';
 
 // One shared empty list so a disconnected relay keeps the same array identity across renders - a
 // fresh [] each poll would invalidate every consumer's memo for nothing.
-const NO_COMPANIES: string[] = [];
+const NO_STRINGS: string[] = [];
 
 export interface RelayStatusInfo {
   // null = the first relayStatus check is still in flight.
@@ -17,6 +17,17 @@ export interface RelayStatusInfo {
   // Which relay install is holding the connection (#366); null when disconnected. Lets the Relay
   // Installs grid disable Remove on the live row instead of letting the backend reject it.
   installId: string | null;
+  // When the link last came up / went down, and why it went down. Null until the backend has seen
+  // one of those transitions since it started.
+  lastConnectedAt: string | null;
+  lastDisconnectedAt: string | null;
+  lastDisconnectReason: string | null;
+  // The companies the workstation relay itself is configured for, from its hello frame. null when
+  // the connected relay does not report them. An install enrolled for a company missing here is
+  // enrolled for something the workstation cannot actually serve.
+  configuredCompanies: string[] | null;
+  // Production only: the preview-environment sockets the relay is being told to dial as well.
+  previewChannels: string[];
 }
 
 // Single definition of the relay-status poll (backend relayStatus field, the relay-to-backend WS
@@ -24,7 +35,17 @@ export interface RelayStatusInfo {
 // doesn't poll, which keeps this to one live poller at a time.
 export function useRelayStatus(options?: { skip?: boolean }): RelayStatusInfo {
   const { data } = useQuery<{
-    relayStatus: { connected: boolean; companies: string[]; build: string | null; installId: string | null };
+    relayStatus: {
+      connected: boolean;
+      companies: string[];
+      build: string | null;
+      installId: string | null;
+      lastConnectedAt: string | null;
+      lastDisconnectedAt: string | null;
+      lastDisconnectReason: string | null;
+      configuredCompanies: string[] | null;
+      previewChannels: string[];
+    };
   }>(GET_RELAY_STATUS, {
     pollInterval: 10_000,
     fetchPolicy: 'cache-and-network',
@@ -32,8 +53,13 @@ export function useRelayStatus(options?: { skip?: boolean }): RelayStatusInfo {
   });
   return {
     connected: data ? data.relayStatus.connected : null,
-    companies: data?.relayStatus.companies ?? NO_COMPANIES,
+    companies: data?.relayStatus.companies ?? NO_STRINGS,
     build: data?.relayStatus.build ?? null,
     installId: data?.relayStatus.installId ?? null,
+    lastConnectedAt: data?.relayStatus.lastConnectedAt ?? null,
+    lastDisconnectedAt: data?.relayStatus.lastDisconnectedAt ?? null,
+    lastDisconnectReason: data?.relayStatus.lastDisconnectReason ?? null,
+    configuredCompanies: data?.relayStatus.configuredCompanies ?? null,
+    previewChannels: data?.relayStatus.previewChannels ?? NO_STRINGS,
   };
 }

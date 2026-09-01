@@ -1,9 +1,12 @@
 name: preview-env-cleanup
 
-# Deletes the PR's Railway environment when the PR closes. Railway tears down environments IT
-# created, but preview-env forks one itself when Railway provisions nothing (a PR touching no
-# service directory) - and nothing else would ever delete those. Deleting an already-gone
-# environment is a no-op here, so this runs for every close, merge included.
+# Deletes the PR's Railway environment when the PR closes. Railway tears down environments IT created,
+# and preview-env forks every one itself, so nothing else would ever delete these. Deleting an
+# already-gone environment is a no-op here, so this runs for every close, merge included.
+#
+# The relay stub service goes first. serviceCreate made it a project-level service scoped into this
+# environment, so environmentDelete alone can leave the project-level service behind; it is a per-PR
+# service, so serviceDelete(id) removes it outright.
 
 on:
   pull_request:
@@ -57,6 +60,22 @@ jobs:
             echo "environment $ENV_NAME does not exist; nothing to delete"
             exit 0
           fi
+
+          STUB_NAME="relay-stub-pr-${PR}"
+          STUB_ID=$(rgql 'query($id:String!){ environment(id:$id){ serviceInstances{ edges{ node{ serviceId serviceName } } } } }' \
+            "$(jq -cn --arg id "$ENV_ID" '{id:$id}')" \
+            | jq -r --arg n "$STUB_NAME" '[.environment.serviceInstances.edges[]?|select(.node.serviceName==$n)|.node.serviceId][0] // empty')
+          if [ -n "$STUB_ID" ]; then
+            if rgql 'mutation($id:String!){ serviceDelete(id:$id) }' \
+              "$(jq -cn --arg id "$STUB_ID" '{id:$id}')" >/dev/null; then
+              echo "deleted $STUB_NAME ($STUB_ID)"
+            else
+              echo "::warning::could not delete $STUB_NAME ($STUB_ID); it may need manual removal in the Railway dashboard"
+            fi
+          else
+            echo "no $STUB_NAME service in $ENV_NAME; nothing to delete there"
+          fi
+
           if rgql 'mutation($id:String!){ environmentDelete(id:$id) }' "$(jq -cn --arg id "$ENV_ID" '{id:$id}')" >/dev/null; then
             echo "deleted environment $ENV_NAME ($ENV_ID)"
           else

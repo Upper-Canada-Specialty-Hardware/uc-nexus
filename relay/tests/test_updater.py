@@ -74,6 +74,54 @@ def test_latest_release_requires_the_zip_bundle(monkeypatch):
     assert updater.latest_release() == {}
 
 
+def _release(tag, *, prerelease=False, draft=False):
+    return {
+        "tag_name": tag,
+        "prerelease": prerelease,
+        "draft": draft,
+        "assets": [{"name": "ucnexus-relay.zip", "browser_download_url": f"https://x/{tag}.zip"}],
+    }
+
+
+def test_stable_skips_a_prerelease_even_when_it_is_the_highest_build(monkeypatch):
+    # The promote step: a build is cut as a prerelease, proven on the one workstation set to "latest",
+    # and only `gh release edit <tag> --prerelease=false` hands it to the fleet.
+    payload = [_release("relay-v0.1.0-build.9"), _release("relay-v0.1.0-build.10", prerelease=True)]
+    monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: _Resp(payload))
+    assert updater.latest_release("stable")["tag"] == "relay-v0.1.0-build.9"
+
+
+def test_latest_takes_the_prerelease(monkeypatch):
+    payload = [_release("relay-v0.1.0-build.9"), _release("relay-v0.1.0-build.10", prerelease=True)]
+    monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: _Resp(payload))
+    assert updater.latest_release("latest")["tag"] == "relay-v0.1.0-build.10"
+
+
+def test_a_draft_is_skipped_on_either_channel(monkeypatch):
+    payload = [_release("relay-v0.1.0-build.9"), _release("relay-v0.1.0-build.10", draft=True)]
+    monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: _Resp(payload))
+    for channel in ("stable", "latest"):
+        assert updater.latest_release(channel)["tag"] == "relay-v0.1.0-build.9", channel
+
+
+def test_the_channel_comes_from_config_when_it_is_not_passed(monkeypatch):
+    payload = [_release("relay-v0.1.0-build.9"), _release("relay-v0.1.0-build.10", prerelease=True)]
+    monkeypatch.setattr(updater.urllib.request, "urlopen", lambda *a, **k: _Resp(payload))
+    monkeypatch.setattr(updater, "update_channel", lambda: "latest")
+    assert updater.latest_release()["tag"] == "relay-v0.1.0-build.10"
+
+
+def test_an_unreadable_config_falls_back_to_stable(monkeypatch):
+    # "Cannot tell" must not hand a workstation a build nobody has promoted.
+    import ucnexus_relay.config as config
+
+    def _boom(*a, **k):
+        raise OSError("config.toml is being written")
+
+    monkeypatch.setattr(config, "get_settings", _boom)
+    assert updater.update_channel() == "stable"
+
+
 def test_check_update_reports_available(monkeypatch):
     monkeypatch.setattr(updater, "current_build", lambda: "relay-v0.1.0-build.7")
     monkeypatch.setattr(updater, "latest_release", lambda: {"tag": "relay-v0.1.0-build.9", "url": "https://x/b.zip"})

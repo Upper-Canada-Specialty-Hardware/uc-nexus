@@ -55,23 +55,30 @@ default = "mira"   # fallback registered buyer (TUBC registered buyers: donr, mi
 level = "INFO"
 file = "relay.log"
 
+[update]
+# Which GitHub releases this workstation installs. "stable" (the default) takes full releases only and
+# skips anything flagged prerelease; "latest" takes prereleases too. Only the workstation that proves a
+# build before it is promoted (gh release edit <tag> --prerelease=false) should be on "latest".
+#channel = "stable"
+
 [channel]
 # outbound wss channel to the UC Nexus backend's relay gateway. empty backend_url disables it (the
 # relay just runs its existing inbound HTTP server, as today). auths on connect with [auth].shared_secret.
 backend_url = "wss://backend-production-xxxx.up.railway.app/relay-link"
 
-# Railway PR environments are found automatically: the relay asks production which ones exist and dials
-# them, so testing a PR needs nothing here and a closed one is dropped on its own. Requires
-# RAILWAY_API_TOKEN on the production backend. Set false to dial only what this file names.
-#discover_preview_backends = true
+# Railway PR environments need nothing here: production pushes the current list down this relay's own
+# backend socket and the relay dials them, dropping each one when its PR closes. Only the fixed preview
+# hostname shape is accepted, and only from the production channel. Set false to dial only what this
+# file names. (The old name for this key, discover_preview_backends, still works.)
+#accept_pushed_preview_backends = true
 
 # ADD a test backend here, naming ONLY the new one - one channel per URL, so a backend can be tested
-# without dropping production (#414). Now mostly for what discovery cannot know about: a local dev
+# without dropping production (#414). Now mostly for what production cannot know about: a local dev
 # backend, or anything outside the Railway project. The same enrolled secret authenticates on all of
-# them. The production channel is unrestricted; every other URL is pinned to TUBC and refuses any other
-# company, reads and writes alike - so TUBC must also be in [gp] allowed_companies above, or this
-# workstation refuses those jobs itself. Re-read on a timer since #456, so no restart after editing;
-# remove the URL when you are done with it.
+# them. The production channel is unrestricted; every other URL is pinned to the sandboxes TUBC and
+# TUCSH and refuses any other company, reads and writes alike - so the sandbox being tested must also be
+# in [gp] allowed_companies above, or this workstation refuses those jobs itself. Re-read on a timer
+# since #456, so no restart after editing; remove the URL when you are done with it.
 #
 # prefer this over overriding backend_url: whether a channel is production is decided by matching the
 # baked production URL, so retyping it with one character wrong silently pins PRODUCTION to TUBC and

@@ -13,10 +13,13 @@ on its hash, and a PR environment is seeded with that hash rather than issued a 
 
 That set is reconciled against config.toml on a tick rather than read once (issue #456), so adding or
 removing a preview environment needs no restart - see `run_forever` for why that mattered enough to
-build.
+build. The preview URLs themselves are not written there at all any more: PRODUCTION pushes the current
+list down the socket it already holds, as a {"type": "channels"} frame, and the relay unions it with
+whatever config.toml names (see `_handle_channels_frame`). Nothing on the workstation is edited when a
+PR opens or closes.
 
 Which backend a channel points at decides what it may reach: the production URL is unrestricted, every
-other URL is pinned to the sandbox company (config.NON_PRIMARY_ALLOWED_COMPANIES). Reads and writes
+other URL is pinned to the sandbox companies (config.NON_PRIMARY_ALLOWED_COMPANIES). Reads and writes
 are both served on a test channel - a PR that touches GP has to be verifiable before it merges - and
 that company pin is the sole reason it is safe, so `_dispatch` enforces it before any handler runs.
 
@@ -34,14 +37,16 @@ within ~a minute (issue #277) - the websockets client auto-answers protocol ping
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
 import time
-import urllib.error
-import urllib.request
 
-import pyodbc
+try:
+    import pyodbc
+except ImportError:  # fixture mode (a Linux container, no ODBC stack) - see fixture_ops.py
+    pyodbc = None
 import websockets
 from pydantic import ValidationError as PydanticValidationError
 
@@ -57,6 +62,10 @@ from .config import (
 from .logging_setup import get_logger
 
 logger = get_logger()
+
+# An empty tuple in an `except` clause matches nothing, which is exactly right when pyodbc is absent:
+# there is no SQL layer to raise, so those handlers simply never fire.
+_PYODBC_ERROR = pyodbc.Error if pyodbc is not None else ()
 
 # Live channel state PER backend URL, updated by _run_channel and exposed on /health, so the desktop
 # app shows the REAL backend-channel status instead of inferring it from relay.log (a killed serve
@@ -474,6 +483,25 @@ _OPS = {
 }
 
 
+def _allowed_phrase(companies: list[str]) -> str:
+    """The sandbox list as a sentence fragment - TUBC is / TUBC and TUCSH are. The refusal below is
+    shown verbatim in the browser, so it has to read as prose however many companies are in the pin."""
+    if len(companies) == 1:
+        return f"{companies[0]} is"
+    return f"{', '.join(companies[:-1])} and {companies[-1]} are"
+
+def ops_registry() -> dict:
+    """The op table _dispatch resolves against. The real GP handlers above, or the fixture registry when
+    [gp] mode is 'fixture' - a Linux container answering every op from a checked-in snapshot instead of
+    from GP (see fixture_ops.py). Same op names either way, so the hello frame and the backend's
+    op-parity check are unaffected. Imported lazily: the workstation relay never loads that module."""
+    if get_settings().gp.mode == "fixture":
+        from . import fixture_ops
+
+        return fixture_ops.OPS
+    return _OPS
+
+
 def _dispatch(op: str, company: str, payload: dict, allowed_companies: list[str] | None = None) -> dict:
     """Run one job synchronously (pyodbc is blocking) and return its {ok, result|error} body,
     without the id - _handle_job stitches that back on. Runs on a worker thread via
@@ -485,7 +513,7 @@ def _dispatch(op: str, company: str, payload: dict, allowed_companies: list[str]
     verifiable before it merges - and this is the sole thing keeping that safe, so it is checked before
     any handler runs. It layers on top of ops.check_company_allowed rather than replacing it: that one
     is the workstation's own guardrail against production GP companies and still applies."""
-    handler = _OPS.get(op)
+    handler = ops_registry().get(op)
     if handler is None:
         return {"ok": False, "error": errors.error_body("unknown_op", f"unknown op {op!r}")}
     if not company:
@@ -498,7 +526,7 @@ def _dispatch(op: str, company: str, payload: dict, allowed_companies: list[str]
                 # Joined, not interpolated as a list: relay_gateway raises RelayCallError(error
                 # ["message"]), so this string is what the browser shows - "only ['TUBC']" would leak a
                 # Python repr into the UI.
-                f"{company} is not reachable from a non-production backend; only {', '.join(allowed_companies)} is",
+                f"{company} is not reachable from a non-production backend; only {_allowed_phrase(allowed_companies)}",
                 company=company,
                 allowed=list(allowed_companies),
             ),
@@ -516,12 +544,12 @@ def _dispatch(op: str, company: str, payload: dict, allowed_companies: list[str]
         try:
             with db.get_read_connection(company) as conn:
                 body = errors.econnect_error_body(conn, e)
-        except pyodbc.Error:
+        except _PYODBC_ERROR:
             body = errors.error_body("econnect_error", str(e), proc=e.proc, error_state=e.error_state)
         return {"ok": False, "error": body}
     except PydanticValidationError as e:
         return {"ok": False, "error": errors.error_body("invalid_payload", str(e))}
-    except pyodbc.Error as e:
+    except _PYODBC_ERROR as e:
         return {"ok": False, "error": errors.error_body("sql_error", str(e))}
 
 
@@ -554,10 +582,22 @@ def _hello_frame() -> dict:
     the build tag and the exact op-set this relay supports so the backend can reject a call for an op this
     build lacks with a clear 'update the relay' error - proactively, and without a 30s round-trip - and
     show the live build on Admin -> Relay Installs. `updater.current_build()` is 'dev' for a source
-    checkout, which is fine: the backend only compares the op-set, and reports the build verbatim."""
+    checkout, which is fine: the backend only compares the op-set, and reports the build verbatim.
+
+    `companies` is what this workstation will serve at all ([gp] allowed_companies), so the backend can
+    route a job to a relay that can actually answer it instead of learning company_not_allowed on the
+    round-trip. `features` says what this build understands beyond jobs - "channels" means it accepts a
+    pushed preview-channel list, so a backend talking to an older relay knows not to bother sending one."""
     from . import updater  # lazy: keep channel import-light and avoid any package load-order coupling
 
-    return {"type": "hello", "build": updater.current_build(), "ops": sorted(_OPS), "version": VERSION}
+    return {
+        "type": "hello",
+        "build": updater.current_build(),
+        "ops": sorted(ops_registry()),
+        "version": VERSION,
+        "companies": list(get_settings().gp.allowed_companies),
+        "features": ["channels"],
+    }
 
 
 async def _run_once(url: str, secret: str, cfg) -> None:
@@ -624,6 +664,10 @@ async def _run_once(url: str, secret: str, cfg) -> None:
                     # Backend heartbeat (issue #277): answer through the same writer queue so the pong
                     # never interleaves mid-frame with a job reply, and don't dispatch it as a job.
                     await send_queue.put(pong)
+                    continue
+                if isinstance(job, dict) and job.get("type") == "channels":
+                    # The preview-environment list, pushed rather than polled. Nothing to answer.
+                    _handle_channels_frame(job, url)
                     continue
                 task = asyncio.create_task(_dispatch_job(job))
                 jobs.add(task)
@@ -727,8 +771,15 @@ async def _run_channel(url: str, stop_event: asyncio.Event | None = None) -> Non
 CHANNEL_RECONCILE_SECONDS = 10.0
 
 
-def _configured_urls() -> list[str] | None:
-    """The backend URLs config.toml currently names, or None if it could not be read.
+def _secret_hash(secret: str) -> str:
+    """A fingerprint of the enrolled secret, so the supervisor can notice it changed without holding
+    the secret itself in a second place."""
+    return hashlib.sha256((secret or "").encode("utf-8")).hexdigest()
+
+
+def _configured_channels() -> tuple[list[str], str] | None:
+    """The backend URLs config.toml currently names and a hash of the secret beside them, or None if it
+    could not be read.
 
     Guarded and returning None rather than raising, for the reason _run_channel re-reads the secret
     the same way: hand-editing config.toml on a running relay is the documented way to add a test
@@ -738,7 +789,8 @@ def _configured_urls() -> list[str] | None:
     exists to stop needing. None means "keep whatever is running"."""
     try:
         get_settings.cache_clear()
-        return get_settings().channel.backend_urls
+        settings = get_settings()
+        return settings.channel.backend_urls, _secret_hash(settings.auth.shared_secret)
     except Exception as e:
         logger.warning(
             "could not re-read config.toml; leaving the current channels alone",
@@ -747,135 +799,99 @@ def _configured_urls() -> list[str] | None:
         return None
 
 
-# How often to ask the production backend which preview environments exist. Deliberately slower than
-# the reconcile tick: the answer changes when somebody opens or closes a PR, not every ten seconds, and
-# a channel list that is one minute stale costs nothing while a request per tick is just noise.
-DISCOVERY_INTERVAL_SECONDS = 60.0
-DISCOVERY_TIMEOUT_SECONDS = 10.0
-
-# The ONLY shape a discovered channel may take. This is the load-bearing check on this side: the relay
+# The ONLY shape a pushed channel may take. This is the load-bearing check on this side: the relay
 # holds GP credentials, so "the backend told me to" is not sufficient reason to dial a host. Anchored
-# and fully literal apart from the PR number, so no answer from the network can name an arbitrary
-# destination - the worst a compromised or buggy response can produce is a Railway preview address that
+# and fully literal apart from the PR number, so no frame off the socket can name an arbitrary
+# destination - the worst a compromised or buggy backend can produce is a Railway preview address that
 # does not exist, which fails to connect and retries harmlessly.
-_DISCOVERABLE_URL_RE = re.compile(r"^wss://backend-uc-nexus-pr-\d+\.up\.railway\.app/relay-link$")
+_PUSHED_URL_RE = re.compile(r"^wss://backend-uc-nexus-pr-\d+\.up\.railway\.app/relay-link$")
 
-# Last good answer, so a backend blip does not tear down working preview channels. None means "never
-# successfully asked", which is different from "asked and there are none" - the latter is an empty list
-# and legitimately retires every discovered channel.
-_discovered: list[str] | None = None
-_discovered_at: float = 0.0
+# The preview channels production last pushed. None means "never told", which is different from "told,
+# and there are none" - the latter is an empty list and legitimately retires every pushed channel. A
+# push REPLACES this wholesale: the frame carries the full list every time, so a URL absent from it is
+# a preview environment that has gone away.
+_pushed: list[str] | None = None
+
+# Set by a push so the supervisor reconciles at once instead of sitting out the rest of its tick. A PR
+# environment coming up in about a second rather than up to ten is the whole reason the backend pushes
+# rather than the relay polling. Bound to the supervisor's own loop and cleared when it exits, so a
+# frame arriving with no supervisor running (there is none - the channels live under it) is a no-op.
+_wake: asyncio.Event | None = None
 
 
-def _discovery_endpoint(primary: str) -> str:
-    """The https URL of the primary backend's channel list, derived from its wss channel URL."""
-    return primary.replace("wss://", "https://", 1).replace("/relay-link", "/relay-channels", 1)
+def _pushed_urls() -> list[str]:
+    """Whatever production last pushed. Empty until the first frame, so this can only ever ADD to what
+    config.toml names - a relay that never hears from production behaves exactly as it did before the
+    pushed list existed."""
+    return list(_pushed or [])
 
 
-def _fetch_discovered_urls(primary: str, secret: str) -> list[str] | None:
-    """Ask the production backend which preview channels to add. None on any failure.
-
-    Blocking on purpose - it runs in a thread. urllib rather than a real HTTP client because this is one
-    small GET and the relay ships as a PyInstaller exe, where every added dependency is weight in the
-    bundle for the operator to install.
-    """
-    request = urllib.request.Request(  # noqa: S310 - scheme is fixed by _discovery_endpoint
-        _discovery_endpoint(primary),
-        headers={"Authorization": f"Bearer {secret}", "Accept": "application/json"},
-    )
+def _accepts_pushed_channels() -> bool:
     try:
-        with urllib.request.urlopen(request, timeout=DISCOVERY_TIMEOUT_SECONDS) as response:  # noqa: S310
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        if e.code == 401:
-            # WARNING, not debug, and worded for the one cause that actually produces it. The channel
-            # can be UP while this fails - a WebSocket authenticates once at connect and then holds,
-            # so a socket opened with a good secret stays open long after the config it came from
-            # stopped matching. This call re-authenticates every time, so it is the first thing to
-            # notice the drift, and reading it as "discovery is broken" sends you to the wrong side.
-            # Usual cause: a second relay process running from a different install dir and config.
-            logger.warning(
-                "the backend rejected this relay's secret on the channel list, while the channel "
-                "itself may still be connected - the socket authenticated once and holds. check for "
-                "a second relay process running from another install dir, or re-enroll this one",
-                extra={"category": "discovery_unauthorized", "url": _discovery_endpoint(primary)},
-            )
-        else:
-            logger.debug(
-                "backend refused the channel list; keeping the channels already known",
-                extra={"category": "discovery_unavailable", "status": e.code},
-            )
-        return None
-    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as e:
-        logger.debug(
-            "could not read discovered channels from the backend; keeping the ones already known",
-            extra={"category": "discovery_unavailable", "error": str(e)},
-        )
-        return None
+        return bool(get_settings().channel.accept_pushed_preview_backends)
+    except Exception:
+        # An unreadable config is already logged by the supervisor's own read; refusing the push is the
+        # conservative half of "cannot tell".
+        return False
 
-    urls = payload.get("urls") if isinstance(payload, dict) else None
-    if not isinstance(urls, list):
-        return None
+
+def _handle_channels_frame(frame: dict, url: str) -> None:
+    """Take a {"type": "channels", "urls": [...]} push and make it the pushed set.
+
+    PRIMARY channel only. A preview backend is the least trusted thing this process talks to, and one
+    that could name the next backends to dial would be able to walk the relay onto a host of its
+    choosing; production is the only channel whose word is taken for this."""
+    global _pushed
+
+    if not is_primary_backend_url(url):
+        logger.debug(
+            "ignoring a channel list pushed by a non-production backend",
+            extra={"category": "pushed_channels_ignored", "url": url},
+        )
+        return
+    if not _accepts_pushed_channels():
+        return
+
+    raw = frame.get("urls")
+    if not isinstance(raw, list):
+        logger.warning(
+            "ignored a channels frame with no usable url list",
+            extra={"category": "pushed_channels_rejected", "url": url},
+        )
+        return
 
     accepted, rejected = [], []
-    for candidate in urls:
-        url = candidate.strip() if isinstance(candidate, str) else ""
-        # is_primary_backend_url as well as the pattern: belt and braces, so a discovered URL can never
-        # take production's identity and shed the sandbox company pin that makes this safe at all.
-        if _DISCOVERABLE_URL_RE.match(url) and not is_primary_backend_url(url):
-            accepted.append(url)
-        elif url:
-            rejected.append(url)
+    for candidate in raw:
+        pushed = candidate.strip() if isinstance(candidate, str) else ""
+        # is_primary_backend_url as well as the pattern: belt and braces, so a pushed URL can never take
+        # production's identity and shed the sandbox company pin that makes this safe at all.
+        if _PUSHED_URL_RE.match(pushed) and not is_primary_backend_url(pushed):
+            if pushed not in accepted:
+                accepted.append(pushed)
+        elif pushed:
+            rejected.append(pushed)
     if rejected:
         logger.warning(
-            "ignored discovered channel URLs that do not match the preview backend pattern",
-            extra={"category": "discovery_rejected", "rejected": rejected},
+            "ignored pushed channel URLs that do not match the preview backend pattern",
+            extra={"category": "pushed_channels_rejected", "rejected": rejected},
         )
-    return accepted
 
-
-def _discovered_urls() -> list[str]:
-    """Whatever discovery last learned. Empty until the first success, so this can only ever ADD to
-    what config.toml names - a relay that never reaches the backend behaves exactly as it did before
-    discovery existed."""
-    return list(_discovered or [])
-
-
-async def _refresh_discovery(primary: str, secret: str) -> None:
-    global _discovered, _discovered_at
-    fetched = await asyncio.to_thread(_fetch_discovered_urls, primary, secret)
-    if fetched is not None:
-        # Only a successful read moves the clock. A failed one leaves the interval expired so the next
-        # tick tries again, rather than backing off for a minute over a single dropped request.
-        _discovered, _discovered_at = fetched, time.monotonic()
-
-
-def _maybe_refresh_discovery(configured: list[str]) -> asyncio.Task | None:
-    """Kick a background refresh if one is due, and return the task so the supervisor can cancel it.
-
-    Deliberately NOT awaited on the reconcile path. Discovery is an HTTP call with a ten second
-    timeout, and blocking the tick on it would hold up the thing that matters most: on a fresh start
-    the first tick is what brings PRODUCTION's channel up, and no test backend is worth delaying that.
-    So the loop reconciles what it already knows and picks the new list up on a later tick.
-    """
-    try:
-        settings = get_settings()
-        if not settings.channel.discover_preview_backends:
-            return None
-        secret = settings.auth.shared_secret
-    except Exception:
-        return None
-
-    primary = next((url for url in configured if is_primary_backend_url(url)), "")
-    if not primary or not secret:
-        # Nobody to ask, or nothing to authenticate with. A dev checkout pointed only at localhost
-        # lands here and should simply not discover.
-        return None
-
-    if _discovered is not None and time.monotonic() - _discovered_at < DISCOVERY_INTERVAL_SECONDS:
-        return None
-
-    return asyncio.create_task(_refresh_discovery(primary, secret), name="channel-discovery")
+    previous = _pushed_urls()
+    _pushed = accepted
+    if previous == accepted:
+        return  # the same list re-sent (a reconnect, or a push we already applied)
+    logger.info(
+        "backend channels pushed",
+        extra={
+            "urls": accepted,
+            "added": sorted(set(accepted) - set(previous)),
+            # Named as well as added, for the same reason the supervisor names them: a removal
+            # otherwise logs `added: []` and leaves the operator diffing two lines by eye.
+            "removed": sorted(set(previous) - set(accepted)),
+        },
+    )
+    if _wake is not None:
+        _wake.set()
 
 
 def _warn_if_no_primary(urls: list[str]) -> None:
@@ -885,11 +901,26 @@ def _warn_if_no_primary(urls: list[str]) -> None:
     legitimately, which is why it warns rather than refusing to start."""
     if urls and not any(is_primary_backend_url(url) for url in urls):
         logger.warning(
-            "no production channel configured - EVERY channel is restricted to the sandbox company. "
+            "no production channel configured - EVERY channel is restricted to the sandbox companies. "
             "if this is a workstation, check [channel] backend_url matches the production URL exactly, "
             "or list only the extra backend under [channel] extra_backend_urls and leave backend_url alone.",
             extra={"category": "no_primary_channel", "urls": urls, "expected": PRODUCTION_BACKEND_URL},
         )
+
+
+async def _wait_for_next_tick(stop_event: asyncio.Event | None, wake: asyncio.Event) -> None:
+    """Sit out the reconcile interval, returning early when shutdown is requested or a pushed channel
+    list woke us. `wake` is cleared AFTER the wait rather than before it, so a push that lands while a
+    reconcile pass is still running gets its own pass instead of being swallowed by that one."""
+    waiters = [asyncio.ensure_future(wake.wait())]
+    if stop_event is not None:
+        waiters.append(asyncio.ensure_future(stop_event.wait()))
+    try:
+        await asyncio.wait(waiters, timeout=CHANNEL_RECONCILE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for waiter in waiters:
+            waiter.cancel()
+        wake.clear()
 
 
 async def run_forever(stop_event: asyncio.Event | None = None) -> None:
@@ -910,15 +941,25 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
     row dropped. Teardown matters as much as setup - a closed PR's environment otherwise retries
     forever against a backend that no longer exists.
 
+    The same tick also notices a re-enrolment. `_run_channel` re-reads the secret before every dial, so
+    a channel that is DOWN heals itself - but a connected one holds a socket authenticated with the old
+    secret and would never dial again to find out, which reads as "enrolled fine, still not working".
+    A channel whose recorded secret hash no longer matches the file is cancelled and restarted here.
+
     What is deliberately NOT reconciled is a channel that died: the task set is diffed against the URL
     set, not against liveness. `_run_channel` catches per attempt and is not supposed to exit, so one
     that does is a bug worth seeing in the log rather than papering over with a respawn loop."""
+    global _wake
+
     tasks: dict[str, asyncio.Task] = {}
-    # In-flight discovery reads. Held so shutdown can cancel one mid-request rather than leaving it
-    # attached to a loop that is closing, and so a slow read cannot outlive the supervisor that
-    # started it.
-    discovery_tasks: set[asyncio.Task] = set()
+    # The secret each running channel dialled with, so a re-enrolment can be told from a steady state.
+    # Hashes, not the secret itself.
+    secrets: dict[str, str] = {}
     known: set[str] | None = None
+    # Created here rather than at import: an asyncio.Event binds to the loop that first waits on it, and
+    # the supervisor is the only thing that waits on this one.
+    wake = asyncio.Event()
+    _wake = wake
 
     async def _supervised(url: str) -> None:
         """Log a channel that escapes its own retry loop. _run_channel is not supposed to - it catches
@@ -935,11 +976,32 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
             )
             _mark_disconnected(url, "failed")
 
-    async def _reconcile(urls: list[str]) -> None:
+    async def _restart_drifted(urls: list[str], secret_hash: str) -> None:
+        """Cancel every channel that connected with a secret the file no longer holds, so the loop
+        below re-creates it and it dials with the current one. WARNING, not info: the workstation was
+        just re-enrolled and somebody is waiting to see whether it took.
+
+        Only channels that are staying: one whose URL has ALSO just left config.toml is not restarted,
+        it is retired below - restarting it would drop its /health row on the floor."""
+        drifted = [(url, task) for url, task in tasks.items() if url in urls and secrets.get(url) != secret_hash]
+        if not drifted:
+            return
+        logger.warning(
+            "the enrolled secret changed; restarting the backend channels so they reconnect with it",
+            extra={"category": "secret_changed", "urls": [url for url, _ in drifted]},
+        )
+        for url, task in drifted:
+            tasks.pop(url, None)
+            task.cancel()
+        await asyncio.gather(*(task for _, task in drifted), return_exceptions=True)
+
+    async def _reconcile(urls: list[str], secret_hash: str) -> None:
+        await _restart_drifted(urls, secret_hash)
         for url in urls:
             if url not in tasks:
                 register_channels([url])  # so /health lists it from the next poll, before any dial
                 tasks[url] = asyncio.create_task(_supervised(url), name=f"channel:{url}")
+                secrets[url] = secret_hash
         retired = [(url, tasks.pop(url)) for url in list(tasks) if url not in urls]
         for _, task in retired:
             task.cancel()
@@ -949,22 +1011,21 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
             await asyncio.gather(*(task for _, task in retired), return_exceptions=True)
             for url, _ in retired:
                 forget_channel(url)
+                secrets.pop(url, None)
 
     try:
         while True:
-            configured = _configured_urls()
+            channels = _configured_channels()
             urls = None
-            if configured is not None:
-                discovery = _maybe_refresh_discovery(configured)
-                if discovery is not None:
-                    discovery_tasks.add(discovery)
-                    discovery.add_done_callback(discovery_tasks.discard)
-                # Union, config first, so a hand-added URL keeps its position and a discovered one can
-                # only ever be additive. Dedup is backend_urls' job for the config half; this repeats it
+            secret_hash = ""
+            if channels is not None:
+                configured, secret_hash = channels
+                # Union, config first, so a hand-added URL keeps its position and a pushed one can only
+                # ever be additive. Dedup is backend_urls' job for the config half; this repeats it
                 # across the join because the same PR environment may legitimately be in both while an
                 # operator is mid-migration off the manual step.
                 seen = {url.strip().rstrip("/").lower() for url in configured}
-                urls = configured + [u for u in _discovered_urls() if u.strip().rstrip("/").lower() not in seen]
+                urls = configured + [u for u in _pushed_urls() if u.strip().rstrip("/").lower() not in seen]
             if urls is not None:
                 if known != set(urls):
                     # Only on a change, so a steady relay logs this once at startup rather than every
@@ -982,27 +1043,20 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
                     )
                     _warn_if_no_primary(urls)
                     known = set(urls)
-                await _reconcile(urls)
+                await _reconcile(urls, secret_hash)
             if stop_event is not None and stop_event.is_set():
                 return
-            if stop_event is None:
-                await asyncio.sleep(CHANNEL_RECONCILE_SECONDS)
-            else:
-                # Wait on the event rather than sleeping through it, so shutdown is not held up for
-                # most of a tick.
-                try:
-                    await asyncio.wait_for(stop_event.wait(), CHANNEL_RECONCILE_SECONDS)
-                except asyncio.TimeoutError:
-                    pass
-                if stop_event.is_set():
-                    return
+            # Wait rather than sleeping through the interval, so neither a shutdown nor a pushed
+            # channel list is held up for most of a tick.
+            await _wait_for_next_tick(stop_event, wake)
+            if stop_event is not None and stop_event.is_set():
+                return
     finally:
+        _wake = None
         # Reap them rather than just cancelling: cli.py cancels THIS task on shutdown, and a bare
         # cancel() would leave the children pending as the loop closes ("Task was destroyed but it is
         # pending"). CancelledError is a BaseException, so a cancelled child is not logged above.
-        # Discovery reads are reaped the same way and for the same reason - one can be sitting in a
-        # ten second HTTP timeout when shutdown arrives.
-        children = list(tasks.values()) + list(discovery_tasks)
+        children = list(tasks.values())
         for task in children:
             task.cancel()
         await asyncio.gather(*children, return_exceptions=True)

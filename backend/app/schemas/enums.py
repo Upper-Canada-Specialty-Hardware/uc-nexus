@@ -48,6 +48,9 @@ from app.models.enums import (
     ReceiveDraftStatus as ReceiveDraftStatusDB,
 )
 from app.models.enums import (
+    RelayEventKind as RelayEventKindDB,
+)
+from app.models.enums import (
     ReturnDisposition as ReturnDispositionDB,
 )
 from app.models.enums import (
@@ -92,6 +95,7 @@ DeficiencyResolution = strawberry.enum(DeficiencyResolutionDB)
 DeficientItemSource = strawberry.enum(DeficientItemSourceDB)
 ReturnDisposition = strawberry.enum(ReturnDispositionDB)
 ReceiveDraftStatus = strawberry.enum(ReceiveDraftStatusDB)
+RelayEventKind = strawberry.enum(RelayEventKindDB)
 
 
 # GraphQL-only enums (not stored in database)

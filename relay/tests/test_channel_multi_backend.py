@@ -87,10 +87,12 @@ def test_only_production_is_unrestricted():
     assert channel_allowed_companies("ws://localhost:8000/relay-link") == NON_PRIMARY_ALLOWED_COMPANIES
 
 
-def test_the_sandbox_pin_is_tubc_only():
+def test_the_sandbox_pin_is_sandboxes_only():
     # The whole reason a test channel may write to GP at all. If this list ever grows past the
-    # sandbox, the risk argument in channel.py's docstring no longer holds.
-    assert NON_PRIMARY_ALLOWED_COMPANIES == ["TUBC"]
+    # sandboxes, the risk argument in channel.py's docstring no longer holds - so it is pinned here
+    # rather than left to whatever someone edits it to.
+    assert NON_PRIMARY_ALLOWED_COMPANIES == ["TUBC", "TUCSH"]
+    assert not {"UBC", "UCSH"} & set(NON_PRIMARY_ALLOWED_COMPANIES)
 
 
 # --- dispatch gate ---------------------------------------------------------------------------------
@@ -103,21 +105,22 @@ def _sentinel_op(monkeypatch):
     return calls
 
 
-@pytest.mark.parametrize("company", ["TUCSH", "UBC", "UCSH"])
-def test_a_test_channel_refuses_every_company_but_the_sandbox(monkeypatch, company):
+@pytest.mark.parametrize("company", ["UBC", "UCSH", "TUCA"])
+def test_a_test_channel_refuses_every_company_but_the_sandboxes(monkeypatch, company):
     calls = _sentinel_op(monkeypatch)
     reply = channel._dispatch("spy_op", company, {}, channel_allowed_companies(PR_URL))
     assert reply["ok"] is False
     assert reply["error"]["error"] == "company_not_allowed_on_channel"
-    assert reply["error"]["context"] == {"company": company, "allowed": ["TUBC"]}
+    assert reply["error"]["context"] == {"company": company, "allowed": ["TUBC", "TUCSH"]}
     assert calls == []  # refused BEFORE the handler ran - nothing reached GP
 
 
-def test_a_test_channel_serves_reads_against_the_sandbox(monkeypatch):
+@pytest.mark.parametrize("company", ["TUBC", "TUCSH"])
+def test_a_test_channel_serves_reads_against_the_sandboxes(monkeypatch, company):
     calls = _sentinel_op(monkeypatch)
-    reply = channel._dispatch("spy_op", "TUBC", {}, channel_allowed_companies(PR_URL))
+    reply = channel._dispatch("spy_op", company, {}, channel_allowed_companies(PR_URL))
     assert reply == {"ok": True, "result": {"ok": 1}}
-    assert calls == ["TUBC"]
+    assert calls == [company]
 
 
 def test_a_test_channel_also_serves_WRITES_against_the_sandbox(monkeypatch):
@@ -321,6 +324,126 @@ def test_a_config_that_will_not_parse_leaves_the_running_channels_alone(
     assert PR_URL in states
 
 
+# --- re-enrolment (the secret changing under a live channel) ----------------------------------------
+# _run_channel re-reads the secret before every dial, so a channel that is DOWN heals itself. A
+# CONNECTED one holds a socket authenticated with the old secret and would never dial again to find
+# out - which reads as "enrolled fine, still not working" and used to need a serve restart.
+
+
+def test_a_re_enrolment_restarts_the_running_channels(monkeypatch, tmp_path, caplog, clean_channel_states):
+    started: list[str] = []
+    cancelled: list[str] = []
+
+    async def fake_run_channel(url, stop_event=None):
+        started.append(url)
+        try:
+            await _forever()
+        except asyncio.CancelledError:
+            cancelled.append(url)
+            raise
+
+    monkeypatch.setattr(channel, "_run_channel", fake_run_channel)
+    cfg = _use_backend_urls(monkeypatch, tmp_path, [PRODUCTION_BACKEND_URL])
+
+    async def run():
+        stop, task = _start_supervisor(monkeypatch)
+        await _tick()
+        assert started == [PRODUCTION_BACKEND_URL]
+
+        _write_backend_urls(cfg, [PRODUCTION_BACKEND_URL], secret="re-enrolled")
+        await _tick()
+        observed = (list(started), list(cancelled))
+        await _stop(stop, task)
+        return observed
+
+    with caplog.at_level(logging.WARNING):
+        started_urls, cancelled_urls = asyncio.run(run())
+    assert cancelled_urls == [PRODUCTION_BACKEND_URL]
+    assert started_urls == [PRODUCTION_BACKEND_URL, PRODUCTION_BACKEND_URL]  # torn down, then re-dialled
+    assert any(getattr(r, "category", None) == "secret_changed" for r in caplog.records)
+
+
+def test_a_removed_url_is_retired_rather_than_restarted_when_the_secret_also_changed(
+    monkeypatch, tmp_path, clean_channel_states
+):
+    # One edit can do both (re-enrol and drop a PR URL). Restarting the channel that is on its way out
+    # would leave its /health row behind, listing a backend nobody is dialling.
+    started: list[str] = []
+
+    async def fake_run_channel(url, stop_event=None):
+        started.append(url)
+        await _forever()
+
+    monkeypatch.setattr(channel, "_run_channel", fake_run_channel)
+    cfg = _use_backend_urls(monkeypatch, tmp_path, [PRODUCTION_BACKEND_URL, PR_URL])
+
+    async def run():
+        stop, task = _start_supervisor(monkeypatch)
+        await _tick()
+        _write_backend_urls(cfg, [PRODUCTION_BACKEND_URL], secret="re-enrolled")
+        # The restart and the retirement each await their own cancellation, so this reconcile takes
+        # more turns of the loop than a plain one.
+        await _tick()
+        await _tick()
+        observed = (list(started), dict(channel._STATES))
+        await _stop(stop, task)
+        return observed
+
+    started_urls, states = asyncio.run(run())
+    assert started_urls.count(PR_URL) == 1  # never re-dialled
+    assert PR_URL not in states  # and its row went with it
+    assert PRODUCTION_BACKEND_URL in states
+
+
+def test_an_unchanged_secret_leaves_the_channels_alone(monkeypatch, tmp_path, clean_channel_states):
+    # The supervisor re-reads config.toml every few seconds; restarting on each read would drop the
+    # backend connection continuously.
+    started: list[str] = []
+
+    async def fake_run_channel(url, stop_event=None):
+        started.append(url)
+        await _forever()
+
+    monkeypatch.setattr(channel, "_run_channel", fake_run_channel)
+    _use_backend_urls(monkeypatch, tmp_path, [PRODUCTION_BACKEND_URL, PR_URL])
+
+    async def run():
+        stop, task = _start_supervisor(monkeypatch)
+        for _ in range(5):
+            await _tick()
+        await _stop(stop, task)
+
+    asyncio.run(run())
+    assert started == [PRODUCTION_BACKEND_URL, PR_URL]
+
+
+def test_a_config_that_will_not_parse_never_reads_as_a_changed_secret(monkeypatch, tmp_path, clean_channel_states):
+    # A save caught mid-write has no readable secret at all, and treating that as "it changed" would
+    # bounce production's channel every time somebody edits the file.
+    cancelled: list[str] = []
+
+    async def fake_run_channel(url, stop_event=None):
+        try:
+            await _forever()
+        except asyncio.CancelledError:
+            cancelled.append(url)
+            raise
+
+    monkeypatch.setattr(channel, "_run_channel", fake_run_channel)
+    cfg = _use_backend_urls(monkeypatch, tmp_path, [PRODUCTION_BACKEND_URL])
+
+    async def run():
+        stop, task = _start_supervisor(monkeypatch)
+        await _tick()
+        cfg.write_text('[channel]\nbackend_url = ["wss://half-writ', encoding="utf-8")
+        await _tick()
+        observed = list(cancelled)
+        await _stop(stop, task)
+        return observed
+
+    assert asyncio.run(run()) == []
+
+
 async def _forever() -> None:
     """Stand in for a healthy channel: _run_channel never returns on its own."""
     await asyncio.Event().wait()
@@ -353,9 +476,11 @@ async def _supervise_for_one_tick(monkeypatch) -> None:
     await _stop(stop, task)
 
 
-def _write_backend_urls(cfg: Path, urls: list[str]) -> None:
+def _write_backend_urls(cfg: Path, urls: list[str], secret: str = "s3cret") -> None:
     rendered = ", ".join(f'"{u}"' for u in urls)
-    cfg.write_text(f'[auth]\nshared_secret = "s3cret"\n\n[channel]\nbackend_url = [{rendered}]\n', encoding="utf-8")
+    cfg.write_text(
+        f'[auth]\nshared_secret = "{secret}"\n\n[channel]\nbackend_url = [{rendered}]\n', encoding="utf-8"
+    )
 
 
 def _use_backend_urls(monkeypatch, tmp_path, urls: list[str]) -> Path:
@@ -476,7 +601,7 @@ def test_run_once_threads_the_sandbox_pin_into_dispatch_on_a_test_channel(monkey
         await channel._run_once(PR_URL, "secret", channel.get_settings().channel)
         return seen
 
-    assert asyncio.run(run()) == [["TUBC"]]
+    assert asyncio.run(run()) == [NON_PRIMARY_ALLOWED_COMPANIES]
 
 
 def test_run_once_leaves_the_production_channel_unrestricted(monkeypatch, clean_channel_states):
@@ -606,3 +731,10 @@ def test_the_refusal_message_reads_as_prose_not_a_python_list():
     reply = channel._dispatch("list_vendors", "UCSH", {}, ["TUBC"])
     assert "['TUBC']" not in reply["error"]["message"]
     assert "only TUBC is" in reply["error"]["message"]
+
+
+def test_the_refusal_message_reads_as_a_sentence_with_two_sandboxes():
+    # The sandbox pin is a list, and "only TUBC, TUCSH is" is what a plain join produces - in the
+    # browser, on the error the user actually sees.
+    reply = channel._dispatch("list_vendors", "UCSH", {}, NON_PRIMARY_ALLOWED_COMPANIES)
+    assert "only TUBC and TUCSH are" in reply["error"]["message"]

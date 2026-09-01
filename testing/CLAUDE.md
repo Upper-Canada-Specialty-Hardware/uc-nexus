@@ -2,11 +2,12 @@
 
 This is a tester's knowledge journal for UC Nexus. It documents how the app works from a front-end user's perspective and how to drive it via Chrome DevTools MCP.
 
-> **Setting an environment up is a different document: [PR-ENVIRONMENT.md](PR-ENVIRONMENT.md).**
-> Getting a PR environment into a state you can click through - the relay channel above all, without
-> which there are no projects and so almost nothing is reachable - lives there, with a runbook and
-> `scripts/connect-pr-env.ps1`. Read it first; this file is what you need *during* a session, not
-> what you do to start one.
+> **What a PR environment is and is not is a different document:
+> [PR-ENVIRONMENT.md](PR-ENVIRONMENT.md).** There is no setup left - every non-draft PR gets a built
+> environment with a connected fixture relay and a sign-in link in one PR comment - so that file is now
+> what the environment can show you (a stub relay is not GP), how to hand one to the real workstation
+> relay, and how to read a red `preview-env` check. Read it first; this file is what you need *during*
+> a session, not what you do to start one.
 
 **Maintain this file:** Update it when you discover new behaviors, gotchas, or workflows during testing. This is a living document that grows with each testing session.
 
@@ -28,14 +29,7 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 > true production created alongside; the agent-side rule does not change at any point in that
 > evolution.
 
-- **Railway PR environments, a.k.a. "Preview Environments" (the testing target)** (ENABLED 2026-07-29, `prDeploys` on the project; bot PRs like dependabot deliberately excluded): every non-draft PR gets a full ephemeral replica (frontend + backend + fresh empty Postgres, migrated on boot) named `uc-nexus-pr-<N>`. Do not wait for a Railway bot comment - none was observed; the URLs are derivable: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Substitute them into the sign-in flow below; verified live on PR #401 (`/health` 200, `/testing/clerk-sign-in` mints tokens, GraphQL serves the fresh DB). Data starts empty; seed via the import fixture. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **That inheritance is a copy taken when the environment is created, not a live link** (#431): a variable added to production afterwards never reaches a PR environment that already exists, so set it on that environment's own backend service too and let it redeploy. Found the hard way with `RELAY_SEED_SECRET_HASH` on pr-430 - see the relay section below. **A PR that only touches one service's directory only deploys that service in its environment** (root-directory change filtering - PR #401 was backend-only and the frontend showed `latestDeployment: null`). The missing service shows one `SKIPPED` deployment and its `/health` 404s. **A PR touching NEITHER `backend/` nor `frontend/` - a relay-only or docs-only one - leaves the whole environment unbuilt, Postgres included**, and the backend then dies on `could not translate host name "postgres.railway.internal"`, which reads like a networking fault rather than a service that was never started. **The `preview-env` workflow now guarantees all three services** (`.github/workflows/preview-env.yml`, preview-env autonomy plan): on every non-draft push it force-deploys, over the Railway API, any of Postgres / backend / frontend that has no successful deployment in the environment - Postgres first, the backend only after Postgres is up, then the frontend - and posts the "test environment ready" comment when they answer. So an unbuilt environment is self-correcting, and everything below is the MANUAL FALLBACK for a red `preview-env` check. Check the database first: `railway deployment list --service Postgres` returning nothing at all is the tell. Fix it from the CLI, in this order, no dashboard and no raw API call:
-
-```
-railway redeploy --project <id> --environment uc-nexus-pr-<N> --service Postgres --from-source -y
-railway redeploy --project <id> --environment uc-nexus-pr-<N> --service backend  --from-source -y
-```
-
-`--from-source` matters - a plain `redeploy` re-runs the last deployment, and on a service that never deployed there is nothing to re-run. Database first, and then **wait for Postgres to be accepting connections, not merely deployed**: firing the backend 28 seconds behind it got `connection to server at "postgres.railway.internal" ... Connection timed out`, a different failure from the DNS one and equally misleading, because by then the name resolves fine. Give it a minute, or just redeploy the backend again. Hit on a relay-only PR, 2026-08-10.
+- **Railway PR environments, a.k.a. "Preview Environments" (the testing target)**: every non-draft PR gets a full ephemeral replica named `uc-nexus-pr-<N>` - frontend, backend, a fresh empty Postgres migrated on boot, and its own `relay-stub-pr-<N>`. `.github/workflows/preview-env.yml` builds all four and posts one "test environment ready" comment; Railway's own PR-deploy toggle is off, so nothing else creates or deploys anything in there. Do not wait for a Railway bot comment - none was ever observed; the URLs are derivable anyway: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. Data starts empty; seed via the import fixture. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **That inheritance is a copy taken when the environment is forked, not a live link** (#431): a variable added to production afterwards never reaches an environment that already exists, so set it on that environment's own backend service too and let it redeploy. **The old build failure modes are gone and should not be re-derived from an old session note**: root-directory change filtering leaving a service `SKIPPED` and 404ing, a relay-only or docs-only PR leaving the whole environment unbuilt with the backend dying on `could not translate host name "postgres.railway.internal"`, and the `railway redeploy --from-source` dance that recovered them. The workflow deploys every service for the PR head commit and waits on the deployment id it created, so a red `preview-env` check means a build or a boot failed - read the run log for the deployment id it named. Re-running the workflow is the retry.
 
 Environments auto-delete when the PR closes, **so never merge the PR whose environment you are testing in** - it disappears mid-session and every fetch starts failing for a reason that looks like a network fault.
 - **Local (manual fallback)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Run the backend with `poetry run uvicorn main:app --reload` (from `backend/`) and the frontend with `npm run dev` (from `frontend/`). Needs a local Postgres (not provided; the worktree-localdev adoption was dropped).
@@ -97,25 +91,38 @@ Consequences when driving the app by script:
 - `require_admin` costs a Clerk Backend API round-trip per call (`require_user` does not), so a page
   hitting several admin resolvers at once is legitimately slower than the equivalent user page.
 
-### Inventory can only be seeded through the relay - check this first
+### Inventory can only be seeded through the relay, and a preview has one by default
 
 **Nothing puts new hardware into inventory except `createReceive`, and `createReceive` is
-unconditionally GP-first through the on-prem relay.** If the relay is down there is no supported way
-to seed stock, and every scenario downstream of "hardware exists" (approve a pull, stage a cart,
-assemble a leaf, flag a deficiency, ship) is unrunnable. Do not improvise a workaround - re-scope the
-session instead. Establish this in the first minute:
+unconditionally GP-first through the relay.** With no relay there is no supported way to seed stock,
+and every scenario downstream of "hardware exists" (approve a pull, stage a cart, assemble a leaf,
+flag a deficiency, ship) is unrunnable. Establish this in the first minute:
 
 ```
 { relayStatus { connected company build } }
 { inventoryRows { inventoryLocation { hardwareCategory quantity } } }
 ```
 
-**The relay runs on a separate GP-credentialed workstation, already enrolled and already pointed at
-the PR environments. Never install, start, or configure one on the machine your session runs on** -
-`%LOCALAPPDATA%\UCNexusRelay` being absent and `127.0.0.1:7321` being closed are the expected state
-here, not a dependency to satisfy. `connected: false` is a state on somebody else's machine: report
-it and ask. Setting one up locally cannot work anyway, because this box is not domain-joined and
-cannot authenticate to GP SQL. Full rule in
+**A preview environment ships its own relay.** `preview-env` builds a `relay-stub-pr-<N>` service from
+`relay/` in this repo, running `UCNEXUS_RELAY_MODE=fixture` for TUBC and TUCSH, and `relay_connected`
+on `<backend>/health` is the workflow's own readiness gate - so a green `preview-env` check already
+means `relayStatus.connected: true`. `connected: false` on a preview you did not hand to the real relay
+is a workflow or a stub problem, not a state on somebody else's machine: read the `preview-env` run log
+first.
+
+**A fixture answer is not a GP answer.** The stub replies out of fixtures instead of an eConnect round
+trip, so what it exercises is the plumbing and the relay-connected half of the UI, not GP. Whether a
+given op has a fixture behind it is the stub's business (`relay/`); an op with none fails like any
+other relay error, which puts the app in its relay-ERROR state rather than its relay-down one.
+Anything whose point is that GP really holds the row - a GP-minted PO number, a PM00200 vendor stamp,
+a posted receipt - needs the real workstation relay (`PREVIEW_REAL_RELAY=1`, see
+[PR-ENVIRONMENT.md](PR-ENVIRONMENT.md)).
+
+**The real relay runs on a separate GP-credentialed workstation. Never install, start, or configure one
+on the machine your session runs on** - `%LOCALAPPDATA%\UCNexusRelay` being absent and
+`127.0.0.1:7321` being closed are the expected state here, not a dependency to satisfy. Setting one up
+locally cannot work anyway, because this box is not domain-joined and cannot authenticate to GP SQL.
+Full rule in
 [PR-ENVIRONMENT.md](PR-ENVIRONMENT.md#the-relay-is-on-another-machine-never-stand-one-up-locally).
 
 `connected: false` plus `inventoryRows: []` is the signature (the old `inventoryHierarchy` probe was
@@ -123,22 +130,22 @@ deleted with the accordion queries). Confirm it from the backend side
 with `relayInstalls { label enrolled enrolledAt lastSeenAt }` and the Railway backend deploy log:
 
 - A relay that is **running but not trusted** logs `"WebSocket /relay-link" 403` every ~30s forever.
-  The workstation is dialling out fine; the backend is refusing the handshake.
+  Something is dialling out fine; the backend is refusing the handshake. On a preview that means the
+  stub's `UCNEXUS_RELAY_SHARED_SECRET` and the backend's `RELAY_STUB_SECRET_HASH` disagree. The
+  workflow sets those two as a pair, so a mismatch means one side was hand-edited, or one of the two
+  services is still serving a deployment that predates the other's variable.
 - **Not dialling at all reads differently from being refused, and the pair of signals settles it in
   one minute.** A seeded environment always has its install row, so the row existing proves nothing;
   read `lastSeenAt` next to the deploy log. `lastSeenAt: null` on a `seed:uc-nexus-pr-<N>` row means
   no handshake has EVER succeeded there, and if the deploy log also carries **zero** `/relay-link`
   lines - not 403s, none at all - then nothing is dialling this backend and the cause is upstream of
-  auth: the URL is not in the relay workstation's `extra_backend_urls`, or the relay is stopped.
-  A 403 cadence with the same null `lastSeenAt` would instead mean it is dialling and presenting the
-  wrong secret. Observed on pr-554, 2026-08-09: row `seed:uc-nexus-pr-554` (TUBC, enrolled,
-  `lastSeenAt: null`), zero `/relay-link` lines across the deployment, `relayStatus.connected: false`,
-  `projects: []`. That was the not-dialling signature, and at the time it meant a human had not added
-  the URL on the workstation. **Since channel discovery it should not happen at all**: production
-  serves the live preview list at `/relay-channels` and the relay picks a new environment up within a
-  minute or two. So the same signature now means discovery is off or failing, and the first thing to
-  check is whether `RAILWAY_API_TOKEN` is set on the PRODUCTION backend - without it the route
-  correctly answers an empty list and every preview environment stays dark.
+  auth. Observed on pr-554, 2026-08-09, back when a human had to add the URL on the workstation by
+  hand: row `seed:uc-nexus-pr-554` (TUBC, enrolled, `lastSeenAt: null`), zero `/relay-link` lines
+  across the deployment, `relayStatus.connected: false`, `projects: []`. On a preview today that same
+  signature means the stub is missing, crashed, or pointed at the wrong backend - check that
+  `relay-stub-pr-<N>` exists in the environment and read its own deploy log. The stub runs with
+  `UCNEXUS_RELAY_LOG_FILE=-`, so its relay log IS the Railway deploy log, which is the one thing the
+  workstation relay could never give you from here.
 - **Prove the log records a refusal before you trust its silence.** "No `/relay-link` lines" only
   means "nobody dialled" if a dial would have left a line, and an empty log is equally consistent
   with logging being broken or the edge never routing the upgrade. Settle it in one shot by dialling
@@ -151,12 +158,13 @@ with `relayInstalls { label enrolled enrolledAt lastSeenAt }` and the Railway ba
   Then re-read the log. Exactly one new `"WebSocket /relay-link" 403` proves the endpoint is live,
   the edge passes the upgrade through, and refusals are recorded - so the zero lines before it are
   real evidence rather than an artefact. On pr-554 this turned "probably not dialling" into proof.
-- **Check the seed hash matches production's before blaming the channel list.** The relay presents the
-  secret it enrolled with against production, so a PR environment whose `RELAY_SEED_SECRET_HASH`
-  drifted would dial and 403 forever. `railway variables --environment uc-nexus-pr-<N> --service
-  backend --json` against the same read on `production`, compared, rules that out in seconds. On
-  pr-554 they were byte-identical, which is what makes "not in `extra_backend_urls`" the remaining
-  explanation rather than one of two.
+- **Check which hash the environment is actually seeding before blaming anything else.** A preview
+  seeds ONE relay credential and `PREVIEW_REAL_RELAY` picks which: off (the default) seeds the stub's
+  `RELAY_STUB_SECRET_HASH`, on seeds `RELAY_SEED_SECRET_HASH`, the digest the workstation relay's own
+  secret matches. Set the variable on and leave the stub dialling and it 403s forever, correctly.
+  `railway variables --environment uc-nexus-pr-<N> --service backend --json` shows all three in one
+  read. On pr-554, back on the workstation-only path, `RELAY_SEED_SECRET_HASH` was byte-identical to
+  production's, which is what left "nobody is dialling" as the remaining explanation.
 - **`lastSeenAt == enrolledAt` is suggestive, NOT proof.** `last_seen_at` is written in two places:
   `enroll_install` (`relay_repository.py:70-71`) and `authenticate_secret` on a successful match
   (`:95`, committed by `main.py:170`). But `authenticate_secret` runs *only on the connect handshake* -
@@ -370,9 +378,11 @@ Two other things worth knowing when GP is refusing outright:
   answer is that it needs a relay-connected run, not a fabricated row.
 
   `GP_REGISTERED` now comes only from `registerPoInGp` (relay push, real PM00200 vendor) or
-  `create_po`'s GP-first branch for a caller already holding a GP result. So on a relay-less PR
-  environment there are no placed POs at all, and POs Awaiting Receipt, back-order reads and
-  receiving history are legitimately empty there.
+  `create_po`'s GP-first branch for a caller already holding a GP result. A preview has a relay by
+  default now, so that path is reachable there by clicking - what comes back is the stub's fixture,
+  not a GP row, and the vendor stamp is whatever the fixture carries. On a preview with no relay at
+  all there are still no placed POs, and POs Awaiting Receipt, back-order reads and receiving history
+  are legitimately empty.
 - The stock pool is not an escape hatch either: there is no `createStockItem`. Stock only enters
   through a receive, or out of project inventory via `destockInventory`, so it has the same root
   dependency.
@@ -415,9 +425,11 @@ caught two failures that all three stacked PRs were reporting as clean:
    ```
 1. **Sign in**: open the **"test environment ready"** comment the preview-env workflow posts on your
    PR and navigate its sign-in link. It is `<BACKEND>/testing/session?key=<K>` and needs nothing from
-   you - one navigation lands you on `/app`, signed in as the dedicated e2e account (Admin/Manager),
-   with projects already present. The link mints a fresh Clerk ticket on every visit, so it never goes
-   stale, survives a DevAction schema reset, and can be navigated again any time.
+   you - one navigation lands you on `/app`, signed in as the dedicated e2e account (Admin/Manager).
+   The link mints a fresh Clerk ticket on every visit, so it never goes stale, survives a DevAction
+   schema reset, and can be navigated again any time. The same comment carries the environment's relay
+   line - normally `relay: stub connected, companies TUBC, TUCSH` - so you know before you click
+   whether the GP-gated half of the app is reachable.
    ```js
    // straight from the comment - no token fetch, no secret to hold
    window.location.href = '<paste the session link from the PR comment>';
@@ -425,8 +437,8 @@ caught two failures that all three stacked PRs were reporting as clean:
    - Clerk auto-authenticates — no email, password, or verification code needed.
    - **No comment yet?** The workflow posts it once the environment is green (a couple of minutes after
      a non-draft push). A red `preview-env` check means the environment did not come up - the comment
-     it posts says which of backend/frontend/graphql failed, and [PR-ENVIRONMENT.md](PR-ENVIRONMENT.md)
-     is the diagnosis.
+     it posts says which of backend / relay / frontend / graphql / sign-in failed, and
+     [PR-ENVIRONMENT.md](PR-ENVIRONMENT.md) is the diagnosis.
    - The link is safe to reuse and safe to sit in a public comment: the e2e account it mints is
      **refused on production** (`app/auth._reject_e2e_account_in_production`), so it only ever opens
      this disposable preview.
@@ -813,12 +825,13 @@ A successful receive now refetches this page's own three reads, so a line the re
 the back-order grid without a manual reload; a queued receipt that drains later evicts
 `backOrderedItems` for the same reason. Before #416 a receive only refetched the inventory summaries.
 
-**A PR environment cannot populate either grid, and production is not the answer.** Both grids want
-POs at GP_REGISTERED or later, and `registerPoInGp` is relay-gated, so a fresh PR database shows "No
-purchase orders awaiting receipt" and "Nothing is back-ordered" no matter what you do. Reaching for
-production instead is the exact move the Environment section forbids.
+**Both grids want POs at GP_REGISTERED or later, and `registerPoInGp` is relay-gated.** Go through
+the preview's stub relay first - that is what it is for - and read the result honestly: a
+fixture-registered PO exercises the grids and the refetch wiring, it proves nothing about GP. If the
+op has no fixture behind it the grids stay empty however hard you click, and reaching for production
+instead is the exact move the Environment section forbids.
 
-Stub the GraphQL reads instead: from an `initScript`, intercept `window.fetch`, match the operation
+Stub the GraphQL reads instead, when it comes to that: from an `initScript`, intercept `window.fetch`, match the operation
 name in the request body (`GetOpenPOs` / `GetBackOrderedItems`) and return rows built from `new
 Date()` offsets. That drives the real components, which is enough to assert the column set, the
 "Stock PO" and em-dash fallbacks, and every urgency band in one pass.

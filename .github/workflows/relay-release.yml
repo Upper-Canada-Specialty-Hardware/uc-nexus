@@ -1,7 +1,7 @@
 name: Relay Release
 
 # builds the relay ONEDIR bundle on a Windows runner and publishes it as ucnexus-relay.zip.
-# - push to master touching "relay/**" -> builds + publishes an auto-versioned Release
+# - push to master touching "relay/**" -> builds + publishes an auto-versioned PRERELEASE
 # - push a tag like `relay-v0.1.0`               -> builds + attaches the zip to that GitHub Release
 # - run manually (workflow_dispatch)             -> builds + uploads the zip as a workflow artifact
 # path filters are not applied to tag pushes, so a `relay-v*` tag always builds regardless of what it touched.
@@ -116,9 +116,14 @@ jobs:
           gh release create "$TAG" --title "relay $TAG" --notes "UC Nexus relay build $TAG. install steps: relay/docs/relay-deployment.md" --verify-tag || true
           gh release upload "$TAG" dist/ucnexus-relay.zip --clobber
 
-      # A push to master that touched "relay/**" auto-publishes a build-numbered Release.
+      # A push to master that touched "relay/**" auto-publishes a build-numbered PRERELEASE.
       # The tag is created by GITHUB_TOKEN, which never re-triggers this workflow, so there's no loop.
-      - name: Publish auto-release (relay change on master)
+      #
+      # --prerelease, because the workstation follows STABLE releases: a merge to master must not move
+      # the enrolled relay onto a build nobody has decided to ship. Promote deliberately, once the build
+      # is the one you want the workstation running:
+      #   gh release edit <tag> --prerelease=false
+      - name: Publish auto-prerelease (relay change on master)
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
         shell: bash
         env:
@@ -126,5 +131,5 @@ jobs:
         run: |
           version=$(grep -E '^version' pyproject.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
           tag="relay-v${version}-build.${{ github.run_number }}"
-          gh release create "$tag" --target "${{ github.sha }}" --title "relay $tag" --notes "Auto-built from ${{ github.sha }} (relay change on master). install steps: relay/docs/relay-deployment.md" || true
+          gh release create "$tag" --target "${{ github.sha }}" --prerelease --title "relay $tag" --notes "Auto-built from ${{ github.sha }} (relay change on master). Prerelease: the workstation follows stable releases, so promote with \`gh release edit $tag --prerelease=false\` when this is the build to ship. install steps: relay/docs/relay-deployment.md" || true
           gh release upload "$tag" dist/ucnexus-relay.zip --clobber

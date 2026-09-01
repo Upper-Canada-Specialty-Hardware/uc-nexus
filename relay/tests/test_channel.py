@@ -484,6 +484,21 @@ def test_hello_frame_advertises_build_and_the_full_op_set():
     assert isinstance(frame["version"], str) and frame["version"]
 
 
+def test_hello_frame_names_the_companies_this_workstation_serves(monkeypatch):
+    # ops.check_company_allowed refuses anything outside [gp] allowed_companies, so a backend that does
+    # not know the list can only find that out by making the call and being told no.
+    from ucnexus_relay.config import GpCfg, Settings
+
+    monkeypatch.setattr(channel, "get_settings", lambda *a, **k: Settings(gp=GpCfg(allowed_companies=["TUBC", "UBC"])))
+    assert channel._hello_frame()["companies"] == ["TUBC", "UBC"]
+
+
+def test_hello_frame_advertises_the_channels_feature():
+    # How the backend knows this build will accept a pushed preview-channel list rather than treating
+    # the frame as an unknown job.
+    assert channel._hello_frame()["features"] == ["channels"]
+
+
 # --- push a project's site details onto its GP job (issue #497) ---
 
 

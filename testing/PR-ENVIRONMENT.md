@@ -1,245 +1,253 @@
-# Setting up a PR test environment
+# The PR test environment
 
-How to get a UC Nexus PR environment into a state you can actually click through, and what it can and
-cannot show you. Read this **before** a testing session; the module-by-module knowledge you need
-*during* one is in [CLAUDE.md](CLAUDE.md) alongside it.
+What a UC Nexus PR environment is, what it can and cannot show you, and how to read it when it does
+not come up. Read this **before** a testing session; the module-by-module knowledge you need *during*
+one is in [CLAUDE.md](CLAUDE.md) alongside it.
 
 Separate from that file on purpose: this is a procedure invalidated by infrastructure changes, and it
 went stale silently once already - it claimed for months that adding a relay channel needed a restart,
 which stopped being true at #456 and cost a session. Anything here that describes relay behaviour
 should cite the code it came from so a reader can check rather than trust.
 
-**Every open, non-draft PR gets an environment automatically**, cloned from production with a fresh
-empty database, at `https://frontend-uc-nexus-pr-<N>.up.railway.app` and
-`https://backend-uc-nexus-pr-<N>.up.railway.app`. Draft PRs do not get one.
+## There is nothing to set up
 
-**A fresh environment now configures itself, and the runbook below is diagnosis, not a checklist.**
-Open a non-draft PR, wait a couple of minutes for the `preview-env` workflow to go green, and it posts
-a "test environment ready" comment whose `/testing/session` link signs you in on `/app` with projects
-present - nothing set by hand. Three pieces make that true, all one-time setup already done on
-production: the `preview-env` workflow guarantees Postgres + backend + frontend are all built and mints
-the per-env sign-in key (`.github/workflows/preview-env.yml`, preview-env autonomy plan); the relay
-discovers preview environments (below); and GP job sync then adopts the projects. Verified self-config
-end to end on pr-558 (2026-08-10): `relayStatus` `connected: true` company TUBC, 22 GP projects synced.
-Read the rest for what to do when a piece is not working - a red `preview-env` check above all - rather
-than as steps to run per PR.
+**Every open, non-draft PR gets a built environment with a connected relay and a sign-in link.** Open
+the PR, wait for the `preview-env` check, and read its sticky comment. Draft PRs and bot PRs get
+nothing, by design - there would be nothing to sign into.
 
-For signing in, the agent path is the `/testing/session` link in that comment (it mints a dedicated
-e2e account and needs no secret from you). The human `/testing/clerk-sign-in` fallback, `TESTING_ENABLED`
-and the `X-Testing-Secret` header are in the Environment and Getting Started sections of
-[CLAUDE.md](CLAUDE.md); the runbook below refers to them rather than restating them.
+The comment carries four things:
 
-## The relay is on another machine. Never stand one up locally
+- the sign-in link, `<backend>/testing/session?key=<K>`. Navigate it once and you land on `/app` as the
+  dedicated e2e account (Admin/Manager). It mints a fresh Clerk ticket every visit, so it never goes
+  stale and survives a DevAction schema reset.
+- one relay line, normally `relay: stub connected, companies TUBC, TUCSH`.
+- one line on handing the environment to the real workstation relay (below).
+- the two URLs: `https://frontend-uc-nexus-pr-<N>.up.railway.app` and
+  `https://backend-uc-nexus-pr-<N>.up.railway.app`.
 
-**The relay does not run on the machine your session runs on, and you must never install, start, or
-configure one there.** It is a packaged Windows service on a separate GP-credentialed workstation, it
-is already enrolled, and it finds new PR environments by itself (see the discovery section below).
-Connecting it is not part of an agent's test loop.
+The environment is named `uc-nexus-pr-<N>`, NOT `pr-<N>` - the Railway CLI answers `Environment
+"pr-511" not found` for the latter, which reads like the environment is missing.
 
-Your entire relay responsibility is to **confirm the channel is up and then test through it**:
+**`.github/workflows/preview-env.yml` owns every build in it.** It forks the environment from
+production, repoints the forked deployment triggers at the PR branch, creates the relay stub service,
+sets the testing variables, and then deploys each of the four services for that PR head commit and
+waits on the deployment id it created. Railway is not asked to decide what to build, and the workflow
+reads no deployment it did not start. What follows is what the environment can show you, and how to
+read it when the check goes red - not a checklist to run per PR.
+
+## The relay is a fixture stub by default
+
+Each environment gets its own relay: a service named `relay-stub-pr-<N>`, built from `relay/` in this
+repo and running with `UCNEXUS_RELAY_MODE=fixture`. It dials the environment's own
+`/relay-link` and answers GP ops out of fixtures instead of a GP SQL connection, for **TUBC** and
+**TUCSH**. It has no public domain and nothing outside its environment can reach it.
+
+Confirm it the same way you always did:
 
 ```
 { relayStatus { connected company build } }
 ```
 
-`connected: true` with company TUBC means you are done thinking about the relay. `connected: false`
-means you report it and ask - it is a state on somebody else's machine, not a task in front of you.
+and from outside the app, `GET <backend>/health` answers `relay_connected` and `relay_companies` -
+that pair is the workflow's own readiness gate, so a green `preview-env` check already means the relay
+was connected when the comment was posted.
+
+What that buys you: the GP-connected half of the app is reachable by clicking. What it does not buy
+you is GP. **A fixture answer is not an eConnect write.** Anything whose point is that GP really holds
+the row - a PO number GP minted, a vendor stamped from PM00200, a receipt posted against a live
+purchase order - proves nothing against the stub. For those, hand the environment to the real relay.
+
+The stub is an ordinary service in the environment, so **the relay-down half of the app is still
+reachable**: remove `relay-stub-pr-<N>` from the environment in the Railway dashboard and the backend
+goes back to reporting `relay_connected: false`, until the next `preview-env` run rebuilds it. That
+half is worth testing on purpose - disabled controls, "not connected" copy, held values still
+displaying, the queued-write outbox - and it is awkward to reach on production without stopping the
+relay for everyone.
+
+## Handing an environment to the real relay
+
+Set `PREVIEW_REAL_RELAY=1` on that environment's **backend** service and redeploy. The workstation
+relay dials in within a couple of minutes. The next `preview-env` run deletes the stub service rather
+than rebuilding it - a stub left dialling a backend that now seeds the workstation relay's hash would
+403 every ~30s forever, which is the exact cadence you would otherwise diagnose a real relay fault
+by.
+
+```powershell
+railway variables --set "PREVIEW_REAL_RELAY=1" --environment uc-nexus-pr-<N> --service backend
+```
+
+The set prints nothing on success (verify with a `--json` read) and redeploys the backend, ~2 min.
+Then poll the same gate the workflow uses:
+
+```powershell
+Invoke-RestMethod "https://backend-uc-nexus-pr-<N>.up.railway.app/health"
+```
+
+`relay_connected: true` with the companies the workstation is enrolled for means you are through. To
+go back to the stub, remove the variable and re-run `preview-env` on the PR.
+
+Two things this path still depends on, both inherited from production at fork time and neither
+something to set per PR:
+
+- `PREVIEW_REGISTRY_SECRET` on the production backend. A preview with `PREVIEW_REAL_RELAY` on
+  announces itself to production's `/preview-channels` with that secret in an
+  `X-Preview-Registry-Secret` header (`app/services/preview_announce.py`); production holds the
+  announcements (`app/services/preview_registry.py`) and pushes the channel list down the socket the
+  relay already holds. Blank on either side closes the route with a 401 and the relay keeps dialling
+  production alone.
+- `RELAY_SEED_SECRET_HASH` on the production backend (#414). Relay installs live in Postgres and a PR
+  environment boots a fresh empty one, so the real relay's handshake would be refused 4403 without a
+  trusted install seeded at backend startup. Production itself refuses to seed and logs the refusal at
+  INFO, which is the intended steady state. `PREVIEW_REAL_RELAY` is what switches the seeded
+  credential from the stub's hash to this one, and the seeded install is pinned to
+  `RELAY_SEED_COMPANIES` (TUBC by default) - narrower than the stub's list on purpose, because this
+  one is a credential the production workstation relay also answers to.
+
+**Inheritance is a copy taken when the environment is forked, not a live link** (#431). A variable
+added to production afterwards never reaches an environment that already exists; set it on that
+environment's own backend service too and let it redeploy.
+
+## The relay is on another machine. Never stand one up locally
+
+**The workstation relay does not run on the machine your session runs on, and you must never install,
+start, or configure one there.** It is a packaged Windows service on a separate GP-credentialed
+workstation and it is already enrolled. The stub above is a container in Railway, not a relay on your
+box, and the `PREVIEW_REAL_RELAY` handoff is a Railway variable, not a visit to that workstation.
 
 What that rules out, because each of these has burned a session:
 
-- Do not look for `%LOCALAPPDATA%\UCNexusRelay` here. Its absence is the expected state, not a
-  missing dependency.
+- Do not look for `%LOCALAPPDATA%\UCNexusRelay` here. Its absence is the expected state, not a missing
+  dependency.
 - Do not read "nothing listening on `127.0.0.1:7321`" as a fault. That port is only ever open on the
-  relay workstation; the relay binds to localhost *there*, which is the whole reason the WebSocket
-  channel to Railway exists.
+  relay workstation.
 - Do not install a relay to "unblock testing". One without GP credentials connects and then fails
   every op, which is strictly worse than being honestly disconnected. This dev box is not
   domain-joined and cannot authenticate to GP SQL at all.
-- Do not edit a `config.toml` you had to create.
+- Do not edit a `config.toml` you had to create. Editing `[channel] extra_backend_urls` on the
+  workstation is no longer how a preview gets a relay, and `backend_url` is never touched by anybody:
+  production's URL comes from the relay's baked default, and retyping it with one character wrong
+  silently demotes the production channel to the TUBC sandbox pin (see the safety note in #414).
 
-**In a hurry, and only when sitting at the relay workstation:** `testing/scripts/connect-pr-env.ps1
-<PR#>` does the hookup and reports whether it worked. It edits a file that exists on that one
-machine, so running it anywhere else fails at its channel step by design. The rest of this file is
-what it does and how to diagnose it when it does not.
+`connected: false` on an environment you did not hand to the real relay is a workflow or a stub
+problem, not somebody else's machine - read the run log. `connected: false` on one you DID hand over
+is a state on that workstation: report it and ask.
 
-## The relay discovers PR environments on its own
+## A red preview-env check
 
-Production answers `GET /relay-channels` with the preview environments that exist right now, read from
-the Railway API; the relay asks about once a minute and unions the answer with its config file. So a
-new PR environment gets a GP channel without anybody touching the workstation, and a closed one is
-retired the same way.
+Every deployment in the environment was created by the workflow and waited on by id, so a red check
+means a build or a boot failed - there is no "Railway skipped a service" shape left, and no CLI
+redeploy dance to run. The comment names which gate failed (backend, relay, frontend, graphql,
+sign-in) and the run log names the deployment id it was waiting on; open that deployment in Railway
+and read its build and runtime logs.
 
-Setup, once, ever: `RAILWAY_API_TOKEN` on the **production** backend service, nowhere else - a preview
-environment must not be able to advertise other preview environments, so a backend without the token
-answers an empty list, which is the correct answer everywhere but production.
+Re-running the workflow is the retry. It is idempotent: it resolves the environment it already made,
+reuses the session key out of its own comment, reuses the stub secret when the backend already carries
+its hash, and reuses a deployment that already carries this commit rather than building it again.
 
-Make it a **workspace** token, at [railway.com/account/tokens](https://railway.com/account/tokens)
-with the workspace picked in the dropdown. Railway has three kinds and the other two do not fit: an
-account token reaches everything the account can, and a **project token cannot be used here at all** -
-it authenticates with a `Project-Access-Token` header rather than `Authorization: Bearer`, and it is
-scoped to a single environment, so it could neither authenticate the call nor see the siblings this
-whole feature is about. Railway has no read-only scope on any of them; nothing in this path ever
-issues a mutation, but the token is write-capable and belongs on production alone.
+Two failures worth naming, because they have their own handling and their own log lines:
 
-Verify it before setting it, because a bad token fails silently into an empty list. PowerShell, since
-that is the shell on the machines this gets run from - **not** the curl one-liner you may reach for
-first. Single-quoted JSON does not survive PowerShell's native-command argument parsing, and Railway
-answers `invalid JSON, only supports object and array`, which reads like a bad token rather than a
-mangled body:
+- **A forked environment comes up with no Postgres volume.** Railway's environment duplication copies
+  services and variables but drops the volume stanzas, so Postgres crash-loops on `Railway volume not
+  mounted` while its deployment still reads SUCCESS. The workflow detects that line in the
+  deployment's runtime logs, creates the volume, and redeploys. If even a fresh fork cannot be healed
+  it posts "stranded by Railway provisioning" and fails; re-run to retry.
+- **The sign-in link never reaches 302.** `/testing/session` answers 302 only when the key hash is
+  live on the *running* backend and the Clerk mint works, so it is the probe that proves the
+  handed-out link rather than `/health`. `E2E_CLERK_USER_ID` unset on the environment is the usual
+  cause; the human `/testing/clerk-sign-in` fallback is in the Getting Started section of
+  [CLAUDE.md](CLAUDE.md).
 
-```powershell
-$body = @{
-  query     = 'query($id:String!){ environments(projectId:$id){ edges{ node{ name } } } }'
-  variables = @{ id = '<PROJECT_ID>' }
-} | ConvertTo-Json -Depth 5
+**Never merge the PR whose environment you are testing in** - `preview-env-cleanup.yml` deletes the
+environment on close, mid-session, and every fetch then fails for a reason that looks like a network
+fault.
 
-Invoke-RestMethod -Uri 'https://backboard.railway.com/graphql/v2' -Method Post `
-  -ContentType 'application/json' -Headers @{ Authorization = 'Bearer <TOKEN>' } `
-  -Body $body | ConvertTo-Json -Depth 8
-```
+## One-time ops, outside any PR
 
-It should list `production` alongside every `uc-nexus-pr-<N>`. An `errors` array instead means the
-token type is wrong or the project id is.
+None of this is created by a PR and none of it is per-PR work. It is recorded here because each piece
+fails silently when it is missing.
 
-What keeps this safe, given a network answer now decides what a GP-credentialed process dials:
+- **Repo secret `RAILWAY_WORKSPACE_TOKEN` and repo variable `RAILWAY_PROJECT_ID`.** Make the token a
+  **workspace** token, at [railway.com/account/tokens](https://railway.com/account/tokens) with the
+  workspace picked in the dropdown. A **project token cannot be used here at all** - it authenticates
+  with a `Project-Access-Token` header rather than `Authorization: Bearer` and is scoped to one
+  environment, so it could neither authenticate the call nor see the siblings this whole workflow is
+  about. Railway has no read-only scope on any token type.
 
-- The relay accepts only `wss://backend-uc-nexus-pr-<N>.up.railway.app/relay-link`, anchored and
-  literal apart from the number. No answer can name an arbitrary host.
-- A discovered channel is never the primary one. `is_primary_backend_url` decides that by identity
-  against the relay's own baked-in production URL, so everything discovered inherits the TUBC sandbox
-  pin. The worst a bad entry can do is offer a channel that may only touch the sandbox company.
-- Discovery only ADDS. It cannot remove or reorder what `config.toml` names, and it cannot switch
-  itself on where the token is absent.
-- A backend that cannot be reached leaves the last known list in place, so a blip does not tear down
-  live channels. `discover_preview_backends = false` under `[channel]` turns it off entirely.
+  Verify a token before setting it, because a bad one fails into an empty list rather than an error.
+  PowerShell, since that is the shell on the machines this gets run from - **not** the curl one-liner
+  you may reach for first. Single-quoted JSON does not survive PowerShell's native-command argument
+  parsing, and Railway answers `invalid JSON, only supports object and array`, which reads like a bad
+  token rather than a mangled body:
 
-`extra_backend_urls` is still there and still the right tool for a backend discovery cannot know about
-- a local dev backend, or anything outside this Railway project.
+  ```powershell
+  $body = @{
+    query     = 'query($id:String!){ environments(projectId:$id){ edges{ node{ name } } } }'
+    variables = @{ id = '<PROJECT_ID>' }
+  } | ConvertTo-Json -Depth 5
 
-## A PR environment is relay-disconnected by default, and that is useful
+  Invoke-RestMethod -Uri 'https://backboard.railway.com/graphql/v2' -Method Post `
+    -ContentType 'application/json' -Headers @{ Authorization = 'Bearer <TOKEN>' } `
+    -Body $body | ConvertTo-Json -Depth 8
+  ```
 
-By default a PR environment always reports `relayStatus.connected: false`, and no amount of waiting
-changes it. Two independent reasons, both addressed by #414 but neither automatic:
+  It should list `production` alongside every `uc-nexus-pr-<N>`. An `errors` array instead means the
+  token type is wrong or the project id is.
+- **`E2E_CLERK_USER_ID` on the production backend**, so every fork inherits it. It names the dedicated
+  e2e account the sign-in link mints - not a person, Admin/Manager, and refused on production
+  (`app/auth._reject_e2e_account_in_production`), which is what makes the link safe to sit in a public
+  PR comment.
+- **`PREVIEW_TESTING_SIGN_IN_SECRET_HASH` on the production backend**, inherited by every fork, for the
+  human `/testing/clerk-sign-in` fallback. `TESTING_SIGN_IN_SECRET_HASH` stays unset on production on
+  purpose: production resolves to no digest however many of these it holds, which is what makes
+  storing the inherited one there safe.
+- **`PREVIEW_REGISTRY_SECRET` on the production backend.** The `PREVIEW_REAL_RELAY` handoff above
+  depends on it. It belongs on production only, for the same reason the old `RAILWAY_API_TOKEN` did: a
+  preview environment must not be able to speak for the whole project.
+- **Delete `RAILWAY_API_TOKEN` from the production backend.** It powered `GET /relay-channels`, the
+  discovery route the workstation relay polled to find preview environments and dial them on its own.
+  The stub replaces that for the default case and the announce/push pair above replaces it for the
+  real-relay case, so a write-capable Railway token no longer has to sit on a public-facing service.
+  Discovery was fragile in its own right: the poll carried a second copy of the relay credential that
+  could drift from the one the live socket had already proven, which is how #654 left every fresh
+  preview relay-dark while the socket itself was healthy - and a token that stopped working returned
+  an empty list, indistinguishable from "every PR closed".
+- **Switch Railway's own PR-environments toggle (`prDeploys`) off**, once this is on master. The
+  workflow forks every environment itself and `preview-env-cleanup.yml` deletes it on close (Railway
+  only tears down environments it created). Leaving the toggle on is not destructive - the workflow
+  resolves an environment Railway made instead of forking one, and repoints its triggers at the PR
+  branch - but it means two systems create environments while only one owns the builds.
 
-1. The relay has to be dialling this backend. Since #414 it can hold a LIST, so a PR backend is added
-   *alongside* production rather than replacing it; since #456 the list is re-read every
-   `CHANNEL_RECONCILE_SECONDS` (see `relay/src/ucnexus_relay/channel.py`) so a change needs no
-   restart; and since discovery it does not need a human either - see the section above. This reason
-   is therefore mostly historical now, and a preview environment that stays disconnected for more than
-   a couple of minutes means discovery is off or failing rather than "nobody has added it yet".
-2. Relay installs live in Postgres and a PR environment boots a fresh empty one, so the handshake is
-   refused (4403) even if the relay does dial. Since #414 the backend seeds a trusted install on
-   startup from `RELAY_SEED_SECRET_HASH` - the SHA-256 already in production's row, copyable from
-   Admin -> Relay Installs ("Seed hash" column). Where that variable goes is the part that catches
-   people out (#431):
-   - It belongs on the **production** backend service and stays there inert. PR environments are cloned
-     from production, so that is the only place a new one can inherit it from; production refuses to
-     seed and logs the refusal at INFO, which is the intended steady state, not something to tidy up.
-   - **Inheritance happens at environment creation only.** Setting it on production does nothing for a
-     PR environment that already exists - set it on that environment's own backend service as well.
-     Verified 2026-07-30: pr-430 predated the variable and stayed GP-blind until it had its own copy.
-   - Seeding runs at backend startup, so the variable only takes effect on that service's next deploy.
+## What a PR environment still cannot show
 
-Read the default state as a free test fixture rather than a limitation. The relay-down half of any
-GP-gated feature - disabled controls, "not connected" copy, held values still displaying, buttons that
-must not be clickable - is exactly what a PR environment exercises by construction, and it is the half
-that is otherwise awkward to reach on production without stopping the relay for everyone.
+**A relay op that does not exist in the packaged build.** This applies to the real-relay path: the
+workstation runs a published release, so a PR that adds to `_OPS` answers `unknown_op` ->
+`RELAY_OP_UNSUPPORTED` there, just as it does on production before the relay is rebuilt (its own
+distinct UI state, worth checking on purpose during the deploy-before-rebuild window). The stub is
+built from the PR branch, so it has the new op - which means the stub is the right place to exercise
+op *plumbing*, and the workstation is still the only place to prove the op against GP.
 
-**But "by default" is doing real work in that heading.** Disconnected is a state you were handed, not
-a property of PR environments, and leaving it that way is a choice with a cost: with no relay there
-are no projects (they come from the GP job sync), and with no projects there is no schedule import, no
-PO, no receiving, no inventory, no assembly, no shipping. Nearly the whole spine of the app is
-unreachable. If you find yourself writing "this surface cannot be tested here", connect the relay
-first and check whether that is still true. It usually is not.
+To put a branch build on the workstation for a session: `gh workflow run relay-release.yml --ref
+<branch>` uploads a zip as a workflow artifact and publishes nothing. The full procedure, including
+how the release build gets restored afterwards, is the "testing a PR that adds a new op" section of
+`relay/README.md`. It is a manual install by design.
 
-A PR environment with a connected relay is pinned to **TUBC** and refuses every other company with
-`company_not_allowed_on_channel`, reads and writes alike. Reads and writes both work against TUBC;
-that pin is what makes serving writes off a test backend acceptable at all.
+Note also that pushes to master auto-publish the relay as a **prerelease**
+(`.github/workflows/relay-release.yml`), and the workstation follows stable releases - so a merge does
+not move it. Promoting a build is deliberate: `gh release edit <tag> --prerelease=false`.
 
-## Connect a PR environment for full click-through testing
+## Still-true notes from earlier sessions
 
-`testing/scripts/connect-pr-env.ps1 <PR#>` does steps 2-4 and waits for the confirmation in step 5.
-Run it rather than doing this by hand; the manual steps are here so a failure is diagnosable, and
-because a script that nobody can read is its own kind of stale documentation.
-
-Each step lists **the signal that proves it worked**. Check the signal rather than assuming - every
-step here has failed silently at least once.
-
-1. **Find the Railway environment.** It is named `uc-nexus-pr-<N>`, NOT `pr-<N>` - the CLI answers
-   `Environment "pr-511" not found` for the latter, which reads like the environment is missing.
-   Services inside it are `backend` and `frontend`; the public hostnames are
-   `backend-uc-nexus-pr-<N>.up.railway.app`.
-   - Signal: `railway environment list --json` lists it, with `meta.prNumber` matching.
-2. **Nothing for the agent sign-in - the `preview-env` workflow provisions it.** On the first run for
-   an environment it generates the per-env key `K`, sets `TESTING_SESSION_KEY_HASH` on that backend,
-   and puts the `/testing/session?key=<K>` link in the "test environment ready" comment. Navigate that
-   link; it mints the dedicated e2e account (refused on production) and needs no secret from you.
-   Requires `E2E_CLERK_USER_ID` on the production backend so previews inherit it - one-time setup.
-   - Signal: `GET /testing/session?key=<K>` 302s to the frontend; a wrong key answers 401.
-   - The human fallback below is the `/testing/clerk-sign-in` secret path, only for a red `preview-env`
-     check: `PREVIEW_TESTING_SIGN_IN_SECRET_HASH` on production is inherited by every preview, so
-     `GET /testing/clerk-sign-in` with the matching `X-Testing-Secret` answers 200; production resolves
-     to no digest however many of these variables it holds, which is what makes storing it there safe.
-     Per-environment override, still supported and still wins: set `TESTING_SIGN_IN_SECRET_HASH` on
-     that backend, for an environment that predates the inherited variable or wants its own secret.
-3. **`RELAY_SEED_SECRET_HASH` on that same backend**, so the relay's handshake is accepted rather than
-   refused 4403. Usually inherited at environment creation; set it by hand if the environment predates
-   the variable.
-   - Signal: same `railway variables` read shows it set.
-4. **Nothing. The relay finds the environment by itself.** It asks production which preview
-   environments exist and dials them, re-checking about once a minute, so an environment created after
-   the last time anybody touched that workstation is picked up without a visit. This step used to be
-   the whole reason a PR environment needed a human, and it is the step that kept getting forgotten.
-   - Signal: `relay.log` on the workstation logs `backend channels changed` with your URL under
-     `added`, then `channel connected`, within a minute or two of the environment existing. From this
-     side, just read `relayStatus`.
-   - Requires `RAILWAY_API_TOKEN` on the PRODUCTION backend. That is the one piece of setup, done
-     once, ever - see the discovery section below. Without it discovery answers an empty list and
-     everything falls back to the manual path below.
-   - Discovery only ever ADDS. `extra_backend_urls` still works and still wins nothing away from you,
-     so the manual route stays available for a backend discovery cannot know about (a local dev
-     backend, an environment outside this Railway project).
-
-   The manual route, performed ON THE RELAY WORKSTATION and not on the machine you are reading this
-   from. In that machine's `%LOCALAPPDATA%\UCNexusRelay\config.toml`, under `[channel]`:
-   ```toml
-   extra_backend_urls = ["wss://backend-uc-nexus-pr-<N>.up.railway.app/relay-link"]
-   ```
-   **Never touch `backend_url`** - production's URL comes from the baked default, and retyping it with
-   one character wrong silently demotes the production channel to the TUBC pin (see the safety note in
-   #414). Write the file as UTF-8 **without a BOM**: PowerShell's `Set-Content -Encoding utf8` adds one
-   in 5.1, `tomllib` then refuses the file, and the relay crashes at startup.
-   - Signal: within ~10s, `%LOCALAPPDATA%\UCNexusRelay\relay.log` logs `backend channels changed` with
-     your URL under `added`, then `channel connected` with `restricted_to: ["TUBC"]`.
-5. **Confirm the app sees it.** Sign in and open the PO module.
-   - Signal: the header reads `RELAY CONNECTED`, not `GP RELAY NOT DETECTED`.
-6. **Assign your GP buyer to the project you will test on**, or Register in GP refuses with "Buyer X is
-   not assigned to this project" (#216). Admin -> Buyers -> Add Buyer.
-   - Signal: the buyer grid lists a row pairing your buyer with that project.
-7. **Tear down when the PR closes**: remove the URL from `extra_backend_urls` (or run the script with
-   `-Disconnect`). A closed environment otherwise retries forever against a backend that is gone.
-   - Signal: `relay.log` logs `backend channels changed` with your URL under `removed`.
-
-With that done the whole chain is click-through: GP job sync populates real TUBC projects, the import
-wizard runs against a real schedule, Register in GP writes a real PO to TUBC and stamps the PM00200
-vendor onto it, and receiving populates from that. Proven end to end on pr-511 (2026-08-05): PO0000095
-against ALLEGION, from Create-GP-Job through to the back-order grid, entirely by clicking.
-
-What a PR environment cannot show out of the box is a NEW op. The workstation runs a packaged build, so
-a PR that adds to `_OPS` answers `unknown_op` -> `RELAY_OP_UNSUPPORTED` there just as it does on
-production before the relay is rebuilt (its own distinct UI state, worth checking on purpose during the
-deploy-before-rebuild window). To exercise the op itself, build the PR's branch with
-`gh workflow run relay-release.yml --ref <branch>` and install that zip on the workstation for the
-session - the full procedure, including how the release build gets restored afterwards, is the
-"testing a PR that adds a new op" section of `relay/README.md`. It is a manual install by design.
-
-Verified on PR #412 (issue #409's buyer dropdown), in the default disconnected state: the field
-rendered `role="combobox"`, disabled, still showing the stored `mira`, with "The GP relay is not
-connected, so this cannot be changed right now." - all four assertions met without touching production.
-
-Seeding verified live on PR #421 (#414 itself), against that PR's own environment: setting
-`RELAY_SEED_SECRET_HASH` produced exactly one install row labelled `seed:uc-nexus-pr-<N>` (company
-TUBC, ENROLLED), the Seed hash cell truncated to 8 chars with a copy button carrying the full 64-char
-digest, a provisioned-but-unenrolled row showing `—` and no button, and a second full redeploy still
-leaving exactly one seeded row. Note the label takes `RAILWAY_ENVIRONMENT_NAME` verbatim, which on a
-PR environment is `uc-nexus-pr-<N>` rather than `pr-<N>`.
+- **The e2e account is real.** Every environment inherits production Clerk keys, so the identities in
+  a PR environment are real staff accounts even though the Postgres data is disposable. Sign in as the
+  account you were given; do not mint tokens for colleagues' accounts to test role behaviour.
+- **A GP buyer must be assigned to the project you test on**, or Register in GP refuses with "Buyer X
+  is not assigned to this project" (#216). Admin -> Buyers -> Add Buyer.
+- **Verified relay-down assertions, PR #412** (issue #409's buyer dropdown): the field rendered
+  `role="combobox"`, disabled, still showing the stored `mira`, with "The GP relay is not connected, so
+  this cannot be changed right now." That was the default state then; it is the deliberate state now
+  (remove the stub service), and the assertions still hold.
+- **Verified full GP click-through, pr-511, 2026-08-05**: PO0000095 against ALLEGION, from
+  Create-GP-Job through to the back-order grid, entirely by clicking, with the real relay. That is the
+  bar the `PREVIEW_REAL_RELAY` path exists to reach.
+- **Seeded install labels take `RAILWAY_ENVIRONMENT_NAME` verbatim**, which on a preview is
+  `uc-nexus-pr-<N>` rather than `pr-<N>` (verified on PR #421).

@@ -574,6 +574,8 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
       $('u-last').innerHTML = `<span class="bad">last update to ${esc(u.target_build)} failed: ${esc(u.last_error || 'unknown')}</span>`;
     } else if (u.status === 'cancelled') {
       $('u-last').innerHTML = `<span class="muted">last update to ${esc(u.target_build)} was cancelled${when}</span>`;
+    } else if (u.status === 'rolled_back') {
+      $('u-last').innerHTML = `<span class="bad">update to ${esc(u.target_build)} was rolled back: ${esc(u.last_error || 'unknown')}</span>`;
     } else {
       $('u-last').innerHTML = `<span class="muted">update to ${esc(u.target_build)}: ${esc(u.status)}…</span>`;
     }
