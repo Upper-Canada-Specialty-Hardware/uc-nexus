@@ -4,9 +4,10 @@ name: preview-env-cleanup
 # and preview-env forks every one itself, so nothing else would ever delete these. Deleting an
 # already-gone environment is a no-op here, so this runs for every close, merge included.
 #
-# The relay stub service goes first. serviceCreate made it a project-level service scoped into this
-# environment, so environmentDelete alone can leave the project-level service behind; it is a per-PR
-# service, so serviceDelete(id) removes it outright.
+# The relay stub service goes first and is found at project level, not through the environment:
+# serviceCreate made it a project-level service scoped into this environment, and an environment that
+# is already gone (Railway tore down its own on pr-663) would otherwise leave the service orphaned. It
+# is a per-PR service, so serviceDelete(id) removes it outright.
 
 on:
   pull_request:
@@ -52,28 +53,28 @@ jobs:
             printf '%s' "$resp" | jq -c '.data'
           }
 
-          data=$(rgql 'query($id:String!){ environments(projectId:$id){ edges{ node{ id name } } } }' \
-            "$(jq -cn --arg id "$PROJECT_ID" '{id:$id}')") \
-            || { echo "::warning::could not list Railway environments"; exit 0; }
-          ENV_ID=$(printf '%s' "$data" | jq -r --arg n "$ENV_NAME" '[.environments.edges[]?|select(.node.name==$n)|.node.id][0] // empty')
-          if [ -z "$ENV_ID" ]; then
-            echo "environment $ENV_NAME does not exist; nothing to delete"
-            exit 0
-          fi
-
+          # The stub first, and looked up at PROJECT level: serviceCreate made it a project-level service
+          # scoped into this environment, and an environment Railway tore down itself (pr-663) leaves
+          # the service behind with no environment to search. It is a per-PR service, so it is deleted
+          # outright.
           STUB_NAME="relay-stub-pr-${PR}"
-          STUB_ID=$(rgql 'query($id:String!){ environment(id:$id){ serviceInstances{ edges{ node{ serviceId serviceName } } } } }' \
-            "$(jq -cn --arg id "$ENV_ID" '{id:$id}')" \
-            | jq -r --arg n "$STUB_NAME" '[.environment.serviceInstances.edges[]?|select(.node.serviceName==$n)|.node.serviceId][0] // empty')
+          svc=$(rgql 'query($id:String!){ project(id:$id){ services{ edges{ node{ id name } } } } }'             "$(jq -cn --arg id "$PROJECT_ID" '{id:$id}')")             || { echo "::warning::could not list the project's services"; svc='{}'; }
+          STUB_ID=$(printf '%s' "$svc" | jq -r --arg n "$STUB_NAME" '[.project.services.edges[]?|select(.node.name==$n)|.node.id][0] // empty')
           if [ -n "$STUB_ID" ]; then
-            if rgql 'mutation($id:String!){ serviceDelete(id:$id) }' \
-              "$(jq -cn --arg id "$STUB_ID" '{id:$id}')" >/dev/null; then
+            if rgql 'mutation($id:String!){ serviceDelete(id:$id) }'               "$(jq -cn --arg id "$STUB_ID" '{id:$id}')" >/dev/null; then
               echo "deleted $STUB_NAME ($STUB_ID)"
             else
               echo "::warning::could not delete $STUB_NAME ($STUB_ID); it may need manual removal in the Railway dashboard"
             fi
           else
-            echo "no $STUB_NAME service in $ENV_NAME; nothing to delete there"
+            echo "no $STUB_NAME service in the project; nothing to delete"
+          fi
+
+          data=$(rgql 'query($id:String!){ environments(projectId:$id){ edges{ node{ id name } } } }'             "$(jq -cn --arg id "$PROJECT_ID" '{id:$id}')")             || { echo "::warning::could not list Railway environments"; exit 0; }
+          ENV_ID=$(printf '%s' "$data" | jq -r --arg n "$ENV_NAME" '[.environments.edges[]?|select(.node.name==$n)|.node.id][0] // empty')
+          if [ -z "$ENV_ID" ]; then
+            echo "environment $ENV_NAME does not exist; nothing to delete"
+            exit 0
           fi
 
           if rgql 'mutation($id:String!){ environmentDelete(id:$id) }' "$(jq -cn --arg id "$ENV_ID" '{id:$id}')" >/dev/null; then
