@@ -223,6 +223,16 @@ def seed_on_startup() -> None:
     when PREVIEW_REAL_RELAY says this environment needs live GP."""
     if not RELAY_SEED_SECRET_HASH and not RELAY_STUB_SECRET_HASH:
         return
+    if _is_production(RAILWAY_ENVIRONMENT_NAME):
+        # Before choosing a credential, not after: production holds RELAY_SEED_SECRET_HASH for previews
+        # to inherit and never the stub hash, so the branch below would otherwise warn that "relay
+        # pages will not work here" on the one environment where that is false (#431's lesson).
+        logger.info(
+            "a relay seed hash is set here and seeding was skipped, which is correct: seeding never "
+            "runs in production. Leave the variable in place - Railway clones a new PR environment from "
+            "production, so this is where a PR environment inherits it from.",
+        )
+        return
     if PREVIEW_REAL_RELAY:
         secret_hash, raw_companies, prefix, variable = (
             RELAY_SEED_SECRET_HASH,
