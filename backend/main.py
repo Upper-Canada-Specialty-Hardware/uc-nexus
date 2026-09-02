@@ -464,6 +464,7 @@ async def relay_link(websocket: WebSocket):
         # (throttled inside relay_events).
         await relay_events.write(
             RelayEventKind.REFUSED_SECRET,
+            install_id=None,
             reason="the presented secret matched no relay install",
         )
         await websocket.close(code=4401)
