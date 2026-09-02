@@ -38,6 +38,7 @@ from .converters import (
 from .inputs import CreateGpCustomerAddressInput, EnrollRelayInstallInput
 from .types import (
     GpBuyer,
+    GpCompany,
     GpCostCode,
     GpCostCodeMasterEntry,
     GpCustomer,
@@ -90,8 +91,11 @@ def _sole_relay_company() -> str:
     if len(available) == 1:
         return available[0]
     if not available:
+        # Same two states as resolve_gp_company: nothing connected, or a relay that found no company
+        # master. Only the relay can say which, so its reason wins when it gave one.
         raise RelayUnavailableError(
-            "The GP relay is not connected, so this cannot be written to GP. Start the relay and try again."
+            relay_gateway.companies_error
+            or "The GP relay is not connected, so this cannot be written to GP. Start the relay and try again."
         )
     raise ValidationError(
         f"The connected relay serves several GP companies ({', '.join(available)}); name the one to use.",
@@ -102,7 +106,7 @@ def _sole_relay_company() -> str:
 def resolve_gp_company(info: strawberry.Info, company: str) -> str:
     """The GP company a passthrough read may actually be made for (#637).
 
-    Two gates, and both matter. The relay one is old: a company the live install does not serve fails
+    Two gates, and both matter. The relay one is old: a company the live relay does not serve fails
     every read anyway, so refusing here turns a 30s round trip into a message naming what IS available.
     The tenant one is new: `gpJobs(company: "UCSH")` is a read of another company's job master, and
     nothing about the relay stops a UCSH-less user asking for it - only the caller's own scope does.
@@ -113,12 +117,15 @@ def resolve_gp_company(info: strawberry.Info, company: str) -> str:
 
     available = relay_gateway.companies
     if not available:
+        # Connected-but-empty is its own failure: the relay is there, GP's company master is
+        # not, and the relay's own reason is the only thing that names the fix.
         raise RelayUnavailableError(
-            "The GP relay is not connected, so GP cannot be read. Start the relay and try again."
+            relay_gateway.companies_error
+            or "The GP relay is not connected, so GP cannot be read. Start the relay and try again."
         )
     if requested not in available:
         raise ValidationError(
-            f"The connected relay does not serve {requested}. It is enrolled for {', '.join(available)}.",
+            f"The connected relay does not serve {requested}. It serves {', '.join(available)}.",
             field="company",
         )
 
@@ -153,21 +160,24 @@ class RelayQueries:
     @strawberry.field
     def relay_status(self, info: strawberry.Info) -> RelayStatus:
         """Whether the outbound relay WS channel is currently connected (and, if so, the GP companies it
-        is enrolled for), for the relay status chip and the company-aware PO/receive/adopt dialogs.
+        discovered), for the relay status chip and the company-aware PO/receive/adopt dialogs.
 
         Answered entirely from the gateway's in-memory state plus the preview registry - no database
         read at all. This is polled by every open tab, so it has to stay cheap enough to be, and the
         gateway is the only thing that can be right about a live socket anyway (#654)."""
         live_install = relay_gateway.install_id
+        companies = relay_gateway.companies
+        names = relay_gateway.company_names
         return RelayStatus(
             connected=relay_gateway.connected,
-            companies=relay_gateway.companies,
+            companies=companies,
+            gp_companies=[GpCompany(id=c, name=names.get(c) or c) for c in companies],
+            companies_error=relay_gateway.companies_error,
             build=relay_gateway.build,
             install_id=strawberry.ID(str(live_install)) if live_install else None,
             last_connected_at=relay_gateway.last_connected_at,
             last_disconnected_at=relay_gateway.last_disconnected_at,
             last_disconnect_reason=relay_gateway.last_disconnect_reason,
-            configured_companies=relay_gateway.configured_companies,
             preview_channels=preview_registry.channels(),
         )
 
@@ -489,20 +499,19 @@ class RelayMutations:
         return gp_customer_address_to_type(result["address"])
 
     @strawberry.mutation
-    def provision_relay_install(self, info: strawberry.Info, label: str, companies: list[str]) -> RelayInstallProvision:
+    def provision_relay_install(self, info: strawberry.Info, label: str) -> RelayInstallProvision:
         """Admin: create a relay install + a one-time enrollment token shown ONCE. The relay uses the
         token during setup to register its self-generated Bearer secret (which never comes back here).
 
-        `companies` is every GP company this install may be called for (#637) - the relay's own
-        allowed_companies list, recorded on the backend side. Non-empty, each code uppercased and
-        bounded at GP's char(15)."""
+        A label and nothing else. Which GP companies the relay serves is read out of GP by the
+        relay itself and reported on every connection, so there is no list to type here and no way for
+        one typed here to be wrong."""
         with SessionLocal() as session:
-            install, token = relay_repository.provision_install(session, label=label, companies=companies)
+            install, token = relay_repository.provision_install(session, label=label)
             session.commit()
             return RelayInstallProvision(
                 install_id=strawberry.ID(str(install.id)),
                 label=install.label,
-                companies=list(install.companies),
                 enrollment_token=token,
                 enrollment_token_expires_at=install.enrollment_token_expires_at,
             )
@@ -556,10 +565,9 @@ class RelayMutations:
         # The row is gone, so this log is the only remaining record of it - and revoking a relay
         # credential is exactly the kind of act worth being able to grep for afterwards.
         logger.warning(
-            "relay install deleted: %s (label=%s companies=%s hostname=%s enrolled_at=%s) by %s",
+            "relay install deleted: %s (label=%s hostname=%s enrolled_at=%s) by %s",
             snapshot["id"],
             snapshot["label"],
-            snapshot["companies"],
             snapshot["hostname"],
             snapshot["enrolled_at"],
             identity["user_id"],

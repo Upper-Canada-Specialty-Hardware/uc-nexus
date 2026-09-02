@@ -25,6 +25,7 @@ import type { PurchaseOrder } from './index';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { useCompanyChoice } from '../../relay/useCompanyChoice';
+import GpCompanyLabel from '../../relay/GpCompanyLabel';
 import { poVendorName } from './poVendorName';
 import { computeManufacturerVendorHint, type ManufacturerSuggestion } from './manufacturerVendorHint';
 import GpErrorAlert from '../../components/GpErrorAlert';
@@ -1030,7 +1031,7 @@ export default function GpPurchaseOrderDialog({
           <Typography component="h3" sx={microLabelSx}>
             GP purchase order
           </Typography>
-          <RelayStatusChip connected={relayStatus} companies={relay.companies} />
+          <RelayStatusChip connected={relayStatus} companies={relay.companies} gpCompanies={relay.gpCompanies} />
         </Stack>
         <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-start">
           {/* #637: a pick only when there is something to pick - one company (or a scoped caller,
@@ -1043,10 +1044,11 @@ export default function GpPurchaseOrderDialog({
             size="small"
             sx={{ minWidth: 140, ...MONO_FIELD_SX }}
             disabled={companyChoice.locked}
+            slotProps={{ select: { renderValue: (v) => String(v) } }}
           >
             {companyChoice.options.map((c) => (
-              <MenuItem key={c} value={c} sx={monoSx}>
-                {c}
+              <MenuItem key={c} value={c}>
+                <GpCompanyLabel code={c} gpCompanies={relay.gpCompanies} />
               </MenuItem>
             ))}
           </TextField>

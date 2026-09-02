@@ -23,6 +23,8 @@ snapshot format
   "captured_at": "<iso8601>",
   "companies": {
     "TUBC": {
+      "name": "TUBC",   # SY01500.CMPNYNAM, written by `capture` when GP answers. OPTIONAL - company
+                        # discovery (companies.py) falls back to the code, as shown here, when absent
       "mc_setup": {"functional": "CAD", "purchase_rate_type": "AVERAGE"},   # MC40000
       "exchange_rates": [{"currency": "USD", "rate_type": "AVERAGE"}],      # what has_exchange_rate probes
       "next_numbers": {"po": "PO0000101", "receipt": "RCT0000042"},         # POP40100 / the receipt counter
@@ -126,11 +128,12 @@ def reset_state() -> None:
 def _company(name: str) -> dict:
     """The snapshot's record for one company.
 
-    check_company_allowed still runs first, so [gp] allowed_companies governs a fixture relay exactly
-    as it governs a workstation one. A company that passes that gate but is not in the snapshot gets
-    the same company_not_allowed answer: there is nothing here to serve it from either way, and the
-    caller's question ("can this relay reach that company") has one answer."""
-    ops.check_company_allowed(name)
+    check_company_served still runs first: discovery in fixture mode reads the snapshot's own company
+    keys, so the served set and the snapshot agree by construction. A company that somehow passes that
+    gate but is not in the snapshot gets the same company_not_allowed answer - there is nothing here to
+    serve it from either way, and the caller's question ("can this relay reach that company") has one
+    answer."""
+    ops.check_company_served(name)
     companies = load_state().get("companies") or {}
     data = companies.get(name)
     if data is None:

@@ -74,7 +74,7 @@ poetry run ruff check src tests
 endpoints
 - `GET /health` — liveness, no auth
 - `GET /info` — config + read-only SQL identity + the workstation `hostname` and the `resolved_buyer` that hostname maps to, bearer auth
-- `GET /vendors` — active PM00200 vendors (VENDORID / VENDNAME / class / status) for the vendor sync, bearer auth. takes `?company=` (defaults to `default_company`)
+- `GET /vendors` — active PM00200 vendors (VENDORID / VENDNAME / class / status) for the vendor sync, bearer auth. takes `?company=` (required - there is no default company)
 - `GET /buyers` — registered GP buyers (`POP00101`) for the Create PO buyer dropdown, bearer auth. `?company=` like `/vendors`. eConnect validates `BUYERID` against this, so the UI must pick from it
 - `GET /cost-codes` — active, account-usable per-job cost codes from `JC00701` (`cost_code` two-segment number / `description` / real `cost_element`) for the Create PO cost-code dropdown, bearer auth. takes `?job=` (the GP job number = UC Nexus `project_id`, required) and `?company=` like `/vendors`. cost codes are per-job and each carries its own `Cost_Element`, so the `/po` cost_code is `'phase-step-element'` (e.g. `310-000-3`) from the code's own element, not a hardcoded `2`. codes whose `WS_Account_Index_1` is non-zero and absent from `GL00105` are excluded (#425) - a PO on one registers but can never be received, and the `create_po` `cost_code_account_invalid` guard refuses it anyway
 - `POST /po/next-number` — reserve a PO number via `taGetPONextNumber`, bearer auth
@@ -107,6 +107,15 @@ with `wsiJCJobDetailMSTR` in the same transaction, every value taken from the co
 reconnects with exponential backoff on drop; the `websockets` client's default 20s ping/pong keeps the
 channel alive through a corporate proxy's idle timeout.
 
+which companies this relay serves
+
+read from GP itself - the company master `DYNAMICS..SY01500` (`[sql] system_db`), by
+`src/ucnexus_relay/companies.py`. nothing to maintain in config.toml, and nothing to edit in the
+source when a company is added in GP. the set is re-read on every channel connect and every 15 minutes
+while a channel is up, and each hello frame carries it as `companies` + `company_names`; a changed set
+re-sends the hello on the same socket. a relay that cannot read the master serves NO company - the
+frame carries `companies_error` and every op is refused with `company_not_allowed` quoting it.
+
 more than one backend (#414)
 
 the relay holds one independent reconnecting channel per configured URL. that exists so a Railway PR
@@ -137,11 +146,10 @@ for any other company comes back `company_not_allowed_on_channel` before it reac
 are in the pin because UCSH-side work is only reproducible against TUCSH, and the alternative is aiming
 a PR backend at live UCSH.
 
-**the sandbox the PR is testing must also be in `[gp] allowed_companies`.** the channel pin decides what
-a test backend may ASK for; `ops.check_company_allowed` still decides what this workstation will serve,
-and it reads `[gp] allowed_companies` from config.toml. a workstation set up only for production
-companies refuses every PR-environment job with `company_not_allowed`. nothing checks the two lists
-intersect at startup.
+the sandbox the PR is testing has to exist in GP. the channel pin decides what a test backend may ASK
+for; `ops.check_company_served` decides what this workstation will serve, and that set is read from
+GP's own company master (`companies.py`), not configured. a company GP does not hold is refused with
+`company_not_allowed`.
 
 **the backend side of this - `RELAY_SEED_SECRET_HASH` - lives on the PRODUCTION backend service, and a
 PR environment inherits it only at creation (#431).** Railway clones a new PR environment from
@@ -308,7 +316,6 @@ no DPAPI to decrypt with. each one wins over the file when there is one:
 - `UCNEXUS_RELAY_SHARED_SECRET` - the channel secret, PLAINTEXT. never DPAPI-decrypted, so an
   `enc:dpapi:` value in a config.toml carried into the image is replaced rather than choked on
 - `UCNEXUS_RELAY_BACKEND_URL` - the `wss://.../relay-link` to dial
-- `UCNEXUS_RELAY_COMPANIES` - comma list; becomes `[gp] allowed_companies`, first entry is `default_company`
 - `UCNEXUS_RELAY_LOG_FILE` - `-` for stdout only, so nothing is written to an ephemeral filesystem
 
 ```

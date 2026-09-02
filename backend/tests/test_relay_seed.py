@@ -7,7 +7,7 @@ preimage authenticate with the secret it already has.
 WHICH hash is seeded is #654's change: the default is a stub relay running inside the preview, and
 PREVIEW_REAL_RELAY opts back into the workstation relay. Exactly one is ever seeded, and the tests
 that matter most are still the refusals - this writes a working credential into a database, and the
-only things keeping that acceptable are the production kill-switch and the sandbox company pin.
+production kill-switch is what keeps that acceptable.
 """
 
 import logging
@@ -26,12 +26,11 @@ HASH = hash_secret(SECRET)
 STUB_HASH = hash_secret("the-stub-relays-own-secret")
 
 
-def _seed(session, *, environment_name="pr-414", secret_hash=HASH, companies=None, label_prefix=None):
+def _seed(session, *, environment_name="pr-414", secret_hash=HASH, label_prefix=None):
     return relay_seed.seed_from_env(
         session,
         environment_name=environment_name,
         secret_hash=secret_hash,
-        companies=companies if companies is not None else ["TUBC"],
         label_prefix=label_prefix or relay_seed.SEED_LABEL_PREFIX,
     )
 
@@ -61,7 +60,6 @@ def test_production_refuses_the_stub_hash_too(db_session):
             db_session,
             environment_name="production",
             secret_hash=STUB_HASH,
-            companies=["TUBC", "TUCSH"],
             label_prefix=relay_seed.STUB_LABEL_PREFIX,
         )
         is None
@@ -88,7 +86,6 @@ def test_the_production_check_ignores_case_and_padding(db_session, name):
 def test_a_pr_environment_gets_a_seeded_install(db_session):
     install = _seed(db_session)
     assert install is not None
-    assert install.companies == ["TUBC"]
     assert install.secret_hash == HASH
     assert install.label == "seed:pr-414"
     # Enrolled on creation: there is no token and none is wanted, and a permanently "pending" row that
@@ -96,17 +93,10 @@ def test_a_pr_environment_gets_a_seeded_install(db_session):
     assert install.enrolled_at is not None
 
 
-def test_the_stub_install_is_labelled_as_one_and_can_serve_several_companies(db_session):
-    install = _seed(
-        db_session,
-        secret_hash=STUB_HASH,
-        companies=["TUBC", "TUCSH"],
-        label_prefix=relay_seed.STUB_LABEL_PREFIX,
-    )
+def test_the_stub_install_is_labelled_as_one(db_session):
+    # The label prefix is what lets a later pass recognise the row of the other kind and remove it.
+    install = _seed(db_session, secret_hash=STUB_HASH, label_prefix=relay_seed.STUB_LABEL_PREFIX)
     assert install.label == "stub:pr-414"
-    # Wider than the real relay's list on purpose: the stub answers from fixtures, so a second company
-    # costs nothing and is what lets the multi-company screens be exercised in a preview at all.
-    assert install.companies == ["TUBC", "TUCSH"]
 
 
 def test_seeding_is_idempotent_across_restarts(db_session):
@@ -125,13 +115,6 @@ def test_a_malformed_hash_is_skipped_not_stored(db_session, value):
     assert db_session.query(RelayInstall).filter(RelayInstall.secret_hash == HASH).count() == 0
 
 
-def test_an_install_with_no_companies_is_not_created(db_session):
-    # It could serve no call and would be refused at the handshake, so a misconfigured company list is
-    # a skipped seed rather than a row that looks healthy in the grid.
-    assert _seed(db_session, companies=[]) is None
-    assert db_session.query(RelayInstall).filter(RelayInstall.secret_hash == HASH).count() == 0
-
-
 def test_an_uppercase_hash_is_accepted_and_normalised(db_session):
     # Copy/paste out of a SQL client can arrive uppercase; the stored digest is lowercase hex, so a
     # verbatim insert would silently never match on the handshake.
@@ -145,7 +128,7 @@ def test_the_seeded_row_authenticates_the_real_relay_secret(db_session):
     _seed(db_session)
     install = relay_repository.authenticate_secret(db_session, SECRET)
     assert install is not None
-    assert install.companies == ["TUBC"]
+    assert install.label == "seed:pr-414"
 
 
 def test_a_local_environment_with_no_name_still_seeds(db_session):
@@ -164,7 +147,6 @@ def test_a_database_holding_a_real_enrolled_relay_is_never_seeded(db_session):
     real = RelayInstall(
         id=uuid.uuid4(),
         label="TAGGING3W10",
-        companies=["UCSH"],
         hostname="Tagging3W10",
         secret_hash="c" * 64,
         enrolled_at=datetime.utcnow(),
@@ -174,20 +156,18 @@ def test_a_database_holding_a_real_enrolled_relay_is_never_seeded(db_session):
 
     assert _seed(db_session, environment_name="staging") is None
     assert db_session.query(RelayInstall).filter(RelayInstall.secret_hash == HASH).count() == 0
-    assert real.companies == ["UCSH"]  # untouched
+    assert real.secret_hash == "c" * 64  # untouched
 
 
 def test_an_existing_row_carrying_the_hash_is_left_completely_alone(db_session):
-    # An earlier draft "repaired" the company here. On a live install that silently repoints a real
-    # credential from UBC/UCSH to TUBC, with the original value surviving only in a log line. Still
-    # true of the companies LIST (#637): seeding leaves a row carrying the hash completely alone.
-    real = RelayInstall(id=uuid.uuid4(), label="hand-made", companies=["UCSH"], secret_hash=HASH)
+    # A row that already carries the hash is somebody else's - a real install, or one made by hand -
+    # and seeding neither relabels nor otherwise repairs it.
+    real = RelayInstall(id=uuid.uuid4(), label="hand-made", secret_hash=HASH)
     db_session.add(real)
     db_session.flush()
 
     returned = _seed(db_session)
     assert returned.id == real.id
-    assert returned.companies == ["UCSH"]  # NOT rewritten to TUBC
     assert returned.label == "hand-made"
 
 
@@ -205,7 +185,7 @@ def test_rotating_the_hash_removes_the_superseded_seed_row(db_session):
 
 
 def test_rotation_only_removes_this_environments_own_seed_row(db_session):
-    other = RelayInstall(id=uuid.uuid4(), label="seed:pr-999", companies=["TUBC"], secret_hash="e" * 64)
+    other = RelayInstall(id=uuid.uuid4(), label="seed:pr-999", secret_hash="e" * 64)
     db_session.add(other)
     db_session.flush()
 
@@ -219,12 +199,7 @@ def test_rotation_only_removes_this_environments_own_seed_row(db_session):
 def test_flipping_to_the_real_relay_removes_the_stub_row(db_session):
     """Two live credentials on one environment means the connection slot goes to whichever relay dials
     first, which is not a decision anybody made."""
-    _seed(
-        db_session,
-        secret_hash=STUB_HASH,
-        companies=["TUBC", "TUCSH"],
-        label_prefix=relay_seed.STUB_LABEL_PREFIX,
-    )
+    _seed(db_session, secret_hash=STUB_HASH, label_prefix=relay_seed.STUB_LABEL_PREFIX)
     real = _seed(db_session)
 
     assert real.label == "seed:pr-414"
@@ -233,19 +208,14 @@ def test_flipping_to_the_real_relay_removes_the_stub_row(db_session):
 
 def test_flipping_back_to_the_stub_removes_the_real_row(db_session):
     _seed(db_session)
-    stub = _seed(
-        db_session,
-        secret_hash=STUB_HASH,
-        companies=["TUBC", "TUCSH"],
-        label_prefix=relay_seed.STUB_LABEL_PREFIX,
-    )
+    stub = _seed(db_session, secret_hash=STUB_HASH, label_prefix=relay_seed.STUB_LABEL_PREFIX)
 
     assert stub.label == "stub:pr-414"
     assert _owned_rows(db_session) == ["stub:pr-414"]
 
 
 def test_the_flip_only_touches_this_environments_rows(db_session):
-    other = RelayInstall(id=uuid.uuid4(), label="stub:pr-999", companies=["TUBC"], secret_hash="f" * 64)
+    other = RelayInstall(id=uuid.uuid4(), label="stub:pr-999", secret_hash="f" * 64)
     db_session.add(other)
     db_session.flush()
 
@@ -282,7 +252,6 @@ def test_the_stub_is_what_a_preview_seeds_by_default(monkeypatch, startup_call):
     monkeypatch.setattr(relay_seed, "PREVIEW_REAL_RELAY", False)
     monkeypatch.setattr(relay_seed, "RELAY_SEED_SECRET_HASH", HASH)
     monkeypatch.setattr(relay_seed, "RELAY_STUB_SECRET_HASH", STUB_HASH)
-    monkeypatch.setattr(relay_seed, "RELAY_STUB_COMPANIES", "TUBC,TUCSH")
 
     relay_seed.seed_on_startup()
 
@@ -290,7 +259,6 @@ def test_the_stub_is_what_a_preview_seeds_by_default(monkeypatch, startup_call):
         {
             "environment_name": relay_seed.RAILWAY_ENVIRONMENT_NAME,
             "secret_hash": STUB_HASH,
-            "companies": ["TUBC", "TUCSH"],
             "label_prefix": relay_seed.STUB_LABEL_PREFIX,
         }
     ]
@@ -300,12 +268,10 @@ def test_the_real_relay_hash_is_seeded_when_the_flag_is_on(monkeypatch, startup_
     monkeypatch.setattr(relay_seed, "PREVIEW_REAL_RELAY", True)
     monkeypatch.setattr(relay_seed, "RELAY_SEED_SECRET_HASH", HASH)
     monkeypatch.setattr(relay_seed, "RELAY_STUB_SECRET_HASH", STUB_HASH)
-    monkeypatch.setattr(relay_seed, "RELAY_SEED_COMPANIES", "TUBC")
 
     relay_seed.seed_on_startup()
 
     assert startup_call[0]["secret_hash"] == HASH
-    assert startup_call[0]["companies"] == ["TUBC"]
     assert startup_call[0]["label_prefix"] == relay_seed.SEED_LABEL_PREFIX
 
 
@@ -358,17 +324,3 @@ def test_seed_on_startup_never_raises(monkeypatch):
 
     monkeypatch.setattr(relay_seed, "SessionLocal", boom)
     relay_seed.seed_on_startup()  # must not raise
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("TUBC", ["TUBC"]),
-        ("TUBC,TUCSH", ["TUBC", "TUCSH"]),
-        (" tubc , tucsh ", ["TUBC", "TUCSH"]),
-        ("TUBC,,TUBC", ["TUBC"]),
-        ("", []),
-    ],
-)
-def test_configured_companies_are_parsed_the_way_the_column_stores_them(raw, expected):
-    assert relay_seed.parse_companies(raw) == expected

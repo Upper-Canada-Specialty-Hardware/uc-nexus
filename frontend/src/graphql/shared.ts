@@ -51,25 +51,29 @@ export const GET_NOTIFICATIONS = gql`
   }
 `;
 
-// #637: `companies`, not `company` - one relay can be enrolled for several GP companies, and every
-// screen that used to read the single value now picks from this list.
+// #637: `companies`, not `company` - the relay reports every GP company its company master gives
+// it, and every screen that used to read the single value now picks from this list.
 //
 // The link-health scalars below feed the Relay Installs status strip. They ride along on the one
 // shared relayStatus document on purpose: a second document selecting a different subset of this
 // (un-normalized) root field would replace it in the cache on every poll instead of merging.
-// configuredCompanies is what the workstation itself is set up for - null from a relay too old to
-// report it - and previewChannels is empty outside production.
+// gpCompanies is the same list with GP's own display name on each code, and companiesError says why a
+// connected relay reported none. previewChannels is empty outside production.
 export const GET_RELAY_STATUS = gql`
   query GetRelayStatus {
     relayStatus {
       connected
       companies
+      gpCompanies {
+        id
+        name
+      }
+      companiesError
       build
       installId
       lastConnectedAt
       lastDisconnectedAt
       lastDisconnectReason
-      configuredCompanies
       previewChannels
     }
   }

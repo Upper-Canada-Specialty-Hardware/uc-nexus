@@ -51,7 +51,7 @@ import websockets
 from pydantic import ValidationError as PydanticValidationError
 
 from . import __version__ as VERSION
-from . import db, econnect, errors, models, ops
+from . import companies, db, econnect, errors, models, ops
 from .config import (
     PRODUCTION_BACKEND_URL,
     channel_allowed_companies,
@@ -180,7 +180,7 @@ def _classify_connect_failure(exc: Exception) -> tuple[str, str]:
 
 
 def _run_list_vendors(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     with db.get_read_connection(company) as conn:
         rows = econnect.list_vendors(conn, active_only=payload.get("active_only", True))
     return {"company": company, "vendors": rows}
@@ -190,7 +190,7 @@ def _run_get_vendor_contact(company: str, payload: dict) -> dict:
     """#500: the vendor's email and contact name, so Nexus can send them their PO. Read-only, and
     the only reason vendor contact details are reachable at all - GP owns them (#509), Nexus keeps
     none of its own."""
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     vendor_id = (payload.get("vendor_id") or "").strip()
     if not vendor_id:
         raise ops.RelayOpError("invalid_payload", "vendor_id is required")
@@ -204,21 +204,21 @@ def _run_get_vendor_contact(company: str, payload: dict) -> dict:
 
 
 def _run_list_buyers(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     with db.get_read_connection(company) as conn:
         ids = econnect.list_buyers(conn)
     return {"company": company, "buyers": ids}
 
 
 def _run_list_buyers_detailed(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     with db.get_read_connection(company) as conn:
         rows = econnect.list_buyers_detailed(conn)
     return models.BuyersDetailedResponse(company=company, buyers=rows).model_dump(mode="json")
 
 
 def _run_create_buyer(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     request = models.CreateBuyerRequest(company=company, **payload)
     with db.get_connection(company) as conn:
         try:
@@ -231,14 +231,14 @@ def _run_create_buyer(company: str, payload: dict) -> dict:
 
 
 def _run_list_tax_details(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     with db.get_read_connection(company) as conn:
         rows = econnect.list_tax_details(conn)
     return {"company": company, "tax_details": rows}
 
 
 def _run_list_cost_codes(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     job = (payload.get("job") or "").strip()
     if not job:
         raise ops.RelayOpError("missing_job", "job is required")
@@ -256,7 +256,7 @@ def _run_list_cost_code_master(company: str, payload: dict) -> dict:
     (Divisions, Cost_Element) -> ACTINDX), so answering without one would return codes with no account
     at all. A missing or blank division answers missing_division, exactly as the job read answers
     missing_job."""
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     division = (payload.get("division") or "").strip()
     if not division:
         raise ops.RelayOpError("missing_division", "division is required")
@@ -266,7 +266,7 @@ def _run_list_cost_code_master(company: str, payload: dict) -> dict:
 
 
 def _run_list_jobs(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     with db.get_read_connection(company) as conn:
         rows = econnect.list_jobs(conn)
     return {"company": company, "jobs": rows}
@@ -279,7 +279,7 @@ def _run_job_setup_health(company: str, payload: dict) -> dict:
 
     Unlike _run_list_cost_codes there is no missing_job error: a blank job is not a mistake here, it
     is the whole-company sweep."""
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     job = (payload.get("job") or "").strip() or None
     with db.get_read_connection(company) as conn:
         jobs = econnect.job_setup_health(conn, job)
@@ -287,7 +287,7 @@ def _run_job_setup_health(company: str, payload: dict) -> dict:
 
 
 def _run_read_po_totals(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     po_number = (payload.get("po_number") or "").strip()
     if not po_number:
         raise ops.RelayOpError("missing_po_number", "po_number is required")
@@ -300,7 +300,7 @@ def _run_sync_pos(company: str, payload: dict) -> dict:
     """Read a page of GP purchase orders for the backend's mirror sync (gp-owned-po mirror). Read-only:
     backfill walks POP10100/POP30100 by PONUMBER keyset; incremental re-reads open POs + history rows
     changed since the watermark. See econnect.sync_pos."""
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     with db.get_read_connection(company) as conn:
         result = econnect.sync_pos(
             conn,
@@ -312,7 +312,7 @@ def _run_sync_pos(company: str, payload: dict) -> dict:
 
 
 def _run_create_po(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     request = models.CreatePoRequest(company=company, **payload)
     with db.get_connection(company) as conn:
         try:
@@ -325,14 +325,14 @@ def _run_create_po(company: str, payload: dict) -> dict:
 
 
 def _run_list_customers(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     with db.get_read_connection(company) as conn:
         rows = econnect.list_customers(conn)
     return {"company": company, "customers": rows}
 
 
 def _run_list_customer_addresses(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     customer = (payload.get("customer") or "").strip()
     if not customer:
         raise ops.RelayOpError("missing_customer", "customer is required")
@@ -342,14 +342,14 @@ def _run_list_customer_addresses(company: str, payload: dict) -> dict:
 
 
 def _run_list_tax_schedules(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     with db.get_read_connection(company) as conn:
         rows = econnect.list_tax_schedules(conn)
     return {"company": company, "tax_schedules": rows}
 
 
 def _run_list_employees(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     with db.get_read_connection(company) as conn:
         # active_only is forwarded (like _run_list_vendors): the proc validates the estimator against
         # the whole of UPR00100, not just its active rows, so backdating or recreating a job whose
@@ -361,14 +361,14 @@ def _run_list_employees(company: str, payload: dict) -> dict:
 
 
 def _run_list_divisions(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     with db.get_read_connection(company) as conn:
         rows = econnect.list_divisions(conn)
     return {"company": company, "divisions": rows}
 
 
 def _run_create_job(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     request = models.CreateJobRequest(company=company, **payload)
     with db.get_connection(company) as conn:
         try:
@@ -395,7 +395,7 @@ def _run_create_customer_address(company: str, payload: dict) -> dict:
     A missing or blank customer answers missing_customer, exactly as _run_list_customer_addresses does.
     Letting the model raise it instead would surface the same mistake as a multi-line pydantic dump on
     the write half of a picker whose read half answers in one clean sentence."""
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     fields = dict(payload)
     customer = fields.pop("customer", None)
     if customer is not None:
@@ -417,7 +417,7 @@ def _run_create_customer_address(company: str, payload: dict) -> dict:
 
 
 def _run_update_job_site(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     request = models.UpdateJobSiteRequest(company=company, **payload)
     with db.get_connection(company) as conn:
         try:
@@ -430,7 +430,7 @@ def _run_update_job_site(company: str, payload: dict) -> dict:
 
 
 def _run_create_receipt(company: str, payload: dict) -> dict:
-    ops.check_company_allowed(company)
+    ops.check_company_served(company)
     request = models.ReceiptRequest(company=company, **payload)
     with db.get_connection(company) as conn:
         try:
@@ -507,12 +507,12 @@ def _dispatch(op: str, company: str, payload: dict, allowed_companies: list[str]
     without the id - _handle_job stitches that back on. Runs on a worker thread via
     asyncio.to_thread so a slow GP call doesn't block the channel's read loop.
 
-    `allowed_companies` is the CHANNEL's restriction (#414): None for the production channel, which is
-    governed by [gp] allowed_companies alone as it always has been, and the sandbox list for any other
-    backend. Non-production channels get full read AND write access - a PR that touches GP has to be
-    verifiable before it merges - and this is the sole thing keeping that safe, so it is checked before
-    any handler runs. It layers on top of ops.check_company_allowed rather than replacing it: that one
-    is the workstation's own guardrail against production GP companies and still applies."""
+    `allowed_companies` is the CHANNEL's restriction (#414): None for the production channel, which
+    reaches every company this relay discovered, and the sandbox list for any other backend.
+    Non-production channels get full read AND write access - a PR that touches GP has to be verifiable
+    before it merges - and this is the sole thing keeping that safe, so it is checked before any handler
+    runs. It layers on top of ops.check_company_served rather than replacing it: that one is what says
+    the company was found in GP at all."""
     handler = ops_registry().get(op)
     if handler is None:
         return {"ok": False, "error": errors.error_body("unknown_op", f"unknown op {op!r}")}
@@ -577,27 +577,49 @@ def _heartbeat_reply(message: object) -> dict | None:
     return None
 
 
-def _hello_frame() -> dict:
-    """The relay's identity frame, sent once right after the channel connects (issue #315). It carries
-    the build tag and the exact op-set this relay supports so the backend can reject a call for an op this
-    build lacks with a clear 'update the relay' error - proactively, and without a 30s round-trip - and
-    show the live build on Admin -> Relay Installs. `updater.current_build()` is 'dev' for a source
-    checkout, which is fine: the backend only compares the op-set, and reports the build verbatim.
+def _served_companies(channel_allowed: list[str] | None) -> tuple[list[str], dict[str, str], str | None]:
+    """What THIS channel is told it can reach: the companies discovered in GP, intersected with the
+    channel's own pin (#414) so a test backend is never offered a company it would refuse anyway. The
+    discovery error rides along, so a backend can tell "this relay could not read GP" from "this relay
+    serves none of the companies you may ask for"."""
+    discovered = companies.current()
+    served = [c for c in discovered.companies if channel_allowed is None or c in channel_allowed]
+    return served, {c: discovered.names[c] for c in served}, discovered.error
 
-    `companies` is what this workstation will serve at all ([gp] allowed_companies), so the backend can
-    route a job to a relay that can actually answer it instead of learning company_not_allowed on the
-    round-trip. `features` says what this build understands beyond jobs - "channels" means it accepts a
-    pushed preview-channel list, so a backend talking to an older relay knows not to bother sending one."""
+
+def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
+    """The relay's identity frame, sent right after the channel connects (issue #315) and again on the
+    same socket whenever the discovered companies change. It carries the build tag and the exact op-set
+    this relay supports so the backend can reject a call for an op this build lacks with a clear
+    'update the relay' error - proactively, and without a 30s round-trip - and show the live build on
+    Admin -> Relay Installs. `updater.current_build()` is 'dev' for a source checkout, which is fine:
+    the backend only compares the op-set, and reports the build verbatim.
+
+    `companies` / `company_names` are the GP companies this relay serves ON THIS CHANNEL, read from GP's
+    own company master (companies.py), so the backend can route a job to a relay that can actually answer
+    it instead of learning company_not_allowed on the round-trip. Both are empty and `companies_error`
+    carries the reason when that master could not be read - a relay that cannot tell which companies
+    exist serves none of them. `features` says what this build understands beyond jobs - "channels" means
+    it accepts a pushed preview-channel list, so a backend talking to an older relay knows not to bother
+    sending one."""
     from . import updater  # lazy: keep channel import-light and avoid any package load-order coupling
 
+    served, names, error = _served_companies(channel_allowed)
     return {
         "type": "hello",
         "build": updater.current_build(),
         "ops": sorted(ops_registry()),
         "version": VERSION,
-        "companies": list(get_settings().gp.allowed_companies),
+        "companies": served,
+        "company_names": names,
+        "companies_error": error,
         "features": ["channels"],
     }
+
+
+# How often a live channel re-reads GP's company master. A company is added in GP about once a year, so
+# this is set by "nobody should have to restart the relay for it", not by any need for speed.
+COMPANY_REFRESH_SECONDS = 900.0
 
 
 async def _run_once(url: str, secret: str, cfg) -> None:
@@ -617,10 +639,17 @@ async def _run_once(url: str, secret: str, cfg) -> None:
         logger.info("channel connected", extra={"url": url, "restricted_to": allowed_companies})
         _mark_connected(url)
 
+        # Re-read GP's company master before announcing anything: the hello names the companies this
+        # relay serves, and a set discovered ten hours ago on a previous connection is not what the
+        # backend should be routing on. On a thread because pyodbc blocks, and cheap when several
+        # channels connect together - companies.refresh hands back a reading a few seconds old.
+        await asyncio.to_thread(companies.refresh)
+
         # Advertise this relay's build + op-set to the backend before anything else (issue #315). Sent
         # directly here, ahead of the writer coroutine below, so it's the first frame on the wire - the
         # backend records it and can then reject calls for ops this build lacks with a clear error.
-        await ws.send(json.dumps(_hello_frame()))
+        await ws.send(json.dumps(_hello_frame(allowed_companies)))
+        sent_companies = _served_companies(allowed_companies)
 
         # Dispatch each job as its own task so the read loop keeps pulling frames instead of blocking on
         # the current job's GP round-trip (issue #202 #5). The Create-PO page fires list_vendors +
@@ -651,7 +680,21 @@ async def _run_once(url: str, secret: str, cfg) -> None:
                 _INFLIGHT -= 1
                 _LAST_JOB_AT = time.monotonic()
 
+        async def _company_refresher() -> None:
+            # Re-discover on a timer and re-announce only when THIS channel's answer actually changed
+            # (a company added in GP, or discovery recovering from a failed read). Per connection like
+            # the writer above, and cancelled with it, so a dropped socket takes its refresher with it.
+            nonlocal sent_companies
+            while True:
+                await asyncio.sleep(COMPANY_REFRESH_SECONDS)
+                await asyncio.to_thread(companies.refresh)
+                served = _served_companies(allowed_companies)
+                if served != sent_companies:
+                    sent_companies = served
+                    await send_queue.put(_hello_frame(allowed_companies))
+
         writer_task = asyncio.create_task(_writer())
+        refresh_task = asyncio.create_task(_company_refresher())
         try:
             async for raw in ws:
                 try:
@@ -674,6 +717,7 @@ async def _run_once(url: str, secret: str, cfg) -> None:
                 task.add_done_callback(jobs.discard)
         finally:
             writer_task.cancel()
+            refresh_task.cancel()
             for task in list(jobs):
                 task.cancel()
 

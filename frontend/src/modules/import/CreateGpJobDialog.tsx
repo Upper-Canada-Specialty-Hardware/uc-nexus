@@ -36,6 +36,7 @@ import { extractGpError, isRelayOpUnsupported, type GpError } from '../../graphq
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { useCompanyChoice } from '../../relay/useCompanyChoice';
+import GpCompanyLabel from '../../relay/GpCompanyLabel';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import AddCustomerAddressDialog, { type CreatedGpCustomerAddress } from './AddCustomerAddressDialog';
@@ -739,15 +740,15 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
               size="small"
               disabled={companyChoice.locked}
               sx={{ minWidth: 140 }}
-              slotProps={{ input: { sx: monoSx } }}
+              slotProps={{ input: { sx: monoSx }, select: { renderValue: (v) => String(v) } }}
             >
               {companyChoice.options.map((c) => (
-                <MenuItem key={c} value={c} sx={monoSx}>
-                  {c}
+                <MenuItem key={c} value={c}>
+                  <GpCompanyLabel code={c} gpCompanies={relay.gpCompanies} />
                 </MenuItem>
               ))}
             </TextField>
-            <RelayStatusChip connected={relayConnected} companies={relay.companies} />
+            <RelayStatusChip connected={relayConnected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
             <IconButton
               size="small"
               aria-label="Refresh GP data"

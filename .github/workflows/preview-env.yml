@@ -109,7 +109,6 @@ jobs:
           BACKEND_URL="https://backend-${ENV_NAME}.up.railway.app"
           FRONTEND_URL="https://frontend-${ENV_NAME}.up.railway.app"
           STUB_WS_URL="wss://backend-${ENV_NAME}.up.railway.app/relay-link"
-          COMPANIES="TUBC,TUCSH"
           MARKER="<!-- preview-env-ready -->"
           # SUCCESS plus the whole working set: a deployment in one of these is already carrying, or is
           # on its way to carrying, the build it was created for.
@@ -453,10 +452,10 @@ jobs:
                 secret_hash=$(printf '%s' "$secret" | sha256sum | cut -d' ' -f1)
                 echo "minted a relay stub secret for this environment"
               fi
-              desired=$(printf '%s' "$desired" | jq -c --arg h "$secret_hash" --arg c "$COMPANIES" \
-                '. + {RELAY_STUB_SECRET_HASH:$h,RELAY_STUB_COMPANIES:$c}')
-              stub_desired=$(jq -cn --arg s "$secret" --arg u "$STUB_WS_URL" --arg c "$COMPANIES" \
-                '{UCNEXUS_RELAY_MODE:"fixture",UCNEXUS_RELAY_SHARED_SECRET:$s,UCNEXUS_RELAY_BACKEND_URL:$u,UCNEXUS_RELAY_COMPANIES:$c,UCNEXUS_RELAY_LOG_FILE:"-"}')
+              desired=$(printf '%s' "$desired" | jq -c --arg h "$secret_hash" \
+                '. + {RELAY_STUB_SECRET_HASH:$h}')
+              stub_desired=$(jq -cn --arg s "$secret" --arg u "$STUB_WS_URL" \
+                '{UCNEXUS_RELAY_MODE:"fixture",UCNEXUS_RELAY_SHARED_SECRET:$s,UCNEXUS_RELAY_BACKEND_URL:$u,UCNEXUS_RELAY_LOG_FILE:"-"}')
               if vars_differ "$stub_vars" "$stub_desired"; then
                 upsert_vars "$STUB_ID" "$stub_desired" || { echo "::error::could not set the stub relay variables"; exit 1; }
                 STUB_FORCE=true

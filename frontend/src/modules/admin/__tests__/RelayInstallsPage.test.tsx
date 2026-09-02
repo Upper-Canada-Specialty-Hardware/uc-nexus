@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import RelayInstallsPage from '../RelayInstallsPage';
@@ -8,6 +8,7 @@ import {
   RELAY_EVENTS,
   ARM_RELAY_ADOPT,
   DELETE_RELAY_INSTALL,
+  PROVISION_RELAY_INSTALL,
 } from '../../../graphql/admin';
 import { GET_RELAY_STATUS } from '../../../graphql/shared';
 
@@ -52,7 +53,6 @@ vi.mock('../../../hooks/useIdentity', () => ({
 const INSTALL = {
   id: 'install-1',
   label: 'TAGGING3W10',
-  companies: ['TUBC', 'UCSH'],
   hostname: 'Tagging3W10',
   enrolled: true,
   enrolledAt: '2026-07-24T22:54:27.662Z',
@@ -63,27 +63,39 @@ const INSTALL = {
   secretHash: '231a2314ff30d343fdea3f67436d4010efbc0272c59df346d48de909369e779d',
 };
 
+interface GpCompanyShape {
+  id: string;
+  name: string;
+  __typename: 'GpCompany';
+}
+
 interface RelayStatusShape {
   connected: boolean;
   companies: string[];
+  gpCompanies: GpCompanyShape[];
+  companiesError: string | null;
   build: string | null;
   installId: string | null;
   lastConnectedAt: string | null;
   lastDisconnectedAt: string | null;
   lastDisconnectReason: string | null;
-  configuredCompanies: string[] | null;
   previewChannels: string[];
+}
+
+function gpCompany(id: string, name: string): GpCompanyShape {
+  return { id, name, __typename: 'GpCompany' };
 }
 
 const DISCONNECTED_STATUS: RelayStatusShape = {
   connected: false,
   companies: [],
+  gpCompanies: [],
+  companiesError: null,
   build: null,
   installId: null,
   lastConnectedAt: null,
   lastDisconnectedAt: null,
   lastDisconnectReason: null,
-  configuredCompanies: null,
   previewChannels: [],
 };
 
@@ -100,10 +112,10 @@ const statusMock = relayStatusMock();
 // The same status, but with INSTALL holding the live connection (#366) - which is what disables Remove.
 const connectedStatusMock = relayStatusMock({
   connected: true,
-  companies: ['TUBC'],
+  companies: ['TUBC', 'UCSH'],
+  gpCompanies: [gpCompany('TUBC', 'Test UBC'), gpCompany('UCSH', 'UC Shop')],
   build: 'relay-v0.1.0-build.36',
   installId: 'install-1',
-  configuredCompanies: ['TUBC', 'UCSH'],
 });
 
 const installsMock: MockedResponse = {
@@ -301,33 +313,50 @@ it('reports when the link last came up and went down, with the exact instant beh
   expect(tip.textContent).toContain(new Date(connectedAt).toLocaleString());
 });
 
-it('names the companies the workstation is not configured for', async () => {
-  // The install is enrolled for TUBC + UCSH but the relay was only set up for TUBC, so every UCSH
-  // write it is trusted with silently goes nowhere. Connected is not the same as working.
+it('lists the GP companies the relay reported, named as GP names them', async () => {
+  // This list comes from GP's company master through the relay, so it is the whole of what any
+  // picker in the app can offer - and a bare code says nothing about which company it is.
+  renderPage([connectedStatusMock, installsMock, windowMock(null)]);
+
+  expect(await screen.findByText('Test UBC', {}, GRID_TIMEOUT)).toBeTruthy();
+  expect(screen.getByText('UC Shop')).toBeTruthy();
+  expect(screen.getByText(/gp companies/i)).toBeTruthy();
+});
+
+it('shows why a connected relay reported no companies', async () => {
+  // Connected is not the same as working: with no company master the relay serves nothing and every
+  // picker in the app is empty, so the reason has to be on the page rather than in a failed write.
   renderPage([
     relayStatusMock({
       connected: true,
-      companies: ['TUBC'],
       installId: 'install-1',
-      configuredCompanies: ['TUBC'],
+      companiesError: 'could not read the GP company master: login failed for user sa',
     }),
     installsMock,
     windowMock(null),
   ]);
 
-  expect(await screen.findByText(/workstation config lacks UCSH/i, {}, GRID_TIMEOUT)).toBeTruthy();
+  expect(await screen.findByText(/reported no GP companies/i, {}, GRID_TIMEOUT)).toBeTruthy();
+  expect(screen.getByText(/login failed for user sa/i)).toBeTruthy();
 });
 
-it('shows no config warning when the workstation covers every company the install is enrolled for', async () => {
-  renderPage([connectedStatusMock, installsMock, windowMock(null)]);
+it('shows no company block or error when nothing is connected', async () => {
+  renderPage([statusMock, installsMock, windowMock(null)]);
   await screen.findByRole('button', { name: /adopt next connection/i }, GRID_TIMEOUT);
-  expect(screen.queryByText(/workstation config lacks/i)).toBeNull();
+  expect(screen.queryByText(/gp companies/i)).toBeNull();
+  expect(screen.queryByText(/reported no GP companies/i)).toBeNull();
 });
 
 it('names each preview channel by its environment, with the socket url in a tooltip', async () => {
   const url = 'wss://uc-nexus-pr-661.up.railway.app/relay-link';
   renderPage([
-    relayStatusMock({ connected: true, companies: ['TUBC'], installId: 'install-1', previewChannels: [url] }),
+    relayStatusMock({
+      connected: true,
+      companies: ['TUBC'],
+      gpCompanies: [gpCompany('TUBC', 'Test UBC')],
+      installId: 'install-1',
+      previewChannels: [url],
+    }),
     installsMock,
     windowMock(null),
   ]);
@@ -343,6 +372,43 @@ it('hides the preview channel block when the relay is dialling none', async () =
   renderPage([statusMock, installsMock, windowMock(null)]);
   await screen.findByRole('button', { name: /adopt next connection/i }, GRID_TIMEOUT);
   expect(screen.queryByText(/preview channels/i)).toBeNull();
+});
+
+// --- provisioning ---------------------------------------------------------------------------------
+
+it('provisions an install from a label alone', async () => {
+  // There is no company list to type: GP dictates what the relay serves, and it reports that on
+  // every connection - a list entered here could only ever be a second, wrong answer.
+  let sentLabel: string | null = null;
+  const provisionMock: MockedResponse = {
+    request: { query: PROVISION_RELAY_INSTALL, variables: { label: 'Tagging workstation' } },
+    result: () => {
+      sentLabel = 'Tagging workstation';
+      return {
+        data: {
+          provisionRelayInstall: {
+            installId: 'install-9',
+            label: 'Tagging workstation',
+            enrollmentToken: 'the-one-time-token',
+            enrollmentTokenExpiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+          },
+        },
+      };
+    },
+  };
+
+  renderPage([statusMock, installsMock, windowMock(null), provisionMock]);
+
+  fireEvent.click(await screen.findByRole('button', { name: /provision install/i }, GRID_TIMEOUT));
+  // Scoped to the dialog: the installs grid carries a 'Label' column header of its own.
+  const dialog = within(await screen.findByRole('dialog', {}, GRID_TIMEOUT));
+  fireEvent.change(dialog.getByLabelText(/label/i), { target: { value: 'Tagging workstation' } });
+  // No company list to tick: the caption says GP reports them, and there is nothing to choose.
+  expect(dialog.queryAllByRole('checkbox')).toHaveLength(0);
+  fireEvent.click(dialog.getByRole('button', { name: /create token/i }));
+
+  await waitFor(() => expect(sentLabel).toBe('Tagging workstation'), GRID_TIMEOUT);
+  expect(await screen.findByText(/enrollment token for Tagging workstation/i, {}, GRID_TIMEOUT)).toBeTruthy();
 });
 
 // --- connection events -------------------------------------------------------------------------

@@ -100,7 +100,6 @@ class RelayInstallProvision:
 
     install_id: strawberry.ID
     label: str
-    companies: list[str]
     enrollment_token: str
     enrollment_token_expires_at: datetime
 
@@ -115,9 +114,6 @@ class RelayEnrollResult:
 class RelayInstallInfo:
     id: strawberry.ID
     label: str
-    # Every GP company this install may be called for (#637). One install can serve several, which is
-    # what the relay's own allowed_companies list always allowed and the backend did not.
-    companies: list[str]
     hostname: str | None
     enrolled: bool
     enrolled_at: datetime | None
@@ -147,12 +143,21 @@ class RelayAdoptWindow:
 
 
 @strawberry.type
+class GpCompany:
+    """One GP company the connected relay serves, as GP names it. `id` is the code every other
+    field in the app compares on; `name` falls back to the code when GP gave none."""
+
+    id: str
+    name: str
+
+
+@strawberry.type
 class RelayStatus:
     connected: bool
-    # Every GP company the connected relay is enrolled for; EMPTY when disconnected (#637). The
-    # PO/receive/adopt dialogs drive their company selection from this so they never offer a company the
-    # live relay can't serve - one it does not list fails every gp_* read and is rejected as
-    # RelayUnavailable (issue #202 #6).
+    # Every GP company the connected relay discovered in GP; EMPTY when disconnected or when discovery
+    # failed (#637). The PO/receive/adopt dialogs drive their company selection
+    # from this so they never offer a company the live relay can't serve - one it does not list fails
+    # every gp_* read and is rejected as RelayUnavailable (issue #202 #6).
     companies: list[str] = strawberry.field(default_factory=list)
     # The connected relay's build tag from its hello frame (issue #315), e.g. 'relay-v0.1.0-build.30'.
     # Null when disconnected, or when an older relay that predates the hello frame is connected. Shown on
@@ -169,10 +174,12 @@ class RelayStatus:
     last_connected_at: datetime | None = None
     last_disconnected_at: datetime | None = None
     last_disconnect_reason: str | None = None
-    # What the connected WORKSTATION says it is configured for, from its hello frame - as opposed to
-    # `companies` above, which is what its install row here permits. Null for a relay that predates the
-    # field. Shown beside the enrolled list so a mismatch is visible before a GP call fails on it.
-    configured_companies: list[str] | None = None
+    # The same companies with GP's display name attached, for pickers that label an option rather than
+    # showing a bare code. Same order and membership as `companies`.
+    gp_companies: list[GpCompany] = strawberry.field(default_factory=list)
+    # Why the connected relay reported no companies - GP unreachable, a relay too old to look. Null when
+    # it reported some, and when nothing is connected. What the pickers show instead of an empty list.
+    companies_error: str | None = None
     # The preview backends this backend is telling the relay to also dial (#654). Non-empty only on
     # production, which is the only environment that keeps a registry.
     preview_channels: list[str] = strawberry.field(default_factory=list)

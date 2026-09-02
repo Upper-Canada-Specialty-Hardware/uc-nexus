@@ -10,7 +10,7 @@ import socket
 from datetime import date
 from decimal import Decimal
 
-from . import buyers, econnect, models
+from . import buyers, companies, econnect, models
 from .config import get_settings
 
 
@@ -37,10 +37,19 @@ class RelayOpError(Exception):
 _MAX_PO_NUMBER = 17
 
 
-def check_company_allowed(company: str) -> None:
-    allowed = get_settings().gp.allowed_companies
-    if company not in allowed:
-        raise RelayOpError("company_not_allowed", f"{company} not in allowed_companies {allowed}")
+def check_company_served(company: str) -> None:
+    """Refuse a company this relay does not serve. The served set is discovered from GP itself
+    (companies.py), so an empty one means the company master could not be read - which is a different
+    thing from "that company exists but is not yours", and the message says which."""
+    served = companies.current()
+    if company in served.companies:
+        return
+    if not served.companies:
+        raise RelayOpError(
+            "company_not_allowed",
+            f"this relay is serving no GP company: {served.error or 'none discovered'}",
+        )
+    raise RelayOpError("company_not_allowed", f"{company} is not a GP company this relay serves {served.companies}")
 
 
 def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> models.CreatePoResponse:

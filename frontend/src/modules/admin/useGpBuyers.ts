@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useQuery } from '@apollo/client/react';
 import { GET_GP_BUYERS_DETAILED } from '../../graphql/admin';
 import { isRelayOpUnsupported } from '../../graphql/gpError';
-import { useRelayStatus } from '../../relay/useRelayStatus';
+import { useRelayStatus, type GpCompany } from '../../relay/useRelayStatus';
 import { useCompanyChoice } from '../../relay/useCompanyChoice';
 
 export interface GpBuyerOption {
@@ -15,8 +15,12 @@ export interface GpBuyersState {
   loading: boolean;
   /** The GP company the list was read for; '' while disconnected or when none applies. */
   company: string;
-  /** #637: every company the live relay serves, for screens that assign one. Empty while down. */
+  /** #637: every company the live relay found in GP, for screens that assign one. Empty while down. */
   companies: string[];
+  /** The same codes with GP's display names, so a picker can offer 'TUBC - Test UBC'. */
+  gpCompanies: GpCompany[];
+  /** Why a connected relay reported none; null when it reported some or nothing is connected. */
+  companiesError: string | null;
   relayConnected: boolean;
   /** null while the first relay-status check is in flight, so "not yet known" isn't shown as "down". */
   relayStatus: boolean | null;
@@ -66,6 +70,8 @@ export function useGpBuyers(options?: { skip?: boolean; company?: string | null 
     loading,
     company,
     companies: relay.companies,
+    gpCompanies: relay.gpCompanies,
+    companiesError: relay.companiesError,
     relayConnected,
     relayStatus: relay.connected,
     unsupported,

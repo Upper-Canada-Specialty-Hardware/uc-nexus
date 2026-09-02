@@ -2,10 +2,10 @@
 path, which the PR that introduced it did not exercise in CI ("channel connect path not exercised").
 
 The route authenticated the relay's secret inside a `with SessionLocal()` block that ran
-session.commit() and then closed, which expired + detached the RelayInstall. Reading install.companies
-afterwards (right after websocket.accept()) raised DetachedInstanceError, tearing down every accepted
-relay socket, so no relay ever registered and relayStatus stayed false. These tests drive the real
-route so that failure mode can't come back unnoticed.
+session.commit() and then closed, which expired + detached the RelayInstall. Reading an attribute off
+it afterwards (right after websocket.accept()) raised DetachedInstanceError, tearing down every
+accepted relay socket, so no relay ever registered and relayStatus stayed false. These tests drive the
+real route so that failure mode can't come back unnoticed.
 """
 
 import asyncio
@@ -58,11 +58,11 @@ def _no_job_sync(monkeypatch):
     monkeypatch.setenv("GP_PO_SYNC_ENABLED", "false")
 
 
-def _enroll_committed(label: str, company: str, secret: str) -> str:
+def _enroll_committed(label: str, secret: str) -> str:
     """Enroll an install and COMMIT it: the route opens its own SessionLocal(), so it only sees
     committed rows, not this test's transaction. Returns the install id for cleanup."""
     with SessionLocal() as session:
-        _, token = relay_repository.provision_install(session, label=label, companies=[company])
+        _, token = relay_repository.provision_install(session, label=label)
         enrolled = relay_repository.enroll_install(session, token, hostname=label, secret=secret)
         install_id = enrolled.id
         session.commit()
@@ -84,15 +84,29 @@ def _wait_until(predicate, timeout: float = 3.0) -> None:
         time.sleep(0.02)
 
 
-def test_relay_link_handshake_registers_the_company(_migrate_database):
+def test_relay_link_handshake_registers_the_companies_the_hello_reports(_migrate_database):
     secret = "relay-link-regression-secret"
-    install_id = _enroll_committed("WS-REGRESSION", "TUBC", secret)
+    install_id = _enroll_committed("WS-REGRESSION", secret)
     try:
         with TestClient(app) as client:
             with client.websocket_connect("/relay-link", headers={"Authorization": f"Bearer {secret}"}) as ws:
                 _wait_until(lambda: gateway.connected)
                 assert gateway.connected is True
+                # The row carries no company list any more; the hello frame is the whole source.
+                assert gateway.companies == []
+                ws.send_json(
+                    {
+                        "type": "hello",
+                        "build": "relay-v0.3.0",
+                        "ops": ["list_vendors"],
+                        "companies": ["TUBC"],
+                        "company_names": {"TUBC": "Test UBC"},
+                        "features": ["channels"],
+                    }
+                )
+                _wait_until(lambda: gateway.companies == ["TUBC"])
                 assert gateway.companies == ["TUBC"]
+                assert gateway.company_names == {"TUBC": "Test UBC"}
                 # Close client-side and let the route's finally unregister BEFORE leaving the context, so
                 # the app task has already returned when the test client tears its portal down. Now that
                 # the route also runs a background heartbeat task, its disconnect teardown yields once,
@@ -120,7 +134,7 @@ def test_relay_link_heartbeat_keeps_a_responsive_relay_connected(_migrate_databa
     # reaps a relay that has gone silent, never one that keeps ponging.
     monkeypatch.setattr(main, "HEARTBEAT_INTERVAL_SECONDS", 0.1)
     secret = "relay-link-heartbeat-alive"
-    install_id = _enroll_committed("WS-HB-ALIVE", "TUBC", secret)
+    install_id = _enroll_committed("WS-HB-ALIVE", secret)
     try:
         with TestClient(app) as client:
             with client.websocket_connect("/relay-link", headers={"Authorization": f"Bearer {secret}"}) as ws:
@@ -143,7 +157,7 @@ def test_relay_link_heartbeat_reaps_a_relay_that_stops_answering(_migrate_databa
     # socket so the gateway unregisters and relayStatus flips, instead of reading connected for ~an hour.
     monkeypatch.setattr(main, "HEARTBEAT_INTERVAL_SECONDS", 0.05)
     secret = "relay-link-heartbeat-drop"
-    install_id = _enroll_committed("WS-HB-DROP", "TUBC", secret)
+    install_id = _enroll_committed("WS-HB-DROP", secret)
     try:
         with TestClient(app) as client:
             try:
@@ -179,7 +193,7 @@ def test_relay_link_serves_a_relay_call_concurrently_with_heartbeat_pings(monkey
     @link_app.websocket("/relay-link")
     async def _link(websocket: WebSocket):  # mirrors main.relay_link's teardown, minus the DB auth
         await websocket.accept()
-        gateway.try_register("TUBC", websocket)
+        gateway.try_register(websocket)
         try:
             await main._serve_relay_link(websocket)
         except WebSocketDisconnect:
@@ -193,6 +207,11 @@ def test_relay_link_serves_a_relay_call_concurrently_with_heartbeat_pings(monkey
     with TestClient(link_app) as client:
         with client.websocket_connect("/relay-link") as ws:
             _wait_until(lambda: gateway.connected)
+
+            # The hello is what tells the gateway which GP companies are servable; without it
+            # relay_call refuses before it ever reaches the wire this test is about.
+            ws.send_json({"type": "hello", "build": "relay-v0.3.0", "ops": None, "companies": ["TUBC"]})
+            _wait_until(lambda: gateway.companies == ["TUBC"])
 
             # Arm the reaper with one pong so it's live for the rest of the exchange, and prove a ping is
             # already flowing before the job goes out.
@@ -270,7 +289,7 @@ def test_serve_relay_link_reraises_a_reader_disconnect():
     # A genuine client disconnect must surface as WebSocketDisconnect so the route's except handles it.
     async def run():
         ws = _FakeRelaySocket([WebSocketDisconnect()])
-        gateway.try_register("TEST", ws)
+        gateway.try_register(ws)
         try:
             with pytest.raises(WebSocketDisconnect):
                 await main._serve_relay_link(ws)
@@ -286,7 +305,7 @@ def test_serve_relay_link_swallows_a_cancelled_reader():
     # there marked the whole route task cancelled, which TestClient surfaced as a CancelledError.
     async def run():
         ws = _FakeRelaySocket([asyncio.CancelledError()])
-        gateway.try_register("TEST", ws)
+        gateway.try_register(ws)
         try:
             await main._serve_relay_link(ws)  # must not raise
         finally:
@@ -304,16 +323,24 @@ def test_relay_link_adopts_an_unknown_secret_while_a_window_is_armed(_migrate_da
     # #353 PR B: the live recovery path. The install's stored secret does NOT match what the relay is
     # dialling with; with a window armed, that connection is accepted and the presented secret is bound.
     relay_adopt.disarm()
-    install_id = _enroll_committed("WS-ADOPT", "TUBC", "the-secret-the-backend-has")
+    install_id = _enroll_committed("WS-ADOPT", "the-secret-the-backend-has")
     try:
         relay_adopt.arm(install_id, "WS-ADOPT", "user_admin")
         with TestClient(app) as client:
             headers = {"Authorization": "Bearer what-the-relay-is-actually-presenting"}
             with client.websocket_connect("/relay-link", headers=headers) as ws:
                 # An adopted socket must prove it speaks the relay protocol before it is trusted.
-                ws.send_json({"type": "hello", "build": "relay-v0.1.0-build.42", "ops": ["list_vendors"]})
+                ws.send_json(
+                    {
+                        "type": "hello",
+                        "build": "relay-v0.1.0-build.42",
+                        "ops": ["list_vendors"],
+                        "companies": ["TUBC"],
+                    }
+                )
                 _wait_until(lambda: gateway.connected)
                 assert gateway.connected is True
+                _wait_until(lambda: gateway.companies == ["TUBC"])
                 assert gateway.companies == ["TUBC"]
                 _wait_until(lambda: gateway.build == "relay-v0.1.0-build.42")
                 assert gateway.build == "relay-v0.1.0-build.42"
@@ -342,7 +369,7 @@ def test_relay_link_adopts_an_unknown_secret_while_a_window_is_armed(_migrate_da
 def test_relay_link_still_rejects_an_unknown_secret_with_no_window_armed(_migrate_database):
     # The gate only opens when an admin opens it: no window means the pre-adopt behaviour, verbatim.
     relay_adopt.disarm()
-    install_id = _enroll_committed("WS-NO-ADOPT", "TUBC", "stored-secret")
+    install_id = _enroll_committed("WS-NO-ADOPT", "stored-secret")
     try:
         with TestClient(app) as client:
             try:
@@ -375,7 +402,7 @@ def test_serve_relay_link_accepts_an_adopted_socket_that_says_hello():
                 WebSocketDisconnect(),
             ]
         )
-        gateway.try_register("TEST", ws)
+        gateway.try_register(ws)
         try:
             with pytest.raises(WebSocketDisconnect):
                 await main._serve_relay_link(ws, require_hello=True)
@@ -397,7 +424,7 @@ def test_read_loop_records_the_relay_hello_frame(monkeypatch):
                 WebSocketDisconnect(),
             ]
         )
-        gateway.try_register("TEST", ws)
+        gateway.try_register(ws)
         try:
             with pytest.raises(WebSocketDisconnect):
                 await main._relay_read_loop(ws)
@@ -428,13 +455,13 @@ class _FakeInfo:
 
 def test_delete_refuses_the_install_holding_the_live_connection(_migrate_database):
     """Revoking the secret under a running relay would take GP down mid-write, so the resolver refuses
-    it. This drives the real route because the id it compares against is set by the route - reading
-    install.id in the same pre-commit block as install.companies, per the DetachedInstanceError rule."""
+    it. This drives the real route because the id it compares against is set by the route - read while
+    the row is still bound to the session, per the DetachedInstanceError rule."""
     from app.errors import ConflictError
     from app.schemas.relay import RelayMutations
 
     secret = "relay-link-delete-guard-secret"
-    install_id = _enroll_committed("WS-DELETE-GUARD", "TUBC", secret)
+    install_id = _enroll_committed("WS-DELETE-GUARD", secret)
     try:
         with TestClient(app) as client:
             with client.websocket_connect("/relay-link", headers={"Authorization": f"Bearer {secret}"}) as ws:
@@ -458,8 +485,8 @@ def test_delete_allows_a_different_disconnected_install_while_one_is_live(_migra
     from app.schemas.relay import RelayMutations
 
     live_secret = "relay-link-delete-live-secret"
-    live_id = _enroll_committed("WS-DELETE-LIVE", "TUBC", live_secret)
-    other_id = _enroll_committed("WS-DELETE-OTHER", "TUBC", "relay-link-delete-other-secret")
+    live_id = _enroll_committed("WS-DELETE-LIVE", live_secret)
+    other_id = _enroll_committed("WS-DELETE-OTHER", "relay-link-delete-other-secret")
     try:
         with TestClient(app) as client:
             with client.websocket_connect("/relay-link", headers={"Authorization": f"Bearer {live_secret}"}) as ws:
@@ -501,7 +528,7 @@ def test_the_read_loop_pushes_the_preview_channels_after_a_hello(monkeypatch):
                 WebSocketDisconnect(),
             ]
         )
-        gateway.try_register("TUBC", ws)
+        gateway.try_register(ws)
         try:
             with pytest.raises(WebSocketDisconnect):
                 await main._relay_read_loop(ws)
@@ -525,7 +552,7 @@ def test_a_relay_that_does_not_advertise_the_feature_is_pushed_nothing(monkeypat
                 WebSocketDisconnect(),
             ]
         )
-        gateway.try_register("TUBC", ws)
+        gateway.try_register(ws)
         try:
             with pytest.raises(WebSocketDisconnect):
                 await main._relay_read_loop(ws)
@@ -549,7 +576,7 @@ def test_an_adopted_socket_is_pushed_the_channels_too(monkeypatch):
                 WebSocketDisconnect(),
             ]
         )
-        gateway.try_register("TUBC", ws)
+        gateway.try_register(ws)
         try:
             with pytest.raises(WebSocketDisconnect):
                 await main._serve_relay_link(ws, require_hello=True)
@@ -595,7 +622,7 @@ def test_a_connection_records_the_build_the_hello_advertised(_migrate_database, 
     monkeypatch.setattr(main.relay_events, "write", _capture)
 
     secret = "relay-link-connected-event-secret"
-    install_id = _enroll_committed("WS-CONNECTED-EVENT", "TUBC", secret)
+    install_id = _enroll_committed("WS-CONNECTED-EVENT", secret)
     try:
         with TestClient(app) as client:
             with client.websocket_connect("/relay-link", headers={"Authorization": f"Bearer {secret}"}) as ws:

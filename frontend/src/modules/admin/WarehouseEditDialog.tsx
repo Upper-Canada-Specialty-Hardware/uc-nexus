@@ -7,7 +7,8 @@ import { CREATE_WAREHOUSE, UPDATE_WAREHOUSE } from '../../graphql/admin';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { useCompanyChoice } from '../../relay/useCompanyChoice';
-import { FONT_MONO, microLabelSx, monoSx } from '../../theme';
+import GpCompanyLabel from '../../relay/GpCompanyLabel';
+import { FONT_MONO, microLabelSx } from '../../theme';
 
 export interface WarehouseFormValue {
   id?: string;
@@ -201,10 +202,11 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
             size="small"
             disabled={companyLocked}
             sx={{ width: 140, '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
+            slotProps={{ select: { renderValue: (v) => String(v) } }}
           >
             {companyOptions.map((c) => (
-              <MenuItem key={c} value={c} sx={monoSx}>
-                {c}
+              <MenuItem key={c} value={c}>
+                <GpCompanyLabel code={c} gpCompanies={relay.gpCompanies} />
               </MenuItem>
             ))}
           </TextField>

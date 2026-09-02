@@ -9,9 +9,6 @@ import {
   DialogContent,
   DialogActions,
   TextField,
-  Checkbox,
-  FormGroup,
-  FormControlLabel,
   Alert,
   AlertTitle,
   Chip,
@@ -26,7 +23,7 @@ import {
   Tooltip,
 } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
-import { Copy, TriangleAlert } from 'lucide-react';
+import { Copy } from 'lucide-react';
 import { useQuery, useMutation } from '@apollo/client/react';
 import {
   RELAY_INSTALLS,
@@ -42,20 +39,15 @@ import GpWriteQueuePanel from './GpWriteQueuePanel';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useRelayStatus } from '../../relay/useRelayStatus';
+import GpCompanyLabel from '../../relay/GpCompanyLabel';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { FONT_MONO, microLabelSx, monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
 
-// The GP companies a relay may be provisioned for. Matches the relay's baked KNOWN_COMPANIES; the relay's
-// own Setup tab must list the same companies as the token it enrolls with.
-const COMPANIES = ['TUBC', 'TUCSH', 'UBC', 'UCSH'];
-
 interface RelayInstall {
   id: string;
   label: string;
-  // #637: one relay can serve several GP companies, so this is a list rather than a single value.
-  companies: string[];
   hostname: string | null;
   enrolled: boolean;
   enrolledAt: string | null;
@@ -69,7 +61,6 @@ interface RelayInstall {
 interface Provisioned {
   installId: string;
   label: string;
-  companies: string[];
   enrollmentToken: string;
   enrollmentTokenExpiresAt: string;
 }
@@ -194,7 +185,6 @@ export default function RelayInstallsPage() {
 
   const [provisionOpen, setProvisionOpen] = useState(false);
   const [label, setLabel] = useState('');
-  const [companies, setCompanies] = useState<string[]>(['TUBC']);
   const [provisioned, setProvisioned] = useState<Provisioned | null>(null);
 
   const { data, loading } = useQuery<{ relayInstalls: RelayInstall[] }>(RELAY_INSTALLS, {
@@ -237,17 +227,6 @@ export default function RelayInstallsPage() {
   const [deleteTarget, setDeleteTarget] = useState<RelayInstall | null>(null);
   const liveInstallId = relay.installId;
   const [, setTick] = useState(0);
-
-  // What the workstation is configured for decides what it can actually serve. An install enrolled
-  // for a company the relay was never set up for looks healthy here and quietly serves nothing, so
-  // name the gap rather than leaving it to a failed write to surface.
-  const missingCompanies = useMemo(() => {
-    if (!relay.connected || !relay.configuredCompanies) return [];
-    const live = installs.find((i) => i.id === liveInstallId);
-    if (!live) return [];
-    const configured = new Set(relay.configuredCompanies);
-    return live.companies.filter((c) => !configured.has(c));
-  }, [relay.connected, relay.configuredCompanies, installs, liveInstallId]);
 
   useEffect(() => {
     if (!adoptWindow) return;
@@ -296,22 +275,13 @@ export default function RelayInstallsPage() {
     },
   );
 
-  const toggleCompany = useCallback((c: string) => {
-    setCompanies((prev) => (prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]));
-  }, []);
-
   const handleProvision = useCallback(() => {
     if (!label.trim()) {
       showToast('Label is required', 'error');
       return;
     }
-    // A token enrolled for no company would connect and serve nothing.
-    if (companies.length === 0) {
-      showToast('Pick at least one GP company', 'error');
-      return;
-    }
-    provision({ variables: { label: label.trim(), companies } });
-  }, [label, companies, provision, showToast]);
+    provision({ variables: { label: label.trim() } });
+  }, [label, provision, showToast]);
 
   // The relay's own Setup tab is the primary enroll path (it knows the backend URL); this CLI line is the
   // alternative. VITE_GRAPHQL_URL is the backend the frontend talks to.
@@ -342,20 +312,6 @@ export default function RelayInstallsPage() {
           <Box component="span" sx={{ ...monoSx, fontWeight: 600 }}>
             {p.row.label}
           </Box>
-        ),
-      },
-      {
-        // #637: the companies this install serves. A designation, not a system state - ink tags.
-        field: 'companies',
-        headerName: 'Companies',
-        width: 190,
-        sortable: false,
-        renderCell: (p) => (
-          <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ py: 0.5 }}>
-            {(p.row.companies as string[]).map((c) => (
-              <Chip key={c} label={c} size="small" variant="outlined" sx={{ fontFamily: FONT_MONO }} />
-            ))}
-          </Stack>
         ),
       },
       {
@@ -513,7 +469,7 @@ export default function RelayInstallsPage() {
             </Typography>
           </Box>
           <Stack direction="row" spacing={2} alignItems="center">
-            <RelayStatusChip connected={relay.connected} companies={relay.companies} />
+            <RelayStatusChip connected={relay.connected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
             {/* Issue #315: show the live relay build so an out-of-date relay is visible at a glance. A
                 connected relay too old to advertise its build (pre-hello-frame) reports null -> 'build
                 unknown', itself a signal it needs updating. */}
@@ -532,8 +488,8 @@ export default function RelayInstallsPage() {
         </Stack>
       </FadeIn>
 
-      {/* Link health on one line: when it last came up, when it last went down and why, and the
-          config mismatches that make a "connected" relay serve nothing. */}
+      {/* Link health on one line: when it last came up, when it last went down and why, and what GP
+          gave the connected relay to serve. */}
       <Stack
         direction="row"
         spacing={2}
@@ -563,16 +519,22 @@ export default function RelayInstallsPage() {
           title={relay.lastDisconnectedAt ? fmtDate(relay.lastDisconnectedAt) : undefined}
         />
         {relay.lastDisconnectReason && <StripField label="Reason" value={relay.lastDisconnectReason} />}
-        {/* The hue is carried by the icon, not the sentence: warning-on-paper prose would sit under
-            the 4.5:1 the rest of this app holds to. */}
-        {missingCompanies.length > 0 && (
-          <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
-            <Box component="span" sx={{ color: 'warning.main', display: 'flex' }}>
-              <TriangleAlert size={14} strokeWidth={2} />
+        {/* What GP hands the relay, which is the whole of what any picker in the app can offer.
+            Only rendered when there is something to render - an empty group is a labelled blank. */}
+        {relay.gpCompanies.length > 0 && (
+          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
+            <Box component="span" sx={microLabelSx}>
+              GP companies
             </Box>
-            <Typography variant="body2" sx={{ fontWeight: 600 }}>
-              workstation config lacks {missingCompanies.join(', ')}
-            </Typography>
+            {relay.gpCompanies.map((c) => (
+              <Chip
+                key={c.id}
+                size="small"
+                variant="outlined"
+                label={<GpCompanyLabel code={c.id} gpCompanies={relay.gpCompanies} />}
+                sx={{ textTransform: 'none' }}
+              />
+            ))}
           </Stack>
         )}
         {/* Production only: the preview environments this relay is also dialling. Empty everywhere
@@ -595,6 +557,15 @@ export default function RelayInstallsPage() {
           </Stack>
         )}
       </Stack>
+
+      {/* A connected relay that found no companies in GP serves nothing, and every picker in the app is
+          empty until it does. The relay's own reason is the only thing that names the fix. */}
+      {relay.companiesError && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          <AlertTitle>The relay reported no GP companies</AlertTitle>
+          <Typography variant="body2">{relay.companiesError}</Typography>
+        </Alert>
+      )}
 
       {/* An open adopt window is real system state with a real security cost, which DESIGN.md reserves
           status colour for: it stays loud until it is consumed or cancelled. */}
@@ -625,9 +596,7 @@ export default function RelayInstallsPage() {
 
       {provisioned && (
         <Alert severity="success" onClose={() => setProvisioned(null)} sx={{ mb: 2 }}>
-          <AlertTitle>
-            Enrollment token for {provisioned.label} ({provisioned.companies.join(', ')})
-          </AlertTitle>
+          <AlertTitle>Enrollment token for {provisioned.label}</AlertTitle>
           <Typography variant="body2" sx={{ mb: 1 }}>
             Shown once. Expires {fmtDate(provisioned.enrollmentTokenExpiresAt)}. Copy it now.
           </Typography>
@@ -775,32 +744,11 @@ export default function RelayInstallsPage() {
               fullWidth
               autoFocus
             />
-            {/* #637: one install can serve several companies, so this is a set rather than a pick.
-                Four options, ever - checkboxes in a row read faster than a multi-select and cost
-                the dialog no extra height. */}
-            <Box>
-              <Typography component="div" sx={{ ...microLabelSx, mb: 0.5 }}>
-                GP companies
-              </Typography>
-              <FormGroup row sx={{ gap: 0.5 }}>
-                {COMPANIES.map((c) => (
-                  <FormControlLabel
-                    key={c}
-                    control={
-                      <Checkbox size="small" checked={companies.includes(c)} onChange={() => toggleCompany(c)} />
-                    }
-                    label={
-                      <Box component="span" sx={monoSx}>
-                        {c}
-                      </Box>
-                    }
-                  />
-                ))}
-              </FormGroup>
-              <Typography variant="caption" color="text.secondary">
-                The relay's Setup tab must be set to these same companies.
-              </Typography>
-            </Box>
+            {/* No company list to pick: the relay reads GP's company master and reports what it
+                finds on every connection, so an install is a credential and a label. */}
+            <Typography variant="caption" color="text.secondary">
+              Nothing to pick here: the relay reports the companies GP holds each time it connects.
+            </Typography>
           </Stack>
         </DialogContent>
         <DialogActions>

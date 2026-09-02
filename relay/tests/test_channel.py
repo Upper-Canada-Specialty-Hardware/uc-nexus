@@ -36,6 +36,13 @@ def _no_real_sql(monkeypatch):
     monkeypatch.setattr(db, "get_connection", _fake_connection)
 
 
+@pytest.fixture(autouse=True)
+def _served(serving):
+    """Every handler calls ops.check_company_served first, and the served set is discovered from GP
+    (companies.py) rather than configured - so a dispatch test has to say what this relay found."""
+    serving(["TUBC", "TUCSH", "UBC", "UCSH"])
+
+
 def test_list_vendors_routes_to_econnect(monkeypatch):
     monkeypatch.setattr(econnect, "list_vendors", lambda conn, active_only=True: [{"vendor_id": "V1"}])
     reply = channel._dispatch("list_vendors", "TUBC", {})
@@ -484,13 +491,15 @@ def test_hello_frame_advertises_build_and_the_full_op_set():
     assert isinstance(frame["version"], str) and frame["version"]
 
 
-def test_hello_frame_names_the_companies_this_workstation_serves(monkeypatch):
-    # ops.check_company_allowed refuses anything outside [gp] allowed_companies, so a backend that does
-    # not know the list can only find that out by making the call and being told no.
-    from ucnexus_relay.config import GpCfg, Settings
-
-    monkeypatch.setattr(channel, "get_settings", lambda *a, **k: Settings(gp=GpCfg(allowed_companies=["TUBC", "UBC"])))
-    assert channel._hello_frame()["companies"] == ["TUBC", "UBC"]
+def test_hello_frame_names_the_companies_this_workstation_serves(serving):
+    # ops.check_company_served refuses anything this relay did not find in GP, so a backend that does
+    # not know the set can only find that out by making the call and being told no. Discovery itself is
+    # covered in test_companies.py.
+    serving(["TUBC", "UBC"], {"TUBC": "Test Upper Canada", "UBC": "Upper Canada"})
+    frame = channel._hello_frame()
+    assert frame["companies"] == ["TUBC", "UBC"]
+    assert frame["company_names"] == {"TUBC": "Test Upper Canada", "UBC": "Upper Canada"}
+    assert frame["companies_error"] is None
 
 
 def test_hello_frame_advertises_the_channels_feature():

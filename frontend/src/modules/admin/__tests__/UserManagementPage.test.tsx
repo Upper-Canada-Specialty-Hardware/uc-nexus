@@ -74,12 +74,18 @@ function relayStatusMock(connected: boolean): MockedResponse {
         relayStatus: {
           connected,
           companies: connected ? [COMPANY, 'UCSH'] : [],
+          gpCompanies: connected
+            ? [
+                { id: COMPANY, name: 'Test UBC', __typename: 'GpCompany' },
+                { id: 'UCSH', name: 'UC Shop', __typename: 'GpCompany' },
+              ]
+            : [],
+          companiesError: null,
           build: connected ? 'relay-v0.1.0-build.40' : null,
           installId: connected ? 'install-1' : null,
           lastConnectedAt: null,
           lastDisconnectedAt: null,
           lastDisconnectReason: null,
-          configuredCompanies: null,
           previewChannels: [],
           __typename: 'RelayStatus',
         },
@@ -241,9 +247,10 @@ test('saving an unchanged buyer does not re-write it to Clerk', async () => {
 
 // --- company assignment (#637) -------------------------------------------------------------------
 
-test('the company field offers the companies the relay serves, plus a clear option', async () => {
-  // A tenant IS a GP company, so this field decides what the account can see at all. The options are
-  // the live relay's, not a hardcoded list that would drift the moment a company is added.
+test('the company field offers the companies the relay serves, named as GP names them', async () => {
+  // A tenant IS a GP company, so this field decides what the account can see at all. The options come
+  // from GP through the live relay, and each carries GP's own name - a bare code says nothing
+  // about which company it is.
   renderPage([relayStatusMock(true), usersMock(), buyersMock]);
 
   await openEditDialog();
@@ -251,8 +258,8 @@ test('the company field offers the companies the relay serves, plus a clear opti
   fireEvent.mouseDown(field);
 
   const options = await screen.findByRole('listbox');
-  expect(within(options).getByRole('option', { name: 'TUBC' })).toBeInTheDocument();
-  expect(within(options).getByRole('option', { name: 'UCSH' })).toBeInTheDocument();
+  expect(within(options).getByRole('option', { name: 'TUBC Test UBC' })).toBeInTheDocument();
+  expect(within(options).getByRole('option', { name: 'UCSH UC Shop' })).toBeInTheDocument();
   expect(within(options).getByRole('option', { name: /none/i })).toBeInTheDocument();
 });
 
@@ -275,7 +282,8 @@ test('assigning a company writes it through updateUserCompany', async () => {
 
   await openEditDialog();
   fireEvent.mouseDown(await screen.findByRole('combobox', { name: /^Company$/i }));
-  fireEvent.click(await screen.findByRole('option', { name: 'UCSH' }));
+  // The option is labelled, but the value written is the bare code GP compares on.
+  fireEvent.click(await screen.findByRole('option', { name: 'UCSH UC Shop' }));
   fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
 
   await waitFor(() => expect(written).toBe('UCSH'), GRID_TIMEOUT);
@@ -322,5 +330,36 @@ test('with the relay down the stored company shows read-only, with the reason', 
   const field = (await screen.findByLabelText(/^Company$/i)) as HTMLInputElement;
   expect(field).toBeDisabled();
   expect(field.value).toBe('TUBC');
-  expect(screen.getByText(/relay must be connected to change this/i)).toBeInTheDocument();
+  expect(screen.getByText(/relay must be connected and reporting its GP companies/i)).toBeInTheDocument();
+});
+
+test('a connected relay that reported no companies locks the field with its own reason', async () => {
+  // Connected is not the same as servable: GP's company master is what fills this picker, and
+  // when the relay could not read it the relay's reason is the only thing that names the fix.
+  const failedDiscovery: MockedResponse = {
+    request: { query: GET_RELAY_STATUS },
+    maxUsageCount: INFINITE,
+    result: {
+      data: {
+        relayStatus: {
+          connected: true,
+          companies: [],
+          gpCompanies: [],
+          companiesError: 'could not read the GP company master: login failed for user sa',
+          build: 'relay-v0.3.0',
+          installId: 'install-1',
+          lastConnectedAt: null,
+          lastDisconnectedAt: null,
+          lastDisconnectReason: null,
+          previewChannels: [],
+          __typename: 'RelayStatus',
+        },
+      },
+    },
+  };
+  renderPage([failedDiscovery, usersMock({ ...USER, company: 'TUBC' })]);
+
+  await openEditDialog();
+  expect((await screen.findByLabelText(/^Company$/i)) as HTMLInputElement).toBeDisabled();
+  expect(screen.getByText(/login failed for user sa/i)).toBeInTheDocument();
 });

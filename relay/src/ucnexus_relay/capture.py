@@ -5,9 +5,10 @@ The snapshot checked in at relay/fixtures/gp-snapshot.json is synthetic, written
 container has something to serve on day one. This is how it gets replaced with the real sandbox
 companies: run it on the workstation, which is the only machine that can reach GP, and commit the file
 it writes. Read-only throughout - every call here is one of the list_/read_ handlers the channel already
-serves, so capturing costs GP nothing it is not asked for a hundred times a day anyway.
+serves (bar one plain SELECT for the company name, below), so capturing costs GP nothing it is not asked
+for a hundred times a day anyway.
 
-Three things GP holds that no read op exposes, and what is written instead:
+Four things GP holds that no read op exposes, and what is written instead:
 
   - GL00105, the account master. Not read at all. A job's usable cost codes are stored at account index
     0 ("GP picks the account at posting time"), which is usable in the fixture for the same reason it is
@@ -18,6 +19,10 @@ Three things GP holds that no read op exposes, and what is written instead:
     dangles still is.
   - the PO and receipt counters. Reserving a number is a WRITE, so the PO counter is derived as one past
     the highest number captured and the receipt counter starts fresh.
+  - the company's display name, SY01500.CMPNYNAM. Read here with a plain SELECT against the GP system
+    database, because that name is what a workstation relay discovers (companies.py) and a fixture relay
+    should report the same thing. A read that fails leaves the field out entirely rather than writing a
+    guess; discovery then falls back to the company code, as it does for any older snapshot.
 """
 
 import argparse
@@ -27,6 +32,8 @@ from datetime import datetime
 from pathlib import Path
 
 from . import db, econnect
+from .companies import COMPANY_NAME_QUERY
+from .config import get_settings
 from .fixture_ops import SNAPSHOT_FORMAT, SNAPSHOT_VERSION, next_number
 
 _PAGE_SIZE = 300
@@ -204,9 +211,26 @@ def capture_company(conn) -> dict:
     }
 
 
+def _company_name(open_connection, company: str) -> str | None:
+    """One company's display name out of the company master, or None if it cannot be read.
+
+    The master lives in the GP SYSTEM database, not the company's own, so this opens its own connection
+    there. None rather than a fallback on failure: the field is then absent from the snapshot and
+    discovery falls back to the code, which is the honest answer for a name nobody read."""
+    system_db = get_settings().sql.system_db
+    try:
+        with open_connection(system_db) as conn:
+            row = conn.cursor().execute(COMPANY_NAME_QUERY, company).fetchone()
+    except Exception as e:  # noqa: BLE001 - a name is a nicety; a capture must not die for one
+        print(f"{company}: could not read its name from {system_db} ({e}); leaving it out", file=sys.stderr)
+        return None
+    return (str(row[0]).strip() or None) if row and row[0] is not None else None
+
+
 def capture(companies: list[str], out_path: str | Path, *, connect=None) -> dict:
     """Read `companies` out of GP and write the snapshot to `out_path`. `connect` is the read-connection
-    factory, injectable so the tests can drive this with a fake connection instead of a GP one."""
+    factory, injectable so the tests can drive this with a fake connection instead of a GP one. It takes
+    a DATABASE name - each company's own, then the system database for the name read."""
     open_connection = connect or db.get_read_connection
     snapshot = {
         "format": SNAPSHOT_FORMAT,
@@ -217,7 +241,9 @@ def capture(companies: list[str], out_path: str | Path, *, connect=None) -> dict
     }
     for company in companies:
         with open_connection(company) as conn:
-            snapshot["companies"][company] = capture_company(conn)
+            record = capture_company(conn)
+        name = _company_name(open_connection, company)
+        snapshot["companies"][company] = {"name": name, **record} if name else record
     path = Path(out_path)
     if path.parent != Path():
         path.parent.mkdir(parents=True, exist_ok=True)

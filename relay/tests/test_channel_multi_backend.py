@@ -134,7 +134,7 @@ def test_a_test_channel_also_serves_WRITES_against_the_sandbox(monkeypatch):
 
 
 def test_the_production_channel_is_not_restricted_by_this_gate(monkeypatch):
-    # None = unrestricted; [gp] allowed_companies alone governs production, exactly as before #414.
+    # None = unrestricted; the companies discovered in GP alone govern production, as before #414.
     calls = _sentinel_op(monkeypatch)
     reply = channel._dispatch("spy_op", "UCSH", {}, channel_allowed_companies(PRODUCTION_BACKEND_URL))
     assert reply == {"ok": True, "result": {"ok": 1}}

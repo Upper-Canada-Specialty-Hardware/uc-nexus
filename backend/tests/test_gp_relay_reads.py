@@ -15,7 +15,7 @@ import pytest
 
 from app.auth import ADMIN_ROLE
 from app.auth_policy import ROOT_FIELD_POLICY, SIGNED_IN
-from app.errors import ValidationError
+from app.errors import RelayUnavailableError, ValidationError
 from app.schemas import relay as relay_module
 from app.schemas.enums import RelayEventKind
 from app.schemas.queries import Query
@@ -30,9 +30,11 @@ class FakeInfo:
 
 
 class FakeGateway:
-    def __init__(self, result, companies=("TUBC",)):
+    def __init__(self, result, companies=("TUBC",), company_names=None, companies_error=None):
         self.result = result
         self.companies = list(companies)
+        self.company_names = dict(company_names or {})
+        self.companies_error = companies_error
         self.calls: list[tuple] = []
 
     async def relay_call(self, company, op, payload=None, timeout=None):
@@ -230,11 +232,14 @@ def test_relay_status_resolver_reads_gateway_connected(monkeypatch):
     # #637: empty rather than null when nothing is connected - the dialogs read it as a list of
     # companies they may offer, and there are none.
     assert status.companies == []
+    assert status.gp_companies == []
+    # Null, not a reason: nothing is connected, which is its own explanation.
+    assert status.companies_error is None
 
 
 def test_a_read_for_a_company_the_relay_does_not_serve_is_refused(monkeypatch):
-    """#637: a relay enrolled for TUBC cannot answer for UCSH, so the request is refused here naming
-    what IS available rather than after a 30-second round trip."""
+    """#637: a relay serving TUBC cannot answer for UCSH, so the request is refused here naming what
+    IS available rather than after a 30-second round trip."""
     _install_fake_gateway(monkeypatch, {"jobs": []})
 
     async def run():
@@ -361,15 +366,21 @@ def test_relay_status_reports_the_last_connect_disconnect_and_reason(monkeypatch
     # The half of the answer that matters when nothing is connected: when it went, and why.
     gateway = RelayGateway()
     ws = object()
-    gateway.try_register(["TUBC"], ws)
-    gateway.note_hello("relay-v0.2.0", ["list_vendors"], ["TUBC", "TUCSH"], ["channels"])
+    gateway.try_register(ws)
+    gateway.note_hello(
+        "relay-v0.3.0",
+        ["list_vendors"],
+        ["TUBC", "TUCSH"],
+        ["channels"],
+        {"TUBC": "Test UBC"},
+    )
     monkeypatch.setattr(relay_module, "relay_gateway", gateway)
 
     status = Query().relay_status(FakeInfo())
     assert status.connected is True
     assert status.last_connected_at is not None
     assert status.last_disconnected_at is None
-    assert status.configured_companies == ["TUBC", "TUCSH"]
+    assert status.companies == ["TUBC", "TUCSH"]
 
     gateway.unregister(ws)
     after = Query().relay_status(FakeInfo())
@@ -377,6 +388,47 @@ def test_relay_status_reports_the_last_connect_disconnect_and_reason(monkeypatch
     assert after.last_connected_at == status.last_connected_at  # survives the disconnect
     assert after.last_disconnected_at is not None
     assert after.last_disconnect_reason
+
+
+def test_relay_status_labels_the_companies_with_gps_own_names(monkeypatch):
+    # The pickers show "TUBC - Test UBC"; a code GP gave no name for falls back to the bare code so a
+    # partial answer is still a usable list.
+    gateway = RelayGateway()
+    gateway.try_register(object())
+    gateway.note_hello("relay-v0.3.0", ["list_vendors"], ["TUBC", "UCSH"], ["channels"], {"TUBC": "Test UBC"})
+    monkeypatch.setattr(relay_module, "relay_gateway", gateway)
+
+    status = Query().relay_status(FakeInfo())
+    assert [(c.id, c.name) for c in status.gp_companies] == [("TUBC", "Test UBC"), ("UCSH", "UCSH")]
+    assert status.companies_error is None
+
+
+def test_relay_status_surfaces_why_a_connected_relay_reported_no_companies(monkeypatch):
+    gateway = RelayGateway()
+    gateway.try_register(object())
+    gateway.note_hello("relay-v0.3.0", ["list_vendors"], [], ["channels"], {}, "GP is unreachable")
+    monkeypatch.setattr(relay_module, "relay_gateway", gateway)
+
+    status = Query().relay_status(FakeInfo())
+    assert status.connected is True
+    assert status.companies == []
+    assert status.gp_companies == []
+    assert status.companies_error == "GP is unreachable"
+
+
+def test_a_read_is_refused_with_the_relays_own_reason_when_it_serves_nothing(monkeypatch):
+    # Connected but with no company master: the relay's reason is the only thing that names the fix,
+    # so it rides the error instead of the generic "the relay is not connected".
+    monkeypatch.setattr(
+        relay_module, "relay_gateway", FakeGateway({"jobs": []}, companies=(), companies_error="GP is unreachable")
+    )
+
+    async def run():
+        return await Query().gp_jobs(FakeInfo(), company="TUBC")
+
+    with pytest.raises(RelayUnavailableError) as e:
+        asyncio.run(run())
+    assert "GP is unreachable" in str(e.value)
 
 
 def test_relay_status_carries_the_preview_channels_it_is_pushing(monkeypatch):

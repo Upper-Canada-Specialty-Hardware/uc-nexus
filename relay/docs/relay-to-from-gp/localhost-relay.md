@@ -248,10 +248,11 @@ Configuration introspection. Auth required.
 ```json
 {
   "version": "0.1.0",
-  "configured_companies": ["TUBC"],
+  "companies": ["TUBC"],
+  "company_names": {"TUBC": "TUBC"},
+  "companies_error": null,
   "sql_server": "UCSHSQL2\\MSSQL2014",
   "connected_as": "UPPERCANADA\\jayp",
-  "default_company": "TUBC",
   "odbc_driver": "ODBC Driver 18 for SQL Server"
 }
 ```
@@ -897,8 +898,7 @@ connection_timeout = 10
 command_timeout = 30
 
 [gp]
-default_company = "TUBC"
-allowed_companies = ["TUBC"]
+# the companies this relay serves are read from GP's company master (SY01500), not listed here
 
 [logging]
 level = "INFO"

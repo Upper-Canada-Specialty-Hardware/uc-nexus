@@ -27,7 +27,6 @@ def test_missing_config_plus_env_is_a_complete_relay(tmp_path, monkeypatch):
     monkeypatch.setenv("UCNEXUS_RELAY_FIXTURE_PATH", "/app/fixtures/gp-snapshot.json")
     monkeypatch.setenv("UCNEXUS_RELAY_SHARED_SECRET", "container-secret")
     monkeypatch.setenv("UCNEXUS_RELAY_BACKEND_URL", "wss://backend-pr-999.up.railway.app/relay-link")
-    monkeypatch.setenv("UCNEXUS_RELAY_COMPANIES", "TUCSH, TUBC")
     monkeypatch.setenv("UCNEXUS_RELAY_LOG_FILE", "-")
 
     s = get_settings(str(tmp_path / "does-not-exist" / "config.toml"))
@@ -36,31 +35,26 @@ def test_missing_config_plus_env_is_a_complete_relay(tmp_path, monkeypatch):
     assert s.gp.fixture_path == "/app/fixtures/gp-snapshot.json"
     assert s.auth.shared_secret == "container-secret"
     assert s.channel.backend_url == "wss://backend-pr-999.up.railway.app/relay-link"
-    # first entry of the list is the default company, and the whole list is what's allowed
-    assert s.gp.allowed_companies == ["TUCSH", "TUBC"]
-    assert s.gp.default_company == "TUCSH"
     assert s.logging.file == "-"
+    # No company variable: a fixture relay serves the snapshot's own companies, discovered from it the
+    # same way a workstation relay discovers GP's (companies.py).
 
 
 def test_defaults_are_unchanged_without_the_env(tmp_path):
     s = get_settings(str(tmp_path / "nothing" / "config.toml"))
     assert s.gp.mode == "sql"
     assert s.gp.fixture_path is None
-    assert s.gp.allowed_companies == ["TUBC"]
     assert s.logging.file == "relay.log"
 
 
 def test_env_wins_over_the_file(tmp_path, monkeypatch):
     cfg = tmp_path / "config.toml"
-    cfg.write_text(
-        '[auth]\nshared_secret = "from-the-file"\n\n[gp]\nallowed_companies = ["UBC"]\ndefault_company = "UBC"\n',
-        encoding="utf-8",
-    )
+    cfg.write_text('[auth]\nshared_secret = "from-the-file"\n\n[gp]\nmode = "sql"\n', encoding="utf-8")
     monkeypatch.setenv("UCNEXUS_RELAY_SHARED_SECRET", "from-the-env")
-    monkeypatch.setenv("UCNEXUS_RELAY_COMPANIES", "TUBC")
+    monkeypatch.setenv("UCNEXUS_RELAY_MODE", "fixture")
     s = get_settings(str(cfg))
     assert s.auth.shared_secret == "from-the-env"
-    assert s.gp.allowed_companies == ["TUBC"]
+    assert s.gp.mode == "fixture"
 
 
 def test_env_secret_is_taken_verbatim_and_never_decrypted(tmp_path, monkeypatch):
@@ -70,13 +64,6 @@ def test_env_secret_is_taken_verbatim_and_never_decrypted(tmp_path, monkeypatch)
     cfg.write_text('[auth]\nshared_secret = "enc:dpapi:bm90LWEtcmVhbC1ibG9i"\n', encoding="utf-8")
     monkeypatch.setenv("UCNEXUS_RELAY_SHARED_SECRET", "plaintext-from-env")
     assert get_settings(str(cfg)).auth.shared_secret == "plaintext-from-env"
-
-
-def test_blank_companies_list_is_ignored(tmp_path, monkeypatch):
-    # An empty variable must not leave the relay allowed to serve nothing at all.
-    monkeypatch.setenv("UCNEXUS_RELAY_COMPANIES", " , ")
-    s = get_settings(str(tmp_path / "config.toml"))
-    assert s.gp.allowed_companies == ["TUBC"]
 
 
 def test_bundled_fixture_path_resolves_to_the_checked_in_snapshot():

@@ -22,7 +22,7 @@ except ImportError:  # fixture mode (a Linux container, no ODBC stack) - see fix
 from fastapi import Depends, FastAPI, HTTPException
 
 from . import __version__ as VERSION
-from . import auth, buyers, channel, db, econnect, errors, models, ops
+from . import auth, buyers, channel, companies, db, econnect, errors, models, ops
 from .config import get_settings
 from .cors import configure_cors
 from .logging_setup import configure_logging, get_logger
@@ -52,12 +52,25 @@ def _check_gp_reachable() -> None:
 
 
 def _check_company(company: str) -> None:
-    allowed = get_settings().gp.allowed_companies
-    if company not in allowed:
+    """The HTTP shape of ops.check_company_served - same served set, same error code, a 400 instead of
+    a channel error body."""
+    try:
+        ops.check_company_served(company)
+    except ops.RelayOpError as e:
+        raise HTTPException(status_code=400, detail=errors.error_body(e.code, e.message, **e.context))
+
+
+def _required_company(company: str | None) -> str:
+    """These routes used to fall back to a company named in config.toml. There is no default company
+    any more - the set comes from GP and nothing picks one out of it - so the caller says which it
+    means."""
+    company = (company or "").strip()
+    if not company:
         raise HTTPException(
             status_code=400,
-            detail=errors.error_body("company_not_allowed", f"{company} not in allowed_companies {allowed}"),
+            detail=errors.error_body("company_required", "company is required"),
         )
+    return company
 
 
 def _econnect_http(conn, e: econnect.EConnectError) -> HTTPException:
@@ -112,11 +125,16 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health():
+        discovered = companies.current()
         return {
             "status": "ok",
             "version": VERSION,
             "uptime_seconds": round(time.monotonic() - _START, 1),
             "channel": channel.channel_state_snapshot(),  # the REAL backend-channel state, for the app UI
+            # What this relay found in GP, for the desktop status panel - which is the only place an
+            # operator can see that discovery failed on a relay whose channel is otherwise healthy.
+            "companies": [{"id": c, "name": discovered.names.get(c, c)} for c in discovered.companies],
+            "companies_error": discovered.error,
         }
 
     @app.get("/info")
@@ -124,17 +142,21 @@ def create_app() -> FastAPI:
         _check_gp_reachable()
         s = get_settings()
         hostname = socket.gethostname()
+        discovered = companies.current()
         out = {
             "version": VERSION,
-            "configured_companies": s.gp.allowed_companies,
-            "default_company": s.gp.default_company,
+            # Discovered from GP's own company master, not configured - see companies.py. Empty with a
+            # reason in companies_error when that master could not be read.
+            "companies": discovered.companies,
+            "company_names": discovered.names,
+            "companies_error": discovered.error,
             "sql_server": s.sql.server,
             "odbc_driver": s.sql.driver,
             "driver_installed": db.driver_available(),
             "hostname": hostname,  # the device name the relay maps to a GP buyer
         }
         try:
-            out.update(db.connection_info(s.gp.default_company))
+            out.update(db.connection_info(s.sql.system_db))
         except _PYODBC_ERROR as e:
             out["connection_error"] = str(e)
         # which buyer this workstation resolves to (confirm hostname->BUYERID during deployment)
@@ -146,7 +168,7 @@ def create_app() -> FastAPI:
         """Read PM00200 (active vendors) for the vendor sync. The frontend posts this list to UC
         Nexus's syncGpVendors, which fills Vendor.gp_vendor_id by matching on name."""
         _check_gp_reachable()
-        company = company or get_settings().gp.default_company
+        company = _required_company(company)
         _check_company(company)
         try:
             with db.get_read_connection(company) as conn:
@@ -160,7 +182,7 @@ def create_app() -> FastAPI:
         """Registered GP buyers (POP00101) for the Create PO buyer dropdown. eConnect validates BUYERID
         against this, so the UI must pick from it (a device hostname is not a registered buyer)."""
         _check_gp_reachable()
-        company = company or get_settings().gp.default_company
+        company = _required_company(company)
         _check_company(company)
         try:
             with db.get_read_connection(company) as conn:
@@ -174,7 +196,7 @@ def create_app() -> FastAPI:
         """Purchase tax details (TX00201, TXDTLTYP=2) for the register-PO tax-detail dropdown (issue
         #257). GP-first: the options are whatever the company defines, read live, not a hardcoded list."""
         _check_gp_reachable()
-        company = company or get_settings().gp.default_company
+        company = _required_company(company)
         _check_company(company)
         try:
             with db.get_read_connection(company) as conn:
@@ -192,7 +214,7 @@ def create_app() -> FastAPI:
         them, so they must not be selectable. `job` is the GP job number (UC Nexus project_id). A
         job with no usable cost codes returns an empty list (the UI shows that)."""
         _check_gp_reachable()
-        company = company or get_settings().gp.default_company
+        company = _required_company(company)
         _check_company(company)
         job = job.strip()
         if not job:

@@ -26,15 +26,13 @@ encrypt = "yes"
 trust_server_certificate = true
 connection_timeout = 10
 command_timeout = 30
-
-[gp]
-# HARD GUARDRAIL: sandboxes only. NEVER add UBC or UCSH (production) here.
-default_company = "TUBC"
-allowed_companies = ["TUBC", "TUCSH"]
+# the GP system database holding the company master (SY01500). the companies this relay serves are read
+# from there - there is no company list to maintain in this file.
+system_db = "DYNAMICS"
 
 [gp.custom_db]
 # company -> paired custom warehouse DB holding WHRECLINE101 (read by the company dashboards).
-# only applied when the company is also allowed. sandboxes have no paired DB (GP-only receipts).
+# a company with no entry gets GP-only receipts. sandboxes have no paired DB.
 UBC = "PMUBC"
 UCSH = "PMUCSH"
 
@@ -76,9 +74,9 @@ backend_url = "wss://backend-production-xxxx.up.railway.app/relay-link"
 # without dropping production (#414). Now mostly for what production cannot know about: a local dev
 # backend, or anything outside the Railway project. The same enrolled secret authenticates on all of
 # them. The production channel is unrestricted; every other URL is pinned to the sandboxes TUBC and
-# TUCSH and refuses any other company, reads and writes alike - so the sandbox being tested must also be
-# in [gp] allowed_companies above, or this workstation refuses those jobs itself. Re-read on a timer
-# since #456, so no restart after editing; remove the URL when you are done with it.
+# TUCSH and refuses any other company, reads and writes alike - so a sandbox has to exist in GP for a
+# PR to be testable against it. Re-read on a timer since #456, so no restart after editing; remove the
+# URL when you are done with it.
 #
 # prefer this over overriding backend_url: whether a channel is production is decided by matching the
 # baked production URL, so retyping it with one character wrong silently pins PRODUCTION to TUBC and

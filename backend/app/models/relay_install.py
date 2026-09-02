@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, String, Text
+from sqlalchemy import DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
@@ -11,17 +11,16 @@ class RelayInstall(Base):
     """One on-prem relay install (one workstation). The relay generates its own long-lived Bearer
     secret and registers it here via the one-time enrollment token (the backend can't reach the relay,
     but the relay can reach the backend), then presents that same secret on its outbound WS connect
-    handshake (see relay_repository.authenticate_secret)."""
+    handshake (see relay_repository.authenticate_secret).
+
+    A credential and a label, nothing more. Which GP companies the install serves is GP's answer, not
+    one kept here: the relay discovers it from GP's company master and reports it on the hello
+    frame, so the gateway holds it for the life of the connection."""
 
     __tablename__ = "relay_installs"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     label: Mapped[str] = mapped_column(String, nullable=False)
-    # Every GP company this install may serve (#637). The relay protocol always carried `company` on
-    # each call and the relay itself has been multi-company capable (allowed_companies) - the single
-    # column this replaces was the only place the one-company assumption still lived. A JSON list of
-    # uppercase codes; the gateway turns it into the membership set relay_call checks against.
-    companies: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     hostname: Mapped[str | None] = mapped_column(String, nullable=True)  # filled by the relay at enrollment
     # SHA-256 hex of the relay's long-lived Bearer secret - the sole credential for any install
     # enrolled or adopted from migration 067 on. Indexed so a handshake is a single row fetch rather
