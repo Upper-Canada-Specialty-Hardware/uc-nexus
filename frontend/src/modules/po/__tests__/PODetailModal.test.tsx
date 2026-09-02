@@ -64,6 +64,7 @@ const draftPo: PurchaseOrder = {
   requestNumber: 'REQ-001',
   projectId: 'p1',
   status: 'DRAFT',
+  company: 'TUBC',
   gpCompany: null,
   gpVendorId: null,
   vendorNameSnapshot: 'Ace Hardware Co',

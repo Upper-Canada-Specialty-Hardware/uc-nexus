@@ -4,13 +4,19 @@ The escaping assertions are the ones that matter: a user typing % or _ into the 
 search for the literal character, not fire a SQL LIKE wildcard that matches everything.
 """
 
+import asyncio
 import uuid
 from decimal import Decimal
 
+import pytest
+
+from app import auth
 from app.auth import ADMIN_ROLE
 from app.models.enums import POStatus
+from app.models.project import Project
 from app.models.purchase_order import PurchaseOrder
-from app.repositories import po_repository
+from app.repositories import po_repository, user_repository
+from main import schema
 
 
 def _make_po(session, *, po_number, vendor="Acme"):
@@ -100,7 +106,7 @@ def test_page_row_carries_line_item_count_scalar_not_collection(db_session):
 class _StubRow:
     """The columns po_list_row_to_type and the Created By resolution read off a register row."""
 
-    def __init__(self, *, po_number, created_by_user_id=None, buyer_id=None):
+    def __init__(self, *, po_number, created_by_user_id=None, buyer_id=None, company="TUBC", gp_company="TUBC"):
         from datetime import datetime
 
         from app.models.enums import POOrigin, POStatus
@@ -111,7 +117,8 @@ class _StubRow:
         self.project_id = None
         self.status = POStatus.GP_REGISTERED
         self.origin = POOrigin.GP
-        self.gp_company = "TUBC"
+        self.company = company
+        self.gp_company = gp_company
         self.vendor_name_snapshot = "Acme"
         self.ordered_at = None
         self.expected_delivery_date = None
@@ -205,3 +212,112 @@ def test_authors_are_resolved_once_per_page_not_once_per_row(monkeypatch):
 
     assert sorted(lookups) == ["u_1", "u_2"]
     assert [r.created_by for r in page.rows] == ["Bev Buyer"] * 3 + ["Pat Purchasing"]
+
+
+# --- #637: the tenant a PO belongs to ---------------------------------------------------------------
+# `company` is stamped when the PO is raised; `gp_company` only when it is registered into GP. A DRAFT
+# therefore has the first and not the second, which is the row the register used to print as "-": the
+# column read gp_company, the one field a draft never has. Both reads have to publish `company`, so
+# both are exercised through the built schema rather than through the converter.
+
+
+def test_a_draft_register_row_carries_its_tenant_with_no_gp_company(monkeypatch):
+    rows = [_StubRow(po_number=None, company="TUBC", gp_company=None)]
+
+    page, _ = _page(monkeypatch, rows)
+
+    assert page.rows[0].company == "TUBC"
+    assert page.rows[0].gp_company is None
+
+
+class _FakeRequest:
+    def __init__(self, token: str = "tok"):
+        self.headers = {"authorization": f"Bearer {token}"}
+
+
+def _context():
+    """A signed-in, company-scoped caller with the auth memos already filled, so neither the gate nor
+    `tenant_scope` (#637) reaches Clerk for a token this test never minted."""
+    return {
+        "request": _FakeRequest(),
+        "_auth_user_id": "u_test",
+        "_auth_roles": [],
+        "_auth_company": "TUBC",
+    }
+
+
+def _execute(query: str, variables: dict | None = None):
+    return asyncio.run(schema.execute(query, variable_values=variables or {}, context_value=_context()))
+
+
+@pytest.fixture
+def signed_in(monkeypatch, db_session):
+    """A signed-in caller whose PO resolvers run against the test's own session."""
+    from app.schemas import po as po_module
+
+    monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_test"})
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [])
+    monkeypatch.setattr(user_repository, "get_user_company", lambda user_id: "TUBC")
+
+    class _Borrowed:
+        def __enter__(self):
+            return db_session
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(po_module, "SessionLocal", _Borrowed)
+    return db_session
+
+
+def _make_draft(session, *, company="TUBC"):
+    """A project and the DRAFT PO raised against it, both in the same company."""
+    project = Project(
+        id=uuid.uuid4(),
+        company=company,
+        project_id=f"PO-{uuid.uuid4().hex[:8]}",
+        description=f"{company} job",
+    )
+    session.add(project)
+    session.flush()
+    po = PurchaseOrder(
+        id=uuid.uuid4(),
+        company=company,
+        po_number=None,
+        request_number=f"PO-REQ-{uuid.uuid4().hex[:6]}",
+        project_id=project.id,
+        status=POStatus.DRAFT,
+        gp_company=None,
+        vendor_name_snapshot="Acme",
+    )
+    session.add(po)
+    session.flush()
+    return project, po
+
+
+def test_the_register_publishes_a_drafts_company(signed_in, db_session):
+    project, po = _make_draft(db_session)
+
+    result = _execute(
+        """query($search: String!){
+             purchaseOrdersPage(search: $search){ rows{ id company gpCompany } }
+           }""",
+        {"search": po.request_number},
+    )
+
+    assert result.errors is None, result.errors
+    assert result.data["purchaseOrdersPage"]["rows"] == [
+        {"id": str(po.id), "company": project.company, "gpCompany": None}
+    ]
+
+
+def test_the_detail_read_publishes_a_drafts_company(signed_in, db_session):
+    project, po = _make_draft(db_session)
+
+    result = _execute(
+        "query($id: ID!){ purchaseOrder(id: $id){ company gpCompany } }",
+        {"id": str(po.id)},
+    )
+
+    assert result.errors is None, result.errors
+    assert result.data["purchaseOrder"] == {"company": project.company, "gpCompany": None}

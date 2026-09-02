@@ -99,12 +99,15 @@ export default function ProjectDetailPage() {
   const detail = data?.adminProjectDetail ?? null;
   const project = detail?.project ?? null;
 
-  const [setArchived, { loading: archiving }] = useMutation(SET_PROJECT_ARCHIVED, {
+  const [setArchived, { loading: archiving }] = useMutation<{ setProjectArchived: { archived: boolean } }>(SET_PROJECT_ARCHIVED, {
     // The grid reads its own list, and archiving changes which rows it shows.
     refetchQueries: [{ query: GET_ADMIN_PROJECTS }],
-    onCompleted: () => {
+    onCompleted: (result) => {
       setArchiveConfirmOpen(false);
-      showToast(project?.archived ? 'Project restored' : 'Project archived', 'success');
+      // Read the outcome off the reply, not off `project`: the normalized cache has already applied
+      // the mutation by the time this runs, so `project.archived` is the NEW state and would name
+      // the opposite action.
+      showToast(result.setProjectArchived.archived ? 'Project archived' : 'Project restored', 'success');
     },
     onError: (err) => {
       setArchiveConfirmOpen(false);
