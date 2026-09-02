@@ -139,12 +139,11 @@ still means exactly one channel), but overriding it means retyping production al
 the one way to express that mistake. the relay logs a WARNING at startup when no configured channel is
 the production one.
 
-the production channel is unrestricted. every other URL is pinned to the sandboxes `TUBC` and `TUCSH`
+the production channel is unrestricted. every other URL is pinned to the sandbox `TUBC`
 (`config.NON_PRIMARY_ALLOWED_COMPANIES`) - reads AND writes are served there, since a PR touching GP
 has to be verifiable before it merges, and the company pin is the only thing making that safe. a job
-for any other company comes back `company_not_allowed_on_channel` before it reaches GP. both sandboxes
-are in the pin because UCSH-side work is only reproducible against TUCSH, and the alternative is aiming
-a PR backend at live UCSH.
+for any other company comes back `company_not_allowed_on_channel` before it reaches GP. TUBC alone is
+in the pin: GP testing happens there and nowhere else.
 
 the sandbox the PR is testing has to exist in GP. the channel pin decides what a test backend may ASK
 for; `ops.check_company_served` decides what this workstation will serve, and that set is read from
@@ -288,68 +287,3 @@ it, exactly as with a failed install.
 the check runs ONCE per update - its verdict is stamped on `update-state.json` - so a workstation that
 happens to boot offline a week later cannot roll a good build back. an unenrolled relay dials no channel
 by design, and that is recorded as `no_channel` rather than judged as a bad build.
-
-fixture mode / stub relay
-
-the relay can run with no GP at all, answering every channel op out of a checked-in snapshot of the
-TUBC and TUCSH sandbox companies (`src/ucnexus_relay/fixture_ops.py`, `fixtures/gp-snapshot.json`).
-that is what makes a Railway preview environment testable on its own: nothing relay-dependent works
-there until a relay dials it, and the workstation is a physical machine somebody has to be sitting at.
-in fixture mode the relay is a Linux container the preview environment brings up itself - no GP, no
-ODBC driver, no pyodbc.
-
-the op set is identical: same names, same result shapes, same error codes, so the backend cannot tell
-the difference and nothing backend-side is conditional on it. writes are real within the process -
-`create_po` reserves the next PO number in GP's shape (suffix rules included) and appends the PO,
-`create_receipt` moves the received quantities on it, and `sync_pos` / `read_po_totals` then see both.
-nothing is written back to the snapshot file, so a container restart is a clean company again.
-
-what it is NOT: a test of GP. no eConnect proc runs, so a change to the eConnect call path is not
-verified by anything a fixture relay does. that still needs the workstation - see "testing a PR that
-adds a new op" above.
-
-configuration is entirely environment variables, because a container has no config.toml to enroll and
-no DPAPI to decrypt with. each one wins over the file when there is one:
-
-- `UCNEXUS_RELAY_MODE` - `fixture`, or `sql` (the default) for the workstation relay, unchanged
-- `UCNEXUS_RELAY_FIXTURE_PATH` - the snapshot to serve; unset means the bundled `fixtures/gp-snapshot.json`
-- `UCNEXUS_RELAY_SHARED_SECRET` - the channel secret, PLAINTEXT. never DPAPI-decrypted, so an
-  `enc:dpapi:` value in a config.toml carried into the image is replaced rather than choked on
-- `UCNEXUS_RELAY_BACKEND_URL` - the `wss://.../relay-link` to dial
-- `UCNEXUS_RELAY_LOG_FILE` - `-` for stdout only, so nothing is written to an ephemeral filesystem
-
-```
-docker build -f Dockerfile -t ucnexus-relay-fixture .
-docker run --rm \
-  -e UCNEXUS_RELAY_BACKEND_URL=wss://backend-pr-999.up.railway.app/relay-link \
-  -e UCNEXUS_RELAY_SHARED_SECRET=<the secret that environment's RELAY_SEED_SECRET_HASH was seeded from> \
-  ucnexus-relay-fixture
-```
-
-the GP-touching HTTP routes (`/info`, `/vendors`, `/buyers`, `/tax-details`, `/cost-codes`, `/po`,
-`/po/next-number`, `/receipt`) answer `503` with error `fixture_mode` there. the outbound channel is
-the transport this mode serves, and the browser hop is no longer the live path anyway. `/health`
-answers normally.
-
-replacing the snapshot with real sandbox data
-
-the checked-in file is synthetic, hand-written so the container has something to serve on day one. to
-swap it for the real TUBC/TUCSH, run this on the workstation - the only machine that can reach GP -
-and commit what it writes:
-
-```
-poetry run python -m ucnexus_relay capture --companies TUBC,TUCSH --out fixtures/gp-snapshot.json
-```
-
-read-only throughout: every call is one of the `list_`/`read_` handlers the channel already serves.
-three things GP holds have no read op and are derived instead - a job's usable cost codes are stored at
-account index 0 while only the codes `job_setup_health` already calls broken keep their dangling index
-(so #425 still reproduces), PO lines are stored at index 0 and are therefore receivable, and the PO
-counter starts one past the highest number captured. `capture.py` says which is which.
-
-the same per-company record is served over the channel as the `capture_snapshot` op, and the backend
-exposes it to admins as the `relaySnapshot` GraphQL query - so a re-capture is a query against
-whichever relay is connected, and nobody has to be at the workstation to run it. the query assembles
-the identical envelope and hands back the file's text, ready to write over `fixtures/gp-snapshot.json`.
-a stub relay answers the op from its own fixture, so running it against a preview gives back what that
-preview was built with.

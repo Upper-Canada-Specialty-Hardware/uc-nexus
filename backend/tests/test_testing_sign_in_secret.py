@@ -6,10 +6,10 @@ Clerk session for a real staff account (#422/#424), so it must stay unset in pro
 clones a preview from production, so a preview had nothing to inherit and needed the variable set by
 hand, once per PR.
 
-`PREVIEW_TESTING_SIGN_IN_SECRET_HASH` closes that gap the way RELAY_SEED_SECRET_HASH already does:
-it lives on production, inert, and is inherited. The load-bearing test here is the one asserting it
-stays inert there - a regression that let production resolve a usable digest would hand back exactly
-the impersonation primitive #424 removed.
+`PREVIEW_TESTING_SIGN_IN_SECRET_HASH` closes that gap: it lives on production, inert, and is
+inherited. The load-bearing test here is the one asserting it stays inert there - a regression that
+let production resolve a usable digest would hand back exactly the impersonation primitive #424
+removed.
 """
 
 import pytest

@@ -1,8 +1,7 @@
 """Environment overrides on config loading, and the stdout-only log file they turn on.
 
-These exist for the containerised relay: it has no config.toml to write and no DPAPI to decrypt with,
-so everything it needs has to be expressible as an environment variable. get_settings is @lru_cache-d,
-so every test clears the cache around itself.
+These exist for a run with no config.toml to write and no DPAPI to decrypt with - a dev checkout
+pointed at a test backend. get_settings is @lru_cache-d, so every test clears the cache around itself.
 """
 
 import logging
@@ -11,7 +10,7 @@ from logging.handlers import RotatingFileHandler
 import pytest
 
 from ucnexus_relay import logging_setup
-from ucnexus_relay.config import DEFAULT_FIXTURE_PATH, get_settings
+from ucnexus_relay.config import PRODUCTION_BACKEND_URL, get_settings
 
 
 @pytest.fixture(autouse=True)
@@ -22,53 +21,42 @@ def _clear_settings_cache():
 
 
 def test_missing_config_plus_env_is_a_complete_relay(tmp_path, monkeypatch):
-    """The container's whole configuration: no file at all, everything from the environment."""
-    monkeypatch.setenv("UCNEXUS_RELAY_MODE", "fixture")
-    monkeypatch.setenv("UCNEXUS_RELAY_FIXTURE_PATH", "/app/fixtures/gp-snapshot.json")
-    monkeypatch.setenv("UCNEXUS_RELAY_SHARED_SECRET", "container-secret")
+    """No file at all, everything from the environment."""
+    monkeypatch.setenv("UCNEXUS_RELAY_SHARED_SECRET", "env-secret")
     monkeypatch.setenv("UCNEXUS_RELAY_BACKEND_URL", "wss://backend-pr-999.up.railway.app/relay-link")
     monkeypatch.setenv("UCNEXUS_RELAY_LOG_FILE", "-")
 
     s = get_settings(str(tmp_path / "does-not-exist" / "config.toml"))
 
-    assert s.gp.mode == "fixture"
-    assert s.gp.fixture_path == "/app/fixtures/gp-snapshot.json"
-    assert s.auth.shared_secret == "container-secret"
+    assert s.auth.shared_secret == "env-secret"
     assert s.channel.backend_url == "wss://backend-pr-999.up.railway.app/relay-link"
     assert s.logging.file == "-"
-    # No company variable: a fixture relay serves the snapshot's own companies, discovered from it the
-    # same way a workstation relay discovers GP's (companies.py).
+    # No company variable: the served set is discovered from GP's own company master (companies.py).
 
 
 def test_defaults_are_unchanged_without_the_env(tmp_path):
     s = get_settings(str(tmp_path / "nothing" / "config.toml"))
-    assert s.gp.mode == "sql"
-    assert s.gp.fixture_path is None
+    assert s.channel.backend_url == PRODUCTION_BACKEND_URL
     assert s.logging.file == "relay.log"
 
 
 def test_env_wins_over_the_file(tmp_path, monkeypatch):
     cfg = tmp_path / "config.toml"
-    cfg.write_text('[auth]\nshared_secret = "from-the-file"\n\n[gp]\nmode = "sql"\n', encoding="utf-8")
+    cfg.write_text('[auth]\nshared_secret = "from-the-file"\n', encoding="utf-8")
     monkeypatch.setenv("UCNEXUS_RELAY_SHARED_SECRET", "from-the-env")
-    monkeypatch.setenv("UCNEXUS_RELAY_MODE", "fixture")
+    monkeypatch.setenv("UCNEXUS_RELAY_BACKEND_URL", "wss://backend-pr-999.up.railway.app/relay-link")
     s = get_settings(str(cfg))
     assert s.auth.shared_secret == "from-the-env"
-    assert s.gp.mode == "fixture"
+    assert s.channel.backend_url == "wss://backend-pr-999.up.railway.app/relay-link"
 
 
 def test_env_secret_is_taken_verbatim_and_never_decrypted(tmp_path, monkeypatch):
-    """An enrolled config.toml carried into a Linux image holds a DPAPI blob that cannot be decrypted
-    there. The environment secret replaces it BEFORE the decrypt, so loading never touches DPAPI."""
+    """A config.toml copied off the workstation holds a DPAPI blob this machine cannot decrypt. The
+    environment secret replaces it BEFORE the decrypt, so loading never touches DPAPI."""
     cfg = tmp_path / "config.toml"
     cfg.write_text('[auth]\nshared_secret = "enc:dpapi:bm90LWEtcmVhbC1ibG9i"\n', encoding="utf-8")
     monkeypatch.setenv("UCNEXUS_RELAY_SHARED_SECRET", "plaintext-from-env")
     assert get_settings(str(cfg)).auth.shared_secret == "plaintext-from-env"
-
-
-def test_bundled_fixture_path_resolves_to_the_checked_in_snapshot():
-    assert DEFAULT_FIXTURE_PATH.name == "gp-snapshot.json"
-    assert DEFAULT_FIXTURE_PATH.exists()
 
 
 def test_stdout_only_log_file_writes_no_relay_log(tmp_path, monkeypatch):

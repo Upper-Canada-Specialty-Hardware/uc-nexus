@@ -87,11 +87,11 @@ def test_only_production_is_unrestricted():
     assert channel_allowed_companies("ws://localhost:8000/relay-link") == NON_PRIMARY_ALLOWED_COMPANIES
 
 
-def test_the_sandbox_pin_is_sandboxes_only():
-    # The whole reason a test channel may write to GP at all. If this list ever grows past the
-    # sandboxes, the risk argument in channel.py's docstring no longer holds - so it is pinned here
-    # rather than left to whatever someone edits it to.
-    assert NON_PRIMARY_ALLOWED_COMPANIES == ["TUBC", "TUCSH"]
+def test_the_sandbox_pin_is_the_one_sandbox():
+    # The whole reason a test channel may write to GP at all. GP testing happens in TUBC and nowhere
+    # else; if this list ever grows past it, the risk argument in channel.py's docstring no longer
+    # holds - so it is pinned here rather than left to whatever someone edits it to.
+    assert NON_PRIMARY_ALLOWED_COMPANIES == ["TUBC"]
     assert not {"UBC", "UCSH"} & set(NON_PRIMARY_ALLOWED_COMPANIES)
 
 
@@ -106,21 +106,20 @@ def _sentinel_op(monkeypatch):
 
 
 @pytest.mark.parametrize("company", ["UBC", "UCSH", "TUCA"])
-def test_a_test_channel_refuses_every_company_but_the_sandboxes(monkeypatch, company):
+def test_a_test_channel_refuses_every_company_but_the_sandbox(monkeypatch, company):
     calls = _sentinel_op(monkeypatch)
     reply = channel._dispatch("spy_op", company, {}, channel_allowed_companies(PR_URL))
     assert reply["ok"] is False
     assert reply["error"]["error"] == "company_not_allowed_on_channel"
-    assert reply["error"]["context"] == {"company": company, "allowed": ["TUBC", "TUCSH"]}
+    assert reply["error"]["context"] == {"company": company, "allowed": ["TUBC"]}
     assert calls == []  # refused BEFORE the handler ran - nothing reached GP
 
 
-@pytest.mark.parametrize("company", ["TUBC", "TUCSH"])
-def test_a_test_channel_serves_reads_against_the_sandboxes(monkeypatch, company):
+def test_a_test_channel_serves_reads_against_the_sandbox(monkeypatch):
     calls = _sentinel_op(monkeypatch)
-    reply = channel._dispatch("spy_op", company, {}, channel_allowed_companies(PR_URL))
+    reply = channel._dispatch("spy_op", "TUBC", {}, channel_allowed_companies(PR_URL))
     assert reply == {"ok": True, "result": {"ok": 1}}
-    assert calls == [company]
+    assert calls == ["TUBC"]
 
 
 def test_a_test_channel_also_serves_WRITES_against_the_sandbox(monkeypatch):
@@ -733,8 +732,8 @@ def test_the_refusal_message_reads_as_prose_not_a_python_list():
     assert "only TUBC is" in reply["error"]["message"]
 
 
-def test_the_refusal_message_reads_as_a_sentence_with_two_sandboxes():
-    # The sandbox pin is a list, and "only TUBC, TUCSH is" is what a plain join produces - in the
-    # browser, on the error the user actually sees.
-    reply = channel._dispatch("list_vendors", "UCSH", {}, NON_PRIMARY_ALLOWED_COMPANIES)
-    assert "only TUBC and TUCSH are" in reply["error"]["message"]
+def test_the_refusal_message_reads_as_a_sentence_when_a_channel_is_pinned_to_more_than_one():
+    # The pin holds one company today but is still a list, and "only TUBC, TUCA is" is what a plain
+    # join produces - in the browser, on the error the user actually sees.
+    reply = channel._dispatch("list_vendors", "UCSH", {}, ["TUBC", "TUCA"])
+    assert "only TUBC and TUCA are" in reply["error"]["message"]

@@ -6,8 +6,6 @@ Subcommands:
   serve                run the relay (headless) - uvicorn on the configured [server] host/port
   enroll  ...          one-time enrollment (delegates to ucnexus_relay.enroll; pass its flags through)
   protect-secret       DPAPI-encrypt the shared_secret currently in config.toml
-  capture ...          read GP through the relay's own read handlers and write a fixture snapshot
-                       (--companies TUBC,TUCSH --out <path>); see capture.py
   health               GET the local /health endpoint and print it (exit 0 if status ok)
   print-build          print this exe's build tag (used by promote to compare against the installed exe)
   update-apply --pid N the detached self-update helper: wait for app pid N to exit, swap the staged exe,
@@ -253,9 +251,6 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "protect-secret":
         from .protect_secret import main as protect_main
         return protect_main(rest)
-    if cmd == "capture":
-        from .capture import main as capture_main
-        return capture_main(rest)
     if cmd == "health":
         return _health(rest)
     if cmd == "install-autostart":
@@ -266,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
         return _autostart_status(rest)
 
     print(
-        f"unknown command: {cmd!r} (expected: serve | app | enroll | protect-secret | capture | health | "
+        f"unknown command: {cmd!r} (expected: serve | app | enroll | protect-secret | health | "
         "print-build | update-apply | install-autostart | uninstall-autostart | autostart-status)",
         file=sys.stderr,
     )

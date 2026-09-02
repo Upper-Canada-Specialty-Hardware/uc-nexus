@@ -73,10 +73,9 @@ backend_url = "wss://backend-production-xxxx.up.railway.app/relay-link"
 # ADD a test backend here, naming ONLY the new one - one channel per URL, so a backend can be tested
 # without dropping production (#414). Now mostly for what production cannot know about: a local dev
 # backend, or anything outside the Railway project. The same enrolled secret authenticates on all of
-# them. The production channel is unrestricted; every other URL is pinned to the sandboxes TUBC and
-# TUCSH and refuses any other company, reads and writes alike - so a sandbox has to exist in GP for a
-# PR to be testable against it. Re-read on a timer since #456, so no restart after editing; remove the
-# URL when you are done with it.
+# them. The production channel is unrestricted; every other URL is pinned to the sandbox TUBC and
+# refuses any other company, reads and writes alike - GP testing happens in TUBC and nowhere else.
+# Re-read on a timer since #456, so no restart after editing; remove the URL when you are done with it.
 #
 # prefer this over overriding backend_url: whether a channel is production is decided by matching the
 # baked production URL, so retyping it with one character wrong silently pins PRODUCTION to TUBC and

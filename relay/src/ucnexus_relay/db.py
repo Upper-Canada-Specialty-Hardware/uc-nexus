@@ -6,20 +6,9 @@ BEGIN..COMMIT/ROLLBACK scope across the multi-proc PO create.
 
 from contextlib import contextmanager
 
-try:
-    import pyodbc
-except ImportError:  # a Linux container running fixture mode has no ODBC stack at all
-    pyodbc = None
+import pyodbc
 
 from .config import get_settings
-
-
-def _require_pyodbc() -> None:
-    if pyodbc is None:
-        raise RuntimeError(
-            "pyodbc is not installed, so this relay cannot open a GP connection - it is running in "
-            "fixture mode (see fixture_ops.py)"
-        )
 
 
 def build_conn_string(company: str) -> str:
@@ -39,8 +28,6 @@ def build_conn_string(company: str) -> str:
 
 
 def driver_available() -> bool:
-    if pyodbc is None:
-        return False
     target = get_settings().sql.driver
     return any(target in d for d in pyodbc.drivers())
 
@@ -48,7 +35,6 @@ def driver_available() -> bool:
 @contextmanager
 def get_connection(company: str):
     """Transactional connection for eConnect orchestration (autocommit off)."""
-    _require_pyodbc()
     conn = pyodbc.connect(build_conn_string(company), autocommit=False)
     conn.timeout = get_settings().sql.command_timeout
     # SET NOCOUNT ON for the whole session: eConnect procs do heavy internal DML, and the
@@ -66,7 +52,6 @@ def get_connection(company: str):
 def get_read_connection(company: str):
     """Read-only connection (autocommit) for plain SELECTs — no eConnect, no writes, no held
     transaction. Used by /vendors and any other pure read."""
-    _require_pyodbc()
     conn = pyodbc.connect(build_conn_string(company), autocommit=True)
     conn.timeout = get_settings().sql.command_timeout
     try:
@@ -78,7 +63,6 @@ def get_read_connection(company: str):
 def connection_info(company: str) -> dict:
     """Read-only identity probe for /info. Opens an autocommit connection, runs a
     metadata SELECT, returns who we are. No eConnect calls, no writes."""
-    _require_pyodbc()
     with pyodbc.connect(build_conn_string(company), autocommit=True) as conn:
         row = conn.cursor().execute(
             "SELECT SUSER_NAME() AS login, DB_NAME() AS db, @@VERSION AS ver, IS_MEMBER('DYNGRP') AS dyngrp"

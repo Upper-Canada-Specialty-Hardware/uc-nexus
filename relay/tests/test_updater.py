@@ -3,8 +3,6 @@ zip-download + junction-repoint self-update. No network (urlopen/urlretrieve moc
 
 import json
 import logging
-import sys
-import types
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -39,42 +37,8 @@ def _bundle_zip(dest):
 # --- release discovery / check_update -----------------------------------------------------------------
 
 
-def test_current_build_falls_back_to_dev(monkeypatch):
-    monkeypatch.delenv("UCNEXUS_RELAY_BUILD", raising=False)
+def test_current_build_falls_back_to_dev():
     assert updater.current_build() == "dev"
-
-
-def test_current_build_takes_the_env_var_when_nothing_is_frozen(monkeypatch):
-    """How the fixture-mode container names itself: it is not a PyInstaller bundle, so CI has no
-    package to stamp _build.py into, and every preview would otherwise report "dev"."""
-    monkeypatch.setenv("UCNEXUS_RELAY_BUILD", "  relay-stub.abc1234  ")
-    assert updater.current_build() == "relay-stub.abc1234"
-
-
-def test_current_build_ignores_a_blank_env_var(monkeypatch):
-    monkeypatch.setenv("UCNEXUS_RELAY_BUILD", "   ")
-    assert updater.current_build() == "dev"
-
-
-def test_a_frozen_build_wins_over_the_env_var(monkeypatch):
-    """The exe never sets the variable, but a workstation that had it in its environment for some
-    other reason must not be able to rename the build CI stamped in - that tag is what the update
-    comparison and single_instance both decide on."""
-    module = types.ModuleType("ucnexus_relay._build")
-    module.BUILD = "relay-v0.2.0-build.31"
-    monkeypatch.setitem(sys.modules, "ucnexus_relay._build", module)
-    monkeypatch.setenv("UCNEXUS_RELAY_BUILD", "relay-stub.abc1234")
-
-    assert updater.current_build() == "relay-v0.2.0-build.31"
-
-
-def test_a_stub_build_tag_can_never_be_read_as_newer_than_a_release():
-    """The stub tag carries no `build.<N>`, so it scores -1 exactly as "dev" does. That is what keeps
-    single_instance from treating a stub as the newer instance and the updater from calling it up to
-    date against a real release."""
-    assert updater.build_number("relay-stub.abc1234") == -1
-    assert updater.build_number("relay-stub.abc1234") == updater.build_number("dev")
-    assert updater.build_number("relay-v0.1.0-build.9") > updater.build_number("relay-stub.abc1234")
 
 
 def test_latest_release_picks_highest_build_not_list_order(monkeypatch):

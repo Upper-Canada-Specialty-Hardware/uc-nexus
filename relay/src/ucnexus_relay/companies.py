@@ -17,10 +17,7 @@ added in GP reaches the backend without a restart.
 import time
 from dataclasses import dataclass, field
 
-try:
-    import pyodbc
-except ImportError:  # fixture mode (a Linux container, no ODBC stack) - see fixture_ops.py
-    pyodbc = None
+import pyodbc
 
 from . import db
 from .config import get_settings
@@ -31,10 +28,6 @@ logger = get_logger()
 # SY01500 is GP's company master: one row per company, INTERID the code (and the company database
 # name), CMPNYNAM the display name. Both are char columns, hence the RTRIM.
 COMPANY_QUERY = "SELECT RTRIM(INTERID) AS id, RTRIM(CMPNYNAM) AS name FROM dbo.SY01500 ORDER BY INTERID"
-
-# One company's display name, for `ucnexus-relay capture` - a snapshot records the name GP gives so a
-# fixture relay reports what a workstation would. Same table, same trim; parameterised on the code.
-COMPANY_NAME_QUERY = "SELECT RTRIM(CMPNYNAM) FROM dbo.SY01500 WHERE RTRIM(INTERID) = ?"
 
 _NOT_DISCOVERED_YET = "GP companies not discovered yet"
 
@@ -56,6 +49,8 @@ class Discovery:
 
 
 def _from_sql() -> list[tuple[str, str]]:
+    # Not dead: the test suite takes pyodbc away module-wide (conftest), so a discovery nothing asked
+    # for fails loudly here instead of dialling the real GP server out of a test run.
     if pyodbc is None:
         raise RuntimeError("pyodbc is not installed, so the GP company master cannot be read")
     system_db = get_settings().sql.system_db
@@ -63,21 +58,12 @@ def _from_sql() -> list[tuple[str, str]]:
         return [(row.id, row.name) for row in conn.cursor().execute(COMPANY_QUERY).fetchall()]
 
 
-def _from_fixture() -> list[tuple[str, str]]:
-    """The snapshot's own companies. `name` is optional there, so a snapshot written before this
-    existed (and one written by `ucnexus-relay capture`, which has no read op for it) still loads."""
-    from . import fixture_ops  # lazy: the workstation relay never loads this module
-
-    companies = fixture_ops.load_state().get("companies") or {}
-    return [(code, (data or {}).get("name") or code) for code, data in companies.items()]
-
-
 def discover() -> Discovery:
     """Read the company master. Never raises: a failure comes back as an empty Discovery carrying the
     reason, because the callers are a channel hello frame and an op refusal, and neither has anywhere
     to put an exception."""
     try:
-        rows = _from_fixture() if get_settings().gp.mode == "fixture" else _from_sql()
+        rows = _from_sql()
     except Exception as e:  # noqa: BLE001 - any failure to read GP is "this relay serves nothing"
         logger.warning(
             "could not read the GP company master; this relay serves no company until it can",

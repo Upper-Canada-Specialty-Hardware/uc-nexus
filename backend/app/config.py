@@ -1,5 +1,6 @@
 import os
 import re
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -39,8 +40,8 @@ TESTING_SESSION_KEY_HASH = os.getenv("TESTING_SESSION_KEY_HASH", "")
 # session - every environment shares the production Clerk instance - so TESTING_ENABLED alone is an
 # environment switch, not an auth gate. A caller must either already hold an Admin/Manager session or
 # present this digest's preimage in X-Testing-Secret, the bootstrap path for a fresh PR environment
-# where no session exists yet. Same verifier-not-credential shape as RELAY_SEED_SECRET_HASH: Railway
-# stores nothing replayable. Blank disables the secret path, leaving only the admin path.
+# where no session exists yet. A hash is a verifier, not a credential, so Railway stores nothing
+# replayable. Blank disables the secret path, leaving only the admin path.
 TESTING_SIGN_IN_SECRET_HASH = os.getenv("TESTING_SIGN_IN_SECRET_HASH", "")
 
 # The same digest, but the copy that PREVIEW environments inherit - and the reason a fresh PR
@@ -52,18 +53,17 @@ TESTING_SIGN_IN_SECRET_HASH = os.getenv("TESTING_SIGN_IN_SECRET_HASH", "")
 # therefore needed the variable set on it by hand, which is one manual step per PR standing between
 # "PR opened" and "an agent can test it".
 #
-# So this is the RELAY_SEED_SECRET_HASH shape, for the same reason and with the same safeguard: it
-# lives on PRODUCTION, sits inert there because `testing_sign_in_secret_hash()` refuses to read it in
-# production, and is inherited by every preview created afterwards.
+# So this one lives on PRODUCTION, sits inert there because `testing_sign_in_secret_hash()` refuses to
+# read it in production, and is inherited by every preview created afterwards.
 #
 # What it does mean: one secret opens the sign-in bootstrap on every preview environment at once,
-# rather than one secret per environment. That is the same trade RELAY_SEED_SECRET_HASH already makes,
-# and it is bounded the same way - previews hold disposable data, and the sign-in route is still gated
-# on TESTING_ENABLED first. Rotate it here and every preview follows on its next deploy.
+# rather than one secret per environment. It is bounded the same way the rest of the preview
+# machinery is - previews hold disposable data, and the sign-in route is still gated on
+# TESTING_ENABLED first. Rotate it here and every preview follows on its next deploy.
 PREVIEW_TESTING_SIGN_IN_SECRET_HASH = os.getenv("PREVIEW_TESTING_SIGN_IN_SECRET_HASH", "")
 
-# Railway sets this to the environment's name ("production", "pr-414", ...). Empty off Railway.
-# app/services/relay_seed.py uses it as the production kill-switch for credential seeding.
+# Railway sets this to the environment's name ("production", "uc-nexus-pr-414", ...). Empty off
+# Railway. Everything that must behave differently on production or on a preview is named off it.
 RAILWAY_ENVIRONMENT_NAME = os.getenv("RAILWAY_ENVIRONMENT_NAME", "")
 
 # Microsoft Entra app registration used to read the legacy SharePoint inventory list during the
@@ -95,6 +95,17 @@ PG_DIRECT_PORT = os.getenv("PG_DIRECT_PORT", "5432")
 PG_DIRECT_DBNAME = os.getenv("PG_DIRECT_DBNAME", "railway")
 PG_DIRECT_SSLMODE = os.getenv("PG_DIRECT_SSLMODE", "require")
 
+# The password of the read-only login a preview environment uses to pg_dump production. Set on
+# PRODUCTION and nowhere else: production is what CREATES the role from it (app/services/
+# preview_clone_role.py), and a Railway fork inherits every production variable at creation, so the
+# preview that comes out already holds the credential it needs to clone the database it was forked
+# from. Blank disables cloning on both sides - production mints no role, and a preview boots empty.
+PREVIEW_CLONE_PASSWORD = os.getenv("PREVIEW_CLONE_PASSWORD", "")
+
+# The role that password belongs to. A constant rather than a variable: both halves have to agree on
+# the name and there is no reason for a deployment to choose its own.
+PREVIEW_CLONE_ROLE = "preview_clone"
+
 # Railway names a per-PR preview environment "uc-nexus-pr-<N>". Anchored so a name that merely contains
 # the prefix does not match - the same shape preview_registry's PREVIEW_ENVIRONMENT_RE uses, kept local
 # here to avoid importing that module from config.
@@ -119,6 +130,27 @@ def preview_frontend_origin() -> str:
     asked to derive an origin for production or a local checkout, where the name would not fit.
     """
     return f"https://frontend-{RAILWAY_ENVIRONMENT_NAME.strip()}.up.railway.app"
+
+
+def preview_clone_source_url() -> str | None:
+    """The connection string a preview pg_dumps production through, or None when cloning is off.
+
+    Built from the db-admin public-proxy coordinates because they are already here and already point
+    at production's Postgres from outside Railway - a preview lives in its own Railway project
+    network, so the private hostname production's own DATABASE_URL uses is unreachable from it.
+
+    None when either half is missing, which is the state everywhere cloning is not configured: local
+    dev and CI never set PG_DIRECT_HOST, and a preview forked before PREVIEW_CLONE_PASSWORD existed
+    inherits no password. The caller boots empty rather than failing on it."""
+    host = PG_DIRECT_HOST.strip()
+    password = PREVIEW_CLONE_PASSWORD.strip()
+    if not host or not password:
+        return None
+    return (
+        f"postgresql://{PREVIEW_CLONE_ROLE}:{quote(password, safe='')}@"
+        f"{host}:{PG_DIRECT_PORT.strip()}/{PG_DIRECT_DBNAME.strip()}"
+        f"?sslmode={PG_DIRECT_SSLMODE.strip()}"
+    )
 
 
 def db_direct_access_enabled() -> bool:
@@ -148,33 +180,11 @@ def testing_sign_in_secret_hash() -> str:
     return ""
 
 
-# SHA-256 hex of the workstation relay's long-lived Bearer secret - the same digest already sitting in
-# production's relay_installs.secret_hash, copied from Admin -> Relay Installs. Set ONLY on the Railway
-# environment that PR deploys duplicate, so a PR backend can accept the one relay that exists without a
-# manual provision + enroll per PR (#414). A hash is a verifier, not a credential: it cannot be replayed
-# to authenticate. relay_seed refuses to act on it in production regardless.
-RELAY_SEED_SECRET_HASH = os.getenv("RELAY_SEED_SECRET_HASH", "")
-
-# SHA-256 hex of the STUB relay's Bearer secret - the default relay credential for a preview
-# environment. A preview normally runs its own fixture-backed stub relay inside the environment rather
-# than borrowing the one GP-credentialed workstation, so nothing has to be dialled from an office
-# machine for a PR to be testable. Minted PER PREVIEW by the preview-env workflow, which sets this hash
-# on the preview's backend and the matching secret on the stub service, so the pair can never drift.
-# Never set on production: seeding never runs there and the stub does not exist there.
-RELAY_STUB_SECRET_HASH = os.getenv("RELAY_STUB_SECRET_HASH", "")
-
-# Whether THIS preview environment wants the real workstation relay instead of the stub. Off by
-# default, which is the whole point: the default preview is self-contained. Turning it on does two
-# things at once - the seeded credential becomes RELAY_SEED_SECRET_HASH (the hash the workstation
-# relay's secret matches), and this backend announces itself to production so that relay is told to
-# dial it (app/services/preview_announce.py). Set per environment, never on production.
-PREVIEW_REAL_RELAY = os.getenv("PREVIEW_REAL_RELAY", "").lower() in ("true", "1", "yes")
-
 # The shared secret a preview presents to production's POST/DELETE /preview-channels, which is how
 # production learns a preview exists at all. Set on PRODUCTION - which both verifies it and is where a
-# new preview inherits its copy from at environment creation. Not a digest like the seed hashes: the
-# preview has to PRESENT it, so both sides need the value itself. Blank on either side closes the
-# route (401), which leaves the relay dialling nothing but production.
+# new preview inherits its copy from at environment creation. The secret itself rather than a
+# digest: the preview has to PRESENT it, so both sides need the value. Blank on either side closes
+# the route (401), which leaves the relay dialling nothing but production.
 PREVIEW_REGISTRY_SECRET = os.getenv("PREVIEW_REGISTRY_SECRET", "")
 
 # Where a preview announces itself. Constant in practice - production's public backend origin - and a
