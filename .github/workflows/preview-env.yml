@@ -52,16 +52,18 @@ name: preview-env
 #     production refuses (app/auth._reject_e2e_account_in_production), so it is safe to sit in a
 #     public PR comment.
 #   - Railway's own PR-environments toggle is OFF: this workflow forks every environment, and
-#     preview-env-cleanup.yml deletes it when the PR closes (Railway only tears down environments it
-#     created itself).
+#     preview-env-cleanup.yml deletes it once the PR closes AND any run here has finished (Railway
+#     only tears down environments it created itself).
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
 # One run per PR; a newer push cancels an in-flight run so two never race on the same environment,
-# variable, or sticky comment. Per PR deliberately, and shared with preview-env-cleanup: a repo-wide
-# group would let GitHub replace a PENDING run of another PR, silently dropping that PR's build.
+# variable, or sticky comment. Per PR deliberately: a repo-wide group would let GitHub replace a
+# PENDING run of another PR, silently dropping that PR's build. NOT shared with preview-env-cleanup:
+# a close must never cancel a run here (a cancelled run is a red check on the closed PR), so cleanup
+# keeps its own group and waits for this run to finish before it deletes the environment.
 concurrency:
   group: preview-env-${{ github.event.pull_request.number }}
   cancel-in-progress: true
