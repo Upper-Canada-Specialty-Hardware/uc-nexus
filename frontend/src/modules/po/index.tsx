@@ -135,6 +135,9 @@ export interface PurchaseOrder {
   gpSyncedAt: string | null;
   projectId: string | null;
   status: string;
+  // #637: the tenant that owns the PO. Stamped when the PO is raised, so a draft has it too,
+  // unlike gpCompany, which arrives only at GP registration.
+  company: string;
   gpCompany: string | null;
   gpVendorId: string | null;
   vendorNameSnapshot: string | null;
@@ -165,6 +168,9 @@ interface POListRow {
   projectId: string | null;
   status: string;
   origin: string;
+  // #637: the tenant that owns the PO - the register's Company column. Present on a draft, which
+  // gpCompany is not.
+  company: string;
   gpCompany: string | null;
   vendorNameSnapshot: string | null;
   // #632: who raised it - resolved server-side (Clerk display name for a Nexus request, the GP buyer
@@ -308,7 +314,7 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, sho
         )}
       </TableCell>
       {showCompany && (
-        <TableCell sx={{ ...hugSx, ...monoSx, color: 'text.secondary' }}>{po.gpCompany || '-'}</TableCell>
+        <TableCell sx={{ ...hugSx, ...monoSx, color: 'text.secondary' }}>{po.company}</TableCell>
       )}
       <TableCell sx={hugSx}>
         {po.poNumber ? (

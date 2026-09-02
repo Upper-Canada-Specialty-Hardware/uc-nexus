@@ -188,6 +188,20 @@ def test_the_warehouse_type_publishes_its_company():
     assert str(fields["company"].type) == "String!"
 
 
+def test_both_po_reads_publish_the_tenant():
+    """The register row and the detail read. A DRAFT has a company and no gp_company, so a register
+    that only published gp_company had no way to say whose draft it was."""
+    from main import schema
+
+    for type_name in ("PurchaseOrder", "POListRow"):
+        fields = schema._schema.type_map[type_name].fields
+
+        assert "company" in fields, type_name
+        # Non-null, unlike gp_company: a PO has a tenant from the moment it is raised.
+        assert str(fields["company"].type) == "String!", type_name
+        assert str(fields["gpCompany"].type) == "String", type_name
+
+
 def test_the_warehouse_update_input_accepts_a_company():
     from main import schema
 

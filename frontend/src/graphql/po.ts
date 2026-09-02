@@ -35,6 +35,9 @@ export const GET_PURCHASE_ORDER = gql`
       gpSyncedAt
       projectId
       status
+      # #637: the tenant that owns the PO. A draft has one from the moment it is raised; gpCompany
+      # is only stamped at GP registration.
+      company
       gpCompany
       gpVendorId
       vendorNameSnapshot
@@ -145,6 +148,9 @@ export const PURCHASE_ORDERS_PAGE = gql`
         projectId
         status
         origin
+        # #637: the tenant that owns the PO. A draft has one from the moment it is raised;
+        # gpCompany is only stamped at GP registration.
+        company
         gpCompany
         vendorNameSnapshot
         createdBy

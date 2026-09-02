@@ -52,6 +52,7 @@ const stockDraft: PurchaseOrder = {
   requestNumber: 'REQ-001',
   projectId: null,
   status: 'DRAFT',
+  company: 'TUBC',
   gpCompany: null,
   gpVendorId: null,
   vendorNameSnapshot: 'Ace Hardware Co',

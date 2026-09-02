@@ -411,6 +411,7 @@ def po_to_type(po, receive_records=None) -> PurchaseOrder:
         project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
         status=po.status,
         cost_code=po.cost_code,
+        company=po.company,
         gp_company=po.gp_company,
         gp_vendor_id=po.gp_vendor_id,
         # The GP vendor pick, the only vendor a PO has. Null on a DRAFT that has not been registered
@@ -465,6 +466,7 @@ def po_list_row_to_type(po, line_item_count: int, created_by: str | None = None)
         project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
         status=po.status,
         origin=po.origin,
+        company=po.company,
         gp_company=po.gp_company,
         vendor_name_snapshot=po.vendor_name_snapshot,
         created_by=created_by,

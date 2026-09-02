@@ -442,6 +442,41 @@ def _run_create_receipt(company: str, payload: dict) -> dict:
             raise
 
 
+def _run_capture_snapshot(company: str, payload: dict) -> dict:
+    """One company's whole fixture-snapshot record, assembled live out of GP (#666).
+
+    This is `ucnexus-relay capture`'s per-company half reached over the socket instead of from a
+    console on the workstation. capture.py stays the single description of what a snapshot holds and
+    how it is derived; the backend's relaySnapshot query calls this per company and writes the
+    envelope around what comes back, so refreshing relay/fixtures/gp-snapshot.json no longer needs a
+    person standing at the GP machine.
+
+    Read-only throughout, and slow by nature: the capture pages every PO and reads header totals per
+    PO. Every op is dispatched on a worker thread (see _handle_job), so a capture in flight does not
+    stop this channel answering anything else - the caller's timeout is the only thing that has to be
+    generous about it.
+
+    The format/version constants ride out with the record so the backend never holds a second copy of
+    them. The display name comes from discovery rather than a second read of the company master: this
+    channel refreshed that master to decide it serves `company` at all. It is left out of the record
+    entirely when no name is known, exactly as capture.py leaves it out on a failed read - discovery
+    then falls back to the code."""
+    ops.check_company_served(company)
+    # Lazy, because capture imports fixture_ops: ops_registry keeps that module off a workstation
+    # relay's startup path, and paying the import only when a capture is actually asked for keeps it
+    # off. Nothing in either module touches pyodbc at import time.
+    from . import capture, fixture_ops
+
+    with db.get_read_connection(company) as conn:
+        record = capture.capture_company(conn)
+    name = (companies.current().names.get(company) or "").strip()
+    return {
+        "format": fixture_ops.SNAPSHOT_FORMAT,
+        "version": fixture_ops.SNAPSHOT_VERSION,
+        "record": {"name": name, **record} if name else record,
+    }
+
+
 _OPS = {
     "list_vendors": _run_list_vendors,
     # issue #500 - the vendor's email, read live at send time. Nexus stores no vendor contact.
@@ -480,6 +515,9 @@ _OPS = {
     # issue #425 - jobs replicated from UCSH carry GL account indexes that do not exist in UBC, so a
     # PO against them registers and can never be received. This is how Nexus finds out which ones.
     "job_setup_health": _run_job_setup_health,
+    # issue #666 - the fixture snapshot's per-company record, so the checked-in one can be refreshed
+    # from the backend instead of from a console on the workstation.
+    "capture_snapshot": _run_capture_snapshot,
 }
 
 

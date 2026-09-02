@@ -991,6 +991,17 @@ def _create_receipt(company: str, payload: dict) -> dict:
     ).model_dump(mode="json")
 
 
+def _capture_snapshot(company: str, payload: dict) -> dict:
+    """This relay's own record for one company, in the shape the GP handler builds by reading GP
+    (channel._run_capture_snapshot, via capture.capture_company).
+
+    Answering the op out of the loaded snapshot is what makes an export through the backend's
+    relaySnapshot query idempotent against a preview: capture what a stub serves and the file that
+    comes back is the file it was built from, in-memory writes included. `name` is carried only when
+    the snapshot has one, which is the same rule the GP handler applies to what discovery knew."""
+    return {"format": SNAPSHOT_FORMAT, "version": SNAPSHOT_VERSION, "record": _company(company)}
+
+
 # The SAME op names channel._OPS carries - the hello frame advertises that set and the backend refuses
 # anything outside it, so a fixture relay that answered a different set would be a relay the backend
 # could not talk to. test_fixture_ops pins the two together.
@@ -1017,4 +1028,5 @@ OPS = {
     "create_customer_address": _create_customer_address,
     "update_job_site": _update_job_site,
     "job_setup_health": _job_setup_health,
+    "capture_snapshot": _capture_snapshot,
 }

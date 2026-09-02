@@ -32,4 +32,8 @@ ENV PYTHONPATH=/app/src \
 # Set per environment, and the container has nothing to do without them:
 #   UCNEXUS_RELAY_BACKEND_URL   the wss://.../relay-link to dial
 #   UCNEXUS_RELAY_SHARED_SECRET the secret that backend's RELAY_SEED_SECRET_HASH was seeded from
+# Optional:
+#   UCNEXUS_RELAY_BUILD         what the hello frame reports as this build, e.g. relay-stub.<sha7>.
+#                               Without it a container reports "dev" and no reader of relayStatus or
+#                               relay_events can tell one preview build from another.
 CMD ["python", "-m", "ucnexus_relay", "serve"]

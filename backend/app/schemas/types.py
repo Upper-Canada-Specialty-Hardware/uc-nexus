@@ -615,6 +615,9 @@ class PurchaseOrder:
     project_id: strawberry.ID | None
     status: POStatus
     cost_code: str | None
+    # The tenant that owns the PO (#637), distinct from gp_company, which is only stamped at GP
+    # registration; equal to gp_company once registered.
+    company: str
     gp_company: str | None
     gp_vendor_id: str | None
     vendor_name_snapshot: str | None
@@ -1162,6 +1165,9 @@ class POListRow:
     project_id: strawberry.ID | None
     status: POStatus
     origin: POOrigin
+    # The tenant that owns the PO (#637), distinct from gp_company, which is only stamped at GP
+    # registration; equal to gp_company once registered.
+    company: str
     gp_company: str | None
     vendor_name_snapshot: str | None
     # #632: who raised it, resolved server-side - the Clerk display name for a Nexus request, the GP
