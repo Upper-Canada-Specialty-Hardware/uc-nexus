@@ -517,6 +517,25 @@ def test_writes_never_reach_the_checked_in_file():
     assert "EPHEM" not in ok("list_buyers")["buyers"]
 
 
+def test_capture_snapshot_hands_back_the_loaded_record():
+    """#666: the export is idempotent against a stub. Capture what a preview serves and the record that
+    comes back is the one it was loaded with, so re-running it cannot quietly rewrite the fixture."""
+    result = ok("capture_snapshot")
+
+    assert result["format"] == fixture_ops.SNAPSHOT_FORMAT
+    assert result["version"] == fixture_ops.SNAPSHOT_VERSION
+    assert result["record"] == fixture_ops.load_state()["companies"]["TUBC"]
+    assert result["record"]["jobs"] and result["record"]["vendors"]
+
+    # The in-memory writes are part of what a stub serves, so they are part of what it captures.
+    ok("create_buyer", payload={"buyer_id": "EPHEM", "description": "in memory only"})
+    assert "EPHEM" in [b["buyer_id"] for b in ok("capture_snapshot")["record"]["buyers"]]
+
+
+def test_capture_snapshot_is_gated_like_every_other_fixture_op():
+    assert err("capture_snapshot", "UCSH")["error"] == "company_not_allowed"
+
+
 def test_the_second_company_is_served_too():
     assert "31004" in [j["job_number"] for j in ok("list_jobs", "TUCSH")["jobs"]]
     rows = ok("list_cost_code_master", "TUCSH", {"division": "VICTORIA"})["cost_codes"]

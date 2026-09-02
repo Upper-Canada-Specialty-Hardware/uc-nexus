@@ -346,3 +346,10 @@ three things GP holds have no read op and are derived instead - a job's usable c
 account index 0 while only the codes `job_setup_health` already calls broken keep their dangling index
 (so #425 still reproduces), PO lines are stored at index 0 and are therefore receivable, and the PO
 counter starts one past the highest number captured. `capture.py` says which is which.
+
+the same per-company record is served over the channel as the `capture_snapshot` op, and the backend
+exposes it to admins as the `relaySnapshot` GraphQL query - so a re-capture is a query against
+whichever relay is connected, and nobody has to be at the workstation to run it. the query assembles
+the identical envelope and hands back the file's text, ready to write over `fixtures/gp-snapshot.json`.
+a stub relay answers the op from its own fixture, so running it against a preview gives back what that
+preview was built with.

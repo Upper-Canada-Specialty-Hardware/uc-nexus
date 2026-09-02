@@ -1,7 +1,9 @@
 """Relay installs + live GP reads via the connected relay."""
 
+import json
 import logging
 import uuid
+from datetime import datetime
 
 import strawberry
 
@@ -79,6 +81,12 @@ _GP_ADDRESS_FIELDS = (
     ("zip_code", "zipCode", "A postal or ZIP code", 10, False),
     ("country", "country", "A country", 60, False),
 )
+
+# How long one company's `capture_snapshot` may take. Far past the gateway's default, and deliberately:
+# the op pages every purchase order in the company and reads header totals for each one, which is
+# minutes against a real GP rather than the second a list read costs. A capture that timed out would
+# have done all that work and thrown it away.
+_SNAPSHOT_TIMEOUT_SECONDS = 600.0
 
 
 def _sole_relay_company() -> str:
@@ -190,6 +198,55 @@ class RelayQueries:
         capped = max(1, min(limit, 500))
         with SessionLocal() as session:
             return [relay_event_to_type(e) for e in relay_event_repository.list_events(session, capped)]
+
+    @strawberry.field
+    async def relay_snapshot(self, info: strawberry.Info, companies: list[str]) -> str:
+        """The relay fixture snapshot for `companies`, captured live through the connected relay (#666).
+
+        This is how relay/fixtures/gp-snapshot.json gets regenerated. It used to take a person at the
+        GP workstation running `ucnexus-relay capture` from a console, because that CLI was the only
+        thing that could reach GP; the relay now serves the same per-company assembly as an op, so the
+        capture is a query against whichever relay is connected. The relay keeps the assembly - there
+        is one description of what a snapshot holds, in relay/src/ucnexus_relay/capture.py, and this
+        does not hold a second one. Even the format and version are copied out of the reply rather than
+        stated here.
+
+        Every op it triggers is READ-ONLY: the capture is `list_`/`read_` handlers plus one plain
+        SELECT for the company name, so a snapshot pulled from production changes nothing in GP.
+
+        It returns a str because the file is the deliverable. The whole point is to write what comes
+        back straight over the checked-in fixture, and a typed GraphQL object would have to be
+        flattened back into that same JSON to be useful - while pinning the schema to a snapshot shape
+        the relay owns and evolves. The text is the exact file contents, trailing newline and all.
+
+        Admin-only, and slow: a company with a real PO history takes minutes (see
+        _SNAPSHOT_TIMEOUT_SECONDS). A relay too old to know the op fails with the gateway's own
+        'update the relay' error, which is the accurate diagnosis."""
+        if not companies:
+            raise ValidationError("At least one GP company is required.", field="companies")
+
+        # Deduped after normalization: a code typed twice is one capture, not two ten-minute ones.
+        targets = list(dict.fromkeys(resolve_gp_company(info, c) for c in companies))
+        snapshot_format: str | None = None
+        version: int | None = None
+        records: dict[str, dict] = {}
+        for company in targets:
+            reply = await relay_gateway.relay_call(company, "capture_snapshot", timeout=_SNAPSHOT_TIMEOUT_SECONDS)
+            if snapshot_format is None:
+                snapshot_format = reply["format"]
+                version = reply["version"]
+            records[company] = reply["record"]
+
+        envelope = {
+            "format": snapshot_format,
+            "version": version,
+            # Seconds precision and no timezone, matching what `ucnexus-relay capture` writes: this
+            # field is read by people looking at a fixture, not by anything that parses offsets.
+            "captured_at": datetime.now().replace(microsecond=0).isoformat(),
+            "source": "captured from GP by the relaySnapshot query",
+            "companies": records,
+        }
+        return json.dumps(envelope, indent=2) + "\n"
 
     @strawberry.field
     async def gp_jobs(self, info: strawberry.Info, company: str) -> list[GpJob]:
