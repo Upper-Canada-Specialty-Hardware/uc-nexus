@@ -555,7 +555,7 @@ function POListPage() {
         <Typography variant="h5" sx={{ flex: 1 }}>
           Purchase Orders
         </Typography>
-        <RelayStatusChip connected={relayConnected} companies={relay.companies} />
+        <RelayStatusChip connected={relayConnected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
         {isAdmin && (
           <Button
             variant="outlined"

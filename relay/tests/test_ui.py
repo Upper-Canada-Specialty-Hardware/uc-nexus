@@ -35,9 +35,6 @@ shared_secret = "enc:dpapi:AQAAsecret"
 [sql]
 server = "10.0.0.246,1435"
 driver = "ODBC Driver 17 for SQL Server"
-[gp]
-default_company = "TUBC"
-allowed_companies = ["TUBC", "TUCSH"]
 [channel]
 backend_url = "wss://host/relay-link"
 [logging]
@@ -47,8 +44,6 @@ file = "relay.log"
     s = ui.config_summary(p)
     assert s["present"] is True
     assert s["enrolled"] is True
-    assert s["default_company"] == "TUBC"
-    assert s["allowed_companies"] == ["TUBC", "TUCSH"]
     assert s["sql_server"] == "10.0.0.246,1435"
     assert s["backend_url"].endswith("/relay-link")
     assert "AQAAsecret" not in json.dumps(s)  # the secret VALUE must never appear
@@ -144,16 +139,42 @@ def test_relay_health_down_on_closed_port():
 
 
 def test_gather_status_shape(tmp_path, monkeypatch):
-    p = _cfg(tmp_path, '[gp]\ndefault_company = "TUBC"\nallowed_companies = ["TUBC"]\n[logging]\nfile = "relay.log"\n')
+    p = _cfg(tmp_path, '[logging]\nfile = "relay.log"\n')
     _log(tmp_path, {"asctime": "t1", "levelname": "INFO", "message": "channel connected"})
     monkeypatch.setattr(ui, "relay_health", lambda host="127.0.0.1", port=7321: {"running": True, "version": "0.1.0"})
     monkeypatch.setattr(ui.autostart, "autostart_status", lambda: {"installed": True, "command": "x"})
     s = ui.gather_status(p)
-    assert set(s) == {"ui_version", "build", "known_companies", "config", "relay", "channel", "autostart"}
-    assert s["known_companies"]  # dev-determined company options for the Setup dropdowns
+    assert set(s) == {"ui_version", "build", "config", "relay", "channel", "autostart"}
     assert s["channel"]["state"] == "connected"
     assert s["relay"]["running"] is True
-    assert s["config"]["default_company"] == "TUBC"
+    assert s["config"]["sql_server"]
+
+
+def test_relay_health_carries_the_discovered_companies(monkeypatch):
+    # The Status tab's Companies row: only the serve process knows these (it reads them from GP), so
+    # they ride out on /health rather than being read from config.toml the way the old list was.
+    import json as _json
+    from io import BytesIO
+
+    body = _json.dumps(
+        {
+            "status": "ok",
+            "companies": [{"id": "TUBC", "name": "Test Upper Canada"}],
+            "companies_error": None,
+        }
+    ).encode()
+
+    class _Resp:
+        def __enter__(self):
+            return BytesIO(body)
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(ui.urllib.request, "urlopen", lambda url, timeout=3: _Resp())
+    health = ui.relay_health()
+    assert health["companies"] == [{"id": "TUBC", "name": "Test Upper Canada"}]
+    assert health["companies_error"] is None
 
 
 def test_api_delegates(monkeypatch):
@@ -165,8 +186,8 @@ def test_api_delegates(monkeypatch):
 
 
 def test_config_summary_shows_baked_infra_when_file_omits_it(tmp_path):
-    # config.toml now carries only [auth] + [gp]; SQL server + backend must come from the baked defaults.
-    p = _cfg(tmp_path, '[auth]\nshared_secret = "x"\n[gp]\ndefault_company = "TUBC"\n')
+    # config.toml now carries only [auth]; SQL server + backend must come from the baked defaults.
+    p = _cfg(tmp_path, '[auth]\nshared_secret = "x"\n')
     s = ui.config_summary(p)
     assert s["sql_server"]
     assert s["backend_url"].startswith("wss://")
@@ -180,7 +201,7 @@ def test_enroll_url_derived_from_baked_backend():
 
 def test_gather_status_channel_disconnected_when_serve_down(tmp_path, monkeypatch):
     # a killed serve can't have a live channel, no matter what the log's last line says
-    p = _cfg(tmp_path, '[gp]\ndefault_company = "TUBC"\n[logging]\nfile = "relay.log"\n')
+    p = _cfg(tmp_path, '[logging]\nfile = "relay.log"\n')
     _log(tmp_path, {"asctime": "t1", "levelname": "INFO", "message": "channel connected"})
     monkeypatch.setattr(ui, "relay_health", lambda host="127.0.0.1", port=7321: {"running": False})
     monkeypatch.setattr(ui.autostart, "autostart_status", lambda: {"installed": True})
@@ -188,7 +209,7 @@ def test_gather_status_channel_disconnected_when_serve_down(tmp_path, monkeypatc
 
 
 def test_gather_status_uses_live_channel_from_health(tmp_path, monkeypatch):
-    p = _cfg(tmp_path, '[gp]\ndefault_company = "TUBC"\n[logging]\nfile = "relay.log"\n')
+    p = _cfg(tmp_path, '[logging]\nfile = "relay.log"\n')
     _log(tmp_path, {"asctime": "t1", "levelname": "INFO", "message": "channel connected"})  # stale "connected"
     monkeypatch.setattr(
         ui, "relay_health", lambda host="127.0.0.1", port=7321: {"running": True, "channel": {"connected": False, "state": "secret_rejected"}}

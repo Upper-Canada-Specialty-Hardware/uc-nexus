@@ -10,23 +10,25 @@ from pathlib import Path
 
 import pytest
 
-from ucnexus_relay import channel, fixture_ops
+from ucnexus_relay import channel, companies, fixture_ops
 from ucnexus_relay.config import get_settings
 
 SNAPSHOT = Path(__file__).resolve().parents[1] / "fixtures" / "gp-snapshot.json"
 
 
-def _fixture_env(monkeypatch, companies: str) -> None:
+def _fixture_env(monkeypatch) -> None:
     monkeypatch.setenv("UCNEXUS_RELAY_MODE", "fixture")
     monkeypatch.setenv("UCNEXUS_RELAY_FIXTURE_PATH", str(SNAPSHOT))
-    monkeypatch.setenv("UCNEXUS_RELAY_COMPANIES", companies)
     get_settings.cache_clear()
     fixture_ops.reset_state()
 
 
 @pytest.fixture(autouse=True)
 def fixture_mode(monkeypatch):
-    _fixture_env(monkeypatch, "TUBC,TUCSH")
+    _fixture_env(monkeypatch)
+    # The real discovery path for this mode: the served companies ARE the snapshot's, read out of it
+    # the way a workstation reads GP's company master.
+    companies.refresh(max_age=0)
     yield
     get_settings.cache_clear()
     fixture_ops.reset_state()
@@ -67,14 +69,19 @@ def test_unknown_op_is_still_unknown_op():
     assert err("no_such_op")["error"] == "unknown_op"
 
 
-def test_a_company_outside_the_snapshot_is_company_not_allowed(monkeypatch):
-    # Allowed by config, absent from the snapshot: there is nothing to serve it from either way.
-    _fixture_env(monkeypatch, "TUBC,TUCSH,UBC")
+def test_a_company_outside_the_snapshot_is_company_not_allowed(serving):
+    # Served, absent from the snapshot: there is nothing to answer it from either way. Only reachable
+    # by seeding a served set the snapshot disagrees with - discovery reads the snapshot itself.
+    serving(["TUBC", "TUCSH", "UBC"])
     assert err("list_jobs", "UBC")["error"] == "company_not_allowed"
 
 
-def test_a_company_outside_allowed_companies_is_company_not_allowed():
+def test_a_company_this_relay_did_not_discover_is_company_not_allowed():
     assert err("list_jobs", "UCSH")["error"] == "company_not_allowed"
+
+
+def test_the_served_companies_are_the_snapshots_own():
+    assert companies.current().companies == ["TUBC", "TUCSH"]
 
 
 # --- reads ------------------------------------------------------------------

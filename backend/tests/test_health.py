@@ -19,7 +19,9 @@ def test_health_reports_the_live_relay(monkeypatch):
     Answered off the gateway's in-memory state, so it stays a constant-cost, database-free answer -
     which is the point of putting it on the probe endpoint rather than behind GraphQL."""
     gateway = RelayGateway()
-    gateway.try_register(["TUBC", "TUCSH"], object())
+    gateway.try_register(object())
+    # The hello frame is what says which companies GP gave the relay.
+    gateway.note_hello("relay-v0.3.0", ["list_vendors"], ["TUBC", "TUCSH"])
     monkeypatch.setattr(main, "relay_gateway", gateway)
 
     body = client.get("/health").json()

@@ -32,6 +32,7 @@ import { microLabelSx, monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import GpBuyerSelect from './GpBuyerSelect';
 import { useGpBuyers } from './useGpBuyers';
+import GpCompanyLabel from '../../relay/GpCompanyLabel';
 
 const ALL_ROLES = [
   'Hardware Schedule Import',
@@ -177,7 +178,7 @@ export default function UserManagementPage() {
   // offering another company's roster is how a PO gets rejected weeks later.
   const gpBuyers = useGpBuyers({ skip: !selectedUser, company: editCompany || null });
 
-  // #637: the companies the live relay serves, plus whatever this user already holds - a stored
+  // #637: the companies GP handed the live relay, plus whatever this user already holds - a stored
   // company must not vanish from the list just because the relay that serves it is between runs.
   const companyOptions = useMemo(() => {
     const list = [...gpBuyers.companies];
@@ -185,6 +186,10 @@ export default function UserManagementPage() {
     return list;
   }, [gpBuyers.companies, editCompany]);
   const companyLocked = gpBuyers.companies.length === 0;
+  // Why it is locked, when the relay said. Otherwise the field just sits disabled with no reason.
+  const companyLockedReason =
+    gpBuyers.companiesError ??
+    'The GP relay must be connected and reporting its GP companies to change this.';
 
   const [updateRoles] = useMutation(UPDATE_USER_ROLES);
   const [updateName] = useMutation(UPDATE_USER_NAME);
@@ -369,7 +374,7 @@ export default function UserManagementPage() {
               size="small"
               sx={{ width: 320, mb: 2 }}
               disabled
-              helperText="The GP relay must be connected to change this."
+              helperText={companyLockedReason}
               slotProps={{ input: { sx: monoSx } }}
             />
           ) : (
@@ -390,8 +395,8 @@ export default function UserManagementPage() {
                 <em>None</em>
               </MenuItem>
               {companyOptions.map((c) => (
-                <MenuItem key={c} value={c} sx={monoSx}>
-                  {c}
+                <MenuItem key={c} value={c}>
+                  <GpCompanyLabel code={c} gpCompanies={gpBuyers.gpCompanies} />
                 </MenuItem>
               ))}
             </TextField>

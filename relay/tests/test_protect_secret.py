@@ -19,7 +19,7 @@ def _secret_value(text: str) -> str:
 @windows_only
 def test_encrypts_plaintext_in_place(tmp_path):
     cfg = tmp_path / "config.toml"
-    cfg.write_text('[auth]\nshared_secret = "my-plain-secret"\n\n[gp]\ndefault_company = "TUBC"\n', encoding="utf-8")
+    cfg.write_text('[auth]\nshared_secret = "my-plain-secret"\n\n[gp]\nmode = "sql"\n', encoding="utf-8")
 
     assert main(["--config", str(cfg)]) == 0
 
@@ -27,7 +27,7 @@ def test_encrypts_plaintext_in_place(tmp_path):
     val = _secret_value(text)
     assert dpapi.is_encrypted(val)
     assert dpapi.unprotect(val) == "my-plain-secret"
-    assert 'default_company = "TUBC"' in text  # rest of the file preserved
+    assert 'mode = "sql"' in text  # rest of the file preserved
 
 
 @windows_only

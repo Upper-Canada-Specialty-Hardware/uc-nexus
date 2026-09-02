@@ -20,7 +20,7 @@ from app.repositories import relay_repository  # noqa: E402
 def _legacy_install(session, label: str, secret: str) -> RelayInstall:
     """A pre-067 row: ciphertext only, no hash. Constructed directly because nothing writes this shape
     any more - which is the point of the test."""
-    install, _token = relay_repository.provision_install(session, label=label, companies=["TUBC"])
+    install, _token = relay_repository.provision_install(session, label=label)
     install.secret_encrypted = encrypt_secret(secret)
     install.secret_hash = None
     session.flush()
@@ -28,7 +28,7 @@ def _legacy_install(session, label: str, secret: str) -> RelayInstall:
 
 
 def test_enrolment_stores_a_hash_and_no_ciphertext(db_session):
-    _install, token = relay_repository.provision_install(db_session, label="HASH-1", companies=["TUBC"])
+    _install, token = relay_repository.provision_install(db_session, label="HASH-1")
     enrolled = relay_repository.enroll_install(db_session, token, hostname="HASH-1", secret="s3cr3t-value")
 
     assert enrolled.secret_hash == hash_secret("s3cr3t-value")
@@ -57,7 +57,7 @@ def test_a_legacy_row_authenticates_and_upgrades_in_place(db_session):
 def test_a_hash_only_install_authenticates_with_no_encryption_key(db_session, monkeypatch):
     # The whole point of the change: losing or rotating RELAY_SECRET_ENC_KEY can no longer orphan a
     # relay enrolled from 067 on.
-    _install, token = relay_repository.provision_install(db_session, label="NOKEY-1", companies=["TUBC"])
+    _install, token = relay_repository.provision_install(db_session, label="NOKEY-1")
     enrolled = relay_repository.enroll_install(db_session, token, hostname="NOKEY-1", secret="keyless-secret")
 
     monkeypatch.delenv("RELAY_SECRET_ENC_KEY", raising=False)
@@ -77,7 +77,7 @@ def test_a_legacy_only_install_fails_softly_when_the_key_is_gone(db_session, mon
 
 
 def test_a_wrong_secret_matches_neither_representation(db_session):
-    _install, token = relay_repository.provision_install(db_session, label="WRONG-1", companies=["TUBC"])
+    _install, token = relay_repository.provision_install(db_session, label="WRONG-1")
     relay_repository.enroll_install(db_session, token, hostname="WRONG-1", secret="right-secret")
     _legacy_install(db_session, "WRONG-2", "right-legacy-secret")
 
@@ -87,7 +87,7 @@ def test_a_wrong_secret_matches_neither_representation(db_session):
 
 def test_adoption_also_stores_a_hash(db_session):
     # set_install_secret is the single writer, so the adopt path must have moved with it.
-    install, _token = relay_repository.provision_install(db_session, label="ADOPT-HASH", companies=["TUBC"])
+    install, _token = relay_repository.provision_install(db_session, label="ADOPT-HASH")
     relay_repository.adopt_secret(db_session, install.id, "presented-secret", "user_admin")
 
     assert install.secret_hash == hash_secret("presented-secret")

@@ -4,13 +4,26 @@ import { GET_RELAY_STATUS } from '../graphql/shared';
 // One shared empty list so a disconnected relay keeps the same array identity across renders - a
 // fresh [] each poll would invalidate every consumer's memo for nothing.
 const NO_STRINGS: string[] = [];
+const NO_COMPANIES: GpCompany[] = [];
+
+/** One GP company the live relay serves, as GP names it. `name` falls back to the code. */
+export interface GpCompany {
+  id: string;
+  name: string;
+}
 
 export interface RelayStatusInfo {
   // null = the first relayStatus check is still in flight.
   connected: boolean | null;
-  // #637: the GP companies the connected relay is enrolled for; empty when disconnected. A relay
-  // serves one workstation but can be enrolled for several companies, and a tenant IS a company.
+  // #637: the GP companies the connected relay discovered in GP's company master; empty when
+  // disconnected or when discovery failed. A tenant IS a company.
   companies: string[];
+  // The same codes with GP's display name attached, for anything that labels an option rather than
+  // showing a bare code. Same order and membership as `companies`.
+  gpCompanies: GpCompany[];
+  // Why a CONNECTED relay reported no companies - GP unreachable, a relay too old to look. null when
+  // it reported some, and when nothing is connected (that is its own explanation).
+  companiesError: string | null;
   // The connected relay's build tag (issue #315), e.g. 'relay-v0.1.0-build.30'. null when disconnected
   // or when an older relay that predates the hello frame is connected.
   build: string | null;
@@ -22,10 +35,6 @@ export interface RelayStatusInfo {
   lastConnectedAt: string | null;
   lastDisconnectedAt: string | null;
   lastDisconnectReason: string | null;
-  // The companies the workstation relay itself is configured for, from its hello frame. null when
-  // the connected relay does not report them. An install enrolled for a company missing here is
-  // enrolled for something the workstation cannot actually serve.
-  configuredCompanies: string[] | null;
   // Production only: the preview-environment sockets the relay is being told to dial as well.
   previewChannels: string[];
 }
@@ -38,12 +47,13 @@ export function useRelayStatus(options?: { skip?: boolean }): RelayStatusInfo {
     relayStatus: {
       connected: boolean;
       companies: string[];
+      gpCompanies: GpCompany[];
+      companiesError: string | null;
       build: string | null;
       installId: string | null;
       lastConnectedAt: string | null;
       lastDisconnectedAt: string | null;
       lastDisconnectReason: string | null;
-      configuredCompanies: string[] | null;
       previewChannels: string[];
     };
   }>(GET_RELAY_STATUS, {
@@ -54,12 +64,13 @@ export function useRelayStatus(options?: { skip?: boolean }): RelayStatusInfo {
   return {
     connected: data ? data.relayStatus.connected : null,
     companies: data?.relayStatus.companies ?? NO_STRINGS,
+    gpCompanies: data?.relayStatus.gpCompanies ?? NO_COMPANIES,
+    companiesError: data?.relayStatus.companiesError ?? null,
     build: data?.relayStatus.build ?? null,
     installId: data?.relayStatus.installId ?? null,
     lastConnectedAt: data?.relayStatus.lastConnectedAt ?? null,
     lastDisconnectedAt: data?.relayStatus.lastDisconnectedAt ?? null,
     lastDisconnectReason: data?.relayStatus.lastDisconnectReason ?? null,
-    configuredCompanies: data?.relayStatus.configuredCompanies ?? null,
     previewChannels: data?.relayStatus.previewChannels ?? NO_STRINGS,
   };
 }

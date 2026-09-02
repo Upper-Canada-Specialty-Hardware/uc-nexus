@@ -150,7 +150,7 @@ def test_a_recorded_event_reads_back_newest_first(db_session):
 
 
 def test_the_install_label_is_snapshotted_at_write_time(db_session):
-    install = RelayInstall(id=uuid.uuid4(), label="TAGGING3W10", companies=["TUBC"], secret_hash="a" * 64)
+    install = RelayInstall(id=uuid.uuid4(), label="TAGGING3W10", secret_hash="a" * 64)
     db_session.add(install)
     db_session.flush()
 
@@ -161,7 +161,7 @@ def test_the_install_label_is_snapshotted_at_write_time(db_session):
 def test_deleting_an_install_keeps_its_history(db_session):
     # Retiring a workstation (#366) must not erase what it did, and history that can only say "an
     # install that no longer exists" is worth nothing - hence the label snapshot beside the FK.
-    install = RelayInstall(id=uuid.uuid4(), label="RETIRED", companies=["TUBC"], secret_hash="b" * 64)
+    install = RelayInstall(id=uuid.uuid4(), label="RETIRED", secret_hash="b" * 64)
     db_session.add(install)
     db_session.flush()
     event = relay_event_repository.record(db_session, kind=RelayEventKind.CONNECTED, install_id=install.id)

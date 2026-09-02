@@ -28,10 +28,10 @@ Two guards keep this out of production, and the variables are SUPPOSED to be set
 clones a new PR environment from production directly - there is no separate base environment - so
 production is the only place a hash can sit for a PR environment to inherit it at all. It is inert
 there: `seed_from_env` refuses outright when `RAILWAY_ENVIRONMENT_NAME` says production, rather than
-trusting the variables to be absent. And the companies a seeded install may serve are sandbox
-companies: the relay's own `allowed_companies` guardrail already blocks production GP companies, and
-`relay_gateway.relay_call` refuses any company that does not match the registered install's, so a PR
-backend cannot reach past the sandbox even if someone sets a variable somewhere unexpected.
+trusting the variables to be absent. Which GP companies a seeded credential can reach is not decided
+here at all: the relay reports what GP gives it, and every non-production channel is pinned to the
+sandbox companies (NON_PRIMARY_ALLOWED_COMPANIES in the relay's config, #414) for reads and writes
+alike, which is what keeps a preview off production GP companies.
 """
 
 import logging
@@ -45,9 +45,7 @@ from sqlalchemy.orm import Session
 from app.config import (
     PREVIEW_REAL_RELAY,
     RAILWAY_ENVIRONMENT_NAME,
-    RELAY_SEED_COMPANIES,
     RELAY_SEED_SECRET_HASH,
-    RELAY_STUB_COMPANIES,
     RELAY_STUB_SECRET_HASH,
 )
 from app.database import SessionLocal
@@ -63,19 +61,6 @@ STUB_LABEL_PREFIX = "stub:"
 _LABEL_PREFIXES = (SEED_LABEL_PREFIX, STUB_LABEL_PREFIX)
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
-
-
-def parse_companies(raw: str) -> list[str]:
-    """A comma-separated company list from configuration, in the form relay_installs stores: trimmed,
-    uppercased, de-duplicated, order preserved. Empty entries are dropped rather than stored - the list
-    is what relay_call's membership check is made against, so a blank one would be a company nothing
-    could ever match."""
-    cleaned: list[str] = []
-    for part in (raw or "").split(","):
-        code = part.strip().upper()
-        if code and code not in cleaned:
-            cleaned.append(code)
-    return cleaned
 
 
 def _real_relay_install(session: Session) -> RelayInstall | None:
@@ -120,7 +105,6 @@ def seed_from_env(
     *,
     environment_name: str,
     secret_hash: str,
-    companies: list[str],
     label_prefix: str = SEED_LABEL_PREFIX,
 ) -> RelayInstall | None:
     """Ensure a relay install exists for `secret_hash`, or return None if seeding does not apply.
@@ -128,11 +112,8 @@ def seed_from_env(
     Idempotent: re-running it on every boot converges on exactly one row. Two rules make that safe
     rather than merely convergent, and both matter more than the convergence does.
 
-    It never MUTATES a row it did not create. An earlier draft repaired the company of whatever row
-    already carried the hash, which is fine for its own seed row and catastrophic for the real one: in
-    any environment holding a genuine install (production, or a database restored from it) that
-    silently repoints a live credential from UBC/UCSH to TUBC, and the original value survives only in
-    a log line. A row that already carries the hash is now left completely alone.
+    It never MUTATES a row it did not create: a row that already carries the hash is left completely
+    alone.
 
     And it refuses outright wherever a relay has genuinely enrolled - see `_real_relay_install`. The
     environment-name check alone is a single-string denylist that fails OPEN: rename the base
@@ -162,13 +143,6 @@ def seed_from_env(
         )
         return None
 
-    if not companies:
-        logger.error(
-            "no GP companies are configured for the relay credential being seeded; skipping. An install "
-            "that lists none can serve no call and is refused at the handshake.",
-        )
-        return None
-
     paired = _real_relay_install(session)
     if paired is not None:
         logger.error(
@@ -184,21 +158,13 @@ def seed_from_env(
 
     existing = session.scalars(select(RelayInstall).where(RelayInstall.secret_hash == secret_hash)).first()
     if existing is not None:
-        # Deliberately untouched, companies included. See the docstring.
-        missing = [c for c in companies if c not in (existing.companies or [])]
-        if missing:
-            logger.warning(
-                "an install already carries the seed hash but does not list every configured company; "
-                "leaving it as it is. relay_call will refuse any company it does not list.",
-                extra={"install_id": str(existing.id), "companies": list(existing.companies or [])},
-            )
+        # Deliberately untouched. See the docstring.
         return existing
 
     now = datetime.utcnow()
     install = RelayInstall(
         id=uuid.uuid4(),
         label=label,
-        companies=list(companies),
         secret_hash=secret_hash,
         # Marked enrolled on creation: there is no enrollment token and none is wanted - the relay
         # already holds the matching secret. Leaving this null would show the row as "pending" on
@@ -209,7 +175,7 @@ def seed_from_env(
     session.flush()
     logger.info(
         "seeded a trusted relay install for this non-production environment",
-        extra={"install_id": str(install.id), "label": install.label, "companies": list(install.companies)},
+        extra={"install_id": str(install.id), "label": install.label},
     )
     return install
 
@@ -234,16 +200,14 @@ def seed_on_startup() -> None:
         )
         return
     if PREVIEW_REAL_RELAY:
-        secret_hash, raw_companies, prefix, variable = (
+        secret_hash, prefix, variable = (
             RELAY_SEED_SECRET_HASH,
-            RELAY_SEED_COMPANIES,
             SEED_LABEL_PREFIX,
             "RELAY_SEED_SECRET_HASH",
         )
     else:
-        secret_hash, raw_companies, prefix, variable = (
+        secret_hash, prefix, variable = (
             RELAY_STUB_SECRET_HASH,
-            RELAY_STUB_COMPANIES,
             STUB_LABEL_PREFIX,
             "RELAY_STUB_SECRET_HASH",
         )
@@ -261,7 +225,6 @@ def seed_on_startup() -> None:
                 session,
                 environment_name=RAILWAY_ENVIRONMENT_NAME,
                 secret_hash=secret_hash,
-                companies=parse_companies(raw_companies),
                 label_prefix=prefix,
             )
             # Committed unconditionally: the pass may have deleted the row of the other kind without

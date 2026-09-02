@@ -24,7 +24,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from . import __version__ as VERSION
 from . import autostart, updater
-from .config import ChannelCfg, DEFAULT_CONFIG_PATH, KNOWN_COMPANIES, SqlCfg, primary_url
+from .config import ChannelCfg, DEFAULT_CONFIG_PATH, SqlCfg, primary_url
 
 
 def _resolve_log_path(config_path: Path, logging_file: str) -> Path:
@@ -47,7 +47,6 @@ def config_summary(config_path: str | Path | None = None) -> dict:
     except (OSError, tomllib.TOMLDecodeError) as e:
         return {"present": True, "path": str(p), "parse_error": str(e)}
 
-    gp = data.get("gp") or {}
     # infra (SQL, channel) is baked into config.py, not written to config.toml - overlay the baked
     # defaults so the read-only display shows the EFFECTIVE values; a file override (dev) still wins.
     sql = {**SqlCfg().model_dump(), **(data.get("sql") or {})}
@@ -65,8 +64,6 @@ def config_summary(config_path: str | Path | None = None) -> dict:
     return {
         "present": True,
         "path": str(p),
-        "default_company": gp.get("default_company"),
-        "allowed_companies": gp.get("allowed_companies") or [],
         "sql_server": sql.get("server"),
         "odbc_driver": sql.get("driver"),
         # Singular, and the PRIMARY (production) URL rather than merely the first configured one: it is
@@ -94,6 +91,10 @@ def relay_health(host: str = "127.0.0.1", port: int = 7321) -> dict:
             "version": body.get("version"),
             "uptime_seconds": body.get("uptime_seconds"),
             "channel": body.get("channel"),  # the serve process's REAL backend-channel state
+            # The GP companies the serve process actually discovered, and why it found none if it did
+            # not. Only the running relay knows this - it is read from GP, not from config.toml.
+            "companies": body.get("companies") or [],
+            "companies_error": body.get("companies_error"),
         }
     except (OSError, json.JSONDecodeError):
         return {"running": False}
@@ -188,7 +189,6 @@ def gather_status(config_path: str | Path | None = None) -> dict:
     return {
         "ui_version": VERSION,
         "build": updater.current_build(),
-        "known_companies": KNOWN_COMPANIES,  # dev-determined options for the Setup company dropdowns
         "config": cfg,
         "relay": health,
         "channel": channel,
@@ -390,12 +390,7 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
   .form { display:grid; gap:10px; margin:6px 0 10px; }
   .form label { display:flex; flex-direction:column; gap:4px; font-size:11.5px; color:#8b93a7; }
   .form input { background:#0f131b; border:1px solid #2c364b; border-radius:6px; color:#e6e8ee; padding:7px 9px; font-size:13px; }
-  .form input:focus, .form select:focus { outline:none; border-color:#3a4a6b; }
-  .form select { background:#0f131b; border:1px solid #2c364b; border-radius:6px; color:#e6e8ee; padding:7px 9px; font-size:13px; }
-  .fld { display:flex; flex-direction:column; gap:4px; }
-  .fld .lbl { font-size:11.5px; color:#8b93a7; }
-  .checks { display:flex; flex-wrap:wrap; gap:12px; padding:2px 0; }
-  .checks label { display:flex; flex-direction:row; align-items:center; gap:5px; font-size:12.5px; color:#cdd3e1; }
+  .form input:focus { outline:none; border-color:#3a4a6b; }
   .step { display:flex; align-items:center; gap:8px; font-weight:600; font-size:13px; margin:16px 0 6px; }
   .stepn { display:inline-flex; width:20px; height:20px; align-items:center; justify-content:center; border-radius:50%; background:#20283a; color:#7fb2ff; font-size:12px; }
   .actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:4px; }
@@ -431,16 +426,10 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
     <section id="view-setup" hidden>
       <div class="card">
         <h2>Guided setup</h2>
-        <p class="muted" style="margin:0 0 4px">Choose the GP company, test the connection, then enroll. Start-at-logon and shut down live on the Status tab.</p>
-        <div class="step"><span class="stepn">1</span> GP company</div>
-        <div class="form">
-          <div class="fld"><span class="lbl">Allowed companies</span><div id="f-allowed-box" class="checks"></div></div>
-          <label>Default company<select id="f-defco"></select></label>
-        </div>
+        <p class="muted" style="margin:0 0 4px">Test the GP connection, then enroll. The companies this relay serves are read from GP itself. Start-at-logon and shut down live on the Status tab.</p>
+        <div class="step"><span class="stepn">1</span> GP connection</div>
         <div class="actions">
-          <button onclick="saveConfig()">Save configuration</button>
           <button onclick="testConn()">Test GP connection</button></div>
-        <div id="r-save" class="result"></div>
         <div id="r-test" class="result"></div>
         <div class="step"><span class="stepn">2</span> Enroll with UC Nexus</div>
         <div class="form">
@@ -474,6 +463,15 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
   function row(k, v) { return `<div class="k">${k}</div><div class="v">${v}</div>`; }
   function pill(ok, txt, warn) { const c = warn ? 'warn' : (ok ? 'ok' : 'bad'); return `<span class="pill ${c}">${txt}</span>`; }
   function esc(s) { return String(s == null ? '' : s).replace(/</g, '&lt;'); }
+  // Read from the RUNNING relay (/health), not from config.toml: the companies come from GP's own
+  // company master, so a stopped relay has nothing to show and a failed read says why.
+  function companyList(cs) { return (cs || []).map(c => c.name && c.name !== c.id ? c.id + ' - ' + c.name : c.id); }
+  function companiesText(r) {
+    if (!r || !r.running) return '-';
+    if (r.companies_error) return `<span class="bad">${esc(r.companies_error)}</span>`;
+    const names = companyList(r.companies);
+    return names.length ? esc(names.join(', ')) : '<span class="bad">none found in GP</span>';
+  }
   function result(id, ok, text) { $(id).innerHTML = `<span class="${ok ? 'ok' : 'bad'}">${esc(text)}</span>`; }
 
   function showView(v) {
@@ -506,7 +504,7 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
       row('Backend channel', pill(connected, st, st==='unknown')) +
       row('Config', c.present ? (c.parse_error ? pill(false,'parse error') : pill(true,'loaded')) : pill(false,'not set up')) +
       row('Enrolled', c.present ? pill(!!c.enrolled, c.enrolled?'yes':'no') : '-') +
-      row('Companies', (c.allowed_companies||[]).join(', ') || '-') +
+      row('Companies', companiesText(r)) +
       row('SQL server', c.sql_server || '-') +
       row('Backend URL', c.backend_url || '-') +
       chanRows +
@@ -518,48 +516,30 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
       `<td>${esc(l.message)}</td><td class="muted">${esc(l.detail)}</td></tr>`).join('');
   }
 
-  function checkedAllowed() {
-    return Array.from(document.querySelectorAll('#f-allowed-box input:checked')).map(i => i.value);
-  }
-  function renderDefaultOptions(allowed, current) {
-    const cur = allowed.includes(current) ? current : (allowed[0] || '');
-    $('f-defco').innerHTML = allowed.map(c => `<option value="${c}"${c === cur ? ' selected' : ''}>${c}</option>`).join('');
-  }
-  function onAllowedChange() { renderDefaultOptions(checkedAllowed(), $('f-defco').value); }
-
   async function loadSetup() {
     const s = await window.pywebview.api.get_status();
     const c = s.config || {};
-    const known = s.known_companies || [];
-    const allowed = c.allowed_companies || [];
-    $('f-allowed-box').innerHTML = known.map(co =>
-      `<label><input type="checkbox" value="${co}"${allowed.includes(co) ? ' checked' : ''} onchange="onAllowedChange()">${co}</label>`).join('');
-    renderDefaultOptions(allowed.length ? allowed : known, c.default_company || (allowed[0] || known[0]));
     $('baked').innerHTML =
       row('Backend', c.backend_url || '-') +
       row('SQL server', c.sql_server || '-') +
       row('ODBC driver', c.odbc_driver || '-');
   }
 
-  async function saveConfig() {
-    const allowed = checkedAllowed();
-    if (!allowed.length) { result('r-save', false, 'select at least one allowed company'); return; }
-    const r = await window.pywebview.api.save_config({ allowed_companies: allowed, default_company: $('f-defco').value || allowed[0] });
-    result('r-save', r.ok, r.ok ? ('saved ' + r.path) : (r.error || 'save failed'));
-    refresh();
-  }
   async function testConn() {
     $('r-test').innerHTML = '<span class="muted">testing…</span>';
     const r = await window.pywebview.api.test_connection();
-    result('r-test', r.ok, r.ok
-      ? `connected as ${r.connected_as} to ${r.database} (DYNGRP: ${r.is_member_dyngrp ? 'yes' : 'no'})`
-      : (r.error || 'connection failed'));
+    if (!r.ok) { result('r-test', false, r.error || 'connection failed'); return; }
+    const found = r.companies_error
+      ? 'companies could not be read: ' + r.companies_error
+      : 'companies: ' + (companyList(r.companies).join(', ') || 'none found in GP');
+    result('r-test', true,
+      `connected as ${r.connected_as} to ${r.database} (DYNGRP: ${r.is_member_dyngrp ? 'yes' : 'no'}); ${found}`);
   }
   async function doEnroll() {
     $('r-enroll').innerHTML = '<span class="muted">enrolling…</span>';
     const r = await window.pywebview.api.enroll(val('f-token'));
     result('r-enroll', r.ok, r.ok
-      ? `enrolled ${r.install_id} as ${r.hostname} (${r.company}); secret written ${r.how}. restart the relay (Status tab) to use it.`
+      ? `enrolled ${r.install_id} as ${r.hostname}; secret written ${r.how}. restart the relay (Status tab) to use it.`
       : (r.error || 'enrollment failed'));
     refresh();
   }

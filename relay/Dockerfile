@@ -27,7 +27,6 @@ COPY fixtures ./fixtures
 ENV PYTHONPATH=/app/src \
     PYTHONUNBUFFERED=1 \
     UCNEXUS_RELAY_MODE=fixture \
-    UCNEXUS_RELAY_COMPANIES=TUBC,TUCSH \
     UCNEXUS_RELAY_LOG_FILE=-
 
 # Set per environment, and the container has nothing to do without them:

@@ -58,12 +58,16 @@ install - admin, scheduled task (IT / fleet alternative)
 configure config.toml
 - edit `%LOCALAPPDATA%\UCNexusRelay\config.toml`:
   - `[sql] server` / `driver` for the site
-  - `[gp] default_company` / `allowed_companies` (sandboxes only until prod sign-off; NEVER add UBC/UCSH
-    here without it)
   - `[cors] allowed_origins` to the UC Nexus frontend origin
   - `[update] channel` - `stable` (the default: full releases only) or `latest` (prereleases too). only
     the one workstation that proves a build before it is promoted should be on `latest`.
-- leave `[auth] shared_secret` for the enroll step below.
+- leave `[auth] shared_secret` for the enroll step below. enroll writes `config.toml` itself if this
+  workstation has none (a hand-copied exe rather than an install), so there is nothing to create by
+  hand first.
+- there is no company list to set. the relay reads the companies it serves from GP's company master
+  (`DYNAMICS..SY01500`, `[sql] system_db`) on every channel connect, so a company added in GP needs no
+  edit here. the Setup tab's "Test GP connection" lists what it found; a relay that cannot read the
+  master serves nothing and says so on the Status tab.
 - there is nothing to configure for Railway PR environments. production pushes the current preview list
   down the relay's own backend socket (a `{"type": "channels", "urls": [...]}` frame, re-sent whenever it
   changes) and the relay dials the difference within about a second, dropping a channel when its PR

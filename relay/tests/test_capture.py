@@ -11,17 +11,54 @@ from contextlib import contextmanager
 
 import pytest
 
-from ucnexus_relay import capture, channel, econnect, fixture_ops
+from ucnexus_relay import capture, channel, companies, econnect, fixture_ops
 from ucnexus_relay.config import get_settings
 
 
+SYSTEM_DB = "DYNAMICS"
+CAPTURED_NAME = "TEST COMPANY ONE"
+
+
 class _Conn:
-    """Stands in for a read connection. Every read is monkeypatched, so nothing reaches a cursor."""
+    """Stands in for a company read connection. Every read is monkeypatched, so nothing reaches a
+    cursor."""
 
 
-@contextmanager
-def _connect(company):
-    yield _Conn()
+class _SystemConn:
+    """The GP system database, which answers only the one plain SELECT capture makes: the company's
+    display name out of SY01500."""
+
+    def __init__(self, name):
+        self._name = name
+
+    def cursor(self):
+        return self
+
+    def execute(self, query, company):
+        assert "SY01500" in query and company
+        return self
+
+    def fetchone(self):
+        return None if self._name is None else (self._name,)
+
+
+def _connect_factory(name=CAPTURED_NAME, master_fails=False):
+    """A read-connection factory keyed by DATABASE name: the system database for the name read, a
+    company database for everything else."""
+
+    @contextmanager
+    def _open(database):
+        if database == SYSTEM_DB:
+            if master_fails:
+                raise RuntimeError("SY01500 is unreadable")
+            yield _SystemConn(name)
+        else:
+            yield _Conn()
+
+    return _open
+
+
+_connect = _connect_factory()
 
 
 @pytest.fixture(autouse=True)
@@ -245,10 +282,13 @@ def test_a_captured_snapshot_is_servable(tmp_path, monkeypatch):
 
     monkeypatch.setenv("UCNEXUS_RELAY_MODE", "fixture")
     monkeypatch.setenv("UCNEXUS_RELAY_FIXTURE_PATH", str(out))
-    monkeypatch.setenv("UCNEXUS_RELAY_COMPANIES", "TUBC")
     get_settings.cache_clear()
     fixture_ops.reset_state()
     try:
+        # The name capture read out of SY01500 comes back through discovery, so a fixture relay
+        # reports the company the way a workstation one would.
+        assert companies.refresh(max_age=0).names == {"TUBC": CAPTURED_NAME}
+
         jobs = channel._dispatch("list_jobs", "TUBC", {})
         assert jobs["ok"] is True
         assert [j["job_number"] for j in jobs["result"]["jobs"]] == ["23093", "23145"]
@@ -264,6 +304,31 @@ def test_a_captured_snapshot_is_servable(tmp_path, monkeypatch):
     finally:
         get_settings.cache_clear()
         fixture_ops.reset_state()
+
+
+def test_capture_records_the_company_display_name(tmp_path):
+    # It is the one thing in the snapshot no read handler returns, and the thing a fixture relay's
+    # company discovery reports to the backend.
+    out = tmp_path / "gp-snapshot.json"
+    snapshot = capture.capture(["TUBC"], out, connect=_connect)
+    assert snapshot["companies"]["TUBC"]["name"] == CAPTURED_NAME
+    assert json.loads(out.read_text(encoding="utf-8"))["companies"]["TUBC"]["name"] == CAPTURED_NAME
+
+
+def test_capture_leaves_the_name_out_when_the_company_master_cannot_be_read(tmp_path, capsys):
+    # No guess is written: the field is absent and discovery falls back to the company code. A name
+    # is a nicety, so the rest of the capture still lands.
+    out = tmp_path / "gp-snapshot.json"
+    snapshot = capture.capture(["TUBC"], out, connect=_connect_factory(master_fails=True))
+    assert "name" not in snapshot["companies"]["TUBC"]
+    assert snapshot["companies"]["TUBC"]["jobs"]  # the capture itself still happened
+    assert "could not read its name" in capsys.readouterr().err
+
+
+def test_capture_leaves_the_name_out_when_the_company_master_has_no_row(tmp_path):
+    out = tmp_path / "gp-snapshot.json"
+    snapshot = capture.capture(["TUBC"], out, connect=_connect_factory(name=None))
+    assert "name" not in snapshot["companies"]["TUBC"]
 
 
 def test_main_requires_both_arguments(tmp_path, monkeypatch):

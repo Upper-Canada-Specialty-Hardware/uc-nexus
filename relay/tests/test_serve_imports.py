@@ -32,7 +32,7 @@ import sys
 sys.modules["pyodbc"] = None   # any `import pyodbc` now raises ImportError, as it does with no ODBC stack
 sys.platform = "linux"         # the non-Windows path through dpapi (ctypes.wintypes will not import there)
 
-from ucnexus_relay import autostart, channel, cli, db, dpapi, fixture_ops
+from ucnexus_relay import autostart, channel, cli, companies, db, dpapi, fixture_ops
 from ucnexus_relay.main import app
 
 assert channel.pyodbc is None
@@ -44,6 +44,10 @@ assert channel.ops_registry() is fixture_ops.OPS, "UCNEXUS_RELAY_MODE=fixture se
 assert app.title == "UC Nexus Relay"
 assert cli.main is not None
 assert autostart is not None
+
+# the companies a fixture relay serves are discovered from the snapshot, exactly as a workstation
+# relay discovers GP's company master - nothing lists them in the environment
+assert companies.refresh(max_age=0).companies == ["TUBC", "TUCSH"]
 
 reply = channel._dispatch("list_jobs", "TUBC", {})
 assert reply["ok"] is True and reply["result"]["jobs"], reply
@@ -60,7 +64,6 @@ def test_serve_path_imports_and_dispatches_without_pyodbc(tmp_path):
         "PYTHONPATH": str(SRC),
         "PYTHONIOENCODING": "utf-8",
         "UCNEXUS_RELAY_MODE": "fixture",
-        "UCNEXUS_RELAY_COMPANIES": "TUBC,TUCSH",
         "UCNEXUS_RELAY_SHARED_SECRET": "container-secret",
         "UCNEXUS_RELAY_LOG_FILE": "-",
         "UCNEXUS_RELAY_FIXTURE_PATH": str(SRC.parent / "fixtures" / "gp-snapshot.json"),
@@ -81,7 +84,6 @@ def test_serve_path_imports_and_dispatches_without_pyodbc(tmp_path):
 @pytest.fixture
 def fixture_client(monkeypatch):
     monkeypatch.setenv("UCNEXUS_RELAY_MODE", "fixture")
-    monkeypatch.setenv("UCNEXUS_RELAY_COMPANIES", "TUBC,TUCSH")
     monkeypatch.setenv("UCNEXUS_RELAY_SHARED_SECRET", "container-secret")
     get_settings.cache_clear()
     fixture_ops.reset_state()

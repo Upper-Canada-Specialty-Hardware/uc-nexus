@@ -155,12 +155,6 @@ def testing_sign_in_secret_hash() -> str:
 # to authenticate. relay_seed refuses to act on it in production regardless.
 RELAY_SEED_SECRET_HASH = os.getenv("RELAY_SEED_SECRET_HASH", "")
 
-# The GP companies the seeded REAL-relay install is enrolled for, comma separated. Only ever read
-# together with RELAY_SEED_SECRET_HASH, i.e. when PREVIEW_REAL_RELAY is on. Defaults to the GP sandbox
-# alone: seeding a hash that the production workstation relay also answers to is only acceptable while
-# the reach of the resulting install is a sandbox company.
-RELAY_SEED_COMPANIES = os.getenv("RELAY_SEED_COMPANIES", "TUBC")
-
 # SHA-256 hex of the STUB relay's Bearer secret - the default relay credential for a preview
 # environment. A preview normally runs its own fixture-backed stub relay inside the environment rather
 # than borrowing the one GP-credentialed workstation, so nothing has to be dialled from an office
@@ -168,11 +162,6 @@ RELAY_SEED_COMPANIES = os.getenv("RELAY_SEED_COMPANIES", "TUBC")
 # on the preview's backend and the matching secret on the stub service, so the pair can never drift.
 # Never set on production: seeding never runs there and the stub does not exist there.
 RELAY_STUB_SECRET_HASH = os.getenv("RELAY_STUB_SECRET_HASH", "")
-
-# The GP companies the seeded STUB install is enrolled for, comma separated. Wider than the real
-# relay's list on purpose: the stub answers from fixtures, so a second company costs nothing and lets
-# the multi-company screens (#637) be exercised in a preview at all.
-RELAY_STUB_COMPANIES = os.getenv("RELAY_STUB_COMPANIES", "TUBC,TUCSH")
 
 # Whether THIS preview environment wants the real workstation relay instead of the stub. Off by
 # default, which is the whole point: the default preview is self-contained. Turning it on does two

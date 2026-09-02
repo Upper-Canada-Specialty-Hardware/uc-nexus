@@ -34,10 +34,6 @@ def _default_fixture_path() -> Path:
 
 DEFAULT_FIXTURE_PATH = _default_fixture_path()
 
-# The determined GP companies an operator may pick from in the Setup tab. Dev-determined - edit here to
-# change what's offered; allowed_companies + default_company in the wizard are chosen from this list.
-KNOWN_COMPANIES = ["TUBC", "TUCSH", "UBC", "UCSH"]
-
 
 class ServerCfg(BaseModel):
     host: str = "127.0.0.1"
@@ -73,6 +69,10 @@ class SqlCfg(BaseModel):
     trust_server_certificate: bool = True
     connection_timeout: int = 10
     command_timeout: int = 30
+    # The GP system database, which holds the company master SY01500 - the list of companies this relay
+    # serves is read from there rather than hand-maintained (see companies.py). Baked like the rest of
+    # [sql]: it is GP's own name for that database, not a per-workstation choice.
+    system_db: str = "DYNAMICS"
 
 
 class BuyersCfg(BaseModel):
@@ -86,8 +86,6 @@ class BuyersCfg(BaseModel):
 
 
 class GpCfg(BaseModel):
-    default_company: str = "TUBC"
-    allowed_companies: list[str] = ["TUBC"]
     # How GP is reached. "sql" is the workstation relay: pyodbc to the real company databases. "fixture"
     # serves every op out of a checked-in JSON snapshot instead, with writes kept in memory, so the relay
     # can run in a Linux container (a Railway preview environment) with no GP and no ODBC at all - see
@@ -98,7 +96,7 @@ class GpCfg(BaseModel):
     fixture_path: str | None = None
     # company -> paired custom warehouse DB that holds WHRECLINE101 (the table the company dashboards
     # read). A company with no entry gets GP-only receipts (no WHRECLINE101 write). Sandboxes have none.
-    # Baked dev default: the prod pairings (applied only when that company is also allowed).
+    # Baked dev default: the prod pairings (applied only to a discovered company that has an entry).
     custom_db: dict[str, str] = {"UBC": "PMUBC", "UCSH": "PMUCSH"}
     buyers: BuyersCfg = BuyersCfg()
 
@@ -135,7 +133,7 @@ def is_primary_backend_url(url: str) -> bool:
 
 def channel_allowed_companies(url: str) -> list[str] | None:
     """The GP companies this channel may target, or None for unrestricted (the production channel,
-    which is governed by [gp] allowed_companies alone, as it always has been)."""
+    which reaches every company this relay discovered, as it always has)."""
     return None if is_primary_backend_url(url) else list(NON_PRIMARY_ALLOWED_COMPANIES)
 
 
@@ -230,7 +228,6 @@ class Settings(BaseModel):
 #   UCNEXUS_RELAY_FIXTURE_PATH  -> [gp] fixture_path      snapshot to serve; unset = the bundled one
 #   UCNEXUS_RELAY_SHARED_SECRET -> [auth] shared_secret   PLAINTEXT; never DPAPI-decrypted
 #   UCNEXUS_RELAY_BACKEND_URL   -> [channel] backend_url  the single backend to dial
-#   UCNEXUS_RELAY_COMPANIES     -> [gp] allowed_companies comma list; the first entry is default_company
 #   UCNEXUS_RELAY_LOG_FILE      -> [logging] file         "-" means stdout only, no relay.log on disk
 
 
@@ -246,18 +243,12 @@ def _apply_env_overrides(data: dict) -> None:
     """Fold the UCNEXUS_RELAY_* variables into the parsed config, in place."""
     mode = os.environ.get("UCNEXUS_RELAY_MODE")
     fixture_path = os.environ.get("UCNEXUS_RELAY_FIXTURE_PATH")
-    companies = os.environ.get("UCNEXUS_RELAY_COMPANIES")
-    if mode or fixture_path or companies:
+    if mode or fixture_path:
         gp = _section(data, "gp")
         if mode:
             gp["mode"] = mode.strip().lower()
         if fixture_path:
             gp["fixture_path"] = fixture_path
-        if companies:
-            names = [c.strip() for c in companies.split(",") if c.strip()]
-            if names:
-                gp["allowed_companies"] = names
-                gp["default_company"] = names[0]
 
     backend_url = os.environ.get("UCNEXUS_RELAY_BACKEND_URL")
     if backend_url:

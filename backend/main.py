@@ -214,7 +214,7 @@ def health():
 
 async def _relay_read_loop(websocket: WebSocket) -> None:
     """Feed each frame the relay sends to relay_gateway: a {"type": "hello"} advertises the relay's build,
-    op-set, configured companies and features on connect (issue #315, #654), a {"type": "pong"} answers
+    op-set, discovered GP companies and features on connect (issue #315, #654), a {"type": "pong"} answers
     the heartbeat (issue #277), anything else is a {id, ok, result|error} job reply to correlate with
     relay_call().
 
@@ -229,6 +229,8 @@ async def _relay_read_loop(websocket: WebSocket) -> None:
                 message.get("ops"),
                 message.get("companies"),
                 message.get("features"),
+                message.get("company_names"),
+                message.get("companies_error"),
             )
             await relay_gateway.push_channels(preview_registry.channels())
         elif isinstance(message, dict) and message.get("type") == "pong":
@@ -282,6 +284,8 @@ async def _await_hello(websocket: WebSocket) -> bool:
         message.get("ops"),
         message.get("companies"),
         message.get("features"),
+        message.get("company_names"),
+        message.get("companies_error"),
     )
     await relay_gateway.push_channels(preview_registry.channels())
     return True
@@ -339,7 +343,7 @@ async def _record_connected(websocket: WebSocket, install_id, connected_at: date
         at=connected_at,
         install_id=install_id,
         build=relay_gateway.build if live else None,
-        companies=(relay_gateway.configured_companies or relay_gateway.companies) if live else None,
+        companies=relay_gateway.companies if live else None,
     )
 
 
@@ -447,29 +451,20 @@ async def relay_link(websocket: WebSocket):
                     # to a plain rejection and let the rebind roll back with the session.
                     install = None
                     session.rollback()
-        # Read the companies while the row is still bound to the session. session.commit() below expires
-        # every attribute (expire_on_commit), and leaving the `with` block detaches `install` - so any
-        # later install.companies access raises DetachedInstanceError. Because that access sat AFTER
+        # Read the id while the row is still bound to the session (#366). session.commit() below expires
+        # every attribute (expire_on_commit), and leaving the `with` block detaches `install` - so a
+        # later attribute access raises DetachedInstanceError. Because that access sat AFTER
         # websocket.accept(), the exception tore down every already-accepted relay socket, so no relay
         # could ever register (relayStatus stayed false).
-        companies = list(install.companies or []) if install is not None else None
-        # Same rule for the id (#366): read it here, beside the companies, while the row is attached.
         install_id = install.id if install is not None else None
         session.commit()
-    if not companies:
-        # No install matched, or one enrolled for no company at all - which could serve no GP call
-        # anyway, so it is refused at the handshake rather than holding the single slot uselessly.
-        # Recorded because a drifted credential is otherwise invisible from this side: the relay retries
-        # forever and nothing but a log line ever says so (throttled inside relay_events).
+    if install_id is None:
+        # Nothing matched the presented secret. Recorded because a drifted credential is otherwise
+        # invisible from this side: the relay retries forever and nothing but a log line ever says so
+        # (throttled inside relay_events).
         await relay_events.write(
             RelayEventKind.REFUSED_SECRET,
-            install_id=install_id,
-            companies=companies,
-            reason=(
-                "the presented secret matched no relay install"
-                if install_id is None
-                else "the matched install is enrolled for no GP company"
-            ),
+            reason="the presented secret matched no relay install",
         )
         await websocket.close(code=4401)
         return
@@ -478,7 +473,7 @@ async def relay_link(websocket: WebSocket):
     # POC scope: one relay at a time, incumbent wins (issue #202 #6). If a relay is already connected,
     # reject this one rather than superseding - superseding could drop an in-flight reply for a GP write
     # that committed, and two enrolled relays would otherwise thrash by force-closing each other.
-    if not relay_gateway.try_register(companies, websocket, install_id):
+    if not relay_gateway.try_register(websocket, install_id):
         await websocket.close(code=4409)
         return
     connected_at = datetime.utcnow()
@@ -487,7 +482,9 @@ async def relay_link(websocket: WebSocket):
             RelayEventKind.ADOPTED,
             at=connected_at,
             install_id=install_id,
-            companies=companies,
+            # Null, not the gateway's list: the hello has not landed yet, so what this relay serves is
+            # unknown at this instant rather than empty.
+            companies=None,
             reason="an armed adopt window bound the presented secret to this install",
             detail={"armed_by": adopted_by},
         )

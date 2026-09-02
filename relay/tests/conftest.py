@@ -35,6 +35,38 @@ def clean_channel_states():
         channel._STATES.update(saved)
 
 
+@pytest.fixture(autouse=True)
+def _no_company_discovery_leaks(monkeypatch):
+    """Two guards around the discovered GP company set.
+
+    It is cached module-wide (read from GP when a channel connects, not per call), so a test that seeds
+    one would otherwise decide what the NEXT test's ops may reach - hence the reset either side. And
+    pyodbc is taken away, so a code path that discovers without being asked to fails instead of dialling
+    the real GP server from a test run; a test that wants a discovery hands back its own fake.
+
+    Imported inside the fixture for the same reason clean_channel_states is: it reaches pyodbc."""
+    from ucnexus_relay import companies
+
+    companies.reset()
+    monkeypatch.setattr(companies, "pyodbc", None)
+    yield
+    companies.reset()
+
+
+@pytest.fixture
+def serving(monkeypatch):
+    """Say which GP companies this relay discovered, without a GP or a snapshot to read. Every op goes
+    through ops.check_company_served, so a test that dispatches one has to answer that question."""
+    from ucnexus_relay import companies
+
+    def _set(codes, names=None, error=None):
+        discovery = companies.Discovery(list(codes), dict(names or {c: c for c in codes}), error)
+        monkeypatch.setattr(companies, "current", lambda: discovery)
+        return discovery
+
+    return _set
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _never_hard_exit_the_test_runner():
     calls = []

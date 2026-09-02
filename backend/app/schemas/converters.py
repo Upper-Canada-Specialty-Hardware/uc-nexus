@@ -207,7 +207,6 @@ def relay_install_to_type(ri) -> RelayInstallInfo:
     return RelayInstallInfo(
         id=strawberry.ID(str(ri.id)),
         label=ri.label,
-        companies=list(ri.companies or []),
         hostname=ri.hostname,
         enrolled=ri.enrolled_at is not None,
         enrolled_at=ri.enrolled_at,

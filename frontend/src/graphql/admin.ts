@@ -89,7 +89,6 @@ export const RELAY_INSTALLS = gql`
     relayInstalls {
       id
       label
-      companies
       hostname
       enrolled
       enrolledAt
@@ -327,11 +326,10 @@ export const MERGE_LOCATIONS = gql`
 `;
 
 export const PROVISION_RELAY_INSTALL = gql`
-  mutation ProvisionRelayInstall($label: String!, $companies: [String!]!) {
-    provisionRelayInstall(label: $label, companies: $companies) {
+  mutation ProvisionRelayInstall($label: String!) {
+    provisionRelayInstall(label: $label) {
       installId
       label
-      companies
       enrollmentToken
       enrollmentTokenExpiresAt
     }

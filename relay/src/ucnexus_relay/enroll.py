@@ -21,7 +21,6 @@ import re
 import secrets
 import socket
 import sys
-import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -63,25 +62,13 @@ class EnrollError(Exception):
         self.detail = detail
 
 
-def _company_from_config(config_path: Path) -> str:
-    """Read [gp].default_company directly (tomllib), not via get_settings - enrollment only needs the
-    company, and the config at this point may not yet validate as full Settings (the wizard writes [sql]/
-    [gp] and a placeholder secret before enrolling)."""
-    try:
-        with open(config_path, "rb") as f:
-            data = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        return "TUBC"
-    return (data.get("gp") or {}).get("default_company") or "TUBC"
-
-
 def enroll_relay(*, token: str, backend_url: str, config_path: str | Path, encrypt: bool = True) -> dict:
     """Generate this install's long-lived secret, register it with the backend using the one-time token,
-    and write it (DPAPI-encrypted unless encrypt=False) into config.toml [auth] shared_secret. Returns a
-    result dict; raises EnrollError on any failure. Shared by the CLI (main) and the UI setup wizard."""
+    and write it (DPAPI-encrypted unless encrypt=False) into config.toml [auth] shared_secret, creating
+    that file if the workstation has none. Returns a result dict; raises EnrollError on any failure.
+    Shared by the CLI (main) and the UI setup wizard."""
     config_path = Path(config_path)
     hostname = socket.gethostname()
-    company = _company_from_config(config_path)
     secret = secrets.token_urlsafe(32)
 
     variables = {"input": {"enrollmentToken": token, "hostname": hostname, "secret": secret}}
@@ -96,6 +83,16 @@ def enroll_relay(*, token: str, backend_url: str, config_path: str | Path, encry
     if not data.get("ok"):
         raise EnrollError("enrollment did not succeed", detail=result)
 
+    # A workstation may have no config.toml at all - the installer seeds one from config.example.toml,
+    # but a hand-copied exe has nothing and the Setup tab no longer writes one. Create the minimal file
+    # (placeholder secret) so enrolling is the only step; the write below then replaces that
+    # placeholder. Done only when the file is ABSENT: one that exists without an [auth] shared_secret
+    # line was hand-edited, and write_secret_to_config still refuses it rather than rewriting it.
+    if not config_path.exists():
+        from . import setup  # lazy: enroll runs as a CLI and should not pull the wizard's helpers in
+
+        setup.write_config({}, config_path)
+
     # the backend stores the PLAINTEXT secret (the frontend presents it as the Bearer token); locally we
     # persist the DPAPI-encrypted form so config.toml holds no plaintext at rest.
     stored = secret if not encrypt else dpapi.protect(secret)
@@ -104,7 +101,6 @@ def enroll_relay(*, token: str, backend_url: str, config_path: str | Path, encry
         "ok": True,
         "install_id": data.get("installId"),
         "hostname": hostname,
-        "company": company,
         "how": "plaintext" if not encrypt else "DPAPI-encrypted (CurrentUser)",
     }
 
@@ -131,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(
-        f"enrolled install {r['install_id']} as host {r['hostname']} (company {r['company']}); "
+        f"enrolled install {r['install_id']} as host {r['hostname']}; "
         f"secret written {r['how']} to {args.config}. a running relay picks this up on its next "
         f"reconnect (within ~30s) - no restart needed."
     )

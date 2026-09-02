@@ -7,20 +7,53 @@ import tomllib
 from ucnexus_relay import setup, ui
 
 
-def test_build_config_toml_is_minimal_company_plus_secret():
-    data = tomllib.loads(setup.build_config_toml({"default_company": "TUBC", "allowed_companies": ["TUBC", "TUCSH"]}))
-    assert data["gp"]["default_company"] == "TUBC"
-    assert data["gp"]["allowed_companies"] == ["TUBC", "TUCSH"]
+class _Cur:
+    """Answers both reads test_gp_connection does: the identity row through fetchone, the company
+    master through fetchall."""
+
+    def __init__(self, row, companies):
+        self._row, self._companies = row, companies
+
+    def execute(self, *a):
+        return self
+
+    def fetchone(self):
+        return self._row
+
+    def fetchall(self):
+        return self._companies
+
+
+class _Conn:
+    def __init__(self, row, companies=()):
+        self._row, self._companies = row, list(companies)
+
+    def cursor(self):
+        return _Cur(self._row, self._companies)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _identity(login, db, dyngrp):
+    return type("_Row", (), {"login": login, "db": db, "dyngrp": dyngrp})()
+
+
+def _company(code, name):
+    return type("_Company", (), {"id": code, "name": name})()
+
+
+def test_build_config_toml_is_the_secret_and_nothing_else():
+    data = tomllib.loads(setup.build_config_toml({}))
     assert data["auth"]["shared_secret"]  # placeholder present so enroll can replace it
-    # infra is baked in config.py, never written to config.toml:
+    # infra is baked in config.py and the companies come from GP, so neither is written to config.toml:
+    assert "gp" not in data
     assert "sql" not in data
     assert "channel" not in data
     assert "cors" not in data
-
-
-def test_build_config_toml_allowed_falls_back_to_the_default_company():
-    data = tomllib.loads(setup.build_config_toml({"default_company": "TUCSH"}))
-    assert data["gp"]["allowed_companies"] == ["TUCSH"]
 
 
 def test_write_config_writes_a_parseable_file(tmp_path):
@@ -33,87 +66,50 @@ def test_write_config_writes_a_parseable_file(tmp_path):
 
 def test_write_config_preserves_an_already_enrolled_secret(tmp_path):
     p = tmp_path / "config.toml"
-    setup.write_config({"default_company": "TUBC", "shared_secret": "enc:dpapi:REAL"}, p)
+    setup.write_config({"shared_secret": "enc:dpapi:REAL"}, p)
     # re-running setup without a secret must NOT wipe the enrolled one
-    setup.write_config({"default_company": "TUCSH"}, p)
+    setup.write_config({}, p)
     data = tomllib.loads(p.read_text(encoding="utf-8"))
     assert data["auth"]["shared_secret"] == "enc:dpapi:REAL"
-    assert data["gp"]["default_company"] == "TUCSH"
 
 
 def test_test_gp_connection_uses_baked_sql_when_file_has_none(tmp_path, monkeypatch):
     import pyodbc
 
     p = tmp_path / "config.toml"
-    p.write_text('[gp]\ndefault_company = "TUBC"\n', encoding="utf-8")  # no [sql] - baked defaults apply
+    p.write_text('[gp]\nmode = "sql"\n', encoding="utf-8")  # no [sql] - baked defaults apply
     captured = {}
-
-    class _Row:
-        login = "x"
-        db = "TUBC"
-        dyngrp = 0
-
-    class _Cur:
-        def execute(self, *a):
-            return self
-
-        def fetchone(self):
-            return _Row()
-
-    class _Conn:
-        def cursor(self):
-            return _Cur()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
+    row = _identity("x", "DYNAMICS", 0)
 
     def _connect(conn_str, **k):
         captured["conn_str"] = conn_str
-        return _Conn()
+        return _Conn(row)
 
     monkeypatch.setattr(pyodbc, "connect", _connect)
     r = setup.test_gp_connection(p)
     assert r["ok"] is True
     assert "10.0.0.246,1435" in captured["conn_str"]  # the baked SQL server was used
+    assert "DATABASE=DYNAMICS" in captured["conn_str"]  # probed against the GP system database
 
 
 def test_test_gp_connection_success(tmp_path, monkeypatch):
     import pyodbc
 
     p = tmp_path / "config.toml"
-    p.write_text('[sql]\nserver = "10.0.0.246,1435"\n[gp]\ndefault_company = "TUBC"\n', encoding="utf-8")
+    p.write_text('[sql]\nserver = "10.0.0.246,1435"\n', encoding="utf-8")
 
-    class _Row:
-        login = "UPPERCANADA\\jayp"
-        db = "TUBC"
-        dyngrp = 1
+    row = _identity("UPPERCANADA\\jayp", "DYNAMICS", 1)
+    companies = [_company("TUBC", "Test Upper Canada"), _company("UBC", "Upper Canada")]
 
-    class _Cur:
-        def execute(self, *a):
-            return self
-
-        def fetchone(self):
-            return _Row()
-
-    class _Conn:
-        def cursor(self):
-            return _Cur()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr(pyodbc, "connect", lambda *a, **k: _Conn())
+    monkeypatch.setattr(pyodbc, "connect", lambda *a, **k: _Conn(row, companies))
     r = setup.test_gp_connection(p)
     assert r["ok"] is True
     assert r["connected_as"].endswith("jayp")
-    assert r["database"] == "TUBC"
+    assert r["database"] == "DYNAMICS"
     assert r["is_member_dyngrp"] is True
+    # the wizard is where an operator finds out which companies this workstation will serve
+    assert r["companies"] == [{"id": "TUBC", "name": "Test Upper Canada"}, {"id": "UBC", "name": "Upper Canada"}]
+    assert r["companies_error"] is None
 
 
 def test_stop_serve_no_pid_file(tmp_path):
@@ -166,15 +162,14 @@ def test_write_config_preserves_a_hand_added_extra_backend_url(tmp_path):
     # re-run that dropped it would silently disconnect a PR environment mid-test.
     p = tmp_path / "config.toml"
     p.write_text(
-        '[auth]\nshared_secret = "s3cret"\n\n[gp]\ndefault_company = "TUBC"\n'
+        '[auth]\nshared_secret = "s3cret"\n'
         '\n[channel]\nextra_backend_urls = ["wss://backend-pr-414.up.railway.app/relay-link"]\n',
         encoding="utf-8",
     )
-    setup.write_config({"default_company": "TUCSH", "allowed_companies": ["TUCSH"]}, p)
+    setup.write_config({}, p)
     data = tomllib.loads(p.read_text(encoding="utf-8"))
     assert data["channel"]["extra_backend_urls"] == ["wss://backend-pr-414.up.railway.app/relay-link"]
     assert data["auth"]["shared_secret"] == "s3cret"  # still preserved alongside it
-    assert data["gp"]["default_company"] == "TUCSH"  # and the wizard's own change applied
 
 
 def test_build_config_toml_renders_extra_backend_urls_as_a_toml_array(tmp_path):
