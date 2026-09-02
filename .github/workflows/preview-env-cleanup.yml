@@ -4,6 +4,12 @@ name: preview-env-cleanup
 # and preview-env forks every one itself, so nothing else would ever delete these. Deleting an
 # already-gone environment is a no-op here, so this runs for every close, merge included.
 #
+# A preview-env run still going when the PR closes is left to finish first. Cancelling it would leave
+# a red "cancelled" run on the closed PR, and deleting the environment under it would have Railway
+# mark every in-flight deployment "Deployment cancelled" on the head sha - two failures on a PR that
+# failed nothing. So this workflow keeps its own concurrency group, waits for the build to end, and
+# only then deletes. The environment lives a few extra minutes after a merge; nothing reads it.
+#
 # The relay stub service goes first and is found at project level, not through the environment:
 # serviceCreate made it a project-level service scoped into this environment, and an environment that
 # is already gone (Railway tore down its own on pr-663) would otherwise leave the service orphaned. It
@@ -13,24 +19,52 @@ on:
   pull_request:
     types: [closed]
 
-# Shares the build workflow's group so closing the PR also cancels an in-flight build run.
+# Its own group, per PR. Sharing preview-env's group would cancel the very build this waits for.
 concurrency:
-  group: preview-env-${{ github.event.pull_request.number }}
+  group: preview-env-cleanup-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   cleanup:
     name: Delete the PR test environment
     runs-on: ubuntu-latest
+    # preview-env gives itself 40 minutes; the wait below gives up at 45 and deletes anyway.
+    timeout-minutes: 55
     env:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_WORKSPACE_TOKEN }}
       RAILWAY_API_URL: https://backboard.railway.com/graphql/v2
       PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
       PR: ${{ github.event.pull_request.number }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Wait for an in-flight build to finish
+        shell: bash
+        run: |
+          set +e -o pipefail
+          # preview-env runs on this PR's branch that have not completed: a run reads queued,
+          # in_progress, waiting, requested or pending until it is completed.
+          build_runs() {
+            gh run list --workflow preview-env.yml --branch "$HEAD_REF" --event pull_request \
+              --json databaseId,status --jq '[.[]|select(.status!="completed")|.databaseId]|join(" ")'
+          }
+          waited=0; grace=0
+          while [ "$waited" -lt 2700 ]; do
+            ids=$(build_runs) || { echo "::warning::could not list preview-env runs; not waiting"; exit 0; }
+            if [ -z "$ids" ]; then
+              # One grace pass: a push that landed just before the close can still be creating its run.
+              [ "$grace" = "1" ] && { echo "no preview-env run in flight"; exit 0; }
+              grace=1; sleep 30; waited=$((waited+30)); continue
+            fi
+            echo "preview-env run $ids still going (${waited}s); waiting for it to finish"
+            sleep 20; waited=$((waited+20))
+          done
+          echo "::warning::a preview-env run was still going after 45 minutes; deleting the environment under it"
+
       - name: Delete the environment if it still exists
         shell: bash
         run: |
