@@ -22,7 +22,6 @@ the relay update (single-PR rollout).
 
 import asyncio
 import logging
-import math
 import os
 import time
 from datetime import datetime, timedelta
@@ -30,9 +29,10 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.errors import RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
+from app.errors import RelayBusyError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
 from app.models.project import Project as ProjectModel
 from app.repositories import gp_po_sync_repository as sync_repo
+from app.services import gp_load
 from app.services.relay_gateway import gateway as relay_gateway
 
 logger = logging.getLogger(__name__)
@@ -41,25 +41,9 @@ _env_warned: set[str] = set()
 
 
 def _env_number(name: str, default, cast, *, minimum):
-    """One numeric tunable from the environment, falling back to `default` on anything unparseable or
-    below `minimum`. A mistyped variable must never stop the mirror or, worse, turn a throttle off, so
-    the fallback is silent-safe rather than fatal - it just logs, once per variable (these are read at
-    import, so once is all it ever gets)."""
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        value = cast(raw.strip())
-    except (TypeError, ValueError):
-        value = None
-    # isfinite before the comparison: float("nan") parses happily and every comparison against it is
-    # False, so a NaN would sail past a bare `< minimum` and become the throttle.
-    if value is None or not math.isfinite(value) or value < minimum:
-        if name not in _env_warned:
-            _env_warned.add(name)
-            logger.warning("gp po sync: ignoring unusable %s=%r; using %s", name, raw, default)
-        return default
-    return value
+    """This module's tunables, through the shared parser (gp_load.env_number). Keeps its own `warned`
+    set and log prefix so a mistyped GP_PO_SYNC_* variable is reported as this service's problem."""
+    return gp_load.env_number(name, default, cast, minimum=minimum, warned=_env_warned, prefix="gp po sync")
 
 
 # THE INCREMENTAL SCHEDULE. One tick reads ONE already-mirrored company, so the interval and the
@@ -223,7 +207,7 @@ def _persist_page(company: str, pos: list[dict], next_cursor: str | None, *, is_
     }
 
 
-async def _run_backfill(company: str, *, max_pages: int) -> dict:
+async def _run_backfill(company: str, *, max_pages: int, background: bool = True) -> dict:
     """Drain up to max_pages pages from the stored cursor, pausing PAGE_DELAY_SECONDS between them. The
     result's `backfill_done` tells the loop the history is fully mirrored; `stalled` tells it the cursor
     could not advance this pass (a relay handing back the same keyset, or a page whose leading PO could
@@ -239,9 +223,19 @@ async def _run_backfill(company: str, *, max_pages: int) -> dict:
     pass_started = time.monotonic()
     for page in range(max_pages):
         cursor = await asyncio.to_thread(_load_cursor, company)
-        relay_started = time.monotonic()
-        result = await relay_gateway.relay_call(company, "sync_pos", {"cursor": cursor, "page_size": PAGE_SIZE})
-        relay_ms = (time.monotonic() - relay_started) * 1000
+        # paced_call waits out whatever the PREVIOUS page earned before issuing this one, so the gap
+        # between pages is the pace gp_load computed from that page's real cost, floored at
+        # PAGE_DELAY_SECONDS. Waiting before the next op rather than after the last one also means a
+        # pass boundary is spaced for free - there is no "last page" special case to get wrong.
+        call = await gp_load.paced_call(
+            company,
+            "sync_pos",
+            {"cursor": cursor, "page_size": PAGE_SIZE},
+            floor_seconds=PAGE_DELAY_SECONDS,
+            background=background,
+        )
+        result = call["result"]
+        relay_ms = call["elapsed_ms"]
         pos = (result or {}).get("pos") or []
         next_cursor = (result or {}).get("next_cursor")
         persist_started = time.monotonic()
@@ -254,7 +248,7 @@ async def _run_backfill(company: str, *, max_pages: int) -> dict:
         pages += 1
         logger.info(
             "gp po sync: %s backfill page %s/%s cursor=%s pos=%s created=%s updated=%s skipped=%s "
-            "stored_cursor=%s relay_ms=%.0f persist_ms=%.0f",
+            "stored_cursor=%s relay_ms=%.0f persist_ms=%.0f cpu_ms=%s sql_cpu_pct=%s next_pace=%.1fs",
             company,
             page + 1,
             max_pages,
@@ -266,6 +260,9 @@ async def _run_backfill(company: str, *, max_pages: int) -> dict:
             counts["stored_cursor"],
             relay_ms,
             persist_ms,
+            call["cpu_ms"],
+            call["sql_cpu_pct"],
+            call["pace"],
         )
         if counts["backfill_done"]:
             done = True
@@ -277,10 +274,6 @@ async def _run_backfill(company: str, *, max_pages: int) -> dict:
             logger.warning("gp po sync: backfill cursor did not advance past %s; pausing this pass", cursor)
             stalled = True
             break
-        # Space the pages out so GP's SQL server gets its CPU back between them. Never after the LAST
-        # page of a pass: the pass is over and run_forever's own between-pass wait takes it from here.
-        if page + 1 < max_pages and PAGE_DELAY_SECONDS > 0:
-            await asyncio.sleep(PAGE_DELAY_SECONDS)
     logger.info(
         "gp po sync: %s backfill pass drained %s page(s) pos=%s created=%s updated=%s skipped=%s "
         "done=%s stalled=%s elapsed_ms=%.0f",
@@ -307,7 +300,7 @@ async def _run_backfill(company: str, *, max_pages: int) -> dict:
     }
 
 
-async def _run_incremental(company: str) -> dict:
+async def _run_incremental(company: str, *, background: bool = True) -> dict:
     """Re-read the open-PO set plus history rows changed since the watermark, and upsert them.
 
     This is the pass that runs forever, so it logs one INFO line of its own: it is not free (the relay
@@ -315,11 +308,15 @@ async def _run_incremental(company: str) -> dict:
     company's worth of it every tick is the whole of the mirror's steady-state cost on GP."""
     watermark = await asyncio.to_thread(_load_watermark, company)
     modified_since = (watermark - INCREMENTAL_SLACK).isoformat() if watermark else "1900-01-01T00:00:00"
-    relay_started = time.monotonic()
-    result = await relay_gateway.relay_call(
-        company, "sync_pos", {"page_size": PAGE_SIZE, "modified_since": modified_since}
+    call = await gp_load.paced_call(
+        company,
+        "sync_pos",
+        {"page_size": PAGE_SIZE, "modified_since": modified_since},
+        floor_seconds=BACKFILL_PASS_DELAY_SECONDS,
+        background=background,
     )
-    relay_ms = (time.monotonic() - relay_started) * 1000
+    result = call["result"]
+    relay_ms = call["elapsed_ms"]
     pos = (result or {}).get("pos") or []
     persist_started = time.monotonic()
     counts = await asyncio.to_thread(_persist_page, company, pos, None, is_backfill=False)
@@ -327,7 +324,7 @@ async def _run_incremental(company: str) -> dict:
     history = sum(1 for po in pos if (po.get("source_table") or "work") == "history")
     logger.info(
         "gp po sync: %s incremental pass open=%s history_since=%s created=%s updated=%s skipped=%s "
-        "relay_ms=%.0f persist_ms=%.0f",
+        "relay_ms=%.0f persist_ms=%.0f cpu_ms=%s sql_cpu_pct=%s next_pace=%.1fs",
         company,
         len(pos) - history,
         history,
@@ -336,6 +333,9 @@ async def _run_incremental(company: str) -> dict:
         counts["skipped"],
         relay_ms,
         persist_ms,
+        call["cpu_ms"],
+        call["sql_cpu_pct"],
+        call["pace"],
     )
     return {
         "mode": "incremental",
@@ -382,7 +382,9 @@ def _backfill_phase(companies: list[str]) -> tuple[list[str], list[str]]:
     return draining, mirrored
 
 
-async def run_once(*, backfill_max_pages: int | None = None, all_companies: bool = False) -> dict:
+async def run_once(
+    *, backfill_max_pages: int | None = None, all_companies: bool = False, background: bool = False
+) -> dict:
     """One sync pass for ONE of the companies the connected relay serves (#637): backfill a batch of
     pages if that company's history is not fully mirrored yet, otherwise run one incremental pass for
     it. Returns an aggregate result dict (mode, counts, backfill_done, stalled).
@@ -402,6 +404,10 @@ async def run_once(*, backfill_max_pages: int | None = None, all_companies: bool
     and backfill phase - one company still draining history does not hold another's incremental pass.
     The result's `mode` reads 'backfill' when any company covered by THIS call is still backfilling,
     which is what the loop keys its short between-pass wait off.
+
+    `background` marks these reads as timer-driven on the wire, which is the ONLY thing the relay's
+    busy gate keys on. It defaults FALSE so the admin Sync from GP button - the one caller that is a
+    person waiting - is served rather than refused; run_forever passes True for its own sweeps.
 
     backfill_max_pages bounds how many backfill pages a single call drains PER COMPANY. None means the
     configured BACKFILL_MAX_PAGES_PER_PASS (read at call time, not bound as a default argument, so the
@@ -428,12 +434,23 @@ async def run_once(*, backfill_max_pages: int | None = None, all_companies: bool
     for company in targets:
         try:
             if await asyncio.to_thread(_backfill_done, company):
-                result = await _run_incremental(company)
+                result = await _run_incremental(company, background=background)
             else:
-                result = await _run_backfill(company, max_pages=max_pages)
+                result = await _run_backfill(company, max_pages=max_pages, background=background)
         except RelayOpUnsupportedError:
             logger.info("gp po sync: connected relay does not support sync_pos yet; skipping until it updates")
             return {"mode": "unsupported", "backfill_done": False, "created": 0, "updated": 0, "pos": 0}
+        except RelayBusyError:
+            # GP is above the relay's ceiling. The next company would be refused by the same server for
+            # the same reason, so the pass ENDS here rather than working through the list collecting
+            # refusals - gp_load is already paused and the loop will probe until it clears.
+            #
+            # Raised, not swallowed into a 0-created result: run_forever catches it and hands over to
+            # its paused branch, and the admin Sync from GP button gets a RELAY_BUSY error saying why
+            # nothing happened instead of a silent "0 new / 0 updated" that reads like success.
+            # Whatever earlier companies committed stays committed - each has its own session.
+            logger.info("gp po sync: GP is too busy for background reads; pass stopped at %s", company)
+            raise
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 - one company must not cost every other company its pass
@@ -542,7 +559,11 @@ async def run_forever() -> None:
 
     A company whose batch could not advance its cursor is held out of the backfill rotation until the
     next incremental tick, which is the old anti-hot-spin rule made per company: a stalled company is
-    retried on the poll cadence instead of every pass delay, and the others keep draining meanwhile."""
+    retried on the poll cadence instead of every pass delay, and the others keep draining meanwhile.
+
+    Above all of that sits gp_load: while it says GP is too busy, NO tick runs at all - the loop only
+    probes the server until it recovers. Both delays are floors now, not the actual spacing; what
+    decides how long a gap really is comes from what the last read cost the server."""
     global _wake_event, _loop
     _wake_event = asyncio.Event()
     _loop = asyncio.get_running_loop()
@@ -557,12 +578,28 @@ async def run_forever() -> None:
     try:
         while True:
             try:
-                if not (relay_gateway.connected and relay_gateway.companies):
+                if not relay_gateway.connected:
                     # No relay, nothing to schedule against. run_all is deliberately NOT consumed - the
                     # all-companies pass it promises has not happened yet, and the reconnect that makes
                     # it possible will wake() anyway.
                     now = time.monotonic()
                     next_incremental_at = next_backfill_at = now + POLL_SECONDS
+                elif not relay_gateway.companies:
+                    # Connected, but the hello frame carrying the company list has not been read yet.
+                    # /relay-link calls wake() the instant try_register succeeds, which is BEFORE that
+                    # frame arrives - so this is the normal state for the first moments of EVERY
+                    # connection, and parking it on POLL_SECONDS is what left a freshly connected mirror
+                    # silent for fifteen minutes on 2026-09-03. A short grace instead; the read loop
+                    # also wakes us the moment the hello lands, so the grace is only the backstop.
+                    now = time.monotonic()
+                    next_incremental_at = next_backfill_at = now + gp_load.HELLO_GRACE_SECONDS
+                elif gp_load.paused():
+                    # GP is above the ceiling. No ticks at all - just ask the server how it is doing,
+                    # when a probe is due, and sleep until the next one. run_all is not consumed here
+                    # either: the sweep it promises still has to happen once the server recovers.
+                    await gp_load.probe()
+                    now = time.monotonic()
+                    next_incremental_at = next_backfill_at = gp_load.policy.probe_due_at() if gp_load.paused() else now
                 elif run_all:
                     run_all = False
                     now = time.monotonic()
@@ -581,7 +618,7 @@ async def run_forever() -> None:
                         # Stamped BEFORE the pass, not after: the gap is between sweeps starting, so a
                         # long sweep cannot earn a second one the moment it finishes.
                         last_all_at = now
-                        _log_pass(await run_once(all_companies=True))
+                        _log_pass(await run_once(all_companies=True, background=True))
                         stalled.clear()
                         now = time.monotonic()
                         next_incremental_at = now + POLL_SECONDS
@@ -601,6 +638,10 @@ async def run_forever() -> None:
                             next_incremental_at = time.monotonic() + POLL_SECONDS
             except asyncio.CancelledError:
                 raise
+            except RelayBusyError:
+                # gp_load is paused by the time this lands; the paused branch above takes it from here.
+                # No _defer: the probe schedule, not the pass delay, owns the timing now.
+                next_backfill_at = next_incremental_at = gp_load.policy.probe_due_at()
             except (RelayUnavailableError, RelayTimeoutError) as e:
                 logger.info("gp po sync: relay unavailable this pass (%s); retrying later", e.message)
                 next_backfill_at, next_incremental_at = _defer(next_incremental_at)

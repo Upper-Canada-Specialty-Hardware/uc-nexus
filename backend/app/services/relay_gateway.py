@@ -35,7 +35,13 @@ from datetime import datetime
 
 from fastapi import WebSocket
 
-from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
+from app.errors import (
+    RelayBusyError,
+    RelayCallError,
+    RelayOpUnsupportedError,
+    RelayTimeoutError,
+    RelayUnavailableError,
+)
 from app.models.enums import RelayEventKind
 from app.services import relay_events
 
@@ -137,6 +143,10 @@ class RelayGateway:
         # disconnect (see DISCONNECT_REASON_* above); None at unregister time means the peer did.
         self._registered_at: float | None = None
         self._disconnect_reason: str | None = None
+        # The most recent live sample of GP's SQL server, off whichever reply happened to carry one
+        # (adaptive pacing). Per-connection: a sample taken before the socket died says nothing about
+        # the server now, and pacing on a stale number is worse than pacing on none.
+        self._last_server_sample: dict | None = None
         # Wall-clock stamps for RelayStatus. These deliberately OUTLIVE the connection they describe -
         # "it went at 14:02 and has not been back" is the answer somebody wants when nothing is
         # connected, so unregister sets them rather than clearing them. Kept in memory: the status chip
@@ -266,6 +276,7 @@ class RelayGateway:
         self._registered_at = time.monotonic()
         self._last_connected_at = datetime.utcnow()
         self._disconnect_reason = None
+        self._last_server_sample = None
         return True
 
     def unregister(self, websocket: WebSocket) -> None:
@@ -333,6 +344,7 @@ class RelayGateway:
         self._heartbeat_armed = False
         self._registered_at = None
         self._disconnect_reason = None
+        self._last_server_sample = None
         self._last_disconnected_at = datetime.utcnow()
         self._last_disconnect_reason = reason
         # The reason rides the error too: it lands on the failed GraphQL call and on any outbox row, so
@@ -501,22 +513,69 @@ class RelayGateway:
             future.set_result(reply)
 
     async def relay_call(
-        self, company: str, op: str, payload: dict | None = None, timeout: float = DEFAULT_TIMEOUT_SECONDS
+        self,
+        company: str,
+        op: str,
+        payload: dict | None = None,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        *,
+        background: bool = False,
     ) -> dict | list | None:
         """Send {id, op, company, payload} to the connected relay and await its correlated reply.
         Raises RelayUnavailableError (no/wrong-company connection or send failure), RelayTimeoutError,
-        RelayOpUnsupportedError (relay too old for this op, issue #315), or RelayCallError (the relay
+        RelayOpUnsupportedError (relay too old for this op, issue #315), RelayBusyError (the relay
+        refused a background op because GP's server is above its ceiling), or RelayCallError (the relay
         itself answered ok=false).
+
+        The plain result, for every caller that has no use for what the op cost. relay_call_with_meta
+        is the same call with the reply's `cost` and `server` blocks kept."""
+        result, _ = await self.relay_call_with_meta(company, op, payload, timeout, background=background)
+        return result
+
+    async def relay_call_with_meta(
+        self,
+        company: str,
+        op: str,
+        payload: dict | None = None,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        *,
+        background: bool = False,
+    ) -> tuple[dict | list | None, dict]:
+        """relay_call, plus the reply's accounting: (result, {"cost": ..., "server": ...}), either of
+        which may be None.
+
+        `cost` is what the op cost the SQL server by its own reckoning ({cpu_ms, logical_reads,
+        elapsed_ms}, delta per session); `server` is a live sample of the whole instance
+        ({sql_cpu_pct, other_cpu_pct, runnable_tasks, sampled_at, source}). Together they are what lets
+        pacing follow the server's actual state instead of a fixed wait somebody guessed - which is the
+        rule this exists to serve: neither Nexus nor its relay may contribute to overloading GP.
+
+        A relay too old to send either block simply sends neither, and the meta is {"cost": None,
+        "server": None} - pacing then runs on wall-clock elapsed time alone, which still works.
+
+        A `server` block is harvested from EVERY reply, refusals included: a server_busy refusal is
+        precisely the reply whose sample matters most.
+
+        `background` marks a timer-driven read on the wire. It is the ONLY thing the relay's busy gate
+        keys on - not the op name - so a user-facing call for the same op is never refused, and a
+        caller that forgets the flag gets served rather than throttled. Every sync loop passes it; no
+        resolver, outbox write or admin button does.
 
         A relay that reported no companies serves nothing, so every call is refused rather than
         dispatched - and refused with whatever the relay said went wrong, since that is the only thing
-        that names the fix."""
+        that names the fix. An EMPTY company opts out of both checks: it means "this op is not routed
+        to a company", which the relay exempts from its channel pin (server_load is the one such op).
+        That exemption is what lets the load probe run before a hello has landed, or after discovery
+        failed - the two states where asking how the server is doing matters most."""
         if self._socket is None:
             raise RelayUnavailableError()
-        if not self._companies:
-            raise RelayUnavailableError(self._companies_error or "connected relay has not reported any GP companies")
-        if company not in self._companies:
-            raise RelayUnavailableError(f"connected relay serves {', '.join(self.companies)}, not {company}")
+        if company:
+            if not self._companies:
+                raise RelayUnavailableError(
+                    self._companies_error or "connected relay has not reported any GP companies"
+                )
+            if company not in self._companies:
+                raise RelayUnavailableError(f"connected relay serves {', '.join(self.companies)}, not {company}")
         # Proactive parity (issue #315): if the relay advertised its op-set on connect and this op isn't
         # in it, fail fast with a clear 'update the relay' error rather than a 30s round-trip. Skipped when
         # `_ops` is None (an older relay that sends no hello) - the reactive `unknown_op` mapping below
@@ -528,7 +587,15 @@ class RelayGateway:
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[job_id] = future
         try:
-            await self._socket.send_json({"id": job_id, "op": op, "company": company, "payload": payload or {}})
+            await self._socket.send_json(
+                {
+                    "id": job_id,
+                    "op": op,
+                    "company": company,
+                    "payload": payload or {},
+                    "background": background,
+                }
+            )
         except Exception as e:
             self._pending.pop(job_id, None)
             raise RelayUnavailableError(f"failed to send job to relay: {e}") from e
@@ -539,6 +606,9 @@ class RelayGateway:
             self._pending.pop(job_id, None)
             raise RelayTimeoutError(f"relay did not answer {op!r} within {timeout}s") from None
 
+        # Before the ok check, deliberately: the refusal replies carry the sample too.
+        meta = self._note_reply_meta(reply)
+
         if not reply.get("ok"):
             error = reply.get("error") or {}
             # Reactive parity (issue #315): an out-of-date relay answers a call for an op it lacks with
@@ -547,8 +617,37 @@ class RelayGateway:
             # `unknown op '...'` string.
             if error.get("error") == "unknown_op":
                 raise RelayOpUnsupportedError(op, detail=error)
+            if error.get("error") == "server_busy":
+                context = error.get("context") or {}
+                raise RelayBusyError(
+                    error.get("message") or f"GP server is too busy to run {op!r} right now",
+                    detail=error,
+                    sql_cpu_pct=context.get("sql_cpu_pct"),
+                    ceiling_pct=context.get("ceiling_pct"),
+                    retry_after_seconds=context.get("retry_after_seconds"),
+                )
             raise RelayCallError(error.get("message") or f"{op} failed", detail=error)
-        return reply.get("result")
+        return reply.get("result"), meta
+
+    def _note_reply_meta(self, reply: dict) -> dict:
+        """Pull `cost` and `server` off a reply, remembering the server sample. Tolerant by design: a
+        relay that sends neither, or sends something that is not an object, must not turn a good reply
+        into an exception."""
+        cost = reply.get("cost")
+        server = reply.get("server")
+        if not isinstance(cost, dict):
+            cost = None
+        if not isinstance(server, dict):
+            server = None
+        if server is not None:
+            self._last_server_sample = server
+        return {"cost": cost, "server": server}
+
+    @property
+    def last_server_sample(self) -> dict | None:
+        """The newest server sample this connection has seen, on whichever op carried it. None before
+        the first one, after a disconnect, and for the whole life of a relay build that sends none."""
+        return self._last_server_sample
 
 
 gateway = RelayGateway()

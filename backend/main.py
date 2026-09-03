@@ -253,7 +253,11 @@ async def _relay_read_loop(websocket: WebSocket) -> None:
 
     A hello is answered with the current preview channel list, which is the whole of #654's push: the
     relay learns which preview backends to also dial over the socket it has already authenticated,
-    instead of polling a second endpoint with a second copy of its credential."""
+    instead of polling a second endpoint with a second copy of its credential.
+
+    It also re-wakes the GP sync loops, because the hello is where the GP company list actually
+    arrives: the wake they get from /relay-link fires at try_register, one frame too early to be
+    useful."""
     while True:
         message = await websocket.receive_json()
         if isinstance(message, dict) and message.get("type") == "hello":
@@ -266,6 +270,14 @@ async def _relay_read_loop(websocket: WebSocket) -> None:
                 message.get("companies_error"),
             )
             await relay_gateway.push_channels(preview_registry.channels())
+            # The company list arrives HERE, not at try_register - and the sync loops were woken back
+            # there, when `companies` was still empty. Without this second nudge each loop sits on its
+            # own timer with a pending all-companies pass it cannot run, which on 2026-09-03 left the
+            # PO mirror silent for over ten minutes after a reconnect. wake() is idempotent and costs
+            # nothing when a loop is already running.
+            if relay_gateway.companies:
+                gp_po_sync.wake()
+                gp_job_sync.wake()
         elif isinstance(message, dict) and message.get("type") == "pong":
             relay_gateway.note_pong()
         else:

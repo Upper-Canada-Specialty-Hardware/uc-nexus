@@ -21,9 +21,10 @@ import os
 from sqlalchemy import select
 
 from app.database import SessionLocal
-from app.errors import ConflictError, RelayTimeoutError, RelayUnavailableError
+from app.errors import ConflictError, RelayBusyError, RelayTimeoutError, RelayUnavailableError
 from app.models.project import Project as ProjectModel
 from app.repositories import project_repository
+from app.services import gp_load
 from app.services.relay_gateway import gateway as relay_gateway
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,10 @@ POLL_SECONDS = 300.0
 # because this pass also writes a project row per GP job, and the reset is a deliberate manual action
 # that nobody is timing - overshooting costs a few seconds, giving up early costs every buyer link.
 RESET_SYNC_TIMEOUT_SECONDS = 90.0
+
+# Floor between this service's background reads. Small because a list_jobs is cheap next to a PO page;
+# gp_load raises it whenever the server says the read actually cost something.
+COMPANY_FLOOR_SECONDS = 1.0
 
 _wake_event: asyncio.Event | None = None
 
@@ -124,7 +129,7 @@ def _persist_health(jobs: list[dict], company: str) -> int:
     return stamped
 
 
-async def _stamp_setup_health(company: str) -> None:
+async def _stamp_setup_health(company: str, *, background: bool = False) -> None:
     """Ask the relay for every job's GP setup verdict and record it (#425).
 
     Swallows everything. This runs inside the adoption pass and must never cost it: a relay too old
@@ -135,8 +140,10 @@ async def _stamp_setup_health(company: str) -> None:
     Logged at info without a traceback for the same reason the pass itself is: relays restart, get
     updated and flap, and a stack trace per flap buries the one that matters."""
     try:
-        result = await relay_gateway.relay_call(company, "job_setup_health")
-        jobs = (result or {}).get("jobs") or []
+        call = await gp_load.paced_call(
+            company, "job_setup_health", floor_seconds=COMPANY_FLOOR_SECONDS, background=background
+        )
+        jobs = (call["result"] or {}).get("jobs") or []
         stamped = await asyncio.to_thread(_persist_health, jobs, company)
         unhealthy = sum(1 for job in jobs if not job.get("ok"))
         if unhealthy:
@@ -175,7 +182,7 @@ async def check_job_setup_live(company: str, job_number: str) -> dict | None:
     return None
 
 
-async def run_once() -> tuple[int, int]:
+async def run_once(*, background: bool = False) -> tuple[int, int]:
     """One sync pass PER COMPANY the connected relay serves (#637): read GP's job master through the
     relay and create the projects that are missing, then stamp each project with its GP setup verdict
     (#425).
@@ -187,7 +194,11 @@ async def run_once() -> tuple[int, int]:
     not a reason to leave every other company's new jobs unadopted, and the next pass retries it.
 
     The health check runs AFTER adoption for each company, deliberately: a job GP has just started
-    reporting gets its project first and its verdict on the same pass, rather than a pass later."""
+    reporting gets its project first and its verdict on the same pass, rather than a pass later.
+
+    `background` marks these reads as timer-driven on the wire, which is what the relay's busy gate
+    keys on. It defaults FALSE, so the admin Sync from GP button and the /admin/reset-data re-adoption
+    are served rather than refused; run_forever passes True for its own passes."""
     companies = relay_gateway.companies
     if not companies:
         raise RelayUnavailableError(
@@ -199,14 +210,27 @@ async def run_once() -> tuple[int, int]:
     failures = 0
     for company in companies:
         try:
-            result = await relay_gateway.relay_call(company, "list_jobs")
-            jobs = (result or {}).get("jobs") or []
+            # Paced like every other background read (gp_load): the wait before this company's read is
+            # whatever the previous one cost the server, which is also what spaces the companies apart.
+            call = await gp_load.paced_call(
+                company, "list_jobs", floor_seconds=COMPANY_FLOOR_SECONDS, background=background
+            )
+            jobs = (call["result"] or {}).get("jobs") or []
             # Off the event loop: the /relay-link read loop runs on it and must not block on Postgres.
             company_total, company_adopted = await asyncio.to_thread(_persist_missing, jobs, company)
             total += company_total
             adopted += company_adopted
-            await _stamp_setup_health(company)
+            await _stamp_setup_health(company, background=background)
         except asyncio.CancelledError:
+            raise
+        except RelayBusyError:
+            # GP is above the relay's ceiling; the next company would be refused for the same reason.
+            # End the pass - gp_load is already paused and run_forever will probe until it clears.
+            #
+            # Raised rather than counted as a failure: the all-companies-failed branch below would
+            # otherwise report "the relay could not read jobs", which names the wrong culprit and the
+            # wrong fix. The relay is fine; the server is busy.
+            logger.info("gp job sync: GP is too busy for background reads; pass stopped at %s", company)
             raise
         except Exception as e:  # noqa: BLE001 - one company must not cost every other company its pass
             failures += 1
@@ -261,13 +285,28 @@ async def run_forever() -> None:
     logger.info("gp job sync started")
     try:
         while True:
+            wait_for = POLL_SECONDS
             try:
-                if relay_gateway.connected and relay_gateway.companies:
-                    total, adopted = await run_once()
+                if not relay_gateway.connected:
+                    pass
+                elif not relay_gateway.companies:
+                    # Connected, hello not read yet - the state every connection passes through, because
+                    # /relay-link wakes this loop before that frame lands. A short grace rather than the
+                    # full poll interval; the read loop also wakes us when the hello arrives.
+                    wait_for = gp_load.HELLO_GRACE_SECONDS
+                elif gp_load.paused():
+                    # GP is above the ceiling. Adopting jobs can wait; not adding load cannot.
+                    await gp_load.probe()
+                    wait_for = gp_load.SERVER_PROBE_SECONDS if gp_load.paused() else 0.0
+                else:
+                    total, adopted = await run_once(background=True)
                     if adopted:
                         logger.info("gp job sync: adopted %s of %s GP jobs", adopted, total)
             except asyncio.CancelledError:
                 raise
+            except RelayBusyError:
+                # gp_load is paused by the time this lands; the paused branch above takes over next turn.
+                wait_for = gp_load.SERVER_PROBE_SECONDS
             except (RelayUnavailableError, RelayTimeoutError) as e:
                 # The relay went away between the guard above and the call, or mid-pass. Routine - relays
                 # restart, get updated, and flap - and the next tick retries. Logging a traceback for every
@@ -277,7 +316,7 @@ async def run_forever() -> None:
                 logger.exception("gp job sync iteration failed")
 
             try:
-                await asyncio.wait_for(_wake_event.wait(), timeout=POLL_SECONDS)
+                await asyncio.wait_for(_wake_event.wait(), timeout=max(0.0, wait_for))
             except TimeoutError:
                 pass
             finally:

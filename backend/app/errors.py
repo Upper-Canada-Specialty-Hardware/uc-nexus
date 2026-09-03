@@ -99,6 +99,38 @@ class RelayCallError(AppError):
         self.detail = detail or {}
 
 
+class RelayBusyError(RelayCallError):
+    """The relay refused a BACKGROUND op before running it because GP's SQL server is above the
+    relay's CPU ceiling (adaptive pacing).
+
+    Not a failure of the request and not something a user can fix by retrying now: the server is busy
+    with somebody else's work, and the whole point of the refusal is that Nexus must not add to it. It
+    is deliberately a distinct type rather than one more RelayCallError, because the caller's correct
+    response is different in kind - stop issuing background reads and probe until the server recovers,
+    rather than log the failure and carry on to the next company.
+
+    `retry_after_seconds` is the relay's own advice on when to look again; the pause state machine uses
+    it as the first probe delay instead of its configured interval. All three fields are optional
+    because they come off the wire, and a relay that omits one must not break the pause."""
+
+    def __init__(
+        self,
+        message: str,
+        detail: dict | None = None,
+        *,
+        sql_cpu_pct: float | None = None,
+        ceiling_pct: float | None = None,
+        retry_after_seconds: float | None = None,
+    ):
+        super().__init__(message, detail)
+        # Its own code, not RELAY_CALL_FAILED: "the server is busy, this will succeed later" and "the
+        # call was rejected" are different answers, and only one of them is worth showing a user.
+        self.code = "RELAY_BUSY"
+        self.sql_cpu_pct = sql_cpu_pct
+        self.ceiling_pct = ceiling_pct
+        self.retry_after_seconds = retry_after_seconds
+
+
 class RelayOpUnsupportedError(AppError):
     """The connected relay build doesn't support the requested op (issue #315). Raised either
     proactively (the relay advertised its op-set on connect and this op isn't in it) or reactively

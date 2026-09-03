@@ -48,7 +48,7 @@ import websockets
 from pydantic import ValidationError as PydanticValidationError
 
 from . import __version__ as VERSION
-from . import companies, db, econnect, errors, models, ops
+from . import companies, db, econnect, errors, models, ops, server_load
 from .config import (
     PRODUCTION_BACKEND_URL,
     channel_allowed_companies,
@@ -435,6 +435,14 @@ def _run_create_receipt(company: str, payload: dict) -> dict:
             raise
 
 
+def _run_server_load(company: str, payload: dict) -> dict:
+    """How busy the GP SQL server is right now (server_load.py), re-read if the cached reading is
+    older than 15s. The backend probes this while it is holding a background loop back, so it is the
+    one op that must answer while everything else is being refused - it is never itself refused, and
+    it needs no company (the DMVs are server-wide, and a paused backend may have none in hand)."""
+    return server_load.refresh().to_dict()
+
+
 _OPS = {
     "list_vendors": _run_list_vendors,
     # issue #500 - the vendor's email, read live at send time. Nexus stores no vendor contact.
@@ -473,7 +481,40 @@ _OPS = {
     # issue #425 - jobs replicated from UCSH carry GL account indexes that do not exist in UBC, so a
     # PO against them registers and can never be received. This is how Nexus finds out which ones.
     "job_setup_health": _run_job_setup_health,
+    # the live load reading the backend paces its background loops on - see BACKGROUND_OPS below.
+    "server_load": _run_server_load,
 }
+
+# WHICH CALL is deferrable is the caller's to declare: the job frame carries `background: true`, set by
+# the backend's timer-driven loops and by nothing else. That is the flag the busy gate keys on, because
+# the op name alone cannot answer it - the GP job picker, the admin Sync from GP button and the
+# register-PO screen's live setup check all reach the same ops the adoption pass does, and somebody is
+# waiting on those.
+#
+# BACKGROUND_OPS is the relay's own outer bound on that claim: the ops a backend loop is known to call
+# on a timer, audited against its callers.
+#   sync_pos           - gp_po_sync.run_forever, the PO mirror's backfill pages and its incremental pass
+#   list_jobs          - gp_job_sync.run_forever, the job adoption pass (POLL_SECONDS)
+#   job_setup_health   - the same adoption pass's setup-health stamp
+# A flagged job is only sampled for - and so only ever refused - if its op is in here. A backend that
+# flagged create_po as background could otherwise have a user's PO write, already accepted and owed to
+# them, deferred by this relay; the list is what makes that unexpressible.
+#
+# Everything else reaching the relay is somebody waiting on it: the create/receive writes (directly or
+# replayed from the backend's outbox), and the pickers. None of those are ever refused - a person is
+# worth more than a percentage point of CPU - and an UNFLAGGED job is never refused and never pays for
+# a sample, whatever its op.
+BACKGROUND_OPS = frozenset({"sync_pos", "list_jobs", "job_setup_health"})
+
+# Ops that answer a question about the SERVER rather than about a company. They run without one: the
+# backend probes the load while paused, and the company checks below have nothing to bite on because
+# there is no company data in the answer.
+_COMPANYLESS_OPS = frozenset({"server_load"})
+
+# What the backend is told to wait before trying the deferred work again. One minute because that is
+# how often SQL Server refreshes the ring buffer the CPU reading comes from - asking sooner can only
+# get the same number back.
+BUSY_RETRY_AFTER_SECONDS = 60
 
 
 def _allowed_phrase(companies: list[str]) -> str:
@@ -485,10 +526,20 @@ def _allowed_phrase(companies: list[str]) -> str:
     return f"{', '.join(companies[:-1])} and {companies[-1]} are"
 
 
-def _dispatch(op: str, company: str, payload: dict, allowed_companies: list[str] | None = None) -> dict:
+def _dispatch(
+    op: str,
+    company: str,
+    payload: dict,
+    allowed_companies: list[str] | None = None,
+    background: bool = False,
+) -> dict:
     """Run one job synchronously (pyodbc is blocking) and return its {ok, result|error} body,
     without the id - _handle_job stitches that back on. Runs on a worker thread via
     asyncio.to_thread so a slow GP call doesn't block the channel's read loop.
+
+    `background` is the frame's own claim that nobody is waiting on this call (see BACKGROUND_OPS).
+    It is the only thing that can get a job deferred while GP's server is busy; a frame without it is
+    run whatever the server looks like.
 
     `allowed_companies` is the CHANNEL's restriction (#414): None for the production channel, which
     reaches every company this relay discovered, and the sandbox list for any other backend.
@@ -498,46 +549,109 @@ def _dispatch(op: str, company: str, payload: dict, allowed_companies: list[str]
     the company was found in GP at all."""
     handler = _OPS.get(op)
     if handler is None:
-        return {"ok": False, "error": errors.error_body("unknown_op", f"unknown op {op!r}")}
-    if not company:
-        return {"ok": False, "error": errors.error_body("missing_company", "company is required")}
-    if allowed_companies is not None and company not in allowed_companies:
-        return {
-            "ok": False,
-            "error": errors.error_body(
-                "company_not_allowed_on_channel",
-                # Joined, not interpolated as a list: relay_gateway raises RelayCallError(error
-                # ["message"]), so this string is what the browser shows - "only ['TUBC']" would leak a
-                # Python repr into the UI.
-                f"{company} is not reachable from a non-production backend; only {_allowed_phrase(allowed_companies)}",
-                company=company,
-                allowed=list(allowed_companies),
-            ),
-        }
+        return _reply({"ok": False, "error": errors.error_body("unknown_op", f"unknown op {op!r}")})
+    if op not in _COMPANYLESS_OPS:
+        if not company:
+            return _reply({"ok": False, "error": errors.error_body("missing_company", "company is required")})
+        if allowed_companies is not None and company not in allowed_companies:
+            return _reply(
+                {
+                    "ok": False,
+                    "error": errors.error_body(
+                        "company_not_allowed_on_channel",
+                        # Joined, not interpolated as a list: relay_gateway raises RelayCallError(error
+                        # ["message"]), so this string is what the browser shows - "only ['TUBC']" would
+                        # leak a Python repr into the UI.
+                        f"{company} is not reachable from a non-production backend; "
+                        f"only {_allowed_phrase(allowed_companies)}",
+                        company=company,
+                        allowed=list(allowed_companies),
+                    ),
+                }
+            )
+
+    # The last gate in front of GP. Work the backend itself declared deferrable stands down while the
+    # server is busy - whatever that backend's own pacing decided, because a relay that ran the mirror
+    # into a pinned CPU once has to be the thing that cannot do it again. Read fresh (15s-cached)
+    # rather than off the last reading: the whole point is the LIVE state of the server. An unflagged
+    # job never reaches this and never pays for the sample.
+    if background and op in BACKGROUND_OPS:
+        # Named while it samples: a reading that is not already cached opens a connection of its own to
+        # the system database, and that is the relay's overhead for deciding whether to run at all -
+        # not the deferred op's cost. Unnamed it would land in gp_cost as an unattributed "unknown"
+        # against DYNAMICS, which is the one thing the cost accounting exists to stop.
+        with db.measuring("server_load", ""):
+            load = server_load.refresh()
+        ceiling = get_settings().gp.load_ceiling_pct
+        if load.busy(ceiling):
+            logger.info(
+                "background op deferred; the GP server is busy",
+                extra={
+                    "category": "server_busy",
+                    "op": op,
+                    "company": company,
+                    "sql_cpu_pct": load.sql_cpu_pct,
+                    "ceiling_pct": ceiling,
+                },
+            )
+            return _reply(
+                {
+                    "ok": False,
+                    "error": errors.error_body(
+                        "server_busy",
+                        f"GP SQL server is at {load.sql_cpu_pct}% CPU, above this relay's ceiling of "
+                        f"{ceiling}%; background work deferred",
+                        sql_cpu_pct=load.sql_cpu_pct,
+                        ceiling_pct=ceiling,
+                        retry_after_seconds=BUSY_RETRY_AFTER_SECONDS,
+                    ),
+                }
+            )
 
     # Everything below runs named: db.py measures what each connection cost the GP server and books it
     # against (company, op). The whole block, not just the handler - the eConnect description lookup
     # opens a connection of its own, and it belongs to this op too.
-    with db.measuring(op, company):
+    with db.measuring(op, company) as measured:
+        reply = _run_handler(handler, company, payload)
+    return _reply(reply, cost=measured.cost)
+
+
+def _run_handler(handler, company: str, payload: dict) -> dict:
+    """The handler call and its error mapping: the {ok, result|error} half of a reply, before the
+    cost/server fields _reply attaches."""
+    try:
+        return {"ok": True, "result": handler(company, payload)}
+    except ops.RelayOpError as e:
+        return {"ok": False, "error": errors.error_body(e.code, e.message, **e.context)}
+    except econnect.EConnectError as e:
+        # the connection that raised this is already closed by the time we're back here (the `with`
+        # block in the handler closed it on the way out), but the description lookup only needs a
+        # live connection to run the SELECT - open a fresh read-only one for it.
         try:
-            result = handler(company, payload)
-            return {"ok": True, "result": result}
-        except ops.RelayOpError as e:
-            return {"ok": False, "error": errors.error_body(e.code, e.message, **e.context)}
-        except econnect.EConnectError as e:
-            # the connection that raised this is already closed by the time we're back here (the `with`
-            # block in the handler closed it on the way out), but the description lookup only needs a
-            # live connection to run the SELECT - open a fresh read-only one for it.
-            try:
-                with db.get_read_connection(company) as conn:
-                    body = errors.econnect_error_body(conn, e)
-            except pyodbc.Error:
-                body = errors.error_body("econnect_error", str(e), proc=e.proc, error_state=e.error_state)
-            return {"ok": False, "error": body}
-        except PydanticValidationError as e:
-            return {"ok": False, "error": errors.error_body("invalid_payload", str(e))}
-        except pyodbc.Error as e:
-            return {"ok": False, "error": errors.error_body("sql_error", str(e))}
+            with db.get_read_connection(company) as conn:
+                body = errors.econnect_error_body(conn, e)
+        except pyodbc.Error:
+            body = errors.error_body("econnect_error", str(e), proc=e.proc, error_state=e.error_state)
+        return {"ok": False, "error": body}
+    except PydanticValidationError as e:
+        return {"ok": False, "error": errors.error_body("invalid_payload", str(e))}
+    except pyodbc.Error as e:
+        return {"ok": False, "error": errors.error_body("sql_error", str(e))}
+
+
+def _reply(body: dict, cost: dict | None = None) -> dict:
+    """Every reply carries what the op cost the GP server and what the server looked like, so the
+    backend paces on measured facts instead of on a fixed wait.
+
+    `server` is the LAST reading, not a fresh one: only a background op samples on its own account
+    (above), because a user-facing op must not pay a connect - up to the 10s connection timeout, on a
+    server that is by definition already struggling - before its own work starts. `sampled_at` rides
+    along so the backend can see how old the reading it got is, and null means this relay has not
+    taken one yet."""
+    latest = server_load.current()
+    body["cost"] = cost
+    body["server"] = latest.to_dict() if latest is not None else None
+    return body
 
 
 async def _handle_job(job: dict, allowed_companies: list[str] | None = None) -> dict:
@@ -545,9 +659,13 @@ async def _handle_job(job: dict, allowed_companies: list[str] | None = None) -> 
     op = job.get("op")
     company = job.get("company")
     payload = job.get("payload") or {}
+    # Optional, and strictly true: the backend's timer-driven loops set it and nothing else does, so
+    # anything else in that slot - absent, false, a string, a relay talking to an older backend - means
+    # somebody is waiting on this job and it runs.
+    background = job.get("background") is True
 
     try:
-        reply = await asyncio.to_thread(_dispatch, op, company, payload, allowed_companies)
+        reply = await asyncio.to_thread(_dispatch, op, company, payload, allowed_companies, background)
     except Exception as e:  # last-resort guard: one bad job must never kill the channel loop
         logger.exception("unhandled error dispatching op", extra={"op": op, "id": job_id})
         reply = {"ok": False, "error": errors.error_body("internal_error", str(e))}

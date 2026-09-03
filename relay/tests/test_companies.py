@@ -57,15 +57,16 @@ class _Conn:
 
 
 def _pyodbc(monkeypatch, rows=None, raises=None):
-    """Stand in for the module-level pyodbc companies.py imports, recording the connection string so
-    the system database it dialled can be asserted."""
-    seen = {}
+    """Stand in for the module-level pyodbc companies.py imports, recording every connection string it
+    dialled: the master read first, then one access probe per discovered company."""
+    seen = {"conn_strs": []}
 
     class _Pyodbc:
         Error = RuntimeError
 
         @staticmethod
         def connect(conn_str, **kw):
+            seen["conn_strs"].append(conn_str)
             seen["conn_str"] = conn_str
             if raises is not None:
                 raise raises
@@ -84,7 +85,7 @@ def test_sql_discovery_reads_the_company_master(monkeypatch):
     assert found.companies == ["TUBC", "UBC"]
     assert found.names == {"TUBC": "Test Upper Canada", "UBC": "Upper Canada"}
     assert found.error is None
-    assert "DATABASE=DYNAMICS" in seen["conn_str"]  # the system database, not a company one
+    assert "DATABASE=DYNAMICS" in seen["conn_strs"][0]  # the master read: the system database, not a company one
 
 
 def test_sql_discovery_trims_and_upcases_codes_and_skips_blanks(monkeypatch):
@@ -193,6 +194,133 @@ def test_the_exclusion_is_pinned_to_the_one_sandbox():
     # the relay out of real work silently.
     assert EXCLUDED_COMPANIES == ["TUCSH"]
     assert not {"UBC", "UCSH", "TUBC"} & set(EXCLUDED_COMPANIES)
+
+
+# --- what this workstation can actually read --------------------------------------------------------
+
+
+class _ProbeError(Exception):
+    """pyodbc puts the SQLSTATE first in args, which is where the class of refusal is read from."""
+
+
+def _pyodbc_probing(monkeypatch, rows, *, login_denied=(), select_denied=()):
+    """A pyodbc with production's shape: the company master reads fine, and then each per-company probe
+    either works, is refused at the login (28000), or is refused on JC00102 (42000)."""
+    seen = {"probed": []}
+    system_db = get_settings().sql.system_db
+
+    def _database(conn_str):
+        return next(part.split("=", 1)[1] for part in conn_str.split(";") if part.startswith("DATABASE="))
+
+    class _ProbeCursor:
+        def __init__(self, code):
+            self._code = code
+
+        def execute(self, sql, *params):
+            if self._code in select_denied:
+                raise _ProbeError(
+                    "42000",
+                    f"[42000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]SELECT permission "
+                    f"was denied on the object 'JC00102', database '{self._code}' (229)",
+                )
+            return self
+
+        def fetchall(self):
+            return rows
+
+    class _ProbeConn:
+        def __init__(self, code):
+            self._code = code
+
+        def cursor(self):
+            return _ProbeCursor(self._code)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Pyodbc:
+        Error = _ProbeError
+
+        @staticmethod
+        def connect(conn_str, **kw):
+            code = _database(conn_str)
+            if code != system_db:
+                seen["probed"].append(code)
+            if code in login_denied:
+                raise _ProbeError(
+                    "28000",
+                    f"[28000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]Login failed for "
+                    f"user 'UPPERCANADA\\jayp'. Cannot open database '{code}' (18456)",
+                )
+            return _ProbeConn(code)
+
+    monkeypatch.setattr(companies, "pyodbc", _Pyodbc)
+    return seen
+
+
+def test_companies_this_login_cannot_read_are_dropped_and_the_reason_kept(monkeypatch, caplog):
+    """Production listed 11 companies and could open three, so every backend loop failed a pass per
+    unreachable company on every tick. The master is not the authority on what this workstation can
+    read - the probe is."""
+    rows = [_Row(code, f"{code} name") for code in ("KEYMA", "TUBC", "TUCA", "UBC", "UCSH")]
+    seen = _pyodbc_probing(monkeypatch, rows, login_denied=("KEYMA",), select_denied=("TUCA",))
+
+    with caplog.at_level("INFO"):
+        found = companies.discover()
+
+    assert found.companies == ["TUBC", "UBC", "UCSH"]  # only what the login opens
+    assert found.names == {"TUBC": "TUBC name", "UBC": "UBC name", "UCSH": "UCSH name"}
+    assert found.error is None  # the READING worked; it is the login that is short
+    assert found.inaccessible == {"KEYMA": "login denied (28000)", "TUCA": "permission denied (42000)"}
+    assert seen["probed"] == ["KEYMA", "TUBC", "TUCA", "UBC", "UCSH"]  # one probe each, once
+
+    logged = [r for r in caplog.records if r.category == "companies_inaccessible"]
+    assert len(logged) == 1  # once per discovery, not once per company
+    assert logged[0].companies == found.inaccessible
+
+
+def test_an_excluded_company_is_never_probed(monkeypatch):
+    # It is dropped upstream of everything, so the relay does not so much as open a connection to it.
+    rows = [_Row(code, code) for code in ("TUBC", "TUCSH")]
+    seen = _pyodbc_probing(monkeypatch, rows)
+    found = companies.discover()
+    assert found.companies == ["TUBC"]
+    assert seen["probed"] == ["TUBC"]
+    assert found.inaccessible == {}
+
+
+def test_a_probe_that_fails_for_any_other_reason_also_drops_the_company(monkeypatch):
+    # A timeout, a missing database, a driver fault - the loops cannot work it either way, and
+    # guessing at a category we have not seen would be worse than saying so plainly.
+    rows = [_Row("TUBC", "TUBC"), _Row("UBC", "UBC")]
+
+    class _Pyodbc:
+        Error = _ProbeError
+
+        @staticmethod
+        def connect(conn_str, **kw):
+            if "DATABASE=UBC;" in conn_str:
+                raise _ProbeError("HYT00", "[HYT00] Login timeout expired")
+            return _Conn(rows)
+
+    monkeypatch.setattr(companies, "pyodbc", _Pyodbc)
+    found = companies.discover()
+    assert found.companies == ["TUBC"]
+    assert found.inaccessible == {"UBC": "unreadable (HYT00)"}
+
+
+def test_a_login_that_can_read_none_of_them_serves_nothing_and_says_why(monkeypatch):
+    # Distinct from a failed master read: GP answered, and this workstation can open none of it.
+    rows = [_Row("TUBC", "TUBC"), _Row("UBC", "UBC")]
+    _pyodbc_probing(monkeypatch, rows, login_denied=("TUBC", "UBC"))
+    found = companies.discover()
+    assert found.companies == []
+    assert "cannot read any GP company" in found.error
+    assert "TUBC (login denied (28000))" in found.error
+    assert set(found.inaccessible) == {"TUBC", "UBC"}
 
 
 # --- the module cache -------------------------------------------------------------------------------
