@@ -9,6 +9,12 @@ import pytest
 from ucnexus_relay import channel, db, econnect, ops
 
 
+def _body(reply: dict) -> dict:
+    """A dispatch reply without the two pacing fields every reply now carries (`cost`, `server`), so a
+    test can go on asserting the exact {ok, result|error} it is actually about."""
+    return {key: value for key, value in reply.items() if key not in ("cost", "server")}
+
+
 class _FakeConn:
     def cursor(self):
         raise AssertionError("test should stub the econnect call directly, not hit a real cursor")
@@ -46,13 +52,13 @@ def _served(serving):
 def test_list_vendors_routes_to_econnect(monkeypatch):
     monkeypatch.setattr(econnect, "list_vendors", lambda conn, active_only=True: [{"vendor_id": "V1"}])
     reply = channel._dispatch("list_vendors", "TUBC", {})
-    assert reply == {"ok": True, "result": {"company": "TUBC", "vendors": [{"vendor_id": "V1"}]}}
+    assert _body(reply) == {"ok": True, "result": {"company": "TUBC", "vendors": [{"vendor_id": "V1"}]}}
 
 
 def test_list_buyers_routes_to_econnect(monkeypatch):
     monkeypatch.setattr(econnect, "list_buyers", lambda conn: ["mira", "donr"])
     reply = channel._dispatch("list_buyers", "TUBC", {})
-    assert reply == {"ok": True, "result": {"company": "TUBC", "buyers": ["mira", "donr"]}}
+    assert _body(reply) == {"ok": True, "result": {"company": "TUBC", "buyers": ["mira", "donr"]}}
 
 
 def test_list_cost_codes_requires_job():
@@ -71,7 +77,7 @@ def test_list_cost_codes_routes_to_econnect_and_strips_job(monkeypatch):
     monkeypatch.setattr(econnect, "list_cost_codes", _fake)
     reply = channel._dispatch("list_cost_codes", "TUBC", {"job": " 80003 "})
     assert seen["job"] == "80003"
-    assert reply == {
+    assert _body(reply) == {
         "ok": True,
         "result": {"company": "TUBC", "job": "80003", "cost_codes": [{"cost_code": "210-200"}]},
     }
@@ -95,7 +101,7 @@ def test_list_cost_code_master_routes_to_econnect_and_strips_division(monkeypatc
     monkeypatch.setattr(econnect, "list_cost_code_master", _fake)
     reply = channel._dispatch("list_cost_code_master", "TUBC", {"division": " VANCOUVER "})
     assert seen["division"] == "VANCOUVER"
-    assert reply == {
+    assert _body(reply) == {
         "ok": True,
         "result": {
             "company": "TUBC",
@@ -108,7 +114,7 @@ def test_list_cost_code_master_routes_to_econnect_and_strips_division(monkeypatc
 def test_list_jobs_routes_to_econnect(monkeypatch):
     monkeypatch.setattr(econnect, "list_jobs", lambda conn: [{"job_number": "80003", "job_name": "Test"}])
     reply = channel._dispatch("list_jobs", "TUBC", {})
-    assert reply == {
+    assert _body(reply) == {
         "ok": True,
         "result": {"company": "TUBC", "jobs": [{"job_number": "80003", "job_name": "Test"}]},
     }
@@ -136,12 +142,15 @@ def test_read_po_totals_routes_to_econnect_and_strips_number(monkeypatch):
 def test_read_po_totals_passes_through_none_when_not_found(monkeypatch):
     monkeypatch.setattr(econnect, "read_po_totals", lambda conn, po_number: None)
     reply = channel._dispatch("read_po_totals", "TUBC", {"po_number": "PO-NOPE"})
-    assert reply == {"ok": True, "result": {"company": "TUBC", "totals": None}}
+    assert _body(reply) == {"ok": True, "result": {"company": "TUBC", "totals": None}}
 
 
 def test_unknown_op_returns_a_clean_error():
     reply = channel._dispatch("not_a_real_op", "TUBC", {})
-    assert reply == {"ok": False, "error": {"error": "unknown_op", "message": "unknown op 'not_a_real_op'", "context": {}}}
+    assert _body(reply) == {
+        "ok": False,
+        "error": {"error": "unknown_op", "message": "unknown op 'not_a_real_op'", "context": {}},
+    }
 
 
 def test_missing_company_returns_a_clean_error():
@@ -173,7 +182,7 @@ def test_create_po_relay_op_error_translates_cleanly(monkeypatch):
 
     monkeypatch.setattr(ops, "create_po_op", _raise)
     reply = channel._dispatch("create_po", "TUBC", _PO_PAYLOAD)
-    assert reply == {"ok": False, "error": {"error": "buyer_unresolved", "message": "no buyer", "context": {}}}
+    assert _body(reply) == {"ok": False, "error": {"error": "buyer_unresolved", "message": "no buyer", "context": {}}}
 
 
 def test_create_po_success_returns_the_response_body(monkeypatch):
@@ -227,7 +236,7 @@ _JOB_PAYLOAD = {
 def test_list_customers_routes_to_econnect(monkeypatch):
     monkeypatch.setattr(econnect, "list_customers", lambda conn: [{"customer_number": "ELL100"}])
     reply = channel._dispatch("list_customers", "TUBC", {})
-    assert reply == {"ok": True, "result": {"company": "TUBC", "customers": [{"customer_number": "ELL100"}]}}
+    assert _body(reply) == {"ok": True, "result": {"company": "TUBC", "customers": [{"customer_number": "ELL100"}]}}
 
 
 def test_list_customer_addresses_requires_customer():
@@ -246,7 +255,7 @@ def test_list_customer_addresses_routes_to_econnect_and_strips_customer(monkeypa
     monkeypatch.setattr(econnect, "list_customer_addresses", _fake)
     reply = channel._dispatch("list_customer_addresses", "TUBC", {"customer": "  ELL100  "})
     assert seen["customer"] == "ELL100"
-    assert reply == {
+    assert _body(reply) == {
         "ok": True,
         "result": {"company": "TUBC", "customer": "ELL100", "addresses": [{"address_code": "MAIN"}]},
     }
@@ -255,7 +264,7 @@ def test_list_customer_addresses_routes_to_econnect_and_strips_customer(monkeypa
 def test_list_tax_schedules_routes_to_econnect(monkeypatch):
     monkeypatch.setattr(econnect, "list_tax_schedules", lambda conn: [{"tax_schedule_id": "GST 5%"}])
     reply = channel._dispatch("list_tax_schedules", "TUBC", {})
-    assert reply == {"ok": True, "result": {"company": "TUBC", "tax_schedules": [{"tax_schedule_id": "GST 5%"}]}}
+    assert _body(reply) == {"ok": True, "result": {"company": "TUBC", "tax_schedules": [{"tax_schedule_id": "GST 5%"}]}}
 
 
 def test_list_employees_routes_to_econnect(monkeypatch):
@@ -265,7 +274,7 @@ def test_list_employees_routes_to_econnect(monkeypatch):
         lambda conn, active_only=True: [{"employee_id": "IANB", "first_name": "Ian", "last_name": "Brown"}],
     )
     reply = channel._dispatch("list_employees", "TUBC", {})
-    assert reply == {
+    assert _body(reply) == {
         "ok": True,
         "result": {
             "company": "TUBC",
@@ -291,7 +300,7 @@ def test_list_employees_forwards_active_only(monkeypatch):
 def test_list_divisions_routes_to_econnect(monkeypatch):
     monkeypatch.setattr(econnect, "list_divisions", lambda conn: ["VANCOUVER"])
     reply = channel._dispatch("list_divisions", "TUBC", {})
-    assert reply == {"ok": True, "result": {"company": "TUBC", "divisions": ["VANCOUVER"]}}
+    assert _body(reply) == {"ok": True, "result": {"company": "TUBC", "divisions": ["VANCOUVER"]}}
 
 
 def test_create_job_success_returns_the_response_body(monkeypatch):
@@ -338,7 +347,7 @@ def test_list_buyers_detailed_routes_to_econnect(monkeypatch):
         lambda conn: [{"buyer_id": "donr", "description": "Don Roberton"}],
     )
     reply = channel._dispatch("list_buyers_detailed", "TUBC", {})
-    assert reply == {
+    assert _body(reply) == {
         "ok": True,
         "result": {"company": "TUBC", "buyers": [{"buyer_id": "donr", "description": "Don Roberton"}]},
     }
@@ -561,3 +570,148 @@ def test_update_job_site_missing_job_translates_cleanly(monkeypatch):
     reply = channel._dispatch("update_job_site", "TUBC", {"job_number": "23093", "job_name": "Cowichan"})
     assert reply["ok"] is False
     assert reply["error"]["error"] == "job_not_found"
+
+
+# --- the PO mirror's two reads --------------------------------------------------------------------
+
+
+def test_sync_pos_forwards_the_open_only_page(monkeypatch):
+    seen = {}
+
+    def _fake(conn, *, cursor, page_size, modified_since, open_only):
+        seen.update(cursor=cursor, page_size=page_size, modified_since=modified_since, open_only=open_only)
+        return {"pos": [], "next_cursor": "PO000011"}
+
+    monkeypatch.setattr(econnect, "sync_pos", _fake)
+    reply = channel._dispatch("sync_pos", "TUBC", {"open_only": True, "cursor": "PO000010", "page_size": 50})
+    assert seen == {"cursor": "PO000010", "page_size": 50, "modified_since": None, "open_only": True}
+    assert reply["result"] == {"company": "TUBC", "pos": [], "next_cursor": "PO000011"}
+
+
+def test_sync_pos_without_the_flag_is_still_the_backfill(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        econnect,
+        "sync_pos",
+        lambda conn, **kw: (seen.update(kw), {"pos": [], "next_cursor": None})[1],
+    )
+    channel._dispatch("sync_pos", "TUBC", {"cursor": "PO000010"})
+    assert seen["open_only"] is False
+
+
+def test_read_pos_by_number_routes_to_econnect(monkeypatch):
+    seen = {}
+
+    def _fake(conn, po_numbers):
+        seen["po_numbers"] = po_numbers
+        return {"pos": [{"po_number": "PO000005"}], "missing": ["PO000099"]}
+
+    monkeypatch.setattr(econnect, "read_pos_by_number", _fake)
+    reply = channel._dispatch("read_pos_by_number", "TUBC", {"po_numbers": ["PO000005", "PO000099"]})
+    assert seen["po_numbers"] == ["PO000005", "PO000099"]
+    assert reply["result"] == {
+        "company": "TUBC",
+        "pos": [{"po_number": "PO000005"}],
+        "missing": ["PO000099"],
+    }
+
+
+def test_read_pos_by_number_refuses_more_than_one_batch():
+    # The budget is bounded work per request. A batch bigger than a batch is refused rather than
+    # quietly becoming the unbounded read this replaced.
+    asked = [f"PO{i:06d}" for i in range(econnect.MAX_PO_NUMBERS + 1)]
+    reply = channel._dispatch("read_pos_by_number", "TUBC", {"po_numbers": asked})
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "too_many_po_numbers"
+    assert reply["error"]["context"] == {"asked": 101, "maximum": econnect.MAX_PO_NUMBERS}
+
+
+def test_read_pos_by_number_wants_a_list():
+    reply = channel._dispatch("read_pos_by_number", "TUBC", {"po_numbers": "PO000005"})
+    assert reply["error"]["error"] == "invalid_payload"
+
+
+def test_read_pos_by_number_with_no_numbers_reads_nothing(monkeypatch):
+    monkeypatch.setattr(econnect, "read_pos_by_number", lambda conn, po_numbers: {"pos": [], "missing": []})
+    assert channel._dispatch("read_pos_by_number", "TUBC", {})["ok"] is True
+
+
+def test_the_relay_advertises_the_new_read():
+    # The backend refuses to call an op an older relay does not advertise, so the hello frame is what
+    # lets it switch from the unpaged incremental read to the paged pair.
+    ops_advertised = channel._hello_frame()["ops"]
+    assert "read_pos_by_number" in ops_advertised
+    assert ops_advertised == sorted(ops_advertised)
+
+
+# --- job_setup_health: one job, a batch, or the whole company -------------------------------------
+
+
+def _health_stub(monkeypatch, seen):
+    def _fake(conn, job_number=None, job_numbers=None):
+        seen.append({"job": job_number, "jobs": job_numbers})
+        return [{"job_number": "23090", "ok": True, "active_cost_code_count": 3, "issues": []}]
+
+    monkeypatch.setattr(econnect, "job_setup_health", _fake)
+
+
+def test_job_setup_health_forwards_the_batch(monkeypatch):
+    seen = []
+    _health_stub(monkeypatch, seen)
+    reply = channel._dispatch("job_setup_health", "TUBC", {"jobs": [" 23090 ", "23093", "23090"]})
+    assert seen == [{"job": None, "jobs": ["23090", "23093"]}]  # trimmed and de-duplicated
+    # `job` stays None for the list form - it means "the caller asked about ONE job".
+    assert reply["result"]["job"] is None
+    assert reply["result"]["company"] == "TUBC"
+    assert reply["result"]["jobs"][0]["job_number"] == "23090"
+
+
+def test_job_setup_health_batch_wins_over_the_single_job(monkeypatch):
+    seen = []
+    _health_stub(monkeypatch, seen)
+    channel._dispatch("job_setup_health", "TUBC", {"job": "23099", "jobs": ["23090"]})
+    assert seen == [{"job": None, "jobs": ["23090"]}]
+
+
+def test_job_setup_health_still_answers_one_job(monkeypatch):
+    seen = []
+    _health_stub(monkeypatch, seen)
+    reply = channel._dispatch("job_setup_health", "TUBC", {"job": " 23093 "})
+    assert seen == [{"job": "23093", "jobs": None}]
+    assert reply["result"]["job"] == "23093"
+
+
+def test_job_setup_health_with_no_filter_is_still_the_whole_company(monkeypatch):
+    # An older backend sends neither key and must keep getting the sweep it asks for.
+    seen = []
+    _health_stub(monkeypatch, seen)
+    reply = channel._dispatch("job_setup_health", "TUBC", {})
+    assert seen == [{"job": None, "jobs": None}]
+    assert reply["result"]["job"] is None
+
+
+def test_an_empty_batch_opens_no_connection(monkeypatch):
+    opened = []
+
+    @contextmanager
+    def _counting(company):
+        opened.append(company)
+        yield _FakeConn()
+
+    monkeypatch.setattr(db, "get_read_connection", _counting)
+    reply = channel._dispatch("job_setup_health", "TUBC", {"jobs": []})
+    assert reply["result"]["jobs"] == []
+    assert opened == []  # the caller named no jobs, so GP is not touched at all
+
+
+def test_job_setup_health_refuses_more_than_one_batch():
+    asked = [f"J{i:05d}" for i in range(econnect.MAX_JOB_NUMBERS + 1)]
+    reply = channel._dispatch("job_setup_health", "TUBC", {"jobs": asked})
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "too_many_job_numbers"
+    assert reply["error"]["context"] == {"asked": 101, "maximum": econnect.MAX_JOB_NUMBERS}
+
+
+def test_job_setup_health_wants_a_list():
+    reply = channel._dispatch("job_setup_health", "TUBC", {"jobs": "23090"})
+    assert reply["error"]["error"] == "invalid_payload"

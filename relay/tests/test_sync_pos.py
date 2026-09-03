@@ -53,8 +53,12 @@ class _Cursor:
             self._kind = "hist_lines"
         elif "POP10500" in sql:
             self._kind = "received"
+        elif "UNION ALL" in sql:
+            self._kind = "headers"  # backfill / legacy incremental read both header tables at once
+        elif "POP30100" in sql:
+            self._kind = "hist_headers"  # the history half of a read_pos_by_number seek
         else:
-            self._kind = "headers"
+            self._kind = "headers"  # an open-only page, or the work half of a seek
         return self
 
     def fetchall(self):
@@ -186,3 +190,122 @@ def test_backfill_keyset_uses_raw_ponumber_not_trimmed():
     # the incoming cursor is bound raw against po_raw as the second header param (after TOP page_size).
     header_params = next(p for s, p in cursor.calls if "UNION ALL" in s)
     assert header_params == (1, "PO000005")
+
+
+# --- the open-only page -------------------------------------------------------------------------------
+
+
+def test_open_only_walks_the_work_table_by_keyset_page():
+    """The open-book re-read is a PAGE now. One request read 2,344 POs in 8s on one company and never
+    finished on another; the fix is bounded work per request, not a longer wait."""
+    rows = {
+        "headers": [_hdr("work", "PO000010"), _hdr("work", "PO000011")],
+        "work_lines": [_line("PO000010", 16384, "ITEM-A", qty=5)],
+        "received": [_rcv("PO000010", 16384, 3)],
+    }
+    cursor = _Cursor(rows)
+    out = econnect.sync_pos(_Conn(cursor), cursor="PO000009", page_size=2, modified_since=None, open_only=True)
+
+    header_sql = cursor.all_sql[0]
+    assert "FROM dbo.POP10100" in header_sql
+    assert "TOP (?)" in header_sql
+    assert "WHERE PONUMBER > ?" in header_sql and "ORDER BY PONUMBER" in header_sql
+    assert cursor.calls[0][1] == (2, "PO000009")  # the page size and the incoming cursor, bound in order
+
+    # no history table is touched at all in this branch, and nothing looks at DEX_ROW_TS.
+    everything = " ".join(cursor.all_sql)
+    assert "POP30100" not in everything and "POP30110" not in everything
+    assert "DEX_ROW_TS >=" not in everything
+    assert "UNION ALL" not in everything
+
+    # a full page hands back the last PONUMBER to resume from, and the page carries lines + receipts
+    # exactly as a backfill page does.
+    assert out["next_cursor"] == "PO000011"
+    assert out["pos"][0]["lines"][0]["received"] == 3.0
+    assert out["pos"][0]["source_table"] == "work"
+
+
+def test_open_only_short_page_ends_the_walk():
+    rows = {"headers": [_hdr("work", "PO000010")], "work_lines": [], "received": []}
+    out = econnect.sync_pos(_Conn(_Cursor(rows)), cursor=None, page_size=5, modified_since=None, open_only=True)
+    assert out["next_cursor"] is None  # fewer rows than the page -> the open book is walked
+
+
+def test_open_only_starts_from_the_beginning_with_no_cursor():
+    rows = {"headers": [], "work_lines": [], "received": []}
+    cursor = _Cursor(rows)
+    econnect.sync_pos(_Conn(cursor), cursor=None, page_size=50, modified_since=None, open_only=True)
+    assert cursor.calls[0][1] == (50, "")  # an empty string sorts before every PONUMBER
+
+
+def test_no_read_is_ever_larger_than_the_page_it_was_asked_for():
+    """The chunk is min(len(keys), page_size), not a fixed 1000. A request that asked for 2 POs reads
+    two keys at a time - which is what makes the cost of a request predictable from its own payload."""
+    po_nums = [f"PO{i:06d}" for i in range(5)]
+    rows = {"headers": [_hdr("work", po) for po in po_nums], "work_lines": [], "received": []}
+    cursor = _Cursor(rows)
+    econnect.sync_pos(_Conn(cursor), cursor=None, page_size=2, modified_since=None, open_only=True)
+
+    line_calls = [p for s, p in cursor.calls if "POP10110" in s]
+    rcv_calls = [p for s, p in cursor.calls if "POP10500" in s]
+    assert [len(p) for p in line_calls] == [2, 2, 1]  # 5 keys at 2 per read
+    assert [len(p) for p in rcv_calls] == [2, 2, 1]
+    assert sum(len(p) for p in line_calls) == 5  # every key read exactly once, none dropped
+
+
+# --- fetching the POs that left the open set ------------------------------------------------------------
+
+
+def test_read_pos_by_number_splits_across_work_and_history():
+    """The other half of the open-only page: the backend diffs the open set and names what dropped out,
+    so nothing has to scan history looking for it."""
+    rows = {
+        "headers": [_hdr("work", "PO000010")],  # the work-table seek
+        "hist_headers": [_hdr("history", "PO000005"), _hdr("history", "PO000007")],
+        "work_lines": [_line("PO000010", 16384, "ITEM-A", qty=5)],
+        "hist_lines": [_line("PO000005", 16384, "ITEM-B", qty=4, cancelled=1)],
+        "received": [_rcv("PO000010", 16384, 2)],
+    }
+    cursor = _Cursor(rows)
+    out = econnect.read_pos_by_number(_Conn(cursor), ["PO000010", "PO000007", "PO000005", "PO000099"])
+
+    assert [p["po_number"] for p in out["pos"]] == ["PO000005", "PO000007", "PO000010"]  # sorted
+    assert out["missing"] == ["PO000099"]  # in neither table - GP no longer holds it at all
+
+    by_po = {p["po_number"]: p for p in out["pos"]}
+    assert by_po["PO000010"]["source_table"] == "work"
+    assert by_po["PO000010"]["lines"][0]["received"] == 2.0  # open PO: the POP10500 sum
+    assert by_po["PO000005"]["source_table"] == "history"
+    assert by_po["PO000005"]["lines"][0]["received"] == 3.0  # history PO: qty - cancelled
+
+    work_seek = next((sql, params) for sql, params in cursor.calls if "POP10100" in sql)
+    hist_seek = next((sql, params) for sql, params in cursor.calls if "POP30100" in sql)
+    assert "WHERE PONUMBER IN (?,?,?,?)" in work_seek[0]  # every number asked for, one seek
+    assert set(work_seek[1]) == {"PO000010", "PO000007", "PO000005", "PO000099"}
+    # history is only asked for what the work table did not have.
+    assert set(hist_seek[1]) == {"PO000007", "PO000005", "PO000099"}
+    # the column is still SELECTed as `modified`; what must never appear is a SCAN on it.
+    assert "DEX_ROW_TS >=" not in " ".join(cursor.all_sql)
+
+
+def test_read_pos_by_number_trims_dedupes_and_ignores_blanks():
+    rows = {"headers": [_hdr("work", "PO000010")], "hist_headers": [], "work_lines": [], "received": []}
+    cursor = _Cursor(rows)
+    out = econnect.read_pos_by_number(_Conn(cursor), [" PO000010 ", "PO000010", "", None])
+    assert [p["po_number"] for p in out["pos"]] == ["PO000010"]
+    assert next(p for sql, p in cursor.calls if "POP10100" in sql) == ("PO000010",)
+
+
+def test_read_pos_by_number_with_nothing_to_read_touches_gp_at_all():
+    cursor = _Cursor({})
+    assert econnect.read_pos_by_number(_Conn(cursor), []) == {"pos": [], "missing": []}
+    assert cursor.all_sql == []
+
+
+def test_read_pos_by_number_never_reads_more_keys_than_it_was_given():
+    po_nums = [f"PO{i:06d}" for i in range(econnect.MAX_PO_NUMBERS)]
+    rows = {"headers": [_hdr("work", po) for po in po_nums], "hist_headers": [], "work_lines": [], "received": []}
+    cursor = _Cursor(rows)
+    econnect.read_pos_by_number(_Conn(cursor), po_nums)
+    for sql, params in cursor.calls:
+        assert len(params) <= econnect.MAX_PO_NUMBERS

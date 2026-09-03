@@ -542,8 +542,10 @@ function POListPage() {
         const msg =
           r.mode === 'unsupported'
             ? 'The connected relay does not support PO mirroring yet - update the relay.'
-            : `GP sync (${r.mode}): ${r.created} added, ${r.updated} updated${r.backfillDone ? '' : ' - backfill still running'}.`;
-        showToast(msg, r.mode === 'unsupported' ? 'warning' : 'success');
+            : r.mode === 'queued'
+              ? 'GP sync queued - the open-PO refresh runs in the background at the paced rate; the register updates as pages land.'
+              : `GP sync (${r.mode}): ${r.created} added, ${r.updated} updated${r.backfillDone ? '' : ' - backfill still running'}.`;
+        showToast(msg, r.mode === 'unsupported' ? 'warning' : r.mode === 'queued' ? 'info' : 'success');
       }
       handleRefetch();
     } catch (e) {

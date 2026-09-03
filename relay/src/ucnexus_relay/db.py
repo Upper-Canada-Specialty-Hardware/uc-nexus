@@ -1,4 +1,4 @@
-"""pyodbc connection factory. Windows SSPI auth (Trusted_Connection) — no password stored.
+"""pyodbc connection factory. Windows SSPI auth (Trusted_Connection) - no password stored.
 
 autocommit=False on the orchestration connection is critical: we want one explicit
 BEGIN..COMMIT/ROLLBACK scope across the multi-proc PO create.
@@ -65,11 +65,48 @@ _SESSION_COST_SQL = (
     "SELECT cpu_time, logical_reads, total_elapsed_time FROM sys.dm_exec_sessions WHERE session_id = @@SPID"
 )
 
+class Measured:
+    """What one op is being measured as, and what it turned out to cost.
+
+    `cost` sums EVERY connection opened inside the block, because an op that opens two (create_po and
+    then the eConnect description lookup on the way out) cost the server both. It stays None until a
+    delta actually landed - a reply says "not measured" with null rather than with a zero, which would
+    read as a free op."""
+
+    __slots__ = ("op", "company", "background", "cpu_ms", "logical_reads", "elapsed_ms", "connections")
+
+    def __init__(self, op: str, company: str, background: bool = False):
+        self.op = op
+        self.company = company
+        # The frame's own claim that nobody is waiting on this op. It decides the command timeout the
+        # connections opened inside the block get - see _command_timeout.
+        self.background = background
+        self.cpu_ms = 0
+        self.logical_reads = 0
+        self.elapsed_ms = 0
+        self.connections = 0
+
+    def add(self, cpu_ms: int, logical_reads: int, elapsed_ms: int) -> None:
+        # No lock: a handler is synchronous and every connection it opens is opened on its own thread,
+        # so this object is only ever touched by the one thread its context belongs to.
+        self.cpu_ms += cpu_ms
+        self.logical_reads += logical_reads
+        self.elapsed_ms += elapsed_ms
+        self.connections += 1
+
+    @property
+    def cost(self) -> dict | None:
+        """The `cost` block on a job reply, or None if no measurement happened."""
+        if not self.connections:
+            return None
+        return {"cpu_ms": self.cpu_ms, "logical_reads": self.logical_reads, "elapsed_ms": self.elapsed_ms}
+
+
 # Which op the connections opened on this thread belong to. channel._dispatch sets it around the
 # handler call and main.py's middleware sets it around an HTTP request, so db.py can name a cost
 # without every call site threading an op name through. asyncio.to_thread and Starlette's threadpool
 # both copy the caller's context into the worker thread, so a value set either side reaches here.
-_CURRENT_OP: ContextVar[tuple[str, str] | None] = ContextVar("gp_current_op", default=None)
+_CURRENT_OP: ContextVar[Measured | None] = ContextVar("gp_current_op", default=None)
 
 _UNKNOWN_OP = "unknown"
 
@@ -80,12 +117,29 @@ _COST: dict[str, dict] = {}
 _COST_UNAVAILABLE_LOGGED = False
 
 
+def _command_timeout() -> int:
+    """How long a statement on a connection opened right now may run.
+
+    Background work gets the shorter [gp] background_command_timeout_seconds: nobody is waiting on it,
+    so an overrunning statement is cancelled on the server instead of being allowed to the user-facing
+    limit. Everything else keeps [sql] command_timeout, because somebody IS waiting and cutting their
+    PO create short to save the server a few seconds is the wrong trade."""
+    settings = get_settings()
+    measured = _CURRENT_OP.get()
+    if measured is not None and measured.background:
+        return settings.gp.background_command_timeout_seconds
+    return settings.sql.command_timeout
+
+
 @contextmanager
-def measuring(op: str, company: str):
-    """Name the op that every connection opened inside this block is measured against."""
-    token = _CURRENT_OP.set((op, company))
+def measuring(op: str, company: str, background: bool = False):
+    """Name the op that every connection opened inside this block is measured against, and yield the
+    Measured that collects what it cost - channel._dispatch reads `.cost` off it for the reply.
+    `background` also shortens those connections' command timeout (see _command_timeout)."""
+    measured = Measured(op, company, background)
+    token = _CURRENT_OP.set(measured)
     try:
-        yield
+        yield measured
     finally:
         _CURRENT_OP.reset(token)
 
@@ -150,11 +204,14 @@ def _record_delta(conn, company: str, opened: tuple[int, int, int] | None) -> No
     closed = _sample(conn)
     if closed is None:
         return
-    op, ctx_company = _CURRENT_OP.get() or (_UNKNOWN_OP, None)
+    measured = _CURRENT_OP.get()
     # Clamped: a pooled session that was reset between the two readings would otherwise book a
     # negative and quietly eat somebody else's total.
     cpu_ms, logical_reads, elapsed_ms = (max(0, c - o) for c, o in zip(closed, opened))
-    _record(ctx_company or company, op, cpu_ms, logical_reads, elapsed_ms)
+    if measured is not None:
+        measured.add(cpu_ms, logical_reads, elapsed_ms)
+    op = measured.op if measured is not None else _UNKNOWN_OP
+    _record((measured.company if measured is not None else "") or company, op, cpu_ms, logical_reads, elapsed_ms)
 
 
 def cost_snapshot() -> dict:
@@ -192,7 +249,7 @@ def reset_cost() -> None:
 def get_connection(company: str):
     """Transactional connection for eConnect orchestration (autocommit off)."""
     conn = pyodbc.connect(build_conn_string(company), autocommit=False)
-    conn.timeout = get_settings().sql.command_timeout
+    conn.timeout = _command_timeout()
     # SET NOCOUNT ON for the whole session: eConnect procs do heavy internal DML, and the
     # "(N rows affected)" count messages otherwise push our trailing `SELECT @err` off pyodbc's
     # first result set -> "No results. Previous SQL was not a query." NOCOUNT suppresses the
@@ -208,10 +265,10 @@ def get_connection(company: str):
 
 @contextmanager
 def get_read_connection(company: str):
-    """Read-only connection (autocommit) for plain SELECTs — no eConnect, no writes, no held
+    """Read-only connection (autocommit) for plain SELECTs - no eConnect, no writes, no held
     transaction. Used by /vendors and any other pure read."""
     conn = pyodbc.connect(build_conn_string(company), autocommit=True)
-    conn.timeout = get_settings().sql.command_timeout
+    conn.timeout = _command_timeout()
     opened = _sample(conn)
     try:
         yield conn

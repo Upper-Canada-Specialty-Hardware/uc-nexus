@@ -28,6 +28,12 @@ from ucnexus_relay.config import (
     primary_url,
 )
 
+
+def _body(reply: dict) -> dict:
+    """A dispatch reply without the two pacing fields every reply now carries (`cost`, `server`), so a
+    test can go on asserting the exact {ok, result|error} it is actually about."""
+    return {key: value for key, value in reply.items() if key not in ("cost", "server")}
+
 PR_URL = "wss://backend-pr-414.up.railway.app/relay-link"
 
 
@@ -118,7 +124,7 @@ def test_a_test_channel_refuses_every_company_but_the_sandbox(monkeypatch, compa
 def test_a_test_channel_serves_reads_against_the_sandbox(monkeypatch):
     calls = _sentinel_op(monkeypatch)
     reply = channel._dispatch("spy_op", "TUBC", {}, channel_allowed_companies(PR_URL))
-    assert reply == {"ok": True, "result": {"ok": 1}}
+    assert _body(reply) == {"ok": True, "result": {"ok": 1}}
     assert calls == ["TUBC"]
 
 
@@ -128,7 +134,7 @@ def test_a_test_channel_also_serves_WRITES_against_the_sandbox(monkeypatch):
     ran = []
     monkeypatch.setitem(channel._OPS, "create_po", lambda company, payload: ran.append(company) or {"po": "PO1"})
     reply = channel._dispatch("create_po", "TUBC", {}, channel_allowed_companies(PR_URL))
-    assert reply == {"ok": True, "result": {"po": "PO1"}}
+    assert _body(reply) == {"ok": True, "result": {"po": "PO1"}}
     assert ran == ["TUBC"]
 
 
@@ -136,7 +142,7 @@ def test_the_production_channel_is_not_restricted_by_this_gate(monkeypatch):
     # None = unrestricted; the companies discovered in GP alone govern production, as before #414.
     calls = _sentinel_op(monkeypatch)
     reply = channel._dispatch("spy_op", "UCSH", {}, channel_allowed_companies(PRODUCTION_BACKEND_URL))
-    assert reply == {"ok": True, "result": {"ok": 1}}
+    assert _body(reply) == {"ok": True, "result": {"ok": 1}}
     assert calls == ["UCSH"]
 
 

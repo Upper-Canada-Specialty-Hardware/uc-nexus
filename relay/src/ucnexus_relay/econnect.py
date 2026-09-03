@@ -856,9 +856,11 @@ _ACTIVE_COST_CODE = "WS_Inactive = 0"
 # between them; change one and change the others.
 
 
-def job_setup_health(conn, job_number: str | None = None) -> list[dict]:
-    """Read-only: the per-job GP setup verdict for EVERY job in the company (#425), or for one job
-    when `job_number` is given.
+def job_setup_health(
+    conn, job_number: str | None = None, job_numbers: list[str] | None = None
+) -> list[dict]:
+    """Read-only: the per-job GP setup verdict for EVERY job in the company (#425), for the BATCH of
+    jobs in `job_numbers`, or for the one job in `job_number`.
 
     Two queries regardless of how many jobs there are, because the loop is a sync pass over the whole
     job master and a per-job round trip over the relay socket would make it unusable:
@@ -876,8 +878,17 @@ def job_setup_health(conn, job_number: str | None = None) -> list[dict]:
 
     The single-job filter exists for the live re-check register_po_in_gp runs at submit time: reading
     900 jobs to answer a question about one is the difference between a gate somebody keeps and a gate
-    somebody turns off."""
+    somebody turns off.
+
+    `job_numbers` is the same idea for the adoption pass, which now walks the job master in batches
+    against a shared read budget: without it every batch would re-read the WHOLE company, N times over
+    for N batches, which is worse than the single unbatched sweep it replaced. Precedence is
+    job_numbers (when it holds anything) -> job_number -> the whole company, so a backend too old to
+    send either still gets the sweep it asks for. An explicitly empty batch reads nothing at all, and
+    a job number that is not in JC00102 is simply absent from the answer - asking about a job GP does
+    not have is not an error, it is a verdict of "nothing to stamp"."""
     job = (job_number or "").strip() or None
+    keys = distinct_keys(job_numbers) if job_numbers is not None else []
     cur = conn.cursor()
 
     verdict_sql = (
@@ -895,7 +906,32 @@ def job_setup_health(conn, job_number: str | None = None) -> list[dict]:
         "LEFT JOIN dbo.GL00105 a ON a.ACTINDX = c.WS_Account_Index_1 "
         f"WHERE c.{_ACTIVE_COST_CODE} AND c.WS_Account_Index_1 <> 0 AND a.ACTINDX IS NULL "
     )
-    if job is None:
+    if job_numbers is not None:
+        # An explicitly empty batch is not the whole-company sweep: the caller named nothing, so
+        # nothing is read. Falling through to the sweep here is the accident this branch exists to
+        # prevent - it would turn a no-op into a full scan.
+        if not keys:
+            return []
+        # Chunked like the PO reads, at the batch's own size, so one read never touches more keys than
+        # it was handed. In practice the caller is capped well under one chunk; this is what keeps that
+        # true if it ever is not.
+        verdict_rows = []
+        detail_rows = []
+        for group in _chunk(keys, _in_chunk(keys, MAX_JOB_NUMBERS)):
+            placeholders = ",".join("?" * len(group))
+            verdict_rows += cur.execute(
+                verdict_sql + f"WHERE RTRIM(j.WS_Job_Number) IN ({placeholders}) "
+                "GROUP BY RTRIM(j.WS_Job_Number) ORDER BY 1",
+                *group,
+            ).fetchall()
+            detail_rows += cur.execute(
+                detail_sql + f"AND RTRIM(c.WS_Job_Number) IN ({placeholders}) ORDER BY 1, 2, 3",
+                *group,
+            ).fetchall()
+        # Each chunk is ordered on its own, so the batch as a whole is only ordered once they are
+        # merged - the caller gets one list in job order however many reads it took.
+        verdict_rows.sort(key=lambda r: r.job_number)
+    elif job is None:
         verdict_rows = cur.execute(verdict_sql + "GROUP BY RTRIM(j.WS_Job_Number) ORDER BY 1").fetchall()
         detail_rows = cur.execute(detail_sql + "ORDER BY 1, 2, 3").fetchall()
     else:
@@ -1761,15 +1797,52 @@ _PO_HEADER_COLS = (
     "RTRIM(VENDORID) AS vendor, RTRIM(VENDNAME) AS vendname, DOCDATE AS docdate, DEX_ROW_TS AS modified"
 )
 _MAX_PO_PAGE_SIZE = 1000
-# SQL Server caps a statement at 2100 parameters. Incremental mode is unpaginated, so a large open-order
-# book can push far more than that many PO numbers into an IN-list; chunk it well under the ceiling.
+# SQL Server caps a statement at 2100 parameters, and this is the hard ceiling under it. It is no
+# longer the chunk itself: see _in_chunk.
 _PO_IN_CHUNK = 1000
+
+# At most this many PO numbers in one read_pos_by_number call. The throttle is BOUNDED WORK PER
+# REQUEST - the budget is 100 PO reads a minute, issued as small sequential batches - so a request that
+# asked for more than a batch is refused rather than quietly turned into the unbounded read this
+# replaced.
+MAX_PO_NUMBERS = 100
+
+# The same bound for the batched job-setup read. Deliberately the same number as MAX_PO_NUMBERS - one
+# batch is one batch, whatever it is a batch of - and its own name so the two can move apart if the
+# job read ever turns out to cost something different from the PO read.
+MAX_JOB_NUMBERS = MAX_PO_NUMBERS
+
+
+def distinct_keys(values) -> list[str]:
+    """Trimmed, de-duplicated, order-preserving keys from a payload list. Blanks and None are dropped;
+    None is skipped rather than str()-ed, since str(None) is the truthy "None" and would go into an
+    IN-list as a key nobody asked for.
+
+    Shared by every by-key batch read so they cannot drift on what "the same key twice" means."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        key = "" if value is None else str(value).strip()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
 
 
 def _chunk(items: list, size: int):
     """Yield `items` in successive slices of at most `size`. Empty input yields nothing."""
     for i in range(0, len(items), size):
         yield items[i : i + size]
+
+
+def _in_chunk(keys: list, page_size: int) -> int:
+    """How many keys a single IN-list read may touch.
+
+    The rule is that no read is ever larger than the page it was asked for: a request that asked for 50
+    POs reads 50 keys at a time, not 1000. That is what makes the cost of a request predictable from
+    its own payload - the thing the unpaged incremental read did not have, which is how one request
+    came to touch 2,344 POs and pin the server."""
+    return max(1, min(len(keys), page_size, _PO_IN_CHUNK))
 
 
 def _parse_modified_since(value: str) -> datetime:
@@ -1787,13 +1860,13 @@ def _po_header_union(*, history_where: str = "") -> str:
     return f"{work} UNION ALL {hist}"
 
 
-def _read_po_lines(conn, table: str, po_numbers: list[str]) -> dict[str, list[dict]]:
+def _read_po_lines(conn, table: str, po_numbers: list[str], *, page_size: int) -> dict[str, list[dict]]:
     """PO lines for a set of PO numbers, grouped by PO number. `table` is POP10110 (work) or POP30110
     (history). Received qty is left to the caller (work sums POP10500; history derives it). The IN-list
-    is chunked (_PO_IN_CHUNK) so an incremental pass over a large open-order book never trips the
-    2100-parameter ceiling."""
+    is chunked at the request's own page size (_in_chunk), so a read never touches more keys than the
+    caller asked for and never trips the 2100-parameter ceiling."""
     out: dict[str, list[dict]] = {}
-    for group in _chunk(po_numbers, _PO_IN_CHUNK):
+    for group in _chunk(po_numbers, _in_chunk(po_numbers, page_size)):
         placeholders = ",".join("?" * len(group))
         rows = conn.cursor().execute(
             f"SELECT RTRIM(PONUMBER) AS po, ORD, RTRIM(ITEMNMBR) AS item, RTRIM(ITEMDESC) AS itemdesc, "
@@ -1817,9 +1890,9 @@ def _read_po_lines(conn, table: str, po_numbers: list[str]) -> dict[str, list[di
     return out
 
 
-def _read_received_sums(conn, po_numbers: list[str]) -> dict[tuple[str, int], float]:
+def _read_received_sums(conn, po_numbers: list[str], *, page_size: int) -> dict[tuple[str, int], float]:
     """SUM(QTYSHPPD) per (PONUMBER, POLNENUM) from POP10500, for open POs. POLNENUM == POP10110.ORD.
-    IN-list chunked (_PO_IN_CHUNK) for the same 2100-parameter reason as _read_po_lines.
+    IN-list chunked at the request's page size, like _read_po_lines.
 
     LIVE-VERIFY (POP10500 unposted receipts): QTYSHPPD is the receipt quantity on this receipt-line
     table. It is NOT confirmed whether receipts still sitting in an unposted GP receiving batch are
@@ -1829,7 +1902,7 @@ def _read_received_sums(conn, po_numbers: list[str]) -> dict[tuple[str, int], fl
     floor received here on purpose - the defensive guard (never let a synced received qty drop below the
     last-seen value) lives backend-side."""
     out: dict[tuple[str, int], float] = {}
-    for group in _chunk(po_numbers, _PO_IN_CHUNK):
+    for group in _chunk(po_numbers, _in_chunk(po_numbers, page_size)):
         placeholders = ",".join("?" * len(group))
         rows = conn.cursor().execute(
             f"SELECT RTRIM(PONUMBER) AS po, POLNENUM, SUM(QTYSHPPD) AS received "
@@ -1840,15 +1913,16 @@ def _read_received_sums(conn, po_numbers: list[str]) -> dict[tuple[str, int], fl
     return out
 
 
-def _assemble_pos(conn, headers: list) -> list[dict]:
+def _assemble_pos(conn, headers: list, *, page_size: int) -> list[dict]:
     """Attach lines + received qty to a list of header rows (each has .src/.po/.status/.vendor/
-    .vendname/.docdate/.modified). Splits work vs history so each reads its own tables."""
+    .vendname/.docdate/.modified). Splits work vs history so each reads its own tables. `page_size` is
+    the caller's own page, and bounds every IN-list read below it."""
     work_pos = [h.po for h in headers if h.src == "work"]
     hist_pos = [h.po for h in headers if h.src == "history"]
 
-    work_lines = _read_po_lines(conn, "POP10110", work_pos)
-    hist_lines = _read_po_lines(conn, "POP30110", hist_pos)
-    received = _read_received_sums(conn, work_pos)
+    work_lines = _read_po_lines(conn, "POP10110", work_pos, page_size=page_size)
+    hist_lines = _read_po_lines(conn, "POP30110", hist_pos, page_size=page_size)
+    received = _read_received_sums(conn, work_pos, page_size=page_size)
 
     pos = []
     for h in headers:
@@ -1888,19 +1962,41 @@ def _assemble_pos(conn, headers: list) -> list[dict]:
     return pos
 
 
-def sync_pos(conn, *, cursor: str | None, page_size: int, modified_since: str | None) -> dict:
+def sync_pos(
+    conn, *, cursor: str | None, page_size: int, modified_since: str | None, open_only: bool = False
+) -> dict:
     """Read a page of GP purchase orders for the mirror sync. Returns {pos: [...], next_cursor}.
 
-    Two modes:
+    Three modes:
+      - OPEN-ONLY (open_only): keyset page over POP10100 alone - the open work POs - ordered by
+        PONUMBER, TOP page_size, WHERE PONUMBER > cursor, with lines and receipt sums exactly as a
+        backfill page carries them. No history table is touched at all. This is how the mirror
+        re-reads the live order book: bounded work per request, walked a page at a time, instead of
+        one statement over the whole book. next_cursor is the last PONUMBER of the page, or None when
+        the page came back short (the book is walked).
       - backfill (modified_since is None): keyset page over POP10100 UNION POP30100 ordered by
-        PONUMBER, TOP page_size, WHERE PONUMBER > cursor. next_cursor is the last PONUMBER of the page,
-        or None when the page came back short (history drained).
-      - incremental (modified_since set): every open work PO (the bounded active order book, re-read so
-        live receipt sums and status are always current) plus history POs with DEX_ROW_TS >=
-        modified_since (newly closed/voided). Not paginated - next_cursor is always None.
+        PONUMBER, TOP page_size, WHERE PONUMBER > cursor. next_cursor as above, or None on a short page.
+      - incremental (modified_since set): every open work PO plus history POs with DEX_ROW_TS >=
+        modified_since. NOT PAGINATED, and no longer called - the open-only page above plus
+        read_pos_by_number replace it. Kept only so an older backend still gets an answer; on a large
+        order book this is the read that took 8s on one company and never finished on another.
     """
     page_size = max(1, min(int(page_size or 300), _MAX_PO_PAGE_SIZE))
     cur = conn.cursor()
+
+    if open_only:
+        # Same keyset reasoning as the backfill below, over one table: PONUMBER is the clustered key on
+        # POP10100, so `> ?` seeks and ORDER BY streams from the index. No UNION, no DEX_ROW_TS, no
+        # history - a PO that left the open set is fetched by number (read_pos_by_number), not found by
+        # scanning history for it.
+        sql = (
+            f"SELECT TOP (?) {_PO_HEADER_COLS.format(src='work')} "
+            f"FROM dbo.POP10100 WHERE PONUMBER > ? ORDER BY PONUMBER"
+        )
+        headers = cur.execute(sql, page_size, (cursor or "")).fetchall()
+        pos = _assemble_pos(conn, headers, page_size=page_size)
+        next_cursor = headers[-1].po if len(headers) == page_size else None
+        return {"pos": pos, "next_cursor": next_cursor}
 
     if modified_since is None:
         # Keyset on the RAW PONUMBER (po_raw), not RTRIM(PONUMBER): the raw column is the clustered key
@@ -1914,12 +2010,53 @@ def sync_pos(conn, *, cursor: str | None, page_size: int, modified_since: str | 
             f"FROM ({_po_header_union()}) u WHERE u.po_raw > ? ORDER BY u.po_raw"
         )
         headers = cur.execute(sql, page_size, (cursor or "")).fetchall()
-        pos = _assemble_pos(conn, headers)
+        pos = _assemble_pos(conn, headers, page_size=page_size)
         next_cursor = headers[-1].po if len(headers) == page_size else None
         return {"pos": pos, "next_cursor": next_cursor}
 
     union = _po_header_union(history_where="WHERE DEX_ROW_TS >= ?")
     sql = f"SELECT src, po, status, vendor, vendname, docdate, modified FROM ({union}) u ORDER BY u.po"
     headers = cur.execute(sql, _parse_modified_since(modified_since)).fetchall()
-    pos = _assemble_pos(conn, headers)
+    pos = _assemble_pos(conn, headers, page_size=page_size)
     return {"pos": pos, "next_cursor": None}
+
+
+def _seek_headers(conn, table: str, src: str, po_numbers: list[str], page_size: int) -> list:
+    """PO headers for exactly these numbers, by key seek. PONUMBER is the clustered key on both header
+    tables, so an IN-list is a seek per value rather than a scan - and the trimmed values match the
+    char(17) column because T-SQL char comparison ignores trailing spaces."""
+    out: list = []
+    for group in _chunk(po_numbers, _in_chunk(po_numbers, page_size)):
+        placeholders = ",".join("?" * len(group))
+        out += conn.cursor().execute(
+            f"SELECT {_PO_HEADER_COLS.format(src=src)} FROM dbo.{table} "
+            f"WHERE PONUMBER IN ({placeholders}) ORDER BY PONUMBER",
+            *group,
+        ).fetchall()
+    return out
+
+
+def read_pos_by_number(conn, po_numbers: list[str]) -> dict:
+    """Headers + lines + received quantities for exactly the PO numbers asked for. Returns
+    {pos: [...], missing: [...]}.
+
+    This is the other half of the open-only page: the backend diffs the open set it just walked
+    against what it holds, and asks here for the ones that dropped out - closed, posted, voided. Work
+    table first, history only for whatever the work table did not have, all by key seek. Nothing
+    scans DEX_ROW_TS, and nothing reads a row the backend did not name.
+
+    `missing` is the numbers found in neither table (a PO deleted outright), so the backend can tell
+    that from a relay that simply did not return one."""
+    keys = distinct_keys(po_numbers)
+    if not keys:
+        return {"pos": [], "missing": []}
+
+    # The batch IS the page here: every read below is bounded by the number of POs asked for.
+    page_size = len(keys)
+    work = _seek_headers(conn, "POP10100", "work", keys, page_size)
+    found = {h.po for h in work}
+    history = _seek_headers(conn, "POP30100", "history", [k for k in keys if k not in found], page_size)
+    found |= {h.po for h in history}
+
+    headers = sorted(work + history, key=lambda h: h.po)
+    return {"pos": _assemble_pos(conn, headers, page_size=page_size), "missing": [k for k in keys if k not in found]}

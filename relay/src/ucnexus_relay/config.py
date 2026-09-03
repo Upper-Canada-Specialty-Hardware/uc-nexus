@@ -6,7 +6,7 @@ import tomllib
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 from . import dpapi
 
@@ -75,12 +75,60 @@ class BuyersCfg(BaseModel):
     by_login: dict[str, str] = {}  # SQL/SSPI login -> registered buyer
 
 
+# The GP SQL server CPU percentage at or above which this relay stops running BACKGROUND work
+# (channel.BACKGROUND_OPS - the PO mirror and the job adoption pass). 70 leaves the server most of a
+# third of itself for the people using GP directly: a mirror page is worth nothing next to somebody
+# posting a batch, and by the time SQL Server is over 70% sustained, the work Nexus adds is what turns
+# a slow afternoon into a stalled one. It is not a tuning knob for throughput - lifting it trades
+# GP users' responsiveness for a faster backfill.
+DEFAULT_LOAD_CEILING_PCT = 70
+
+# No workstation may set the ceiling below this. A very low value refuses everything forever, which
+# looks exactly like a broken relay and would have somebody "fixing" it by turning the gate off.
+MIN_LOAD_CEILING_PCT = 10
+
+# Command timeout for a read the backend declared BACKGROUND. Shorter than sql.command_timeout (30s) on
+# purpose: nobody is waiting on it, so an overrunning statement is worth cancelling ON THE SERVER rather
+# than letting it run to the user-facing limit. The relay kept a 30s open-book re-read running against a
+# company where it never finished; at 20s that statement is killed and the pass simply retries a smaller
+# page. The cancel is what matters - a client that gives up without one leaves the query burning CPU.
+DEFAULT_BACKGROUND_COMMAND_TIMEOUT = 20
+
+
 class GpCfg(BaseModel):
     # company -> paired custom warehouse DB that holds WHRECLINE101 (the table the company dashboards
     # read). A company with no entry gets GP-only receipts (no WHRECLINE101 write). Sandboxes have none.
     # Baked dev default: the prod pairings (applied only to a discovered company that has an entry).
     custom_db: dict[str, str] = {"UBC": "PMUBC", "UCSH": "PMUCSH"}
     buyers: BuyersCfg = BuyersCfg()
+    load_ceiling_pct: int = DEFAULT_LOAD_CEILING_PCT
+    background_command_timeout_seconds: int = DEFAULT_BACKGROUND_COMMAND_TIMEOUT
+
+    @field_validator("load_ceiling_pct", mode="before")
+    @classmethod
+    def _clamp_ceiling(cls, value):
+        """Clamped, never rejected. This is a safety limit, so the two ways it could fail have to be
+        impossible rather than merely unlikely: a junk value must not make config.toml unreadable and
+        keep serve from starting (which would take production's channel down over a typo), and no
+        value may disable the gate. Above 100 would - sql_cpu_pct cannot exceed 100 - so 100 is the
+        top, and the gate can be moved from a workstation but not turned off."""
+        try:
+            pct = int(value)
+        except (TypeError, ValueError):
+            return DEFAULT_LOAD_CEILING_PCT
+        return max(MIN_LOAD_CEILING_PCT, min(100, pct))
+
+    @field_validator("background_command_timeout_seconds", mode="before")
+    @classmethod
+    def _clamp_background_timeout(cls, value):
+        """Tolerant like the ceiling above, and for the same reason: a junk value in a safety setting
+        must not stop the relay from starting. Floored at 1 (0 means "no timeout" to pyodbc, which is
+        the exact failure this exists to prevent) and capped well under any sane statement."""
+        try:
+            seconds = int(value)
+        except (TypeError, ValueError):
+            return DEFAULT_BACKGROUND_COMMAND_TIMEOUT
+        return max(1, min(300, seconds))
 
 
 class LoggingCfg(BaseModel):
@@ -215,9 +263,12 @@ class Settings(BaseModel):
 # config.toml to hand-write - a dev checkout pointed at a test backend for an afternoon. On an enrolled
 # workstation nothing sets these and config.toml is the only source.
 #
-#   UCNEXUS_RELAY_SHARED_SECRET -> [auth] shared_secret   PLAINTEXT; never DPAPI-decrypted
-#   UCNEXUS_RELAY_BACKEND_URL   -> [channel] backend_url  the single backend to dial
-#   UCNEXUS_RELAY_LOG_FILE      -> [logging] file         "-" means stdout only, no relay.log on disk
+#   UCNEXUS_RELAY_SHARED_SECRET     -> [auth] shared_secret        PLAINTEXT; never DPAPI-decrypted
+#   UCNEXUS_RELAY_BACKEND_URL       -> [channel] backend_url       the single backend to dial
+#   UCNEXUS_RELAY_LOG_FILE          -> [logging] file              "-" means stdout only, no relay.log
+#   UCNEXUS_RELAY_LOAD_CEILING_PCT  -> [gp] load_ceiling_pct       GP CPU % that defers background work
+#   UCNEXUS_RELAY_BACKGROUND_TIMEOUT_SECONDS
+#                                   -> [gp] background_command_timeout_seconds
 
 
 def _section(data: dict, name: str) -> dict:
@@ -237,6 +288,16 @@ def _apply_env_overrides(data: dict) -> None:
     log_file = os.environ.get("UCNEXUS_RELAY_LOG_FILE")
     if log_file:
         _section(data, "logging")["file"] = log_file.strip()
+
+    # Not validated here: GpCfg clamps it, and a junk value there falls back to the default rather
+    # than stopping the relay from starting.
+    ceiling = os.environ.get("UCNEXUS_RELAY_LOAD_CEILING_PCT")
+    if ceiling:
+        _section(data, "gp")["load_ceiling_pct"] = ceiling.strip()
+
+    background_timeout = os.environ.get("UCNEXUS_RELAY_BACKGROUND_TIMEOUT_SECONDS")
+    if background_timeout:
+        _section(data, "gp")["background_command_timeout_seconds"] = background_timeout.strip()
 
 
 @lru_cache

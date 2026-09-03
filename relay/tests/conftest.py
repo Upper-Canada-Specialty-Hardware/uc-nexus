@@ -53,6 +53,31 @@ def _no_company_discovery_leaks(monkeypatch):
     companies.reset()
 
 
+@pytest.fixture(autouse=True)
+def _no_server_load_leaks(monkeypatch):
+    """Empty the cached GP load reading around every test, and take its transport away.
+
+    channel._dispatch samples the server before every BACKGROUND op, and unlike companies.py that
+    sample goes through db's real connection factory - so without this a test dispatching sync_pos or
+    list_jobs would dial the actual GP server and sit out the connection timeout. server_load never
+    raises, so what a test sees by default is a sample whose source is "unavailable": no refusal, the
+    op runs, exactly as before pacing existed. A test that wants a reading hands back its own db or
+    its own sample.
+
+    Imported inside the fixture like the two above: server_load reaches pyodbc through db."""
+    from ucnexus_relay import server_load
+
+    class _NoDb:
+        @staticmethod
+        def get_read_connection(company):
+            raise RuntimeError("no GP server in a test run; a test that wants a load sample fakes one")
+
+    server_load.reset()
+    monkeypatch.setattr(server_load, "db", _NoDb)
+    yield
+    server_load.reset()
+
+
 @pytest.fixture
 def serving(monkeypatch):
     """Say which GP companies this relay discovered, without a GP or a snapshot to read. Every op goes

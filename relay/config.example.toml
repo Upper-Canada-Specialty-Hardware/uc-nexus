@@ -30,6 +30,27 @@ command_timeout = 30
 # from there - there is no company list to maintain in this file.
 system_db = "DYNAMICS"
 
+[gp]
+# SAFETY LIMIT, not a throughput knob. background work (the PO mirror, the job adoption pass) is
+# refused while GP's SQL server sits at or above this CPU percentage; the reading comes from the
+# server itself (sys.dm_os_ring_buffers, refreshed once a minute) and the relay re-checks it before
+# every background op. user-facing work - creating a PO, receiving, every picker - is never refused.
+# 70 leaves the server most of a third of itself for the people working in GP directly: a mirror page
+# is worth nothing next to somebody posting a batch, and past roughly 70% sustained, the load Nexus
+# adds is what turns a slow afternoon into a stalled one. raising it trades GP users' responsiveness
+# for a faster backfill. clamped to 10-100 and never rejected: a junk value falls back to 70 rather
+# than stopping the relay from starting, and the gate cannot be switched off from here.
+# env override for a dev run: UCNEXUS_RELAY_LOAD_CEILING_PCT
+#load_ceiling_pct = 70
+
+# command timeout for a read the backend declared background, in seconds. shorter than [sql]
+# command_timeout (30) on purpose: nobody is waiting on background work, so an overrunning statement is
+# CANCELLED ON THE SERVER instead of being allowed the user-facing limit - a client that just gives up
+# leaves the query burning CPU. user-facing ops keep [sql] command_timeout. clamped to 1-300; 0 would
+# mean "wait forever" to the driver, which is the exact failure this prevents.
+# env override: UCNEXUS_RELAY_BACKGROUND_TIMEOUT_SECONDS
+#background_command_timeout_seconds = 20
+
 [gp.custom_db]
 # company -> paired custom warehouse DB holding WHRECLINE101 (read by the company dashboards).
 # a company with no entry gets GP-only receipts. sandboxes have no paired DB.

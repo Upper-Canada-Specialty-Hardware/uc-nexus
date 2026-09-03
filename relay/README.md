@@ -17,7 +17,7 @@ prerequisites
 - Poetry
 - an ODBC driver for SQL Server. Driver 17 or 18 both work; set which one in `config.toml` under `[sql] driver`.
 - the machine must be able to authenticate to GP. on a domain-joined box that's just Windows SSPI
-  (`Trusted_Connection=yes`) as a user who is in GP's DYNGRP role — no password stored anywhere.
+  (`Trusted_Connection=yes`) as a user who is in GP's DYNGRP role - no password stored anywhere.
 
 setup
 ```
@@ -84,23 +84,24 @@ poetry run ruff check src tests
 ```
 
 endpoints
-- `GET /health` — liveness, no auth
-- `GET /info` — config + read-only SQL identity + the workstation `hostname` and the `resolved_buyer` that hostname maps to, bearer auth
-- `GET /vendors` — active PM00200 vendors (VENDORID / VENDNAME / class / status) for the vendor sync, bearer auth. takes `?company=` (required - there is no default company)
-- `GET /buyers` — registered GP buyers (`POP00101`) for the Create PO buyer dropdown, bearer auth. `?company=` like `/vendors`. eConnect validates `BUYERID` against this, so the UI must pick from it
-- `GET /cost-codes` — active, account-usable per-job cost codes from `JC00701` (`cost_code` two-segment number / `description` / real `cost_element`) for the Create PO cost-code dropdown, bearer auth. takes `?job=` (the GP job number = UC Nexus `project_id`, required) and `?company=` like `/vendors`. cost codes are per-job and each carries its own `Cost_Element`, so the `/po` cost_code is `'phase-step-element'` (e.g. `310-000-3`) from the code's own element, not a hardcoded `2`. codes whose `WS_Account_Index_1` is non-zero and absent from `GL00105` are excluded (#425) - a PO on one registers but can never be received, and the `create_po` `cost_code_account_invalid` guard refuses it anyway
-- `POST /po/next-number` — reserve a PO number via `taGetPONextNumber`, bearer auth
-- `POST /po` — create a PO end-to-end via the 5-step orchestration, bearer auth. the request's `buyer_id` (picked from `/buyers`) is validated against `POP00101`; if omitted, falls back to `[gp.buyers]` (`by_host` → `by_login` → `default`). a device hostname is NOT a registered buyer, so it can't be used as one
-- `POST /receipt` — receive against a PO (taPopRcptLineInsert xN then taPopRcptHdrInsert, autocosted), and for a company mapped in `[gp.custom_db]` also writes the matching `WHRECLINE101` rows (the custom warehouse table the dashboards read) in the same transaction. needs a `rack_location` per line. bearer auth
+- `GET /health` - liveness, no auth
+- `GET /info` - config + read-only SQL identity + the workstation `hostname` and the `resolved_buyer` that hostname maps to, bearer auth
+- `GET /vendors` - active PM00200 vendors (VENDORID / VENDNAME / class / status) for the vendor sync, bearer auth. takes `?company=` (required - there is no default company)
+- `GET /buyers` - registered GP buyers (`POP00101`) for the Create PO buyer dropdown, bearer auth. `?company=` like `/vendors`. eConnect validates `BUYERID` against this, so the UI must pick from it
+- `GET /cost-codes` - active, account-usable per-job cost codes from `JC00701` (`cost_code` two-segment number / `description` / real `cost_element`) for the Create PO cost-code dropdown, bearer auth. takes `?job=` (the GP job number = UC Nexus `project_id`, required) and `?company=` like `/vendors`. cost codes are per-job and each carries its own `Cost_Element`, so the `/po` cost_code is `'phase-step-element'` (e.g. `310-000-3`) from the code's own element, not a hardcoded `2`. codes whose `WS_Account_Index_1` is non-zero and absent from `GL00105` are excluded (#425) - a PO on one registers but can never be received, and the `create_po` `cost_code_account_invalid` guard refuses it anyway
+- `POST /po/next-number` - reserve a PO number via `taGetPONextNumber`, bearer auth
+- `POST /po` - create a PO end-to-end via the 5-step orchestration, bearer auth. the request's `buyer_id` (picked from `/buyers`) is validated against `POP00101`; if omitted, falls back to `[gp.buyers]` (`by_host` → `by_login` → `default`). a device hostname is NOT a registered buyer, so it can't be used as one
+- `POST /receipt` - receive against a PO (taPopRcptLineInsert xN then taPopRcptHdrInsert, autocosted), and for a company mapped in `[gp.custom_db]` also writes the matching `WHRECLINE101` rows (the custom warehouse table the dashboards read) in the same transaction. needs a `rack_location` per line. bearer auth
 
-browser hop (the cloud frontend → `http://localhost:7321` call) is governed by Chrome Local Network Access from Chrome 142: the frontend fetch must set `targetAddressSpace: "loopback"` and the user grants a one-time loopback permission prompt (or IT pre-grants it via enterprise policy). that is a client-side gate — the relay needs no LNA server header. the relay does echo the legacy `Access-Control-Allow-Private-Network: true` on the preflight for stragglers on a pre-LNA Chrome, but it is not the mechanism.
+browser hop (the cloud frontend → `http://localhost:7321` call) is governed by Chrome Local Network Access from Chrome 142: the frontend fetch must set `targetAddressSpace: "loopback"` and the user grants a one-time loopback permission prompt (or IT pre-grants it via enterprise policy). that is a client-side gate - the relay needs no LNA server header. the relay does echo the legacy `Access-Control-Allow-Private-Network: true` on the preflight for stragglers on a pre-LNA Chrome, but it is not the mechanism.
 
 outbound channel (additive - the HTTP endpoints above are unchanged)
 
 alongside the inbound HTTP server, `ucnexus-relay serve` also dials OUT to the backend over a
 persistent `wss://` connection (`src/ucnexus_relay/channel.py`), authenticating with `[auth]
 shared_secret` on the connect handshake. the backend's `relay_call(company, op, payload)` sends a job
-down that socket as `{id, op, company, payload}`; the relay answers `{id, ok, result|error}` by
+down that socket as `{id, op, company, payload}` (plus an optional `background` flag - see the
+pacing section below); the relay answers `{id, ok, result|error}` by
 running the same eConnect logic the HTTP routes use (`ops.py` holds the shared `create_po`/
 `create_receipt` orchestration). set `[channel] backend_url` in `config.toml` to enable it; leave it
 blank to run HTTP-only, as before. op dispatch (`_OPS` in `channel.py`, which is also what the relay
@@ -109,6 +110,99 @@ advertises to the backend on connect so an out-of-date relay is caught before th
   `list_cost_code_master`, `list_jobs`, `list_customers`, `list_customer_addresses`,
   `list_tax_schedules`, `list_divisions`, `list_employees`, `read_po_totals`
 - writes: `create_po`, `create_receipt`, `create_job`, `create_buyer`
+- the PO mirror: `sync_pos`, `read_pos_by_number`
+- job setup: `job_setup_health` - the per-job GP setup verdict (#425), in one of three widths.
+  `{"jobs": [...]}` is a BATCH of job numbers and wins over everything else: the adoption pass walks
+  the job master in batches against its read budget, and without this filter each batch would re-read
+  the whole company, once per batch. same rules as `read_pos_by_number` - trimmed, de-duplicated,
+  blanks dropped, at most 100 (`econnect.MAX_JOB_NUMBERS`) or `too_many_job_numbers`, and both the
+  verdict and the detail query take the IN-list. an explicitly empty `jobs` reads nothing and opens no
+  connection. `{"job": "23090"}` is the single-job live re-check the register-PO screen runs. neither
+  key is the whole-company sweep, which is what a backend that sends neither still gets. a job number
+  GP does not hold is simply absent from the answer, not an error.
+- the server itself: `server_load`
+
+the PO mirror's two reads
+
+both are bounded by the page they were asked for. nothing the mirror does scans the whole order book
+or `DEX_ROW_TS` any more - one request read 2,344 POs in 8 seconds on one company and never finished
+inside 30 seconds on another, and the fix is bounded work per request, not a longer gap between
+requests.
+- `sync_pos` with `{"open_only": true, "cursor": <PONUMBER|null>, "page_size": N}` - the next keyset
+  page of OPEN work POs: `POP10100`, `WHERE PONUMBER > cursor ORDER BY PONUMBER`, `TOP N`, with lines
+  and receipt sums exactly as a backfill page carries them, plus `next_cursor` (null on a short page,
+  meaning the book is walked). no history table is touched in this branch at all.
+- `read_pos_by_number` with `{"po_numbers": [...]}` - headers, lines and received quantities for
+  exactly those POs, `POP10100` first and `POP30100`/`POP30110` for whatever the work table did not
+  have, all by key seek on the clustered `PONUMBER`. this is how a PO that dropped out of the open set
+  (closed, posted, voided) is fetched: the backend diffs the open set it just walked against what it
+  holds and names the difference, instead of anything scanning history to find it. at most 100 numbers
+  per request (`econnect.MAX_PO_NUMBERS`) - more is refused with `too_many_po_numbers` rather than
+  quietly becoming the unbounded read this replaced. the answer also carries `missing`: the numbers
+  found in neither table.
+
+no read is ever larger than its page. every IN-list read - lines, receipt sums, the by-number header
+seeks - is chunked at `min(len(keys), page_size)` rather than a fixed 1000, so what a request costs
+the server is predictable from its own payload. `sync_pos`'s old `modified_since` branch (every open
+PO plus history by `DEX_ROW_TS`, unpaged) is still answered for a backend too old to ask for the pair
+above, and is no longer called.
+
+pacing, and the busy gate
+
+every job reply carries two more top-level fields next to `id` / `ok` / `result|error`, so the backend
+paces its loops on measured facts instead of on a fixed wait:
+- `cost` - `{cpu_ms, logical_reads, elapsed_ms}`, what this op cost the GP server, summed over every
+  connection it opened and taken from the server's own per-session accounting (see `gp_cost` above).
+  null when the measurement could not be taken.
+- `server` - `{sql_cpu_pct, other_cpu_pct, runnable_tasks, sampled_at, source}`, how busy the server
+  is. `source` is `ring_buffer` for a real reading and `unavailable` for one that could not be taken
+  (then every value is null - there is no zero standing in for "we could not look"). null when this
+  relay has not sampled yet. only a background-flagged job samples on its own account, so every other
+  reply carries the LAST reading - `sampled_at` says how old it is.
+
+`sql_cpu_pct` / `other_cpu_pct` come from the `RING_BUFFER_SCHEDULER_MONITOR` ring buffer, whose
+latest `SystemHealth` record holds `ProcessUtilization` (SQL Server's own CPU share) and `SystemIdle`;
+everything else on the box is `100 - process - idle`. SQL Server writes one a minute, so that number
+is a trend, up to a minute old. `runnable_tasks` is `SUM(runnable_tasks_count)` over the `VISIBLE
+ONLINE` schedulers - tasks holding a worker and queued for CPU, which is instantaneous.
+
+background work stands down while the server is busy, and the job frame is what says a call IS
+background: it gains an optional top-level `background: true`, which the backend's timer-driven loops
+set and nothing else does - `{id, op, company, payload, background}`. the op name cannot answer that
+question on its own, because the GP job picker, the admin Sync from GP button and the register-PO
+screen's live setup check all reach the same ops the adoption pass does, and somebody is waiting on
+those.
+
+so: on a flagged job the relay takes a fresh (15s-cached) reading before the handler runs, and at or
+above `[gp] load_ceiling_pct` (default 70) answers `server_busy` with
+`{sql_cpu_pct, ceiling_pct, retry_after_seconds}` in the error context and runs nothing. an UNFLAGGED
+job is never refused and never pays for a reading, whatever its op. this is the last gate in front of
+GP: it refuses whatever backend asked and whatever that backend's own pacing decided.
+
+`channel.BACKGROUND_OPS` (`sync_pos`, `read_pos_by_number`, `list_jobs`, `job_setup_health` - the PO
+mirror's two reads and the job adoption pass) is the relay's own outer bound on the claim: a flagged
+job is only sampled for, and so only ever refused, if its op is in there. a backend that flagged `create_po` as background could
+otherwise have a user's PO write - already accepted and owed to them - deferred here. `server_load`
+is never refused and needs no company: it is what the backend probes while it is holding a loop back.
+
+only a REAL reading refuses anything: `source: unavailable` never defers work, so a missing grant
+cannot strand the mirror.
+
+a flagged job in `BACKGROUND_OPS` also gets a shorter command timeout -
+`[gp] background_command_timeout_seconds`, default 20, against `[sql] command_timeout`'s 30 for
+everything else (a mis-flagged write keeps the user-facing limit). nobody is waiting on background
+work, so an overrunning statement is cancelled ON THE SERVER rather than allowed the user-facing
+limit; a client that simply gives up leaves the query burning CPU, which is how a 30-second open-book
+re-read kept running. the cancel surfaces as an ordinary `sql_error` reply, so the backend retries the
+page like any other transient SQL failure.
+
+one-time DBA op - `sys.dm_os_ring_buffers` and `sys.dm_os_schedulers` need VIEW SERVER STATE (the
+per-session `gp_cost` reading does not - a session may read its own row):
+```sql
+GRANT VIEW SERVER STATE TO [<the relay's login>]   -- the login /info reports as connected_as
+```
+without it nothing breaks: `server` stays `unavailable`, the busy gate never fires, and the backend
+paces on `cost` and elapsed time alone. the relay logs the grant once per process at WARNING.
 
 `create_job` also provisions the job's cost codes (#448): `wsiJCJobMaster` writes only the `JC00102`
 row, so a job created without them has no `JC00701` cost structure at all - an empty register-PO
@@ -134,6 +228,17 @@ it is an old testing sandbox from before the current development policies and it
 unpredictable, so executives ruled it out of every relay interaction (2026-09-03). the drop is upstream
 of everything else - it never reaches a hello frame, so no backend syncs it or offers it in a picker,
 and an op for it is refused with `company_not_allowed` exactly like a company GP does not hold.
+
+nor does the master decide what this WORKSTATION can read. SY01500 lists every company the GP install
+has; the relay's own login opens a fraction of them - production reported 11 while its trusted
+connection could open three, so every backend loop failed a pass per unreadable company on every tick,
+forever. so each remaining company is probed once per discovery (`SELECT TOP 1 1 FROM dbo.JC00102`,
+the job master every loop starts from) and the ones that answer `login denied` (28000) or `permission
+denied` (42000) - or anything else, the company is unusable either way - are dropped. the reason is
+kept rather than thrown away: `/health` and `/info` carry `companies_inaccessible` as code -> why, and
+the relay logs it once per discovery (`companies_inaccessible`), so a company an operator expects to
+see does not simply look like a company that does not exist. excluded companies are never probed, and
+the hello frame still carries only the served ones.
 
 more than one backend (#414)
 

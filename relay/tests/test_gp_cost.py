@@ -12,6 +12,12 @@ from ucnexus_relay import auth, channel, db, econnect
 from ucnexus_relay.main import create_app
 
 
+def _body(reply: dict) -> dict:
+    """A dispatch reply without the two pacing fields every reply now carries (`cost`, `server`), so a
+    test can go on asserting the exact {ok, result|error} it is actually about."""
+    return {key: value for key, value in reply.items() if key not in ("cost", "server")}
+
+
 @pytest.fixture(autouse=True)
 def _empty_totals():
     """The accumulator is module-level and runs from process start, so it has to be emptied around
@@ -253,7 +259,7 @@ def test_a_dmv_that_refuses_leaves_the_op_result_untouched(monkeypatch, serving)
 
     reply = channel._dispatch("list_vendors", "TUBC", {})
 
-    assert reply == {"ok": True, "result": {"company": "TUBC", "vendors": [{"vendor_id": "V1"}]}}
+    assert _body(reply) == {"ok": True, "result": {"company": "TUBC", "vendors": [{"vendor_id": "V1"}]}}
     assert db.cost_snapshot()["companies"] == {}
 
 

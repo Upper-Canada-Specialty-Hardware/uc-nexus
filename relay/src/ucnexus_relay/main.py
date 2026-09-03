@@ -1,15 +1,15 @@
 """FastAPI app for the UC Nexus relay.
 
 Endpoints:
-  GET  /health           — liveness, no auth
-  GET  /info             — config + read-only SQL identity probe (+ workstation hostname), auth required
-  GET  /vendors          — PM00200 vendor list for the vendor sync, auth required
-  GET  /buyers           — POP00101 registered buyers for the Create PO buyer dropdown, auth required
-  GET  /tax-details      — TX00201 purchase tax details for the register-PO tax-detail dropdown, auth required
-  GET  /cost-codes       — JC00701 per-job cost codes for the Create PO cost-code dropdown, auth required
-  POST /po/next-number   — reserve a PO number (live taGetPONextNumber), auth required
-  POST /po               — create a PO end-to-end (5-step orchestration), auth required
-  POST /receipt          — receive against a PO, auth required
+  GET  /health           - liveness, no auth
+  GET  /info             - config + read-only SQL identity probe (+ workstation hostname), auth required
+  GET  /vendors          - PM00200 vendor list for the vendor sync, auth required
+  GET  /buyers           - POP00101 registered buyers for the Create PO buyer dropdown, auth required
+  GET  /tax-details      - TX00201 purchase tax details for the register-PO tax-detail dropdown, auth required
+  GET  /cost-codes       - JC00701 per-job cost codes for the Create PO cost-code dropdown, auth required
+  POST /po/next-number   - reserve a PO number (live taGetPONextNumber), auth required
+  POST /po               - create a PO end-to-end (5-step orchestration), auth required
+  POST /receipt          - receive against a PO, auth required
 """
 
 import socket
@@ -120,6 +120,10 @@ def create_app() -> FastAPI:
             # operator can see that discovery failed on a relay whose channel is otherwise healthy.
             "companies": [{"id": c, "name": discovered.names.get(c, c)} for c in discovered.companies],
             "companies_error": discovered.error,
+            # code -> why, for the companies GP holds that this relay's login cannot read. Not an
+            # error and not a served company: without it a company missing from the list above looks
+            # like a company that does not exist, and nobody goes looking for the missing grant.
+            "companies_inaccessible": dict(discovered.inaccessible),
             # What this relay has cost the GP server since it started, per company and per op, taken
             # from the server's own per-session accounting - see db.py. A copy of a handful of
             # integers; nothing is read from GP to answer this.
@@ -138,6 +142,8 @@ def create_app() -> FastAPI:
             "companies": discovered.companies,
             "company_names": discovered.names,
             "companies_error": discovered.error,
+            # what this login could not open, and why - see /health.
+            "companies_inaccessible": dict(discovered.inaccessible),
             "sql_server": s.sql.server,
             "odbc_driver": s.sql.driver,
             "driver_installed": db.driver_available(),

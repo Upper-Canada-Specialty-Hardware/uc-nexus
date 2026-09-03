@@ -18,6 +18,7 @@ boto3 = ">=1.35.0"
 httpx = ">=0.27.0"
 pyjwt = {extras = ["crypto"], version = "^2.13.0"}
 rapidfuzz = ">=3.0.0"
+tzdata = "^2026.3"
 
 [tool.poetry.group.dev.dependencies]
 ruff = ">=0.9.0"

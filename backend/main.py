@@ -230,7 +230,11 @@ def health():
     The three timestamps deliberately outlive the connection they describe: "it went at 14:02 with
     this reason and has not been back" is the answer somebody wants when `relay_connected` is false,
     and it is the difference between "the relay never dialled this backend" and "it dialled and was
-    dropped" without a session or a log dive."""
+    dropped" without a session or a log dive.
+
+    `backfill_window` / `backfill_window_open` say when GP's history drain may run and whether it may
+    right now - the first thing to check when the backfill looks stalled during the day, because
+    during the day it is supposed to be."""
 
     def _iso(value: datetime | None) -> str | None:
         return value.isoformat() if value else None
@@ -242,6 +246,12 @@ def health():
         "relay_last_connected_at": _iso(relay_gateway.last_connected_at),
         "relay_last_disconnected_at": _iso(relay_gateway.last_disconnected_at),
         "relay_last_disconnect_reason": relay_gateway.last_disconnect_reason,
+        # When the PO history drain is allowed to run, and whether it is allowed right now. Two string
+        # comparisons against a converted clock - no database, no relay round trip - so it costs the
+        # probe nothing, and it answers "why has the backfill not moved since this morning" without a
+        # log dive.
+        "backfill_window": gp_po_sync.BACKFILL_WINDOW.label,
+        "backfill_window_open": gp_po_sync.BACKFILL_WINDOW.allows(datetime.utcnow()),
     }
 
 
@@ -253,7 +263,11 @@ async def _relay_read_loop(websocket: WebSocket) -> None:
 
     A hello is answered with the current preview channel list, which is the whole of #654's push: the
     relay learns which preview backends to also dial over the socket it has already authenticated,
-    instead of polling a second endpoint with a second copy of its credential."""
+    instead of polling a second endpoint with a second copy of its credential.
+
+    It also re-wakes the GP sync loops, because the hello is where the GP company list actually
+    arrives: the wake they get from /relay-link fires at try_register, one frame too early to be
+    useful."""
     while True:
         message = await websocket.receive_json()
         if isinstance(message, dict) and message.get("type") == "hello":
@@ -266,6 +280,14 @@ async def _relay_read_loop(websocket: WebSocket) -> None:
                 message.get("companies_error"),
             )
             await relay_gateway.push_channels(preview_registry.channels())
+            # The company list arrives HERE, not at try_register - and the sync loops were woken back
+            # there, when `companies` was still empty. Without this second nudge each loop sits on its
+            # own timer with a pending all-companies pass it cannot run, which on 2026-09-03 left the
+            # PO mirror silent for over ten minutes after a reconnect. wake() is idempotent and costs
+            # nothing when a loop is already running.
+            if relay_gateway.companies:
+                gp_po_sync.wake()
+                gp_job_sync.wake()
         elif isinstance(message, dict) and message.get("type") == "pong":
             relay_gateway.note_pong()
         else:
