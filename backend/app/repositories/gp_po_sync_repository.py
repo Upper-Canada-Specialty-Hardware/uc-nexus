@@ -282,12 +282,21 @@ def upsert_mirrored_po(
     if row is None:
         # Fall back to a legacy Nexus row stamped with this number before gp_company was recorded (NULL
         # company). Converging onto it here fills its company below, instead of inserting a GP-origin
-        # duplicate that would trip ix_purchase_orders_(project|no_project)_po_number.
+        # duplicate that would trip ix_purchase_orders_(project|company_no_project)_po_number.
+        #
+        # Scoped by the tenant column too, which is NOT NULL on every row: without it this fallback is
+        # the one place the mirror still matched on po_number alone, so a TUCSH pass would adopt UCSH's
+        # legacy row for the same number (TUCSH is a copy of UCSH, same PONUMBERs) and start writing
+        # another company's GP data onto it.
         row = (
             session.scalars(
                 select(PurchaseOrder)
                 .options(selectinload(PurchaseOrder.line_items))
-                .where(PurchaseOrder.po_number == po_number, PurchaseOrder.gp_company.is_(None))
+                .where(
+                    PurchaseOrder.company == company,
+                    PurchaseOrder.po_number == po_number,
+                    PurchaseOrder.gp_company.is_(None),
+                )
                 .order_by(PurchaseOrder.created_at)
             )
             .unique()

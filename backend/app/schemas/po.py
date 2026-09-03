@@ -486,7 +486,9 @@ class POMutations:
         pages and reports backfill_done false; the loop keeps draining the rest on its own."""
         # Only a small cap runs inline here - a full backfill is tens of minutes and would time out at
         # the edge while the server ran on. Kick the background loop to drain the rest.
-        result = await gp_po_sync.run_once(backfill_max_pages=gp_po_sync.ADMIN_SYNC_BACKFILL_PAGES)
+        # all_companies because somebody pressed a button: the background loop takes one company per
+        # tick to keep its steady load off GP, but "sync now" is expected to look at all of them.
+        result = await gp_po_sync.run_once(backfill_max_pages=gp_po_sync.ADMIN_SYNC_BACKFILL_PAGES, all_companies=True)
         if result.get("mode") == "backfill" and not result.get("backfill_done"):
             gp_po_sync.wake()
         return GpPoSyncResult(

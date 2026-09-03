@@ -473,10 +473,10 @@ def test_an_empty_pool_row_forgets_its_migration_cost(db_session):
 
 
 def test_an_over_large_unit_cost_is_a_named_validation_error(db_session):
-    """The cost columns are Numeric(10, 4); without the check this dies at flush as a raw 500."""
+    """The cost columns are Numeric(19, 5); without the check this dies at flush as a raw 500."""
     wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
     with pytest.raises(ValidationError) as e:
-        migration_repo.migrate_inventory(db_session, [_entry(wh, unit_cost=1234567.89)], ACTOR)
+        migration_repo.migrate_inventory(db_session, [_entry(wh, unit_cost="123456789012345.67")], ACTOR)
     assert "Entry 1" in e.value.message and "unit_cost" in e.value.message
 
 

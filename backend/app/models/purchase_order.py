@@ -37,8 +37,13 @@ class PurchaseOrder(Base):
             unique=True,
             postgresql_where="project_id IS NOT NULL AND po_number IS NOT NULL",
         ),
+        # The jobless-PO number key. Scoped by company (#637): a GP PO number is unique within a
+        # company, never across them, and TUCSH is a copy of UCSH down to its PONUMBERs - an unscoped
+        # index made the second company's mirror of the same number a duplicate-key failure. The
+        # project-scoped index above needs no such column: a project already belongs to one company.
         Index(
-            "ix_purchase_orders_no_project_po_number",
+            "ix_purchase_orders_company_no_project_po_number",
+            "company",
             "po_number",
             unique=True,
             postgresql_where="project_id IS NULL AND po_number IS NOT NULL",
@@ -137,7 +142,10 @@ class POLineItem(Base):
     )
     ordered_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     received_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    unit_cost: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
+    # Numeric(19,5) matches GP's own POP10110/POP30110.UNITCOST. The mirror writes GP's value here
+    # verbatim, and Numeric(10,4) capped at 999,999.9999 - a single seven-figure GP line blew the
+    # column and the whole PO's upsert failed with it. Nothing rounds to cents on the way in.
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(19, 5), nullable=False)
     order_as: Mapped[str | None] = mapped_column(String, nullable=True)
     # GP POP10110.ORD this line maps to (16384, 32768, ...). Assigned positionally at create time
     # (the relay assigns ORD = line index * 16384); used to target the GP line on a relay /receipt.

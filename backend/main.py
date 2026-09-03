@@ -4,6 +4,8 @@ import hashlib
 import hmac
 import inspect
 import logging
+import os
+import sys
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -38,6 +40,26 @@ from app.services import (
 )
 from app.services.relay_gateway import HEARTBEAT_INTERVAL_SECONDS
 from app.services.relay_gateway import gateway as relay_gateway
+
+
+def _configure_logging() -> None:
+    """Give the root logger a stdout handler at LOG_LEVEL (default INFO), at import, before anything
+    logs.
+
+    Nothing did this before, so every logger.info() under app.* fell through to Python's last-resort
+    handler, which emits WARNING and above and drops the rest - which is why the GP sync services
+    logged nothing at all in production while a backfill ran for fifteen hours.
+
+    basicConfig is a no-op once the root logger already has handlers, and that is the guard: a pytest
+    or TestClient import finds pytest's own handlers in place and is left alone. Uvicorn configures
+    its own loggers separately and is unaffected either way."""
+    level = logging.getLevelName(os.getenv("LOG_LEVEL", "").strip().upper() or "INFO")
+    if not isinstance(level, int):  # an unknown LOG_LEVEL must not be a boot failure
+        level = logging.INFO
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s", stream=sys.stdout)
+
+
+_configure_logging()
 
 logger = logging.getLogger(__name__)
 

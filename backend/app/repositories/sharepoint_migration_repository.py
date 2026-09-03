@@ -398,9 +398,9 @@ def reapply_migration_marks(session: Session, project_id: uuid.UUID) -> int:
     return marked
 
 
-# The columns are Numeric(10, 4): six integer digits. Anything past this dies at flush as an
+# The columns are Numeric(19, 5): fourteen integer digits. Anything past this dies at flush as an
 # unnamed NumericValueOutOfRange, so _validate_entries refuses it with the entry named instead.
-_MAX_UNIT_COST = Decimal("999999.9999")
+_MAX_UNIT_COST = Decimal("99999999999999.99999")
 
 
 def _clean_unit_cost(value) -> Decimal | None:
@@ -448,7 +448,7 @@ def _validate_entries(session: Session, entries: list[dict]) -> None:
         if not isinstance(quantity, int) or quantity < 1:
             raise ValidationError(f"{label}: quantity must be a positive integer", field="quantity")
 
-        # The cost columns are Numeric(10, 4); an over-large value would otherwise reach the flush
+        # The cost columns are Numeric(19, 5); an over-large value would otherwise reach the flush
         # and die as a raw 500 naming no entry - the same trap the aisle-length check below guards.
         cost = _clean_unit_cost(entry.get("unit_cost"))
         if cost is not None and cost > _MAX_UNIT_COST:
