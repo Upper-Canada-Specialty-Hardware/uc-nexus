@@ -280,15 +280,16 @@ def test_a_failed_health_call_leaves_an_existing_stamp_alone(monkeypatch):
     assert _stamps()["SYNC-380-A"][0] is False
 
 
-def test_the_health_op_is_asked_for_the_whole_company(monkeypatch):
-    # No job filter on the sync pass: one sweep for ~900 jobs, not 900 round trips.
+def test_the_health_op_is_asked_for_exactly_the_jobs_listed(monkeypatch):
+    # Batched, not the whole company: the pass names the jobs it just listed, at most READ_BATCH per
+    # request, so the read is bounded work charged to the shared budget. Two jobs fit in one batch.
     calls = _relay(monkeypatch)
 
     asyncio.run(gp_job_sync.run_once())
 
     health_calls = [c for c in calls if c[1] == "job_setup_health"]
     assert len(health_calls) == 1
-    assert health_calls[0][2] in (None, {})
+    assert health_calls[0][2] == {"jobs": ["SYNC-380-A", "SYNC-380-B"]}
 
 
 def test_a_pass_covers_every_company_the_relay_serves(monkeypatch):
