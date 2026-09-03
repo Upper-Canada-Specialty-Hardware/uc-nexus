@@ -101,6 +101,16 @@ PRODUCTION_BACKEND_URL = "wss://backend-production-7866.up.railway.app/relay-lin
 # the hello frame both take one and a second sandbox would only ever be added here.
 NON_PRIMARY_ALLOWED_COMPANIES = ["TUBC"]
 
+# GP companies this relay must never touch at all. Dropped from discovery itself (companies.py), which
+# is upstream of everything: the hello frame never names one, so no backend syncs it or offers it in a
+# picker, and ops.check_company_served refuses a job for it whatever channel asked. Baked for the same
+# reason the pin above is - an operator-editable value would be one typo away from re-including a
+# company, and re-including this one is exactly what must not be one typo away. TUCSH is an old testing
+# sandbox from before the current development policies, so its data is unpredictable; executives ruled
+# it out of every relay interaction on 2026-09-03, after production's PO mirror drained it in full and
+# pinned the GP SQL server on it.
+EXCLUDED_COMPANIES = ["TUCSH"]
+
 
 def _normalize_url(url: str) -> str:
     return (url or "").strip().rstrip("/").lower()

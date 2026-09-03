@@ -1,6 +1,7 @@
-"""GP company discovery: the relay serves the companies GP itself holds (DYNAMICS..SY01500), and
-nothing else. There is no configured list any more, so these cover both halves of that - what the
-discovery reads, and what an empty discovery does to an op and to the hello frame.
+"""GP company discovery: the relay serves the companies GP itself holds (DYNAMICS..SY01500), minus the
+ones it may never touch (config.EXCLUDED_COMPANIES), and nothing else. There is no configured list any
+more, so these cover what the discovery reads, what the exclusion drops, and what an empty discovery
+does to an op and to the hello frame.
 
 pyodbc is faked throughout; nothing here reaches a real GP.
 """
@@ -10,14 +11,17 @@ import json
 import time
 
 import pytest
+from fastapi.testclient import TestClient
 
-from ucnexus_relay import channel, companies, ops
+from ucnexus_relay import auth, channel, companies, db, ops
 from ucnexus_relay.config import (
+    EXCLUDED_COMPANIES,
     NON_PRIMARY_ALLOWED_COMPANIES,
     PRODUCTION_BACKEND_URL,
     channel_allowed_companies,
     get_settings,
 )
+from ucnexus_relay.main import create_app
 
 PR_URL = "wss://backend-pr-999.up.railway.app/relay-link"
 
@@ -112,6 +116,85 @@ def test_discovery_never_raises(monkeypatch):
     assert companies.discover().error
 
 
+# --- the company nobody may touch ---------------------------------------------------------------------
+
+
+def _excluded_records(caplog):
+    return [r for r in caplog.records if getattr(r, "category", None) == "companies_excluded"]
+
+
+def test_an_excluded_company_never_leaves_the_discovery(monkeypatch, caplog):
+    _pyodbc(monkeypatch, [_Row(c, f"{c} name") for c in ("TUBC", "TUCSH", "UBC", "UCSH")])
+    with caplog.at_level("INFO"):
+        found = companies.discover()
+    assert found.companies == ["TUBC", "UBC", "UCSH"]
+    assert "TUCSH" not in found.names
+    assert found.error is None
+    # Logged once per discovery, naming what was dropped: an operator who cannot find TUCSH in the
+    # picker has to be able to see WHY in relay.log rather than reading it as a broken discovery.
+    assert [r.companies for r in _excluded_records(caplog)] == [["TUCSH"]]
+
+
+def test_a_master_holding_nothing_but_excluded_companies_is_an_empty_discovery_that_says_why(monkeypatch):
+    # Empty, but NOT the could-not-read wording: GP answered fine here, and an operator looking at
+    # "this relay is serving no GP company" has to be able to tell those two apart.
+    _pyodbc(monkeypatch, [_Row("TUCSH", "Test UCSH")])
+    found = companies.discover()
+    assert found.companies == []
+    assert found.names == {}
+    assert found.error == "every GP company discovered is excluded from this relay: TUCSH"
+
+
+def test_serves_says_no_to_an_excluded_company_gp_holds(monkeypatch):
+    _pyodbc(monkeypatch, [_Row("TUBC", "Test Upper Canada"), _Row("TUCSH", "Test UCSH")])
+    companies.refresh()
+    assert companies.serves("TUBC")
+    assert not companies.serves("TUCSH")
+
+
+def test_the_http_surface_never_lists_an_excluded_company(monkeypatch):
+    _pyodbc(monkeypatch, [_Row("TUBC", "Test Upper Canada"), _Row("TUCSH", "Test UCSH")])
+    companies.refresh()
+    app = create_app()
+    app.dependency_overrides[auth.verify_token] = lambda: None
+    # /info probes the SQL login for the desktop status panel; stubbed so the assertion below cannot
+    # be paid for with a real connection to GP out of a test run.
+    monkeypatch.setattr(db, "connection_info", lambda system_db: {})
+    client = TestClient(app)
+    assert [c["id"] for c in client.get("/health").json()["companies"]] == ["TUBC"]
+    info = client.get("/info").json()
+    assert info["companies"] == ["TUBC"]
+    assert "TUCSH" not in info["company_names"]
+
+
+def test_a_job_for_an_excluded_company_is_refused_before_it_reaches_gp(monkeypatch):
+    # The production channel is unrestricted (#414), so the ONLY thing standing between a backend that
+    # asks for TUCSH and GP is the discovery it was dropped from.
+    _pyodbc(monkeypatch, [_Row("TUBC", "Test Upper Canada"), _Row("TUCSH", "Test UCSH")])
+    companies.refresh()
+    ran = []
+
+    def _spy(company, payload):
+        ops.check_company_served(company)  # every real handler's first line, before it opens anything
+        ran.append(company)
+        return {"ok": 1}
+
+    monkeypatch.setitem(channel._OPS, "spy_op", _spy)
+    reply = channel._dispatch("spy_op", "TUCSH", {}, channel_allowed_companies(PRODUCTION_BACKEND_URL))
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "company_not_allowed"
+    assert ran == []  # refused at the gate; nothing past it ran
+
+
+def test_the_exclusion_is_pinned_to_the_one_sandbox():
+    # TUCSH is an old testing sandbox whose data predates the current development policies, and it is
+    # excluded by executive decision (2026-09-03) rather than by preference - so it is pinned here, not
+    # left to whatever someone edits the constant to. A live company appearing in this list would take
+    # the relay out of real work silently.
+    assert EXCLUDED_COMPANIES == ["TUCSH"]
+    assert not {"UBC", "UCSH", "TUBC"} & set(EXCLUDED_COMPANIES)
+
+
 # --- the module cache -------------------------------------------------------------------------------
 
 
@@ -194,6 +277,18 @@ def test_a_non_primary_channel_is_only_told_about_the_sandbox(serving):
     assert frame["companies"] == NON_PRIMARY_ALLOWED_COMPANIES
     assert set(frame["company_names"]) == set(NON_PRIMARY_ALLOWED_COMPANIES)
     assert frame["companies_error"] is None  # discovery worked; this channel is simply pinned
+
+
+def test_the_hello_frame_never_names_an_excluded_company(monkeypatch):
+    # The frame is what every backend routes and builds its company picker from, so a company dropped
+    # from the discovery is a company no backend can sync, offer or ask for - on the production channel
+    # too, which is the unrestricted one.
+    _pyodbc(monkeypatch, [_Row(c, f"{c} name") for c in ("TUBC", "TUCSH", "UBC", "UCSH")])
+    companies.refresh()
+    frame = channel._hello_frame(channel_allowed_companies(PRODUCTION_BACKEND_URL))
+    assert frame["companies"] == ["TUBC", "UBC", "UCSH"]
+    assert "TUCSH" not in frame["company_names"]
+    assert frame["companies_error"] is None
 
 
 def test_a_failed_discovery_reaches_the_backend_on_the_hello(serving):
