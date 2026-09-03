@@ -43,6 +43,14 @@ system_db = "DYNAMICS"
 # env override for a dev run: UCNEXUS_RELAY_LOAD_CEILING_PCT
 #load_ceiling_pct = 70
 
+# command timeout for a read the backend declared background, in seconds. shorter than [sql]
+# command_timeout (30) on purpose: nobody is waiting on background work, so an overrunning statement is
+# CANCELLED ON THE SERVER instead of being allowed the user-facing limit - a client that just gives up
+# leaves the query burning CPU. user-facing ops keep [sql] command_timeout. clamped to 1-300; 0 would
+# mean "wait forever" to the driver, which is the exact failure this prevents.
+# env override: UCNEXUS_RELAY_BACKGROUND_TIMEOUT_SECONDS
+#background_command_timeout_seconds = 20
+
 [gp.custom_db]
 # company -> paired custom warehouse DB holding WHRECLINE101 (read by the company dashboards).
 # a company with no entry gets GP-only receipts. sandboxes have no paired DB.

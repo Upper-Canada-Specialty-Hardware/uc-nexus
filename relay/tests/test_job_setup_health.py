@@ -153,6 +153,85 @@ def test_an_unknown_job_yields_no_verdict_at_all():
     assert job_setup_health(conn, "NOPE") == []
 
 
+# --- job_setup_health: the batch filter (the adoption pass's read budget) ---
+
+
+def test_the_batch_filter_scopes_both_queries():
+    """The adoption pass walks the job master in batches now. Without this filter every batch would
+    re-read the whole company - N full scans for N batches, worse than the one sweep it replaced."""
+    conn = _FakeConn(
+        [_Verdict("23090", 14, 0), _Verdict("23093", 14, 1)],
+        [_Detail("23093", "210", "200", 2, 1617)],
+    )
+    out = job_setup_health(conn, job_numbers=["23090", "23093"])
+
+    assert len(conn.calls) == 2  # still two queries, whatever the batch size
+    assert "WHERE RTRIM(j.WS_Job_Number) IN (?,?)" in conn.sql(0)
+    assert "AND RTRIM(c.WS_Job_Number) IN (?,?)" in conn.sql(1)
+    assert conn.calls[0][1] == ("23090", "23093")
+    assert conn.calls[1][1] == ("23090", "23093")
+    assert [j["job_number"] for j in out] == ["23090", "23093"]
+    assert out[1]["issues"] == [{"cost_code": "210-200-2", "account_index": 1617}]
+
+
+def test_the_batch_filter_trims_dedupes_and_skips_blanks():
+    conn = _FakeConn([_Verdict("23090", 1, 0)], [])
+    job_setup_health(conn, job_numbers=["  23090 ", "23090", "", None])
+    assert conn.calls[0][1] == ("23090",)
+
+
+def test_an_empty_batch_reads_nothing():
+    # The caller named no jobs, so there is nothing to ask GP. Falling through to the whole-company
+    # sweep here would turn a no-op into a full scan.
+    conn = _FakeConn()
+    assert job_setup_health(conn, job_numbers=[]) == []
+    assert conn.calls == []
+
+
+def test_a_batch_of_nothing_but_blanks_reads_nothing():
+    conn = _FakeConn()
+    assert job_setup_health(conn, job_numbers=["", None, "   "]) == []
+    assert conn.calls == []
+
+
+def test_the_batch_wins_over_the_single_job():
+    conn = _FakeConn([_Verdict("23090", 1, 0)], [])
+    job_setup_health(conn, "23099", job_numbers=["23090"])
+    assert conn.calls[0][1] == ("23090",)  # the batch, not the single job
+
+
+def test_no_batch_at_all_is_still_the_whole_company_sweep():
+    # An older backend sends neither key and must keep getting the sweep it asks for.
+    conn = _FakeConn([_Verdict("A", 1, 0)], [])
+    job_setup_health(conn)
+    assert conn.calls[0][1] == ()
+    assert "WS_Job_Number IN" not in conn.sql(0)
+
+
+def test_a_batch_never_reads_more_keys_than_the_cap_in_one_statement():
+    keys = [f"J{i:05d}" for i in range(econnect.MAX_JOB_NUMBERS * 2 + 5)]
+    # 205 keys -> 3 chunks -> a verdict + detail query per chunk, and the chunks come back unordered.
+    conn = _FakeConn(
+        [_Verdict("J00300", 1, 0)], [],
+        [_Verdict("J00100", 1, 0)], [],
+        [_Verdict("J00200", 1, 0)], [],
+    )
+    out = job_setup_health(conn, job_numbers=keys)
+
+    assert len(conn.calls) == 6
+    assert [len(params) for sql, params in conn.calls] == [100, 100, 100, 100, 5, 5]
+    assert sum(len(p) for s, p in conn.calls) == len(keys) * 2  # every key read once per query
+    # merged back into one list in job order, however many reads it took
+    assert [j["job_number"] for j in out] == ["J00100", "J00200", "J00300"]
+
+
+def test_a_job_in_the_batch_that_gp_does_not_have_is_simply_absent():
+    # Not an error: asking about a job JC00102 does not hold is a verdict of "nothing to stamp".
+    conn = _FakeConn([_Verdict("23090", 1, 0)], [])
+    out = job_setup_health(conn, job_numbers=["23090", "NOPE"])
+    assert [j["job_number"] for j in out] == ["23090"]
+
+
 # --- the create_po guard (cost_code_account_invalid) ---
 
 

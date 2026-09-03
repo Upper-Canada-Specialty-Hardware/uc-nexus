@@ -16,7 +16,17 @@ from app.services import gp_load
 
 
 @pytest.fixture(autouse=True)
-def _fresh_policy(monkeypatch):
+def clock(monkeypatch):
+    """A monotonic clock the test moves by hand. The bucket refills off elapsed time, so this is the
+    whole of what makes its arithmetic testable. Autouse and declared FIRST so the policy's bucket is
+    built against it - a bucket stamped with the real clock never refills against a fake one."""
+    now = {"t": 1000.0}
+    monkeypatch.setattr(gp_load.time, "monotonic", lambda: now["t"])
+    return now
+
+
+@pytest.fixture(autouse=True)
+def _fresh_policy(monkeypatch, clock):
     """A policy per test. It is process-wide in production on purpose (one SQL server, one budget), so
     the tests have to reset it rather than construct their own."""
     policy = gp_load.GpLoadPolicy()
@@ -36,42 +46,127 @@ def _sample(cpu=10.0, runnable=0, source=gp_load.RING_BUFFER, age_seconds=0.0):
     }
 
 
-# --- budget ------------------------------------------------------------------------------------------
+# --- the read budget ---------------------------------------------------------------------------------
 
 
-def test_spacing_is_the_wall_clock_the_cpu_cost_averages_out_over():
-    """400 ms of CPU at a tenth of a core is 4 s of wall clock. That identity IS the budget."""
-    assert gp_load.spacing_ms(400.0, budget_cores=0.10) == pytest.approx(4000.0)
-    assert gp_load.spacing_ms(800.0, budget_cores=0.10) == pytest.approx(8000.0)
-    assert gp_load.spacing_ms(400.0, budget_cores=0.20) == pytest.approx(2000.0)
+def test_a_fresh_bucket_holds_one_minute_of_reads(clock):
+    bucket = gp_load.TokenBucket(100)
+    assert bucket.tokens() == pytest.approx(100.0)
+    assert bucket.capacity == pytest.approx(100.0)
 
 
-def test_no_reported_cost_claims_no_spacing():
-    """An older relay reports no cost block. Pacing then falls back to the floor, not to zero waits and
-    not to a made-up number."""
-    assert gp_load.spacing_ms(None) == 0.0
-    assert gp_load.spacing_ms(0) == 0.0
-    assert gp_load.pace_seconds(floor_seconds=5.0, cpu_ms=None, elapsed_ms=200.0) == 5.0
+def test_taking_tokens_spends_them(clock):
+    bucket = gp_load.TokenBucket(100)
+    bucket.take(25)
+    assert bucket.tokens() == pytest.approx(75.0)
 
 
-def test_a_zero_budget_cannot_become_an_infinite_wait():
-    """The floor exists so a mistyped budget throttles hard rather than deadlocking the mirror."""
-    assert gp_load.spacing_ms(100.0, budget_cores=0.0) == pytest.approx(100.0 / 0.01)
+def test_tokens_refill_continuously_not_in_steps(clock):
+    """Continuous refill is what removes the edge a burst could line up on: after a quarter of the
+    interval a quarter of the tokens are back, not none of them."""
+    bucket = gp_load.TokenBucket(60)  # one a second
+    bucket.take(60)
+    assert bucket.tokens() == pytest.approx(0.0)
+    clock["t"] += 0.5
+    assert bucket.tokens() == pytest.approx(0.5)
+    clock["t"] += 9.5
+    assert bucket.tokens() == pytest.approx(10.0)
 
 
-def test_the_pause_owed_is_spacing_minus_the_time_already_spent():
-    """A slow op has already provided some of the quiet its cost bought; only the remainder is owed."""
-    # 800 ms cpu at 0.10 cores = 8000 ms spacing, of which the op itself consumed 3000.
-    assert gp_load.pace_seconds(floor_seconds=1.0, cpu_ms=800.0, elapsed_ms=3000.0, budget_cores=0.10) == pytest.approx(
-        5.0
-    )
+def test_refill_stops_at_capacity(clock):
+    """An idle process may burst a minute's worth and no more - the budget is not bankable."""
+    bucket = gp_load.TokenBucket(100)
+    clock["t"] += 3600
+    assert bucket.tokens() == pytest.approx(100.0)
 
 
-def test_the_configured_delay_is_a_floor_the_budget_can_raise_but_not_undercut():
-    cheap = gp_load.pace_seconds(floor_seconds=5.0, cpu_ms=10.0, elapsed_ms=50.0, budget_cores=0.10)
-    assert cheap == 5.0  # 100 ms of spacing does not buy less than the floor
-    dear = gp_load.pace_seconds(floor_seconds=5.0, cpu_ms=4000.0, elapsed_ms=1000.0, budget_cores=0.10)
-    assert dear == pytest.approx(39.0)  # 40 s of spacing minus the 1 s the op took
+def test_the_wait_for_a_batch_is_the_shortfall_at_the_refill_rate(clock):
+    bucket = gp_load.TokenBucket(100)  # 100/min = 1.667/s
+    bucket.take(100)
+    # 25 tokens at 100 a minute is 15 seconds. This IS the documented arithmetic.
+    assert bucket.wait_for(25) == pytest.approx(15.0)
+    clock["t"] += 15.0
+    assert bucket.wait_for(25) == pytest.approx(0.0)
+
+
+def test_nothing_is_owed_when_the_tokens_are_already_there(clock):
+    assert gp_load.TokenBucket(100).wait_for(25) == 0.0
+
+
+def test_a_request_larger_than_the_whole_budget_is_clamped_not_deadlocked(clock):
+    """A misconfigured batch should slow the sync, never wedge it."""
+    bucket = gp_load.TokenBucket(10)
+    bucket.take(10)
+    assert bucket.wait_for(1000) == pytest.approx(60.0)  # one capacity, not a hundred minutes
+
+
+def test_a_penalty_can_drive_the_balance_negative(clock):
+    """The pressure brake has to be felt. Charged against a full bucket a penalty would otherwise be
+    absorbed and change nothing."""
+    bucket = gp_load.TokenBucket(100)
+    bucket.penalise(25)
+    assert bucket.tokens() == pytest.approx(75.0)
+    bucket.take(75)
+    bucket.penalise(50)
+    assert bucket.tokens() == pytest.approx(-50.0)
+    # And it is bounded, so one pathological reading cannot mute the sync for an hour.
+    bucket.penalise(10_000)
+    assert bucket.tokens() == pytest.approx(-100.0)
+
+
+def test_acquire_returns_at_once_when_the_budget_is_there(_fresh_policy, clock, monkeypatch):
+    slept: list[float] = []
+    monkeypatch.setattr(gp_load.asyncio, "sleep", _recorder(slept))
+
+    waited = asyncio.run(_fresh_policy.acquire(25))
+
+    assert waited == 0.0
+    assert slept == []
+    assert _fresh_policy.bucket.tokens() == pytest.approx(gp_load.READS_PER_MINUTE - 25)
+
+
+def test_acquire_waits_out_the_shortfall_then_spends(_fresh_policy, clock, monkeypatch):
+    slept: list[float] = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+        clock["t"] += seconds
+
+    monkeypatch.setattr(gp_load.asyncio, "sleep", fake_sleep)
+    _fresh_policy.bucket.take(gp_load.READS_PER_MINUTE)  # drain it
+
+    waited = asyncio.run(_fresh_policy.acquire(25))
+
+    assert waited == pytest.approx(15.0)
+    assert slept == [pytest.approx(15.0)]
+
+
+def test_a_paused_policy_acquires_nothing(_fresh_policy, clock):
+    """The brake sits on top of the budget: paused means no reads at all, not reads at a lower rate."""
+    _fresh_policy.note_sample(_sample(cpu=95.0))
+
+    with pytest.raises(RelayBusyError):
+        asyncio.run(_fresh_policy.acquire(1))
+
+    assert _fresh_policy.bucket.tokens() == pytest.approx(gp_load.READS_PER_MINUTE)
+
+
+def test_the_budget_is_charged_in_keys_not_requests(_fresh_policy, clock, monkeypatch):
+    """A page of 25 costs 25. Otherwise a caller could have all of GP for the price of one request by
+    asking for it in one request."""
+    monkeypatch.setattr(gp_load.asyncio, "sleep", _recorder([]))
+
+    asyncio.run(_fresh_policy.acquire(25))
+    asyncio.run(_fresh_policy.acquire(3))
+
+    assert _fresh_policy.bucket.tokens() == pytest.approx(gp_load.READS_PER_MINUTE - 28)
+
+
+def _recorder(into):
+    async def fake_sleep(seconds):
+        into.append(seconds)
+
+    return fake_sleep
 
 
 # --- pressure ----------------------------------------------------------------------------------------
@@ -83,26 +178,6 @@ def test_pressure_is_an_op_far_slower_than_that_op_normally_is():
     # No median yet, or no reading: no signal, never a false positive.
     assert gp_load.is_under_pressure(9999.0, None) is False
     assert gp_load.is_under_pressure(None, 1000.0) is False
-
-
-def test_pressure_doubles_the_wait_and_is_capped_at_ten_floors():
-    assert gp_load.pace_seconds(floor_seconds=5.0, cpu_ms=None, elapsed_ms=1.0, under_pressure=True) == 10.0
-    # 5 s floor, 30 s base from the budget: doubling would be 60, the cap holds it at 10 x floor.
-    capped = gp_load.pace_seconds(
-        floor_seconds=5.0, cpu_ms=3100.0, elapsed_ms=100.0, under_pressure=True, budget_cores=0.10
-    )
-    assert capped == pytest.approx(50.0)
-
-
-def test_the_cap_never_shrinks_a_wait_the_budget_itself_demands():
-    """The cap limits what PRESSURE may add, not the total. A genuinely expensive op keeps its spacing -
-    shrinking it would break the budget the cap exists to protect."""
-    base = gp_load.pace_seconds(floor_seconds=1.0, cpu_ms=8000.0, elapsed_ms=0.0, budget_cores=0.10)
-    pressured = gp_load.pace_seconds(
-        floor_seconds=1.0, cpu_ms=8000.0, elapsed_ms=0.0, under_pressure=True, budget_cores=0.10
-    )
-    assert base == pytest.approx(80.0)
-    assert pressured == pytest.approx(80.0)  # 10 x floor is 10 s, well under the budget's own demand
 
 
 def test_the_median_is_not_trusted_until_it_has_seen_enough_ops(_fresh_policy):
@@ -129,6 +204,61 @@ def test_the_rolling_window_forgets_old_ops(_fresh_policy):
     for _ in range(gp_load.MEDIAN_WINDOW):
         _fresh_policy.observe("TUBC", "sync_pos", 500.0)
     assert _fresh_policy.median_ms("TUBC", "sync_pos") == 500.0
+
+
+def test_a_slow_op_charges_the_budget_rather_than_adding_a_delay(_fresh_policy, clock):
+    """Pressure spends budget instead of pausing. A pressure PAUSE could deadlock - resuming needs a
+    server sample, and the relay that cannot read server load is exactly the one this signal is for."""
+    for _ in range(gp_load.MEDIAN_MIN_SAMPLES):
+        _fresh_policy.note_op("TUBC", "sync_pos", {"cost": {"elapsed_ms": 100.0}}, 100.0, reads=1)
+    before = _fresh_policy.bucket.tokens()
+
+    _fresh_policy.note_op("TUBC", "sync_pos", {"cost": {"elapsed_ms": 5000.0}}, 5000.0, reads=1)
+
+    assert _fresh_policy.bucket.tokens() == pytest.approx(before - gp_load.READ_BATCH)
+    assert _fresh_policy.paused is False
+
+
+def test_an_ordinary_op_charges_no_penalty(_fresh_policy, clock):
+    for _ in range(gp_load.MEDIAN_MIN_SAMPLES):
+        _fresh_policy.note_op("TUBC", "sync_pos", {"cost": {"elapsed_ms": 100.0}}, 100.0, reads=1)
+    before = _fresh_policy.bucket.tokens()
+
+    _fresh_policy.note_op("TUBC", "sync_pos", {"cost": {"elapsed_ms": 120.0}}, 120.0, reads=1)
+
+    assert _fresh_policy.bucket.tokens() == pytest.approx(before)
+
+
+def test_note_op_prefers_the_server_s_own_elapsed_over_our_round_trip(_fresh_policy):
+    for _ in range(gp_load.MEDIAN_MIN_SAMPLES):
+        _fresh_policy.note_op("TUBC", "sync_pos", {"cost": {"elapsed_ms": 100.0}}, 100.0, reads=1)
+    before = _fresh_policy.bucket.tokens()
+
+    # Our round trip looks terrible; the server says the statement itself was normal. Believe the
+    # server - the difference is our own queueing, not GP's load.
+    _fresh_policy.note_op("TUBC", "sync_pos", {"cost": {"elapsed_ms": 110.0}}, 9999.0, reads=1)
+
+    assert _fresh_policy.bucket.tokens() == pytest.approx(before)
+
+
+def test_note_op_falls_back_to_our_round_trip_when_the_relay_reports_none(_fresh_policy):
+    for _ in range(gp_load.MEDIAN_MIN_SAMPLES):
+        _fresh_policy.note_op("TUBC", "sync_pos", None, 100.0, reads=1)
+    before = _fresh_policy.bucket.tokens()
+
+    _fresh_policy.note_op("TUBC", "sync_pos", None, 5000.0, reads=1)
+
+    assert _fresh_policy.bucket.tokens() == pytest.approx(before - gp_load.READ_BATCH)
+
+
+def test_every_read_logs_what_it_cost_and_what_is_left(_fresh_policy, caplog):
+    with caplog.at_level(logging.INFO, logger="app.services.gp_load"):
+        _fresh_policy.note_op("TUBC", "sync_pos", {"cost": {"cpu_ms": 812.0}}, 1500.0, reads=25)
+
+    lines = [m for m in caplog.messages if "reads=25" in m]
+    assert len(lines) == 1
+    assert "cpu_ms=812.0" in lines[0]
+    assert "budget_left=" in lines[0]
 
 
 # --- pause / resume ----------------------------------------------------------------------------------
@@ -223,71 +353,19 @@ def test_the_missing_permission_is_warned_about_once_per_process(_fresh_policy, 
     assert "paced on op cost and elapsed time only" in warnings[0]
 
 
-def test_pacing_still_works_with_an_unavailable_sample(_fresh_policy):
-    """No server permissions: cost and elapsed time alone, and nothing pauses."""
-    pace = _fresh_policy.note_op(
+def test_the_budget_still_paces_with_an_unavailable_sample(_fresh_policy):
+    """No server permissions: nothing pauses, and the budget alone decides the rate. That is the whole
+    degraded mode - a fixed number of reads a minute needs no VIEW SERVER STATE."""
+    _fresh_policy.note_op(
         "TUBC",
         "sync_pos",
-        {"cost": {"cpu_ms": 800.0, "elapsed_ms": 1000.0}, "server": _sample(cpu=99.0, source=gp_load.UNAVAILABLE)},
+        {"cost": {"cpu_ms": 800.0}, "server": _sample(cpu=99.0, source=gp_load.UNAVAILABLE)},
         1000.0,
-        floor_seconds=5.0,
+        reads=25,
     )
+
     assert _fresh_policy.paused is False
-    assert pace == pytest.approx(7.0)  # 8 s of spacing, 1 s of which the op already spent
-
-
-# --- note_op bookkeeping -----------------------------------------------------------------------------
-
-
-def test_note_op_prefers_the_server_s_own_elapsed_over_our_round_trip(_fresh_policy):
-    pace = _fresh_policy.note_op(
-        "TUBC", "sync_pos", {"cost": {"cpu_ms": 1000.0, "elapsed_ms": 2000.0}}, 9999.0, floor_seconds=1.0
-    )
-    assert pace == pytest.approx(8.0)  # 10 s spacing minus the server's 2 s, not our 9.999 s
-
-
-def test_note_op_falls_back_to_our_round_trip_when_the_relay_reports_none(_fresh_policy):
-    pace = _fresh_policy.note_op("TUBC", "sync_pos", {"cost": {"cpu_ms": 1000.0}}, 2000.0, floor_seconds=1.0)
-    assert pace == pytest.approx(8.0)
-
-
-def test_note_op_sets_when_the_next_background_op_may_run(_fresh_policy, monkeypatch):
-    clock = {"now": 500.0}
-    monkeypatch.setattr(gp_load.time, "monotonic", lambda: clock["now"])
-
-    _fresh_policy.note_op("TUBC", "sync_pos", {"cost": {"cpu_ms": 1000.0}}, 0.0, floor_seconds=1.0)
-
-    assert _fresh_policy.next_op_at() == pytest.approx(510.0)
-    assert _fresh_policy.wait_seconds() == pytest.approx(10.0)
-    clock["now"] = 515.0
-    assert _fresh_policy.wait_seconds() == 0.0
-
-
-def test_a_slow_op_doubles_the_next_wait_once_a_median_exists(_fresh_policy):
-    for _ in range(gp_load.MEDIAN_MIN_SAMPLES):
-        _fresh_policy.note_op("TUBC", "sync_pos", {"cost": {"elapsed_ms": 100.0}}, 100.0, floor_seconds=5.0)
-
-    pace = _fresh_policy.note_op("TUBC", "sync_pos", {"cost": {"elapsed_ms": 5000.0}}, 5000.0, floor_seconds=5.0)
-
-    assert pace == pytest.approx(10.0)
-
-
-def test_a_pacing_decision_above_the_floor_says_why(_fresh_policy, caplog):
-    with caplog.at_level(logging.INFO, logger="app.services.gp_load"):
-        _fresh_policy.note_op("TUBC", "sync_pos", {"cost": {"cpu_ms": 2000.0}}, 100.0, floor_seconds=5.0)
-
-    lines = [m for m in caplog.messages if "paced" in m]
-    assert len(lines) == 1
-    assert "cpu_ms=2000" in lines[0] and "floor 5.0s" in lines[0]
-
-
-def test_a_pace_at_the_floor_says_nothing(_fresh_policy, caplog):
-    """One line per decision that DIFFERS from the floor. The ordinary case is silent, or the log is
-    just the delay written out longhand."""
-    with caplog.at_level(logging.INFO, logger="app.services.gp_load"):
-        _fresh_policy.note_op("TUBC", "sync_pos", {"cost": {"cpu_ms": 1.0}}, 10.0, floor_seconds=5.0)
-
-    assert not [m for m in caplog.messages if "paced" in m]
+    assert _fresh_policy.bucket.tokens() == pytest.approx(gp_load.READS_PER_MINUTE)  # note_op spends nothing
 
 
 # --- probing -----------------------------------------------------------------------------------------
@@ -348,75 +426,87 @@ def test_a_probe_that_cannot_reach_the_relay_does_not_resume(_fresh_policy, monk
 # --- paced_call --------------------------------------------------------------------------------------
 
 
-def test_paced_call_waits_out_what_the_previous_op_earned(_fresh_policy, monkeypatch):
+def test_paced_call_spends_the_budget_before_the_request_goes_out(_fresh_policy, monkeypatch):
+    """Charged on work REQUESTED, not on work that turned out to be expensive afterwards. By the time
+    a read has cost the server something it is too late to have not asked for it."""
+    seen = {}
+
+    async def fake_call(company, op, payload=None, *, background=False, **kwargs):
+        seen["tokens_at_call"] = _fresh_policy.bucket.tokens()
+        return {"pos": []}, {"cost": {"cpu_ms": 500.0}, "server": _sample()}
+
+    monkeypatch.setattr(gp_load.relay_gateway, "relay_call_with_meta", fake_call)
+
+    call = asyncio.run(gp_load.paced_call("TUBC", "sync_pos", reads=25))
+
+    assert seen["tokens_at_call"] == pytest.approx(gp_load.READS_PER_MINUTE - 25)
+    assert call["result"] == {"pos": []}
+    assert call["cpu_ms"] == 500.0
+    assert call["sql_cpu_pct"] == 10.0
+    assert call["waited"] == 0.0
+
+
+def test_paced_call_waits_when_the_budget_is_spent(_fresh_policy, clock, monkeypatch):
     slept: list[float] = []
 
     async def fake_sleep(seconds):
         slept.append(seconds)
+        clock["t"] += seconds
 
-    async def fake_call(company, op, payload=None, **kwargs):
-        return {"pos": []}, {"cost": {"cpu_ms": 500.0, "elapsed_ms": 100.0}, "server": _sample()}
+    async def fake_call(company, op, payload=None, *, background=False, **kwargs):
+        return None, {"cost": None, "server": None}
 
     monkeypatch.setattr(gp_load.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(gp_load.relay_gateway, "relay_call_with_meta", fake_call)
-    monkeypatch.setattr(gp_load.time, "monotonic", lambda: 1000.0)
-    _fresh_policy.note_op("TUBC", "sync_pos", {"cost": {"cpu_ms": 1000.0}}, 0.0, floor_seconds=1.0)
+    _fresh_policy.bucket.take(gp_load.READS_PER_MINUTE)
 
-    call = asyncio.run(gp_load.paced_call("TUBC", "sync_pos", floor_seconds=5.0))
+    call = asyncio.run(gp_load.paced_call("TUBC", "sync_pos", reads=25))
 
-    assert slept == [pytest.approx(10.0)]  # the previous op's 1000 ms of cpu at 0.10 cores
-    assert call["result"] == {"pos": []}
-    assert call["cpu_ms"] == 500.0
-    assert call["sql_cpu_pct"] == 10.0
-    assert call["pace"] == pytest.approx(5.0)  # 5 s of spacing is under the floor
+    assert slept == [pytest.approx(15.0)]
+    assert call["waited"] == pytest.approx(15.0)
 
 
 def test_paced_call_enters_the_pause_on_a_busy_refusal(_fresh_policy, monkeypatch):
-    async def refuse(company, op, payload=None, **kwargs):
+    async def refuse(company, op, payload=None, *, background=False, **kwargs):
         raise RelayBusyError("busy", sql_cpu_pct=91.0, ceiling_pct=70.0, retry_after_seconds=45.0)
 
     monkeypatch.setattr(gp_load.relay_gateway, "relay_call_with_meta", refuse)
 
     with pytest.raises(RelayBusyError):
-        asyncio.run(gp_load.paced_call("TUBC", "sync_pos", floor_seconds=5.0))
+        asyncio.run(gp_load.paced_call("TUBC", "sync_pos", reads=25))
 
     # Paused where the error was raised, so no caller can forget to - but still raised, because the
     # caller's pass genuinely did not happen.
     assert _fresh_policy.paused is True
 
 
+def test_paced_call_refuses_outright_once_paused(_fresh_policy, monkeypatch):
+    """While the brake is on nothing is acquired and nothing is sent - the refusal happens here, with
+    no round trip at all."""
+    sent = []
+
+    async def fake_call(company, op, payload=None, *, background=False, **kwargs):
+        sent.append(op)
+        return None, {"cost": None, "server": None}
+
+    monkeypatch.setattr(gp_load.relay_gateway, "relay_call_with_meta", fake_call)
+    _fresh_policy.note_sample(_sample(cpu=95.0))
+
+    with pytest.raises(RelayBusyError):
+        asyncio.run(gp_load.paced_call("TUBC", "sync_pos", reads=25))
+
+    assert sent == []
+
+
 def test_paced_call_records_the_sample_even_from_an_op_that_is_not_about_load(_fresh_policy, monkeypatch):
-    async def fake_call(company, op, payload=None, **kwargs):
+    async def fake_call(company, op, payload=None, *, background=False, **kwargs):
         return None, {"cost": None, "server": _sample(cpu=95.0)}
 
-    monkeypatch.setattr(gp_load.asyncio, "sleep", lambda s: asyncio.sleep(0))
     monkeypatch.setattr(gp_load.relay_gateway, "relay_call_with_meta", fake_call)
 
-    asyncio.run(gp_load.paced_call("TUBC", "list_jobs", floor_seconds=1.0))
+    asyncio.run(gp_load.paced_call("TUBC", "list_jobs", reads=gp_load.JOBS_PER_READ))
 
     assert _fresh_policy.paused is True
-
-
-def test_a_relay_downgraded_mid_pause_does_not_wedge_the_mirror(_fresh_policy, monkeypatch, caplog):
-    """The only probe failure that resumes. A workstation that rolled back to a build without the op
-    can never answer, so staying paused would stop background reads forever - and that relay reports
-    no samples either, which is exactly the cost-only mode this falls back to."""
-    clock = {"now": 1000.0}
-    monkeypatch.setattr(gp_load.time, "monotonic", lambda: clock["now"])
-
-    async def too_old(company, op, payload=None, **kwargs):
-        raise RelayOpUnsupportedError(op)
-
-    monkeypatch.setattr(gp_load.relay_gateway, "relay_call_with_meta", too_old)
-    _fresh_policy.note_sample(_sample(cpu=88.0))
-    clock["now"] = 1000.0 + gp_load.SERVER_PROBE_SECONDS + 1
-
-    with caplog.at_level(logging.WARNING, logger="app.services.gp_load"):
-        resumed = asyncio.run(gp_load.probe())
-
-    assert resumed is True
-    assert _fresh_policy.paused is False
-    assert [m for m in caplog.messages if "cannot report server load" in m]
 
 
 # --- sample freshness ---------------------------------------------------------------------------------
@@ -480,10 +570,10 @@ def test_paced_call_defaults_to_marking_the_read_background(_fresh_policy, monke
 
     monkeypatch.setattr(gp_load.relay_gateway, "relay_call_with_meta", fake_call)
 
-    asyncio.run(gp_load.paced_call("TUBC", "sync_pos", floor_seconds=0.0))
+    asyncio.run(gp_load.paced_call("TUBC", "sync_pos", reads=1))
     assert seen["background"] is True
 
-    asyncio.run(gp_load.paced_call("TUBC", "sync_pos", floor_seconds=0.0, background=False))
+    asyncio.run(gp_load.paced_call("TUBC", "sync_pos", reads=1, background=False))
     assert seen["background"] is False
 
 
@@ -504,3 +594,23 @@ def test_the_probe_goes_out_with_no_company_and_is_not_background(_fresh_policy,
 
     assert asyncio.run(gp_load.probe()) is True
     assert seen == {"company": "", "op": "server_load", "background": False}
+
+
+def test_a_relay_downgraded_mid_pause_does_not_wedge_the_mirror(_fresh_policy, clock, monkeypatch, caplog):
+    """The only probe failure that resumes. A workstation that rolled back to a build without the op
+    can never answer, so staying paused would stop background reads forever - and that relay reports
+    no samples either, which is exactly the budget-only mode this falls back to."""
+
+    async def too_old(company, op, payload=None, **kwargs):
+        raise RelayOpUnsupportedError(op)
+
+    monkeypatch.setattr(gp_load.relay_gateway, "relay_call_with_meta", too_old)
+    _fresh_policy.note_sample(_sample(cpu=88.0))
+    clock["t"] += gp_load.SERVER_PROBE_SECONDS + 1
+
+    with caplog.at_level(logging.WARNING, logger="app.services.gp_load"):
+        resumed = asyncio.run(gp_load.probe())
+
+    assert resumed is True
+    assert _fresh_policy.paused is False
+    assert [m for m in caplog.messages if "cannot report server load" in m]

@@ -266,13 +266,40 @@ def _run_list_jobs(company: str, payload: dict) -> dict:
 
 
 def _run_job_setup_health(company: str, payload: dict) -> dict:
-    """Read-only GP setup verdict per job (#425). The optional `job` filter narrows it to one job for
-    the live re-check register_po_in_gp runs at submit time; without it this answers for every job in
-    the company, which is what the backend's sync pass stamps onto projects.
+    """Read-only GP setup verdict per job (#425), in one of three widths.
 
-    Unlike _run_list_cost_codes there is no missing_job error: a blank job is not a mistake here, it
-    is the whole-company sweep."""
+    `jobs` (a list) is the batch the adoption pass walks the job master in, charged to its read budget
+    at the batch's length. It wins over everything else when it holds anything: without it a batched
+    backend would re-read the WHOLE company once per batch, which is worse than the single sweep it
+    replaced. `job` (one number) is the live re-check register_po_in_gp runs at submit time. Neither
+    is the whole-company sweep, which is what a backend too old to send either still gets.
+
+    An explicitly empty `jobs` reads nothing and opens no connection - the caller named no jobs, so
+    there is nothing to ask GP. Unlike _run_list_cost_codes there is no missing_job error: a blank job
+    is not a mistake here, it is the sweep."""
     ops.check_company_served(company)
+    if "jobs" in payload:
+        asked = payload.get("jobs")
+        if not isinstance(asked, list):
+            raise ops.RelayOpError("invalid_payload", "jobs must be a list of job numbers")
+        if len(asked) > econnect.MAX_JOB_NUMBERS:
+            raise ops.RelayOpError(
+                "too_many_job_numbers",
+                f"{len(asked)} job numbers asked for; this relay reads at most "
+                f"{econnect.MAX_JOB_NUMBERS} in one request",
+                asked=len(asked),
+                maximum=econnect.MAX_JOB_NUMBERS,
+            )
+        keys = econnect.distinct_keys(asked)
+        if keys:
+            with db.get_read_connection(company) as conn:
+                jobs = econnect.job_setup_health(conn, job_numbers=keys)
+        else:
+            jobs = []
+        # `job` stays None for the list form: it means "the caller asked about ONE job", and the
+        # backend reads it to tell a single answer from a wider one.
+        return models.JobSetupHealthResponse(company=company, job=None, jobs=jobs).model_dump(mode="json")
+
     job = (payload.get("job") or "").strip() or None
     with db.get_read_connection(company) as conn:
         jobs = econnect.job_setup_health(conn, job)
@@ -290,9 +317,10 @@ def _run_read_po_totals(company: str, payload: dict) -> dict:
 
 
 def _run_sync_pos(company: str, payload: dict) -> dict:
-    """Read a page of GP purchase orders for the backend's mirror sync (gp-owned-po mirror). Read-only:
-    backfill walks POP10100/POP30100 by PONUMBER keyset; incremental re-reads open POs + history rows
-    changed since the watermark. See econnect.sync_pos."""
+    """Read a page of GP purchase orders for the backend's mirror sync (gp-owned-po mirror). Read-only,
+    and always a PAGE: backfill walks POP10100/POP30100 by PONUMBER keyset, and `open_only` walks the
+    open work book the same way. Both are bounded by page_size; the old unpaged `modified_since` branch
+    is still answered for a backend too old to ask for either. See econnect.sync_pos."""
     ops.check_company_served(company)
     with db.get_read_connection(company) as conn:
         result = econnect.sync_pos(
@@ -300,7 +328,32 @@ def _run_sync_pos(company: str, payload: dict) -> dict:
             cursor=payload.get("cursor"),
             page_size=payload.get("page_size", 300),
             modified_since=payload.get("modified_since"),
+            open_only=bool(payload.get("open_only")),
         )
+    return {"company": company, **result}
+
+
+def _run_read_pos_by_number(company: str, payload: dict) -> dict:
+    """Read exactly the POs the backend names, by key seek (econnect.read_pos_by_number).
+
+    The companion to an open_only page: the backend diffs the open set it walked against what it holds
+    and asks here for the ones that dropped out, instead of scanning history for them. Capped at
+    econnect.MAX_PO_NUMBERS - the budget is bounded work per request, so a batch bigger than one batch
+    is refused rather than quietly becoming the unbounded read this replaced."""
+    ops.check_company_served(company)
+    po_numbers = payload.get("po_numbers") or []
+    if not isinstance(po_numbers, list):
+        raise ops.RelayOpError("invalid_payload", "po_numbers must be a list of PO numbers")
+    if len(po_numbers) > econnect.MAX_PO_NUMBERS:
+        raise ops.RelayOpError(
+            "too_many_po_numbers",
+            f"{len(po_numbers)} PO numbers asked for; this relay reads at most "
+            f"{econnect.MAX_PO_NUMBERS} in one request",
+            asked=len(po_numbers),
+            maximum=econnect.MAX_PO_NUMBERS,
+        )
+    with db.get_read_connection(company) as conn:
+        result = econnect.read_pos_by_number(conn, po_numbers)
     return {"company": company, **result}
 
 
@@ -457,6 +510,8 @@ _OPS = {
     "read_po_totals": _run_read_po_totals,
     # issue: gp-owned-po mirror - a page of GP's own purchase orders for the backend to mirror locally.
     "sync_pos": _run_sync_pos,
+    # ^ and its companion: the POs that left the open set, fetched by number instead of found by scan.
+    "read_pos_by_number": _run_read_pos_by_number,
     "create_po": _run_create_po,
     "create_receipt": _run_create_receipt,
     # issue #380 - the create-job form's live reads, and the create itself.
@@ -493,7 +548,8 @@ _OPS = {
 #
 # BACKGROUND_OPS is the relay's own outer bound on that claim: the ops a backend loop is known to call
 # on a timer, audited against its callers.
-#   sync_pos           - gp_po_sync.run_forever, the PO mirror's backfill pages and its incremental pass
+#   sync_pos           - gp_po_sync.run_forever, the PO mirror's backfill and open-book pages
+#   read_pos_by_number - the same loop, fetching the POs that dropped out of the open set
 #   list_jobs          - gp_job_sync.run_forever, the job adoption pass (POLL_SECONDS)
 #   job_setup_health   - the same adoption pass's setup-health stamp
 # A flagged job is only sampled for - and so only ever refused - if its op is in here. A backend that
@@ -504,7 +560,7 @@ _OPS = {
 # replayed from the backend's outbox), and the pickers. None of those are ever refused - a person is
 # worth more than a percentage point of CPU - and an UNFLAGGED job is never refused and never pays for
 # a sample, whatever its op.
-BACKGROUND_OPS = frozenset({"sync_pos", "list_jobs", "job_setup_health"})
+BACKGROUND_OPS = frozenset({"sync_pos", "read_pos_by_number", "list_jobs", "job_setup_health"})
 
 # Ops that answer a question about the SERVER rather than about a company. They run without one: the
 # backend probes the load while paused, and the company checks below have nothing to bite on because
@@ -610,8 +666,12 @@ def _dispatch(
 
     # Everything below runs named: db.py measures what each connection cost the GP server and books it
     # against (company, op). The whole block, not just the handler - the eConnect description lookup
-    # opens a connection of its own, and it belongs to this op too.
-    with db.measuring(op, company) as measured:
+    # opens a connection of its own, and it belongs to this op too. The flag rides along so a
+    # background read gets the shorter command timeout (db._command_timeout): nobody is waiting on it,
+    # so an overrunning statement is cancelled on the server rather than allowed the user-facing limit.
+    # Same audit as the gate above: only an op in BACKGROUND_OPS is ever cut short, so a write a backend
+    # mis-flagged as background still gets the user-facing timeout it needs.
+    with db.measuring(op, company, background and op in BACKGROUND_OPS) as measured:
         reply = _run_handler(handler, company, payload)
     return _reply(reply, cost=measured.cost)
 

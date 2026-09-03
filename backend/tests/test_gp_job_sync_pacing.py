@@ -9,7 +9,7 @@ import asyncio
 import pytest
 
 from app.errors import RelayBusyError
-from app.services import gp_job_sync
+from app.services import gp_job_sync, gp_load
 
 # --- adaptive pacing ---------------------------------------------------------------------------------
 
@@ -94,7 +94,7 @@ def test_a_busy_refusal_ends_the_pass_instead_of_working_through_the_list(monkey
     monkeypatch.setattr(gp_job_sync.relay_gateway, "_companies", frozenset({"TUBC", "UCSH", "UBC"}))
     tried: list[str] = []
 
-    async def refuse(company, op, payload=None, *, floor_seconds, **kwargs):
+    async def refuse(company, op, payload=None, *, reads, **kwargs):
         tried.append(company)
         raise RelayBusyError("busy", sql_cpu_pct=91.0, ceiling_pct=70.0)
 
@@ -113,9 +113,17 @@ def test_the_timer_driven_pass_is_marked_background_and_the_admin_one_is_not(mon
     monkeypatch.setattr(gp_job_sync.relay_gateway, "_companies", frozenset({"TUBC"}))
     seen: list[bool] = []
 
-    async def fake_paced_call(company, op, payload=None, *, floor_seconds, background=True, **kwargs):
+    async def fake_paced_call(company, op, payload=None, *, reads, background=True, **kwargs):
         seen.append(background)
-        return {"result": {"jobs": []}, "meta": {}, "elapsed_ms": 1.0, "cpu_ms": None, "sql_cpu_pct": None, "pace": 0.0}
+        jobs = [{"job_number": "J1"}] if op == "list_jobs" else [{"job_number": "J1", "ok": True}]
+        return {
+            "result": {"jobs": jobs},
+            "meta": {},
+            "elapsed_ms": 1.0,
+            "cpu_ms": None,
+            "sql_cpu_pct": None,
+            "waited": 0.0,
+        }
 
     monkeypatch.setattr(gp_job_sync.gp_load, "paced_call", fake_paced_call)
     monkeypatch.setattr(gp_job_sync, "_persist_missing", lambda jobs, company: (0, 0))
@@ -129,14 +137,21 @@ def test_the_timer_driven_pass_is_marked_background_and_the_admin_one_is_not(mon
     assert seen == [True, True]
 
 
-def test_each_company_read_is_paced(monkeypatch):
-    """Spacing the companies apart is the same mechanism as spacing the pages apart - one budget."""
+def test_each_company_read_is_charged_the_jobs_estimate(monkeypatch):
+    """One budget for both syncs, charged in keys: a hundred-row list_jobs cannot cost 1."""
     monkeypatch.setattr(gp_job_sync.relay_gateway, "_companies", frozenset({"TUBC", "UCSH"}))
-    floors: list[float] = []
+    charged: list[tuple] = []
 
-    async def fake_paced_call(company, op, payload=None, *, floor_seconds, **kwargs):
-        floors.append(floor_seconds)
-        return {"result": {"jobs": []}, "meta": {}, "elapsed_ms": 1.0, "cpu_ms": None, "sql_cpu_pct": None, "pace": 0.0}
+    async def fake_paced_call(company, op, payload=None, *, reads, **kwargs):
+        charged.append((op, reads))
+        return {
+            "result": {"jobs": []},
+            "meta": {},
+            "elapsed_ms": 1.0,
+            "cpu_ms": None,
+            "sql_cpu_pct": None,
+            "waited": 0.0,
+        }
 
     monkeypatch.setattr(gp_job_sync.gp_load, "paced_call", fake_paced_call)
     monkeypatch.setattr(gp_job_sync, "_persist_missing", lambda jobs, company: (0, 0))
@@ -144,5 +159,85 @@ def test_each_company_read_is_paced(monkeypatch):
 
     asyncio.run(gp_job_sync.run_once())
 
-    # list_jobs and job_setup_health, for each of the two companies.
-    assert floors == [gp_job_sync.COMPANY_FLOOR_SECONDS] * 4
+    # list_jobs is charged the flat estimate before it goes out - it cannot be paged and its size is
+    # unknown until the reply lands. No jobs came back, so no health read follows.
+    assert charged == [("list_jobs", gp_load.JOBS_PER_READ), ("list_jobs", gp_load.JOBS_PER_READ)]
+
+
+def test_the_health_read_is_batched_by_job_number(monkeypatch):
+    """It used to ask for a whole company at once - one statement over every job it has, which is the
+    same unbounded shape that pinned GP's CPU on the PO side. RELAY NOTE: the op has to honour the
+    `jobs` filter, or the batching here buys nothing."""
+    monkeypatch.setattr(gp_load, "READ_BATCH", 2)
+    asked: list[dict] = []
+
+    async def fake_paced_call(company, op, payload=None, *, reads, **kwargs):
+        asked.append({"op": op, "payload": payload, "reads": reads})
+        return {
+            "result": {"jobs": []},
+            "meta": {},
+            "elapsed_ms": 1.0,
+            "cpu_ms": None,
+            "sql_cpu_pct": None,
+            "waited": 0.0,
+        }
+
+    monkeypatch.setattr(gp_job_sync.gp_load, "paced_call", fake_paced_call)
+    monkeypatch.setattr(gp_job_sync, "_persist_health", lambda jobs, company: 0)
+
+    asyncio.run(gp_job_sync._stamp_setup_health("TUBC", ["J1", "J2", "J3", "J4", "J5"]))
+
+    batches = [a["payload"]["jobs"] for a in asked]
+    assert batches == [["J1", "J2"], ["J3", "J4"], ["J5"]]
+    # Charged its real length, so a trailing batch of one costs one.
+    assert [a["reads"] for a in asked] == [2, 2, 1]
+
+
+def test_the_health_read_skips_a_company_with_no_jobs(monkeypatch):
+    called = []
+    monkeypatch.setattr(gp_job_sync.gp_load, "paced_call", lambda *a, **k: called.append(1))
+
+    asyncio.run(gp_job_sync._stamp_setup_health("TUBC", []))
+
+    assert called == []
+
+
+def test_a_failed_health_batch_stops_the_rest(monkeypatch):
+    """Pressing on would spend budget against a server that just refused us, and the next pass retries
+    them anyway."""
+    monkeypatch.setattr(gp_load, "READ_BATCH", 1)
+    tried = []
+
+    async def boom(company, op, payload=None, *, reads, **kwargs):
+        tried.append(payload["jobs"])
+        raise RuntimeError("GP said no")
+
+    monkeypatch.setattr(gp_job_sync.gp_load, "paced_call", boom)
+
+    asyncio.run(gp_job_sync._stamp_setup_health("TUBC", ["J1", "J2", "J3"]))
+
+    assert tried == [["J1"]]
+
+
+def test_the_poll_interval_is_env_tunable_with_a_floor(monkeypatch):
+    """It is a share of the read budget, not just a freshness knob. One company's pass costs
+    JOBS_PER_READ for the unpageable list_jobs plus one read per job for the batched health check, so
+    three companies is roughly 600 reads; at the old hardcoded 300 seconds that is 120 a minute, more
+    than the whole 100/minute budget, and the PO mirror would be crowded out of a queue it shares."""
+    monkeypatch.delenv("GP_JOB_SYNC_POLL_SECONDS", raising=False)
+    assert gp_job_sync._env_number("GP_JOB_SYNC_POLL_SECONDS", 900.0, float, minimum=60.0) == 900.0
+
+    monkeypatch.setenv("GP_JOB_SYNC_POLL_SECONDS", "1800")
+    assert gp_job_sync._env_number("GP_JOB_SYNC_POLL_SECONDS", 900.0, float, minimum=60.0) == 1800.0
+
+    # Under a minute cannot fit even one company's pass into the budget it implies.
+    monkeypatch.setattr(gp_job_sync, "_env_warned", set())
+    monkeypatch.setenv("GP_JOB_SYNC_POLL_SECONDS", "30")
+    assert gp_job_sync._env_number("GP_JOB_SYNC_POLL_SECONDS", 900.0, float, minimum=60.0) == 900.0
+
+
+def test_the_shipped_poll_interval_leaves_the_mirror_room():
+    """The arithmetic the constant's comment claims, asserted rather than trusted: three companies of
+    a hundred jobs each, against the budget, has to come out well under it."""
+    reads_per_pass = 3 * (gp_load.JOBS_PER_READ + 100)
+    assert reads_per_pass / (gp_job_sync.POLL_SECONDS / 60) < gp_load.READS_PER_MINUTE / 2

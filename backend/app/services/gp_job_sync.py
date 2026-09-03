@@ -29,19 +29,37 @@ from app.services.relay_gateway import gateway as relay_gateway
 
 logger = logging.getLogger(__name__)
 
+_env_warned: set[str] = set()
+
+
+def _env_number(name: str, default, cast, *, minimum):
+    """This module's tunables, through the shared parser. Its own `warned` set and prefix so a mistyped
+    GP_JOB_SYNC_* variable is reported as this service's problem."""
+    return gp_load.env_number(name, default, cast, minimum=minimum, warned=_env_warned, prefix="gp job sync")
+
+
 # Jobs are created by hand in GP a few times a week at most, so this is a backstop, not the main path -
 # wake() covers the case that actually matters (a relay coming back), and the admin Sync from GP button
 # covers "I just made one and want it now".
-POLL_SECONDS = 300.0
+#
+# It is also a SHARE OF THE READ BUDGET, which is what sets the number. One company's pass costs
+# JOBS_PER_READ for the unpageable list_jobs plus one read per job for the batched health check -
+# call it 200 for a hundred-job company, so three companies is ~600 reads. Against the 100/minute the
+# whole backend is allowed, the old 300 seconds meant 120 reads a minute for job adoption alone: more
+# than the entire budget, with the PO mirror crowded out of a queue it was supposed to share. 900
+# seconds puts the same pass at ~40 a minute and leaves the mirror the rest. Minimum 60, because
+# anything under a minute cannot fit even one company's pass into the budget it implies.
+POLL_SECONDS = _env_number("GP_JOB_SYNC_POLL_SECONDS", 900.0, float, minimum=60.0)
 
 # How long /admin/reset-data waits for its one forced sync pass. Generous next to relay_call's own 30s
 # because this pass also writes a project row per GP job, and the reset is a deliberate manual action
 # that nobody is timing - overshooting costs a few seconds, giving up early costs every buyer link.
 RESET_SYNC_TIMEOUT_SECONDS = 90.0
 
-# Floor between this service's background reads. Small because a list_jobs is cheap next to a PO page;
-# gp_load raises it whenever the server says the read actually cost something.
-COMPANY_FLOOR_SECONDS = 1.0
+# What one list_jobs is charged against the shared read budget. The op cannot be paged and its size is
+# not known until the reply lands, so it is charged a flat estimate BEFORE the request rather than the
+# real count after it - a company has roughly a hundred jobs, and charging 1 for a hundred-row read is
+# how a budget stops meaning anything. Tunable through gp_load.JOBS_PER_READ.
 
 _wake_event: asyncio.Event | None = None
 
@@ -129,23 +147,45 @@ def _persist_health(jobs: list[dict], company: str) -> int:
     return stamped
 
 
-async def _stamp_setup_health(company: str, *, background: bool = False) -> None:
-    """Ask the relay for every job's GP setup verdict and record it (#425).
+async def _stamp_setup_health(company: str, job_numbers: list[str], *, background: bool = False) -> None:
+    """Ask the relay for each job's GP setup verdict and record it (#425), in batches.
+
+    The op used to be asked for a whole company at once, which is exactly the unbounded shape that
+    pinned GP's CPU on the PO side: one statement over every job the company has. It now goes out with
+    an explicit `jobs` list of at most GP_SYNC_READ_BATCH numbers, charged to the shared budget, so a
+    company with six hundred jobs costs six hundred reads spread over time instead of one large scan.
+
+    NOTE FOR THE RELAY: `job_setup_health` needs to honour a `jobs: [..]` payload filter and read only
+    those. Today it takes an optional single `job`, and nothing else - without the list filter it will
+    keep scanning the whole company and the batching here buys nothing.
 
     Swallows everything. This runs inside the adoption pass and must never cost it: a relay too old
     for the op, a GP read that times out, a malformed answer - all of them leave the existing stamps
     exactly as they were, which is the correct fallback because a stale verdict is still a verdict and
-    the alternative (blanking it) would un-quarantine a broken project on a transient failure.
+    the alternative (blanking it) would un-quarantine a broken project on a transient failure. A batch
+    that fails stops the rest: the next pass retries them, and pressing on would spend budget against a
+    server that just refused us.
 
     Logged at info without a traceback for the same reason the pass itself is: relays restart, get
     updated and flap, and a stack trace per flap buries the one that matters."""
+    wanted = [str(n).strip() for n in job_numbers if str(n or "").strip()]
+    if not wanted:
+        return
+    stamped = 0
+    unhealthy = 0
     try:
-        call = await gp_load.paced_call(
-            company, "job_setup_health", floor_seconds=COMPANY_FLOOR_SECONDS, background=background
-        )
-        jobs = (call["result"] or {}).get("jobs") or []
-        stamped = await asyncio.to_thread(_persist_health, jobs, company)
-        unhealthy = sum(1 for job in jobs if not job.get("ok"))
+        for start in range(0, len(wanted), gp_load.READ_BATCH):
+            batch = wanted[start : start + gp_load.READ_BATCH]
+            call = await gp_load.paced_call(
+                company,
+                "job_setup_health",
+                {"jobs": batch},
+                reads=len(batch),
+                background=background,
+            )
+            jobs = (call["result"] or {}).get("jobs") or []
+            stamped += await asyncio.to_thread(_persist_health, jobs, company)
+            unhealthy += sum(1 for job in jobs if not job.get("ok"))
         if unhealthy:
             logger.info("gp job sync: %s of %s %s jobs have broken GP setup", unhealthy, stamped, company)
     except Exception as e:  # noqa: BLE001 - a health check must never break job adoption
@@ -210,17 +250,16 @@ async def run_once(*, background: bool = False) -> tuple[int, int]:
     failures = 0
     for company in companies:
         try:
-            # Paced like every other background read (gp_load): the wait before this company's read is
-            # whatever the previous one cost the server, which is also what spaces the companies apart.
-            call = await gp_load.paced_call(
-                company, "list_jobs", floor_seconds=COMPANY_FLOOR_SECONDS, background=background
-            )
+            # Charged the flat estimate before it goes out: one list_jobs is roughly a hundred rows,
+            # and it draws on the same budget as every PO read, so the two syncs cannot between them
+            # exceed what GP has been allowed to give.
+            call = await gp_load.paced_call(company, "list_jobs", reads=gp_load.JOBS_PER_READ, background=background)
             jobs = (call["result"] or {}).get("jobs") or []
             # Off the event loop: the /relay-link read loop runs on it and must not block on Postgres.
             company_total, company_adopted = await asyncio.to_thread(_persist_missing, jobs, company)
             total += company_total
             adopted += company_adopted
-            await _stamp_setup_health(company, background=background)
+            await _stamp_setup_health(company, [j.get("job_number") for j in jobs], background=background)
         except asyncio.CancelledError:
             raise
         except RelayBusyError:

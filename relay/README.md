@@ -110,7 +110,42 @@ advertises to the backend on connect so an out-of-date relay is caught before th
   `list_cost_code_master`, `list_jobs`, `list_customers`, `list_customer_addresses`,
   `list_tax_schedules`, `list_divisions`, `list_employees`, `read_po_totals`
 - writes: `create_po`, `create_receipt`, `create_job`, `create_buyer`
+- the PO mirror: `sync_pos`, `read_pos_by_number`
+- job setup: `job_setup_health` - the per-job GP setup verdict (#425), in one of three widths.
+  `{"jobs": [...]}` is a BATCH of job numbers and wins over everything else: the adoption pass walks
+  the job master in batches against its read budget, and without this filter each batch would re-read
+  the whole company, once per batch. same rules as `read_pos_by_number` - trimmed, de-duplicated,
+  blanks dropped, at most 100 (`econnect.MAX_JOB_NUMBERS`) or `too_many_job_numbers`, and both the
+  verdict and the detail query take the IN-list. an explicitly empty `jobs` reads nothing and opens no
+  connection. `{"job": "23090"}` is the single-job live re-check the register-PO screen runs. neither
+  key is the whole-company sweep, which is what a backend that sends neither still gets. a job number
+  GP does not hold is simply absent from the answer, not an error.
 - the server itself: `server_load`
+
+the PO mirror's two reads
+
+both are bounded by the page they were asked for. nothing the mirror does scans the whole order book
+or `DEX_ROW_TS` any more - one request read 2,344 POs in 8 seconds on one company and never finished
+inside 30 seconds on another, and the fix is bounded work per request, not a longer gap between
+requests.
+- `sync_pos` with `{"open_only": true, "cursor": <PONUMBER|null>, "page_size": N}` - the next keyset
+  page of OPEN work POs: `POP10100`, `WHERE PONUMBER > cursor ORDER BY PONUMBER`, `TOP N`, with lines
+  and receipt sums exactly as a backfill page carries them, plus `next_cursor` (null on a short page,
+  meaning the book is walked). no history table is touched in this branch at all.
+- `read_pos_by_number` with `{"po_numbers": [...]}` - headers, lines and received quantities for
+  exactly those POs, `POP10100` first and `POP30100`/`POP30110` for whatever the work table did not
+  have, all by key seek on the clustered `PONUMBER`. this is how a PO that dropped out of the open set
+  (closed, posted, voided) is fetched: the backend diffs the open set it just walked against what it
+  holds and names the difference, instead of anything scanning history to find it. at most 100 numbers
+  per request (`econnect.MAX_PO_NUMBERS`) - more is refused with `too_many_po_numbers` rather than
+  quietly becoming the unbounded read this replaced. the answer also carries `missing`: the numbers
+  found in neither table.
+
+no read is ever larger than its page. every IN-list read - lines, receipt sums, the by-number header
+seeks - is chunked at `min(len(keys), page_size)` rather than a fixed 1000, so what a request costs
+the server is predictable from its own payload. `sync_pos`'s old `modified_since` branch (every open
+PO plus history by `DEX_ROW_TS`, unpaged) is still answered for a backend too old to ask for the pair
+above, and is no longer called.
 
 pacing, and the busy gate
 
@@ -144,14 +179,22 @@ above `[gp] load_ceiling_pct` (default 70) answers `server_busy` with
 job is never refused and never pays for a reading, whatever its op. this is the last gate in front of
 GP: it refuses whatever backend asked and whatever that backend's own pacing decided.
 
-`channel.BACKGROUND_OPS` (`sync_pos`, `list_jobs`, `job_setup_health` - the PO mirror's pages and the
-job adoption pass) is the relay's own outer bound on the claim: a flagged job is only sampled for, and
-so only ever refused, if its op is in there. a backend that flagged `create_po` as background could
+`channel.BACKGROUND_OPS` (`sync_pos`, `read_pos_by_number`, `list_jobs`, `job_setup_health` - the PO
+mirror's two reads and the job adoption pass) is the relay's own outer bound on the claim: a flagged
+job is only sampled for, and so only ever refused, if its op is in there. a backend that flagged `create_po` as background could
 otherwise have a user's PO write - already accepted and owed to them - deferred here. `server_load`
 is never refused and needs no company: it is what the backend probes while it is holding a loop back.
 
 only a REAL reading refuses anything: `source: unavailable` never defers work, so a missing grant
 cannot strand the mirror.
+
+a flagged job in `BACKGROUND_OPS` also gets a shorter command timeout -
+`[gp] background_command_timeout_seconds`, default 20, against `[sql] command_timeout`'s 30 for
+everything else (a mis-flagged write keeps the user-facing limit). nobody is waiting on background
+work, so an overrunning statement is cancelled ON THE SERVER rather than allowed the user-facing
+limit; a client that simply gives up leaves the query burning CPU, which is how a 30-second open-book
+re-read kept running. the cancel surfaces as an ordinary `sql_error` reply, so the backend retries the
+page like any other transient SQL failure.
 
 one-time DBA op - `sys.dm_os_ring_buffers` and `sys.dm_os_schedulers` need VIEW SERVER STATE (the
 per-session `gp_cost` reading does not - a session may read its own row):

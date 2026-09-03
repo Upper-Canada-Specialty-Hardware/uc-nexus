@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi.testclient import TestClient
 
 import main
@@ -19,6 +21,10 @@ def test_health_endpoint():
         "relay_last_connected_at": None,
         "relay_last_disconnected_at": None,
         "relay_last_disconnect_reason": None,
+        # When GP's history drain may run, and whether it may right now. The first thing to check when
+        # the backfill looks stalled during the day - during the day it is supposed to be.
+        "backfill_window": main.gp_po_sync.BACKFILL_WINDOW.label,
+        "backfill_window_open": main.gp_po_sync.BACKFILL_WINDOW.allows(datetime.utcnow()),
     }
 
 

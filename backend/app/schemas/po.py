@@ -479,16 +479,23 @@ class POQueries:
 class POMutations:
     @strawberry.mutation
     async def sync_gp_pos(self, info: strawberry.Info) -> GpPoSyncResult:
-        """Admin: run one pass of the GP PO mirror now, instead of waiting out the poll interval
-        (gp-owned-po mirror). The background service already does this on a timer and on every relay
-        reconnect; this is for seeing the result immediately after a PO is created directly in GP, or
-        for kicking the first backfill. While the backfill is still running a pass mirrors one batch of
-        pages and reports backfill_done false; the loop keeps draining the rest on its own."""
-        # Only a small cap runs inline here - a full backfill is tens of minutes and would time out at
-        # the edge while the server ran on. Kick the background loop to drain the rest.
-        # all_companies because somebody pressed a button: the background loop takes one company per
-        # tick to keep its steady load off GP, but "sync now" is expected to look at all of them.
+        """Admin: kick the GP PO mirror now, instead of waiting out its own schedule (gp-owned-po
+        mirror). This is for seeing the result soon after a PO is created directly in GP, or for
+        kicking the first backfill.
+
+        What it does depends on where each company is. A company still BACKFILLING gets a bounded
+        batch of history pages inline and reports backfill_done false. A company whose history is
+        already mirrored gets its open-book refresh QUEUED - mode 'queued' - and the background loop
+        walks it next: that walk is ~94 pages for a company the size of UBC, tens of minutes, which
+        would time out at the edge and then race the loop for the same cursor. The loop is the only
+        thing that ever walks an open book."""
+        # all_companies because somebody pressed a button. The background loop never sweeps - it takes
+        # one company per turn and a reconnect does not change that - but "sync now" is expected to
+        # look at all of them, and every request inside still draws on the same read budget, so this
+        # is slower than a single company rather than heavier on GP.
         result = await gp_po_sync.run_once(backfill_max_pages=gp_po_sync.ADMIN_SYNC_BACKFILL_PAGES, all_companies=True)
+        # A queued refresh already woke the loop (request_refresh does it); this covers the backfill
+        # half, where the inline batch stopped at its cap and the rest is the loop's to drain.
         if result.get("mode") == "backfill" and not result.get("backfill_done"):
             gp_po_sync.wake()
         return GpPoSyncResult(

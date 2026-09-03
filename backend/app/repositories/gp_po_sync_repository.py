@@ -16,7 +16,7 @@ import uuid
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.enums import HardwareItemState, POOrigin, POStatus
@@ -386,3 +386,63 @@ def set_watermark(session: Session, company: str, watermark: datetime) -> None:
     state = get_or_create_sync_state(session, company)
     if state.watermark is None or watermark > state.watermark:
         state.watermark = watermark
+
+
+# --- the open-book walk ------------------------------------------------------------------------------
+
+# Stages a mirrored PO can be in while GP still has it in the OPEN purchase-order table. Anything past
+# these has left it, which is precisely what the closure sweep looks for.
+OPEN_STAGES = (POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED)
+
+
+def begin_open_pass(session: Session, company: str, started_at: datetime) -> tuple[str | None, datetime]:
+    """Start or resume the open-book walk. Returns (cursor to read from, the walk's start time).
+
+    A walk already in progress keeps BOTH its cursor and its original start time: the start time is
+    what closure detection compares gp_synced_at against, so moving it on a resume would declare every
+    PO read before the restart to have closed."""
+    state = get_or_create_sync_state(session, company)
+    if state.open_pass_started_at is None:
+        state.open_pass_started_at = started_at
+        state.open_book_cursor = None
+    return state.open_book_cursor, state.open_pass_started_at
+
+
+def advance_open_pass(session: Session, company: str, cursor: str | None) -> None:
+    """Store where the walk has reached. A null cursor means GP's last page was short, which the caller
+    turns into finish_open_pass - it is never stored, because null already means "no walk running"."""
+    if cursor is None:
+        return
+    get_or_create_sync_state(session, company).open_book_cursor = cursor
+
+
+def finish_open_pass(session: Session, company: str) -> None:
+    """The walk reached the end of GP's open table. Clearing both fields is what makes the next pass
+    start from the beginning with a fresh start time."""
+    state = get_or_create_sync_state(session, company)
+    state.open_book_cursor = None
+    state.open_pass_started_at = None
+
+
+def po_numbers_left_open(session: Session, company: str, since: datetime) -> list[str]:
+    """PO numbers Nexus still believes are open in GP but which this pass did not see.
+
+    `since` is when the walk started. The walk stamps gp_synced_at on every PO it reads, so a row that
+    is open here and was last synced BEFORE the walk began was not in GP's open table while the walk
+    ran: it has been received in full, closed, voided, or moved to history. Those are exactly the rows
+    worth spending budget on a by-number read for - and there is no other way to learn about them,
+    because a PO that has left the open table is invisible to every subsequent open-only page.
+
+    Ordered by po_number so the batches a caller cuts are stable across restarts."""
+    rows = session.execute(
+        select(PurchaseOrder.po_number)
+        .where(
+            PurchaseOrder.company == company,
+            PurchaseOrder.po_number.isnot(None),
+            PurchaseOrder.status.in_(OPEN_STAGES),
+            PurchaseOrder.deleted_at.is_(None),
+            or_(PurchaseOrder.gp_synced_at.is_(None), PurchaseOrder.gp_synced_at < since),
+        )
+        .order_by(PurchaseOrder.po_number)
+    ).all()
+    return [row[0] for row in rows]

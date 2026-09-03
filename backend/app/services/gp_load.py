@@ -13,13 +13,13 @@ actually paces the reads is the server's own live state, which the relay now rep
 
 Three mechanisms, in increasing order of bluntness:
 
-  1. BUDGET. Nexus's background reads get GP_SYNC_CPU_BUDGET_CORES of CPU on average. An op that cost
-     cpu_ms must be followed by cpu_ms / budget of quiet before the next one, so the long-run average
-     stays under budget no matter how expensive the individual reads turn out to be. At the 0.10
-     default an 800 ms page buys an 8 second gap.
+  1. BUDGET. A token bucket of GP_SYNC_READS_PER_MINUTE, where a token is one PO (or job) a request
+     will ask GP for, spent before the request goes out. Bounded work per request (GP_SYNC_READ_BATCH
+     keys) and a fixed number of reads per minute - not a gap between requests, because a gap between
+     two unbounded requests is still an unbounded read.
   2. PRESSURE. Per (company, op) rolling median of elapsed_ms. An op that took more than 3x its own
      median is the server telling us it is busy, and it is the only such signal available without
-     VIEW SERVER STATE - so it doubles the next wait.
+     VIEW SERVER STATE - so it charges the bucket an extra batch.
   3. PAUSE. With a real server sample, CPU at or above the pause threshold (or the runnable-task queue
      backed up) stops background reads outright, and a `server_busy` refusal from the relay does the
      same. Resume needs BOTH numbers back under their (lower) resume thresholds, so a server hovering
@@ -48,7 +48,9 @@ logger = logging.getLogger(__name__)
 _env_warned: set[str] = set()
 
 
-def env_number(name: str, default, cast, *, minimum, warned: set[str] | None = None, prefix: str = "gp load"):
+def env_number(
+    name: str, default, cast, *, minimum, maximum=None, warned: set[str] | None = None, prefix: str = "gp load"
+):
     """One numeric tunable from the environment, falling back to `default` on anything unparseable or
     below `minimum`, and logging that fallback once per variable.
 
@@ -64,7 +66,7 @@ def env_number(name: str, default, cast, *, minimum, warned: set[str] | None = N
         value = None
     # isfinite before the comparison: float("nan") parses happily and every comparison against it is
     # False, so a NaN would sail past a bare `< minimum` and become the throttle.
-    if value is None or not math.isfinite(value) or value < minimum:
+    if value is None or not math.isfinite(value) or value < minimum or (maximum is not None and value > maximum):
         seen = _env_warned if warned is None else warned
         if name not in seen:
             seen.add(name)
@@ -73,11 +75,23 @@ def env_number(name: str, default, cast, *, minimum, warned: set[str] | None = N
     return value
 
 
-# How much CPU Nexus's background reads may average on the GP server, in cores. 0.10 is a tenth of one
-# core - small enough to be invisible on any box that runs GP, large enough that a backfill still
-# finishes. The floor is 0.01 rather than 0: a zero budget is an infinite wait, which is not a throttle
-# but a deadlock.
-CPU_BUDGET_CORES = env_number("GP_SYNC_CPU_BUDGET_CORES", 0.10, float, minimum=0.01)
+# THE BUDGET. Every timer-driven GP read spends tokens from one process-wide bucket, and a token is
+# one PO (or job) the request will ask GP for. 100 a minute, refilling continuously, across every
+# company and both syncs - so the load Nexus puts on GP is a fixed, knowable number rather than
+# whatever a sequence of time gaps happens to produce.
+#
+# Time gaps were the wrong instrument. A 30-second gap between two requests that each re-read every
+# open PO in a company is still an unbounded read; UBC's 2,344-PO open-book re-read pinned the server
+# in ONE request, and UCSH's timed out at 30s on our side while GP kept executing it. The fix is
+# bounded work per request (READ_BATCH keys) and a fixed number of reads per minute (this).
+READS_PER_MINUTE = env_number("GP_SYNC_READS_PER_MINUTE", 100, int, minimum=1)
+# Keys per request: page size for a keyset page, and the chunk size for by-number reads. Capped at 100
+# because that is the relay's own per-request key cap - asking for more is a request it will refuse.
+# 25 at 100/minute is one small statement every 15 seconds.
+READ_BATCH = env_number("GP_SYNC_READ_BATCH", 25, int, minimum=1, maximum=100)
+# What one list_jobs costs the bucket. A company's job list cannot be paged and its size is not known
+# until the reply lands, so it is charged a flat estimate BEFORE the read rather than not at all.
+JOBS_PER_READ = env_number("GP_SYNC_JOBS_PER_READ", 100, int, minimum=1)
 # Pause/resume band for the live sample. The gap between them is the hysteresis: resuming at the same
 # number that paused would flap once per probe on a server sitting at the line.
 SERVER_CPU_PAUSE_PCT = env_number("GP_SYNC_SERVER_CPU_PAUSE_PCT", 70.0, float, minimum=1.0)
@@ -124,14 +138,56 @@ UNAVAILABLE = "unavailable"
 # --- pure decisions ----------------------------------------------------------------------------------
 
 
-def spacing_ms(cpu_ms: float | None, *, budget_cores: float | None = None) -> float:
-    """Quiet time one op earns, in ms: the wall clock over which its CPU cost averages out to the
-    budget. 400 ms of CPU at a 0.10-core budget is 4 s of wall clock. No cost reported (an older relay,
-    or an op the server did not account for) means no budget claim, hence no spacing."""
-    budget = CPU_BUDGET_CORES if budget_cores is None else budget_cores
-    if not cpu_ms or cpu_ms <= 0:
-        return 0.0
-    return cpu_ms / max(budget, 0.01)
+class TokenBucket:
+    """A continuously-refilling budget of GP reads.
+
+    Tokens are PO (or job) keys, not requests: a page of 25 costs 25, so a caller cannot get more work
+    out of GP by asking for it in fewer, larger requests. Refill is continuous rather than per-interval
+    so there is no edge for a burst to line up on - a caller that wants 25 tokens at 100/minute waits
+    15 seconds, every time, whatever the clock says.
+
+    Capacity equals one minute's rate, so an idle process may burst a minute's worth and no more. A
+    request larger than capacity is clamped to it rather than waiting forever, which is what stops a
+    misconfigured READ_BATCH from deadlocking the sync instead of merely slowing it."""
+
+    def __init__(self, rate_per_minute: float, *, capacity: float | None = None) -> None:
+        self._per_second = max(float(rate_per_minute), 1.0) / 60.0
+        self._capacity = float(capacity if capacity is not None else max(rate_per_minute, 1))
+        self._tokens = self._capacity
+        self._stamp = time.monotonic()
+
+    def _refill(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._stamp
+        if elapsed > 0:
+            self._tokens = min(self._capacity, self._tokens + elapsed * self._per_second)
+            self._stamp = now
+
+    @property
+    def capacity(self) -> float:
+        return self._capacity
+
+    def tokens(self) -> float:
+        self._refill()
+        return self._tokens
+
+    def wait_for(self, n: float) -> float:
+        """Seconds until `n` tokens exist. 0 when they already do."""
+        self._refill()
+        shortfall = min(float(n), self._capacity) - self._tokens
+        return 0.0 if shortfall <= 0 else shortfall / self._per_second
+
+    def take(self, n: float) -> None:
+        """Spend `n`. Callers wait first; this does not."""
+        self._refill()
+        self._tokens -= min(float(n), self._capacity)
+
+    def penalise(self, n: float) -> None:
+        """Spend `n` with no read to show for it - the pressure brake. Allowed to drive the balance
+        negative (bounded at one capacity) so the penalty is actually felt rather than absorbed by a
+        bucket that happened to be full."""
+        self._refill()
+        self._tokens = max(-self._capacity, self._tokens - float(n))
 
 
 def is_under_pressure(elapsed_ms: float | None, median_ms: float | None) -> bool:
@@ -140,31 +196,6 @@ def is_under_pressure(elapsed_ms: float | None, median_ms: float | None) -> bool
     if not elapsed_ms or not median_ms or median_ms <= 0:
         return False
     return elapsed_ms > median_ms * PRESSURE_MULTIPLE
-
-
-def pace_seconds(
-    *,
-    floor_seconds: float,
-    cpu_ms: float | None,
-    elapsed_ms: float | None,
-    under_pressure: bool = False,
-    budget_cores: float | None = None,
-) -> float:
-    """How long to stay quiet before the next background op.
-
-    The budget claim is spacing minus the time the op already spent - waiting is only owed for the
-    quiet the op has not already provided by being slow. The floor is the configured fixed delay, which
-    this can raise but never undercut.
-
-    Pressure doubles the result, capped at PRESSURE_MAX_FLOOR_MULTIPLE x the floor. The cap is on what
-    PRESSURE may add, not on the total: a genuinely expensive op whose budget spacing already exceeds
-    that cap keeps its spacing, because shrinking it would break the budget the cap exists to protect."""
-    spacing = spacing_ms(cpu_ms, budget_cores=budget_cores)
-    owed = (spacing - (elapsed_ms or 0.0)) / 1000.0
-    base = max(floor_seconds, owed)
-    if not under_pressure:
-        return base
-    return max(base, min(base * 2, floor_seconds * PRESSURE_MAX_FLOOR_MULTIPLE))
 
 
 def sample_age_seconds(sample: dict | None, *, now: datetime | None = None) -> float | None:
@@ -239,8 +270,7 @@ class GpLoadPolicy:
 
     def __init__(self) -> None:
         self._elapsed: dict[tuple[str, str], deque] = defaultdict(lambda: deque(maxlen=MEDIAN_WINDOW))
-        # Monotonic instant the next background op may start. In the past means "go now".
-        self._next_op_at: float = 0.0
+        self._bucket = TokenBucket(READS_PER_MINUTE)
         self._paused_reason: str | None = None
         self._probe_at: float = 0.0
         self._unavailable_warned = False
@@ -322,12 +352,19 @@ class GpLoadPolicy:
 
     # -- pacing ----------------------------------------------------------------------------------
 
-    def note_op(self, company: str, op: str, meta: dict | None, elapsed_ms: float, *, floor_seconds: float) -> float:
-        """Record what an op cost and when the next one may run. Returns the pace in seconds.
+    def note_op(self, company: str, op: str, meta: dict | None, elapsed_ms: float, *, reads: int) -> None:
+        """Record what an op cost. The BUCKET is the pace, so this sets no wait of its own - it feeds
+        the brake and the log.
 
         `elapsed_ms` is the backend's own wall-clock measurement of the round trip, used when the relay
         reports no cost block - it is always available and is never smaller than the server's own
-        elapsed, so falling back to it is conservative in the right direction."""
+        elapsed, so falling back to it is conservative in the right direction.
+
+        An op that took more than PRESSURE_MULTIPLE times its own median is the only load signal
+        available without VIEW SERVER STATE, and it now spends budget rather than adding a delay: a
+        READ_BATCH penalty against the bucket. That is self-limiting (the bucket refills) and cannot
+        deadlock, which a pressure-triggered PAUSE could - resuming needs a server sample, and a relay
+        that cannot read server load would never produce one."""
         meta = meta or {}
         cost = meta.get("cost") or {}
         self.note_sample(meta.get("server"))
@@ -338,44 +375,58 @@ class GpLoadPolicy:
         pressured = is_under_pressure(measured, median)
         self.observe(company, op, measured)
 
-        cpu_ms = cost.get("cpu_ms")
-        pace = pace_seconds(
-            floor_seconds=floor_seconds,
-            cpu_ms=cpu_ms,
-            elapsed_ms=measured,
-            under_pressure=pressured,
-        )
-        self._next_op_at = time.monotonic() + pace
-        if pace > floor_seconds:
+        if pressured:
+            self._bucket.penalise(READ_BATCH)
             logger.info(
-                "gp load: %s %s paced %.1fs (floor %.1fs) - cpu_ms=%s elapsed_ms=%.0f median_ms=%s%s",
+                "gp load: %s %s took %.0fms against a %.0fms median - charging %s reads of budget",
                 company,
                 op,
-                pace,
-                floor_seconds,
-                cpu_ms,
                 measured,
-                None if median is None else round(median),
-                " pressure=3x" if pressured else "",
+                median or 0.0,
+                READ_BATCH,
             )
-        return pace
+        logger.info(
+            "gp load: %s %s reads=%s cpu_ms=%s elapsed_ms=%.0f budget_left=%.0f/%s",
+            company,
+            op,
+            reads,
+            cost.get("cpu_ms"),
+            measured,
+            self._bucket.tokens(),
+            READS_PER_MINUTE,
+        )
 
-    def wait_seconds(self) -> float:
-        """Seconds still owed before the next background op may run."""
-        return max(0.0, self._next_op_at - time.monotonic())
+    async def acquire(self, n: int) -> float:
+        """Wait until `n` reads of budget exist, then spend them. Returns how long it waited.
 
-    def next_op_at(self) -> float:
-        return self._next_op_at
+        Nothing is acquired while the brake is on: a paused policy refuses rather than queues, so an
+        in-flight page loop stops where it is instead of resuming minutes later against a server that
+        is still busy. The refusal is a RelayBusyError because that is exactly what it is - GP is too
+        busy - and every caller already handles it."""
+        waited = 0.0
+        while True:
+            if self.paused:
+                raise RelayBusyError(f"GP reads are paused: {self.paused_reason}")
+            wait = self._bucket.wait_for(n)
+            if wait <= 0:
+                self._bucket.take(n)
+                return waited
+            waited += wait
+            await asyncio.sleep(wait)
 
-    def defer(self, seconds: float) -> None:
-        """Push the next-op instant out by hand, for a caller that could not run its op at all."""
-        self._next_op_at = max(self._next_op_at, time.monotonic() + max(0.0, seconds))
+    def budget_wait(self, n: int) -> float:
+        """Seconds before `n` reads could be acquired. For a loop deciding what to do next."""
+        return self._bucket.wait_for(n)
+
+    @property
+    def bucket(self) -> TokenBucket:
+        return self._bucket
 
     def reset(self) -> None:
-        """Drop every observation and clear the pause. For tests, and for a relay reconnect where the
-        medians describe a server we can no longer assume is the same one."""
+        """Drop every observation, refill the bucket and clear the pause. For tests, and for a relay
+        reconnect where the medians describe a server we can no longer assume is the same one."""
         self._elapsed.clear()
-        self._next_op_at = 0.0
+        self._bucket = TokenBucket(READS_PER_MINUTE)
         self._paused_reason = None
         self._probe_at = 0.0
 
@@ -391,27 +442,28 @@ async def paced_call(
     op: str,
     payload: dict | None = None,
     *,
-    floor_seconds: float,
+    reads: int,
     timeout: float | None = None,
     background: bool = True,
 ) -> dict:
-    """Run one op with pacing on both sides of it.
+    """Run one budgeted GP read.
+
+    `reads` is what this request will ask GP for, in PO or job keys - a 25-key page costs 25. It is
+    spent from the shared bucket BEFORE the request goes out, so the budget is enforced on work
+    requested rather than on work that turned out to be expensive after the fact.
 
     `background` is the flag the relay's busy gate keys on, and it defaults True because everything
     routed through here is a timer-driven read. The exception is a person pressing a button: the admin
     Sync from GP path runs the same code with background=False, so it is served rather than refused,
-    while still taking its turn in the budget - a deliberate action should be slow if the server is
-    busy, not silently dropped.
+    while still drawing on the same budget - a deliberate action should be slow if the server is busy,
+    not silently dropped.
 
-    Waits out whatever the previous op earned, makes the call, records the cost, and returns
-    {"result", "meta", "elapsed_ms", "cpu_ms", "sql_cpu_pct", "pace"} - everything a caller needs for
-    its own log line without reaching into the meta itself.
+    Returns {"result", "meta", "elapsed_ms", "cpu_ms", "sql_cpu_pct", "waited"}: everything a caller
+    needs for its own log line without reaching into the meta itself.
 
     A `server_busy` refusal enters the pause here rather than at each call site, so no caller can
     forget to; the error still propagates, because the caller's pass genuinely did not happen."""
-    wait = policy.wait_seconds()
-    if wait > 0:
-        await asyncio.sleep(wait)
+    waited = await policy.acquire(reads)
 
     started = time.monotonic()
     try:
@@ -421,7 +473,7 @@ async def paced_call(
         policy.note_busy(e)
         raise
     elapsed_ms = (time.monotonic() - started) * 1000
-    pace = policy.note_op(company, op, meta, elapsed_ms, floor_seconds=floor_seconds)
+    policy.note_op(company, op, meta, elapsed_ms, reads=reads)
     cost = (meta or {}).get("cost") or {}
     server = (meta or {}).get("server") or {}
     return {
@@ -430,7 +482,7 @@ async def paced_call(
         "elapsed_ms": elapsed_ms,
         "cpu_ms": cost.get("cpu_ms"),
         "sql_cpu_pct": server.get("sql_cpu_pct"),
-        "pace": pace,
+        "waited": waited,
     }
 
 

@@ -87,6 +87,13 @@ DEFAULT_LOAD_CEILING_PCT = 70
 # looks exactly like a broken relay and would have somebody "fixing" it by turning the gate off.
 MIN_LOAD_CEILING_PCT = 10
 
+# Command timeout for a read the backend declared BACKGROUND. Shorter than sql.command_timeout (30s) on
+# purpose: nobody is waiting on it, so an overrunning statement is worth cancelling ON THE SERVER rather
+# than letting it run to the user-facing limit. The relay kept a 30s open-book re-read running against a
+# company where it never finished; at 20s that statement is killed and the pass simply retries a smaller
+# page. The cancel is what matters - a client that gives up without one leaves the query burning CPU.
+DEFAULT_BACKGROUND_COMMAND_TIMEOUT = 20
+
 
 class GpCfg(BaseModel):
     # company -> paired custom warehouse DB that holds WHRECLINE101 (the table the company dashboards
@@ -95,6 +102,7 @@ class GpCfg(BaseModel):
     custom_db: dict[str, str] = {"UBC": "PMUBC", "UCSH": "PMUCSH"}
     buyers: BuyersCfg = BuyersCfg()
     load_ceiling_pct: int = DEFAULT_LOAD_CEILING_PCT
+    background_command_timeout_seconds: int = DEFAULT_BACKGROUND_COMMAND_TIMEOUT
 
     @field_validator("load_ceiling_pct", mode="before")
     @classmethod
@@ -109,6 +117,18 @@ class GpCfg(BaseModel):
         except (TypeError, ValueError):
             return DEFAULT_LOAD_CEILING_PCT
         return max(MIN_LOAD_CEILING_PCT, min(100, pct))
+
+    @field_validator("background_command_timeout_seconds", mode="before")
+    @classmethod
+    def _clamp_background_timeout(cls, value):
+        """Tolerant like the ceiling above, and for the same reason: a junk value in a safety setting
+        must not stop the relay from starting. Floored at 1 (0 means "no timeout" to pyodbc, which is
+        the exact failure this exists to prevent) and capped well under any sane statement."""
+        try:
+            seconds = int(value)
+        except (TypeError, ValueError):
+            return DEFAULT_BACKGROUND_COMMAND_TIMEOUT
+        return max(1, min(300, seconds))
 
 
 class LoggingCfg(BaseModel):
@@ -247,6 +267,8 @@ class Settings(BaseModel):
 #   UCNEXUS_RELAY_BACKEND_URL       -> [channel] backend_url       the single backend to dial
 #   UCNEXUS_RELAY_LOG_FILE          -> [logging] file              "-" means stdout only, no relay.log
 #   UCNEXUS_RELAY_LOAD_CEILING_PCT  -> [gp] load_ceiling_pct       GP CPU % that defers background work
+#   UCNEXUS_RELAY_BACKGROUND_TIMEOUT_SECONDS
+#                                   -> [gp] background_command_timeout_seconds
 
 
 def _section(data: dict, name: str) -> dict:
@@ -272,6 +294,10 @@ def _apply_env_overrides(data: dict) -> None:
     ceiling = os.environ.get("UCNEXUS_RELAY_LOAD_CEILING_PCT")
     if ceiling:
         _section(data, "gp")["load_ceiling_pct"] = ceiling.strip()
+
+    background_timeout = os.environ.get("UCNEXUS_RELAY_BACKGROUND_TIMEOUT_SECONDS")
+    if background_timeout:
+        _section(data, "gp")["background_command_timeout_seconds"] = background_timeout.strip()
 
 
 @lru_cache

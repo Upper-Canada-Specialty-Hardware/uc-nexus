@@ -3,8 +3,8 @@
 One row per enrolled GP company. The mirror runs in two phases and this row records which one it is
 in. During BACKFILL it walks GP's whole PO history in po-number order, advancing `backfill_cursor`
 after each drained page; when a page comes back short it flips `backfill_done` true. From then on it
-runs INCREMENTAL, re-pulling only rows GP has touched since `watermark` (minus a day's slack, because
-GP's modified date is day-granular and a same-day edit after the pass would otherwise be missed).
+runs INCREMENTAL, walking GP's open purchase orders in keyset pages (`open_book_cursor`) and then
+re-reading by number whatever has since left that table.
 
 The row dies with the schema on a dev reset, which needs no special handling: with no state the loop
 simply backfills fresh after the project sync has re-adopted the jobs a mirrored PO matches on.
@@ -33,6 +33,16 @@ class GpPoSyncState(Base):
     backfill_cursor: Mapped[str | None] = mapped_column(String(17), nullable=True)
     # True once a backfill page came back short (history drained). The loop then only runs incremental.
     backfill_done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Where the current open-book walk is up to, and when it started. Both null between passes.
+    #
+    # The incremental pass walks GP's OPEN purchase orders in keyset pages rather than asking for all
+    # of them at once - UBC's 2,344 open POs pinned the SQL server in a single request. The cursor is
+    # what lets a restart resume that walk instead of spending the read budget re-reading its start.
+    # `open_pass_started_at` is what makes closure detection survive the same restart: a PO still open
+    # in Nexus whose gp_synced_at predates the walk was not in GP's open table this pass, so it has
+    # closed, been voided or moved to history, and gets re-read by number.
+    open_book_cursor: Mapped[str | None] = mapped_column(String(17), nullable=True)
+    open_pass_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow

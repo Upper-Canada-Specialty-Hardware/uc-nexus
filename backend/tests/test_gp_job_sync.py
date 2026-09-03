@@ -46,14 +46,12 @@ NO_META = {"cost": None, "server": None}
 
 @pytest.fixture(autouse=True)
 def _no_pacing(monkeypatch):
-    """A fresh gp_load policy per test, and no floor between reads.
+    """A fresh read budget per test.
 
-    The policy is process-wide in production on purpose (one SQL server, one budget), so without this
-    every test here would inherit the previous one's next-op deadline and the four relay calls a
-    two-company pass makes would sleep a floor apart. What the pacing itself does is
-    tests/test_gp_load.py's job."""
+    The bucket is process-wide in production on purpose (one SQL server, one budget), so without this
+    a test would inherit the previous one's balance and the reads a two-company pass makes would wait
+    out real seconds. What the budget itself does is tests/test_gp_load.py's job."""
     monkeypatch.setattr(gp_job_sync.gp_load, "policy", gp_job_sync.gp_load.GpLoadPolicy())
-    monkeypatch.setattr(gp_job_sync, "COMPANY_FLOOR_SECONDS", 0.0)
 
 
 def _relay(monkeypatch, *, company="TUBC", jobs=None, raises=None, health=None, health_raises=None):
@@ -71,10 +69,14 @@ def _relay(monkeypatch, *, company="TUBC", jobs=None, raises=None, health=None, 
         if op == "job_setup_health":
             if health_raises is not None:
                 raise health_raises
+            wanted = (payload or {}).get("jobs")
             if health is not None:
-                return {"jobs": health}, NO_META
+                answer = health if wanted is None else [h for h in health if h.get("job_number") in wanted]
+                return {"jobs": answer}, NO_META
             reported = JOBS if jobs is None else jobs
             jobs_health = [{"job_number": j.get("job_number"), "ok": True, "issues": []} for j in reported]
+            if wanted is not None:
+                jobs_health = [h for h in jobs_health if h["job_number"] in wanted]
             return {"jobs": jobs_health}, NO_META
         if raises is not None:
             raise raises

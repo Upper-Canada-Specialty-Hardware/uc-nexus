@@ -73,11 +73,14 @@ class Measured:
     delta actually landed - a reply says "not measured" with null rather than with a zero, which would
     read as a free op."""
 
-    __slots__ = ("op", "company", "cpu_ms", "logical_reads", "elapsed_ms", "connections")
+    __slots__ = ("op", "company", "background", "cpu_ms", "logical_reads", "elapsed_ms", "connections")
 
-    def __init__(self, op: str, company: str):
+    def __init__(self, op: str, company: str, background: bool = False):
         self.op = op
         self.company = company
+        # The frame's own claim that nobody is waiting on this op. It decides the command timeout the
+        # connections opened inside the block get - see _command_timeout.
+        self.background = background
         self.cpu_ms = 0
         self.logical_reads = 0
         self.elapsed_ms = 0
@@ -114,11 +117,26 @@ _COST: dict[str, dict] = {}
 _COST_UNAVAILABLE_LOGGED = False
 
 
+def _command_timeout() -> int:
+    """How long a statement on a connection opened right now may run.
+
+    Background work gets the shorter [gp] background_command_timeout_seconds: nobody is waiting on it,
+    so an overrunning statement is cancelled on the server instead of being allowed to the user-facing
+    limit. Everything else keeps [sql] command_timeout, because somebody IS waiting and cutting their
+    PO create short to save the server a few seconds is the wrong trade."""
+    settings = get_settings()
+    measured = _CURRENT_OP.get()
+    if measured is not None and measured.background:
+        return settings.gp.background_command_timeout_seconds
+    return settings.sql.command_timeout
+
+
 @contextmanager
-def measuring(op: str, company: str):
+def measuring(op: str, company: str, background: bool = False):
     """Name the op that every connection opened inside this block is measured against, and yield the
-    Measured that collects what it cost - channel._dispatch reads `.cost` off it for the reply."""
-    measured = Measured(op, company)
+    Measured that collects what it cost - channel._dispatch reads `.cost` off it for the reply.
+    `background` also shortens those connections' command timeout (see _command_timeout)."""
+    measured = Measured(op, company, background)
     token = _CURRENT_OP.set(measured)
     try:
         yield measured
@@ -231,7 +249,7 @@ def reset_cost() -> None:
 def get_connection(company: str):
     """Transactional connection for eConnect orchestration (autocommit off)."""
     conn = pyodbc.connect(build_conn_string(company), autocommit=False)
-    conn.timeout = get_settings().sql.command_timeout
+    conn.timeout = _command_timeout()
     # SET NOCOUNT ON for the whole session: eConnect procs do heavy internal DML, and the
     # "(N rows affected)" count messages otherwise push our trailing `SELECT @err` off pyodbc's
     # first result set -> "No results. Previous SQL was not a query." NOCOUNT suppresses the
@@ -250,7 +268,7 @@ def get_read_connection(company: str):
     """Read-only connection (autocommit) for plain SELECTs - no eConnect, no writes, no held
     transaction. Used by /vendors and any other pure read."""
     conn = pyodbc.connect(build_conn_string(company), autocommit=True)
-    conn.timeout = get_settings().sql.command_timeout
+    conn.timeout = _command_timeout()
     opened = _sample(conn)
     try:
         yield conn

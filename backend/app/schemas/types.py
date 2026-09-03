@@ -335,9 +335,13 @@ class GpJobSyncResult:
 
 @strawberry.type
 class GpPoSyncResult:
-    """What one pass of the GP PO mirror did (gp-owned-po mirror). `mode` is 'backfill' | 'incremental'
-    | 'unsupported' (relay too old); `created`/`updated` count the rows the pass wrote; `backfill_done`
-    is whether history is fully mirrored yet."""
+    """What one pass of the GP PO mirror did (gp-owned-po mirror).
+
+    `mode` is 'backfill' (history pages were drained inline) | 'queued' (the open-book refresh was
+    handed to the background loop, which is the only thing that walks one - a walk is tens of minutes
+    and cannot run inside a request) | 'incremental' | 'unsupported' (relay too old). `created` /
+    `updated` count the rows the pass wrote, and are 0 for a queued refresh because nothing was read
+    yet. `backfill_done` is whether history is fully mirrored."""
 
     mode: str
     created: int

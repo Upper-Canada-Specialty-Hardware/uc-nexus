@@ -254,7 +254,7 @@ def test_every_op_a_loop_calls_can_be_deferred(monkeypatch, serving, _no_real_sq
     # The set is the audit of the backend's timer-driven callers and the outer bound on what a
     # `background` flag may ever defer; a new one added to _OPS without being classified is the
     # failure this guards.
-    assert channel.BACKGROUND_OPS == {"sync_pos", "list_jobs", "job_setup_health"}
+    assert channel.BACKGROUND_OPS == {"sync_pos", "read_pos_by_number", "list_jobs", "job_setup_health"}
     serving(["UBC"])
     _ceiling(monkeypatch, 70)
     _server_at(monkeypatch, 95)
@@ -565,3 +565,98 @@ def test_the_gate_books_its_own_sampling_as_server_load(monkeypatch, serving):
         }
     finally:
         db.reset_cost()
+
+
+# --- the command timeout a background read gets --------------------------------------------------------
+
+
+class _TimedConn:
+    """Records the command timeout db set on it. No session accounting, so nothing is booked."""
+
+    def __init__(self):
+        self.autocommit = True
+        self.timeout = None
+        self.closed = False
+
+    def cursor(self):
+        return _TimedCursor()
+
+    def close(self):
+        self.closed = True
+
+
+class _TimedCursor:
+    def execute(self, sql, *params):
+        return self
+
+    def fetchone(self):
+        return None
+
+
+def _timeout_seen(monkeypatch, serving, *, background):
+    serving(["UBC"])
+    conn = _TimedConn()
+
+    class _Pyodbc:
+        Error = RuntimeError
+
+        @staticmethod
+        def connect(conn_str, **kw):
+            return conn
+
+    monkeypatch.setattr(db, "pyodbc", _Pyodbc)
+    monkeypatch.setattr(econnect, "list_jobs", lambda conn: [])
+    reply = channel._dispatch("list_jobs", "UBC", {}, None, background)
+    assert reply["ok"] is True  # the load sample is unavailable in tests, so nothing is deferred
+    return conn.timeout
+
+
+def test_a_background_read_gets_the_short_command_timeout(monkeypatch, serving):
+    # Nobody is waiting on it, so an overrunning statement is cancelled ON THE SERVER rather than
+    # allowed the user-facing limit - the 30s open-book re-read that never finished is the reason.
+    assert _timeout_seen(monkeypatch, serving, background=True) == (
+        get_settings().gp.background_command_timeout_seconds
+    )
+
+
+def test_a_user_facing_read_keeps_the_normal_command_timeout(monkeypatch, serving):
+    # Cutting somebody's own read short to save the server a few seconds is the wrong trade.
+    assert _timeout_seen(monkeypatch, serving, background=False) == get_settings().sql.command_timeout
+
+
+def test_the_two_timeouts_are_actually_different():
+    assert get_settings().gp.background_command_timeout_seconds < get_settings().sql.command_timeout
+
+
+def test_a_statement_the_server_cancelled_is_a_normal_sql_error(monkeypatch, serving, _no_real_sql):
+    # pyodbc raises on the timeout; it must come back as the same sql_error any other SQL failure does,
+    # so the backend retries the page rather than treating it as a protocol fault.
+    serving(["UBC"])
+
+    def _timed_out(conn):
+        raise channel.pyodbc.Error("HYT00", "[HYT00] [Microsoft][ODBC Driver 17] Query timeout expired")
+
+    monkeypatch.setattr(econnect, "list_jobs", _timed_out)
+    reply = channel._dispatch("list_jobs", "UBC", {}, None, True)
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "sql_error"
+    assert "timeout expired" in reply["error"]["message"].lower()
+
+
+def test_the_background_timeout_defaults_to_twenty_seconds(tmp_path):
+    assert get_settings(str(tmp_path / "none.toml")).gp.background_command_timeout_seconds == 20
+
+
+def test_config_and_env_set_the_background_timeout(tmp_path, monkeypatch):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[gp]\nbackground_command_timeout_seconds = 8\n", encoding="utf-8")
+    assert get_settings(str(cfg)).gp.background_command_timeout_seconds == 8
+    monkeypatch.setenv("UCNEXUS_RELAY_BACKGROUND_TIMEOUT_SECONDS", "12")
+    assert get_settings(str(tmp_path / "env.toml")).gp.background_command_timeout_seconds == 12
+
+
+def test_the_background_timeout_is_never_zero(tmp_path):
+    # 0 means "wait forever" to pyodbc, which is the exact failure this setting exists to prevent.
+    cfg = tmp_path / "config.toml"
+    cfg.write_text("[gp]\nbackground_command_timeout_seconds = 0\n", encoding="utf-8")
+    assert get_settings(str(cfg)).gp.background_command_timeout_seconds == 1
