@@ -12,6 +12,10 @@ meant this workstation to touch.
 
 Refreshed on every channel connect and on a timer while a channel is up (channel.py), so a company
 added in GP reaches the backend without a restart.
+
+The one thing the master does not get to decide is config.EXCLUDED_COMPANIES: those are dropped here,
+before anything else sees the reading, so a company nobody may touch is invisible to every consumer at
+once rather than needing a refusal in each of them.
 """
 
 import time
@@ -20,7 +24,7 @@ from dataclasses import dataclass, field
 import pyodbc
 
 from . import db
-from .config import get_settings
+from .config import EXCLUDED_COMPANIES, get_settings
 from .logging_setup import get_logger
 
 logger = get_logger()
@@ -76,6 +80,18 @@ def discover() -> Discovery:
         if not code:
             continue
         names[code] = (name or "").strip() or code
+    excluded = [code for code in sorted(names) if code in EXCLUDED_COMPANIES]
+    for code in excluded:
+        del names[code]
+    if excluded:
+        logger.info(
+            "GP companies dropped from this discovery; this relay never serves them",
+            extra={"category": "companies_excluded", "companies": excluded},
+        )
+        if not names:
+            # Distinct from a failed read, and the message has to say so: an operator who sees "serving
+            # no GP company" needs to know GP answered and every company it named is excluded here.
+            return Discovery([], {}, f"every GP company discovered is excluded from this relay: {', '.join(excluded)}")
     return Discovery(sorted(names), names)
 
 

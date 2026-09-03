@@ -116,6 +116,13 @@ while a channel is up, and each hello frame carries it as `companies` + `company
 re-sends the hello on the same socket. a relay that cannot read the master serves NO company - the
 frame carries `companies_error` and every op is refused with `company_not_allowed` quoting it.
 
+one company never survives that reading: `TUCSH` is dropped from the discovery itself
+(`config.EXCLUDED_COMPANIES`, baked like the sandbox pin so it is not one typo away from coming back).
+it is an old testing sandbox from before the current development policies and its data is
+unpredictable, so executives ruled it out of every relay interaction (2026-09-03). the drop is upstream
+of everything else - it never reaches a hello frame, so no backend syncs it or offers it in a picker,
+and an op for it is refused with `company_not_allowed` exactly like a company GP does not hold.
+
 more than one backend (#414)
 
 the relay holds one independent reconnecting channel per configured URL. that exists so a Railway PR
