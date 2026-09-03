@@ -1,7 +1,7 @@
 """Company-scope the jobless PO-number key, and widen the GP-fed cost columns
 
-Revision ID: 105
-Revises: 104
+Revision ID: 106
+Revises: 105
 Create Date: 2026-09-03
 
 Two failures the mirror hit the moment #667 pointed it at all twelve GP companies instead of one.
@@ -30,8 +30,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "105"
-down_revision = "104"
+revision = "106"
+down_revision = "105"
 branch_labels = None
 depends_on = None
 
