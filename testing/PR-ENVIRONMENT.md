@@ -29,9 +29,10 @@ The environment is named `uc-nexus-pr-<N>`, NOT `pr-<N>` - the Railway CLI answe
 "pr-511" not found` for the latter, which reads like the environment is missing.
 
 **`.github/workflows/preview-env.yml` owns every build in it.** It forks the environment from
-production, repoints the forked deployment triggers at the PR branch, sets the testing variables, and
-then deploys each of the three services for that PR head commit and waits on the deployment id it
-created. Railway is not asked to decide what to build, and the workflow reads no deployment it did not
+production, deletes the environment's deployment triggers so Railway can never push-deploy it (and so
+never posts a "Deployment cancelled" commit status for a build the workflow superseded), sets the
+testing variables, and then deploys each of the three services for that PR head commit and waits on
+the deployment id it created. Railway is not asked to decide what to build, and the workflow reads no deployment it did not
 start. What follows is what the environment can show you, and how to read it when the check goes red -
 not a checklist to run per PR.
 
@@ -214,8 +215,9 @@ fails silently when it is missing.
 - **Switch Railway's own PR-environments toggle (`prDeploys`) off**, once this is on master. The
   workflow forks every environment itself and `preview-env-cleanup.yml` deletes it on close (Railway
   only tears down environments it created). Leaving the toggle on is not destructive - the workflow
-  resolves an environment Railway made instead of forking one, and repoints its triggers at the PR
-  branch - but it means two systems create environments while only one owns the builds.
+  resolves an environment Railway made instead of forking one, and deletes its triggers just the same -
+  but it means two systems create environments while only one owns the builds, and Railway's own
+  first deploy of that environment is the one build the workflow adopts rather than starts.
 
 ## What a PR environment still cannot show
 

@@ -2,11 +2,11 @@ name: preview-env
 
 # Builds and hands off a signed-in-ready test environment for every non-draft PR.
 #
-# The workflow owns every build in that environment. It resolves uc-nexus-pr-<N> or forks one from
-# production, repoints the forked deployment triggers at the PR branch, sets the testing variables,
-# and then deploys each service for THIS PR head sha and waits on the deployment id it created. It
-# reads no other Railway deployment state, so a build it did not start can neither satisfy the gate
-# nor confuse it.
+# The workflow owns every build in that environment, and is the ONLY thing that may start one. It
+# resolves uc-nexus-pr-<N> or forks one from production, DELETES the environment's deployment triggers
+# so Railway can never deploy it on a push, sets the testing variables, and then deploys each service
+# for THIS PR head sha and waits on the deployment id it created. It reads no other Railway deployment
+# state, so a build it did not start can neither satisfy the gate nor confuse it.
 #
 # Relay state is REPORTED, never gated on. The only relay is the workstation relay, which finds a
 # preview through production's registry (app/services/preview_announce.py) and dials it over the
@@ -27,12 +27,25 @@ name: preview-env
 #   - environmentDelete is asynchronous, and the environments LIST drops the row immediately while the
 #     NAME stays reserved until the teardown finishes. A list poll therefore proves nothing; only
 #     environmentCreate itself can tell when the name is free, so it is retried until it takes.
-#   - A fork's deployment triggers keep the SOURCE environment's branch, so Railway would deploy master
-#     into the preview on its next push. deploymentTriggerUpdate(id,{branch}) is per-environment -
-#     DeploymentTrigger carries environmentId - so repointing them cannot reach production.
-#     serviceConnect is service-level and WOULD, which is why it is not used here.
+#   - A preview environment carries NO deployment triggers. A fork inherits production's (pointed at
+#     master, which Railway would then deploy into the preview), and a trigger pointed at the PR branch
+#     is no better: it makes Railway a SECOND deployer. On a push it starts its own build of the same
+#     commit, Railway keeps one deployment in flight per service and REMOVES the loser, and Railway's
+#     GitHub app posts commit status "UC Nexus - <service>" state error "Deployment cancelled" for the
+#     removed one while posting nothing at all for an API-triggered deploy - so the head sha stays red
+#     on a PR that failed nothing. The same push also queues a build for a service whose watch paths did
+#     not change, which sits WAITING for many minutes before Railway SKIPs it, and the wait below would
+#     sit behind it. So every trigger in this environment is deleted, not repointed.
+#     deploymentTriggerDelete(id) cannot reach production by construction: DeploymentTrigger carries
+#     environmentId, the ids come from environment($ENV_ID) and nowhere else, and production's master
+#     triggers are different rows under a different environmentId. serviceConnect is service-level and
+#     WOULD reach production, which is why it is not used here.
+#   - A service's repo source (ServiceInstance.source.repo) is a separate object from its deployment
+#     trigger, so serviceInstanceDeployV2(serviceId, environmentId, commitSha) still builds that repo at
+#     that sha with no trigger present. Confirmed against the schema and against the live project.
 #   - environmentTriggersDeploy fires the environment's repo triggers, so it answers ok and deploys
-#     NOTHING for the image-backed Postgres. serviceInstanceDeployV2(serviceId, environmentId,
+#     NOTHING for the image-backed Postgres - and now that this environment has no triggers at all, it
+#     would deploy nothing whatsoever. serviceInstanceDeployV2(serviceId, environmentId,
 #     commitSha) deploys the instance whatever its source kind and returns the new deployment id, so a
 #     silent no-op cannot hide. Deployment.meta is a JSON scalar carrying commitHash, which is how a
 #     build for this head sha is recognized on a re-run.
@@ -41,7 +54,9 @@ name: preview-env
 #     scroll this PR's own build out of view after enough pushes.
 #   - DeploymentStatus has no CANCELLED. Working: BUILDING / DEPLOYING / QUEUED / WAITING /
 #     INITIALIZING / NEEDS_APPROVAL. Terminal non-success: CRASHED / FAILED / REMOVED / REMOVING /
-#     SKIPPED / SLEEPING.
+#     SKIPPED / SLEEPING. WAITING is Railway holding a build it has not started, and it can hold one for
+#     a very long time before deciding to SKIP it, so a build this workflow did not create is only
+#     waited on while it moves off WAITING - see ensure_deployed.
 #   - Variables apply at deploy time, so every upsert here passes skipDeploys and the deploy pass below
 #     is what carries them. A service whose variables this run changed therefore cannot reuse an
 #     existing deployment for the same commit - that build predates the change.
@@ -183,29 +198,47 @@ jobs:
             return 1
           }
 
-          # A fork's triggers track production's branch, so Railway would deploy master into this
-          # preview on the next push to master. Repoint every trigger in THIS environment at the PR
-          # branch, then read them back.
-          align_triggers() {
+          # Take Railway out of the deploying business for this environment: delete every trigger it has,
+          # then read the environment back and say what is left. A fork inherits production's triggers
+          # (master), and repointing them at the PR branch only swaps one wrong deployer for another -
+          # Railway would race this workflow on every push, lose, and post the loser's "Deployment
+          # cancelled" as a red commit status on the head sha.
+          #
+          # Production is unreachable from here BY CONSTRUCTION, not by care: DeploymentTrigger carries
+          # environmentId, every id below comes out of environment($ENV_ID), and production's triggers
+          # are different rows under a different environmentId. Nothing here is service-level.
+          #
+          # A delete that will not go through falls back to the old repoint, so a fork can never be left
+          # holding a trigger that would deploy master into this preview.
+          strip_triggers() {
             local data id br left
             data=$(rgql 'query($id:String!){ environment(id:$id){ deploymentTriggers{ edges{ node{ id branch } } } } }' \
               "$(jq -cn --arg id "$ENV_ID" '{id:$id}')") \
               || { echo "::warning::could not read the deployment triggers on $ENV_NAME"; return 1; }
             while read -r id br; do
               [ -n "$id" ] || continue
-              [ "$br" = "$HEAD_REF" ] && continue
-              rgql 'mutation($id:String!,$input:DeploymentTriggerUpdateInput!){ deploymentTriggerUpdate(id:$id,input:$input){ id branch } }' \
-                "$(jq -cn --arg id "$id" --arg b "$HEAD_REF" '{id:$id,input:{branch:$b}}')" >/dev/null \
-                && echo "  trigger $id repointed: $br -> $HEAD_REF" \
-                || echo "::warning::could not repoint deployment trigger $id from $br to $HEAD_REF"
+              if rgql 'mutation($id:String!){ deploymentTriggerDelete(id:$id) }' \
+                "$(jq -cn --arg id "$id" '{id:$id}')" >/dev/null; then
+                echo "  trigger $id ($br) deleted from $ENV_NAME"
+              else
+                echo "::warning::could not delete deployment trigger $id ($br) on $ENV_NAME; repointing it at $HEAD_REF instead"
+                rgql 'mutation($id:String!,$input:DeploymentTriggerUpdateInput!){ deploymentTriggerUpdate(id:$id,input:$input){ id branch } }' \
+                  "$(jq -cn --arg id "$id" --arg b "$HEAD_REF" '{id:$id,input:{branch:$b}}')" >/dev/null \
+                  && echo "  trigger $id repointed: $br -> $HEAD_REF" \
+                  || echo "::warning::could not repoint deployment trigger $id from $br to $HEAD_REF either"
+              fi
             done <<<"$(printf '%s' "$data" | jq -r '.environment.deploymentTriggers.edges[]?|"\(.node.id) \(.node.branch)"')"
-            left=$(rgql 'query($id:String!){ environment(id:$id){ deploymentTriggers{ edges{ node{ branch } } } } }' \
-              "$(jq -cn --arg id "$ENV_ID" '{id:$id}')" \
-              | jq -r --arg b "$HEAD_REF" '[.environment.deploymentTriggers.edges[]?.node.branch|select(. != $b)]|join(", ")')
+            # Read it back and say so out loud. The read is checked on its own, because a failed query
+            # also yields an empty list and "none left" must never be printed on the strength of a
+            # question Railway did not answer.
+            data=$(rgql 'query($id:String!){ environment(id:$id){ deploymentTriggers{ edges{ node{ branch } } } } }' \
+              "$(jq -cn --arg id "$ENV_ID" '{id:$id}')") \
+              || { echo "::warning::could not read the deployment triggers back on $ENV_NAME"; return 1; }
+            left=$(printf '%s' "$data" | jq -r '[.environment.deploymentTriggers.edges[]?.node.branch]|join(", ")')
             if [ -n "$left" ]; then
-              echo "::warning::deployment triggers still tracking [$left] on $ENV_NAME"
+              echo "::warning::deployment triggers still on $ENV_NAME after the delete pass [$left]; Railway can still push-deploy this environment"
             else
-              echo "deployment triggers all track $HEAD_REF"
+              echo "no deployment triggers on $ENV_NAME; this workflow is its only deployer"
             fi
           }
 
@@ -277,8 +310,12 @@ jobs:
             printf '%s' "$out" | jq -re '.serviceInstanceDeployV2 // empty' || return 1
           }
           DEPLOY_STATUS=""; DEPLOY_ID=""
-          wait_deployment() {  # $1 deployment id, $2 label, $3 timeout -> 0 on SUCCESS
-            local dep="$1" label="$2" timeout="$3" waited=0 status
+          # 0 = SUCCESS, 1 = terminal non-success or the overall timeout, 2 = still QUEUED after $4
+          # seconds of unbroken WAITING. WAITING is "Railway has not started this build", not "it is
+          # slow": a build that is running reads BUILDING/DEPLOYING, so the streak resets the moment it
+          # moves. The cap is only ever passed for a deployment this run did not create.
+          wait_deployment() {  # $1 deployment id, $2 label, $3 timeout, $4 queued cap (0/absent = none)
+            local dep="$1" label="$2" timeout="$3" cap="${4:-0}" waited=0 queued=0 status
             while [ "$waited" -lt "$timeout" ]; do
               status=$(rgql 'query($id:String!){ deployment(id:$id){ status } }' \
                 "$(jq -cn --arg id "$dep" '{id:$id}')" | jq -r '.deployment.status // empty')
@@ -287,6 +324,11 @@ jobs:
               [ "$status" = "SUCCESS" ] && return 0
               case "$status" in
                 CRASHED|FAILED|REMOVED|REMOVING|SKIPPED|SLEEPING) return 1 ;;
+                WAITING)
+                  queued=$((queued+15))
+                  if [ "$cap" -gt 0 ] && [ "$queued" -ge "$cap" ]; then return 2; fi
+                  ;;
+                *) queued=0 ;;
               esac
               sleep 15; waited=$((waited+15))
             done
@@ -296,20 +338,35 @@ jobs:
           # One deployment per service per run: reuse one already carrying this build, else create one
           # and wait on THAT id. force=true when this run changed the service's variables, because a
           # build for the same commit that predates the change cannot carry them.
+          #
+          # An ADOPTED deployment - one Railway started, so the initial deploy of an environment Railway
+          # provisioned, or a build left over from an earlier run - is still waited on rather than
+          # superseded, but only while it moves. One that is STILL QUEUED after five minutes is one
+          # Railway is in no hurry to run: on pr-674 such a deploy sat WAITING eighteen minutes and was
+          # then SKIPPED, and the job died on its own timeout behind it. Drop it and build this sha.
+          # A deployment this run created never gets that cap - there is nothing better to replace it
+          # with, and dropping it would just loop.
           ensure_deployed() {  # $1 service id, $2 label, $3 force, $4 sha|nosha
-            local sid="$1" label="$2" force="$3" mode="$4" want="any" dep=""
+            local sid="$1" label="$2" force="$3" mode="$4" want="any" dep="" cap=0 rc
             [ "$mode" = "sha" ] && want="sha"
             if [ "$force" != "true" ]; then
               dep=$(usable_deployment "$sid" "$want")
-              [ -n "$dep" ] && echo "$label already has a deployment for this build ($dep); waiting on it"
+              [ -n "$dep" ] && { cap=300; echo "$label already has a deployment for this build ($dep); waiting on it"; }
             fi
             if [ -z "$dep" ]; then
               dep=$(create_deploy "$sid" "$mode") || { echo "::error::could not deploy $label"; exit 1; }
               echo "$label deployment $dep created"
             fi
             DEPLOY_ID="$dep"
-            wait_deployment "$dep" "$label" 1200 && return 0
-            echo "::warning::$label deployment $dep settled to $DEPLOY_STATUS; deploying it once more"
+            wait_deployment "$dep" "$label" 1200 "$cap"; rc=$?
+            [ "$rc" = "0" ] && return 0
+            if [ "$rc" = "2" ]; then
+              echo "$label deployment $dep is still queued after five minutes; removing it and deploying this sha instead"
+              rgql 'mutation($id:String!){ deploymentRemove(id:$id) }' "$(jq -cn --arg id "$dep" '{id:$id}')" >/dev/null \
+                || echo "::warning::could not remove the queued $label deployment $dep; deploying over it anyway"
+            else
+              echo "::warning::$label deployment $dep settled to $DEPLOY_STATUS; deploying it once more"
+            fi
             dep=$(create_deploy "$sid" "$mode") || { echo "::error::could not re-deploy $label"; exit 1; }
             DEPLOY_ID="$dep"
             wait_deployment "$dep" "$label" 1200 && return 0
@@ -383,7 +440,11 @@ jobs:
             local be_vars desired pair
             BE_FORCE=false
             ensure_env || { echo "::error::could not resolve or create environment $ENV_NAME (production env id: ${PROD_ENV_ID:-unresolved})"; exit 1; }
-            align_triggers
+            # First thing after the environment exists, before any deploy, and on BOTH paths: an
+            # environment Railway provisioned carries its own triggers, a fork carries production's, and
+            # the fresh fork a stranded environment is replaced with carries them too - provision() runs
+            # again for that one, so it strips them again.
+            strip_triggers
             load_project_services || { echo "::error::could not list the project's services"; exit 1; }
             PG_ID=$(proj_svc_id "Postgres"); BE_ID=$(proj_svc_id "backend"); FE_ID=$(proj_svc_id "frontend")
             for pair in "Postgres=$PG_ID" "backend=$BE_ID" "frontend=$FE_ID"; do
