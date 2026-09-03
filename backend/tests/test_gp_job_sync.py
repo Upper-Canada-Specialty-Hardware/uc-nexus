@@ -38,27 +38,56 @@ def _clean_up_test_projects(_migrate_database):
         session.commit()
 
 
+# What a reply carries when the relay reports no accounting - an older build, or an op the server did
+# not account for. Pacing then falls back to its floor, which is what these tests want: they are about
+# adoption, not about what a read cost GP.
+NO_META = {"cost": None, "server": None}
+
+
+@pytest.fixture(autouse=True)
+def _no_pacing(monkeypatch):
+    """A fresh gp_load policy per test, and no floor between reads.
+
+    The policy is process-wide in production on purpose (one SQL server, one budget), so without this
+    every test here would inherit the previous one's next-op deadline and the four relay calls a
+    two-company pass makes would sleep a floor apart. What the pacing itself does is
+    tests/test_gp_load.py's job."""
+    monkeypatch.setattr(gp_job_sync.gp_load, "policy", gp_job_sync.gp_load.GpLoadPolicy())
+    monkeypatch.setattr(gp_job_sync, "COMPANY_FLOOR_SECONDS", 0.0)
+
+
 def _relay(monkeypatch, *, company="TUBC", jobs=None, raises=None, health=None, health_raises=None):
     """Fake the relay socket. `health` is the job_setup_health answer (#425); left None it echoes the
-    job list as all-healthy, so the existing adoption tests are unaffected by the health pass."""
+    job list as all-healthy, so the existing adoption tests are unaffected by the health pass.
+
+    BOTH entry points are faked, with relay_call delegating to relay_call_with_meta exactly as the real
+    gateway does. The sync's own reads go through gp_load.paced_call, which calls relay_call_with_meta;
+    check_job_setup_live still calls relay_call. Faking only one leaves the other running against a
+    socket that does not exist, which fails as "the relay could not read jobs for any company"."""
     calls: list[tuple] = []
 
-    async def _call(_company, op, payload=None, timeout=None):
+    async def _call_with_meta(_company, op, payload=None, timeout=None, *, background=False):
         calls.append((_company, op, payload))
         if op == "job_setup_health":
             if health_raises is not None:
                 raise health_raises
             if health is not None:
-                return {"jobs": health}
+                return {"jobs": health}, NO_META
             reported = JOBS if jobs is None else jobs
-            return {"jobs": [{"job_number": j.get("job_number"), "ok": True, "issues": []} for j in reported]}
+            jobs_health = [{"job_number": j.get("job_number"), "ok": True, "issues": []} for j in reported]
+            return {"jobs": jobs_health}, NO_META
         if raises is not None:
             raise raises
-        return {"jobs": JOBS if jobs is None else jobs}
+        return {"jobs": JOBS if jobs is None else jobs}, NO_META
+
+    async def _call(_company, op, payload=None, timeout=None, *, background=False):
+        result, _ = await _call_with_meta(_company, op, payload, timeout, background=background)
+        return result
 
     companies = [company] if isinstance(company, str) else list(company or [])
     monkeypatch.setattr(type(gp_job_sync.relay_gateway), "companies", property(lambda self: companies))
     monkeypatch.setattr(type(gp_job_sync.relay_gateway), "connected", property(lambda self: bool(companies)))
+    monkeypatch.setattr(gp_job_sync.relay_gateway, "relay_call_with_meta", _call_with_meta)
     monkeypatch.setattr(gp_job_sync.relay_gateway, "relay_call", _call)
     return calls
 
@@ -278,15 +307,20 @@ def test_a_pass_covers_every_company_the_relay_serves(monkeypatch):
 def test_one_companys_failure_does_not_cost_the_others_their_pass(monkeypatch):
     """#637: a company whose GP read fails must not leave every other company's new jobs unadopted."""
 
-    async def _call(company, op, payload=None, timeout=None):
+    async def _call_with_meta(company, op, payload=None, timeout=None, *, background=False):
         if company == "TUBC" and op == "list_jobs":
             raise RuntimeError("GP is down for this company")
         if op == "job_setup_health":
-            return {"jobs": []}
-        return {"jobs": [{"job_number": "SYNC-380-B", "job_name": "Second job"}]}
+            return {"jobs": []}, NO_META
+        return {"jobs": [{"job_number": "SYNC-380-B", "job_name": "Second job"}]}, NO_META
+
+    async def _call(company, op, payload=None, timeout=None, *, background=False):
+        result, _ = await _call_with_meta(company, op, payload, timeout, background=background)
+        return result
 
     monkeypatch.setattr(type(gp_job_sync.relay_gateway), "companies", property(lambda self: ["TUBC", "UCSH"]))
     monkeypatch.setattr(type(gp_job_sync.relay_gateway), "connected", property(lambda self: True))
+    monkeypatch.setattr(gp_job_sync.relay_gateway, "relay_call_with_meta", _call_with_meta)
     monkeypatch.setattr(gp_job_sync.relay_gateway, "relay_call", _call)
 
     total, adopted = asyncio.run(gp_job_sync.run_once())
