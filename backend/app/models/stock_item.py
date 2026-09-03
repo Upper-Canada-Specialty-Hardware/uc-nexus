@@ -38,7 +38,9 @@ class StockItem(Base):
     bay: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # Cost per unit for rows that entered off-PO (the SharePoint migration). Null on rows whose cost
     # lives on a PO line; valuation reads coalesce(po_line.unit_cost, row.unit_cost, 0).
-    unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
+    # Numeric(19,5) for the same reason as inventory_locations.unit_cost: a destock or a transfer
+    # copies that column onto this one, so a GP-fed cost ends up here as well.
+    unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(19, 5), nullable=True)
     received_at: Mapped[datetime] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

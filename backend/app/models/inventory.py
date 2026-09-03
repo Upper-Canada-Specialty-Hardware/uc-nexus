@@ -67,7 +67,10 @@ class InventoryLocation(Base):
     # Cost per unit for rows with no PO origin (the SharePoint migration). Null when the cost lives on
     # a PO line; travels with the units the way the origin FKs do (allocate/destock/transfer/split all
     # carry it). Valuation reads coalesce(po_line.unit_cost, row.unit_cost, 0).
-    unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
+    # Numeric(19,5) tracks po_line_items.unit_cost: resolve_project_combo_cost copies a PO line's cost
+    # onto a re-materialized row (a shipment return, a pull-cancel restock), so a GP-fed seven-figure
+    # cost reaches this column too and a narrower one would just move the overflow to receive time.
+    unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(19, 5), nullable=True)
     received_at: Mapped[datetime] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -80,6 +80,15 @@ def create_app() -> FastAPI:
         )
 
     @app.middleware("http")
+    async def name_the_op(request, call_next):
+        # Same contextvar channel._dispatch uses, so a connection opened by an HTTP route is booked
+        # against the route rather than landing in "unknown". The path, not the route name: routing
+        # hasn't happened yet here, and none of these routes take path params so the key set stays
+        # small. The company is left to db.py, which has it from the connection it is measuring.
+        with db.measuring(f"http:{request.url.path}", ""):
+            return await call_next(request)
+
+    @app.middleware("http")
     async def log_requests(request, call_next):
         start = time.perf_counter()
         response = await call_next(request)
@@ -111,6 +120,10 @@ def create_app() -> FastAPI:
             # operator can see that discovery failed on a relay whose channel is otherwise healthy.
             "companies": [{"id": c, "name": discovered.names.get(c, c)} for c in discovered.companies],
             "companies_error": discovered.error,
+            # What this relay has cost the GP server since it started, per company and per op, taken
+            # from the server's own per-session accounting - see db.py. A copy of a handful of
+            # integers; nothing is read from GP to answer this.
+            "gp_cost": db.cost_snapshot(),
         }
 
     @app.get("/info")

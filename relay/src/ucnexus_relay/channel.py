@@ -515,25 +515,29 @@ def _dispatch(op: str, company: str, payload: dict, allowed_companies: list[str]
             ),
         }
 
-    try:
-        result = handler(company, payload)
-        return {"ok": True, "result": result}
-    except ops.RelayOpError as e:
-        return {"ok": False, "error": errors.error_body(e.code, e.message, **e.context)}
-    except econnect.EConnectError as e:
-        # the connection that raised this is already closed by the time we're back here (the `with`
-        # block in the handler closed it on the way out), but the description lookup only needs a
-        # live connection to run the SELECT - open a fresh read-only one for it.
+    # Everything below runs named: db.py measures what each connection cost the GP server and books it
+    # against (company, op). The whole block, not just the handler - the eConnect description lookup
+    # opens a connection of its own, and it belongs to this op too.
+    with db.measuring(op, company):
         try:
-            with db.get_read_connection(company) as conn:
-                body = errors.econnect_error_body(conn, e)
-        except pyodbc.Error:
-            body = errors.error_body("econnect_error", str(e), proc=e.proc, error_state=e.error_state)
-        return {"ok": False, "error": body}
-    except PydanticValidationError as e:
-        return {"ok": False, "error": errors.error_body("invalid_payload", str(e))}
-    except pyodbc.Error as e:
-        return {"ok": False, "error": errors.error_body("sql_error", str(e))}
+            result = handler(company, payload)
+            return {"ok": True, "result": result}
+        except ops.RelayOpError as e:
+            return {"ok": False, "error": errors.error_body(e.code, e.message, **e.context)}
+        except econnect.EConnectError as e:
+            # the connection that raised this is already closed by the time we're back here (the `with`
+            # block in the handler closed it on the way out), but the description lookup only needs a
+            # live connection to run the SELECT - open a fresh read-only one for it.
+            try:
+                with db.get_read_connection(company) as conn:
+                    body = errors.econnect_error_body(conn, e)
+            except pyodbc.Error:
+                body = errors.error_body("econnect_error", str(e), proc=e.proc, error_state=e.error_state)
+            return {"ok": False, "error": body}
+        except PydanticValidationError as e:
+            return {"ok": False, "error": errors.error_body("invalid_payload", str(e))}
+        except pyodbc.Error as e:
+            return {"ok": False, "error": errors.error_body("sql_error", str(e))}
 
 
 async def _handle_job(job: dict, allowed_companies: list[str] | None = None) -> dict:

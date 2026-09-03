@@ -65,6 +65,18 @@ curl -H "Authorization: Bearer <shared_secret>" http://localhost:7321/info
 `/po/next-number`, `/po`, and `/receipt` perform live eConnect writes against TUBC - see the
 phase gates in `docs/relay-poc-next-steps.md` before running them.
 
+`/health` also carries `gp_cost`: what this relay has cost the GP SQL server since the process
+started, totalled per company and per op (`ops`, `cpu_ms`, `logical_reads`, `elapsed_ms`). the
+numbers are not the relay's own timings - they are the server's own per-session accounting, read
+from `sys.dm_exec_sessions` on the connection itself at open and at close and booked as the delta
+(those counters are cumulative for the life of a session, and pyodbc pools connections). a reading
+the server will not give costs nothing: the op runs and is simply not counted. server-side, every
+connection the relay opens carries `APP=UCNexusRelay`, so `program_name` is what to filter on in
+activity monitor or the DMVs, and a DBA can watch the relay's sessions live with:
+```sql
+SELECT session_id, cpu_time, logical_reads, total_elapsed_time, status FROM sys.dm_exec_sessions WHERE program_name = 'UCNexusRelay'
+```
+
 test
 ```
 poetry run pytest          # health + auth only; never touches GP
