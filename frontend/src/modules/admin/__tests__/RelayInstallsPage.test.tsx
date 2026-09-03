@@ -248,10 +248,10 @@ it('disables Remove on the install that is currently connected', async () => {
   expect(screen.getByRole('button', { name: /adopt next connection/i })).not.toBeDisabled();
 });
 
-it('copies the full seed hash for the PR-environment variable', async () => {
-  // #414: RELAY_SEED_SECRET_HASH is what lets a Railway PR environment accept this relay without a
-  // provision + enroll cycle. The grid truncates it to stay readable, so the copy must carry the whole
-  // digest - a truncated one silently never matches on the handshake.
+it('copies the full secret hash', async () => {
+  // The stored digest of the relay's Bearer secret, which is what an admin reads to tell which
+  // credential a relay holds. The grid truncates it to stay readable, so the copy must carry the whole
+  // digest - a truncated one is not the value anything compares against.
   const copied: string[] = [];
   // Captured and restored: the stub would otherwise persist for every later test in this worker, which
   // could then observe this array instead of its own and pass for the wrong reason.
@@ -264,7 +264,7 @@ it('copies the full seed hash for the PR-environment variable', async () => {
   try {
     renderPage([statusMock, installsMock, windowMock(null)]);
 
-    const button = await screen.findByRole('button', { name: /copy seed hash/i }, GRID_TIMEOUT);
+    const button = await screen.findByRole('button', { name: /copy secret hash/i }, GRID_TIMEOUT);
     fireEvent.click(button);
     await waitFor(() => expect(copied).toEqual([INSTALL.secretHash]), GRID_TIMEOUT);
   } finally {
@@ -273,9 +273,9 @@ it('copies the full seed hash for the PR-environment variable', async () => {
   }
 });
 
-it('shows no seed hash for an install that has not enrolled yet', async () => {
-  // A provisioned-but-never-enrolled row has no secret, so there is nothing to seed with. Offering a
-  // copy button there would hand over an empty string that fails silently in Railway.
+it('shows no secret hash for an install that has not enrolled yet', async () => {
+  // A provisioned-but-never-enrolled row has no secret yet, so there is no digest to show. Offering a
+  // copy button there would hand over an empty string.
   const pending = { ...INSTALL, id: 'install-2', enrolled: false, enrolledAt: null, secretHash: null };
   renderPage([
     statusMock,
@@ -284,7 +284,7 @@ it('shows no seed hash for an install that has not enrolled yet', async () => {
   ]);
 
   await screen.findByRole('button', { name: /adopt next connection/i }, GRID_TIMEOUT);
-  expect(screen.queryByRole('button', { name: /copy seed hash/i })).toBeNull();
+  expect(screen.queryByRole('button', { name: /copy secret hash/i })).toBeNull();
 });
 
 // --- link health strip -------------------------------------------------------------------------

@@ -9,11 +9,6 @@ name: preview-env-cleanup
 # mark every in-flight deployment "Deployment cancelled" on the head sha - two failures on a PR that
 # failed nothing. So this workflow keeps its own concurrency group, waits for the build to end, and
 # only then deletes. The environment lives a few extra minutes after a merge; nothing reads it.
-#
-# The relay stub service goes first and is found at project level, not through the environment:
-# serviceCreate made it a project-level service scoped into this environment, and an environment that
-# is already gone (Railway tore down its own on pr-663) would otherwise leave the service orphaned. It
-# is a per-PR service, so serviceDelete(id) removes it outright.
 
 on:
   pull_request:
@@ -88,23 +83,6 @@ jobs:
             fi
             printf '%s' "$resp" | jq -c '.data'
           }
-
-          # The stub first, and looked up at PROJECT level: serviceCreate made it a project-level service
-          # scoped into this environment, and an environment Railway tore down itself (pr-663) leaves
-          # the service behind with no environment to search. It is a per-PR service, so it is deleted
-          # outright.
-          STUB_NAME="relay-stub-pr-${PR}"
-          svc=$(rgql 'query($id:String!){ project(id:$id){ services{ edges{ node{ id name } } } } }'             "$(jq -cn --arg id "$PROJECT_ID" '{id:$id}')")             || { echo "::warning::could not list the project's services"; svc='{}'; }
-          STUB_ID=$(printf '%s' "$svc" | jq -r --arg n "$STUB_NAME" '[.project.services.edges[]?|select(.node.name==$n)|.node.id][0] // empty')
-          if [ -n "$STUB_ID" ]; then
-            if rgql 'mutation($id:String!){ serviceDelete(id:$id) }'               "$(jq -cn --arg id "$STUB_ID" '{id:$id}')" >/dev/null; then
-              echo "deleted $STUB_NAME ($STUB_ID)"
-            else
-              echo "::warning::could not delete $STUB_NAME ($STUB_ID); it may need manual removal in the Railway dashboard"
-            fi
-          else
-            echo "no $STUB_NAME service in the project; nothing to delete"
-          fi
 
           data=$(rgql 'query($id:String!){ environments(projectId:$id){ edges{ node{ id name } } } }'             "$(jq -cn --arg id "$PROJECT_ID" '{id:$id}')")             || { echo "::warning::could not list Railway environments"; exit 0; }
           ENV_ID=$(printf '%s' "$data" | jq -r --arg n "$ENV_NAME" '[.environments.edges[]?|select(.node.name==$n)|.node.id][0] // empty')

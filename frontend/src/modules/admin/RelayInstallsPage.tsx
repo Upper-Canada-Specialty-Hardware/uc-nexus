@@ -385,12 +385,12 @@ export default function RelayInstallsPage() {
         valueFormatter: (v: string | null) => v ?? '—',
       },
       {
-        // #414: the value RELAY_SEED_SECRET_HASH wants, so a PR environment can accept this relay
-        // without a provision + enroll cycle. Copyable here because the alternative is hand-written
-        // SQL against Railway Postgres. Safe to show: a digest authenticates nothing - only its
-        // preimage does, and that never leaves the workstation.
+        // The stored digest of this relay's Bearer secret - what the backend compares a handshake
+        // against. Shown so an admin can read which credential a relay holds without hand-written SQL
+        // against Railway Postgres. Safe to show: a digest is a verifier, not a credential. It
+        // authenticates nothing; only its preimage does, and that never leaves the workstation.
         field: 'secretHash',
-        headerName: 'Seed hash',
+        headerName: 'Secret hash',
         width: 150,
         sortable: false,
         filterable: false,
@@ -402,11 +402,11 @@ export default function RelayInstallsPage() {
               <Box component="span" sx={{ ...monoSx, color: 'text.secondary' }}>
                 {hash.slice(0, 8)}…
               </Box>
-              <Tooltip title="Copy the full hash for RELAY_SEED_SECRET_HASH">
+              <Tooltip title="Copy the full secret hash">
                 <IconButton
                   size="small"
-                  aria-label="Copy seed hash"
-                  onClick={() => copy(hash, 'Seed hash')}
+                  aria-label="Copy secret hash"
+                  onClick={() => copy(hash, 'Secret hash')}
                 >
                   <Copy size={16} strokeWidth={1.75} />
                 </IconButton>

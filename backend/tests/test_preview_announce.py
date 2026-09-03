@@ -134,15 +134,13 @@ def test_the_request_timeout_is_short(calls):
 
 
 @pytest.mark.parametrize(
-    ("environment", "real_relay", "expected"),
+    ("environment", "expected"),
     [
-        ("uc-nexus-pr-9", True, True),
-        ("uc-nexus-pr-9", False, False),  # the default preview runs its own stub; nothing to ask for
-        ("production", True, False),  # production never announces itself to itself
-        ("", True, False),  # local dev
+        ("uc-nexus-pr-9", True),  # every preview announces: its cloned relay_installs row is the real one
+        ("production", False),  # production never announces itself to itself
+        ("", False),  # local dev
     ],
 )
-def test_only_a_preview_that_wants_the_real_relay_announces(monkeypatch, environment, real_relay, expected):
+def test_only_a_preview_announces(monkeypatch, environment, expected):
     monkeypatch.setattr(config, "RAILWAY_ENVIRONMENT_NAME", environment)
-    monkeypatch.setattr(preview_announce, "PREVIEW_REAL_RELAY", real_relay)
     assert preview_announce.enabled() is expected

@@ -178,9 +178,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # staff rosters by another name (`gpBuyersDetailed`, buyer ids with names, and `gpEmployees`), and
     # `gpCostCodeMaster` has exactly one consumer, the admin-only create-job dialog, so it sits at the
     # bar the `createGpJob` it feeds already sets. Everything that provisions, adopts or deletes a
-    # relay install is admin - those are relay credentials. `relaySnapshot` is admin for a different
-    # reason: it hands back a GP company whole, every vendor, job, employee and purchase order of it,
-    # which is more than any one screen's read.
+    # relay install is admin - those are relay credentials.
     "gpBuyers": SIGNED_IN,
     "gpBuyersDetailed": ADMIN_ROLE,
     "gpCostCodeMaster": ADMIN_ROLE,
@@ -197,7 +195,6 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "relayAdoptWindow": ADMIN_ROLE,
     "relayEvents": ADMIN_ROLE,
     "relayInstalls": ADMIN_ROLE,
-    "relaySnapshot": ADMIN_ROLE,
     "relayStatus": SIGNED_IN,
     "suggestVendorForManufacturer": SIGNED_IN,
     "armRelayAdopt": ADMIN_ROLE,

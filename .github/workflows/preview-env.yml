@@ -3,10 +3,14 @@ name: preview-env
 # Builds and hands off a signed-in-ready test environment for every non-draft PR.
 #
 # The workflow owns every build in that environment. It resolves uc-nexus-pr-<N> or forks one from
-# production, repoints the forked deployment triggers at the PR branch, creates the fixture relay stub
-# service, sets the testing variables, and then deploys each service for THIS PR head sha and waits on
-# the deployment id it created. It reads no other Railway deployment state, so a build it did not
-# start can neither satisfy the gate nor confuse it.
+# production, repoints the forked deployment triggers at the PR branch, sets the testing variables,
+# and then deploys each service for THIS PR head sha and waits on the deployment id it created. It
+# reads no other Railway deployment state, so a build it did not start can neither satisfy the gate
+# nor confuse it.
+#
+# Relay state is REPORTED, never gated on. The only relay is the workstation relay, which finds a
+# preview through production's registry (app/services/preview_announce.py) and dials it over the
+# socket it already holds. It can be off; a green check with a "relay: DOWN" line is correct.
 #
 # Railway facts this depends on, all confirmed against the public schema at
 # https://backboard.railway.com/graphql/v2 (unauthenticated introspection answers there):
@@ -32,9 +36,6 @@ name: preview-env
 #     commitSha) deploys the instance whatever its source kind and returns the new deployment id, so a
 #     silent no-op cannot hide. Deployment.meta is a JSON scalar carrying commitHash, which is how a
 #     build for this head sha is recognized on a re-run.
-#   - The Builder enum is HEROKU / NIXPACKS / PAKETO / RAILPACK - there is no Dockerfile value. A
-#     Dockerfile found at the service instance's rootDirectory is used automatically, so the stub needs
-#     only serviceInstanceUpdate(input:{rootDirectory:"relay"}) and no builder or dockerfilePath.
 #   - deployments(input, first:100), never the status.successfulOnly filter (the API rejects that
 #     shape). Railway appends a SKIPPED record per push for unchanged services, so a small window would
 #     scroll this PR's own build out of view after enough pushes.
@@ -51,6 +52,8 @@ name: preview-env
 #     PRODUCTION backend so every fork inherits it. The sign-in link mints that account, which
 #     production refuses (app/auth._reject_e2e_account_in_production), so it is safe to sit in a
 #     public PR comment.
+#   - PREVIEW_CLONE_PASSWORD on the production backend (forks inherit it; production creates the
+#     read-only preview_clone role from it).
 #   - Railway's own PR-environments toggle is OFF: this workflow forks every environment, and
 #     preview-env-cleanup.yml deletes it once the PR closes AND any run here has finished (Railway
 #     only tears down environments it created itself).
@@ -88,6 +91,7 @@ jobs:
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
       REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Build, verify, and hand off
@@ -105,10 +109,8 @@ jobs:
           fi
 
           ENV_NAME="uc-nexus-pr-${PR}"
-          STUB_NAME="relay-stub-pr-${PR}"
           BACKEND_URL="https://backend-${ENV_NAME}.up.railway.app"
           FRONTEND_URL="https://frontend-${ENV_NAME}.up.railway.app"
-          STUB_WS_URL="wss://backend-${ENV_NAME}.up.railway.app/relay-link"
           MARKER="<!-- preview-env-ready -->"
           # SUCCESS plus the whole working set: a deployment in one of these is already carrying, or is
           # on its way to carrying, the build it was created for.
@@ -209,10 +211,10 @@ jobs:
 
           # --- services -----------------------------------------------------------------------------
           # Postgres / backend / frontend are PROJECT-level services and their ids are the same in every
-          # environment, so they are resolved from the project. The per-environment instance listing
-          # is only for the stub, which exists in this environment alone - and that listing is EMPTY for
-          # the first seconds of an environment Railway just created (pr-663: env resolved, zero
-          # instances, "Postgres is not in the environment"), so it is polled rather than read once.
+          # environment, so they are resolved from the project. The per-environment instance listing is
+          # only a settle-wait: it reads EMPTY for the first seconds of an environment Railway just
+          # created (pr-663: env resolved, zero instances, "Postgres is not in the environment"), so it
+          # is polled rather than read once.
           SVC_QUERY='query($id:String!){ project(id:$id){ services{ edges{ node{ id name } } } } }'
           svc_data=""
           load_project_services() { svc_data=$(rgql "$SVC_QUERY" "$(jq -cn --arg id "$PROJECT_ID" '{id:$id}')"); }
@@ -228,31 +230,6 @@ jobs:
               sleep 15
             done
             return 0
-          }
-          svc_id() { printf '%s' "$si_data" | jq -r --arg n "$1" '[.environment.serviceInstances.edges[]?|select(.node.serviceName==$n)|.node.serviceId][0] // empty'; }
-
-          ensure_stub() {
-            local out
-            STUB_ID=$(svc_id "$STUB_NAME")
-            if [ -z "$STUB_ID" ]; then
-              out=$(rgql 'mutation($input:ServiceCreateInput!){ serviceCreate(input:$input){ id } }' \
-                "$(jq -cn --arg p "$PROJECT_ID" --arg e "$ENV_ID" --arg n "$STUB_NAME" --arg r "$REPO" --arg b "$HEAD_REF" \
-                  '{input:{projectId:$p,environmentId:$e,name:$n,branch:$b,source:{repo:$r}}}')") || return 1
-              STUB_ID=$(printf '%s' "$out" | jq -re '.serviceCreate.id // empty') || return 1
-              echo "created $STUB_NAME -> $STUB_ID"
-            else
-              echo "$STUB_NAME -> $STUB_ID"
-            fi
-            # Always, not just on create: a stub left with the repo root as its root directory would
-            # find no Dockerfile there and fail every build.
-            rgql 'mutation($s:String!,$e:String!,$input:ServiceInstanceUpdateInput!){ serviceInstanceUpdate(serviceId:$s,environmentId:$e,input:$input) }' \
-              "$(jq -cn --arg s "$STUB_ID" --arg e "$ENV_ID" '{s:$s,e:$e,input:{rootDirectory:"relay"}}')" >/dev/null
-          }
-          delete_stub() {
-            [ -n "$STUB_ID" ] || return 0
-            rgql 'mutation($id:String!){ serviceDelete(id:$id) }' \
-              "$(jq -cn --arg id "$STUB_ID" '{id:$id}')" >/dev/null \
-              && echo "deleted $STUB_NAME" || echo "::warning::could not delete $STUB_NAME"
           }
 
           # --- variables ---------------------------------------------------------------------------
@@ -400,19 +377,11 @@ jobs:
             exit 1
           }
 
-          # --- provision: environment, triggers, stub, variables, Postgres -------------------------
-          PG_ID=""; BE_ID=""; FE_ID=""; STUB_ID=""; REAL_RELAY=""; BE_FORCE=false; STUB_FORCE=false
-          # Match the backend's own parse of the variable (app/config.PREVIEW_REAL_RELAY), so a human
-          # who typed "true" is not silently handed a stub anyway.
-          real_relay_on() {
-            case "$(printf '%s' "$REAL_RELAY" | tr '[:upper:]' '[:lower:]')" in
-              true|1|yes) return 0 ;;
-              *) return 1 ;;
-            esac
-          }
+          # --- provision: environment, triggers, variables, Postgres --------------------------------
+          PG_ID=""; BE_ID=""; FE_ID=""; BE_FORCE=false
           provision() {
-            local be_vars stub_vars desired stub_desired secret secret_hash be_hash pair
-            BE_FORCE=false; STUB_FORCE=false; STUB_ID=""
+            local be_vars desired pair
+            BE_FORCE=false
             ensure_env || { echo "::error::could not resolve or create environment $ENV_NAME (production env id: ${PROD_ENV_ID:-unresolved})"; exit 1; }
             align_triggers
             load_project_services || { echo "::error::could not list the project's services"; exit 1; }
@@ -424,50 +393,7 @@ jobs:
             echo "services: Postgres=$PG_ID backend=$BE_ID frontend=$FE_ID"
 
             be_vars=$(read_vars "$BE_ID"); [ -n "$be_vars" ] || be_vars='{}'
-            REAL_RELAY=$(printf '%s' "$be_vars" | jq -r '.PREVIEW_REAL_RELAY // ""')
             desired=$(jq -cn --arg k "$KHASH" '{TESTING_SESSION_KEY_HASH:$k}')
-
-            if real_relay_on; then
-              echo "PREVIEW_REAL_RELAY is on for this backend: the environment is handed to the workstation relay, so no stub is built"
-              # A stub left running against a backend that now seeds the workstation relay's hash would
-              # dial and 403 every ~30s forever, which is exactly the cadence a reader diagnoses a real
-              # relay fault by. Take it out; turning the variable off recreates it.
-              STUB_ID=$(svc_id "$STUB_NAME")
-              if [ -n "$STUB_ID" ]; then
-                echo "removing the stub relay service, which this backend would now refuse"
-                delete_stub
-                STUB_ID=""
-              fi
-            else
-              ensure_stub || { echo "::error::could not create or configure $STUB_NAME (a service of that name may survive in the project from an earlier environment; delete it in the Railway dashboard)"; exit 1; }
-              stub_vars=$(read_vars "$STUB_ID"); [ -n "$stub_vars" ] || stub_vars='{}'
-              # Reuse the stub's own secret when the backend already carries its hash; otherwise mint a
-              # pair and set both sides together, so the two can never drift.
-              secret=$(printf '%s' "$stub_vars" | jq -r '.UCNEXUS_RELAY_SHARED_SECRET // ""')
-              secret_hash=""
-              [ -n "$secret" ] && secret_hash=$(printf '%s' "$secret" | sha256sum | cut -d' ' -f1)
-              be_hash=$(printf '%s' "$be_vars" | jq -r '.RELAY_STUB_SECRET_HASH // ""')
-              if [ -z "$secret" ] || [ "$secret_hash" != "$be_hash" ]; then
-                secret=$(openssl rand -hex 32)
-                secret_hash=$(printf '%s' "$secret" | sha256sum | cut -d' ' -f1)
-                echo "minted a relay stub secret for this environment"
-              fi
-              desired=$(printf '%s' "$desired" | jq -c --arg h "$secret_hash" \
-                '. + {RELAY_STUB_SECRET_HASH:$h}')
-              # UCNEXUS_RELAY_BUILD is what the stub's hello frame reports as its build, so relayStatus
-              # and the relay_events log name the commit instead of saying "dev" for every preview
-              # forever. It changes on every push, which makes vars_differ true and forces the stub to
-              # redeploy - which is what a new sha needs anyway.
-              stub_desired=$(jq -cn --arg s "$secret" --arg u "$STUB_WS_URL" --arg b "relay-stub.${HEAD_SHA:0:7}" \
-                '{UCNEXUS_RELAY_MODE:"fixture",UCNEXUS_RELAY_SHARED_SECRET:$s,UCNEXUS_RELAY_BACKEND_URL:$u,UCNEXUS_RELAY_LOG_FILE:"-",UCNEXUS_RELAY_BUILD:$b}')
-              if vars_differ "$stub_vars" "$stub_desired"; then
-                upsert_vars "$STUB_ID" "$stub_desired" || { echo "::error::could not set the stub relay variables"; exit 1; }
-                STUB_FORCE=true
-                echo "set the stub relay variables"
-              else
-                echo "stub relay variables already current"
-              fi
-            fi
 
             if vars_differ "$be_vars" "$desired"; then
               upsert_vars "$BE_ID" "$desired" || { echo "::error::could not set the backend testing variables"; exit 1; }
@@ -482,10 +408,8 @@ jobs:
 
           provision; pg_rc=$?
           if [ "$pg_rc" = "1" ]; then
-            # A stranded environment cannot be repaired in place, so replace it wholesale. The stub is
-            # a service this workflow created, so it goes first - environmentDelete would leave it.
+            # A stranded environment cannot be repaired in place, so replace it wholesale.
             echo "deleting the stranded environment and forking a fresh one from production"
-            delete_stub
             rgql 'mutation($id:String!){ environmentDelete(id:$id) }' "$(jq -cn --arg id "$ENV_ID" '{id:$id}')" >/dev/null \
               || echo "::warning::could not delete the stranded environment; forking a fresh one anyway"
             ENV_ID=""
@@ -495,15 +419,16 @@ jobs:
 
           # --- deploy the rest, in dependency order ------------------------------------------------
           ensure_deployed "$BE_ID" "backend" "$BE_FORCE" sha
-          if ! real_relay_on; then
-            ensure_deployed "$STUB_ID" "$STUB_NAME" "$STUB_FORCE" sha
-          fi
+          BE_DEPLOY_ID="$DEPLOY_ID"
           ensure_deployed "$FE_ID" "frontend" false sha
 
           # --- readiness gate ----------------------------------------------------------------------
+          # backend /health, graphql, sign-in, frontend. The relay is not in it: the workstation relay
+          # is a machine in the office that can be off, and a green check with a "relay: DOWN" line is
+          # the correct answer to that.
           SIGN_IN="${BACKEND_URL}/testing/session?key=${K}"
-          BACKEND_READY=false; RELAY_READY=false; FRONTEND_READY=false; GQL_READY=false; SIGNIN_READY=false
-          RELAY_SEEN=""
+          BACKEND_READY=false; FRONTEND_READY=false; GQL_READY=false; SIGNIN_READY=false
+          RELAY_LINE="relay: DOWN. the workstation relay is not dialling this environment. GP-dependent testing waits until it is up - tell the user"
 
           wait_http_200() {  # $1 url, $2 label, $3 timeout
             local url="$1" label="$2" timeout="$3" waited=0 code
@@ -515,19 +440,17 @@ jobs:
             done
             return 1
           }
-          # /health carries relay_connected and relay_companies, so the relay half of the gate is the
-          # same probe as the liveness half.
-          wait_relay() {  # $1 timeout
-            local timeout="$1" waited=0 body conn
-            while [ "$waited" -lt "$timeout" ]; do
-              body=$(curl -s --max-time 15 "$BACKEND_URL/health")
-              conn=$(printf '%s' "$body" | jq -r '.relay_connected // false' 2>/dev/null)
-              RELAY_SEEN=$(printf '%s' "$body" | jq -r '[.relay_companies[]?]|join(", ")' 2>/dev/null)
-              if [ "$conn" = "true" ]; then echo "  relay connected, companies ${RELAY_SEEN:-unreported} (${waited}s)"; return 0; fi
-              echo "  relay_connected -> ${conn:-unreadable} (${waited}s)"
-              sleep 15; waited=$((waited+15))
-            done
-            return 1
+          # /health carries relay_connected and relay_companies. Read ONCE, and only to report: nothing
+          # below ever branches on the answer and RELAY_LINE never reaches the exit status.
+          read_relay_line() {
+            local body conn companies
+            body=$(curl -s --max-time 15 "$BACKEND_URL/health")
+            conn=$(printf '%s' "$body" | jq -r '.relay_connected // false' 2>/dev/null)
+            companies=$(printf '%s' "$body" | jq -r '[.relay_companies[]?]|join(", ")' 2>/dev/null)
+            if [ "$conn" = "true" ]; then
+              RELAY_LINE="relay: connected, companies ${companies:-none reported}"
+            fi
+            echo "$RELAY_LINE"
           }
           # /testing/session answers 302 (mint + redirect) only when the key hash is live on the RUNNING
           # backend AND the Clerk mint works, so this - not /health - is what proves the handed-out link
@@ -544,9 +467,19 @@ jobs:
             return 1
           }
 
+          # The backend refuses to boot on a branch that is behind production's migrations and says so in
+          # one line. That is a branch problem, not an environment one, so the comment names the line
+          # instead of the gate. Same deploymentLogs query the Postgres crash-loop check uses.
+          migration_block_line() {
+            [ -n "$BE_DEPLOY_ID" ] || return 1
+            rgql 'query($d:String!,$l:Int,$f:String){ deploymentLogs(deploymentId:$d,limit:$l,filter:$f){ message } }' \
+              "$(jq -cn --arg d "$BE_DEPLOY_ID" --arg f "merge master into the branch" '{d:$d,l:20,f:$f}')" \
+              | jq -r '[.deploymentLogs[]?.message|select(test("merge master into the branch"))][0] // empty'
+          }
+
           wait_http_200 "$BACKEND_URL/health" "backend /health" 420 && BACKEND_READY=true
           if [ "$BACKEND_READY" = "true" ]; then
-            wait_relay 300 && RELAY_READY=true
+            read_relay_line
             gcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -X POST "$BACKEND_URL/graphql" \
               -H 'Content-Type: application/json' --data '{"query":"{ __typename }"}' || echo 000)
             echo "graphql probe -> $gcode"; [ "$gcode" = "200" ] && GQL_READY=true
@@ -555,24 +488,19 @@ jobs:
           wait_http_200 "$FRONTEND_URL/" "frontend /" 300 && FRONTEND_READY=true
 
           # --- the one sticky comment --------------------------------------------------------------
-          if real_relay_on; then
-            if [ "$RELAY_READY" = "true" ]; then
-              RELAY_LINE="relay: workstation relay connected, companies ${RELAY_SEEN:-unreported}"
-            else
-              RELAY_LINE="relay: PREVIEW_REAL_RELAY is on and nothing has dialled this backend yet"
-            fi
-            HANDOFF="stub relay: unset PREVIEW_REAL_RELAY on this environment's backend service and re-run preview-env"
-          else
-            if [ "$RELAY_READY" = "true" ]; then
-              RELAY_LINE="relay: stub connected, companies ${RELAY_SEEN:-unreported}"
-            else
-              RELAY_LINE="relay: stub deployed but not connected"
-            fi
-            HANDOFF="real relay: set PREVIEW_REAL_RELAY=1 on this environment's backend service and redeploy; the workstation relay dials in within a couple of minutes"
-          fi
+          # The comment is the whole handoff: a reading agent works from it and from the check, and from
+          # nothing else. Printed in both bodies, because item 2 is about the red one.
+          print_protocol() {
+            echo "agent protocol"
+            echo "1. the preview-env check and this comment are the only source of truth for this environment. do not query railway and do not read the workflow to diagnose it"
+            echo "2. red check: re-run it once (gh run rerun ${RUN_ID}). still red: report the gate this comment names to the user and stop"
+            echo "3. relay DOWN: tell the user the workstation relay must be up, then poll ${BACKEND_URL}/health every two minutes. do not test GP-dependent flows meanwhile. do not install, configure, or look for a relay anywhere, on any machine"
+            echo "4. never merge the PR under test. the environment is deleted on close"
+            echo "5. reset is the DevAction: reset data button. it re-clones production into this PR's copy and touches nothing else"
+          }
 
           body_file="${RUNNER_TEMP}/preview-comment.md"
-          if [ "$BACKEND_READY" = "true" ] && [ "$RELAY_READY" = "true" ] && [ "$FRONTEND_READY" = "true" ] \
+          if [ "$BACKEND_READY" = "true" ] && [ "$FRONTEND_READY" = "true" ] \
             && [ "$GQL_READY" = "true" ] && [ "$SIGNIN_READY" = "true" ]; then
             {
               echo "$MARKER"
@@ -581,29 +509,37 @@ jobs:
               echo "sign in (navigate once, lands on /app as the e2e account):"
               echo "$SIGN_IN"
               echo ""
+              print_protocol
+              echo ""
               echo "$RELAY_LINE"
-              echo "$HANDOFF"
               echo ""
               echo "frontend $FRONTEND_URL"
               echo "backend $BACKEND_URL"
             } > "$body_file"
             READY=true
           else
+            MIGRATION_LINE=""
+            [ "$BACKEND_READY" = "true" ] || MIGRATION_LINE=$(migration_block_line)
             {
               echo "$MARKER"
               echo "test environment: not fully ready"
               echo ""
-              echo "backend healthy: $BACKEND_READY"
-              echo "relay connected: $RELAY_READY"
-              echo "frontend healthy: $FRONTEND_READY"
-              echo "graphql answering: $GQL_READY"
-              echo "sign-in link answering (302): $SIGNIN_READY"
+              if [ -n "$MIGRATION_LINE" ]; then
+                echo "failing gate: the backend will not boot on this branch."
+                echo "$MIGRATION_LINE"
+              else
+                echo "backend healthy: $BACKEND_READY"
+                echo "frontend healthy: $FRONTEND_READY"
+                echo "graphql answering: $GQL_READY"
+                echo "sign-in link answering (302): $SIGNIN_READY"
+              fi
               echo ""
-              echo "every build in $ENV_NAME is this workflow's, so a red check means a deploy or a boot failed here - read the run log for the deployment id it named, then that deployment in Railway. the sign-in link works once it recovers:"
+              echo "the sign-in link works once it recovers:"
               echo "$SIGN_IN"
               echo ""
+              print_protocol
+              echo ""
               echo "$RELAY_LINE"
-              echo "$HANDOFF"
               echo ""
               echo "frontend $FRONTEND_URL"
               echo "backend $BACKEND_URL"
@@ -613,7 +549,11 @@ jobs:
           post_sticky "$body_file"
 
           if [ "$READY" != "true" ]; then
-            echo "::error::the PR test environment did not come up fully (backend=$BACKEND_READY relay=$RELAY_READY frontend=$FRONTEND_READY graphql=$GQL_READY signin=$SIGNIN_READY)"
+            if [ -n "$MIGRATION_LINE" ]; then
+              echo "::error::${MIGRATION_LINE}"
+            else
+              echo "::error::the PR test environment did not come up fully (backend=$BACKEND_READY frontend=$FRONTEND_READY graphql=$GQL_READY signin=$SIGNIN_READY)"
+            fi
             exit 1
           fi
           echo "test environment ready; the sign-in link is in the PR comment"

@@ -43,10 +43,7 @@ import logging
 import re
 import time
 
-try:
-    import pyodbc
-except ImportError:  # fixture mode (a Linux container, no ODBC stack) - see fixture_ops.py
-    pyodbc = None
+import pyodbc
 import websockets
 from pydantic import ValidationError as PydanticValidationError
 
@@ -62,10 +59,6 @@ from .config import (
 from .logging_setup import get_logger
 
 logger = get_logger()
-
-# An empty tuple in an `except` clause matches nothing, which is exactly right when pyodbc is absent:
-# there is no SQL layer to raise, so those handlers simply never fire.
-_PYODBC_ERROR = pyodbc.Error if pyodbc is not None else ()
 
 # Live channel state PER backend URL, updated by _run_channel and exposed on /health, so the desktop
 # app shows the REAL backend-channel status instead of inferring it from relay.log (a killed serve
@@ -442,41 +435,6 @@ def _run_create_receipt(company: str, payload: dict) -> dict:
             raise
 
 
-def _run_capture_snapshot(company: str, payload: dict) -> dict:
-    """One company's whole fixture-snapshot record, assembled live out of GP (#666).
-
-    This is `ucnexus-relay capture`'s per-company half reached over the socket instead of from a
-    console on the workstation. capture.py stays the single description of what a snapshot holds and
-    how it is derived; the backend's relaySnapshot query calls this per company and writes the
-    envelope around what comes back, so refreshing relay/fixtures/gp-snapshot.json no longer needs a
-    person standing at the GP machine.
-
-    Read-only throughout, and slow by nature: the capture pages every PO and reads header totals per
-    PO. Every op is dispatched on a worker thread (see _handle_job), so a capture in flight does not
-    stop this channel answering anything else - the caller's timeout is the only thing that has to be
-    generous about it.
-
-    The format/version constants ride out with the record so the backend never holds a second copy of
-    them. The display name comes from discovery rather than a second read of the company master: this
-    channel refreshed that master to decide it serves `company` at all. It is left out of the record
-    entirely when no name is known, exactly as capture.py leaves it out on a failed read - discovery
-    then falls back to the code."""
-    ops.check_company_served(company)
-    # Lazy, because capture imports fixture_ops: ops_registry keeps that module off a workstation
-    # relay's startup path, and paying the import only when a capture is actually asked for keeps it
-    # off. Nothing in either module touches pyodbc at import time.
-    from . import capture, fixture_ops
-
-    with db.get_read_connection(company) as conn:
-        record = capture.capture_company(conn)
-    name = (companies.current().names.get(company) or "").strip()
-    return {
-        "format": fixture_ops.SNAPSHOT_FORMAT,
-        "version": fixture_ops.SNAPSHOT_VERSION,
-        "record": {"name": name, **record} if name else record,
-    }
-
-
 _OPS = {
     "list_vendors": _run_list_vendors,
     # issue #500 - the vendor's email, read live at send time. Nexus stores no vendor contact.
@@ -515,29 +473,16 @@ _OPS = {
     # issue #425 - jobs replicated from UCSH carry GL account indexes that do not exist in UBC, so a
     # PO against them registers and can never be received. This is how Nexus finds out which ones.
     "job_setup_health": _run_job_setup_health,
-    # issue #666 - the fixture snapshot's per-company record, so the checked-in one can be refreshed
-    # from the backend instead of from a console on the workstation.
-    "capture_snapshot": _run_capture_snapshot,
 }
 
 
 def _allowed_phrase(companies: list[str]) -> str:
-    """The sandbox list as a sentence fragment - TUBC is / TUBC and TUCSH are. The refusal below is
-    shown verbatim in the browser, so it has to read as prose however many companies are in the pin."""
+    """The pin as a sentence fragment: one company reads "TUBC is", a longer pin "TUBC and UBC are". The
+    refusal below is shown verbatim in the browser, so it has to read as prose however many companies are
+    in the pin - one of them today."""
     if len(companies) == 1:
         return f"{companies[0]} is"
     return f"{', '.join(companies[:-1])} and {companies[-1]} are"
-
-def ops_registry() -> dict:
-    """The op table _dispatch resolves against. The real GP handlers above, or the fixture registry when
-    [gp] mode is 'fixture' - a Linux container answering every op from a checked-in snapshot instead of
-    from GP (see fixture_ops.py). Same op names either way, so the hello frame and the backend's
-    op-parity check are unaffected. Imported lazily: the workstation relay never loads that module."""
-    if get_settings().gp.mode == "fixture":
-        from . import fixture_ops
-
-        return fixture_ops.OPS
-    return _OPS
 
 
 def _dispatch(op: str, company: str, payload: dict, allowed_companies: list[str] | None = None) -> dict:
@@ -551,7 +496,7 @@ def _dispatch(op: str, company: str, payload: dict, allowed_companies: list[str]
     before it merges - and this is the sole thing keeping that safe, so it is checked before any handler
     runs. It layers on top of ops.check_company_served rather than replacing it: that one is what says
     the company was found in GP at all."""
-    handler = ops_registry().get(op)
+    handler = _OPS.get(op)
     if handler is None:
         return {"ok": False, "error": errors.error_body("unknown_op", f"unknown op {op!r}")}
     if not company:
@@ -582,12 +527,12 @@ def _dispatch(op: str, company: str, payload: dict, allowed_companies: list[str]
         try:
             with db.get_read_connection(company) as conn:
                 body = errors.econnect_error_body(conn, e)
-        except _PYODBC_ERROR:
+        except pyodbc.Error:
             body = errors.error_body("econnect_error", str(e), proc=e.proc, error_state=e.error_state)
         return {"ok": False, "error": body}
     except PydanticValidationError as e:
         return {"ok": False, "error": errors.error_body("invalid_payload", str(e))}
-    except _PYODBC_ERROR as e:
+    except pyodbc.Error as e:
         return {"ok": False, "error": errors.error_body("sql_error", str(e))}
 
 
@@ -646,7 +591,7 @@ def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
     return {
         "type": "hello",
         "build": updater.current_build(),
-        "ops": sorted(ops_registry()),
+        "ops": sorted(_OPS),
         "version": VERSION,
         "companies": served,
         "company_names": names,

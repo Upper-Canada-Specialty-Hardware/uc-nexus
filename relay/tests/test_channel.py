@@ -40,7 +40,7 @@ def _no_real_sql(monkeypatch):
 def _served(serving):
     """Every handler calls ops.check_company_served first, and the served set is discovered from GP
     (companies.py) rather than configured - so a dispatch test has to say what this relay found."""
-    serving(["TUBC", "TUCSH", "UBC", "UCSH"])
+    serving(["TUBC", "UBC", "UCSH"])
 
 
 def test_list_vendors_routes_to_econnect(monkeypatch):

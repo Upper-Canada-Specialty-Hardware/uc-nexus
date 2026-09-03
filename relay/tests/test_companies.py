@@ -2,14 +2,12 @@
 nothing else. There is no configured list any more, so these cover both halves of that - what the
 discovery reads, and what an empty discovery does to an op and to the hello frame.
 
-pyodbc is faked throughout; the fixture-mode half reads the checked-in snapshot, which is the real
-path a containerised relay takes.
+pyodbc is faked throughout; nothing here reaches a real GP.
 """
 
 import asyncio
 import json
 import time
-from pathlib import Path
 
 import pytest
 
@@ -21,7 +19,6 @@ from ucnexus_relay.config import (
     get_settings,
 )
 
-SNAPSHOT = Path(__file__).resolve().parents[1] / "fixtures" / "gp-snapshot.json"
 PR_URL = "wss://backend-pr-999.up.railway.app/relay-link"
 
 
@@ -115,48 +112,6 @@ def test_discovery_never_raises(monkeypatch):
     assert companies.discover().error
 
 
-# --- fixture mode -----------------------------------------------------------------------------------
-
-
-@pytest.fixture
-def fixture_mode(monkeypatch):
-    from ucnexus_relay import fixture_ops
-
-    monkeypatch.setenv("UCNEXUS_RELAY_MODE", "fixture")
-    monkeypatch.setenv("UCNEXUS_RELAY_FIXTURE_PATH", str(SNAPSHOT))
-    get_settings.cache_clear()
-    fixture_ops.reset_state()
-    yield
-    get_settings.cache_clear()
-    fixture_ops.reset_state()
-
-
-def test_fixture_discovery_reads_the_snapshots_companies(fixture_mode):
-    found = companies.discover()
-    assert found.companies == ["TUBC", "TUCSH"]
-    assert found.error is None
-    # The checked-in snapshot is synthetic and names no company, so the codes stand in. A snapshot
-    # written by `ucnexus-relay capture` carries GP's own names and reports those instead.
-    assert found.names == {"TUBC": "TUBC", "TUCSH": "TUCSH"}
-
-
-def test_fixture_discovery_falls_back_to_the_code_when_a_snapshot_has_no_name(tmp_path, monkeypatch):
-    # `name` is optional: a snapshot written by `ucnexus-relay capture` has no read op to fill it in.
-    from ucnexus_relay import fixture_ops
-
-    snapshot = tmp_path / "snap.json"
-    snapshot.write_text('{"companies": {"TUBC": {"jobs": []}}}', encoding="utf-8")
-    monkeypatch.setenv("UCNEXUS_RELAY_MODE", "fixture")
-    monkeypatch.setenv("UCNEXUS_RELAY_FIXTURE_PATH", str(snapshot))
-    get_settings.cache_clear()
-    fixture_ops.reset_state()
-    try:
-        assert companies.discover().names == {"TUBC": "TUBC"}
-    finally:
-        get_settings.cache_clear()
-        fixture_ops.reset_state()
-
-
 # --- the module cache -------------------------------------------------------------------------------
 
 
@@ -231,10 +186,10 @@ def test_the_hello_frame_carries_the_discovered_companies_and_names(serving):
     assert frame["companies_error"] is None
 
 
-def test_a_non_primary_channel_is_only_told_about_the_sandboxes(serving):
+def test_a_non_primary_channel_is_only_told_about_the_sandbox(serving):
     # A test backend never sees a company its own channel would refuse anyway (#414), so it cannot
     # offer the operator a company that is guaranteed to come back company_not_allowed_on_channel.
-    serving(["TUBC", "TUCSH", "UBC", "UCSH"], {c: f"{c} name" for c in ("TUBC", "TUCSH", "UBC", "UCSH")})
+    serving(["TUBC", "UBC", "UCSH"], {c: f"{c} name" for c in ("TUBC", "UBC", "UCSH")})
     frame = channel._hello_frame(channel_allowed_companies(PR_URL))
     assert frame["companies"] == NON_PRIMARY_ALLOWED_COMPANIES
     assert set(frame["company_names"]) == set(NON_PRIMARY_ALLOWED_COMPANIES)

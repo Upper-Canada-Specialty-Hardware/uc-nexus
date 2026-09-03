@@ -168,7 +168,7 @@ export default function AppLayout() {
                 '&:hover': { borderColor: '#f6f3ec', backgroundColor: alpha('#f6f3ec', 0.08) },
               }}
             >
-              {resetting ? 'Resetting…' : 'DevAction: drop and rebuild schema'}
+              {resetting ? 'Resetting…' : 'DevAction: reset data'}
             </Button>
           )}
 
@@ -243,11 +243,13 @@ export default function AppLayout() {
 
       <Sidebar open={drawerOpen} onClose={() => setDrawerOpen(false)} />
 
+      {/* The endpoint does two different things and the copy has to say which one you are about to
+          get: a PR environment re-clones production, everywhere else it empties the schema. */}
       <ConfirmDialog
         open={resetConfirmOpen}
-        title="Drop & Rebuild Schema?"
-        message="This will DROP the entire public schema and rebuild it from migrations. All data will be lost."
-        confirmLabel="Drop & Rebuild"
+        title="Reset data?"
+        message="On a PR environment this re-clones production's database into this PR's own database and touches nothing else - GP and production are not written to. Anywhere else it DROPS the entire public schema and rebuilds it from migrations, and all data is lost."
+        confirmLabel="Reset data"
         confirmColor="error"
         cancelLabel="Cancel"
         onConfirm={handleResetSchema}

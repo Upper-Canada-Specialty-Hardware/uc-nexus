@@ -31,10 +31,10 @@ from app.services import (
     gp_outbox_worker,
     gp_po_sync,
     preview_announce,
+    preview_clone_role,
     preview_registry,
     relay_adopt,
     relay_events,
-    relay_seed,
 )
 from app.services.relay_gateway import HEARTBEAT_INTERVAL_SECONDS
 from app.services.relay_gateway import gateway as relay_gateway
@@ -149,10 +149,9 @@ async def lifespan(_app: FastAPI):
     Started here rather than lazily on first use so a queue that filled during a deploy starts
     draining as soon as the new container is up, with nobody having to visit a page. Under
     TestClient(app) this runs too, and is harmless: with no relay registered neither loop queries."""
-    # Ahead of the workers, so a PR environment can accept its relay's very first connection rather
-    # than 4403-ing it until someone hits a page (#414). A no-op unless a stub or seed hash is set,
-    # and refused outright in production.
-    relay_seed.seed_on_startup()
+    # Production only, and only when PREVIEW_CLONE_PASSWORD is set: the read-only login a preview
+    # environment dumps this database through. Never fatal - see the module.
+    preview_clone_role.ensure_role_on_startup()
     tasks: list[asyncio.Task] = []
     if gp_outbox_worker.enabled():
         tasks.append(asyncio.create_task(gp_outbox_worker.run_forever()))
@@ -204,11 +203,23 @@ def health():
     Deliberately unauthenticated and database-free - it is what Railway's healthcheck calls, and what
     somebody curls when a GP-dependent page is failing. The relay facts come from the gateway's
     in-memory state, so this stays a constant-cost answer even when the database is the thing that is
-    unwell."""
+    unwell.
+
+    The three timestamps deliberately outlive the connection they describe: "it went at 14:02 with
+    this reason and has not been back" is the answer somebody wants when `relay_connected` is false,
+    and it is the difference between "the relay never dialled this backend" and "it dialled and was
+    dropped" without a session or a log dive."""
+
+    def _iso(value: datetime | None) -> str | None:
+        return value.isoformat() if value else None
+
     return {
         "status": "ok",
         "relay_connected": relay_gateway.connected,
         "relay_companies": relay_gateway.companies,
+        "relay_last_connected_at": _iso(relay_gateway.last_connected_at),
+        "relay_last_disconnected_at": _iso(relay_gateway.last_disconnected_at),
+        "relay_last_disconnect_reason": relay_gateway.last_disconnect_reason,
     }
 
 
@@ -357,7 +368,7 @@ def _authorize_preview_registry(request: Request) -> None:
     then is the environment name validated.
 
     Compared as SHA-256 digests in constant time. Both sides hold the secret itself here (a preview has
-    to present it), so unlike the seed hashes this is a real shared credential - hashing before the
+    to present it), so this is a real shared credential rather than a verifier - hashing before the
     compare keeps the comparison a fixed length regardless of what was presented."""
     if not config.is_production_environment():
         raise HTTPException(status_code=404, detail="Not Found")
@@ -512,9 +523,79 @@ async def relay_link(websocket: WebSocket):
         relay_gateway.unregister(websocket)
 
 
+def _reset_by_recloning(source_url: str):
+    """The /admin/reset-data body on a preview environment that can reach production.
+
+    A preview's data IS production's data, taken at first boot, so "reset" here means "take it again"
+    rather than "empty the schema". Nothing is preserved across it and nothing is re-synced
+    afterwards: the copy already carries the relay install, the warehouses, the buyer assignments and
+    the projects that reset_preservation exists to rescue, so snapshotting them would be restoring
+    rows over identical rows, and the GP job sync pass would re-adopt projects the clone just brought.
+
+    The clone runs in-process rather than as `python -m app.preview_clone`: the endpoint already runs
+    alembic in-process right after it, and calling the function hands back the counts this response
+    reports instead of leaving them to be scraped out of a child's stdout. pg_dump and pg_restore are
+    subprocesses either way."""
+    from alembic.config import Config
+    from sqlalchemy import text
+
+    from alembic import command
+    from app import preview_clone
+    from app.database import engine
+
+    with engine.connect() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+        conn.commit()
+
+    try:
+        result = preview_clone.clone_production_into_this_database(source_url)
+    except Exception as e:
+        # The schema is already gone at this point, so this leaves an empty database - which the next
+        # deploy's entrypoint clones into again. Saying so beats a bare 500.
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": f"Re-clone failed, so this database is now empty: {e}",
+                "code": "CLONE_FAILED",
+            },
+        )
+
+    # Production's revision forward to this branch's head, exactly as the entrypoint does on first boot.
+    command.upgrade(Config("alembic.ini"), "head")
+
+    with engine.connect() as conn:
+        counts = preview_clone.table_row_counts(conn)
+    rows = sum(counts.values())
+    populated = {name: n for name, n in counts.items() if n}
+
+    # The frontend alerts `message` verbatim, so it carries the summary.
+    message = (
+        f"re-cloned production into this PR: {rows} rows across {len(populated)} of {len(counts)} tables"
+        f", from alembic revision {result.source_revision or 'unknown'}"
+    )
+    if result.outbox_cancelled:
+        message += f". Cancelled {result.outbox_cancelled} queued GP write(s) carried over from production"
+
+    return {
+        "status": "ok",
+        "message": message,
+        "cloned": True,
+        "source_revision": result.source_revision,
+        "tables": len(counts),
+        "tables_populated": len(populated),
+        "rows": rows,
+        "table_counts": counts,
+        "gp_writes_cancelled": result.outbox_cancelled,
+    }
+
+
 @app.post("/admin/reset-data")
 def reset_data(request: Request):
     """Drop and rebuild the entire public schema via alembic. Dev use only.
+
+    On a preview environment with a clone source configured this means something different - see
+    `_reset_by_recloning`, which takes production's database again instead of emptying this one.
 
     Gated twice on purpose. This endpoint is total data loss on one unauthenticated POST, and it was
     previously reachable by anyone who knew the URL on a public Railway domain - no auth, no
@@ -535,7 +616,7 @@ def reset_data(request: Request):
     from sqlalchemy import text
 
     from alembic import command
-    from app.config import TESTING_ENABLED
+    from app.config import TESTING_ENABLED, is_preview_environment, preview_clone_source_url
     from app.database import engine
     from app.services import reset_preservation
 
@@ -547,6 +628,10 @@ def reset_data(request: Request):
     except AppError as e:
         status = 403 if e.code == "FORBIDDEN" else 401
         return JSONResponse(status_code=status, content={"error": str(e), "code": e.code})
+
+    clone_source = preview_clone_source_url() if is_preview_environment() else None
+    if clone_source is not None:
+        return _reset_by_recloning(clone_source)
 
     with engine.connect() as conn:
         snap = reset_preservation.snapshot(conn)

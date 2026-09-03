@@ -11,7 +11,6 @@ def test_missing_config_returns_unenrolled_defaults(tmp_path):
     assert s.auth.shared_secret == ""              # unenrolled - no secret yet
     assert s.sql.server == "10.0.0.246,1435"       # infra is baked into the defaults
     assert s.sql.system_db == "DYNAMICS"           # where the company master is read from
-    assert s.gp.mode == "sql"
     assert s.channel.backend_url.startswith("wss://")
 
 
@@ -33,7 +32,7 @@ allowed_companies = ["TUBC"]
     )
     s = get_settings(str(cfg))
     assert s.auth.shared_secret == "s3cret"
-    assert s.gp.mode == "sql"
+    assert s.gp.custom_db["UBC"] == "PMUBC"  # the section still parses; the dead keys are ignored
 
 
 def test_loads_a_real_config_with_secret(tmp_path):

@@ -1,8 +1,8 @@
 """A preview environment telling production it exists, so the workstation relay is told to dial it.
 
-The other half of app/services/preview_registry.py. Only a preview that actually wants the REAL
-workstation relay announces - the default preview runs its own stub relay inside the environment and
-has no reason to pull the one GP-credentialed machine onto a throwaway backend.
+The other half of app/services/preview_registry.py. Every preview announces: a preview clones its
+database from production, relay_installs rows and all, so the workstation relay's existing credential
+authenticates against it with nothing seeded and there is no second kind of preview to distinguish.
 
 Best effort throughout. Production being unreachable, misconfigured, or slow must not delay this
 backend's startup or its shutdown: what fails is "the workstation relay is not told about this
@@ -17,7 +17,6 @@ import logging
 import httpx
 
 from app.config import (
-    PREVIEW_REAL_RELAY,
     PREVIEW_REGISTRY_SECRET,
     PRODUCTION_BACKEND_ORIGIN,
     RAILWAY_ENVIRONMENT_NAME,
@@ -37,9 +36,9 @@ SECRET_HEADER = "X-Preview-Registry-Secret"
 
 
 def enabled() -> bool:
-    """Whether this deployment announces itself. A preview that wants the real relay, and nothing
-    else - production never announces, and a preview running the stub has nothing to ask for."""
-    return is_preview_environment() and PREVIEW_REAL_RELAY
+    """Whether this deployment announces itself. Every preview environment, and nothing else -
+    production never announces."""
+    return is_preview_environment()
 
 
 def _url(path: str) -> str:
@@ -54,8 +53,8 @@ async def announce_once() -> bool:
     """One heartbeat. Returns whether production accepted it; never raises."""
     if not PREVIEW_REGISTRY_SECRET:
         logger.warning(
-            "PREVIEW_REAL_RELAY is on but PREVIEW_REGISTRY_SECRET is not set, so this preview cannot "
-            "announce itself to production and the workstation relay will not dial it."
+            "PREVIEW_REGISTRY_SECRET is not set, so this preview cannot announce itself to production "
+            "and the workstation relay will not dial it."
         )
         return False
     try:

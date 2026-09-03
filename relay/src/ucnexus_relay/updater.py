@@ -66,16 +66,12 @@ _sleep = time.sleep
 
 
 def current_build() -> str:
-    """This build's tag, as the hello frame reports it. _build.py is what CI stamps into a frozen exe
-    and it always wins; UCNEXUS_RELAY_BUILD is how a container build (the fixture stub) names itself
-    instead, since nothing freezes it and CI has no package to stamp. Neither on a source checkout,
-    which is 'dev'."""
     try:
         from ._build import BUILD
 
         return BUILD
     except ImportError:
-        return (os.environ.get("UCNEXUS_RELAY_BUILD") or "").strip() or "dev"
+        return "dev"
 
 
 def build_number(tag: str) -> int:

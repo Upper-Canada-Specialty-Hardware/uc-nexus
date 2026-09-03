@@ -15,10 +15,7 @@ Endpoints:
 import socket
 import time
 
-try:
-    import pyodbc
-except ImportError:  # fixture mode (a Linux container, no ODBC stack) - see fixture_ops.py
-    pyodbc = None
+import pyodbc
 from fastapi import Depends, FastAPI, HTTPException
 
 from . import __version__ as VERSION
@@ -28,27 +25,6 @@ from .cors import configure_cors
 from .logging_setup import configure_logging, get_logger
 
 _START = time.monotonic()
-
-# Nothing to catch when there is no SQL layer: an empty tuple in an `except` clause matches nothing.
-_PYODBC_ERROR = pyodbc.Error if pyodbc is not None else ()
-
-
-def _check_gp_reachable() -> None:
-    """Refuse a GP-touching HTTP route while this relay is in fixture mode.
-
-    Every route below opens a pyodbc connection, and in fixture mode there is neither a driver nor a GP
-    to open one against - so without this they would fail deep inside db.py with an ODBC message that
-    says nothing about why. The outbound channel is the transport that IS served in fixture mode (see
-    fixture_ops.py); these routes are the browser-hop path, which is no longer the live one anyway."""
-    if get_settings().gp.mode == "fixture":
-        raise HTTPException(
-            status_code=503,
-            detail=errors.error_body(
-                "fixture_mode",
-                "this relay runs in fixture mode and has no GP connection; the local HTTP endpoints are "
-                "unavailable - GP ops are served over the outbound channel only",
-            ),
-        )
 
 
 def _check_company(company: str) -> None:
@@ -97,10 +73,10 @@ def create_app() -> FastAPI:
             response.headers["Access-Control-Allow-Private-Network"] = "true"
         return response
 
-    if settings.gp.mode != "fixture" and not db.driver_available():
+    if not db.driver_available():
         logger.warning(
             "configured ODBC driver not found",
-            extra={"driver": settings.sql.driver, "available": pyodbc.drivers() if pyodbc is not None else []},
+            extra={"driver": settings.sql.driver, "available": pyodbc.drivers()},
         )
 
     @app.middleware("http")
@@ -139,7 +115,6 @@ def create_app() -> FastAPI:
 
     @app.get("/info")
     def info(_=Depends(auth.verify_token)):
-        _check_gp_reachable()
         s = get_settings()
         hostname = socket.gethostname()
         discovered = companies.current()
@@ -157,7 +132,7 @@ def create_app() -> FastAPI:
         }
         try:
             out.update(db.connection_info(s.sql.system_db))
-        except _PYODBC_ERROR as e:
+        except pyodbc.Error as e:
             out["connection_error"] = str(e)
         # which buyer this workstation resolves to (confirm hostname->BUYERID during deployment)
         out["resolved_buyer"] = buyers.resolve_buyer(s.gp.buyers, hostname, out.get("connected_as"))
@@ -167,13 +142,12 @@ def create_app() -> FastAPI:
     def vendors(company: str | None = None, _=Depends(auth.verify_token)):
         """Read PM00200 (active vendors) for the vendor sync. The frontend posts this list to UC
         Nexus's syncGpVendors, which fills Vendor.gp_vendor_id by matching on name."""
-        _check_gp_reachable()
         company = _required_company(company)
         _check_company(company)
         try:
             with db.get_read_connection(company) as conn:
                 rows = econnect.list_vendors(conn, active_only=True)
-        except _PYODBC_ERROR as e:
+        except pyodbc.Error as e:
             raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
         return models.VendorsResponse(company=company, vendors=[models.VendorOut(**r) for r in rows])
 
@@ -181,13 +155,12 @@ def create_app() -> FastAPI:
     def gp_buyers(company: str | None = None, _=Depends(auth.verify_token)):
         """Registered GP buyers (POP00101) for the Create PO buyer dropdown. eConnect validates BUYERID
         against this, so the UI must pick from it (a device hostname is not a registered buyer)."""
-        _check_gp_reachable()
         company = _required_company(company)
         _check_company(company)
         try:
             with db.get_read_connection(company) as conn:
                 ids = econnect.list_buyers(conn)
-        except _PYODBC_ERROR as e:
+        except pyodbc.Error as e:
             raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
         return models.BuyersResponse(company=company, buyers=ids)
 
@@ -195,13 +168,12 @@ def create_app() -> FastAPI:
     def tax_details(company: str | None = None, _=Depends(auth.verify_token)):
         """Purchase tax details (TX00201, TXDTLTYP=2) for the register-PO tax-detail dropdown (issue
         #257). GP-first: the options are whatever the company defines, read live, not a hardcoded list."""
-        _check_gp_reachable()
         company = _required_company(company)
         _check_company(company)
         try:
             with db.get_read_connection(company) as conn:
                 rows = econnect.list_tax_details(conn)
-        except _PYODBC_ERROR as e:
+        except pyodbc.Error as e:
             raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
         return models.TaxDetailsResponse(company=company, tax_details=[models.TaxDetailOut(**r) for r in rows])
 
@@ -213,7 +185,6 @@ def create_app() -> FastAPI:
         Codes whose account index dangles (#425) are excluded - the create_po guard would refuse
         them, so they must not be selectable. `job` is the GP job number (UC Nexus project_id). A
         job with no usable cost codes returns an empty list (the UI shows that)."""
-        _check_gp_reachable()
         company = _required_company(company)
         _check_company(company)
         job = job.strip()
@@ -222,7 +193,7 @@ def create_app() -> FastAPI:
         try:
             with db.get_read_connection(company) as conn:
                 rows = econnect.list_cost_codes(conn, job)
-        except _PYODBC_ERROR as e:
+        except pyodbc.Error as e:
             raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
         return models.CostCodesResponse(
             company=company, job=job, cost_codes=[models.CostCodeOut(**r) for r in rows]
@@ -230,7 +201,6 @@ def create_app() -> FastAPI:
 
     @app.post("/po/next-number")
     def next_number(request: models.NextNumberRequest, _=Depends(auth.verify_token)):
-        _check_gp_reachable()
         _check_company(request.company)
         try:
             with db.get_connection(request.company) as conn:
@@ -244,12 +214,11 @@ def create_app() -> FastAPI:
                 except Exception:
                     conn.rollback()
                     raise
-        except _PYODBC_ERROR as e:
+        except pyodbc.Error as e:
             raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
 
     @app.post("/po", response_model=models.CreatePoResponse, status_code=201)
     def create_po(request: models.CreatePoRequest, _=Depends(auth.verify_token)):
-        _check_gp_reachable()
         _check_company(request.company)
         try:
             with db.get_connection(request.company) as conn:
@@ -268,13 +237,12 @@ def create_app() -> FastAPI:
                 except Exception:
                     conn.rollback()
                     raise
-        except _PYODBC_ERROR as e:
+        except pyodbc.Error as e:
             raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
 
     @app.post("/receipt", response_model=models.ReceiptResponse, status_code=201)
     def create_receipt(request: models.ReceiptRequest, _=Depends(auth.verify_token)):
         """Receive against a PO - see ops.create_receipt_op for the orchestration."""
-        _check_gp_reachable()
         _check_company(request.company)
         try:
             with db.get_connection(request.company) as conn:
@@ -294,7 +262,7 @@ def create_app() -> FastAPI:
                 except Exception:
                     conn.rollback()
                     raise
-        except _PYODBC_ERROR as e:
+        except pyodbc.Error as e:
             raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
 
     return app

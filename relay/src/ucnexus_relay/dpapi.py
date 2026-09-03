@@ -24,8 +24,8 @@ _CRYPTPROTECT_UI_FORBIDDEN = 0x1
 
 # ctypes.wintypes cannot even be IMPORTED off Windows, and the blob struct is built out of it - so the
 # whole crypt32 binding lives behind the platform check rather than just the calls that use it. That is
-# what lets this module import on Linux, where the fixture-mode container reads a plaintext secret from
-# the environment and never decrypts anything (protect/unprotect below still refuse a real blob there).
+# what lets this module import off Windows at all, where a plaintext secret still loads and nothing is
+# ever decrypted (protect/unprotect below refuse a real blob there).
 if sys.platform == "win32":
     from ctypes import wintypes
 
