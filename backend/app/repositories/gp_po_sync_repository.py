@@ -350,6 +350,10 @@ def upsert_mirrored_po(
     if is_gp_origin and row.project_id is None and project_id is not None:
         row.project_id = project_id
     row.gp_synced_at = now
+    # GP has this PO again - in the open table or in history - so any missing stamp the closure sweep
+    # left on it is void. A PO that reappears between two passes must never be cancelled as deleted;
+    # the count starts over from the next first miss.
+    row.gp_missing_since = None
     _upsert_lines(session, row, lines, is_gp_origin=is_gp_origin)
     # Status only moves when the derived stage is past registration; otherwise the row (and any
     # VENDOR_CONFIRMED overlay) is left exactly as it is.
@@ -389,6 +393,12 @@ def set_watermark(session: Session, company: str, watermark: datetime) -> None:
 
 
 # --- the open-book walk ------------------------------------------------------------------------------
+#
+# Closure detection has two halves. po_numbers_left_open finds the POs Nexus still thinks are open that
+# the walk did not see, and the caller re-reads those by number: most of them have simply closed, been
+# voided or moved to history, and the re-read converges them. The rest are in NEITHER GP table -
+# deleted outright - and note_missing_from_gp cancels those on the SECOND consecutive pass that cannot
+# find them, never the first (see its docstring for why one miss is not enough).
 
 # Stages a mirrored PO can be in while GP still has it in the OPEN purchase-order table. Anything past
 # these has left it, which is precisely what the closure sweep looks for.
@@ -446,3 +456,53 @@ def po_numbers_left_open(session: Session, company: str, since: datetime) -> lis
         .order_by(PurchaseOrder.po_number)
     ).all()
     return [row[0] for row in rows]
+
+
+def note_missing_from_gp(
+    session: Session, company: str, po_numbers: list[str], pass_started_at: datetime
+) -> dict[str, list[str]]:
+    """Record - and on the second consecutive pass, act on - the POs the closure sweep found in NEITHER
+    GP table. Returns {"marked": [...], "cancelled": [...]}, both sorted by PO number.
+
+    A number that gets here was open in Nexus, did not appear in this pass's walk of GP's open table,
+    and could not then be found by key in the open OR the history table: GP has deleted it outright. In
+    ONE pass that is not distinguishable from a PO being edited in GP while the sweep read it, so the
+    first miss only stamps `gp_missing_since` with the pass's start time. A LATER pass that misses the
+    same PO again - a stamp older than this pass's start - cancels it through the same routine a
+    mirrored GP void goes through (status CANCELLED, soft-deleted, linked hardware released back to
+    AVAILABLE), so a deleted PO stops showing in the register as outstanding, stops double-counting
+    required_quantity, and stops being re-read by number on every pass forever.
+
+    A PO that comes back from GP in between clears its stamp in upsert_mirrored_po, so it starts over
+    at the first miss and is never cancelled on the strength of one bad pass. Numbers with no open,
+    live row here are ignored - the row has closed or been cancelled since the sweep listed it - as is
+    a second miss inside the SAME pass, which is one pass's evidence however many times it is reported.
+
+    Caller commits."""
+    if not po_numbers:
+        return {"marked": [], "cancelled": []}
+    rows = (
+        session.scalars(
+            select(PurchaseOrder)
+            .options(selectinload(PurchaseOrder.line_items))
+            .where(
+                PurchaseOrder.company == company,
+                PurchaseOrder.po_number.in_(po_numbers),
+                PurchaseOrder.status.in_(OPEN_STAGES),
+                PurchaseOrder.deleted_at.is_(None),
+            )
+        )
+        .unique()
+        .all()
+    )
+    now = datetime.utcnow()
+    marked: list[str] = []
+    cancelled: list[str] = []
+    for row in rows:
+        if row.gp_missing_since is None:
+            row.gp_missing_since = pass_started_at
+            marked.append(row.po_number)
+        elif row.gp_missing_since < pass_started_at:
+            _apply_stage(session, row, POStatus.CANCELLED, now)
+            cancelled.append(row.po_number)
+    return {"marked": sorted(marked), "cancelled": sorted(cancelled)}

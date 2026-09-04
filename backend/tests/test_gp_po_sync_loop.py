@@ -12,7 +12,11 @@ bare `continue`, and the per-page log line that would have made the fifteen-hour
 And the two schedules run_forever drives: the open book of the most overdue mirrored company, and a
 batch of history pages for the next company still draining whenever the first has nothing due and the
 nightly window is open. Neither has a delay of its own - the shared read budget is the pace - and
-there is no all-companies sweep on a reconnect."""
+there is no all-companies sweep on a reconnect.
+
+The closure sweep's two-pass rule is here too, from the service's side: what it hands the repository
+and when, and that a PO is only cancelled after a SECOND consecutive pass could not find it in either
+GP table. The bookkeeping itself is DB-backed and tested in tests/test_gp_po_mirror_upsert.py."""
 
 import asyncio
 import logging
@@ -611,6 +615,7 @@ def _open_book(monkeypatch, pages, *, stale=(), cursor=None, started_at=None):
     monkeypatch.setattr(gp_po_sync, "_advance_open_pass", lambda c, cur: asked.append(("cursor", cur)))
     monkeypatch.setattr(gp_po_sync, "_finish_open_pass", lambda c: asked.append(("finish", None)))
     monkeypatch.setattr(gp_po_sync, "_po_numbers_left_open", lambda c, since: list(stale))
+    monkeypatch.setattr(gp_po_sync, "_note_missing", lambda c, numbers, since: {"marked": [], "cancelled": []})
     monkeypatch.setattr(
         gp_po_sync,
         "_persist_page",
@@ -1044,13 +1049,56 @@ def test_request_refresh_queues_and_wakes(monkeypatch):
     assert woken == [True, True]
 
 
-def _open_book_with_missing(monkeypatch, stale, missing):
-    """The closure sweep, where the relay reports some of the numbers as being in neither GP table."""
+PASS1 = datetime(2026, 9, 4, 8, 0)
+PASS2 = datetime(2026, 9, 4, 12, 0)
+
+
+def _stub_note_missing(monkeypatch, seen):
+    """Stand in for the repository's two-pass bookkeeping, which is DB-backed and has its own tests
+    (tests/test_gp_po_mirror_upsert.py): the first pass to miss a number stamps it with that pass's
+    start, a LATER pass that misses it again cancels it. What lives only in the repository - clearing
+    the stamp when GP hands the PO back - is not modelled here; at this level a PO that reappears
+    simply stops being reported missing. Returns the log of calls and what each returned."""
+    noted: list[dict] = []
+
+    def note(company, po_numbers, pass_started_at):
+        marked, cancelled = [], []
+        for number in po_numbers:
+            first_miss = seen.get(number)
+            if first_miss is None:
+                seen[number] = pass_started_at
+                marked.append(number)
+            elif first_miss < pass_started_at:
+                cancelled.append(number)
+        noted.append(
+            {
+                "company": company,
+                "numbers": list(po_numbers),
+                "since": pass_started_at,
+                "marked": sorted(marked),
+                "cancelled": sorted(cancelled),
+            }
+        )
+        return {"marked": sorted(marked), "cancelled": sorted(cancelled)}
+
+    monkeypatch.setattr(gp_po_sync, "_note_missing", note)
+    return noted
+
+
+def _cancel_lines(caplog):
+    return [m for m in caplog.messages if "deleted in GP" in m]
+
+
+def _open_book_with_missing(monkeypatch, stale, missing, *, started_at=None, seen=None):
+    """The closure sweep, where the relay reports some of the numbers as being in neither GP table.
+    `seen` carries the two-pass bookkeeping across passes - a fresh dict is a company nothing has ever
+    missed. Returns (the relay request log, the note_missing call log)."""
     asked: list[tuple] = []
-    monkeypatch.setattr(gp_po_sync, "_begin_open_pass", lambda c, s: (None, datetime(2026, 9, 3, 12, 0)))
+    monkeypatch.setattr(gp_po_sync, "_begin_open_pass", lambda c, s: (None, started_at or datetime(2026, 9, 3, 12, 0)))
     monkeypatch.setattr(gp_po_sync, "_advance_open_pass", lambda c, cur: None)
     monkeypatch.setattr(gp_po_sync, "_finish_open_pass", lambda c: None)
     monkeypatch.setattr(gp_po_sync, "_po_numbers_left_open", lambda c, since: list(stale))
+    noted = _stub_note_missing(monkeypatch, {} if seen is None else seen)
     monkeypatch.setattr(
         gp_po_sync,
         "_persist_page",
@@ -1066,13 +1114,12 @@ def _open_book_with_missing(monkeypatch, stale, missing):
         return _paced({"pos": [], "next_cursor": None})
 
     monkeypatch.setattr(gp_po_sync.gp_load, "paced_call", fake_paced_call)
-    return asked
+    return asked, noted
 
 
 def test_a_po_in_neither_gp_table_is_named_once_per_pass(monkeypatch, caplog):
-    """Deleted outright rather than closed or moved to history. Nothing is changed - what the register
-    should do with a PO that vanished from GP is a product decision - but it is said out loud, because
-    the row stays in an open stage and is re-read by number on every pass until somebody decides."""
+    """Deleted outright rather than closed or moved to history. The first pass to miss it only names
+    and stamps it - it is cancelled on the next pass that misses it again, never on one pass's word."""
     _open_book_with_missing(monkeypatch, stale=["PO1", "PO2", "PO3"], missing={"PO2"})
 
     with caplog.at_level(logging.WARNING, logger="app.services.gp_po_sync"):
@@ -1120,6 +1167,57 @@ def test_the_missing_are_gathered_across_every_batch(monkeypatch, caplog):
     lines = [m for m in caplog.messages if "neither GP table" in m]
     assert len(lines) == 1
     assert "2 PO(s)" in lines[0] and "A, D" in lines[0]
+
+
+def test_the_first_pass_to_miss_a_po_marks_it_and_cancels_nothing(monkeypatch, caplog):
+    """One miss is also what a PO being edited in GP while the sweep read it looks like."""
+    _, noted = _open_book_with_missing(monkeypatch, stale=["PO1"], missing={"PO1"}, started_at=PASS1)
+
+    with caplog.at_level(logging.WARNING, logger="app.services.gp_po_sync"):
+        result = asyncio.run(gp_po_sync._run_incremental("TUBC"))
+
+    # The pass's own start time is what the miss is stamped with, so a resumed walk cannot count twice.
+    assert noted == [
+        {"company": "TUBC", "numbers": ["PO1"], "since": PASS1, "marked": ["PO1"], "cancelled": []},
+    ]
+    assert result["cancelled"] == 0
+    assert not _cancel_lines(caplog)
+
+
+def test_a_second_consecutive_miss_cancels_the_po(monkeypatch, caplog):
+    seen: dict = {}
+    _open_book_with_missing(monkeypatch, stale=["PO1"], missing={"PO1"}, started_at=PASS1, seen=seen)
+    asyncio.run(gp_po_sync._run_incremental("TUBC"))
+
+    _, noted = _open_book_with_missing(monkeypatch, stale=["PO1"], missing={"PO1"}, started_at=PASS2, seen=seen)
+    with caplog.at_level(logging.WARNING, logger="app.services.gp_po_sync"):
+        result = asyncio.run(gp_po_sync._run_incremental("TUBC"))
+
+    assert noted[-1]["cancelled"] == ["PO1"]
+    assert result["cancelled"] == 1
+    lines = _cancel_lines(caplog)
+    assert len(lines) == 1
+    assert "TUBC" in lines[0] and "1 PO(s)" in lines[0] and "PO1" in lines[0]
+
+
+def test_a_po_gp_hands_back_in_between_is_never_cancelled(monkeypatch, caplog):
+    """The two passes must be CONSECUTIVE. A PO that reappears is not missing on the second pass, so
+    it never reaches the cancel branch at all."""
+    seen: dict = {}
+    _open_book_with_missing(monkeypatch, stale=["PO1", "PO2"], missing={"PO1", "PO2"}, started_at=PASS1, seen=seen)
+    asyncio.run(gp_po_sync._run_incremental("TUBC"))
+
+    # GP has PO1 again on the next pass; only PO2 is still in neither table.
+    _, noted = _open_book_with_missing(monkeypatch, stale=["PO1", "PO2"], missing={"PO2"}, started_at=PASS2, seen=seen)
+    with caplog.at_level(logging.WARNING, logger="app.services.gp_po_sync"):
+        result = asyncio.run(gp_po_sync._run_incremental("TUBC"))
+
+    assert noted[-1]["numbers"] == ["PO2"]
+    assert noted[-1]["cancelled"] == ["PO2"]
+    assert result["cancelled"] == 1
+    lines = _cancel_lines(caplog)
+    assert len(lines) == 1
+    assert "PO1" not in lines[0]
 
 
 def test_a_requested_refresh_still_waits_for_the_backfill_inside_the_window(monkeypatch):
