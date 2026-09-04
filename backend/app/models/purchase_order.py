@@ -80,6 +80,11 @@ class PurchaseOrder(Base):
     # Last time the mirror sync wrote GP-derived fields onto this row. Null on a NEXUS PO the sync has
     # never touched; set on every mirrored row and on a NEXUS row once its mirror pass converges.
     gp_synced_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # When the mirror's closure sweep FIRST found this PO in neither GP table - deleted outright rather
+    # than closed, voided or moved to history. Null means GP still has it (or has had it back since).
+    # A second consecutive pass that still cannot find it cancels the PO, so this column is the whole
+    # of the two-pass guard: one missed pass is a race with a GP edit, two is a deletion.
+    gp_missing_since: Mapped[datetime | None] = mapped_column(nullable=True)
     project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
     status: Mapped[POStatus] = mapped_column(Enum(POStatus, name="po_status", create_constraint=True), nullable=False)
     # GP cost code chosen per-PO (the issue #121 dropdown, 'phase-step-element' e.g. '210-200-2'),

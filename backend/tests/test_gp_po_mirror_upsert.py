@@ -1,8 +1,13 @@
 """Upsert rules for the GP PO mirror (gp-owned-po mirror). DB-backed (db_session): convergence onto a
 Nexus row without touching the overlay, GP-authoritative received qty, project matching, gp_line_ord
-line matching, and the status-past-registration rule that preserves VENDOR_CONFIRMED."""
+line matching, and the status-past-registration rule that preserves VENDOR_CONFIRMED.
+
+Plus the two-pass rule for a PO deleted outright in GP (note_missing_from_gp): the first pass that
+finds it in neither GP table only stamps it, the second cancels it like a void, and a PO that comes
+back from GP in between is never cancelled at all."""
 
 import uuid
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
@@ -364,3 +369,133 @@ def test_po_number_pending_registration_is_skipped(db_session, project):
     db_session.flush()
     assert action == "skipped"
     assert _get(db_session, "PO500") is None
+
+
+# --- deleted outright in GP: the two-pass rule ---------------------------------------------------------
+
+PASS1 = datetime(2026, 9, 4, 8, 0, 0)
+PASS2 = datetime(2026, 9, 4, 12, 0, 0)
+
+
+def _open_mirrored(db_session, po_number, **kwargs):
+    """A mirrored PO sitting in an open stage - what the closure sweep hands to note_missing_from_gp."""
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po(po_number, [_line(16384, "IT1", 3)], **kwargs), _project_map(db_session)
+    )
+    db_session.flush()
+    return _get(db_session, po_number)
+
+
+def test_a_first_miss_only_stamps_the_po(db_session, project):
+    """One pass cannot tell a deleted PO from one being edited in GP while the sweep read it."""
+    row = _open_mirrored(db_session, "PO600")
+
+    noted = sync_repo.note_missing_from_gp(db_session, COMPANY, ["PO600"], PASS1)
+    db_session.flush()
+
+    assert noted == {"marked": ["PO600"], "cancelled": []}
+    assert row.gp_missing_since == PASS1
+    assert row.status == POStatus.GP_REGISTERED
+    assert row.deleted_at is None
+
+
+def test_a_second_miss_on_a_later_pass_cancels_and_releases_hardware(db_session, project):
+    from app.models.enums import HardwareItemState
+    from app.models.hardware import HardwareItem
+    from app.models.project import Opening
+
+    row = _open_mirrored(db_session, "PO601")
+    opening = Opening(id=uuid.uuid4(), project_id=project.id, opening_number="101")
+    db_session.add(opening)
+    db_session.flush()
+    hi = HardwareItem(
+        id=uuid.uuid4(),
+        project_id=project.id,
+        opening_id=opening.id,
+        hardware_category="IT1 description",
+        product_code="IT1",
+        item_quantity=3,
+        state=HardwareItemState.IN_PO,
+        po_line_item_id=row.line_items[0].id,
+    )
+    db_session.add(hi)
+    db_session.flush()
+
+    sync_repo.note_missing_from_gp(db_session, COMPANY, ["PO601"], PASS1)
+    db_session.flush()
+    noted = sync_repo.note_missing_from_gp(db_session, COMPANY, ["PO601"], PASS2)
+    db_session.flush()
+
+    assert noted == {"marked": [], "cancelled": ["PO601"]}
+    row = _get(db_session, "PO601")
+    # Cancelled exactly as a mirrored GP void is: dead status, soft-deleted, hardware handed back.
+    assert row.status == POStatus.CANCELLED
+    assert row.deleted_at is not None
+    db_session.refresh(hi)
+    assert hi.state == HardwareItemState.AVAILABLE
+    assert hi.po_line_item_id is None
+
+
+def test_two_misses_inside_the_same_pass_do_not_cancel(db_session, project):
+    """The stamp is a PASS, not a count: the same pass reporting a number twice is still one pass."""
+    _open_mirrored(db_session, "PO602")
+
+    sync_repo.note_missing_from_gp(db_session, COMPANY, ["PO602"], PASS1)
+    db_session.flush()
+    noted = sync_repo.note_missing_from_gp(db_session, COMPANY, ["PO602"], PASS1)
+    db_session.flush()
+
+    assert noted == {"marked": [], "cancelled": []}
+    row = _get(db_session, "PO602")
+    assert row.status == POStatus.GP_REGISTERED
+    assert row.deleted_at is None
+
+
+def test_a_po_seen_again_clears_the_stamp_and_is_never_cancelled(db_session, project):
+    """The whole point of the guard: a PO that reappears between two passes starts over."""
+    _open_mirrored(db_session, "PO603")
+    sync_repo.note_missing_from_gp(db_session, COMPANY, ["PO603"], PASS1)
+    db_session.flush()
+
+    # GP hands it back on the next pass - the by-number re-read upserts it.
+    _open_mirrored(db_session, "PO603")
+    assert _get(db_session, "PO603").gp_missing_since is None
+
+    # And a later pass that misses it again is a FIRST miss, not a second.
+    noted = sync_repo.note_missing_from_gp(db_session, COMPANY, ["PO603"], PASS2)
+    db_session.flush()
+    assert noted == {"marked": ["PO603"], "cancelled": []}
+    row = _get(db_session, "PO603")
+    assert row.gp_missing_since == PASS2
+    assert row.status == POStatus.GP_REGISTERED
+
+
+def test_a_number_with_no_open_row_is_ignored(db_session, project):
+    noted = sync_repo.note_missing_from_gp(db_session, COMPANY, ["PO-NOT-HERE"], PASS1)
+    assert noted == {"marked": [], "cancelled": []}
+    assert sync_repo.note_missing_from_gp(db_session, COMPANY, [], PASS1) == {"marked": [], "cancelled": []}
+
+
+def test_a_closed_or_already_cancelled_row_is_never_touched(db_session, project):
+    # Posted to history with nothing cancelled -> CLOSED; posted fully cancelled -> CANCELLED.
+    closed = _open_mirrored(db_session, "PO604", source="history")
+    sync_repo.upsert_mirrored_po(
+        db_session,
+        COMPANY,
+        _po("PO605", [_line(16384, "IT1", 3, cancelled=3)], source="history"),
+        _project_map(db_session),
+    )
+    db_session.flush()
+    cancelled = _get(db_session, "PO605")
+    assert closed.status == POStatus.CLOSED
+    assert cancelled.status == POStatus.CANCELLED
+    cancelled_deleted_at = cancelled.deleted_at
+
+    noted = sync_repo.note_missing_from_gp(db_session, COMPANY, ["PO604", "PO605"], PASS1)
+    db_session.flush()
+
+    assert noted == {"marked": [], "cancelled": []}
+    assert closed.status == POStatus.CLOSED
+    assert closed.gp_missing_since is None
+    assert cancelled.gp_missing_since is None
+    assert cancelled.deleted_at == cancelled_deleted_at

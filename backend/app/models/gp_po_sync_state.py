@@ -40,7 +40,10 @@ class GpPoSyncState(Base):
     # what lets a restart resume that walk instead of spending the read budget re-reading its start.
     # `open_pass_started_at` is what makes closure detection survive the same restart: a PO still open
     # in Nexus whose gp_synced_at predates the walk was not in GP's open table this pass, so it has
-    # closed, been voided or moved to history, and gets re-read by number.
+    # closed, been voided or moved to history, and gets re-read by number. It is also the timestamp the
+    # two-pass deletion guard is stamped with: a re-read that finds a PO in neither GP table stamps
+    # purchase_orders.gp_missing_since with this pass's start, and the next pass to miss it again
+    # cancels the PO.
     open_book_cursor: Mapped[str | None] = mapped_column(String(17), nullable=True)
     open_pass_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)

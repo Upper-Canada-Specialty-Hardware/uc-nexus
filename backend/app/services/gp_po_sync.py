@@ -19,8 +19,10 @@ have opposite shapes:
     the open-book schedule has nothing due, and the budget alone decides how fast.
   - INCREMENTAL: from then on, walk GP's OPEN purchase orders in keyset pages, then re-read by number
     whatever has since left that table (closed, voided, moved to history) - the only way to learn
-    about a PO that no open-only page will ever mention again. POLL_SECONDS is the minimum gap between
-    consecutive passes of the same company, not a wait between requests.
+    about a PO that no open-only page will ever mention again. A PO the re-read finds in NEITHER GP
+    table was deleted outright, and is cancelled like a void once TWO consecutive passes have missed
+    it (see _sweep_closed). POLL_SECONDS is the minimum gap between consecutive passes of the same
+    company, not a wait between requests.
 
 Until the workstation relay self-updates to a build advertising the sync_pos op, relay_call fails fast
 with RelayOpUnsupportedError and this service no-ops with a log line - so it is safe to deploy ahead of
@@ -393,11 +395,13 @@ async def _run_incremental(company: str, *, background: bool = True) -> dict:
     await asyncio.to_thread(_finish_open_pass, company)
     logger.info(
         "gp po sync: %s open book refreshed - %s page(s), %s open POs, %s left the open table, "
-        "created=%s updated=%s skipped=%s in %.0fms",
+        "%s missing in GP, %s cancelled as deleted, created=%s updated=%s skipped=%s in %.0fms",
         company,
         pages,
         pos_seen,
-        closed,
+        closed["stale"],
+        closed["marked"],
+        closed["cancelled"],
         created,
         updated,
         skipped,
@@ -409,11 +413,12 @@ async def _run_incremental(company: str, *, background: bool = True) -> dict:
         "created": created,
         "updated": updated,
         "skipped": skipped,
-        "pos": pos_seen + closed,
+        "pos": pos_seen + closed["stale"],
+        "cancelled": closed["cancelled"],
     }
 
 
-async def _sweep_closed(company: str, pass_started_at: datetime, *, background: bool = True) -> int:
+async def _sweep_closed(company: str, pass_started_at: datetime, *, background: bool = True) -> dict:
     """Re-read, by number, the POs that were open in Nexus and did not appear in this pass.
 
     A PO that has left GP's open table is invisible to every open-only page, so without this the
@@ -421,12 +426,18 @@ async def _sweep_closed(company: str, pass_started_at: datetime, *, background: 
     after it was received and closed. `read_pos_by_number` finds them in either table by key, which is
     a seek rather than the history scan the old watermark read did.
 
-    Returns how many were re-read. Batched at READ_BATCH, which is also the relay's per-request key
-    cap, and each batch is charged its own length rather than a flat page size - a trailing batch of
-    three should cost three."""
+    A number the relay reports as being in NEITHER table has been deleted outright in GP, and that is
+    handled on a TWO-PASS rule (sync_repo.note_missing_from_gp): the first miss is only stamped,
+    because one pass cannot tell a deletion from a PO being edited in GP while the sweep read it; a
+    second consecutive pass that still cannot find it cancels the PO exactly as a mirrored GP void is
+    cancelled. A PO that comes back from GP in between clears its stamp and starts over.
+
+    Returns {"stale", "marked", "cancelled"} counts. Batched at READ_BATCH, which is also the relay's
+    per-request key cap, and each batch is charged its own length rather than a flat page size - a
+    trailing batch of three should cost three."""
     stale = await asyncio.to_thread(_po_numbers_left_open, company, pass_started_at)
     if not stale:
-        return 0
+        return {"stale": 0, "marked": 0, "cancelled": 0}
     logger.info("gp po sync: %s has %s PO(s) that left GP's open table; re-reading them by number", company, len(stale))
     missing: list[str] = []
     for start in range(0, len(stale), gp_load.READ_BATCH):
@@ -442,20 +453,31 @@ async def _sweep_closed(company: str, pass_started_at: datetime, *, background: 
         pos = result.get("pos") or []
         missing.extend(result.get("missing") or [])
         await asyncio.to_thread(_persist_page, company, pos, None, is_backfill=False)
+    marked: list[str] = []
+    cancelled: list[str] = []
     if missing:
-        # In NEITHER GP table: deleted outright rather than closed or moved to history. Nothing is
-        # changed here - what the register should do with a PO that has vanished from GP is a product
-        # decision, not one to make silently in a sweep. The cost of leaving it is that these rows stay
-        # in an open stage and are re-read by number on every pass, so the warning names them: one line
-        # per pass, capped, so a company with hundreds cannot flood the log.
+        noted = await asyncio.to_thread(_note_missing, company, missing, pass_started_at)
+        marked = noted["marked"]
+        cancelled = noted["cancelled"]
+    # Both lines are one per pass and capped at twenty names, so a company with hundreds of either
+    # cannot flood the log; the count in front of the names is the whole truth.
+    if marked:
         logger.warning(
-            "gp po sync: %s: %s PO(s) are in neither GP table; left as-is: %s%s",
+            "gp po sync: %s: %s PO(s) are in neither GP table, cancelled if still missing next pass: %s%s",
             company,
-            len(missing),
-            ", ".join(missing[:20]),
-            "..." if len(missing) > 20 else "",
+            len(marked),
+            ", ".join(marked[:20]),
+            "..." if len(marked) > 20 else "",
         )
-    return len(stale)
+    if cancelled:
+        logger.warning(
+            "gp po sync: %s: cancelled %s PO(s) deleted in GP: %s%s",
+            company,
+            len(cancelled),
+            ", ".join(cancelled[:20]),
+            "..." if len(cancelled) > 20 else "",
+        )
+    return {"stale": len(stale), "marked": len(marked), "cancelled": len(cancelled)}
 
 
 def _begin_open_pass(company: str, started_at: datetime) -> tuple[str | None, datetime]:
@@ -480,6 +502,13 @@ def _finish_open_pass(company: str) -> None:
 def _po_numbers_left_open(company: str, since: datetime) -> list[str]:
     with SessionLocal() as session:
         return sync_repo.po_numbers_left_open(session, company, since)
+
+
+def _note_missing(company: str, po_numbers: list[str], pass_started_at: datetime) -> dict[str, list[str]]:
+    with SessionLocal() as session:
+        noted = sync_repo.note_missing_from_gp(session, company, po_numbers, pass_started_at)
+        session.commit()
+        return noted
 
 
 def _load_cursor(company: str) -> str | None:
