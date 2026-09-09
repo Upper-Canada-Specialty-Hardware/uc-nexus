@@ -105,6 +105,7 @@ def po_line_item_to_type(li) -> POLineItem:
         unit_cost=float(li.unit_cost),
         order_as=li.order_as,
         gp_line_ord=li.gp_line_ord,
+        nexus_registered=li.nexus_registered,
         manufacturer=_po_line_item_manufacturer(li),
         created_at=li.created_at,
         updated_at=li.updated_at,
@@ -402,12 +403,17 @@ def po_to_type(po, receive_records=None) -> PurchaseOrder:
     # lazy-load, turning list resolvers that don't need it into an N+1. get_purchase_orders /
     # get_purchase_order selectinload it (that's what the generate dialog reads); everything else gets None.
     doc_data = po.__dict__.get("document_data")
+    line_items = list(po.line_items)
     return PurchaseOrder(
         id=strawberry.ID(str(po.id)),
         po_number=po.po_number,
         request_number=po.request_number,
         origin=po.origin,
         gp_synced_at=po.gp_synced_at,
+        # A PO is Nexus-registered when every one of its lines is a NEXUS REGISTERED LINE. Read off the
+        # same collection the line types are built from, so it costs no extra query; a PO with no lines
+        # is not registered (all() of nothing is True, which would be the wrong answer here).
+        nexus_registered=bool(line_items) and all(li.nexus_registered for li in line_items),
         project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
         status=po.status,
         cost_code=po.cost_code,
@@ -428,7 +434,7 @@ def po_to_type(po, receive_records=None) -> PurchaseOrder:
         ordered_at=po.ordered_at,
         created_at=po.created_at,
         updated_at=po.updated_at,
-        line_items=[po_line_item_to_type(li) for li in po.line_items],
+        line_items=[po_line_item_to_type(li) for li in line_items],
         receive_records=[receive_record_to_type(rr) for rr in (receive_records or [])],
         documents=[po_document_to_type(doc) for doc in documents],
         document_data=po_document_data_to_type(doc_data) if doc_data is not None else None,

@@ -365,10 +365,9 @@ def test_register_rejects_duplicate_po_number_in_project(db_session):
         )
 
 
-def test_register_allows_blank_order_as_and_falls_back_to_product_code(db_session):
-    # #563: order_as is optional - GP's item number falls back to product_code. A blank order_as on a
-    # line that carries a product_code registers fine, persists as NULL, and the GP payload uses the
-    # product_code as the item number.
+def test_register_allows_a_blank_order_as(db_session):
+    # Order As is the one optional field on a line: a blank one registers fine and persists as NULL,
+    # while GP still gets the category as the item number and the code as the description.
     project = _make_project(db_session)
     po = _import_draft_po(db_session, project)
     lines = list(po.line_items)
@@ -406,7 +405,9 @@ def test_register_allows_blank_order_as_and_falls_back_to_product_code(db_sessio
         po_number="PO0000102",
         line_items=[line_input],
     )
-    assert payload["lines"][0]["item_number"] == "HG-100"
+    # Order As blank or not, GP gets the category as the item number and the code as the description.
+    assert payload["lines"][0]["item_number"] == "HINGE"
+    assert payload["lines"][0]["item_description"] == "HG-100"
 
 
 # --- issue #233: _prepare_register_po resolves each line's manufacturer from matching HardwareItems ----
@@ -641,3 +642,57 @@ def test_register_without_a_project_override_leaves_a_stock_po_unattached(db_ses
     po = _stock_draft_po(db_session)
     _register(db_session, po)
     assert po_repository.reload_po(db_session, po.id).project_id is None
+
+
+def test_register_rejects_a_blank_hardware_category(db_session):
+    project = _make_project(db_session)
+    po = _import_draft_po(db_session, project)
+    lines = list(po.line_items)
+    with pytest.raises(ValidationError) as exc:
+        po_repository.register_po_in_gp(
+            db_session,
+            po.id,
+            gp_vendor_id="GPV1",
+            vendor_name_snapshot="GP Vendor",
+            po_number="PO0000103",
+            gp_company="TUBC",
+            line_items=[
+                {
+                    "id": str(lines[0].id),
+                    "hardware_category": "   ",
+                    "product_code": "HG-100",
+                    "ordered_quantity": 1,
+                    "unit_cost": 10.0,
+                    "classification": None,
+                    "order_as": "ML2010",
+                }
+            ],
+        )
+    assert exc.value.field == "hardware_category"
+
+
+def test_register_rejects_a_blank_product_code_even_with_an_order_as(db_session):
+    project = _make_project(db_session)
+    po = _import_draft_po(db_session, project)
+    lines = list(po.line_items)
+    with pytest.raises(ValidationError) as exc:
+        po_repository.register_po_in_gp(
+            db_session,
+            po.id,
+            gp_vendor_id="GPV1",
+            vendor_name_snapshot="GP Vendor",
+            po_number="PO0000104",
+            gp_company="TUBC",
+            line_items=[
+                {
+                    "id": str(lines[0].id),
+                    "hardware_category": "HINGE",
+                    "product_code": "",
+                    "ordered_quantity": 1,
+                    "unit_cost": 10.0,
+                    "classification": None,
+                    "order_as": "ML2010",
+                }
+            ],
+        )
+    assert exc.value.field == "product_code"

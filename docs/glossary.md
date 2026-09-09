@@ -22,7 +22,7 @@ MIRRORED GP DATA
 - OPEN-POS RECONCILIATION - The second half of an OPEN-POS SYNC. POs that Nexus still holds open but GP did not list as open are read by number to learn their final state. Code: closure sweep (_sweep_closed, read_pos_by_number, po_numbers_left_open)
 - GP-DELETED PO RULE - A PO that GP has no record of, open or finished, is cancelled in Nexus only after two consecutive OPEN-POS SYNCS miss it. It is cancelled the same way as a GP void, and nothing in the UI says it was deleted. Code: note_missing_from_gp, gp_missing_since
 - PO STATUS FROM QUANTITIES - A mirrored PO's status comes from its received and cancelled quantities plus which GP table it sits in, never from GP's status code. Nothing received means GP_REGISTERED. Some received means PARTIALLY_RECEIVED. All received, or sitting in GP's finished table, means CLOSED. Everything cancelled means CANCELLED. The status is never written below PARTIALLY_RECEIVED, so VENDOR_CONFIRMED survives. Code: derive_po_stage
-- GP-OWNED FIELDS / NEXUS-ONLY FIELDS - The PO fields every OPEN-POS SYNC overwrites from GP (vendor, order date, line quantities, unit cost, received amount) versus the fields it never touches (notes, vendor quote number, cost code, creator, shipping, tariff, request number, the VENDOR_CONFIRMED step, and the project on a Nexus-registered PO). Code: NEXUS_ONLY_FIELDS
+- GP-OWNED FIELDS / NEXUS-ONLY FIELDS - The PO fields every OPEN-POS SYNC overwrites from GP (vendor, order date, cost code, shipping, line quantities, unit cost, received amount) versus the fields it never touches (notes, vendor quote number, creator, tariff, request number, the VENDOR_CONFIRMED step, the hardware category and product code on a NEXUS REGISTERED LINE, and the project on a Nexus-registered PO). Code: NEXUS_ONLY_FIELDS
 - MIRROR PROGRESS - The saved per-company record of how far the initialization got, whether it finished, and where the current OPEN-POS SYNC is up to. It survives restarts and redeploys. Code: gp_po_sync_state
 
 Protection of GP
@@ -43,3 +43,8 @@ Inventory Value
 - DOORS ON HAND - The per-company table of door quantities in the building: one row per project plus one general row. Code: doors_on_hand
 - AVERAGE DOOR COST - The single per-company dollar value that every DOORS ON HAND row is multiplied by. Code: inventory_value_settings.average_door_cost
 - OSSA - Off Site Storage Agreement, a flag on a project. Code: projects.off_site_storage_agreement
+
+Purchase Orders
+
+- GP PO LINE ITEM - One line on a purchase order in GP: item number, item description, ordered quantity, unit cost, received quantity and job number. On every PO not made by Nexus the item number is a cost bucket and the description is the part number. On a Nexus-made PO the item number is the hardware category and the description is the product code. Nexus's own line record mirrors it by line ordinal. Code: POP10110 / POP30110 row, POLineItem.gp_line_ord
+- NEXUS REGISTERED LINE - A GP PO LINE ITEM whose Nexus copy carries the schedule's hardware category and product code, so the OPEN-POS SYNC leaves those two fields alone. A PO is Nexus-registered when every line is a NEXUS REGISTERED LINE. Code: po_line_items.nexus_registered

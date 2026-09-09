@@ -31,8 +31,10 @@ def test_build_create_po_payload_non_job_line():
     assert payload["header"]["confirm_with"] == "Jane Vendor"
     assert payload["po_number"] is None
     line = payload["lines"][0]
-    assert line["item_number"] == "ML2010"
-    assert line["item_description"] == "AB123 HINGE"
+    # The PO REGISTRATION identity: hardware category into GP's item number, product code into its
+    # description. Order As stays in Nexus and reaches neither field.
+    assert line["item_number"] == "HINGE"
+    assert line["item_description"] == "AB123"
     assert line["quantity"] == 2
     assert line["unit_cost"] == 12.5
     assert line["product_indicator"] == 1
@@ -101,7 +103,24 @@ def test_build_create_po_payload_job_cost_line_carries_job_and_cost_code():
     assert line["cost_code"] == "310-000-3"
 
 
-def test_build_create_po_payload_falls_back_to_product_code_without_order_as():
+def test_order_as_never_reaches_gp_whatever_it_holds():
+    """Order As is Nexus-only. Setting it, blanking it or dropping the key entirely produces the
+    same GP line - the category and the code are the only two values that travel."""
+    for line_item in (_line_item(), _line_item(order_as=""), _line_item(order_as=None)):
+        payload = gp_po.build_create_po_payload(
+            vendor_gp_id="ING100",
+            vendor_contact_name=None,
+            buyer_id="mira",
+            job_number=None,
+            cost_code=None,
+            po_number=None,
+            line_items=[line_item],
+        )
+        assert payload["lines"][0]["item_number"] == "HINGE"
+        assert payload["lines"][0]["item_description"] == "AB123"
+
+
+def test_build_create_po_payload_trims_the_category_and_the_code():
     payload = gp_po.build_create_po_payload(
         vendor_gp_id="ING100",
         vendor_contact_name=None,
@@ -109,9 +128,10 @@ def test_build_create_po_payload_falls_back_to_product_code_without_order_as():
         job_number=None,
         cost_code=None,
         po_number=None,
-        line_items=[_line_item(order_as="")],
+        line_items=[_line_item(hardware_category="  HINGE  ", product_code="  AB123  ")],
     )
-    assert payload["lines"][0]["item_number"] == "AB123"
+    assert payload["lines"][0]["item_number"] == "HINGE"
+    assert payload["lines"][0]["item_description"] == "AB123"
 
 
 def test_build_create_po_payload_truncates_confirm_with_and_item_number():
@@ -123,10 +143,24 @@ def test_build_create_po_payload_truncates_confirm_with_and_item_number():
         job_number=None,
         cost_code=None,
         po_number=None,
-        line_items=[_line_item(order_as="B" * 50)],
+        line_items=[_line_item(hardware_category="B" * 50)],
     )
     assert payload["header"]["confirm_with"] == long_name[:20]
+    # GP's ITEMNMBR is 30 characters. An over-long category is cut, never a reason to refuse the PO.
     assert payload["lines"][0]["item_number"] == ("B" * 50)[:30]
+
+
+def test_an_over_long_product_code_is_cut_to_gps_description_width():
+    payload = gp_po.build_create_po_payload(
+        vendor_gp_id="ING100",
+        vendor_contact_name=None,
+        buyer_id="mira",
+        job_number=None,
+        cost_code=None,
+        po_number=None,
+        line_items=[_line_item(product_code="C" * 150)],
+    )
+    assert payload["lines"][0]["item_description"] == ("C" * 150)[:100]
 
 
 def test_build_create_receipt_payload_dedupes_and_joins_rack_locations():
@@ -211,6 +245,40 @@ def test_validate_create_po_inputs_rejects_an_overlong_po_number():
     with pytest.raises(ValidationError) as exc:
         gp_po.validate_create_po_inputs(job_number=None, cost_code=None, po_number="X" * 18, line_items=[_line_item()])
     assert exc.value.field == "po_number"
+
+
+def test_validate_create_po_inputs_rejects_a_blank_hardware_category():
+    import pytest
+
+    from app.errors import ValidationError
+
+    with pytest.raises(ValidationError) as exc:
+        gp_po.validate_create_po_inputs(
+            job_number=None, cost_code=None, po_number=None, line_items=[_line_item(hardware_category="  ")]
+        )
+    assert exc.value.field == "hardware_category"
+
+
+def test_validate_create_po_inputs_rejects_a_blank_product_code_even_with_an_order_as():
+    import pytest
+
+    from app.errors import ValidationError
+
+    with pytest.raises(ValidationError) as exc:
+        gp_po.validate_create_po_inputs(
+            job_number=None,
+            cost_code=None,
+            po_number=None,
+            line_items=[_line_item(product_code="", order_as="ML2010")],
+        )
+    assert exc.value.field == "product_code"
+
+
+def test_validate_create_po_inputs_accepts_a_line_with_no_order_as():
+    """Order As is the one optional field on a line."""
+    gp_po.validate_create_po_inputs(
+        job_number=None, cost_code=None, po_number=None, line_items=[_line_item(order_as=None)]
+    )
 
 
 def test_validate_create_po_inputs_rejects_a_zero_quantity_line():

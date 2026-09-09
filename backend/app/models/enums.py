@@ -25,11 +25,14 @@ class POStatus(str, enum.Enum):
 class POOrigin(str, enum.Enum):
     """Who owns the PO's authoritative record (gp-owned-po mirror).
 
-    NEXUS is a PO drafted here and pushed into GP the normal way - Nexus stamped its GP number and
-    every non-GP field (documents, notes, cost code) is ours to edit. GP is a row the mirror sync
+    NEXUS is a PO drafted here and pushed into GP the normal way - Nexus stamped its GP number and the
+    NEXUS-ONLY FIELDS (documents, notes, tariff) are ours to edit. GP is a row the mirror sync
     discovered in GP's own tables and wrote locally; the sync owns its GP-derived fields and never
     invents the Nexus-only overlay. A NEXUS PO that also exists in GP stays NEXUS - origin records
-    where the row was born, not merely that GP knows about it."""
+    where the row was born, not merely that GP knows about it.
+
+    Origin no longer decides whether the sync overwrites a line's hardware category and product code.
+    That is per-line now, and the line itself answers it: see POLineItem.nexus_registered."""
 
     NEXUS = "NEXUS"
     GP = "GP"

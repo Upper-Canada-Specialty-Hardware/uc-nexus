@@ -82,6 +82,9 @@ export const GET_PURCHASE_ORDER = gql`
         unitCost
         orderAs
         gpLineOrd
+        # True when this line's category and code are the schedule's own, so the GP sync leaves them
+        # alone; false while it still carries GP's item number and description.
+        nexusRegistered
         manufacturer
         createdAt
         updatedAt

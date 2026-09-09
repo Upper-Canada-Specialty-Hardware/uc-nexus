@@ -1,9 +1,13 @@
 """Persistence for the GP purchase-order mirror (gp-owned-po mirror).
 
 The mirror upserts GP's own purchase orders into local rows keyed by (gp_company, po_number). It owns
-only GP-derived fields; the Nexus-only overlay (documents, notes, vendor_quote_number, cost_code,
-created_by_user_id, shipping/tariff) is never touched, so a Nexus-registered PO converges into its
-mirror row unharmed. DRAFTs have no GP identity and are invisible to the sync.
+only GP-derived fields; the Nexus-only overlay (documents, notes, vendor_quote_number,
+created_by_user_id, tariff) is never touched, so a Nexus-registered PO converges into its mirror row
+unharmed. DRAFTs have no GP identity and are invisible to the sync.
+
+Line identity is decided per LINE, not per PO: a NEXUS REGISTERED LINE keeps the schedule's hardware
+category and product code, and every other line takes GP's item number and description. That is what
+lets a GP-born PO be given a schedule identity one line at a time.
 
 Status past registration is derived from GP (source table + received/cancelled quantities); below that
 the sync leaves the row alone, so the quote+ack VENDOR_CONFIRMED auto-transition keeps working and is
@@ -35,14 +39,17 @@ logger = logging.getLogger(__name__)
 # GP-derived category fallback when a mirrored line's GP description is blank.
 _GP_CATEGORY_FALLBACK = "GP"
 
-# The Nexus-only overlay fields the mirror must never write. Listed here as the single record of the
-# convergence contract; the upsert simply never assigns them.
+# The NEXUS-ONLY FIELDS: the overlay the mirror must never write. Listed here as the single record of
+# the convergence contract; the upsert simply never assigns them.
+#
+# cost_code and shipping_cost used to be on this list and are now GP-OWNED FIELDS - the relay reads
+# both back (WS10101's cost code per line, FRTAMNT on the header), so a Nexus-made PO converges to
+# whatever GP ended up holding rather than keeping the value typed at registration. tariff_amount has
+# no GP column at all and stays ours.
 NEXUS_ONLY_FIELDS = (
     "notes",
     "vendor_quote_number",
-    "cost_code",
     "created_by_user_id",
-    "shipping_cost",
     "tariff_amount",
     "request_number",
 )
@@ -108,6 +115,38 @@ def _match_project_id(lines: list[dict], project_map: dict[str, uuid.UUID]) -> u
     return project_map.get(next(iter(jobs)))
 
 
+def _gp_cost_code(lines: list[dict], po_number: str) -> str | None:
+    """The cost code a mirrored PO carries: the first one any of its lines reports. Nexus holds one
+    cost code per PO and GP holds one per line, so a PO whose lines disagree cannot be represented
+    faithfully - the first wins and the disagreement is logged, which is the only way anybody finds
+    out that a GP PO was built that way."""
+    codes = [code for code in ((ln.get("cost_code") or "").strip() for ln in lines) if code]
+    if not codes:
+        return None
+    distinct = sorted(set(codes))
+    if len(distinct) > 1:
+        logger.info(
+            "gp po sync: %s has lines on more than one cost code (%s); keeping %s", po_number, distinct, codes[0]
+        )
+    return codes[0]
+
+
+def _apply_gp_costs(row: PurchaseOrder, po: dict, lines: list[dict]) -> None:
+    """Write the two GP-OWNED FIELDS the relay reads back off GP's own PO: the header freight amount
+    into shipping_cost, and the job-cost line's cost code into cost_code.
+
+    A relay too old to send either key leaves the stored value exactly as it is, and so does a PO with
+    no cost code on any line (a stock PO books to no job). Absent is not zero: zeroing shipping on
+    every pass would wipe what somebody typed at registration for no reason other than that the
+    workstation has not been updated yet."""
+    freight = po.get("freight")
+    if freight is not None:
+        row.shipping_cost = Decimal(str(freight)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    cost_code = _gp_cost_code(lines, row.po_number)
+    if cost_code is not None:
+        row.cost_code = cost_code
+
+
 def _parse_doc_date(doc_date: str | None) -> datetime | None:
     if not doc_date:
         return None
@@ -117,12 +156,25 @@ def _parse_doc_date(doc_date: str | None) -> datetime | None:
         return None
 
 
-def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict], *, is_gp_origin: bool) -> None:
+def _apply_gp_line_identity(li: POLineItem, gp_line: dict) -> None:
+    """Write GP's item number and description onto a line, unless it is a NEXUS REGISTERED LINE - one
+    whose category and code came off a hardware schedule. Those two fields are the whole of what the
+    registration buys: inventory received against the line lands under the schedule's product, so
+    letting a later OPEN-POS SYNC put GP's cost bucket back would undo it every fifteen minutes."""
+    if li.nexus_registered:
+        return
+    li.product_code = (gp_line.get("item") or "").strip() or _GP_CATEGORY_FALLBACK
+    li.hardware_category = (gp_line.get("itemdesc") or "").strip() or _GP_CATEGORY_FALLBACK
+
+
+def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> None:
     """Match GP lines onto the PO's line rows by gp_line_ord. Received qty is GP's (authoritative) but
-    floored at what Nexus already stored; ordered qty and unit cost are GP-owned too. product_code /
-    hardware_category are written only for a GP-origin PO - a Nexus PO's lines carry the schedule's own
-    categorization, which the mirror keeps. Existing lines absent from GP are left untouched rather than
-    deleted, so mirrored inventory is never orphaned.
+    floored at what Nexus already stored; ordered qty and unit cost are GP-owned on every line without
+    exception. product_code / hardware_category are the one pair decided per line: a NEXUS REGISTERED
+    LINE keeps the schedule's own, anything else takes GP's item number and description. A line the
+    mirror creates here starts unregistered, because nothing has given it a schedule identity yet.
+    Existing lines absent from GP are left untouched rather than deleted, so mirrored inventory is
+    never orphaned.
 
     A line GP has cancelled to nothing orderable (net <= 0, or a fractional remainder that rounds below
     one whole unit) is skipped when it is NEW - there is nothing to mirror. When it ALREADY exists it is
@@ -150,9 +202,7 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict], *, 
                 li.received_quantity = received_qty
                 li.ordered_quantity = max(1, received_qty)
                 li.unit_cost = unit_cost
-                if is_gp_origin:
-                    li.product_code = (ln.get("item") or "").strip() or _GP_CATEGORY_FALLBACK
-                    li.hardware_category = (ln.get("itemdesc") or "").strip() or _GP_CATEGORY_FALLBACK
+                _apply_gp_line_identity(li, ln)
             continue
 
         if li is None:
@@ -166,6 +216,7 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict], *, 
                 received_quantity=received_qty,
                 unit_cost=unit_cost,
                 classification=None,
+                nexus_registered=False,
             )
             session.add(li)
             po.line_items.append(li)
@@ -173,9 +224,7 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict], *, 
             li.ordered_quantity = ordered_qty
             li.received_quantity = received_qty
             li.unit_cost = unit_cost
-            if is_gp_origin:
-                li.product_code = (ln.get("item") or "").strip() or _GP_CATEGORY_FALLBACK
-                li.hardware_category = (ln.get("itemdesc") or "").strip() or _GP_CATEGORY_FALLBACK
+            _apply_gp_line_identity(li, ln)
 
 
 def _release_linked_hardware(session: Session, po: PurchaseOrder) -> None:
@@ -329,7 +378,8 @@ def upsert_mirrored_po(
         )
         session.add(row)
         session.flush()
-        _upsert_lines(session, row, lines, is_gp_origin=True)
+        _apply_gp_costs(row, po, lines)
+        _upsert_lines(session, row, lines)
         if status == POStatus.CANCELLED:
             _release_linked_hardware(session, row)
         return "created"
@@ -354,7 +404,8 @@ def upsert_mirrored_po(
     # left on it is void. A PO that reappears between two passes must never be cancelled as deleted;
     # the count starts over from the next first miss.
     row.gp_missing_since = None
-    _upsert_lines(session, row, lines, is_gp_origin=is_gp_origin)
+    _apply_gp_costs(row, po, lines)
+    _upsert_lines(session, row, lines)
     # Status only moves when the derived stage is past registration; otherwise the row (and any
     # VENDOR_CONFIRMED overlay) is left exactly as it is.
     if stage in _APPLIED_STAGES:
