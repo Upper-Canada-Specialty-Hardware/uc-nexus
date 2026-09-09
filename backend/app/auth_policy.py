@@ -128,6 +128,16 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "projectOpenings": SIGNED_IN,
     "reconcileSchedule": SIGNED_IN,
     "finalizeImportSession": SIGNED_IN,
+    # --- inventory_value.py ---------------------------------------------------------------
+    # What everything in the building is worth (#662). A company-wide dollar figure and the door
+    # counts behind it, so not a shop-floor read - but the Shop Assembly Manager is the person who
+    # actually knows how many doors are standing in the building, which is why the writes are theirs
+    # as well as an admin's rather than admin-only.
+    "inventoryValue": frozenset({ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE}),
+    "inventoryValueCompanies": frozenset({ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE}),
+    "saveDoorsOnHand": frozenset({ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE}),
+    "removeDoorsOnHand": frozenset({ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE}),
+    "setAverageDoorCost": frozenset({ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE}),
     # --- notification.py ------------------------------------------------------------------
     "notifications": SIGNED_IN,
     "markNotificationAsRead": SIGNED_IN,

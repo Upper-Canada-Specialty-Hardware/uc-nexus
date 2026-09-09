@@ -2017,3 +2017,56 @@ class MigrationResult:
     catalog_items_created: int = 0
     catalog_items_skipped: int = 0
     catalog_attributes_created: int = 0
+
+
+# --- INVENTORY VALUE (#662) ----------------------------------------------------------------------
+
+
+@strawberry.type
+class InventoryValueBucket:
+    """One of the three INVENTORY VALUE figures: hardware plus doors, in dollars.
+
+    `total_value` is the sum of the two halves as they are printed, so the caption under the figure
+    always adds up to the figure.
+    """
+
+    hardware_value: float
+    door_count: int
+    door_value: float
+    total_value: float
+
+
+@strawberry.type
+class DoorsOnHandRow:
+    """One line of the DOORS ON HAND table: a project's doors, or - with no project - the general row."""
+
+    id: strawberry.ID
+    # Null on the general row, which is the doors belonging to no job.
+    project_id: strawberry.ID | None
+    project_number: str | None
+    project_name: str | None
+    is_ossa: bool
+    quantity: int
+
+
+@strawberry.type
+class InventoryValue:
+    """The whole INVENTORY VALUE page for one GP company.
+
+    Every mutation on the page returns this type rather than the row it changed, because every edit
+    moves one of the three figures - a mutation returning just its row would leave the page showing
+    a total that no longer follows from the table under it.
+    """
+
+    company: str
+    ossa: InventoryValueBucket
+    non_ossa: InventoryValueBucket
+    general_stock: InventoryValueBucket
+    average_door_cost: float
+    average_door_cost_updated_at: datetime | None
+    average_door_cost_updated_by: str | None
+    doors_on_hand: list[DoorsOnHandRow]
+    general_door_count: int
+    ossa_door_count: int
+    non_ossa_door_count: int
+    total_door_count: int
