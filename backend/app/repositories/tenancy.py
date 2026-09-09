@@ -28,7 +28,7 @@ import uuid
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
-from app.errors import NotFoundError
+from app.errors import NotFoundError, ValidationError
 from app.models.inventory import InventoryLocation
 from app.models.inventory_item_type import CustomInventoryItem, InventoryItemAttribute, InventoryItemType
 from app.models.project import Project
@@ -53,6 +53,26 @@ def project_ids_for(company: str) -> Select:
 def warehouse_ids_for(company: str) -> Select:
     """Subquery of every warehouse id in one company, for filtering a warehouse-linked list read."""
     return select(Warehouse.id).where(Warehouse.company == company)
+
+
+def require_company_in_scope(company: str, scope: str | None) -> str:
+    """The tenant check for a field whose argument IS a company, and the normalized code to use.
+
+    Everything else here scopes a ROW: the caller names a uuid and this module answers whose it is.
+    A company-argument field has no row to look up - `inventoryValue(company: "UCSH")` is a read of
+    another tenant's whole warehouse, and nothing but the caller's own scope stands in front of it.
+
+    ValidationError rather than the NotFoundError the by-id checks raise, and deliberately: there is
+    no id to enumerate here, the company codes are not secret, and naming the one company this
+    account may read is the only message that tells the user what to do. It is the same answer
+    `resolve_gp_company` gives for the passthrough GP reads (#637).
+    """
+    requested = (company or "").strip().upper()
+    if not requested:
+        raise ValidationError("A GP company is required.", field="company")
+    if scope is not None and requested != scope:
+        raise ValidationError(f"Your account can only read GP company {scope}.", field="company")
+    return requested
 
 
 def _require(session: Session, company_stmt: Select, scope: str | None, label: str, entity_id) -> None:

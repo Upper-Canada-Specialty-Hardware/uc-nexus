@@ -14,6 +14,7 @@ import {
   IdCard,
   Boxes,
   DoorOpen,
+  CircleDollarSign,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
@@ -96,6 +97,7 @@ const SUB_ROUTES: SubRoute[] = [
   { label: 'Relay Installs', path: '/app/admin/relay-installs', icon: <Router {...CARD_ICON} /> },
   { label: 'Location Cleanup', path: '/app/admin/location-cleanup', icon: <SprayCan {...CARD_ICON} /> },
   { label: 'SharePoint Migration', path: '/app/admin/sharepoint-migration', icon: <DatabaseZap {...CARD_ICON} /> },
+  { label: 'Inventory Value', path: '/app/admin/inventory-value', icon: <CircleDollarSign {...CARD_ICON} /> },
 ];
 
 export default function AdminLanding() {

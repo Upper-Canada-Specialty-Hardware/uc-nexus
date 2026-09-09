@@ -36,3 +36,10 @@ NEXUS TO GP WRITES
 - PO REGISTRATION - a PO drafted in Nexus is sent to GP, GP assigns the number and books the job cost, Nexus stores the number. the register shows it as GP-Registered. code: register_po_in_gp, relay create_po
 - GP RECEIVE ENTRY - the warehouse receives against a PO and Nexus writes the receipt into GP, where it waits in a batch for someone to post inside GP. code: relay create_receipt
 - PENDING GP WRITES - NEXUS TO GP WRITES held while the relay is unreachable and sent automatically when it returns. a write that may already have reached GP is never retried blindly. code: gp_outbox
+
+inventory value
+
+- INVENTORY VALUE - the admin page and its three figures (OSSA, NON-OSSA, GENERAL STOCK): hardware on the shelves plus hardware staged for shipping plus doors, in dollars, per GP company. code: inventory_value_repository.get_inventory_value
+- DOORS ON HAND - the per-company table of door quantities in the building: one row per project plus one general row. code: doors_on_hand
+- AVERAGE DOOR COST - the single per-company dollar value every DOORS ON HAND row is multiplied by. code: inventory_value_settings.average_door_cost
+- OSSA - Off Site Storage Agreement; a flag on a project. code: projects.off_site_storage_agreement

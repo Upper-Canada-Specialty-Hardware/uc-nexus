@@ -44,6 +44,79 @@ from app.services import notification_service
 from app.services.locking import lock_rows
 
 
+def staged_fulfilled_stmt(
+    *,
+    project_id: uuid.UUID | None = None,
+    company: str | None = None,
+    by_project: bool = False,
+):
+    """The first half of the staging pool: what completed shipping-out pulls have fulfilled.
+
+    `by_project` prepends the pull's project to the key. The shipping workspace never needs it - it
+    reads one project at a time - but INVENTORY VALUE (#662) prices the staged pool per project, and
+    it has to net against the SAME two aggregates this function and its sibling produce rather than a
+    second pair that could quietly disagree with them.
+    """
+    group_by = [
+        PullRequestItemModel.opening_number,
+        PullRequestItemModel.hardware_category,
+        PullRequestItemModel.product_code,
+    ]
+    if by_project:
+        group_by.insert(0, PullRequestModel.project_id)
+
+    stmt = (
+        select(*group_by, func.sum(PullRequestItemModel.requested_quantity).label("total_requested"))
+        .join(PullRequestModel, PullRequestItemModel.pull_request_id == PullRequestModel.id)
+        .where(
+            PullRequestModel.source == PullRequestSource.SHIPPING_OUT,
+            PullRequestModel.status == PullRequestStatus.COMPLETED,
+        )
+        .group_by(*group_by)
+    )
+    if project_id is not None:
+        stmt = stmt.where(PullRequestModel.project_id == project_id)
+    if company is not None:
+        from app.repositories import tenancy
+
+        stmt = stmt.where(PullRequestModel.project_id.in_(tenancy.project_ids_for(company)))
+    return stmt
+
+
+def staged_shipped_stmt(
+    *,
+    project_id: uuid.UUID | None = None,
+    company: str | None = None,
+    by_project: bool = False,
+):
+    """The second half: what packing slips have already carried out of the staging pool.
+
+    Manual lines are excluded: a manual line never came off the staged pool in the first place, so
+    subtracting it would understate what is still staged for a real product that shares the key.
+    """
+    group_by = [
+        PackingSlipItem.opening_number,
+        PackingSlipItem.hardware_category,
+        PackingSlipItem.product_code,
+    ]
+    if by_project:
+        group_by.insert(0, PackingSlip.project_id)
+
+    stmt = (
+        select(*group_by, func.sum(PackingSlipItem.quantity).label("total_shipped"))
+        .join(PackingSlip, PackingSlipItem.packing_slip_id == PackingSlip.id)
+        .where(PackingSlipItem.is_manual.is_(False))
+        .group_by(*group_by)
+    )
+    if project_id is not None:
+        stmt = stmt.where(PackingSlip.project_id == project_id)
+    if company is not None:
+        from app.repositories import tenancy
+
+        stmt = stmt.where(PackingSlip.project_id.in_(tenancy.project_ids_for(company)))
+    return stmt
+
+
 def get_ship_ready_items(
     session: Session,
     project_id: uuid.UUID | None = None,
@@ -60,61 +133,14 @@ def get_ship_ready_items(
     set of projects or the arithmetic between them is meaningless.
     """
     # 1. Sum requested_quantity from completed Shipping_Out pulls
-    fulfilled_stmt = (
-        select(
-            PullRequestItemModel.opening_number,
-            PullRequestItemModel.hardware_category,
-            PullRequestItemModel.product_code,
-            func.sum(PullRequestItemModel.requested_quantity).label("total_requested"),
-        )
-        .join(PullRequestModel, PullRequestItemModel.pull_request_id == PullRequestModel.id)
-        .where(
-            PullRequestModel.source == PullRequestSource.SHIPPING_OUT,
-            PullRequestModel.status == PullRequestStatus.COMPLETED,
-        )
-        .group_by(
-            PullRequestItemModel.opening_number,
-            PullRequestItemModel.hardware_category,
-            PullRequestItemModel.product_code,
-        )
-    )
-    if project_id is not None:
-        fulfilled_stmt = fulfilled_stmt.where(PullRequestModel.project_id == project_id)
-    if company is not None:
-        from app.repositories import tenancy
-
-        fulfilled_stmt = fulfilled_stmt.where(PullRequestModel.project_id.in_(tenancy.project_ids_for(company)))
-    fulfilled_rows = session.execute(fulfilled_stmt).all()
+    fulfilled_rows = session.execute(staged_fulfilled_stmt(project_id=project_id, company=company)).all()
     fulfilled_map: dict[tuple, int] = {}
     for row in fulfilled_rows:
         key = (row.opening_number, row.hardware_category, row.product_code)
         fulfilled_map[key] = row.total_requested
 
-    # 2. Subtract what packing slips have already carried out. Manual lines are excluded: a manual
-    # line never came off the staged pool in the first place, so subtracting it here would understate
-    # what is still staged for a real product that happens to share the key.
-    shipped_stmt = (
-        select(
-            PackingSlipItem.opening_number,
-            PackingSlipItem.hardware_category,
-            PackingSlipItem.product_code,
-            func.sum(PackingSlipItem.quantity).label("total_shipped"),
-        )
-        .join(PackingSlip, PackingSlipItem.packing_slip_id == PackingSlip.id)
-        .where(PackingSlipItem.is_manual.is_(False))
-        .group_by(
-            PackingSlipItem.opening_number,
-            PackingSlipItem.hardware_category,
-            PackingSlipItem.product_code,
-        )
-    )
-    if project_id is not None:
-        shipped_stmt = shipped_stmt.where(PackingSlip.project_id == project_id)
-    if company is not None:
-        from app.repositories import tenancy
-
-        shipped_stmt = shipped_stmt.where(PackingSlip.project_id.in_(tenancy.project_ids_for(company)))
-    shipped_rows = session.execute(shipped_stmt).all()
+    # 2. Subtract what packing slips have already carried out.
+    shipped_rows = session.execute(staged_shipped_stmt(project_id=project_id, company=company)).all()
     shipped_map: dict[tuple, int] = {}
     for row in shipped_rows:
         key = (row.opening_number, row.hardware_category, row.product_code)

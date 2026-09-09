@@ -16,6 +16,12 @@ interface Props {
   size?: 'small' | 'medium';
   sx?: SxProps<Theme>;
   disabled?: boolean;
+  /**
+   * Narrow the options. Used where only a subset can legally be picked - INVENTORY VALUE (#662)
+   * offers one company's projects and hides the ones already in its table. Kept as a predicate
+   * rather than an options list so the picker still owns the one read of `projects`.
+   */
+  filter?: (project: Project) => boolean;
 }
 
 const projectLabel = (p: Project) => p.description || p.projectId;
@@ -35,9 +41,13 @@ export default function ProjectPicker({
   size = 'small',
   sx,
   disabled,
+  filter,
 }: Props) {
   const { data, loading } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
-  const options = useMemo(() => data?.projects ?? [], [data?.projects]);
+  const options = useMemo(() => {
+    const all = data?.projects ?? [];
+    return filter ? all.filter(filter) : all;
+  }, [data?.projects, filter]);
   // #637: only Admin/Manager sees more than one company's projects here, so only they need the row
   // told apart by company. A scoped user's list is all one tenant - a chip on every row would be noise.
   const { isAdmin } = useIdentity();

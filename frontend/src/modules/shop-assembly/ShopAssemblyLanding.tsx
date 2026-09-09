@@ -1,5 +1,5 @@
 import { Box, Button, Typography } from '@mui/material';
-import { ClipboardCheck, ClipboardPlus, Truck, ChevronRight } from 'lucide-react';
+import { ClipboardCheck, ClipboardPlus, Truck, ChevronRight, CircleDollarSign } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import { Card, CardActionArea } from '@mui/material';
@@ -7,6 +7,7 @@ import { StatCard, StatCardSkeleton } from '../../components/StatCard';
 import { GET_SHOP_ASSEMBLY_STATS, GET_SHOP_ASSEMBLY_REQUEST_STAGES } from '../../graphql/shop-assembly';
 import { tabularSx } from '../../theme';
 import { FadeIn, StaggerList, StaggerItem } from '../../motion';
+import { useIdentity } from '../../hooks/useIdentity';
 import { STAGE_LABEL, STAGE_ORDER, type RequestStage } from './requestStages';
 
 interface ShopAssemblyStatsData {
@@ -25,6 +26,11 @@ const COLUMN = 460;
 
 export default function ShopAssemblyLanding() {
   const navigate = useNavigate();
+  // INVENTORY VALUE (#662) is gated on the same two roles the backend gates it on. The Shop Assembly
+  // Manager is the person who knows how many doors are standing in the building, so the shortcut sits
+  // here as well as on the admin landing - but a plain bench user must not see it.
+  const { isAdmin, hasRole } = useIdentity();
+  const showInventoryValue = isAdmin || hasRole('Shop Assembly Manager');
   const { data, loading } = useQuery<ShopAssemblyStatsData>(GET_SHOP_ASSEMBLY_STATS, {
     fetchPolicy: 'cache-and-network',
   });
@@ -122,6 +128,32 @@ export default function ShopAssemblyLanding() {
             </CardActionArea>
           </Card>
         </FadeIn>
+
+        {showInventoryValue && (
+          <FadeIn>
+            <Card variant="outlined" sx={{ mt: 1.5 }}>
+              <CardActionArea
+                onClick={() => navigate('/app/admin/inventory-value')}
+                sx={{ p: 1.75, display: 'flex', alignItems: 'center', gap: 1.5 }}
+              >
+                <Box sx={{ color: 'text.secondary', display: 'flex', flexShrink: 0 }}>
+                  <CircleDollarSign size={26} strokeWidth={1.75} />
+                </Box>
+                <Box sx={{ minWidth: 0, flexGrow: 1, textAlign: 'left' }}>
+                  <Typography variant="subtitle1" sx={{ lineHeight: 1.25 }}>
+                    Inventory Value
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Hardware and doors in the building, in dollars
+                  </Typography>
+                </Box>
+                <Box sx={{ color: 'text.disabled', display: 'flex', flexShrink: 0 }}>
+                  <ChevronRight size={18} strokeWidth={1.75} />
+                </Box>
+              </CardActionArea>
+            </Card>
+          </FadeIn>
+        )}
       </Box>
     </Box>
   );
