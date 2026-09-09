@@ -336,13 +336,13 @@ def test_staged_hardware_is_priced_off_the_rows_it_was_picked_from(db_session):
 
     _po_priced_row(db_session, project, warehouse, unit_cost=Decimal("12.50"), quantity=4, age_days=3)
     _row_priced_row(db_session, project, warehouse, unit_cost=Decimal("7.25"), quantity=3, age_days=1)
-    # Picks all 4 of the older row and 1 of the newer: (4 x 12.50 + 1 x 7.25) / 5 = 11.50 a unit.
+    # Picks all 4 of the older row and 1 of the newer: (4 x 12.50 + 1 x 7.25) / 5 = 11.45 a unit.
     _stage_by_picking(db_session, project, quantity=5, ship=2)
 
     value = _value(db_session, company)
 
-    # Shelf: the older row is empty, the newer holds 2 at 7.25. Staged: 3 left at 11.50.
-    assert value["non_ossa"]["hardware_value"] == Decimal("48.50")
+    # Shelf: the older row is empty, the newer holds 2 at 7.25 = 14.50. Staged: 3 left at 11.45 = 34.35.
+    assert value["non_ossa"]["hardware_value"] == Decimal("48.85")
 
 
 def test_a_pull_with_no_pick_lines_falls_back_to_the_projects_average_cost(db_session):
