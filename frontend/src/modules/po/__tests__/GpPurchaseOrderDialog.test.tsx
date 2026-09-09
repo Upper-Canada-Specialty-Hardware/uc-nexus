@@ -26,6 +26,26 @@ configure({ asyncUtilTimeout: 15_000 });
 // Issue #216: the buyer IS the caller's GP identity (Clerk publicMetadata.gpBuyerId). Stub the hook
 // with a mutable slot so individual tests can drop the identity.
 const identity = vi.hoisted(() => ({ gpBuyerId: 'JSMITH' as string | null }));
+// The "Add Custom Item" dialog reads the catalog over GraphQL; stand it in with a picker that hands
+// back one fixed item the moment it opens, so a test can add a custom row without the catalog.
+vi.mock('../CustomItemPicker', () => ({
+  default: ({ open, onPick }: { open: boolean; onPick: (item: unknown) => void }) => {
+    if (open) {
+      onPick({
+        id: 'cat-1',
+        typeId: 'type-frame',
+        hardwareCategory: 'FRAME',
+        typeName: 'Frame',
+        productCode: 'HMF-3070',
+        description: 'Hollow metal frame 3070',
+        isActive: true,
+        values: [],
+      });
+    }
+    return null;
+  },
+}));
+
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
     displayName: 'Test Buyer',
@@ -896,4 +916,34 @@ it('registers with a null Order As when the field is cleared', async () => {
   await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
   const input = calls[0].input as { lineItems: { orderAs: string | null }[] };
   expect(input.lineItems[0].orderAs).toBeNull();
+});
+
+it('gives a custom item row no Order As and registers it with none', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const registerMock: MockedResponse = {
+    request: { query: REGISTER_PO_IN_GP, variables: () => true },
+    result: (vars) => {
+      calls.push(vars as Record<string, unknown>);
+      return { data: registerData() };
+    },
+  };
+  const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), registerMock]);
+  await waitForVendorPreselect();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Add Custom Item' }));
+
+  // The custom row shows the catalog's own category and code, and no Order As box at all: the field
+  // exists to translate a schedule name into the vendor's, and a custom item is already the vendor's.
+  await waitFor(() => expect(screen.getByDisplayValue('HMF-3070')).toBeInTheDocument());
+  expect(screen.getAllByPlaceholderText('e.g. ML2010')).toHaveLength(1);
+  expect(screen.queryByDisplayValue('Hollow metal frame 3070')).not.toBeInTheDocument();
+
+  fireEvent.change(screen.getAllByRole('spinbutton', { name: '' })[2], { target: { value: '2' } });
+  await selectTaxDetail();
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+
+  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  const input = calls[0].input as { lineItems: { productCode: string; orderAs: string | null }[] };
+  expect(input.lineItems[1].productCode).toBe('HMF-3070');
+  expect(input.lineItems[1].orderAs).toBeNull();
 });

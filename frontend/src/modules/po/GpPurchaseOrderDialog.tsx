@@ -538,7 +538,10 @@ export default function GpPurchaseOrderDialog({
           key: nextKey,
           hardwareCategory: item.hardwareCategory,
           productCode: item.productCode,
-          orderAs: item.description ?? item.productCode,
+          // A custom item has no Order As: the field exists for hardware schedule items, whose
+          // schedule name can differ from the vendor's. A custom item is written as the vendor sells
+          // it, so there is nothing to translate.
+          orderAs: '',
           catalogItemId: item.id,
         },
       ]);
@@ -1327,13 +1330,18 @@ export default function GpPurchaseOrderDialog({
             helperText={errors[`li_${idx}_cost`]}
             slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
           />
-          <TextField
-            size="small"
-            value={li.orderAs}
-            onChange={(e) => updateLineItem(li.key, 'orderAs', e.target.value)}
-            placeholder="e.g. ML2010"
-            sx={MONO_FIELD_SX}
-          />
+          {li.catalogItemId ? (
+            // No Order As on a custom item (see addCatalogLineItem); the cell stays so the grid lines up.
+            <Box />
+          ) : (
+            <TextField
+              size="small"
+              value={li.orderAs}
+              onChange={(e) => updateLineItem(li.key, 'orderAs', e.target.value)}
+              placeholder="e.g. ML2010"
+              sx={MONO_FIELD_SX}
+            />
+          )}
           <IconButton
             size="small"
             color="error"
