@@ -262,9 +262,6 @@ const NOT_COUNTED: Array<[string, string]> = [
 function WhatIsCounted() {
   return (
     <Card variant="outlined" sx={{ mt: 2, p: 2 }}>
-      <Typography component="h2" sx={{ ...microLabelSx, mb: 1.5 }}>
-        What these figures include
-      </Typography>
       <Box
         sx={{
           display: 'grid',
