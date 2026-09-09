@@ -204,8 +204,100 @@ export default function InventoryValuePage() {
               </Box>
             </Box>
           )}
+
+          {value && <WhatIsCounted />}
         </>
       )}
+    </Box>
+  );
+}
+
+// The figures above are reported upward, so the reader has to know exactly which hardware is behind
+// them. Every line here names one state hardware can be in and says which side of the line it falls
+// on. Keep it in step with inventory_value_repository: a change there that is not reflected here is
+// a figure somebody will misread.
+const COUNTED: Array<[string, string]> = [
+  [
+    'Hardware in project inventory, wherever it sits',
+    'Put away on a rack, or received and still waiting in the put-away queue - a receive creates the inventory row before a location is chosen. Priced at the PO line it was received on, or the row’s own cost for migrated stock.',
+  ],
+  [
+    'Hardware pulled for shipping and waiting for a truck',
+    'Priced from the inventory rows it was picked off. A pull made before pick sheets existed is priced at the project’s average cost for that product, or zero if nothing on the project has a cost.',
+  ],
+  [
+    'Shelf stock that belongs to no job',
+    'The stock pool, at its own recorded cost. This is the hardware half of General stock.',
+  ],
+  [
+    'Doors, from the table above',
+    'Every row times the average door cost. Nothing else about doors is known to Nexus.',
+  ],
+  [
+    'Units flagged deficient',
+    'Counted at full cost, the same way the warehouse dashboard values them.',
+  ],
+];
+
+const NOT_COUNTED: Array<[string, string]> = [
+  [
+    'Deliveries counted but not yet approved',
+    'A receive draft is only a count. Nothing enters inventory until a Warehouse Manager approves it and GP has numbered the receipt.',
+  ],
+  ['Hardware on order', 'Ordered on a PO but not received.'],
+  [
+    'Hardware on a truck',
+    'Confirming a shipment cuts the packing slip and takes it out of the staged pool at that moment.',
+  ],
+  [
+    'Hardware sent to the shop',
+    'A shop-assembly pull takes it out of inventory; it is not tracked past that point.',
+  ],
+  [
+    'Hardware with no recorded cost',
+    'It is counted as units but contributes $0 - typically migrated stock whose cost was never captured.',
+  ],
+];
+
+function WhatIsCounted() {
+  return (
+    <Card variant="outlined" sx={{ mt: 2, p: 2 }}>
+      <Typography component="h2" sx={{ ...microLabelSx, mb: 1.5 }}>
+        What these figures include
+      </Typography>
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' },
+          columnGap: 3,
+          rowGap: 1.5,
+        }}
+      >
+        <CountedList title="Counted" items={COUNTED} />
+        <CountedList title="Not counted" items={NOT_COUNTED} />
+      </Box>
+    </Card>
+  );
+}
+
+function CountedList({ title, items }: { title: string; items: Array<[string, string]> }) {
+  return (
+    <Box sx={{ minWidth: 0 }}>
+      <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
+        {title}
+      </Typography>
+      <Box component="dl" sx={{ m: 0, display: 'grid', rowGap: 1 }}>
+        {items.map(([head, detail]) => (
+          <Box key={head}>
+            <Typography component="dt" variant="body2" sx={{ fontWeight: 600 }}>
+              {head}
+            </Typography>
+            <Typography component="dd" variant="body2" color="text.secondary" sx={{ m: 0 }}>
+              {detail}
+            </Typography>
+          </Box>
+        ))}
+      </Box>
     </Box>
   );
 }
