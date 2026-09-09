@@ -18,6 +18,7 @@ from .custom_items import CustomItemMutations
 from .db_access import DbAccessMutations
 from .gp_outbox import GpOutboxMutations
 from .imports import ImportMutations
+from .inventory_value import InventoryValueMutations
 from .notification import NotificationMutations
 from .po import POMutations
 from .project import ProjectMutations
@@ -37,6 +38,7 @@ class Mutation(
     DbAccessMutations,
     GpOutboxMutations,
     ImportMutations,
+    InventoryValueMutations,
     NotificationMutations,
     POMutations,
     ProjectMutations,

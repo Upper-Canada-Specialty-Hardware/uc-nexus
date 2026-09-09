@@ -955,3 +955,13 @@ class MirroredPoScheduleLink:
 class LinkScheduleToMirroredPoInput:
     po_id: strawberry.ID
     links: list[MirroredPoScheduleLink]
+
+
+@strawberry.input
+class SaveDoorsOnHandInput:
+    """Set one DOORS ON HAND row's count (#662). A null `project_id` is the company's general row -
+    the doors belonging to no job - which always exists and is set rather than created."""
+
+    company: str
+    quantity: int
+    project_id: strawberry.ID | None = None

@@ -19,6 +19,7 @@ from .dashboard import DashboardQueries
 from .db_access import DbAccessQueries
 from .gp_outbox import GpOutboxQueries
 from .imports import ImportQueries
+from .inventory_value import InventoryValueQueries
 from .notification import NotificationQueries
 from .po import POQueries
 from .project import ProjectQueries
@@ -39,6 +40,7 @@ class Query(
     DbAccessQueries,
     GpOutboxQueries,
     ImportQueries,
+    InventoryValueQueries,
     NotificationQueries,
     POQueries,
     ProjectQueries,

@@ -21,6 +21,7 @@ from .inventory_item_type import (  # noqa: E402, F401
     InventoryItemType,
 )
 from .inventory_reservation import InventoryReservation  # noqa: E402, F401
+from .inventory_value import DoorsOnHand, InventoryValueSettings  # noqa: E402, F401
 from .manufacturer_vendor_map import ManufacturerVendorMap  # noqa: E402, F401
 from .notification import Notification  # noqa: E402, F401
 from .packing_slip_counter import PackingSlipCounter  # noqa: E402, F401
