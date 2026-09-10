@@ -80,6 +80,29 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
             f"buyer '{buyer_id}' is not a registered GP buyer for {company} (registered: {registered})",
         )
 
+    # 0a. the rest of the header's GP-owned values. eConnect validates each of them against the same
+    #     masters the PO dialog's pickers are fed from, and refuses an unknown one with a raw error
+    #     mid-transaction, so they are pre-checked here in the same style as the buyer above.
+    #     The site is checked per LINE rather than once on the header: the header's site is only ever
+    #     the fallback for a line that names none, so the set that actually reaches GP is the set the
+    #     lines resolve to, and validating a header value no line uses would refuse a registerable PO.
+    if not econnect.shipping_method_exists(conn, h.shipping_method):
+        raise RelayOpError(
+            "shipping_method_not_registered",
+            f"shipping method '{h.shipping_method}' is not registered in GP for {company} (SY03000)",
+        )
+    for site in dict.fromkeys(line.location_code or h.site for line in request.lines):
+        if not econnect.site_exists(conn, site):
+            raise RelayOpError(
+                "site_not_registered", f"site '{site}' is not a GP site for {company} (IV40700)"
+            )
+    if not econnect.vendor_address_exists(conn, h.vendor_id, h.vendor_address_code):
+        raise RelayOpError(
+            "vendor_address_not_registered",
+            f"vendor address code '{h.vendor_address_code}' is not set up on vendor '{h.vendor_id}' "
+            f"in {company} (PM00300)",
+        )
+
     # 0c. currency + exchange rate: GP-first, the vendor master dictates the PO currency (issue #257),
     #     not the client. A foreign-currency PO (vendor currency != the company's functional currency)
     #     is priced with the company's default PURCHASING rate type; eConnect resolves the actual rate
@@ -200,9 +223,12 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         rate_type=rate_type,
         exchange_date=exchange_date,
         null_tax_schedule=is_foreign,
+        contact=h.contact,
+        comment=h.comment,
     )
 
     # 3. lines. ORD is dictated here rather than left to eConnect (issue #538) - see create_po_line.
+    #    A line that names no site takes the header's, which is where the header's site is used.
     for idx, line in enumerate(request.lines, start=1):
         econnect.create_po_line(
             conn,
@@ -214,7 +240,7 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
             quantity=line.quantity,
             unit_cost=line.unit_cost,
             line_ord=idx * GP_LINE_ORD_STEP,
-            location_code=line.location_code,
+            location_code=line.location_code or h.site,
             uofm=line.uofm,
             manufacturer=line.manufacturer,
         )
@@ -272,6 +298,8 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         rate_type=rate_type,
         exchange_date=exchange_date,
         null_tax_schedule=is_foreign,
+        contact=h.contact,
+        comment=h.comment,
     )
 
     return models.CreatePoResponse(

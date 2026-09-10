@@ -196,6 +196,28 @@ def _run_get_vendor_contact(company: str, payload: dict) -> dict:
     return {"company": company, **contact}
 
 
+def _run_list_vendor_addresses(company: str, payload: dict) -> dict:
+    """One vendor's address codes (PM00300), for the PO dialog's vendor-address picker. Scoped to the
+    vendor because taPoHdr validates VADCDPAD against that vendor's own addresses - see
+    econnect.list_vendor_addresses."""
+    ops.check_company_served(company)
+    vendor_id = (payload.get("vendor_id") or "").strip()
+    if not vendor_id:
+        raise ops.RelayOpError("invalid_payload", "vendor_id is required")
+    with db.get_read_connection(company) as conn:
+        rows = econnect.list_vendor_addresses(conn, vendor_id)
+    return {"company": company, "vendor_id": vendor_id, "addresses": rows}
+
+
+def _run_list_po_entry_options(company: str, payload: dict) -> dict:
+    """The company's shipping methods, sites and units of measure in one answer, so the PO dialog
+    offers GP's own values rather than free text - see econnect.list_po_entry_options."""
+    ops.check_company_served(company)
+    with db.get_read_connection(company) as conn:
+        options = econnect.list_po_entry_options(conn)
+    return {"company": company, **options}
+
+
 def _run_list_buyers(company: str, payload: dict) -> dict:
     ops.check_company_served(company)
     with db.get_read_connection(company) as conn:
@@ -500,6 +522,10 @@ _OPS = {
     "list_vendors": _run_list_vendors,
     # issue #500 - the vendor's email, read live at send time. Nexus stores no vendor contact.
     "get_vendor_contact": _run_get_vendor_contact,
+    # the PO dialog's own two reads: the vendor's address codes, and the company's shipping methods,
+    # sites and units of measure - so a PO raised in Nexus carries what GP's own PO entry takes.
+    "list_vendor_addresses": _run_list_vendor_addresses,
+    "list_po_entry_options": _run_list_po_entry_options,
     "list_buyers": _run_list_buyers,
     "list_tax_details": _run_list_tax_details,
     "list_cost_codes": _run_list_cost_codes,

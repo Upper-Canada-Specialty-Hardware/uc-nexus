@@ -138,13 +138,16 @@ def test_tax_detail_percent_none_when_not_a_purchase_detail():
 
 # --- list_vendors now carries the vendor's currency ---
 
-_VendRow = namedtuple("_VendRow", "vendor_id vendor_name vendor_class status currency")
+_VendRow = namedtuple(
+    "_VendRow",
+    "vendor_id vendor_name vendor_class status currency shipping_method purchase_address_code contact",
+)
 
 
 def test_list_vendors_includes_currency_blank_defaults_to_cad():
     conn = _FakeConn(many=[
-        _VendRow("SEL101", "SELECT PRODUCTS", "USA", 1, "USD"),
-        _VendRow("V2", "BLANK CUR VENDOR", "CAN", 1, ""),
+        _VendRow("SEL101", "SELECT PRODUCTS", "USA", 1, "USD", "LOCAL DELIVERY", "PRIMARY", "Jane"),
+        _VendRow("V2", "BLANK CUR VENDOR", "CAN", 1, "", "LOCAL DELIVERY", "PRIMARY", "Jane"),
     ])
     out = list_vendors(conn)
     assert out[0]["currency"] == "USD"
@@ -175,6 +178,15 @@ def test_has_exchange_rate_false_when_no_row():
 # --- create_po_op currency preflight ordering (#632) ---
 
 
+def _stub_header_lists(monkeypatch):
+    """The header's shipping method, site and vendor address code are pre-checked against GP before
+    the currency block runs, so a test about the currency ordering has to let them pass. They are not
+    what these tests are about; each has its own coverage in test_po_header_fields.py."""
+    monkeypatch.setattr(ops.econnect, "shipping_method_exists", lambda conn, method: True)
+    monkeypatch.setattr(ops.econnect, "site_exists", lambda conn, site: True)
+    monkeypatch.setattr(ops.econnect, "vendor_address_exists", lambda conn, vendor, code: True)
+
+
 def _usd_po_request():
     return models.CreatePoRequest(
         company="TUBC",
@@ -196,6 +208,7 @@ def _usd_po_request():
 
 
 def test_create_po_raises_no_exchange_rate_before_taPoHdr(monkeypatch):
+    _stub_header_lists(monkeypatch)
     monkeypatch.setattr(ops.econnect, "list_buyers", lambda conn: ["BUYER1"])
     monkeypatch.setattr(ops.econnect, "get_vendor_currency", lambda conn, vid: "USD")
     monkeypatch.setattr(ops.econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "AVERAGE"})
@@ -210,6 +223,7 @@ def test_create_po_raises_no_exchange_rate_before_taPoHdr(monkeypatch):
 def test_create_po_no_rate_type_still_raises_rate_type_unresolved(monkeypatch):
     # no purchasing rate type configured -> the older, more fundamental error; the rate lookup is
     # never attempted (it has no rate type to look up under)
+    _stub_header_lists(monkeypatch)
     monkeypatch.setattr(ops.econnect, "list_buyers", lambda conn: ["BUYER1"])
     monkeypatch.setattr(ops.econnect, "get_vendor_currency", lambda conn, vid: "USD")
     monkeypatch.setattr(ops.econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": None})
@@ -226,6 +240,7 @@ def test_create_po_no_rate_type_still_raises_rate_type_unresolved(monkeypatch):
 def test_create_po_rate_present_clears_the_preflight(monkeypatch):
     # with a rate maintained the currency block passes; the op then proceeds past it (here: into the
     # header write, stubbed to stop the test at the first SQL touch)
+    _stub_header_lists(monkeypatch)
     monkeypatch.setattr(ops.econnect, "list_buyers", lambda conn: ["BUYER1"])
     monkeypatch.setattr(ops.econnect, "get_vendor_currency", lambda conn, vid: "USD")
     monkeypatch.setattr(ops.econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "AVERAGE"})
