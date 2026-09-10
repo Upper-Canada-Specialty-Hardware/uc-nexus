@@ -404,11 +404,12 @@ channel = "latest"   # this workstation proves a build before it is promoted; de
   it is the higher build.
 - `latest` - prereleases too.
 
-that is the promote step, and the whole point of it: CI cuts a relay release as a prerelease, the one
-workstation on `latest` installs it and proves it against GP, and `gh release edit <tag>
---prerelease=false` is what hands it to everyone else. nothing else about update selection changes -
-highest build number wins and a downgrade is never offered, so promoting is the only action that moves
-the fleet. an unknown channel value is read as `stable` with a WARNING in relay.log naming it, rather
+since 2026-09-10 CI publishes every relay change on master as a FULL release, so a merge is the decision
+to ship and every workstation on `stable` installs it on its next update check with nobody promoting it
+by hand. the prerelease flag is now the hold-back: `gh release edit <tag> --prerelease` before the
+workstation polls keeps a bad build off `stable`, and only a workstation on `latest` would take it.
+nothing else about update selection changes - highest build number wins and a downgrade is never
+offered. an unknown channel value is read as `stable` with a WARNING in relay.log naming it, rather
 than refused - a typo in this one key must not make config.toml unreadable and keep serve from starting.
 
 post-update self-check and rollback
