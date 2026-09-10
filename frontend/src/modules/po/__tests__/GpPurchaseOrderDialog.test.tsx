@@ -481,6 +481,8 @@ describe('GpPurchaseOrderDialog', () => {
             unitCost: 2.5,
             classification: null,
             orderAs: 'ML2010',
+            // Null: this row came off the hardware schedule, not the item catalog.
+            customInventoryItemId: null,
           },
         ],
       },
@@ -733,6 +735,7 @@ describe('GpPurchaseOrderDialog', () => {
             unitCost: 3.5,
             classification: null,
             orderAs: 'ML2010',
+            customInventoryItemId: null,
           },
         ],
       },
@@ -943,7 +946,13 @@ it('gives a custom item row no Order As and registers it with none', async () =>
   fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
   await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
-  const input = calls[0].input as { lineItems: { productCode: string; orderAs: string | null }[] };
+  const input = calls[0].input as {
+    lineItems: { productCode: string; orderAs: string | null; customInventoryItemId: string | null }[];
+  };
   expect(input.lineItems[1].productCode).toBe('HMF-3070');
   expect(input.lineItems[1].orderAs).toBeNull();
+  // The catalog entry travels with the line, so the PO detail modal knows Order As does not apply
+  // to it. The hardware schedule row alongside it carries none.
+  expect(input.lineItems[1].customInventoryItemId).toBe('cat-1');
+  expect(input.lineItems[0].customInventoryItemId).toBeNull();
 });

@@ -10,9 +10,9 @@ import uuid
 
 import strawberry
 
-from app.auth import current_user, resolve_display_name
+from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
-from app.repositories import sharepoint_migration_repository
+from app.repositories import sharepoint_migration_repository, tenancy
 from app.repositories import warehouse as warehouse_repository
 from app.services import sharepoint_inventory
 
@@ -90,12 +90,18 @@ class SharepointMigrationQueries:
     def project_schedule_products(
         self, info: strawberry.Info, project_ids: list[strawberry.ID]
     ) -> list[ProjectScheduleProduct]:
-        """Each project's schedule products (category, code, dominant classification) for the wizard.
+        """Each project's schedule products (category, code, dominant classification, units required
+        and units still available) for the migration wizard and for the Nexus Registration panel.
 
         Read once the projects are mapped so the wizard can snap a matched migrated row's category to
-        the schedule and drive the classification step. One grouped query per call, no per-row work."""
+        the schedule and drive the classification step; the panel reads it to offer the products a
+        GP-born PO's line could be for, and to cap the tie quantity. One grouped query per call, no
+        per-row work."""
         ids = [uuid.UUID(str(pid)) for pid in project_ids]
         with SessionLocal() as session:
+            scope = tenant_scope(info)
+            for pid in ids:
+                tenancy.require_project_in_scope(session, pid, scope)
             rows = warehouse_repository.get_project_schedule_products(session, ids)
         return [
             ProjectScheduleProduct(
@@ -104,6 +110,7 @@ class SharepointMigrationQueries:
                 product_code=row["product_code"],
                 classification=row["classification"],
                 required_quantity=row["required_quantity"],
+                available_quantity=row["available_quantity"],
             )
             for row in rows
         ]

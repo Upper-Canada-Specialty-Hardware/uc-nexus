@@ -155,8 +155,8 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "purchaseOrdersPage": SIGNED_IN,
     "cancelPo": SIGNED_IN,
     "createDraftPo": SIGNED_IN,
-    # Attach schedule hardware to a mirrored PO's lines for coverage tracking (gp-owned-po mirror).
-    "linkScheduleToMirroredPo": SIGNED_IN,
+    # Give a GP-born PO's lines their schedule identity - the NEXUS REGISTERED LINE write.
+    "nexusRegisterPoLines": SIGNED_IN,
     "deletePoDocument": SIGNED_IN,
     # Signed-in, not admin: which projects a caller may raise a PO against is decided inside the
     # resolver from the caller's own GP buyer assignment (#216), not by role.
@@ -218,8 +218,11 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # Admin-only on both counts: the query reads another system entirely over the company's Graph
     # credentials, and the mutation writes inventory in bulk with no per-row undo.
     "sharepointInventorySnapshot": ADMIN_ROLE,
-    "projectScheduleProducts": ADMIN_ROLE,
     "migrateSharepointInventory": ADMIN_ROLE,
+    # SIGNED_IN, unlike its two neighbours: this one only reads a project's own schedule products, the
+    # same thing projectHardwareSchedule already publishes to anyone signed in, and the Nexus
+    # Registration panel needs it to offer a buyer the products a GP-born PO's lines could be for.
+    "projectScheduleProducts": SIGNED_IN,
     # --- shipping.py ----------------------------------------------------------------------
     "packingSlips": SIGNED_IN,
     "returnableLines": SIGNED_IN,

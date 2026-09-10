@@ -51,6 +51,9 @@ function makeLineItem(overrides: Partial<LineItem> & { id: string }): LineItem {
     receivedQuantity: 0,
     unitCost: 2.5,
     orderAs: null,
+    gpLineOrd: null,
+    nexusRegistered: true,
+    customInventoryItemId: null,
     manufacturer: null,
     createdAt: '2026-07-01T12:00:00Z',
     updatedAt: '2026-07-01T12:00:00Z',
@@ -62,6 +65,9 @@ const draftPo: PurchaseOrder = {
   id: 'po-1',
   poNumber: null,
   requestNumber: 'REQ-001',
+  origin: 'NEXUS',
+  gpSyncedAt: null,
+  nexusRegistered: false,
   projectId: 'p1',
   status: 'DRAFT',
   company: 'TUBC',
@@ -381,5 +387,46 @@ describe('PODetailModal', () => {
     renderModal(registeredPo, []);
 
     expect(screen.queryByRole('button', { name: 'Cancel PO' })).not.toBeInTheDocument();
+  });
+
+  // Order As translates a hardware schedule item's name into the vendor's. A line added from the
+  // non-schedule item catalog is already written the way the vendor sells it, so the column has
+  // nothing to show for it.
+  it('shows no Order As on a line that came from the item catalog', () => {
+    const po: PurchaseOrder = {
+      ...registeredPo,
+      lineItems: [
+        makeLineItem({ id: 'li-1', orderAs: 'ML2010' }),
+        makeLineItem({
+          id: 'li-2',
+          productCode: 'HMF-3070',
+          hardwareCategory: 'FRAME',
+          orderAs: 'SHOULD-NOT-SHOW',
+          customInventoryItemId: 'cat-1',
+        }),
+      ],
+    };
+    renderModal(po, []);
+
+    expect(screen.getByText('ML2010')).toBeInTheDocument();
+    expect(screen.queryByText('SHOULD-NOT-SHOW')).not.toBeInTheDocument();
+  });
+
+  it('marks a GP-born PO Nexus registered once every line carries a schedule identity', () => {
+    renderModal({ ...registeredPo, origin: 'GP', nexusRegistered: true }, []);
+
+    expect(screen.getByText('Nexus registered')).toBeInTheDocument();
+  });
+
+  it('says nothing about Nexus registration while a line still carries the GP item', () => {
+    renderModal({ ...registeredPo, origin: 'GP', nexusRegistered: false }, []);
+
+    expect(screen.queryByText('Nexus registered')).not.toBeInTheDocument();
+  });
+
+  it('shows no Nexus registered chip on a PO raised in Nexus, which is registered from birth', () => {
+    renderModal({ ...registeredPo, origin: 'NEXUS', nexusRegistered: true }, []);
+
+    expect(screen.queryByText('Nexus registered')).not.toBeInTheDocument();
   });
 });

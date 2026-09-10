@@ -3,11 +3,11 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
-from app.models.enums import AuditAction, AuditEntityType, Classification
+from app.models.enums import AuditAction, AuditEntityType, Classification, HardwareItemState
 from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.project import Project as ProjectModel
@@ -352,6 +352,10 @@ def get_project_schedule_products(session: Session, project_ids: list[uuid.UUID]
     nothing on screen saying so. `classification` is the dominant value within the pair (most units
     wins, ties on the enum name), or null where the schedule never classified it - the step presents
     that inherited or asks for a pick. One grouped query; winners picked in Python.
+
+    `available_quantity` is the slice of the pair still AVAILABLE - on no purchase order yet. It is
+    the ceiling on what the Nexus Registration panel may tie to a GP-born PO's line, and the panel
+    shows it so the buyer sees the cap before saving rather than after being refused.
     """
     if not project_ids:
         return []
@@ -363,6 +367,12 @@ def get_project_schedule_products(session: Session, project_ids: list[uuid.UUID]
             HardwareItemModel.product_code,
             HardwareItemModel.classification,
             func.sum(HardwareItemModel.item_quantity),
+            func.sum(
+                case(
+                    (HardwareItemModel.state == HardwareItemState.AVAILABLE, HardwareItemModel.item_quantity),
+                    else_=0,
+                )
+            ),
         )
         .where(HardwareItemModel.project_id.in_(project_ids))
         .group_by(
@@ -375,9 +385,13 @@ def get_project_schedule_products(session: Session, project_ids: list[uuid.UUID]
 
     # (project, category, code) -> {classification: units}
     grouped: dict[tuple[uuid.UUID, str, str], dict[Classification | None, int]] = {}
-    for project_id, category, code, classification, quantity in rows:
-        tally = grouped.setdefault((project_id, category, code), {})
+    # (project, category, code) -> units still AVAILABLE, summed across classifications
+    available: dict[tuple[uuid.UUID, str, str], int] = {}
+    for project_id, category, code, classification, quantity, available_quantity in rows:
+        key = (project_id, category, code)
+        tally = grouped.setdefault(key, {})
         tally[classification] = tally.get(classification, 0) + int(quantity or 0)
+        available[key] = available.get(key, 0) + int(available_quantity or 0)
 
     out: list[dict] = []
     for (project_id, category, code), tally in grouped.items():
@@ -390,6 +404,7 @@ def get_project_schedule_products(session: Session, project_ids: list[uuid.UUID]
                 "product_code": code,
                 "classification": dominant_class,
                 "required_quantity": required,
+                "available_quantity": available[(project_id, category, code)],
             }
         )
     # Largest pair first within a code, so the wizard's split order is already the read order.

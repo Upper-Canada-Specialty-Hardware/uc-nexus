@@ -71,6 +71,9 @@ interface POLineItem {
   // True when hardwareCategory and productCode above came off a hardware schedule, so the GP sync
   // leaves them alone; false while the line still carries GP's own item number and description.
   nexusRegistered: boolean;
+  // Set when the line was added from the non-schedule item catalog (#454). Order As belongs to
+  // hardware schedule items only, so a line with this shows none.
+  customInventoryItemId: string | null;
   // Issue #232: derived from the line's linked HardwareItem(s); drives the PO dialog's vendor suggestion.
   manufacturer: string | null;
   createdAt: string;
@@ -136,6 +139,8 @@ export interface PurchaseOrder {
   // NEXUS (drafted here) or GP (discovered by the mirror sync).
   origin: string;
   gpSyncedAt: string | null;
+  // True when every one of this PO's lines is a NEXUS REGISTERED LINE.
+  nexusRegistered: boolean;
   projectId: string | null;
   status: string;
   // #637: the tenant that owns the PO. Stamped when the PO is raised, so a draft has it too,

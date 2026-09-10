@@ -106,6 +106,9 @@ def po_line_item_to_type(li) -> POLineItem:
         order_as=li.order_as,
         gp_line_ord=li.gp_line_ord,
         nexus_registered=li.nexus_registered,
+        custom_inventory_item_id=(
+            strawberry.ID(str(li.custom_inventory_item_id)) if li.custom_inventory_item_id else None
+        ),
         manufacturer=_po_line_item_manufacturer(li),
         created_at=li.created_at,
         updated_at=li.updated_at,

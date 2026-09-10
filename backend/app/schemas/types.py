@@ -395,6 +395,9 @@ class POLineItem:
     # OPEN-POS SYNC leaves them alone. False on a mirrored line still carrying GP's item number and
     # description.
     nexus_registered: bool
+    # Set when the line was added from the non-schedule item catalog (#454). Order As belongs to
+    # hardware schedule items only, so the PO detail modal shows no Order As on a line that has this.
+    custom_inventory_item_id: strawberry.ID | None
     # Issue #232: derived (not stored) - the TITAN manufacturer of the HardwareItem rows this line
     # covers, for the PO dialog's vendor suggestion. Null when no linked item carries a manufacturer.
     manufacturer: str | None
@@ -1934,12 +1937,12 @@ class RegisterPOResult:
 
 
 @strawberry.type
-class LinkScheduleResult:
-    """What linkScheduleToMirroredPo attached (gp-owned-po mirror). linked_units is the total schedule
-    units actually marked covered - 0 when the requested (product_code, quantity) had nothing AVAILABLE
-    to link, which the caller surfaces instead of reading a bare PO as success."""
+class NexusRegisterPoLinesResult:
+    """What registering a GP-born PO's lines in Nexus did. `tied_units` is how many units of the
+    project's schedule were actually tied to the lines - 0 on a PO with no project, where identity is
+    the whole of the job, and 0 on a project PO whose lines were registered without a tie."""
 
-    linked_units: int
+    tied_units: int
     purchase_order: PurchaseOrder
 
 
@@ -2013,6 +2016,9 @@ class ProjectScheduleProduct:
     product_code: str
     classification: Classification | None
     required_quantity: int
+    # The slice of `required_quantity` still AVAILABLE - not yet on any purchase order. The Nexus
+    # Registration panel caps a line's tie quantity with it.
+    available_quantity: int
 
 
 @strawberry.type
