@@ -382,7 +382,13 @@ export default function UserManagementPage() {
               select
               label="Company"
               value={editCompany}
-              onChange={(e) => setEditCompany(e.target.value)}
+              onChange={(e) => {
+                // A GP buyer id belongs to one company's buyer master, so a buyer picked under the
+                // old company is not a buyer in the new one. Clear it so the admin picks again from
+                // the right list rather than saving an id GP will refuse at registration.
+                if (e.target.value !== editCompany) setEditGpBuyerId(null);
+                setEditCompany(e.target.value);
+              }}
               size="small"
               sx={{ width: 320, mb: 2 }}
               helperText={
@@ -448,13 +454,22 @@ export default function UserManagementPage() {
             GP identity
           </Typography>
           {/* Issue #409: picked from GP's live buyer master rather than typed, with an inline way to
-              register a missing one - a typo here only surfaces later as a rejected PO. */}
+              register a missing one - a typo here only surfaces later as a rejected PO. The list is
+              the buyer master of the company chosen above, and the field says so, because a buyer
+              id means nothing outside its own company; with no company chosen there is no list to
+              offer, so the field waits rather than showing some other company's buyers. */}
           <GpBuyerSelect
             value={editGpBuyerId}
             onChange={setEditGpBuyerId}
             state={gpBuyers}
+            label={editCompany ? `GP Buyer ID (${editCompany})` : 'GP Buyer ID'}
+            disabled={!editCompany}
             sx={{ width: 320 }}
-            helperText="The GP buyer this account creates POs as (issue #216). Blank = cannot create POs."
+            helperText={
+              editCompany
+                ? `GP buyers registered in ${editCompany}. This account creates POs as this buyer; blank means it cannot create POs.`
+                : 'Choose the company first. The list is that company’s GP buyer master.'
+            }
           />
         </DialogContent>
         <DialogActions>
