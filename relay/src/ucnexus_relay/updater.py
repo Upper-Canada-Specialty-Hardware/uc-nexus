@@ -107,9 +107,9 @@ def latest_release(channel: str | None = None) -> dict:
     list is not reliably newest-first, so pick by build number rather than trusting list order. {} if none.
 
     On the "stable" channel a PRERELEASE is skipped (drafts never appear on an unauthenticated read, and
-    are skipped explicitly anyway). That is what makes the promote step meaningful: a release is cut as a
-    prerelease, the one workstation on "latest" installs and proves it, and
-    `gh release edit <tag> --prerelease=false` is what hands it to everyone else."""
+    are skipped explicitly anyway). CI publishes every master relay change as a full release, so the
+    prerelease flag is the hold-back: flagging a release keeps it off every "stable" workstation and
+    only one on "latest" takes it."""
     channel = channel or update_channel()
     req = urllib.request.Request(_RELEASES_API, headers={"Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=15) as r:  # noqa: S310 (fixed public GitHub API URL)

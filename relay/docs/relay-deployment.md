@@ -59,8 +59,8 @@ configure config.toml
 - edit `%LOCALAPPDATA%\UCNexusRelay\config.toml`:
   - `[sql] server` / `driver` for the site
   - `[cors] allowed_origins` to the UC Nexus frontend origin
-  - `[update] channel` - `stable` (the default: full releases only) or `latest` (prereleases too). only
-    the one workstation that proves a build before it is promoted should be on `latest`.
+  - `[update] channel` - `stable` (the default: full releases only) or `latest` (prereleases too). CI
+    publishes every master relay change as a full release, so `stable` is the channel that follows master.
 - leave `[auth] shared_secret` for the enroll step below. enroll writes `config.toml` itself if this
   workstation has none (a hand-copied exe rather than an install), so there is nothing to create by
   hand first.
@@ -117,10 +117,10 @@ updating to a new build
   on the CURRENT build rather than looping or hanging. Stale `app-<build>\` folders are cleaned up on the
   next start.
 - which releases a workstation takes is `[update] channel`: `stable` (default) skips anything flagged
-  PRERELEASE on GitHub, `latest` takes it. that is how a build is proven before the fleet gets it - CI
-  publishes the release as a prerelease, the one workstation on `latest` installs and exercises it, and
-  `gh release edit <tag> --prerelease=false` promotes it to everyone else. highest build number still
-  wins and a downgrade is still never offered.
+  PRERELEASE on GitHub, `latest` takes it. since 2026-09-10 CI publishes every master relay change as a
+  full release, so a merge to master reaches every `stable` workstation on its next update check; the
+  prerelease flag is the hold-back (`gh release edit <tag> --prerelease` before the workstation polls
+  keeps a build off `stable`). highest build number still wins and a downgrade is still never offered.
 - the first app start after an update lands verifies it: within five minutes `/health` has to report the
   backend channel CONNECTED. the apply helper only proves the new build binds its HTTP port, which says
   nothing about whether it can still reach UC Nexus. if the channel never comes up and a previous
