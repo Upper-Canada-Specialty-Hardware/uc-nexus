@@ -52,7 +52,9 @@ const USER = {
   email: 'jay@example.com',
   roles: ['PO User'],
   gpBuyerId: null as string | null,
-  company: null as string | null,
+  // The buyer field lists the buyer master of THIS company, so the fixture account has one; the
+  // no-company case is its own test below.
+  company: COMPANY as string | null,
   imageUrl: '',
   __typename: 'ClerkUser',
 };
@@ -243,6 +245,38 @@ test('saving an unchanged buyer does not re-write it to Clerk', async () => {
 
   await waitFor(() => expect(screen.getByText(/User updated successfully/i)).toBeInTheDocument());
   expect(buyerWrites).toBe(0);
+});
+
+test('the buyer field names the company whose buyer master it lists', async () => {
+  // A buyer id belongs to one company's buyer master and the admin has to see which one, or the
+  // account is linked to a buyer GP refuses at registration weeks later (#691).
+  renderPage([relayStatusMock(true), usersMock(), buyersMock]);
+
+  const field = await openEditDialog();
+  expect(field).toHaveAccessibleName(/GP Buyer ID \(TUBC\)/);
+  expect(screen.getByText(/GP buyers registered in TUBC/i)).toBeInTheDocument();
+});
+
+test('with no company chosen the buyer field waits instead of listing another company', async () => {
+  renderPage([relayStatusMock(true), usersMock({ ...USER, company: null }), buyersMock]);
+
+  const field = await openEditDialog();
+  expect(field).toBeDisabled();
+  expect(screen.getByText(/Choose the company first/i)).toBeInTheDocument();
+});
+
+test('changing the company clears the picked buyer', async () => {
+  renderPage([relayStatusMock(true), usersMock({ ...USER, gpBuyerId: 'donr' }), buyersMock]);
+
+  const buyerField = (await openEditDialog()) as HTMLInputElement;
+  expect(buyerField.value).toMatch(/donr/);
+
+  fireEvent.mouseDown(await screen.findByRole('combobox', { name: /^Company$/i }));
+  fireEvent.click(await screen.findByRole('option', { name: 'UCSH UC Shop' }));
+
+  await waitFor(() =>
+    expect((screen.getByRole('combobox', { name: /GP Buyer ID/i }) as HTMLInputElement).value).toBe(''),
+  );
 });
 
 // --- company assignment (#637) -------------------------------------------------------------------
