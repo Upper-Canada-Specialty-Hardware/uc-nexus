@@ -32,6 +32,19 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Every table this migration touches is locked here, in one statement, before it holds anything
+    # else. The first production run deadlocked: the migration held row locks on po_line_items from
+    # the updates below and then asked to drop a buyer table, while a request in the previous backend
+    # container (still serving during the rolling deploy) held that table and wanted po_line_items.
+    # Taking all four locks up front leaves nothing for a concurrent request to wedge against, and
+    # the buyer tables go first so the transaction never sits on po_line_items while waiting for them.
+    op.execute(
+        "LOCK TABLE buyer_assignment_projects, buyer_assignments, purchase_orders, po_line_items "
+        "IN ACCESS EXCLUSIVE MODE"
+    )
+    op.drop_table("buyer_assignment_projects")
+    op.drop_table("buyer_assignments")
+
     op.add_column("po_line_items", sa.Column("cost_code", sa.String(length=50), nullable=True))
     op.add_column("po_line_items", sa.Column("uofm", sa.String(length=9), nullable=True))
     op.add_column(
@@ -56,9 +69,6 @@ def upgrade() -> None:
         "UPDATE po_line_items SET hardware_category = product_code, product_code = hardware_category "
         "WHERE nexus_registered = false"
     )
-
-    op.drop_table("buyer_assignment_projects")
-    op.drop_table("buyer_assignments")
 
 
 def downgrade() -> None:
