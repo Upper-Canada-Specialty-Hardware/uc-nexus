@@ -24,6 +24,12 @@ have opposite shapes:
     it (see _sweep_closed). POLL_SECONDS is the minimum gap between consecutive passes of the same
     company, not a wait between requests.
 
+On top of those two, a NEW PO CHECK runs every NEW_PO_CHECK_SECONDS per mirrored company: one page of
+whatever GP has numbered above the newest PO Nexus already holds, so a PO raised in GP shows in the
+register within minutes instead of waiting out a full open-book walk. It runs BETWEEN the pages of
+both phases above as well as between passes, because with several companies mirrored there is rarely
+a moment when neither of them is running.
+
 Until the workstation relay self-updates to a build advertising the sync_pos op, relay_call fails fast
 with RelayOpUnsupportedError and this service no-ops with a log line - so it is safe to deploy ahead of
 the relay update (single-PR rollout).
@@ -60,6 +66,11 @@ def _env_number(name: str, default, cast, *, minimum):
 # requests inside a pass are paced by the shared read budget (gp_load), which is what actually bounds
 # the load on GP; this only stops a company with a small open book from being re-read continuously.
 POLL_SECONDS = _env_number("GP_PO_SYNC_POLL_SECONDS", 900.0, float, minimum=1.0)
+# THE NEW PO CHECK. One page of the POs numbered above the newest one this company already holds, so a
+# PO raised in GP appears in the register within minutes rather than after the next full OPEN-POS
+# SYNC - which is up to POLL_SECONDS away and then takes tens of minutes to walk. One page of
+# READ_BATCH, so it costs the same as any other page and cannot grow with the size of the open book.
+NEW_PO_CHECK_SECONDS = _env_number("GP_PO_SYNC_NEW_PO_CHECK_SECONDS", 120.0, float, minimum=30.0)
 # A single background run_once drains at most this many backfill pages before returning, so one pass
 # is bounded and the loop can interleave companies. At READ_BATCH keys a page that is 300 POs a pass.
 BACKFILL_MAX_PAGES_PER_PASS = _env_number("GP_PO_SYNC_BACKFILL_MAX_PAGES_PER_PASS", 12, int, minimum=1)
@@ -285,6 +296,9 @@ async def _run_backfill(company: str, *, max_pages: int, background: bool = True
             call["sql_cpu_pct"],
             call["waited"],
         )
+        # Between pages, not between passes: a history drain runs for hours and a PO raised in GP
+        # meanwhile must not wait for it to finish.
+        await _run_due_new_po_checks()
         if counts["backfill_done"]:
             done = True
             break
@@ -382,6 +396,9 @@ async def _run_incremental(company: str, *, background: bool = True) -> dict:
             call["sql_cpu_pct"],
             call["waited"],
         )
+        # Between pages, not between passes: this walk is twenty minutes or more, and the next
+        # company's is due the moment it ends, so a check that waited for a gap would never run.
+        await _run_due_new_po_checks()
         if not next_cursor:
             break
         if next_cursor == cursor:
@@ -415,6 +432,114 @@ async def _run_incremental(company: str, *, background: bool = True) -> dict:
         "skipped": skipped,
         "pos": pos_seen + closed["stale"],
         "cancelled": closed["cancelled"],
+    }
+
+
+def _highest_gp_po_number(company: str) -> str | None:
+    with SessionLocal() as session:
+        return sync_repo.highest_gp_po_number(session, company)
+
+
+# When each company was last NEW PO CHECKed, in monotonic time. Module state rather than a local of
+# run_forever because the check has to run BETWEEN THE PAGES of a full pass as well as between passes,
+# and the page loops are three call frames away from the scheduler. run_forever clears it, so a
+# restarted process checks every mirrored company once immediately.
+_last_new_po_check: dict[str, float] = {}
+
+
+async def _run_due_new_po_checks() -> None:
+    """Run a NEW PO CHECK for every mirrored company that is due one, then return.
+
+    Called at the top of every run_forever turn AND after each page of a backfill or an open-book
+    walk. Between passes alone is not enough: with three companies mirrored, one company's open book
+    takes twenty minutes or more to walk and the next is due the moment it ends, so the loop is inside
+    a pass for most of the working day. A check that waited for a gap between passes would wait hours,
+    and the two-minute promise would hold only overnight.
+
+    Never raises. A check is one page nobody is waiting on, so a relay that drops or a GP that goes
+    over the ceiling mid-pass costs this the page and nothing else - the pass it was called from
+    carries on and hits the same condition on its own next request, where it is already handled."""
+    if not relay_gateway.connected:
+        return
+    companies = relay_gateway.companies
+    if not companies or gp_load.paused():
+        return
+    # Cheap early-out before touching the database. This runs after EVERY page, so the common case -
+    # nobody has been waiting their gap yet - has to cost nothing at all.
+    if _seconds_until_new_po_check(companies, _last_new_po_check) > 0:
+        return
+    try:
+        _, mirrored = await asyncio.to_thread(_backfill_phase, companies)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001 - see the docstring: this must never break its caller
+        logger.info("gp po sync: could not tell which companies are due a new-po check (%s)", e)
+        return
+
+    while True:
+        company = _due_for_new_po_check(mirrored, _last_new_po_check)
+        if company is None:
+            return
+        # Stamped BEFORE the read, so a company whose check fails waits out its own gap like every
+        # other company instead of being retried after every single page.
+        _last_new_po_check[company] = time.monotonic()
+        try:
+            _log_pass(await _new_po_check(company))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.info("gp po sync: new-po check for %s failed (%s); the pass carries on", company, e)
+
+
+async def _new_po_check(company: str, *, background: bool = True) -> dict:
+    """One NEW PO CHECK page for a company: the POs GP has numbered above the newest one Nexus holds.
+
+    The open book is walked in full every POLL_SECONDS and takes tens of minutes to get round, so a PO
+    somebody raises in GP at ten past the hour can sit unseen for most of an hour. This is the cheap
+    answer: one keyset page from the highest number already held, which is exactly where GP's next
+    number lands, at the same READ_BATCH cost as any other page.
+
+    A company that holds no plain GP number yet has nothing to read from - its history has not been
+    drawn down - and is skipped rather than read from the beginning, which is what the FIRST TIME GP
+    COMPANY NEXUS INITIALIZATION is for."""
+    cursor = await asyncio.to_thread(_highest_gp_po_number, company)
+    if not cursor:
+        logger.info("gp po sync: %s new-po check skipped; no GP PO number held yet", company)
+        return {"mode": "new-po-check", "created": 0, "updated": 0, "skipped": 0, "pos": 0}
+
+    call = await gp_load.paced_call(
+        company,
+        "sync_pos",
+        {"open_only": True, "cursor": cursor, "page_size": gp_load.READ_BATCH},
+        reads=gp_load.READ_BATCH,
+        background=background,
+    )
+    result = call["result"] or {}
+    pos = result.get("pos") or []
+    persist_started = time.monotonic()
+    counts = await asyncio.to_thread(_persist_page, company, pos, None, is_backfill=False)
+    persist_ms = (time.monotonic() - persist_started) * 1000
+    logger.info(
+        "gp po sync: %s new-po check cursor=%s pos=%s created=%s updated=%s skipped=%s "
+        "relay_ms=%.0f persist_ms=%.0f cpu_ms=%s sql_cpu_pct=%s waited=%.1fs",
+        company,
+        cursor,
+        len(pos),
+        counts["created"],
+        counts["updated"],
+        counts["skipped"],
+        call["elapsed_ms"],
+        persist_ms,
+        call["cpu_ms"],
+        call["sql_cpu_pct"],
+        call["waited"],
+    )
+    return {
+        "mode": "new-po-check",
+        "created": counts["created"],
+        "updated": counts["updated"],
+        "skipped": counts["skipped"],
+        "pos": len(pos),
     }
 
 
@@ -728,20 +853,44 @@ def _seconds_until_due(mirrored: list[str], last_pass: dict[str, float]) -> floa
     return max(0.0, min(POLL_SECONDS - (now - last_pass.get(c, float("-inf"))) for c in mirrored))
 
 
+def _due_for_new_po_check(mirrored: list[str], last_check: dict[str, float]) -> str | None:
+    """The mirrored company most overdue for a NEW PO CHECK, or None if none is. Oldest first and ties
+    broken on the company code, for the same reason `_due_for_refresh` orders that way: an order a
+    reader can predict from the log."""
+    now = time.monotonic()
+    due = [c for c in mirrored if now - last_check.get(c, float("-inf")) >= NEW_PO_CHECK_SECONDS]
+    if not due:
+        return None
+    return min(due, key=lambda c: (last_check.get(c, float("-inf")), c))
+
+
+def _seconds_until_new_po_check(mirrored: list[str], last_check: dict[str, float]) -> float:
+    """How long until the soonest company comes due for a NEW PO CHECK."""
+    now = time.monotonic()
+    if not mirrored:
+        return NEW_PO_CHECK_SECONDS
+    return max(0.0, min(NEW_PO_CHECK_SECONDS - (now - last_check.get(c, float("-inf"))) for c in mirrored))
+
+
 async def run_forever() -> None:
     """The lifespan task. Every iteration is wrapped so no error can kill it.
 
-    TWO SCHEDULES, one task, and never more than one relay op in flight because both run inline here:
+    THREE SCHEDULES, one task, and never more than one relay op in flight because all of them run
+    inline here:
 
       - INCREMENTAL: one already-mirrored company's whole open book, walked in pages. POLL_SECONDS is
         the MINIMUM gap between consecutive passes of the SAME company, not a wait between requests.
       - BACKFILL: a batch of history pages for the next company still draining, run whenever the
         incremental schedule has nothing due AND the nightly window is open. It is the one read big
         enough to be worth keeping out of the working day; everything else is bounded and runs all day.
+      - NEW PO CHECK: one page above the highest number a company already holds, every
+        NEW_PO_CHECK_SECONDS. It runs at the top of every turn AND between the pages of the other two
+        (see _run_due_new_po_checks), because with several companies mirrored the loop is inside a
+        pass for most of the working day and a check that waited for a gap would wait hours.
 
-    Neither has a delay of its own. What paces them is the shared read budget in gp_load - a fixed
-    number of PO reads per minute across every company and both syncs - so the loop runs page after
-    page as fast as that budget allows and no faster. Time gaps were the wrong instrument: a gap
+    None of them has a delay of its own. What paces them is the shared read budget in gp_load - a
+    fixed number of PO reads per minute across every company and every sync - so the loop runs page
+    after page as fast as that budget allows and no faster. Time gaps were the wrong instrument: a gap
     between two unbounded requests is still an unbounded read, which is how one open-book re-read
     pinned GP's CPU twice on 2026-09-03.
 
@@ -754,6 +903,9 @@ async def run_forever() -> None:
     logger.info("gp po sync started")
     # Monotonic instant each company's last full open-book pass finished.
     last_pass: dict[str, float] = {}
+    # A restarted loop owes every mirrored company a NEW PO CHECK at once. The map itself is module
+    # state because the page loops run the check too - see _run_due_new_po_checks.
+    _last_new_po_check.clear()
     stalled: set[str] = set()
     # Whether the "backfill is waiting for its window" line has already been logged. One line per
     # transition, not one per check.
@@ -762,6 +914,10 @@ async def run_forever() -> None:
         while True:
             wait_for = POLL_SECONDS
             try:
+                # First, before anything bigger is chosen: the two-minute schedule is the one a person
+                # watching the register notices, and it must not queue behind a twenty-minute walk.
+                await _run_due_new_po_checks()
+
                 if not relay_gateway.connected:
                     pass
                 elif not relay_gateway.companies:
@@ -810,10 +966,15 @@ async def run_forever() -> None:
                         stalled.clear()
                         ran = True
                         wait_for = 0.0
+
                     if not ran:
-                        # Nothing due: sleep until the soonest open book ages out, or until the window
-                        # reopens if there is history waiting on it - whichever comes first.
-                        wait_for = _seconds_until_due(mirrored, last_pass)
+                        # Nothing due: sleep until the soonest open book or new-po check ages out, or
+                        # until the window reopens if there is history waiting on it - whichever comes
+                        # first.
+                        wait_for = min(
+                            _seconds_until_due(mirrored, last_pass),
+                            _seconds_until_new_po_check(mirrored, _last_new_po_check),
+                        )
                         if draining and not window_open:
                             if not backfill_asleep:
                                 backfill_asleep = True

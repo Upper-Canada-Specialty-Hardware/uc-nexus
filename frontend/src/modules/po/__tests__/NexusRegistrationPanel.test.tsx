@@ -13,15 +13,18 @@ type LineItem = PurchaseOrder['lineItems'][number];
 function makeLineItem(overrides: Partial<LineItem> & { id: string }): LineItem {
   return {
     poId: 'po-1',
-    // A mirrored line holds GP's own pair: the item number in productCode, the description in
-    // hardwareCategory.
-    hardwareCategory: 'HD 001 HINGE 4.5 X 4.5 HG-100',
-    productCode: 'HD 001',
+    // A mirrored line holds GP's own pair: the item number in hardwareCategory, the description
+    // in productCode.
+    hardwareCategory: 'HD 001',
+    productCode: 'HD 001 HINGE 4.5 X 4.5 HG-100',
     classification: null,
     orderedQuantity: 5,
     receivedQuantity: 0,
     unitCost: 10,
     orderAs: null,
+    costCode: null,
+    uofm: 'Each',
+    jobCost: true,
     gpLineOrd: 16384,
     nexusRegistered: false,
     customInventoryItemId: null,

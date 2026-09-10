@@ -13,7 +13,6 @@ fails on it either way.
 
 import strawberry
 
-from .buyer import BuyerMutations
 from .custom_items import CustomItemMutations
 from .db_access import DbAccessMutations
 from .gp_outbox import GpOutboxMutations
@@ -33,7 +32,6 @@ from .warehouse import WarehouseMutations
 
 @strawberry.type
 class Mutation(
-    BuyerMutations,
     CustomItemMutations,
     DbAccessMutations,
     GpOutboxMutations,

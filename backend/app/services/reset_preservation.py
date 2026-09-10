@@ -21,14 +21,6 @@ Python list to a Postgres *array*, so the restore fails with "column is of type 
 is of type text[]". Core carries the column types, so JSON, UUID, enum and datetime all serialize
 correctly, and a column the snapshot is missing falls back to the model's Python-side default instead
 of being inserted as NULL.
-
-One table cannot be restored by row. `buyer_assignment_projects` is keyed on `projects.id`, and
-projects do not survive a reset - they are re-adopted from GP afterwards with **new** UUIDs, so every
-snapshotted `project_id` is stale the moment the schema drops. It is snapshotted as
-`(buyer_assignment_id, company, GP job number)` triples instead and re-linked on that pair once the GP
-sync has re-adopted the projects - the company is half of a job's identity since #637, so a job number
-alone would re-attach the buyer to whichever company's project of that number came back last. The left
-side stays valid because `buyer_assignments` rows do come back with their original UUIDs.
 """
 
 import logging
@@ -40,10 +32,8 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.engine import Connection
 
 from app.models import Base
-from app.models.buyer_assignment import BuyerAssignment, buyer_assignment_projects
 from app.models.manufacturer_vendor_map import ManufacturerVendorMap
 from app.models.po_document_settings import PODocumentSettings
-from app.models.project import Project
 from app.models.relay_install import RelayInstall
 from app.models.warehouse import Warehouse
 
@@ -54,7 +44,6 @@ logger = logging.getLogger(__name__)
 PRESERVED_MODELS = (
     RelayInstall,
     Warehouse,
-    BuyerAssignment,
     ManufacturerVendorMap,
     PODocumentSettings,
 )
@@ -65,7 +54,6 @@ PRESERVED_MODELS = (
 PRESERVED_LABELS: dict[str, tuple[str, str]] = {
     "relay_installs": ("relay install", "relay installs"),
     "warehouses": ("warehouse", "warehouses"),
-    "buyer_assignments": ("buyer assignment", "buyer assignments"),
     "manufacturer_vendor_map": ("manufacturer/vendor mapping", "manufacturer/vendor mappings"),
     "po_document_settings": ("PO document setting", "PO document settings"),
 }
@@ -78,9 +66,6 @@ class ResetSnapshot:
     # Table name -> the rows to put back, as plain dicts. Plain on purpose: the ORM model is about to
     # have its table dropped, so nothing here may hold a live identity-mapped instance.
     rows: dict[str, list[dict]] = field(default_factory=dict)
-    # (buyer_assignment_id, company, job_number) triples - see the module docstring for why these are
-    # not rows, and #637 for why the company rides along.
-    buyer_project_pairs: list[dict] = field(default_factory=list)
 
     @property
     def counts(self) -> dict[str, int]:
@@ -112,9 +97,8 @@ def snapshot_statement(model: type[Base], live_column_names: Iterable[str]) -> S
 
 
 def snapshot(conn: Connection) -> ResetSnapshot:
-    """Read every preserved table, plus the buyer/project link pairs. Safe on a fresh or half-migrated
-    database: a table that isn't there yet is simply not preserved, which is exactly the state a reset
-    exists to clear."""
+    """Read every preserved table. Safe on a fresh or half-migrated database: a table that isn't there
+    yet is simply not preserved, which is exactly the state a reset exists to clear."""
     inspector = sa_inspect(conn)
     # One round trip for the whole table list instead of a has_table call per model; this runs against
     # managed Postgres over a network hop, where each extra round trip is a real cost.
@@ -129,26 +113,6 @@ def snapshot(conn: Connection) -> ResetSnapshot:
         if stmt is None:
             continue
         snap.rows[table.name] = [dict(r) for r in conn.execute(stmt).mappings()]
-
-    # Only worth collecting when the left-hand side of the link is itself preserved: a pair whose
-    # `buyer_assignments` row never comes back would fail the FK on relink, after the schema has already
-    # been rebuilt and committed.
-    if (
-        BuyerAssignment.__table__.name in snap.rows
-        and buyer_assignment_projects.name in live_tables
-        and Project.__table__.name in live_tables
-    ):
-        projects = Project.__table__
-        pairs = select(
-            buyer_assignment_projects.c.buyer_assignment_id,
-            # projects.project_id IS the GP job number; there is no schedule_id column. The company
-            # travels with it since #637, because a job number is only unique within one - without it
-            # a relink would re-attach the buyer to whichever company's project of that number the
-            # sync happened to re-adopt last.
-            projects.c.company,
-            projects.c.project_id.label("job_number"),
-        ).select_from(buyer_assignment_projects.join(projects, projects.c.id == buyer_assignment_projects.c.project_id))
-        snap.buyer_project_pairs = [dict(r) for r in conn.execute(pairs).mappings()]
 
     return snap
 
@@ -186,38 +150,6 @@ def restore(conn: Connection, snap: ResetSnapshot) -> dict[str, int]:
             continue
         restored[table.name] = len(rows)
     return restored
-
-
-def relink_buyer_projects(conn: Connection, pairs: list[dict]) -> tuple[int, int]:
-    """Re-attach each buyer assignment to its projects by GP job number. Returns (restored, dropped).
-
-    Call this only after the GP job sync has re-adopted the projects; before that, `projects` is empty
-    and every pair drops. A pair whose job no longer exists in GP matches nothing and is dropped by
-    design - the buyer keeps their row, they just lose a link to a job that is gone."""
-    if not pairs:
-        return 0, 0
-
-    projects = Project.__table__
-    # Keyed by (company, job number) since #637: a job number alone is no longer an identity, and a
-    # single-column map would silently re-attach the buyer to another company's project.
-    by_job = {
-        (row.company, row.project_id): row.id
-        for row in conn.execute(select(projects.c.company, projects.c.project_id, projects.c.id))
-    }
-    # A buyer whose own row failed to restore has nothing to hang the link on; inserting anyway would
-    # fail the FK and 500 the reset after the schema is already rebuilt and committed.
-    live_buyers = {row.id for row in conn.execute(select(BuyerAssignment.__table__.c.id))}
-    rows = [
-        {
-            "buyer_assignment_id": pair["buyer_assignment_id"],
-            "project_id": by_job[(pair["company"], pair["job_number"])],
-        }
-        for pair in pairs
-        if (pair["company"], pair["job_number"]) in by_job and pair["buyer_assignment_id"] in live_buyers
-    ]
-    if rows:
-        conn.execute(insert(buyer_assignment_projects), rows)
-    return len(rows), len(pairs) - len(rows)
 
 
 def describe_counts(counts: dict[str, int]) -> list[str]:

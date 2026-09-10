@@ -10,12 +10,10 @@ import {
   GET_GP_COST_CODES,
   GET_GP_VENDORS,
   GET_GP_TAX_DETAILS,
+  GET_GP_PO_ENTRY_OPTIONS,
+  GET_GP_VENDOR_ADDRESSES,
 } from '../../../graphql/po';
-import {
-  GET_BUYER_ASSIGNMENTS,
-  GET_PROJECTS,
-  GET_RELAY_STATUS,
-} from '../../../graphql/shared';
+import { GET_PROJECTS, GET_RELAY_STATUS } from '../../../graphql/shared';
 
 // DataGrid-heavy dialogs render slowly under jsdom, slower still when the whole suite runs in
 // parallel - lift both the per-test budget and testing-library's 1s async-util default.
@@ -64,6 +62,12 @@ beforeEach(() => {
 
 const INFINITE = Number.POSITIVE_INFINITY;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// The PO date the dialog seeds itself to: today, in the browser's own timezone.
+const TODAY = (() => {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+})();
 
 // A stock draft imported with one line (no manufacturer, so no suggestion queries fire).
 const stockDraft: PurchaseOrder = {
@@ -78,6 +82,7 @@ const stockDraft: PurchaseOrder = {
   vendorNameSnapshot: 'Ace Hardware Co',
   buyerId: null,
   vendorQuoteNumber: null,
+  costCode: null,
   shippingCost: null,
   tariffAmount: null,
   notes: null,
@@ -97,6 +102,10 @@ const stockDraft: PurchaseOrder = {
       receivedQuantity: 0,
       unitCost: 2.5,
       orderAs: 'ML2010',
+      costCode: null,
+      uofm: 'Each',
+      // Nothing on a stock PO books to a job.
+      jobCost: false,
       manufacturer: null,
       createdAt: '2026-07-01T12:00:00Z',
       updatedAt: '2026-07-01T12:00:00Z',
@@ -107,27 +116,62 @@ const stockDraft: PurchaseOrder = {
   documentData: null,
 };
 
-const projectDraft: PurchaseOrder = { ...stockDraft, projectId: 'p1' };
+// A line on a PO with a project books to the job, and carries the cost code it books to.
+const projectDraft: PurchaseOrder = {
+  ...stockDraft,
+  projectId: 'p1',
+  lineItems: [{ ...stockDraft.lineItems[0], jobCost: true }],
+};
 
-// Buyer JSMITH is assigned to project p1 (issue #216). The assignment scopes projects only - cost
-// codes are not restricted per buyer, so every code the job's GP read returns is offered.
-interface AssignmentFixture {
-  projects: { id: string; projectId: string; description: string | null; __typename: string }[];
+// GP's own header pick lists, and the addresses it holds for a vendor.
+function entryOptionsMock(): MockedResponse {
+  return {
+    request: { query: GET_GP_PO_ENTRY_OPTIONS, variables: { company: 'UCS' } },
+    result: {
+      data: {
+        gpPoEntryOptions: {
+          __typename: 'GpPoEntryOptions',
+          shippingMethods: [
+            { id: 'LOCAL DELIVERY', description: 'Local delivery', __typename: 'GpShippingMethod' },
+            { id: 'PICKUP', description: 'Customer pickup', __typename: 'GpShippingMethod' },
+          ],
+          sites: [
+            { code: 'VANCOUVER', description: 'Vancouver warehouse', __typename: 'GpSite' },
+            { code: 'CALGARY', description: 'Calgary warehouse', __typename: 'GpSite' },
+          ],
+          unitsOfMeasure: ['Each', 'Box', 'Case'],
+        },
+      },
+    },
+    maxUsageCount: INFINITE,
+  };
 }
-const assignedProjectRef = {
-  id: 'p1',
-  projectId: 'JOB-100',
-  description: 'Main St Job',
-  __typename: 'Project',
-};
-const defaultAssignment: AssignmentFixture = {
-  projects: [assignedProjectRef],
-};
 
-function baseMocks(
-  connected = true,
-  assignment: AssignmentFixture | null = defaultAssignment,
-): MockedResponse[] {
+function vendorAddressesMock(vendorId: string, codes: string[]): MockedResponse {
+  return {
+    request: { query: GET_GP_VENDOR_ADDRESSES, variables: { company: 'UCS', vendorId } },
+    result: {
+      data: {
+        gpVendorAddresses: codes.map((code) => ({
+          __typename: 'GpVendorAddress',
+          code,
+          contact: null,
+          address1: '1 Main St',
+          address2: null,
+          address3: null,
+          city: 'Vancouver',
+          state: 'BC',
+          postalCode: 'V1V 1V1',
+          country: 'CA',
+          phone: null,
+        })),
+      },
+    },
+    maxUsageCount: INFINITE,
+  };
+}
+
+function baseMocks(connected = true): MockedResponse[] {
   return [
     {
       request: { query: GET_RELAY_STATUS },
@@ -182,30 +226,13 @@ function baseMocks(
       maxUsageCount: INFINITE,
     },
     {
-      request: { query: GET_BUYER_ASSIGNMENTS },
-      result: {
-        data: {
-          buyerAssignments: assignment
-            ? [
-                {
-                  buyerId: 'JSMITH',
-                  projects: assignment.projects,
-                  __typename: 'BuyerAssignment',
-                },
-              ]
-            : [],
-        },
-      },
-      maxUsageCount: INFINITE,
-    },
-    {
       request: { query: GET_GP_VENDORS, variables: { company: 'UCS' } },
       result: {
         data: {
           gpVendors: [
-            { vendorId: 'V-ACE', vendorName: 'Ace Hardware Co', vendorClass: null, status: 1, currency: 'CAD', __typename: 'GpVendor' },
-            { vendorId: 'V-ALL', vendorName: 'Allegion Hardware', vendorClass: null, status: 1, currency: 'CAD', __typename: 'GpVendor' },
-            { vendorId: 'V-USD', vendorName: 'US Supplier Co', vendorClass: null, status: 1, currency: 'USD', __typename: 'GpVendor' },
+            { vendorId: 'V-ACE', vendorName: 'Ace Hardware Co', vendorClass: null, status: 1, currency: 'CAD', shippingMethod: null, purchaseAddressCode: null, contact: null, __typename: 'GpVendor' },
+            { vendorId: 'V-ALL', vendorName: 'Allegion Hardware', vendorClass: null, status: 1, currency: 'CAD', shippingMethod: 'PICKUP', purchaseAddressCode: 'REMIT', contact: 'Allegion Desk', __typename: 'GpVendor' },
+            { vendorId: 'V-USD', vendorName: 'US Supplier Co', vendorClass: null, status: 1, currency: 'USD', shippingMethod: null, purchaseAddressCode: null, contact: null, __typename: 'GpVendor' },
           ],
         },
       },
@@ -222,6 +249,10 @@ function baseMocks(
       },
       maxUsageCount: INFINITE,
     },
+    entryOptionsMock(),
+    vendorAddressesMock('V-ACE', ['PRIMARY', 'REMIT']),
+    vendorAddressesMock('V-ALL', ['PRIMARY', 'REMIT']),
+    vendorAddressesMock('V-USD', ['PRIMARY']),
   ];
 }
 
@@ -371,22 +402,6 @@ describe('GpPurchaseOrderDialog', () => {
     expect(screen.getByText(/Your account has no GP buyer identity/)).toBeInTheDocument();
   });
 
-  it('blocks registering a draft whose project the buyer is not assigned to', async () => {
-    const { onSubmitted } = renderDialog({ registerPo: projectDraft }, [
-      ...baseMocks(true, { projects: [] }),
-      costCodesMock(),
-    ]);
-
-    expect(
-      await screen.findByText(/Buyer JSMITH is not assigned to this project/),
-    ).toBeInTheDocument();
-
-    await waitForVendorPreselect();
-    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
-
-    expect(onSubmitted).not.toHaveBeenCalled();
-  });
-
   it('requires explicit confirmation of a fuzzy vendor guess before registering', async () => {
     const calls: Record<string, unknown>[] = [];
     const registerMock: MockedResponse = {
@@ -436,14 +451,15 @@ describe('GpPurchaseOrderDialog', () => {
     ]);
     await waitForVendorPreselect();
 
-    // A project PO cannot go up without a cost code.
+    // Nothing has named a cost code yet, and the line books to the job, so it is the line that
+    // blocks the registration - the pick above the grid is a convenience, not a requirement.
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
     expect(
-      await screen.findByText('Cost code is required for a project PO'),
+      await screen.findByText('Cost code required on a job cost line'),
     ).toBeInTheDocument();
     expect(calls).toHaveLength(0);
 
-    const listbox = await openSelect('Cost code (required)');
+    const listbox = await openSelect('Cost code for all lines');
     fireEvent.click(within(listbox).getByText('310-000 · Hardware'));
     await closeSelect();
 
@@ -466,6 +482,13 @@ describe('GpPurchaseOrderDialog', () => {
         // ignores an override on a PO that has one anyway.
         projectId: null,
         costCode: '310-000-3',
+        // The GP vendor card names none of these, so the header sits on GP's own defaults.
+        shippingMethod: 'LOCAL DELIVERY',
+        vendorAddressCode: 'PRIMARY',
+        site: 'VANCOUVER',
+        docDate: TODAY,
+        contact: 'JSMITH',
+        comment: null,
         shippingCost: 25,
         tariffAmount: null,
         taxDetailId: 'ON HST - P',
@@ -481,6 +504,10 @@ describe('GpPurchaseOrderDialog', () => {
             unitCost: 2.5,
             classification: null,
             orderAs: 'ML2010',
+            // The one pick above the grid filled this line, which books to the job.
+            costCode: '310-000-3',
+            uofm: 'Each',
+            jobCost: true,
             // Null: this row came off the hardware schedule, not the item catalog.
             customInventoryItemId: null,
           },
@@ -735,6 +762,11 @@ describe('GpPurchaseOrderDialog', () => {
             unitCost: 3.5,
             classification: null,
             orderAs: 'ML2010',
+            // The relay is down, so there is no live cost code list to pick from; the line still
+            // books to the job, and its unit of measure is GP's own default.
+            costCode: null,
+            uofm: 'Each',
+            jobCost: true,
             customInventoryItemId: null,
           },
         ],
@@ -863,7 +895,7 @@ it('offers every cost code GP has on the job, not a per-buyer subset', async () 
   // the job's codes and could not register against the rest. 520-000 is the code no designation listed.
   renderDialog({ registerPo: projectDraft }, [...baseMocks(), costCodesMock()]);
 
-  const listbox = await openSelect('Cost code (required)');
+  const listbox = await openSelect('Cost code for all lines');
 
   expect(within(listbox).getByText('310-000 · Hardware')).toBeInTheDocument();
   expect(within(listbox).getByText('520-000 · Electrical')).toBeInTheDocument();
@@ -955,4 +987,224 @@ it('gives a custom item row no Order As and registers it with none', async () =>
   // to it. The hardware schedule row alongside it carries none.
   expect(input.lineItems[1].customInventoryItemId).toBe('cat-1');
   expect(input.lineItems[0].customInventoryItemId).toBeNull();
+});
+
+// --- GP parity: the line grid and the header (PO module release) --------------------------------
+// The register dialog takes everything GP's own Purchase Order Entry takes, so a purchaser raises
+// every PO here rather than keying half of it into GP.
+
+function registerCallCollector(calls: Record<string, unknown>[]): MockedResponse {
+  return {
+    request: { query: REGISTER_PO_IN_GP, variables: () => true },
+    maxUsageCount: INFINITE,
+    result: (vars) => {
+      calls.push(vars as Record<string, unknown>);
+      return { data: registerData() };
+    },
+  };
+}
+
+it('registers a hand-typed line with its own cost code, unit of measure and job cost flag', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const { onSubmitted } = renderDialog({ registerPo: projectDraft }, [
+    ...baseMocks(),
+    costCodesMock(),
+    registerCallCollector(calls),
+  ]);
+  await waitForVendorPreselect();
+
+  const listbox = await openSelect('Cost code for all lines');
+  fireEvent.click(within(listbox).getByText('310-000 · Hardware'));
+  await closeSelect();
+
+  // "Add Item" is a hand-typed GP PO LINE ITEM: empty Item Number and Description.
+  fireEvent.click(screen.getByRole('button', { name: 'Add Item' }));
+  fireEvent.change(screen.getAllByPlaceholderText('e.g. Hinges')[1], { target: { value: 'FREIGHT' } });
+  fireEvent.change(screen.getAllByPlaceholderText('e.g. AB123')[1], {
+    target: { value: 'Delivery charge' },
+  });
+  fireEvent.change(screen.getByLabelText('Cost code line 2'), { target: { value: '520-000-2' } });
+  fireEvent.change(screen.getByLabelText('Unit of measure line 2'), { target: { value: 'Box' } });
+
+  await selectTaxDetail();
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+
+  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  const input = calls[0].input as { lineItems: Record<string, unknown>[] };
+  expect(input.lineItems[0]).toMatchObject({ costCode: '310-000-3', uofm: 'Each', jobCost: true });
+  expect(input.lineItems[1]).toMatchObject({
+    hardwareCategory: 'FREIGHT',
+    productCode: 'Delivery charge',
+    costCode: '520-000-2',
+    uofm: 'Box',
+    jobCost: true,
+  });
+});
+
+it('blocks a job cost line that names no cost code, and says so on that row', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const { onSubmitted } = renderDialog({ registerPo: projectDraft }, [
+    ...baseMocks(),
+    costCodesMock(),
+    registerCallCollector(calls),
+  ]);
+  await waitForVendorPreselect();
+
+  const listbox = await openSelect('Cost code for all lines');
+  fireEvent.click(within(listbox).getByText('310-000 · Hardware'));
+  await closeSelect();
+  await selectTaxDetail();
+
+  // A line added after that pick carries no cost code of its own.
+  fireEvent.click(screen.getByRole('button', { name: 'Add Item' }));
+  fireEvent.change(screen.getAllByPlaceholderText('e.g. Hinges')[1], { target: { value: 'FREIGHT' } });
+  fireEvent.change(screen.getAllByPlaceholderText('e.g. AB123')[1], {
+    target: { value: 'Delivery charge' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+
+  expect(await screen.findByText('Cost code required on a job cost line')).toBeInTheDocument();
+  expect(calls).toHaveLength(0);
+  expect(onSubmitted).not.toHaveBeenCalled();
+
+  // Taking the line off job cost is the other way through: GP then books it to nothing.
+  fireEvent.click(screen.getByLabelText('Job cost line 2'));
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+
+  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  const input = calls[0].input as { lineItems: Record<string, unknown>[] };
+  expect(input.lineItems[1]).toMatchObject({ costCode: null, jobCost: false });
+});
+
+it('fills every job cost line from the one pick above the grid', async () => {
+  const twoLines: PurchaseOrder = {
+    ...projectDraft,
+    lineItems: [
+      projectDraft.lineItems[0],
+      { ...projectDraft.lineItems[0], id: 'li-2', productCode: 'LK-200' },
+    ],
+  };
+  renderDialog({ registerPo: twoLines }, [...baseMocks(), costCodesMock()]);
+  await waitForVendorPreselect();
+
+  // The second line is taken off job cost first, so the fill has to leave it alone.
+  fireEvent.click(screen.getByLabelText('Job cost line 2'));
+
+  const listbox = await openSelect('Cost code for all lines');
+  fireEvent.click(within(listbox).getByText('310-000 · Hardware'));
+  await closeSelect();
+
+  expect(screen.getByLabelText('Cost code line 1')).toHaveValue('310-000-3');
+  expect(screen.getByLabelText('Cost code line 2')).toHaveValue('');
+});
+
+it('sends the GP header fields, seeded from GP defaults and changeable', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [
+    ...baseMocks(),
+    registerCallCollector(calls),
+  ]);
+  await waitForVendorPreselect();
+
+  // The Ace vendor card names none of them, so the header starts on GP's own defaults.
+  expect(screen.getByLabelText('Shipping method')).toHaveTextContent('LOCAL DELIVERY');
+  expect(screen.getByLabelText('Vendor address')).toHaveTextContent('PRIMARY');
+  expect(screen.getByLabelText('Site')).toHaveTextContent('VANCOUVER');
+  expect(screen.getByLabelText('PO date')).toHaveValue(TODAY);
+  expect(screen.getByLabelText('Contact')).toHaveValue('JSMITH');
+
+  const shipping = await openSelect('Shipping method');
+  fireEvent.click(within(shipping).getByText(/PICKUP/));
+  await closeSelect();
+  const site = await openSelect('Site');
+  fireEvent.click(within(site).getByText(/CALGARY/));
+  await closeSelect();
+  fireEvent.change(screen.getByLabelText('PO date'), { target: { value: '2026-09-20' } });
+  fireEvent.change(screen.getByLabelText('Contact'), { target: { value: 'Dana Reid' } });
+  fireEvent.change(screen.getByLabelText('Comment'), { target: { value: 'Hold for pickup' } });
+
+  await selectTaxDetail();
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+
+  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  expect(calls[0]).toMatchObject({
+    input: {
+      shippingMethod: 'PICKUP',
+      vendorAddressCode: 'PRIMARY',
+      site: 'CALGARY',
+      docDate: '2026-09-20',
+      contact: 'Dana Reid',
+      comment: 'Hold for pickup',
+    },
+  });
+});
+
+it("follows the picked vendor's own shipping method, address and contact", async () => {
+  renderDialog({ registerPo: stockDraft }, baseMocks());
+  await waitForVendorPreselect();
+
+  const vendors = await openSelect('GP Vendor');
+  fireEvent.click(within(vendors).getByText('Allegion Hardware'));
+  await closeSelect();
+
+  await waitFor(() => expect(screen.getByLabelText('Shipping method')).toHaveTextContent('PICKUP'));
+  expect(screen.getByLabelText('Vendor address')).toHaveTextContent('REMIT');
+  expect(screen.getByLabelText('Contact')).toHaveValue('Allegion Desk');
+});
+
+it('falls back to read-only GP defaults when the relay cannot serve the pick lists, and still registers', async () => {
+  const calls: Record<string, unknown>[] = [];
+  // A relay too old to serve list_po_entry_options answers RELAY_OP_UNSUPPORTED.
+  const opUnsupportedMocks = baseMocks().map((m) =>
+    m.request.query === GET_GP_PO_ENTRY_OPTIONS
+      ? {
+          request: { query: GET_GP_PO_ENTRY_OPTIONS, variables: { company: 'UCS' } },
+          result: {
+            errors: [new GraphQLError('relay out of date', { extensions: { code: 'RELAY_OP_UNSUPPORTED' } })],
+          },
+          maxUsageCount: INFINITE,
+        }
+      : m,
+  );
+  const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [
+    ...opUnsupportedMocks,
+    registerCallCollector(calls),
+  ]);
+  await waitForVendorPreselect();
+
+  // The dropdowns become read-only fields holding exactly what will be sent.
+  await waitFor(() => expect(screen.getByLabelText('Shipping method')).toBeDisabled());
+  expect(screen.getByLabelText('Shipping method')).toHaveValue('LOCAL DELIVERY');
+  expect(screen.getByLabelText('Site')).toHaveValue('VANCOUVER');
+  expect(screen.getAllByText(/Relay out of date/).length).toBeGreaterThan(0);
+
+  await selectTaxDetail();
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+
+  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  expect(calls[0]).toMatchObject({
+    input: { shippingMethod: 'LOCAL DELIVERY', vendorAddressCode: 'PRIMARY', site: 'VANCOUVER' },
+  });
+});
+
+it('registers a project PO on its per-line cost codes, with nothing picked above the grid', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const { onSubmitted } = renderDialog({ registerPo: projectDraft }, [
+    ...baseMocks(),
+    costCodesMock(),
+    registerCallCollector(calls),
+  ]);
+  await waitForVendorPreselect();
+
+  // The line names its own code; the pick above the grid is left alone.
+  await waitFor(() => expect(screen.getByLabelText('Cost code line 1')).toHaveTextContent('520-000-2'));
+  fireEvent.change(screen.getByLabelText('Cost code line 1'), { target: { value: '520-000-2' } });
+  await selectTaxDetail();
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+
+  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  const input = calls[0].input as { costCode: string; lineItems: Record<string, unknown>[] };
+  // The PO header carries the first job cost line's code, since nobody picked one above the grid.
+  expect(input.costCode).toBe('520-000-2');
+  expect(input.lineItems[0]).toMatchObject({ costCode: '520-000-2', jobCost: true });
 });

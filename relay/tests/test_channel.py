@@ -55,6 +55,40 @@ def test_list_vendors_routes_to_econnect(monkeypatch):
     assert _body(reply) == {"ok": True, "result": {"company": "TUBC", "vendors": [{"vendor_id": "V1"}]}}
 
 
+def test_list_vendor_addresses_routes_to_econnect_and_strips_the_vendor(monkeypatch):
+    seen = {}
+
+    def _fake(conn, vendor_id):
+        seen["vendor_id"] = vendor_id
+        return [{"code": "PRIMARY"}]
+
+    monkeypatch.setattr(econnect, "list_vendor_addresses", _fake)
+    reply = channel._dispatch("list_vendor_addresses", "TUBC", {"vendor_id": "  ING100  "})
+    assert seen["vendor_id"] == "ING100"
+    assert _body(reply) == {
+        "ok": True,
+        "result": {"company": "TUBC", "vendor_id": "ING100", "addresses": [{"code": "PRIMARY"}]},
+    }
+
+
+def test_list_vendor_addresses_requires_a_vendor():
+    # ADRSCODE is unique per vendor, so there is no whole-company answer to give.
+    reply = channel._dispatch("list_vendor_addresses", "TUBC", {})
+    assert reply["ok"] is False
+    assert reply["error"]["error"] == "invalid_payload"
+
+
+def test_list_po_entry_options_routes_to_econnect(monkeypatch):
+    options = {
+        "shipping_methods": [{"id": "LOCAL DELIVERY", "description": "Local delivery"}],
+        "sites": [{"code": "VANCOUVER", "description": "Vancouver warehouse"}],
+        "units_of_measure": ["Each"],
+    }
+    monkeypatch.setattr(econnect, "list_po_entry_options", lambda conn: options)
+    reply = channel._dispatch("list_po_entry_options", "TUBC", {})
+    assert _body(reply) == {"ok": True, "result": {"company": "TUBC", **options}}
+
+
 def test_list_buyers_routes_to_econnect(monkeypatch):
     monkeypatch.setattr(econnect, "list_buyers", lambda conn: ["mira", "donr"])
     reply = channel._dispatch("list_buyers", "TUBC", {})

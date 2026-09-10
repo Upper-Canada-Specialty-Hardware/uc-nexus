@@ -66,6 +66,11 @@ interface POLineItem {
   receivedQuantity: number;
   unitCost: number;
   orderAs: string | null;
+  // GP's own three per-line fields: the cost code the line books to, its unit of measure, and
+  // whether GP books it to the job at all. A line on a PO with no project is never job cost.
+  costCode: string | null;
+  uofm: string | null;
+  jobCost: boolean;
   // GP POP10110.ORD this line maps to; present on registered/mirrored lines.
   gpLineOrd: number | null;
   // True when hardwareCategory and productCode above came off a hardware schedule, so the GP sync

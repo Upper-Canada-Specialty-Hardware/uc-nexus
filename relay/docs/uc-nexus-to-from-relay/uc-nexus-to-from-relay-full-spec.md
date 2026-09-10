@@ -89,7 +89,8 @@ app - in UC Connects POs were typed straight into GP's purchasing module and the
 (the one eConnect create-stub in the legacy code was dead test code: hardcoded TUCSH, dummy lines, never
 called). so UC Nexus auto-creating a job-cost PO is genuinely net-new, and every GP field below has to be
 sourced or mapped. the relay's `/po` request already has slots for all of these (header vendor_id /
-buyer_id / confirm_with / currency_id, and per-line item / qty / cost / product_indicator / job_number /
+buyer_id / confirm_with / currency_id / shipping_method / vendor_address_code / site / contact /
+comment, and per-line item / qty / cost / uofm / location_code / product_indicator / job_number /
 cost_code) - the work is filling them from UC Nexus data.
 
 each block below is: relay `/po` field, then bulleted - the UC Nexus source, then the resolution / any
@@ -139,9 +140,11 @@ constraint.
      lengths: a category over 30 characters is cut (and logged), never a reason to refuse the PO.
 
 9. line.quantity / line.unit_cost / line.uofm / line.location_code
-   - quantity = `ordered_quantity`, unit_cost = the line's `unit_cost`, uofm = "Each"
-   - location_code per company (UBC -> VANCOUVER, UCSH -> MARKHAM; the relay default is VANCOUVER). confirm
-     the per-company site code.
+   - quantity = `ordered_quantity`, unit_cost = the line's `unit_cost`, uofm = "Each" unless the dialog
+     picks another off the list `list_po_entry_options` returns
+   - the site is a HEADER value (`header.site`, defaulted to VANCOUVER). every line lands on it unless
+     the line sends its own `location_code`, which overrides the header for that line alone. per company
+     the header site is UBC -> VANCOUVER, UCSH -> MARKHAM; confirm the per-company site code.
 
 10. line.product_indicator (1 non-inv / 2 job cost)
    - DERIVED: project-linked PO -> 2 (job cost) on every line; stock PO with no project -> 1 (non-inv)
@@ -162,6 +165,34 @@ constraint.
      confirm the element per cost code with the user / GP before prod (default 2 for now). issue #121 also
      allows flagging a PO with MULTIPLE cost codes - out of the first build; one cost code per PO to start,
      a multi-code PO is a later extension.
+
+the rest of the header, added when the Create PO dialog grew to take everything GP's own purchasing
+module takes. they sit at the end of this list rather than up with 3-7 so the numbering above keeps
+meaning what it meant:
+
+13. header.shipping_method / header.vendor_address_code / header.site
+   - picked in the dialog off GP's own lists rather than typed. the relay's defaults when the dialog
+     sends nothing are LOCAL DELIVERY, PRIMARY and VANCOUVER, which is what every PO carried before the
+     dialog offered a choice.
+   - the relay checks all three against GP before it writes the header, so an unknown value is a named
+     refusal instead of a raw eConnect error halfway through: `shipping_method_not_registered` (SY03000),
+     `vendor_address_not_registered` (PM00300, and it is that vendor's OWN address codes that count -
+     'PRIMARY' existing under some other vendor is not enough), `site_not_registered` (IV40700, checked
+     for every site the lines actually resolve to, not for the header value on its own).
+
+14. header.contact / header.comment
+   - contact is the person at the vendor the PO is addressed to; comment is free text GP keeps with the
+     PO. both optional and both free-form - there is no GP list to pick from.
+   - when the dialog sends neither, the relay does not send the field to GP at all, so a PO without them
+     is exactly the PO this spec described before they existed.
+
+the two reads that feed those pickers:
+- `list_po_entry_options` - the company's shipping methods (SY03000), sites (IV40700) and units of
+  measure, in one answer, because the dialog needs all three the moment it opens.
+- `list_vendor_addresses` - one vendor's address codes (PM00300), scoped to that vendor for the reason
+  above.
+- `list_vendors` also now carries each vendor's own SHIPMTHD / VADCDPAD / VNDCNTCT, so the dialog can
+  open on that vendor's GP defaults instead of the relay's.
 
 
 schema and api changes

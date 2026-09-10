@@ -371,6 +371,8 @@ class FinalizeImportSessionInput:
 
 @strawberry.input
 class CreatePOLineItemInput:
+    # hardwareCategory is GP's Item Number and productCode is GP's Description - the two columns the
+    # PO screens head that way.
     hardware_category: str
     product_code: str
     ordered_quantity: int
@@ -380,6 +382,11 @@ class CreatePOLineItemInput:
     # Set when the row was added from the non-schedule item catalog (#454). Order As belongs to
     # hardware schedule items only, so a line with this saves no Order As whatever is sent.
     custom_inventory_item_id: strawberry.ID | None = None
+    # GP takes all three per line. Null means the default: the job's code is not decided per line on a
+    # draft, "Each", and "job-cost when this PO has a project".
+    cost_code: str | None = None
+    uofm: str | None = None
+    job_cost: bool | None = None
 
 
 @strawberry.input
@@ -414,6 +421,8 @@ class CreateDraftPOInput:
 class RegisterPOLineItemInput:
     # The existing draft line this row maps to, or null for a line the user added in the register dialog.
     id: strawberry.ID | None = None
+    # hardwareCategory is GP's Item Number and productCode is GP's Description - the two columns the
+    # PO screens head that way.
     hardware_category: str
     product_code: str
     ordered_quantity: int
@@ -423,6 +432,11 @@ class RegisterPOLineItemInput:
     # Set when the row was added from the non-schedule item catalog (#454). Order As belongs to
     # hardware schedule items only, so a line with this saves no Order As whatever is sent.
     custom_inventory_item_id: strawberry.ID | None = None
+    # What GP's Purchase Order Entry takes per line. Null is the default: the header's cost code,
+    # "Each", and "job-cost when this PO has a project, non-inventoried when it does not".
+    cost_code: str | None = None
+    uofm: str | None = None
+    job_cost: bool | None = None
 
 
 @strawberry.input
@@ -458,6 +472,15 @@ class RegisterPOInput:
     tax_detail_id: str | None = None
     miscellaneous: float | None = None
     trade_discount: float | None = None
+    # The rest of what GP's Purchase Order Entry header takes. Null means the default in every case:
+    # LOCAL DELIVERY, the vendor's PRIMARY purchase address, the VANCOUVER site, today's date, the
+    # vendor's contact (falling back to the buyer id), and no comment.
+    shipping_method: str | None = None
+    vendor_address_code: str | None = None
+    site: str | None = None
+    doc_date: date | None = None
+    contact: str | None = None
+    comment: str | None = None
     # Issue #202 #1: client-generated key that makes this GP-first write idempotent on retry.
     idempotency_key: str = ""
 

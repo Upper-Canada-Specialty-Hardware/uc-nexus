@@ -84,6 +84,11 @@ export const GET_PURCHASE_ORDER = gql`
         receivedQuantity
         unitCost
         orderAs
+        # GP's own three per-line fields: the job cost code the line books to, its unit of measure,
+        # and whether GP books it to the job at all.
+        costCode
+        uofm
+        jobCost
         gpLineOrd
         # True when this line's category and code are the schedule's own, so the GP sync leaves them
         # alone; false while it still carries GP's item number and description.
@@ -261,6 +266,47 @@ export const GET_GP_VENDORS = gql`
       vendorClass
       status
       currency
+      # PM00200's own defaults for a PO raised against this vendor: the shipping method, the
+      # purchase address code, and the vendor contact.
+      shippingMethod
+      purchaseAddressCode
+      contact
+    }
+  }
+`;
+
+// Everything GP's own Purchase Order Entry offers in its header pick lists, read live for the
+// register dialog: shipping methods, sites, and the units of measure a non-inventoried line may use.
+export const GET_GP_PO_ENTRY_OPTIONS = gql`
+  query GetGpPoEntryOptions($company: String!) {
+    gpPoEntryOptions(company: $company) {
+      shippingMethods {
+        id
+        description
+      }
+      sites {
+        code
+        description
+      }
+      unitsOfMeasure
+    }
+  }
+`;
+
+// The addresses GP holds for one vendor, for the register dialog's vendor-address pick.
+export const GET_GP_VENDOR_ADDRESSES = gql`
+  query GetGpVendorAddresses($company: String!, $vendorId: String!) {
+    gpVendorAddresses(company: $company, vendorId: $vendorId) {
+      code
+      contact
+      address1
+      address2
+      address3
+      city
+      state
+      postalCode
+      country
+      phone
     }
   }
 `;
@@ -354,6 +400,9 @@ export const UPDATE_PO = gql`
         receivedQuantity
         unitCost
         orderAs
+        costCode
+        uofm
+        jobCost
       }
       receiveRecords {
         id
@@ -396,6 +445,9 @@ export const CANCEL_PO = gql`
         receivedQuantity
         unitCost
         orderAs
+        costCode
+        uofm
+        jobCost
       }
       receiveRecords {
         id
@@ -471,6 +523,9 @@ export const CREATE_DRAFT_PO = gql`
         receivedQuantity
         unitCost
         orderAs
+        costCode
+        uofm
+        jobCost
         createdAt
         updatedAt
       }
@@ -516,6 +571,9 @@ export const UPDATE_PO_LINE_ITEM_ORDER_AS = gql`
       receivedQuantity
       unitCost
       orderAs
+      costCode
+      uofm
+      jobCost
       createdAt
       updatedAt
     }
@@ -533,6 +591,9 @@ export const UPDATE_PO_LINE_ITEM_UNIT_COST = gql`
       receivedQuantity
       unitCost
       orderAs
+      costCode
+      uofm
+      jobCost
       createdAt
       updatedAt
     }

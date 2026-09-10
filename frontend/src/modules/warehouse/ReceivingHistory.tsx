@@ -177,8 +177,8 @@ function ReceivesPanel({ poId }: { poId: string }) {
           <Table size="small" sx={{ bgcolor: 'background.paper' }}>
             <TableHead>
               <TableRow>
-                <TableCell>Category</TableCell>
-                <TableCell>Product Code</TableCell>
+                <TableCell>Item Number</TableCell>
+                <TableCell>Description</TableCell>
                 <TableCell align="right">Quantity Received</TableCell>
               </TableRow>
             </TableHead>

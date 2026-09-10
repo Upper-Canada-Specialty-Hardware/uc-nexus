@@ -156,11 +156,11 @@ function MonoCell({ value }: { value: string | null }) {
 const backOrderColumns: GridColDef[] = [
   {
     field: 'productCode',
-    headerName: 'Product Code',
+    headerName: 'Description',
     flex: 1,
     renderCell: (params) => <MonoCell value={params.value as string | null} />,
   },
-  { field: 'hardwareCategory', headerName: 'Category', flex: 1 },
+  { field: 'hardwareCategory', headerName: 'Item Number', flex: 1 },
   { field: 'projectName', headerName: 'Project', flex: 1 },
   { field: 'vendorName', headerName: 'Vendor', flex: 1 },
   {

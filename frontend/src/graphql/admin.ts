@@ -384,27 +384,6 @@ export const CREATE_GP_BUYER = gql`
   }
 `;
 
-// costCodes came out of the schema in #438: per-buyer cost-code designation was removed in #430,
-// which left the argument as an ignored no-op only so a tab from the previous deploy still validated.
-export const SAVE_BUYER_ASSIGNMENT = gql`
-  mutation SaveBuyerAssignment($buyerId: String!, $projectIds: [ID!]!) {
-    saveBuyerAssignment(buyerId: $buyerId, projectIds: $projectIds) {
-      buyerId
-      projects {
-        id
-        projectId
-        description
-      }
-    }
-  }
-`;
-
-export const DELETE_BUYER_ASSIGNMENT = gql`
-  mutation DeleteBuyerAssignment($buyerId: String!) {
-    deleteBuyerAssignment(buyerId: $buyerId)
-  }
-`;
-
 // GP write queue admin actions (#353 PR E). Both are admin-gated on the backend; retrying an
 // `ambiguous` entry is genuinely dangerous (GP may already hold the write), which is why the UI
 // puts it behind a ConfirmDialog that says to check GP first.

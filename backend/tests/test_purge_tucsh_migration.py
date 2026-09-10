@@ -6,6 +6,11 @@ loaded by path: `alembic/versions/` is not a package, so there is no import name
 
 The second company in here is the whole test. A delete scoped to the wrong thing still passes every
 assertion about the rows that went; only a row that had to survive can catch it.
+
+Running it at head has one consequence the migration itself does not have: `buyer_assignment_projects`
+existed at revision 105 and was dropped at 113, so the statement naming it can only be exercised on
+the schema of its own day. The fixture drops that one table from the list rather than pretend it is
+still there - see `_bookkeeping_tables_at_head`.
 """
 
 import importlib.util
@@ -13,6 +18,7 @@ import uuid
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
 import sqlalchemy as sa
 
 from app.models.enums import POStatus
@@ -57,6 +63,18 @@ def _line(po: PurchaseOrder) -> POLineItem:
 
 def _exists(db_session, table: str, row_id) -> bool:
     return db_session.execute(sa.text(f"SELECT 1 FROM {table} WHERE id = :id"), {"id": row_id}).first() is not None
+
+
+@pytest.fixture(autouse=True)
+def _bookkeeping_tables_at_head(monkeypatch):
+    """Only the project-bookkeeping tables the CURRENT schema still has.
+
+    `buyer_assignment_projects` went with the per-project buyer gate at revision 113. Migration 105
+    still names it, correctly - the table was there when 105 ran - but a statement against a table
+    that no longer exists cannot be run on today's schema, and nothing about it is what these tests
+    are checking."""
+    live = tuple(t for t in migration._PROJECT_BOOKKEEPING_TABLES if t != "buyer_assignment_projects")
+    monkeypatch.setattr(migration, "_PROJECT_BOOKKEEPING_TABLES", live)
 
 
 def test_purge_removes_tucsh_and_leaves_the_other_company(db_session):

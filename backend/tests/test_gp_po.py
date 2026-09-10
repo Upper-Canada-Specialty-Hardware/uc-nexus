@@ -84,6 +84,147 @@ def test_build_create_po_payload_maps_gp_charges_with_freight_from_shipping_cost
     assert h["trade_discount"] == 2.0
 
 
+def test_build_create_po_payload_header_defaults_match_what_gp_entry_expects():
+    """Every header field the register form can leave blank has one answer, and these are they."""
+    from datetime import date
+
+    payload = gp_po.build_create_po_payload(
+        vendor_gp_id="ING100",
+        vendor_contact_name=None,
+        buyer_id="mira",
+        job_number=None,
+        cost_code=None,
+        po_number=None,
+        line_items=[_line_item()],
+    )
+    h = payload["header"]
+    assert h["shipping_method"] == "LOCAL DELIVERY"
+    assert h["vendor_address_code"] == "PRIMARY"
+    assert h["site"] == "VANCOUVER"
+    assert h["doc_date"] == date.today().isoformat()
+    # The form set no contact, so none is sent - the relay then leaves the GP parameter out entirely.
+    assert h["contact"] is None
+    # Confirm With still falls back, because that field is verified in GP.
+    assert h["confirm_with"] == "mira"
+    assert h["comment"] is None
+    # And the site is what every line without one of its own is stocked at.
+    assert payload["lines"][0]["location_code"] == "VANCOUVER"
+
+
+def test_build_create_po_payload_carries_the_header_the_form_sent():
+    from datetime import date
+
+    payload = gp_po.build_create_po_payload(
+        vendor_gp_id="ING100",
+        vendor_contact_name=None,
+        buyer_id="mira",
+        job_number=None,
+        cost_code=None,
+        po_number=None,
+        line_items=[_line_item()],
+        shipping_method="PICKUP",
+        vendor_address_code="WAREHOUSE",
+        site="TORONTO",
+        doc_date=date(2026, 3, 4),
+        contact="Jane Vendor",
+        comment="Split shipment - call before delivery",
+    )
+    h = payload["header"]
+    assert h["shipping_method"] == "PICKUP"
+    assert h["vendor_address_code"] == "WAREHOUSE"
+    assert h["site"] == "TORONTO"
+    assert h["doc_date"] == "2026-03-04"
+    assert h["contact"] == "Jane Vendor"
+    assert h["comment"] == "Split shipment - call before delivery"
+    assert payload["lines"][0]["location_code"] == "TORONTO"
+
+
+def test_the_vendors_own_contact_names_confirm_with_but_is_not_sent_as_the_contact():
+    """Only what the form explicitly set reaches GP's contact parameter."""
+    payload = gp_po.build_create_po_payload(
+        vendor_gp_id="ING100",
+        vendor_contact_name="Jane Vendor",
+        buyer_id="mira",
+        job_number=None,
+        cost_code=None,
+        po_number=None,
+        line_items=[_line_item()],
+    )
+    assert payload["header"]["contact"] is None
+    assert payload["header"]["confirm_with"] == "Jane Vendor"
+
+
+def test_a_long_contact_and_comment_are_cut_to_gps_widths():
+    payload = gp_po.build_create_po_payload(
+        vendor_gp_id="ING100",
+        vendor_contact_name=None,
+        buyer_id="mira",
+        job_number=None,
+        cost_code=None,
+        po_number=None,
+        line_items=[_line_item()],
+        contact="C" * 100,
+        comment="M" * 600,
+    )
+    assert payload["header"]["contact"] == "C" * 61
+    assert payload["header"]["comment"] == "M" * 500
+    # confirm_with is a narrower GP column and keeps its own cut.
+    assert payload["header"]["confirm_with"] == "C" * 20
+
+
+def test_the_register_path_sends_no_po_number_suffix():
+    """GP's own number is already unique; the project suffix made a Nexus-registered PO's number look
+    unlike every other number in the company. The relay still accepts one, so nothing on the
+    workstation had to change."""
+    payload = gp_po.build_create_po_payload(
+        vendor_gp_id="ING100",
+        vendor_contact_name=None,
+        buyer_id="mira",
+        job_number="1001",
+        cost_code="310-000-3",
+        po_number=None,
+        line_items=[_line_item()],
+    )
+    assert payload["po_number_suffix"] is None
+
+
+def test_each_line_carries_its_own_cost_code_and_unit_of_measure():
+    payload = gp_po.build_create_po_payload(
+        vendor_gp_id="ING100",
+        vendor_contact_name=None,
+        buyer_id="mira",
+        job_number="1001",
+        cost_code="310-000-3",
+        po_number=None,
+        line_items=[
+            _line_item(cost_code="210-200-2", uofm="Box"),
+            _line_item(),  # neither, so the PO's cost code and Each
+        ],
+    )
+    first, second = payload["lines"]
+    assert (first["cost_code"], first["uofm"]) == ("210-200-2", "Box")
+    assert (second["cost_code"], second["uofm"]) == ("310-000-3", "Each")
+
+
+def test_a_line_marked_not_job_cost_is_non_inventoried_even_on_a_job_po():
+    payload = gp_po.build_create_po_payload(
+        vendor_gp_id="ING100",
+        vendor_contact_name=None,
+        buyer_id="mira",
+        job_number="1001",
+        cost_code="310-000-3",
+        po_number=None,
+        line_items=[_line_item(job_cost=False), _line_item()],
+    )
+    plain, job = payload["lines"]
+    assert plain["product_indicator"] == 1
+    assert plain["job_number"] is None
+    assert plain["cost_code"] is None
+    # Its neighbour, which said nothing, still takes the PO's answer.
+    assert job["product_indicator"] == 2
+    assert job["job_number"] == "1001"
+
+
 def test_build_create_po_payload_job_cost_line_carries_job_and_cost_code():
     payload = gp_po.build_create_po_payload(
         vendor_gp_id="ING100",
@@ -301,3 +442,40 @@ def test_validate_create_po_inputs_rejects_empty_line_items():
     with pytest.raises(ValidationError) as exc:
         gp_po.validate_create_po_inputs(job_number=None, cost_code=None, po_number=None, line_items=[])
     assert exc.value.field == "line_items"
+
+
+def test_validate_create_po_inputs_accepts_a_job_po_whose_line_brings_its_own_cost_code():
+    """The PO's code is only the fallback; a line that names one satisfies GP on its own."""
+    gp_po.validate_create_po_inputs(
+        job_number="1001", cost_code=None, po_number=None, line_items=[_line_item(cost_code="210-200-2")]
+    )
+
+
+def test_validate_create_po_inputs_rejects_a_job_cost_line_on_a_po_with_no_project():
+    import pytest
+
+    from app.errors import ValidationError
+
+    with pytest.raises(ValidationError) as exc:
+        gp_po.validate_create_po_inputs(
+            job_number=None, cost_code="210-200-2", po_number=None, line_items=[_line_item(job_cost=True)]
+        )
+    assert exc.value.field == "job_cost"
+
+
+def test_validate_create_po_inputs_accepts_a_non_job_line_on_a_job_po_without_a_cost_code():
+    gp_po.validate_create_po_inputs(
+        job_number="1001", cost_code=None, po_number=None, line_items=[_line_item(job_cost=False)]
+    )
+
+
+def test_validate_create_po_inputs_rejects_an_overlong_unit_of_measure():
+    import pytest
+
+    from app.errors import ValidationError
+
+    with pytest.raises(ValidationError) as exc:
+        gp_po.validate_create_po_inputs(
+            job_number=None, cost_code=None, po_number=None, line_items=[_line_item(uofm="Kilogrammes")]
+        )
+    assert exc.value.field == "uofm"

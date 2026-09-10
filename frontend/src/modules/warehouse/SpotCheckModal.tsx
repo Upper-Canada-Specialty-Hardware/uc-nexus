@@ -122,11 +122,11 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
           }}
         >
           <Box>
-            <Typography component="div" sx={microLabelSx}>Product Code</Typography>
+            <Typography component="div" sx={microLabelSx}>Description</Typography>
             <Typography sx={monoSx}>{item.productCode}</Typography>
           </Box>
           <Box>
-            <Typography component="div" sx={microLabelSx}>Category</Typography>
+            <Typography component="div" sx={microLabelSx}>Item Number</Typography>
             <Typography variant="body2">{item.hardwareCategory}</Typography>
           </Box>
           <Box>

@@ -286,6 +286,9 @@ def _stub_create_po_prechecks(monkeypatch, *, account_index, index_exists):
     guard itself. Anything AFTER it is left unstubbed on purpose: if the guard fails to raise, the op
     walks into a missing econnect stub and the test breaks loudly rather than silently passing."""
     monkeypatch.setattr(econnect, "list_buyers", lambda conn: ["MIRA"])
+    monkeypatch.setattr(econnect, "shipping_method_exists", lambda conn, method: True)
+    monkeypatch.setattr(econnect, "site_exists", lambda conn, site: True)
+    monkeypatch.setattr(econnect, "vendor_address_exists", lambda conn, vendor, code: True)
     monkeypatch.setattr(econnect, "get_vendor_currency", lambda conn, vendor_id: "CAD")
     monkeypatch.setattr(econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "BUY"})
     monkeypatch.setattr(econnect, "job_exists", lambda conn, job: True)

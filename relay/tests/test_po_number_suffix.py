@@ -43,6 +43,11 @@ def stubbed(monkeypatch):
     """Everything before the PO-number step passes; everything after it is left unstubbed, so the op
     stops right after composing the number and the test reads it off the collision check."""
     monkeypatch.setattr(econnect, "list_buyers", lambda conn: ["MIRA"])
+    # the header's shipping method, site and vendor address code are checked against GP first; they
+    # are covered in test_po_header_fields.py and just have to pass here
+    monkeypatch.setattr(econnect, "shipping_method_exists", lambda conn, method: True)
+    monkeypatch.setattr(econnect, "site_exists", lambda conn, site: True)
+    monkeypatch.setattr(econnect, "vendor_address_exists", lambda conn, vendor, code: True)
     monkeypatch.setattr(econnect, "get_vendor_currency", lambda conn, vendor_id: "CAD")
     monkeypatch.setattr(
         econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "BUY"}

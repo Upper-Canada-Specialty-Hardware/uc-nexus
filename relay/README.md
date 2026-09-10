@@ -86,7 +86,7 @@ poetry run ruff check src tests
 endpoints
 - `GET /health` - liveness, no auth
 - `GET /info` - config + read-only SQL identity + the workstation `hostname` and the `resolved_buyer` that hostname maps to, bearer auth
-- `GET /vendors` - active PM00200 vendors (VENDORID / VENDNAME / class / status) for the vendor sync, bearer auth. takes `?company=` (required - there is no default company)
+- `GET /vendors` - active PM00200 vendors (VENDORID / VENDNAME / class / status / currency, plus the vendor's own SHIPMTHD / VADCDPAD / VNDCNTCT) for the vendor sync, bearer auth. takes `?company=` (required - there is no default company)
 - `GET /buyers` - registered GP buyers (`POP00101`) for the Create PO buyer dropdown, bearer auth. `?company=` like `/vendors`. eConnect validates `BUYERID` against this, so the UI must pick from it
 - `GET /cost-codes` - active, account-usable per-job cost codes from `JC00701` (`cost_code` two-segment number / `description` / real `cost_element`) for the Create PO cost-code dropdown, bearer auth. takes `?job=` (the GP job number = UC Nexus `project_id`, required) and `?company=` like `/vendors`. cost codes are per-job and each carries its own `Cost_Element`, so the `/po` cost_code is `'phase-step-element'` (e.g. `310-000-3`) from the code's own element, not a hardcoded `2`. codes whose `WS_Account_Index_1` is non-zero and absent from `GL00105` are excluded (#425) - a PO on one registers but can never be received, and the `create_po` `cost_code_account_invalid` guard refuses it anyway
 - `POST /po/next-number` - reserve a PO number via `taGetPONextNumber`, bearer auth
@@ -106,9 +106,10 @@ running the same eConnect logic the HTTP routes use (`ops.py` holds the shared `
 `create_receipt` orchestration). set `[channel] backend_url` in `config.toml` to enable it; leave it
 blank to run HTTP-only, as before. op dispatch (`_OPS` in `channel.py`, which is also what the relay
 advertises to the backend on connect so an out-of-date relay is caught before the round-trip):
-- reads: `list_vendors`, `list_buyers`, `list_buyers_detailed`, `list_tax_details`, `list_cost_codes`,
-  `list_cost_code_master`, `list_jobs`, `list_customers`, `list_customer_addresses`,
-  `list_tax_schedules`, `list_divisions`, `list_employees`, `read_po_totals`
+- reads: `list_vendors`, `list_vendor_addresses`, `list_po_entry_options`, `list_buyers`,
+  `list_buyers_detailed`, `list_tax_details`, `list_cost_codes`, `list_cost_code_master`, `list_jobs`,
+  `list_customers`, `list_customer_addresses`, `list_tax_schedules`, `list_divisions`,
+  `list_employees`, `read_po_totals`
 - writes: `create_po`, `create_receipt`, `create_job`, `create_buyer`
 - the PO mirror: `sync_pos`, `read_pos_by_number`
 - job setup: `job_setup_health` - the per-job GP setup verdict (#425), in one of three widths.
@@ -121,6 +122,27 @@ advertises to the backend on connect so an out-of-date relay is caught before th
   key is the whole-company sweep, which is what a backend that sends neither still gets. a job number
   GP does not hold is simply absent from the answer, not an error.
 - the server itself: `server_load`
+
+what a registered PO carries
+
+`create_po`'s header takes everything GP's own Purchase Order Entry takes, and every one of those
+values is checked against the GP master it came from before the header is written, so an unknown one
+is a named refusal rather than a raw eConnect error halfway through the transaction:
+- `shipping_method` (`SY03000`), `vendor_address_code` (`PM00300`, that vendor's own address codes)
+  and `site` (`IV40700`) - refused as `shipping_method_not_registered`, `vendor_address_not_registered`
+  and `site_not_registered`. `site` is the site every line is placed at unless the line sends its own
+  `location_code`, so what is checked is the set the lines resolve to, not the header value on its own.
+- `contact` - the person at the vendor the PO is addressed to (`taPoHdr CONTACT` -> `POP10100.CONTACT`).
+- `comment` - free text, which GP keeps on `POP10150` (`taPoHdr COMMNTID` + `CMMTTEXT`).
+
+`contact` and `comment` are optional, and when they are absent the parameters are not sent to
+`taPoHdr` at all - both `taPoHdr` calls (create, and the subtotal update that upserts the same header)
+send exactly the same set, so the update can never blank what the create wrote.
+
+the two reads that feed that dialog are `list_po_entry_options` (the company's shipping methods,
+sites and units of measure in one answer) and `list_vendor_addresses` (one vendor's address codes).
+`list_vendors` also carries each vendor's own `shipping_method`, `purchase_address_code` and
+`contact` from `PM00200`, so the dialog opens on that vendor's GP defaults instead of hardcoded ones.
 
 the PO mirror's two reads
 

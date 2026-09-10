@@ -3,7 +3,7 @@
 Five tables carry a `company` column - projects, warehouses, purchase_orders, inventory_item_types,
 shipment_methods. Everything else in the schema inherits its tenant from one of those two roots:
 openings, hardware, inventory locations, reservations, pull requests, shipping and assembly requests,
-packing slips, containers and buyer assignments through their PROJECT; warehouse locations, stock
+packing slips and containers through their PROJECT; warehouse locations, stock
 items and receive drafts through their WAREHOUSE. That is deliberate - duplicating the column onto
 every child table would create two answers to "whose row is this" and no way to keep them agreeing -
 and it is what this module encapsulates, so no resolver has to know which join answers the question.

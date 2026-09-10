@@ -16,7 +16,10 @@ class POLine(BaseModel):
     item_description: str = Field(..., max_length=100)
     quantity: Decimal
     unit_cost: Decimal
-    location_code: str = "VANCOUVER"
+    # The GP site this line is placed at (IV40700.LOCNCODE). None means "wherever the PO says":
+    # create_po_op fills it from the header's site, which is itself defaulted, so a caller that sends
+    # neither still gets VANCOUVER exactly as it did before the header carried a site.
+    location_code: str | None = None
     uofm: str = "Each"
     product_indicator: int = 1  # 1 = Non-Inventoried, 2 = Job Cost
     job_number: str | None = None
@@ -58,6 +61,14 @@ class POHeader(BaseModel):
     trade_discount: Decimal = Decimal(0)
     freight_amount: Decimal = Decimal(0)
     misc_amount: Decimal = Decimal(0)
+    # The rest of what GP's Purchase Order Entry takes, so a PO raised in Nexus is not a thinner
+    # document than one typed in GP. site is the GP site (IV40700.LOCNCODE) every line is placed at
+    # unless the line names its own; create_po_op does that fill. contact is the person at the vendor
+    # the PO is addressed to (taPoHdr CONTACT -> POP10100.CONTACT). comment is free text GP keeps on
+    # POP10150. contact and comment are optional and, when absent, are not sent to taPoHdr at all.
+    site: str = "VANCOUVER"
+    contact: str | None = Field(default=None, max_length=61)
+    comment: str | None = Field(default=None, max_length=500)
 
 
 class CreatePoRequest(BaseModel):
@@ -137,6 +148,11 @@ class VendorOut(BaseModel):
     vendor_class: str | None = None  # GP VNDCLSID
     status: int          # GP VENDSTTS (1 = active)
     currency: str = "CAD"  # GP CURNCYID, blank -> 'CAD' (issue #257: vendor dictates PO currency)
+    # This vendor's own GP defaults, so the PO dialog opens on them rather than on the relay's
+    # hardcoded fallbacks. Null when the vendor carries none.
+    shipping_method: str | None = None        # GP SHIPMTHD
+    purchase_address_code: str | None = None  # GP VADCDPAD
+    contact: str | None = None                # GP VNDCNTCT
 
 
 class VendorsResponse(BaseModel):

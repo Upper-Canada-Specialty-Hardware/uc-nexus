@@ -72,9 +72,9 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
     const map: Record<string, RowState> = {};
     for (const li of openLines) {
       const outstanding = outstandingOf(li);
-      // On an unregistered line the two identity fields still hold GP's: the item number in
-      // productCode, the item description in hardwareCategory.
-      const suggestion = isProjectPo ? suggestScheduleProduct(li.hardwareCategory, products) : null;
+      // On an unregistered line both fields still hold GP's own: the item number in
+      // hardwareCategory, the item description in productCode.
+      const suggestion = isProjectPo ? suggestScheduleProduct(li.productCode, products) : null;
       const cap = suggestion ? Math.min(outstanding, suggestion.availableQuantity) : outstanding;
       map[li.id] = {
         ...BLANK_ROW,
@@ -172,9 +172,11 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
     ? 'minmax(0, 1.1fr) minmax(0, 1.4fr) 52px 52px 52px minmax(0, 1.6fr) 132px 104px'
     : 'minmax(0, 1.1fr) minmax(0, 1.4fr) 52px 52px 52px minmax(0, 1.2fr) minmax(0, 1.2fr) 104px';
 
+  // The first two columns are what the line holds now; on a PO with no project the last two are
+  // where the schedule's own hardware category and product code are typed.
   const headings = isProjectPo
-    ? ['GP item number', 'GP description', 'Ord', 'Rec', 'Out', 'Product', 'Tie qty', '']
-    : ['GP item number', 'GP description', 'Ord', 'Rec', 'Out', 'Hardware Category', 'Product Code', ''];
+    ? ['Item Number', 'Description', 'Ord', 'Rec', 'Out', 'Product', 'Tie qty', '']
+    : ['Item Number', 'Description', 'Ord', 'Rec', 'Out', 'Hardware Category', 'Product Code', ''];
 
   return (
     <Box sx={{ mt: 3, p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 1, minWidth: 0 }}>
@@ -229,10 +231,10 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
                 }}
               >
                 <Box sx={{ ...monoSx, minWidth: 0, overflowWrap: 'anywhere' }}>
-                  {li.productCode}
+                  {li.hardwareCategory}
                 </Box>
                 <Box sx={{ minWidth: 0, overflowWrap: 'anywhere', fontSize: '0.875rem' }}>
-                  {li.hardwareCategory}
+                  {li.productCode}
                 </Box>
                 <Box sx={{ ...tabularSx, minWidth: 0, fontSize: '0.875rem' }}>{li.orderedQuantity}</Box>
                 <Box sx={{ ...tabularSx, minWidth: 0, fontSize: '0.875rem' }}>{li.receivedQuantity}</Box>

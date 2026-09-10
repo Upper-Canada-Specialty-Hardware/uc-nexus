@@ -12,14 +12,9 @@ from app.models.enums import HardwareItemState, POStatus
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
-from app.repositories import buyer_repository, import_repository, po_repository
+from app.repositories import import_repository, po_repository
 from app.schemas import po as po_schema
 from app.services.gp_po import build_create_po_payload
-
-
-def _assign_buyer(session, buyer_id, project):
-    """Issue #216: _prepare_register_po enforces the buyer->project assignment."""
-    return buyer_repository.save_assignment(session, buyer_id, [project.id])
 
 
 def _make_project(session) -> Project:
@@ -221,6 +216,80 @@ def test_register_add_edit_and_remove_lines(db_session):
     }
     assert hw["HG-200"].po_line_item_id is None
     assert hw["HG-100"].po_line_item_id == kept_id
+
+
+def test_register_persists_what_gp_takes_per_line(db_session):
+    project = _make_project(db_session)
+    po = _import_draft_po(db_session, project)
+    lines = {li.product_code: li for li in po.line_items}
+
+    po_repository.register_po_in_gp(
+        db_session,
+        po.id,
+        gp_vendor_id="GPV1",
+        vendor_name_snapshot="GP Vendor",
+        po_number="PO0000105",
+        gp_company="TUBC",
+        cost_code="210-200-2",
+        line_items=[
+            {
+                "id": str(lines["HG-100"].id),
+                "hardware_category": "HINGE",
+                "product_code": "HG-100",
+                "ordered_quantity": 1,
+                "unit_cost": 10.0,
+                "classification": None,
+                "order_as": "ALIAS-100",
+                "cost_code": "310-000-3",
+                "uofm": "Box",
+            },
+            {
+                "id": str(lines["HG-200"].id),
+                "hardware_category": "HINGE",
+                "product_code": "HG-200",
+                "ordered_quantity": 1,
+                "unit_cost": 10.0,
+                "classification": None,
+                "order_as": "ALIAS-200",
+            },
+        ],
+    )
+    db_session.flush()
+    db_session.refresh(po)
+
+    by_code = {li.product_code: li for li in db_session.scalars(select(POLineItem).where(POLineItem.po_id == po.id))}
+    assert (by_code["HG-100"].cost_code, by_code["HG-100"].uofm) == ("310-000-3", "Box")
+    assert by_code["HG-100"].job_cost is True
+    # The line that named neither takes the PO's cost code and Each.
+    assert (by_code["HG-200"].cost_code, by_code["HG-200"].uofm) == ("210-200-2", "Each")
+    # The PO's own column is the first job-cost line's code, derived rather than what was passed.
+    assert po.cost_code == "310-000-3"
+
+
+def test_registering_a_stock_po_leaves_its_lines_booking_to_no_job(db_session):
+    po = _stock_draft_po(db_session)
+
+    _register(db_session, po, cost_code="210-200-2")
+    db_session.flush()
+
+    line = db_session.scalars(select(POLineItem).where(POLineItem.po_id == po.id)).first()
+    assert line.job_cost is False
+    assert line.cost_code is None
+    assert line.uofm == "Each"
+
+
+def test_a_draft_adopting_a_project_at_register_gets_job_cost_lines(db_session):
+    """The adoption happens before the lines are written, so the lines of a stock draft registered
+    against a job book to that job rather than staying non-inventoried."""
+    project = _make_project(db_session)
+    po = _stock_draft_po(db_session)
+
+    _register(db_session, po, project_id=project.id, cost_code="210-200-2")
+    db_session.flush()
+
+    line = db_session.scalars(select(POLineItem).where(POLineItem.po_id == po.id)).first()
+    assert line.job_cost is True
+    assert line.cost_code == "210-200-2"
 
 
 def test_register_rejects_non_draft(db_session):
@@ -476,7 +545,6 @@ def test_prepare_register_po_attaches_manufacturer_per_line(monkeypatch, db_sess
         company="TUBC",
     )
     assert draft.status == POStatus.DRAFT
-    _assign_buyer(db_session, "mira", project)
     _use_test_session(monkeypatch, db_session)
 
     payload = po_schema._prepare_register_po(
@@ -491,9 +559,9 @@ def test_prepare_register_po_attaches_manufacturer_per_line(monkeypatch, db_sess
 
 
 def test_prepare_register_po_accepts_any_cost_code(monkeypatch, db_session):
-    """Per-buyer cost-code designation is gone: the buyer is assigned to the project and nothing else,
-    so a code that no designation would ever have listed still registers. This used to raise a
-    'not designated to buyer' ValidationError on field cost_code."""
+    """Any cost code GP reports for the job registers. There is no Nexus-side list of codes a buyer
+    is allowed to use, and no per-project gate on who may order - a code that no hand-maintained
+    designation would ever have listed still goes through."""
     project = _make_project(db_session)
     _add_hardware_item(db_session, project, hardware_category="HINGE", product_code="HG-100", manufacturer="SCHLAGE")
     draft = po_repository.create_po(
@@ -502,7 +570,6 @@ def test_prepare_register_po_accepts_any_cost_code(monkeypatch, db_session):
         project_id=project.id,
         company="TUBC",
     )
-    _assign_buyer(db_session, "mira", project)
     _use_test_session(monkeypatch, db_session)
 
     payload = po_schema._prepare_register_po(
@@ -542,7 +609,6 @@ def test_prepare_register_po_disagreeing_items_take_first_non_null_and_log(monke
         project_id=project.id,
         company="TUBC",
     )
-    _assign_buyer(db_session, "mira", project)
     _use_test_session(monkeypatch, db_session)
 
     with caplog.at_level(logging.WARNING):
@@ -642,6 +708,67 @@ def test_register_without_a_project_override_leaves_a_stock_po_unattached(db_ses
     po = _stock_draft_po(db_session)
     _register(db_session, po)
     assert po_repository.reload_po(db_session, po.id).project_id is None
+
+
+def test_the_register_resolver_lands_a_stock_draft_on_the_project_the_dialog_chose(monkeypatch, db_session):
+    """#691. The project picked in the register dialog reached the GP payload - the PO was booked
+    against the right job - but the persist call left it out, so the PO came back attached to no
+    project at all and its receipts had nowhere to land. The queued replay never had the bug: it
+    reads the same value out of persist_context, which is why this only ever showed up online."""
+    import asyncio
+
+    from app.schemas.inputs import RegisterPOInput, RegisterPOLineItemInput
+
+    project = _make_project(db_session)
+    draft = _stock_draft_po(db_session)
+    assert draft.project_id is None
+    line = draft.line_items[0]
+    _use_test_session(monkeypatch, db_session)
+
+    monkeypatch.setattr(po_schema, "current_user", lambda info: {"user_id": "user_1"})
+    monkeypatch.setattr(po_schema, "tenant_scope", lambda info: None)
+    monkeypatch.setattr(po_schema.user_repository, "get_user_gp_buyer_id", lambda user_id: "mira")
+    monkeypatch.setattr(po_schema.gp_idempotency, "load", lambda key: None)
+    monkeypatch.setattr(po_schema.gp_idempotency, "record_relay_result", lambda key, op, result: None)
+    monkeypatch.setattr(po_schema.gp_idempotency, "stamp_result_id", lambda *a, **k: None)
+
+    async def _live_check(company, job_number):
+        return None
+
+    monkeypatch.setattr(po_schema.gp_job_sync, "check_job_setup_live", _live_check)
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        return {"po_number": "PO0000691", "company": "TUBC"}
+
+    monkeypatch.setattr(po_schema.relay_gateway, "relay_call", _relay_call)
+
+    result = asyncio.run(
+        po_schema.POMutations().register_po_in_gp(
+            None,
+            RegisterPOInput(
+                po_id=str(draft.id),
+                gp_vendor_id="GPV1",
+                gp_vendor_name="GP Vendor",
+                gp_company="TUBC",
+                buyer_id="mira",
+                line_items=[
+                    RegisterPOLineItemInput(
+                        id=str(line.id),
+                        hardware_category="HINGE",
+                        product_code="HG-100",
+                        ordered_quantity=2,
+                        unit_cost=10.0,
+                    )
+                ],
+                project_id=str(project.id),
+                cost_code="210-200-2",
+                idempotency_key=str(uuid.uuid4()),
+            ),
+        )
+    )
+
+    assert result.queued is False
+    assert po_repository.reload_po(db_session, draft.id).project_id == project.id
 
 
 def test_register_rejects_a_blank_hardware_category(db_session):

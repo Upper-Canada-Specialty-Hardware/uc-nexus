@@ -110,6 +110,43 @@ def _foreign_currency_fields(rate_type: str | None, exchange_date: date | None, 
     return fields
 
 
+# taPoHdr's own parameter names for the PO's contact and comment - the two free-text header fields
+# GP's Purchase Order Entry takes that PO REGISTRATION did not send until now. CONTACT is the person
+# at the vendor the PO is addressed to (POP10100.CONTACT); COMMNTID + CMMTTEXT are GP's comment pair,
+# and the text lands on POP10150. All three are listed on taPoHdr in the eConnect schema
+# (docs/relay-to-from-gp/econnect-reference/POPTransaction.xsd), but VERIFY ON THE WORKSTATION that
+# the live proc takes them under these names. They sit here, one name per constant, so a correction
+# is a one-line edit rather than a hunt through the two SQL builders that send them.
+_CONTACT_PARAM = "CONTACT"
+_COMMENT_ID_PARAM = "COMMNTID"
+_COMMENT_TEXT_PARAM = "CMMTTEXT"
+
+# GP's header comment is a pair: an id naming a comment out of the company's comment master, and the
+# text itself. Nexus writes free text rather than picking a master comment, so the id goes blank -
+# which is also taPoHdr's own default for it.
+_COMMENT_ID_FOR_FREE_TEXT = ""
+
+
+def _contact_and_comment_fields(contact: str | None, comment: str | None) -> dict:
+    """The taPoHdr fields carrying the PO's contact and comment, each omitted entirely when the caller
+    sent None.
+
+    Omitting rather than sending a blank is deliberate. eConnect only writes a header field it is
+    actually passed, so a parameter name that turns out to be wrong can fail only a PO that set that
+    field - never one that left it alone, which is every PO registered before this existed.
+
+    Both taPoHdr calls (create_po_header and update_po_header_subtotal) build these through this one
+    helper, because the second call upserts the same header: a field passed on one call and omitted
+    on the other is a field written and then left behind by the update, which is how the two drift."""
+    fields: dict = {}
+    if contact is not None:
+        fields[_CONTACT_PARAM] = contact
+    if comment is not None:
+        fields[_COMMENT_ID_PARAM] = _COMMENT_ID_FOR_FREE_TEXT
+        fields[_COMMENT_TEXT_PARAM] = comment
+    return fields
+
+
 def create_po_header(
     conn,
     *,
@@ -126,10 +163,14 @@ def create_po_header(
     rate_type: str | None = None,
     exchange_date: date | None = None,
     null_tax_schedule: bool = False,
+    contact: str | None = None,
+    comment: str | None = None,
 ) -> None:
     """Create the PO header. SUBTOTAL is NOT passed here (no lines exist yet); update_po_header_subtotal
     sets it after the lines land. For a foreign-currency PO (issue #257), rate_type/exchange_date let
-    eConnect resolve the exchange rate and null_tax_schedule blanks TAXSCHID."""
+    eConnect resolve the exchange rate and null_tax_schedule blanks TAXSCHID. contact and comment are
+    the two free-text header fields; each is left out of the EXEC entirely when None - see
+    _contact_and_comment_fields."""
     fields = {
         "POTYPE": po_type,
         "PONUMBER": po_number,
@@ -143,6 +184,7 @@ def create_po_header(
         "SHIPMTHD": shipping_method,
     }
     fields.update(_foreign_currency_fields(rate_type, exchange_date, null_tax_schedule))
+    fields.update(_contact_and_comment_fields(contact, comment))
     _exec_tapohdr(conn, fields)
 
 
@@ -365,6 +407,8 @@ def update_po_header_subtotal(
     rate_type: str | None = None,
     exchange_date: date | None = None,
     null_tax_schedule: bool = False,
+    contact: str | None = None,
+    comment: str | None = None,
 ) -> None:
     """Re-call taPoHdr with UpdateIfExists=1 + the computed SUBTOTAL (validated now against the line
     totals from steps 3-4) and the order-time GP charges (issue #257): trade discount, freight, misc,
@@ -375,7 +419,8 @@ def update_po_header_subtotal(
     using_header_taxes=1 tells GP to use the passed TAXAMNT rather than compute one - GP does NOT
     calculate PO tax under header-level taxes (verified live). rate_type/exchange_date/null_tax_schedule
     carry the foreign-currency handling (re-sent here so the UpdateIfExists upsert can't revert the
-    rate or re-default a blanked TAXSCHID)."""
+    rate or re-default a blanked TAXSCHID), and contact/comment are re-sent for exactly the same
+    reason - this call upserts the same header, so it has to send the set create_po_header sent."""
     fields = {
         "POTYPE": po_type,
         "PONUMBER": po_number,
@@ -397,6 +442,7 @@ def update_po_header_subtotal(
         "USINGHEADERLEVELTAXES": 1 if using_header_taxes else 0,
     }
     fields.update(_foreign_currency_fields(rate_type, exchange_date, null_tax_schedule))
+    fields.update(_contact_and_comment_fields(contact, comment))
     _exec_tapohdr(conn, fields)
 
 
@@ -552,10 +598,18 @@ def list_vendors(conn, *, active_only: bool = True) -> list[dict]:
     """Read-only: PM00200 vendor list for the vendor sync (feeds UC Nexus's Vendor.gp_vendor_id).
     Returns VENDORID / VENDNAME / VNDCLSID (class) / VENDSTTS (status) / CURNCYID (currency). VENDSTTS
     1 = active; the sync only wants vendors usable on a new PO, so active_only filters to those.
-    currency (issue #257) is the vendor's GP currency the PO inherits; blank -> functional 'CAD'."""
+    currency (issue #257) is the vendor's GP currency the PO inherits; blank -> functional 'CAD'.
+
+    Three more columns ride along so the PO dialog can open on this vendor's own GP defaults instead
+    of the relay's hardcoded ones: SHIPMTHD (the shipping method the vendor is set up with), VADCDPAD
+    (the vendor address code a PO to them is purchased from) and VNDCNTCT (the person the PO is
+    addressed to). Each is RTRIMmed, and a vendor carrying none of a field comes back null there,
+    which is the dialog's cue to fall back to its own default rather than send a blank to GP."""
     sql = (
         "SELECT RTRIM(VENDORID) AS vendor_id, RTRIM(VENDNAME) AS vendor_name, "
-        "RTRIM(VNDCLSID) AS vendor_class, VENDSTTS AS status, RTRIM(CURNCYID) AS currency FROM dbo.PM00200 "
+        "RTRIM(VNDCLSID) AS vendor_class, VENDSTTS AS status, RTRIM(CURNCYID) AS currency, "
+        "RTRIM(SHIPMTHD) AS shipping_method, RTRIM(VADCDPAD) AS purchase_address_code, "
+        "RTRIM(VNDCNTCT) AS contact FROM dbo.PM00200 "
     )
     if active_only:
         sql += "WHERE VENDSTTS = 1 "
@@ -568,9 +622,66 @@ def list_vendors(conn, *, active_only: bool = True) -> list[dict]:
             "vendor_class": r.vendor_class or None,
             "status": int(r.status),
             "currency": (r.currency or "").strip().upper() or "CAD",
+            "shipping_method": (r.shipping_method or "").strip() or None,
+            "purchase_address_code": (r.purchase_address_code or "").strip() or None,
+            "contact": (r.contact or "").strip() or None,
         }
         for r in rows
     ]
+
+
+def list_vendor_addresses(conn, vendor_id: str) -> list[dict]:
+    """Read-only: one vendor's address codes from the vendor address master PM00300, for the PO
+    dialog's vendor-address picker.
+
+    Scoped to the vendor the way list_customer_addresses is scoped to the customer: ADRSCODE is
+    unique per vendor rather than globally ('PRIMARY' exists under nearly every vendor in GP), and
+    taPoHdr validates VADCDPAD against this table FOR THAT VENDOR, so an address code that exists
+    under a different vendor is not valid on this PO.
+
+    Columns: ADRSCODE (the code), VNDCNTCT (the person at that address), ADDRESS1 / ADDRESS2 /
+    ADDRESS3 / CITY / STATE / ZIPCODE / COUNTRY (the address as GP holds it) and PHNUMBR1 (its
+    phone). The address rides along because a code on its own ('PRIMARY', 'REMIT') does not tell the
+    user which place it is. Every value is RTRIMmed and a blank comes back null, so the dialog shows
+    only the lines this vendor actually has."""
+    rows = conn.cursor().execute(
+        "SELECT RTRIM(ADRSCODE) AS code, RTRIM(VNDCNTCT) AS contact, RTRIM(ADDRESS1) AS address1, "
+        "RTRIM(ADDRESS2) AS address2, RTRIM(ADDRESS3) AS address3, RTRIM(CITY) AS city, "
+        "RTRIM(STATE) AS state, RTRIM(ZIPCODE) AS postal_code, RTRIM(COUNTRY) AS country, "
+        "RTRIM(PHNUMBR1) AS phone FROM dbo.PM00300 WHERE RTRIM(VENDORID) = ? ORDER BY ADRSCODE",
+        vendor_id.strip(),
+    ).fetchall()
+    return [
+        {
+            "code": r.code,
+            "contact": (r.contact or "").strip() or None,
+            "address1": (r.address1 or "").strip() or None,
+            "address2": (r.address2 or "").strip() or None,
+            "address3": (r.address3 or "").strip() or None,
+            "city": (r.city or "").strip() or None,
+            "state": (r.state or "").strip() or None,
+            "postal_code": (r.postal_code or "").strip() or None,
+            "country": (r.country or "").strip() or None,
+            "phone": (r.phone or "").strip() or None,
+        }
+        for r in rows
+    ]
+
+
+def vendor_address_exists(conn, vendor_id: str, address_code: str) -> bool:
+    """Read-only: does this vendor hold this address code (PM00300)? taPoHdr rejects a VADCDPAD the
+    vendor does not have with a raw eConnect error mid-transaction, so create_po_op pre-checks it.
+
+    Scoped to both columns for the same reason customer_address_exists is: ADRSCODE is unique per
+    vendor, not globally. Both are char(15), so the columns are RTRIM'd and the arguments stripped -
+    the same normalization list_vendor_addresses applies, so a code read out of that picker compares
+    equal here."""
+    row = conn.cursor().execute(
+        "SELECT COUNT(*) AS n FROM dbo.PM00300 WHERE RTRIM(VENDORID) = ? AND RTRIM(ADRSCODE) = ?",
+        vendor_id.strip(),
+        address_code.strip(),
+    ).fetchone()
+    return row.n > 0
 
 
 def get_vendor_currency(conn, vendor_id: str) -> str:
@@ -660,6 +771,101 @@ def get_tax_detail_percent(conn, tax_detail_id: str) -> Decimal | None:
         "SELECT TXDTLPCT AS pct FROM dbo.TX00201 WHERE TAXDTLID = ? AND TXDTLTYP = 2", tax_detail_id
     ).fetchone()
     return Decimal(str(row.pct)) if row is not None else None
+
+
+# Purchase Order Processing Setup (POP40100, one row per company) names the unit-of-measure schedule
+# GP offers on a line for an item the inventory does not hold - which is every line the relay writes,
+# since taPoLine is called with NONINVEN = 1. The repository's table dump
+# (docs/relay-to-from-gp/gp-table-structure.md) covers POP10110, POP30000, POP30300 and WHRECLINE101
+# only, so the column name below is a CANDIDATE, not a confirmed one: VERIFY ON THE WORKSTATION.
+# UOMSCHDL is what GP names a unit-of-measure schedule column everywhere else it appears (IV00101,
+# IV40201, IV40202), which is why it is the candidate.
+_UOFM_SCHEDULE_COLUMN = "UOMSCHDL"
+
+# What the unit-of-measure list falls back to when GP cannot answer. 'Each' is the value every PO line
+# the relay has written to date carries (models.POLine.uofm), so the fallback is exactly the behaviour
+# PO entry had before this list existed - a read that fails must never be the reason a PO cannot be
+# raised.
+_FALLBACK_UNITS_OF_MEASURE = ("Each",)
+
+
+def _units_of_measure(conn) -> list[str]:
+    """The unit-of-measure options a PO line may carry, read GP-first: Purchase Order Processing Setup
+    (POP40100) names the schedule non-inventoried items use, and that schedule's rows are IV40202.UOFM
+    keyed by UOMSCHDL.
+
+    Every way this can go wrong gives the same answer - the fallback list. A column that is not there
+    (see _UOFM_SCHEDULE_COLUMN, which is unverified), a setup row naming no schedule, a schedule with
+    no rows: none of them is worth failing list_po_entry_options over, because the caller is a person
+    opening the PO dialog and 'Each' is what the line would have carried anyway. The read connection
+    is autocommit (db.get_read_connection), so a refused SELECT leaves nothing behind to unwind."""
+    try:
+        row = conn.cursor().execute(
+            f"SELECT RTRIM({_UOFM_SCHEDULE_COLUMN}) AS schedule FROM dbo.POP40100"
+        ).fetchone()
+        schedule = ((row.schedule if row else "") or "").strip()
+        if not schedule:
+            return list(_FALLBACK_UNITS_OF_MEASURE)
+        rows = conn.cursor().execute(
+            "SELECT RTRIM(UOFM) AS uofm FROM dbo.IV40202 WHERE RTRIM(UOMSCHDL) = ? ORDER BY UOFM",
+            schedule,
+        ).fetchall()
+    except Exception:
+        return list(_FALLBACK_UNITS_OF_MEASURE)
+    units = [r.uofm for r in rows if (r.uofm or "").strip()]
+    return units or list(_FALLBACK_UNITS_OF_MEASURE)
+
+
+def list_po_entry_options(conn) -> dict:
+    """Read-only: the GP-owned lists PO REGISTRATION offers, so the Nexus dialog puts GP's own values
+    in front of the user instead of free text the eConnect procs would then refuse.
+
+      - shipping methods: the shipping method master SY03000. SHIPMTHD is the id taPoHdr validates
+        its SHIPMTHD against; SHMTHDSC is that method's description.
+      - sites: the site (location) master IV40700. LOCNCODE is the id taPoLine takes as its LOCNCODE;
+        LOCNDSCR is that site's description.
+      - units of measure: see _units_of_measure - the rows of the schedule GP uses for items the
+        inventory does not hold, with a fallback that keeps this answerable when GP cannot say.
+
+    One op rather than three because the dialog needs all three the moment it opens, and three
+    separate calls would pay for the GP connection three times over for one screen."""
+    shipping_methods = conn.cursor().execute(
+        "SELECT RTRIM(SHIPMTHD) AS id, RTRIM(SHMTHDSC) AS description "
+        "FROM dbo.SY03000 WHERE SHIPMTHD <> '' ORDER BY SHIPMTHD"
+    ).fetchall()
+    sites = conn.cursor().execute(
+        "SELECT RTRIM(LOCNCODE) AS code, RTRIM(LOCNDSCR) AS description "
+        "FROM dbo.IV40700 WHERE LOCNCODE <> '' ORDER BY LOCNCODE"
+    ).fetchall()
+    return {
+        "shipping_methods": [
+            {"id": r.id, "description": (r.description or "").strip() or None} for r in shipping_methods
+        ],
+        "sites": [{"code": r.code, "description": (r.description or "").strip() or None} for r in sites],
+        "units_of_measure": _units_of_measure(conn),
+    }
+
+
+def shipping_method_exists(conn, shipping_method: str) -> bool:
+    """Read-only: is this a shipping method the company has registered (SY03000)? taPoHdr validates
+    SHIPMTHD against that master and refuses an unknown one mid-transaction, so create_po_op
+    pre-checks it here for a clean refusal, exactly as it pre-checks the buyer against POP00101.
+    SHIPMTHD is char(15), so the column is RTRIM'd and the argument stripped - the same normalization
+    list_po_entry_options applies, so a value read out of that picker compares equal here."""
+    row = conn.cursor().execute(
+        "SELECT COUNT(*) AS n FROM dbo.SY03000 WHERE RTRIM(SHIPMTHD) = ?", shipping_method.strip()
+    ).fetchone()
+    return row.n > 0
+
+
+def site_exists(conn, site: str) -> bool:
+    """Read-only: is this a site the company has set up (IV40700)? taPoLine validates LOCNCODE against
+    the site master, so create_po_op pre-checks every site the PO's lines would land on. LOCNCODE is
+    char(11), RTRIM'd on both sides like the shipping method and buyer probes."""
+    row = conn.cursor().execute(
+        "SELECT COUNT(*) AS n FROM dbo.IV40700 WHERE RTRIM(LOCNCODE) = ?", site.strip()
+    ).fetchone()
+    return row.n > 0
 
 
 def list_buyers(conn) -> list[str]:

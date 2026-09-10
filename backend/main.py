@@ -572,9 +572,9 @@ def _reset_by_recloning(source_url: str):
 
     A preview's data IS production's data, taken at first boot, so "reset" here means "take it again"
     rather than "empty the schema". Nothing is preserved across it and nothing is re-synced
-    afterwards: the copy already carries the relay install, the warehouses, the buyer assignments and
-    the projects that reset_preservation exists to rescue, so snapshotting them would be restoring
-    rows over identical rows, and the GP job sync pass would re-adopt projects the clone just brought.
+    afterwards: the copy already carries the relay install, the warehouses and the projects that
+    reset_preservation exists to rescue, so snapshotting them would be restoring rows over identical
+    rows, and the GP job sync pass would re-adopt projects the clone just brought.
 
     The clone runs in-process rather than as `python -m app.preview_clone`: the endpoint already runs
     alembic in-process right after it, and calling the function hands back the counts this response
@@ -653,9 +653,7 @@ def reset_data(request: Request):
     re-enrols on the workstation. A dev-convenience reset must not take GP down as a side effect.
 
     Projects are deliberately NOT preserved - they are re-adopted straight from GP by a forced sync
-    pass right after the rebuild, since GP owns them. That pass is also what makes the buyer/project
-    links restorable: re-adopted projects get new UUIDs, so the links come back matched on GP job
-    number rather than on the id they used to point at (#410)."""
+    pass right after the rebuild, since GP owns them."""
     from alembic.config import Config
     from sqlalchemy import text
 
@@ -693,15 +691,9 @@ def reset_data(request: Request):
         preserved = reset_preservation.restore(conn, snap)
         conn.commit()
 
-    # Re-adopt every GP job before re-linking, not after: the links are matched on job number, so a
-    # projects table that is still empty here drops every one of them. Skipped silently when no relay
-    # is connected - see run_once_blocking; the buyer rows and their cost codes survive either way, and
-    # the background poll re-adopts the projects later (it just has nothing left to re-link them to).
+    # Re-adopt every GP job straight after the rebuild, since GP owns them. Skipped silently when no
+    # relay is connected - see run_once_blocking - and the background poll re-adopts them later.
     sync_result = gp_job_sync.run_once_blocking()
-
-    with engine.connect() as conn:
-        links_restored, links_dropped = reset_preservation.relink_buyer_projects(conn, snap.buyer_project_pairs)
-        conn.commit()
 
     # The frontend alerts `message` verbatim, so it carries the summary; the fields below are for
     # anyone reading the response itself.
@@ -714,8 +706,6 @@ def reset_data(request: Request):
         message += f". Re-adopted {adopted} of {total} GP {'job' if total == 1 else 'jobs'}"
     else:
         message += ". GP job sync did not run, so projects were not re-adopted"
-    if snap.buyer_project_pairs:
-        message += f". Buyer project links: {links_restored} restored, {links_dropped} dropped"
 
     return {
         "status": "ok",
@@ -723,10 +713,8 @@ def reset_data(request: Request):
         "preserved": preserved,
         "relay_installs_preserved": preserved.get("relay_installs", 0),
         # null, not 0, when no sync pass ran - "GP had no new jobs" and "GP was never asked" are
-        # different answers and the second one explains any dropped buyer links.
+        # different answers.
         "jobs_adopted": sync_result[1] if sync_result else None,
-        "buyer_links_restored": links_restored,
-        "buyer_links_dropped": links_dropped,
     }
 
 

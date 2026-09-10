@@ -107,9 +107,9 @@ def test_a_preview_reset_re_clones_production(preview, cloned):
 
 
 def test_a_preview_reset_preserves_nothing_and_syncs_nothing(preview, cloned, monkeypatch):
-    """reset_preservation exists to rescue the relay install, the warehouses and the buyer assignments
-    from a DROP. The clone brings all three, so snapshotting them would be restoring rows over
-    identical rows - and the GP job sync would re-adopt projects the clone just delivered."""
+    """reset_preservation exists to rescue the relay install and the warehouses from a DROP. The clone
+    brings both, so snapshotting them would be restoring rows over identical rows - and the GP job
+    sync would re-adopt projects the clone just delivered."""
     from app.services import gp_job_sync, reset_preservation
 
     monkeypatch.setattr(reset_preservation, "snapshot", lambda conn: pytest.fail("must not snapshot"))

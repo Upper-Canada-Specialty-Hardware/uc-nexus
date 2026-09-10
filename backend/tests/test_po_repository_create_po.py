@@ -310,6 +310,75 @@ def test_create_po_persists_shipping_cost_and_tariff(db_session):
     assert po.tariff_amount == Decimal("0")
 
 
+# --- what GP's Purchase Order Entry takes per line ----------------------------------------------------
+
+
+def test_a_stock_pos_lines_book_to_no_job(db_session):
+    po = po_repository.create_po(
+        db_session,
+        line_items=[_line_item("ML2010")],
+        cost_code="210-200-2",
+        company="TUBC",
+    )
+    db_session.refresh(po)
+    line = po.line_items[0]
+    assert line.job_cost is False
+    assert line.cost_code is None  # a line that books to no job carries none
+    assert line.uofm == "Each"
+    # The PO keeps the code the buyer typed, so registering the draft still offers it as the default.
+    assert po.cost_code == "210-200-2"
+
+
+def test_a_project_pos_lines_book_to_the_job_on_the_pos_cost_code(db_session):
+    project = _make_project(db_session)
+    po = po_repository.create_po(
+        db_session,
+        line_items=[_line_item("ML2010")],
+        project_id=project.id,
+        cost_code="210-200-2",
+        company="TUBC",
+    )
+    db_session.refresh(po)
+    line = po.line_items[0]
+    assert line.job_cost is True
+    assert line.cost_code == "210-200-2"
+
+
+def test_a_line_may_name_its_own_cost_code_and_unit_of_measure(db_session):
+    project = _make_project(db_session)
+    first = _line_item("ML2010")
+    first.update({"cost_code": "310-000-3", "uofm": "Box"})
+    po = po_repository.create_po(
+        db_session,
+        line_items=[first, _line_item("ML2011")],
+        project_id=project.id,
+        cost_code="210-200-2",
+        company="TUBC",
+    )
+    db_session.refresh(po)
+    by_ord = {li.gp_line_ord: li for li in po.line_items}
+    assert (by_ord[16384].cost_code, by_ord[16384].uofm) == ("310-000-3", "Box")
+    assert (by_ord[32768].cost_code, by_ord[32768].uofm) == ("210-200-2", "Each")
+    # The PO's own column is the first job-cost line's code.
+    assert po.cost_code == "310-000-3"
+
+
+def test_a_line_marked_not_job_cost_on_a_project_po_carries_no_cost_code(db_session):
+    project = _make_project(db_session)
+    plain = _line_item("ML2010")
+    plain["job_cost"] = False
+    po = po_repository.create_po(
+        db_session,
+        line_items=[plain],
+        project_id=project.id,
+        cost_code="210-200-2",
+        company="TUBC",
+    )
+    db_session.refresh(po)
+    assert po.line_items[0].job_cost is False
+    assert po.line_items[0].cost_code is None
+
+
 def test_create_po_defaults_shipping_cost_and_tariff_to_null(db_session):
     po = po_repository.create_po(
         db_session,

@@ -15,8 +15,17 @@ import { Trash2, Plus, RefreshCw, Tag } from 'lucide-react';
 import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
-import { CREATE_DRAFT_PO, REGISTER_PO_IN_GP, GET_GP_COST_CODES, GET_GP_VENDORS, GET_GP_TAX_DETAILS, SUGGEST_VENDOR_FOR_MANUFACTURER } from '../../graphql/po';
-import { GET_BUYER_ASSIGNMENTS, GET_PROJECTS } from '../../graphql/shared';
+import {
+  CREATE_DRAFT_PO,
+  REGISTER_PO_IN_GP,
+  GET_GP_COST_CODES,
+  GET_GP_VENDORS,
+  GET_GP_TAX_DETAILS,
+  GET_GP_PO_ENTRY_OPTIONS,
+  GET_GP_VENDOR_ADDRESSES,
+  SUGGEST_VENDOR_FOR_MANUFACTURER,
+} from '../../graphql/po';
+import { GET_PROJECTS } from '../../graphql/shared';
 import { useIdentity } from '../../hooks/useIdentity';
 import type { Project } from '../../types/project';
 import { isGpSetupBroken } from '../../types/project';
@@ -44,10 +53,17 @@ interface LineItemRow {
   key: number;
   // The existing draft line item id (register mode). Absent for a row the user added in the dialog.
   id?: string;
+  // GP's own two text fields on the line: hardwareCategory is the item number, productCode the
+  // description. A line off a hardware schedule fills them with its own pair and is a NEXUS
+  // REGISTERED LINE.
   hardwareCategory: string;
   productCode: string;
   orderedQuantity: string;
   unitCost: string;
+  // The cost code the line books to, its unit of measure, and whether GP books it to the job at all.
+  costCode: string;
+  uofm: string;
+  jobCost: boolean;
   classification: string;
   orderAs: string;
   // Issue #232: the line's derived manufacturer (register mode, from the imported HardwareItem). Absent
@@ -65,6 +81,44 @@ interface GpVendorOption {
   vendorClass: string | null;
   status: number;
   currency: string; // GP CURNCYID (issue #257); the PO inherits it, blank -> 'CAD'
+  // The vendor card's own defaults for a PO raised against it (PM00200). Null where the card leaves
+  // them blank, in which case GP's own default applies.
+  shippingMethod: string | null;
+  purchaseAddressCode: string | null;
+  contact: string | null;
+}
+
+/** One of GP's shipping methods (SY03000). */
+interface GpShippingMethodOption {
+  id: string;
+  description: string | null;
+}
+
+/** One of GP's sites (IV40700). */
+interface GpSiteOption {
+  code: string;
+  description: string | null;
+}
+
+/** The header pick lists GP's own Purchase Order Entry offers, read live for this company. */
+interface GpPoEntryOptions {
+  shippingMethods: GpShippingMethodOption[];
+  sites: GpSiteOption[];
+  unitsOfMeasure: string[];
+}
+
+/** One address GP holds for a vendor (PM00300). Only the code is always there. */
+interface GpVendorAddressOption {
+  code: string;
+  contact: string | null;
+  address1: string | null;
+  address2: string | null;
+  address3: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  country: string | null;
+  phone: string | null;
 }
 
 interface GpCostCode {
@@ -79,14 +133,89 @@ interface GpTaxDetailOption {
   percent: number; // GP TXDTLPCT
 }
 
+// What GP falls back to when a header field is left unsaid, and the caps its own fields carry.
+const DEFAULT_SHIPPING_METHOD = 'LOCAL DELIVERY';
+const DEFAULT_VENDOR_ADDRESS_CODE = 'PRIMARY';
+const DEFAULT_SITE = 'VANCOUVER';
+const DEFAULT_UOFM = 'Each';
+const MAX_ITEM_NUMBER = 30;
+const MAX_DESCRIPTION = 100;
+const MAX_CONTACT = 61;
+const MAX_COMMENT = 500;
+
 const EMPTY_LINE_ITEM: Omit<LineItemRow, 'key' | 'id'> = {
   hardwareCategory: '',
   productCode: '',
   orderedQuantity: '1',
   unitCost: '0',
+  costCode: '',
+  uofm: DEFAULT_UOFM,
+  // A line books to the job by default. The checkbox is only offered on a PO that has one.
+  jobCost: true,
   classification: '',
   orderAs: '',
 };
+
+/** Today in the browser's own timezone as YYYY-MM-DD, which is the PO date unless it is changed. */
+function todayIsoDate(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+/** The list a pick shows, always containing the value it is currently on, so a code GP no longer
+ *  returns still reads as the code it is rather than as an empty field. */
+function withCurrentValue(options: string[], value: string): string[] {
+  return value && !options.includes(value) ? [value, ...options] : options;
+}
+
+interface GpPickFieldProps {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: { value: string; label: string }[];
+  /** No live list to pick from - the field goes read-only on the value that will be sent. */
+  readOnly: boolean;
+  readOnlyHelper: string;
+  minWidth: number;
+}
+
+/**
+ * A GP header pick that survives a list the relay cannot serve (an out-of-date build, a failed read,
+ * or a company that defines none): the control becomes a read-only field holding the value the
+ * registration will carry, so registering is never blocked on a list loading.
+ */
+function GpPickField({ label, value, onChange, options, readOnly, readOnlyHelper, minWidth }: GpPickFieldProps) {
+  if (readOnly) {
+    return (
+      <TextField
+        label={label}
+        value={value}
+        size="small"
+        sx={{ minWidth, '& input': monoSx }}
+        disabled
+        helperText={readOnlyHelper}
+      />
+    );
+  }
+  const shown = options.some((o) => o.value === value) ? options : [{ value, label: value }, ...options];
+  return (
+    <TextField
+      select
+      label={label}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      size="small"
+      sx={{ minWidth, '& .MuiSelect-select': monoSx }}
+    >
+      {shown.map((o) => (
+        <MenuItem key={o.value} value={o.value}>
+          {o.label}
+        </MenuItem>
+      ))}
+    </TextField>
+  );
+}
 
 // Pick the live GP vendor that best matches an imported draft's vendor name (issue #175, reworked for
 // #200 now that the picker reads gpVendors live instead of a locally-synced mirror). Returns the match
@@ -162,6 +291,17 @@ export default function GpPurchaseOrderDialog({
   // GP vendor is picked at register time (#509).
   const [preferredDeliveryDate, setPreferredDeliveryDate] = useState('');
   const [costCode, setCostCode] = useState('');
+  // GP's own header fields. An empty pick means "whatever the vendor card, then GP, defaults to";
+  // the effective values below are what the registration actually sends.
+  const [shippingMethod, setShippingMethod] = useState('');
+  const [vendorAddressCode, setVendorAddressCode] = useState('');
+  const [site, setSite] = useState('');
+  const [docDate, setDocDate] = useState('');
+  const [contact, setContact] = useState('');
+  // The contact defaults to the vendor's, so an untouched field has to follow the vendor pick while
+  // a typed one stays put - including when it is deliberately cleared.
+  const [contactEdited, setContactEdited] = useState(false);
+  const [comment, setComment] = useState('');
   const [nextKey, setNextKey] = useState(2);
   const [lineItems, setLineItems] = useState<LineItemRow[]>([{ key: 1, ...EMPTY_LINE_ITEM }]);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -209,29 +349,6 @@ export default function GpPurchaseOrderDialog({
   const isJob = !!projectId && !!selectedProject;
   const jobNumber = selectedProject?.projectId ?? null;
 
-  // Issue #216: the caller's buyer assignment (the projects they may order for). Register-only
-  // (issue #256: drafting is open to everyone; the GP registration is where the buyer gating applies) -
-  // the caller must be assigned to the draft's project. Cost codes are NOT filtered by buyer: the
-  // dropdown offers every code GP reports active for the job.
-  interface BuyerAssignmentData {
-    buyerId: string;
-    projects: { id: string; projectId: string; description: string | null }[];
-  }
-  const { data: assignmentsData } = useQuery<{ buyerAssignments: BuyerAssignmentData[] }>(GET_BUYER_ASSIGNMENTS, {
-    skip: !open || !isRegister,
-    fetchPolicy: 'cache-and-network',
-  });
-  const myAssignment = useMemo(() => {
-    if (!gpBuyerId) return null;
-    return (
-      (assignmentsData?.buyerAssignments ?? []).find(
-        (a) => a.buyerId.trim().toUpperCase() === gpBuyerId.trim().toUpperCase(),
-      ) ?? null
-    );
-  }, [assignmentsData, gpBuyerId]);
-  const assignedProjectIds = useMemo(() => new Set((myAssignment?.projects ?? []).map((p) => p.id)), [myAssignment]);
-  const registerProjectAllowed = !isRegister || !registerPo?.projectId || assignedProjectIds.has(registerPo.projectId);
-
   // Live GP vendor list (PM00200), per company - issue #200 replaces the locally-synced vendor mirror
   // with a direct pick from this list, snapshotted onto the PO.
   const { data: gpVendorsData, refetch: refetchVendors } = useQuery<{ gpVendors: GpVendorOption[] }>(GET_GP_VENDORS, {
@@ -239,7 +356,58 @@ export default function GpPurchaseOrderDialog({
     skip: !open || !isRegister || !relayConnected || !company,
     fetchPolicy: 'cache-first',
   });
-  const gpVendors = gpVendorsData?.gpVendors ?? [];
+  const gpVendors = useMemo(() => gpVendorsData?.gpVendors ?? [], [gpVendorsData]);
+  // The vendor card behind the current pick: its shipping method, purchase address and contact are
+  // what the header fields default to.
+  const selectedVendor = useMemo(
+    () => gpVendors.find((v) => v.vendorId === gpVendorId) ?? null,
+    [gpVendors, gpVendorId],
+  );
+
+  // GP's own header pick lists. Read whenever a relay is up, because the units of measure belong to
+  // the line grid, which the draft dialog shows too.
+  const { data: entryOptionsData, error: entryOptionsError } = useQuery<{
+    gpPoEntryOptions: GpPoEntryOptions;
+  }>(GET_GP_PO_ENTRY_OPTIONS, {
+    variables: { company },
+    skip: !open || !relayConnected || !company,
+    fetchPolicy: 'cache-first',
+  });
+  const shippingMethods = useMemo(
+    () => entryOptionsData?.gpPoEntryOptions?.shippingMethods ?? [],
+    [entryOptionsData],
+  );
+  const sites = useMemo(() => entryOptionsData?.gpPoEntryOptions?.sites ?? [], [entryOptionsData]);
+  const unitsOfMeasure = useMemo(
+    () => entryOptionsData?.gpPoEntryOptions?.unitsOfMeasure ?? [],
+    [entryOptionsData],
+  );
+
+  // The addresses GP holds for the picked vendor (PM00300).
+  const { data: vendorAddressesData, error: vendorAddressesError } = useQuery<{
+    gpVendorAddresses: GpVendorAddressOption[];
+  }>(GET_GP_VENDOR_ADDRESSES, {
+    variables: { company, vendorId: gpVendorId ?? '' },
+    skip: !open || !isRegister || !relayConnected || !company || !gpVendorId,
+    fetchPolicy: 'cache-first',
+  });
+  const vendorAddresses = useMemo(
+    () => vendorAddressesData?.gpVendorAddresses ?? [],
+    [vendorAddressesData],
+  );
+
+  // Issue #315's pattern: a relay too old to serve one of these answers RELAY_OP_UNSUPPORTED. The
+  // control then shows the default read-only instead of a dead dropdown, which is also what a failed
+  // or genuinely empty list does. Registration never waits on any of them.
+  const entryOptionsUnsupported = isRelayOpUnsupported(entryOptionsError);
+  const vendorAddressesUnsupported = isRelayOpUnsupported(vendorAddressesError);
+
+  // What the registration sends: an untouched control follows the vendor card, then GP's default.
+  const effectiveShippingMethod = shippingMethod || selectedVendor?.shippingMethod || DEFAULT_SHIPPING_METHOD;
+  const effectiveVendorAddressCode =
+    vendorAddressCode || selectedVendor?.purchaseAddressCode || DEFAULT_VENDOR_ADDRESS_CODE;
+  const effectiveSite = site || DEFAULT_SITE;
+  const effectiveContact = contactEdited ? contact : selectedVendor?.contact || gpBuyerId || '';
 
   // Issue #257: live GP purchase tax details (TX00201, TXDTLTYP=2) for the tax-detail dropdown.
   const {
@@ -257,7 +425,7 @@ export default function GpPurchaseOrderDialog({
   // A foreign-currency PO (non-CAD) carries no tax schedule/detail - the relay blanks TAXSCHID and
   // prices the PO from GP's own maintained exchange rate - so the CAD-only tax-detail dropdown is
   // hidden for it. Freight/misc/trade discount still apply (in the PO's currency).
-  const gpVendorCurrency = gpVendors.find((v) => v.vendorId === gpVendorId)?.currency ?? 'CAD';
+  const gpVendorCurrency = selectedVendor?.currency ?? 'CAD';
   const isForeignCurrency = isRegister && !!gpVendorId && gpVendorCurrency !== 'CAD';
   // Whether Project is locked at register time (#316). It used to be locked for EVERY registration,
   // which left a manually created stock PO - `create_draft_po` takes an optional project_id and the
@@ -270,7 +438,7 @@ export default function GpPurchaseOrderDialog({
   // The SELECTED vendor's name, for the currency field's "where this came from" text (#316). Derived
   // from gpVendors like the currency is, not from the gpVendorName state, which only ever holds the
   // manufacturer hint's suggestion and goes stale the moment the user picks a different vendor.
-  const selectedGpVendorName = gpVendors.find((v) => v.vendorId === gpVendorId)?.vendorName ?? null;
+  const selectedGpVendorName = selectedVendor?.vendorName ?? null;
 
   // Issue #315: the live tax-detail list can fail to load - the relay is too old to serve
   // list_tax_details (RELAY_OP_UNSUPPORTED), or it timed out / dropped / errored mid-query. Rather than
@@ -398,6 +566,14 @@ export default function GpPurchaseOrderDialog({
       setTaxDetailId('');
       setMiscellaneous('');
       setTradeDiscount('');
+      // GP's header fields start on their defaults; the PO date starts on today.
+      setShippingMethod('');
+      setVendorAddressCode('');
+      setSite('');
+      setDocDate(todayIsoDate());
+      setContact('');
+      setContactEdited(false);
+      setComment('');
       const rows: LineItemRow[] = registerPo.lineItems.map((li, i) => ({
         key: i + 1,
         id: li.id,
@@ -410,6 +586,11 @@ export default function GpPurchaseOrderDialog({
         // "defaults to product code"), so the buyer sees what is actually stored and can clear it.
         // GP's item number falls back to product_code server-side (services/gp_po.py).
         orderAs: li.orderAs || '',
+        // A line with no cost code of its own starts on the draft's, which is what the "Cost code
+        // for all lines" pick above the grid then does for the rest.
+        costCode: li.costCode ?? registerPo.costCode ?? '',
+        uofm: li.uofm || DEFAULT_UOFM,
+        jobCost: li.jobCost,
         manufacturer: li.manufacturer ?? null,
       }));
       setLineItems(rows.length > 0 ? rows : [{ key: 1, ...EMPTY_LINE_ITEM }]);
@@ -424,6 +605,13 @@ export default function GpPurchaseOrderDialog({
       setTradeDiscount('');
       setPreferredDeliveryDate('');
       setVendorQuoteNumber('');
+      setShippingMethod('');
+      setVendorAddressCode('');
+      setSite('');
+      setDocDate(todayIsoDate());
+      setContact('');
+      setContactEdited(false);
+      setComment('');
       setLineItems([{ key: 1, ...EMPTY_LINE_ITEM }]);
       setNextKey(2);
     }
@@ -555,8 +743,18 @@ export default function GpPurchaseOrderDialog({
     setLineItems((prev) => prev.filter((li) => li.key !== key));
   }, []);
 
-  const updateLineItem = useCallback((key: number, field: keyof Omit<LineItemRow, 'key' | 'id'>, value: string) => {
-    setLineItems((prev) => prev.map((li) => (li.key === key ? { ...li, [field]: value } : li)));
+  const updateLineItem = useCallback(
+    <K extends keyof Omit<LineItemRow, 'key' | 'id'>>(key: number, field: K, value: LineItemRow[K]) => {
+      setLineItems((prev) => prev.map((li) => (li.key === key ? { ...li, [field]: value } : li)));
+    },
+    [],
+  );
+
+  // One pick above the grid fills every line GP will book to the job, which is how a PO whose lines
+  // all book to the same code is entered without touching each row.
+  const handleAllLinesCostCode = useCallback((value: string) => {
+    setCostCode(value);
+    setLineItems((prev) => prev.map((li) => (li.jobCost ? { ...li, costCode: value } : li)));
   }, []);
 
   const validate = useCallback(() => {
@@ -565,7 +763,15 @@ export default function GpPurchaseOrderDialog({
     for (let i = 0; i < lineItems.length; i++) {
       const li = lineItems[i];
       if (!li.hardwareCategory.trim()) errs[`li_${i}_cat`] = 'Required';
+      else if (li.hardwareCategory.trim().length > MAX_ITEM_NUMBER)
+        errs[`li_${i}_cat`] = `At most ${MAX_ITEM_NUMBER} characters`;
       if (!li.productCode.trim()) errs[`li_${i}_code`] = 'Required';
+      else if (li.productCode.trim().length > MAX_DESCRIPTION)
+        errs[`li_${i}_code`] = `At most ${MAX_DESCRIPTION} characters`;
+      // A line GP books to the job has to say which cost code it books to. Register only: a draft
+      // touches nothing in GP, and the job cost codes are not always reachable when one is raised.
+      if (isRegister && isJob && li.jobCost && !li.costCode.trim())
+        errs[`li_${i}_costCode`] = 'Cost code required on a job cost line';
       const qty = parseInt(li.orderedQuantity, 10);
       if (isNaN(qty) || qty < 1) errs[`li_${i}_qty`] = 'Must be >= 1';
       const cost = parseFloat(li.unitCost);
@@ -581,12 +787,19 @@ export default function GpPurchaseOrderDialog({
       else if (!vendorConfirmed) errs.vendor = 'Confirm the suggested GP vendor before registering';
       // Issue #216: the PO is pushed as the caller's own GP buyer identity.
       if (!gpBuyerId) errs.buyer = 'Your account has no GP buyer identity - ask an Admin to set it in User Management';
-      else if (!registerProjectAllowed) errs.buyer = `Buyer ${gpBuyerId} is not assigned to this project`;
-      if (isJob && !costCode) errs.costCode = 'Cost code is required for a project PO';
-      // A refresh can drop the picked code from the job's list (GP-side change); the Select then
-      // renders blank while the state still holds the old pick, so catch it here as a form error
-      // instead of letting the relay reject the push after submit.
-      else if (isJob && costCodes.length > 0 && !costCodes.some((c) => `${c.costCode}-${c.costElement}` === costCode))
+      // GP's own caps on the two header text fields.
+      if (effectiveContact.trim().length > MAX_CONTACT) errs.contact = `At most ${MAX_CONTACT} characters`;
+      if (comment.trim().length > MAX_COMMENT) errs.comment = `At most ${MAX_COMMENT} characters`;
+      // The pick above the grid is optional: what GP needs is a cost code on every line it books
+      // to the job, which the per-line check above enforces. A refresh can still drop a picked code
+      // from the job's list (GP-side change) - the Select then renders blank while the state holds
+      // the old pick, so catch that here rather than letting the relay reject the push after submit.
+      if (
+        isJob &&
+        costCode &&
+        costCodes.length > 0 &&
+        !costCodes.some((c) => `${c.costCode}-${c.costElement}` === costCode)
+      )
         errs.costCode = 'The selected cost code is no longer on this job in GP - pick another';
       // Issue #257: a CAD PO must carry a tax detail (the relay computes tax from it); a foreign-currency
       // PO carries none (the relay blanks the schedule), so require it for CAD only. Only enforce it when
@@ -616,19 +829,26 @@ export default function GpPurchaseOrderDialog({
       errs.tradeDiscount = 'Must be >= 0';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, registerProjectAllowed, isJob, costCode, costCodes, shippingCost, tariffAmount, isForeignCurrency, taxDetailId, gpTaxDetails.length, taxDetailsOpUnsupported, taxDetailsFailed, miscellaneous, tradeDiscount]);
+  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, effectiveContact, comment, isJob, costCode, costCodes, shippingCost, tariffAmount, isForeignCurrency, taxDetailId, gpTaxDetails.length, taxDetailsOpUnsupported, taxDetailsFailed, miscellaneous, tradeDiscount]);
 
   const handleSubmit = useCallback(async () => {
     if (!validate()) return;
 
     // costCode already holds GP's 'phase-step-element' (e.g. '310-000-3'); the element is the real
     // one from JC00701, not a hardcoded 2. A stock PO (no project) carries no cost code.
-    const gpCostCode = isJob ? costCode : null;
+    // The PO header takes the pick above the grid when there is one, and otherwise the first job
+    // cost line's own code: the lines are the truth about which code each books to.
+    const firstLineCostCode = lineItems.find((li) => li.jobCost && li.costCode.trim())?.costCode.trim() ?? null;
+    const gpCostCode = isJob ? costCode || firstLineCostCode : null;
     const lineItemsInput = lineItems.map((li) => ({
       hardwareCategory: li.hardwareCategory.trim(),
       productCode: li.productCode.trim(),
       orderedQuantity: parseInt(li.orderedQuantity, 10),
       unitCost: parseFloat(li.unitCost),
+      // GP's own three per-line fields. A line that does not book to the job carries no cost code.
+      costCode: isJob && li.jobCost ? li.costCode.trim() || null : null,
+      uofm: li.uofm.trim() || DEFAULT_UOFM,
+      jobCost: isJob && li.jobCost,
       classification: li.classification || null,
       // Nexus-only and optional: blank stays blank rather than borrowing the product code.
       orderAs: li.orderAs.trim() || null,
@@ -670,6 +890,12 @@ export default function GpPurchaseOrderDialog({
               // ignores it once the PO has one, so a stale value here can't re-point an imported PO.
               projectId: projectLocked ? null : projectId || null,
               costCode: gpCostCode,
+              shippingMethod: effectiveShippingMethod,
+              vendorAddressCode: effectiveVendorAddressCode,
+              site: effectiveSite,
+              docDate: docDate || null,
+              contact: effectiveContact.trim() || null,
+              comment: comment.trim() || null,
               shippingCost: shippingCostValue,
               tariffAmount: tariffAmountValue,
               taxDetailId: taxDetailIdValue,
@@ -742,6 +968,12 @@ export default function GpPurchaseOrderDialog({
     validate,
     isJob,
     costCode,
+    effectiveShippingMethod,
+    effectiveVendorAddressCode,
+    effectiveSite,
+    docDate,
+    effectiveContact,
+    comment,
     company,
     gpBuyerId,
     lineItems,
@@ -792,6 +1024,20 @@ export default function GpPurchaseOrderDialog({
           : costCodeCarriedFromDraft
             ? 'Carried from the PO draft - change it if wrong'
             : '';
+
+  // Sized to content, with the two text fields absorbing the slack. The grid scrolls inside its own
+  // container when the dialog is narrower than its columns need; the page itself never widens.
+  const lineGridColumns = isJob
+    ? 'minmax(0, 1fr) minmax(0, 1.3fr) 56px 96px 88px minmax(0, 1fr) 64px minmax(0, 0.9fr) 40px'
+    : 'minmax(0, 1.2fr) minmax(0, 1.5fr) 56px 96px 88px minmax(0, 1.1fr) 40px';
+  const lineGridMinWidth = isJob ? 880 : 620;
+
+  // The codes a line may book to: everything GP has active on the job, in the same
+  // 'phase-step-element' form the header pick uses.
+  const costCodeOptions = useMemo(
+    () => costCodes.map((c) => `${c.costCode}-${c.costElement}`),
+    [costCodes],
+  );
 
   const importedVendorName = registerPo ? poVendorName(registerPo) || null : null;
   const vendorHelper =
@@ -856,19 +1102,14 @@ export default function GpPurchaseOrderDialog({
         </Box>
       )}
       {isRegister && <GpSetupQuarantineBanner project={selectedProject} action="registering it in GP" dense />}
-      {/* Issue #216: GP registration happens as YOUR buyer identity, against your assigned projects.
-          Drafting (issue #256) is open to everyone, so these gate register mode only. */}
-      {isRegister && !gpBuyerId ? (
+      {/* Issue #216: GP registration happens as YOUR buyer identity. Drafting (issue #256) is open
+          to everyone, so this gates register mode only. */}
+      {isRegister && !gpBuyerId && (
         <Alert severity="error" sx={{ mb: 2 }}>
           Your account has no GP buyer identity - an Admin must set it in User Management before you can
           register purchase orders.
         </Alert>
-      ) : isRegister && !registerProjectAllowed ? (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          Buyer {gpBuyerId} is not assigned to this project - an Admin can change assignments under
-          Admin → Buyers.
-        </Alert>
-      ) : null}
+      )}
       {/* Header Fields */}
       <Stack spacing={2} sx={{ mb: 3 }}>
         <TextField
@@ -961,9 +1202,9 @@ export default function GpPurchaseOrderDialog({
           relayConnected && costCodes.length > 0 ? (
             <TextField
               select
-              label="Cost code (optional)"
+              label="Cost code for all lines (optional)"
               value={costCode}
-              onChange={(e) => setCostCode(e.target.value)}
+              onChange={(e) => handleAllLinesCostCode(e.target.value)}
               size="small"
               sx={{ minWidth: 300, '& .MuiSelect-select': monoSx }}
               helperText="Carried to GP registration as the default"
@@ -1070,9 +1311,9 @@ export default function GpPurchaseOrderDialog({
           <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
             <TextField
               select
-              label={isJob ? 'Cost code (required)' : 'Cost code (project POs)'}
+              label="Cost code for all lines"
               value={costCode}
-              onChange={(e) => setCostCode(e.target.value)}
+              onChange={(e) => handleAllLinesCostCode(e.target.value)}
               size="small"
               sx={{ minWidth: 260, '& .MuiSelect-select': monoSx }}
               disabled={!isJob || !relayConnected || costCodesLoading || costCodes.length === 0}
@@ -1096,6 +1337,94 @@ export default function GpPurchaseOrderDialog({
             </IconButton>
           </Box>
         </Stack>
+        {/* The rest of what GP's own Purchase Order Entry takes in its header. One wrapping row
+            rather than a column of full-width fields, so the box stays dense. */}
+        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-start" sx={{ mt: 2 }}>
+          <GpPickField
+            label="Shipping method"
+            value={effectiveShippingMethod}
+            onChange={setShippingMethod}
+            options={shippingMethods.map((m) => ({
+              value: m.id,
+              label: m.description ? `${m.id} · ${m.description}` : m.id,
+            }))}
+            readOnly={shippingMethods.length === 0}
+            readOnlyHelper={
+              entryOptionsUnsupported
+                ? 'Relay out of date - the GP default is used'
+                : 'The GP default is used'
+            }
+            minWidth={230}
+          />
+          <GpPickField
+            label="Vendor address"
+            value={effectiveVendorAddressCode}
+            onChange={setVendorAddressCode}
+            options={vendorAddresses.map((a) => ({
+              value: a.code,
+              label: a.city ? `${a.code} · ${a.city}` : a.code,
+            }))}
+            readOnly={vendorAddresses.length === 0}
+            readOnlyHelper={
+              vendorAddressesUnsupported
+                ? 'Relay out of date - the GP default is used'
+                : 'The GP default is used'
+            }
+            minWidth={200}
+          />
+          <GpPickField
+            label="Site"
+            value={effectiveSite}
+            onChange={setSite}
+            options={sites.map((st) => ({
+              value: st.code,
+              label: st.description ? `${st.code} · ${st.description}` : st.code,
+            }))}
+            readOnly={sites.length === 0}
+            readOnlyHelper={
+              entryOptionsUnsupported
+                ? 'Relay out of date - the GP default is used'
+                : 'The GP default is used'
+            }
+            minWidth={200}
+          />
+          <TextField
+            label="PO date"
+            type="date"
+            value={docDate}
+            onChange={(e) => setDocDate(e.target.value)}
+            size="small"
+            sx={{ width: 175 }}
+            slotProps={{ inputLabel: { shrink: true } }}
+          />
+          <TextField
+            label="Contact"
+            value={effectiveContact}
+            onChange={(e) => {
+              setContactEdited(true);
+              setContact(e.target.value);
+            }}
+            size="small"
+            sx={{ minWidth: 220, flex: 1 }}
+            slotProps={{ htmlInput: { maxLength: MAX_CONTACT } }}
+            error={!!errors.contact}
+            helperText={errors.contact || (contactEdited ? '' : "From the GP vendor, else your buyer id")}
+          />
+        </Stack>
+        <TextField
+          label="Comment"
+          value={comment}
+          onChange={(e) => setComment(e.target.value)}
+          size="small"
+          fullWidth
+          multiline
+          minRows={2}
+          maxRows={4}
+          sx={{ mt: 2 }}
+          slotProps={{ htmlInput: { maxLength: MAX_COMMENT } }}
+          error={!!errors.comment}
+          helperText={errors.comment || 'Written onto the purchase order in GP'}
+        />
         {/* Issue #315: the live tax-detail list failed to load. Make it visible (and screenshot-friendly)
             and point at the fix, while the manual id field below keeps CAD registration unblocked. Gated
             on useManualTaxEntry so the banner never points at a field that isn't rendered (e.g. after the
@@ -1263,99 +1592,159 @@ export default function GpPurchaseOrderDialog({
         </Typography>
       )}
 
-      {/* Column headers. Site/shop classification is set by the PM at request creation (issue #216),
-          so there is no Classification column here - register mode passes the draft's values through. */}
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: '1.3fr 1.3fr 0.6fr 0.7fr 1.2fr auto',
-          gap: 1,
-          mb: 0.5,
-        }}
-      >
-        <Typography sx={microLabelSx}>Hardware Category</Typography>
-        <Typography sx={microLabelSx}>Product Code</Typography>
-        <Typography sx={microLabelSx}>Qty</Typography>
-        <Typography sx={microLabelSx}>Unit Cost</Typography>
-        <Typography sx={microLabelSx}>Order As</Typography>
-        <Box />
-      </Box>
-
-      {/* Line item rows */}
-      {lineItems.map((li, idx) => (
-        <Box
-          key={li.key}
-          sx={{
-            display: 'grid',
-            gridTemplateColumns: '1.3fr 1.3fr 0.6fr 0.7fr 1.2fr auto',
-            gap: 1,
-            mb: 1,
-            alignItems: 'start',
-          }}
-        >
-          {/* A catalogued row holds the pair the warehouse will receive the stock under, so both
-              fields are read-only on it (#454). */}
-          <TextField
-            size="small"
-            value={li.hardwareCategory}
-            onChange={(e) => updateLineItem(li.key, 'hardwareCategory', e.target.value)}
-            error={!!errors[`li_${idx}_cat`]}
-            helperText={errors[`li_${idx}_cat`] ?? (li.catalogItemId ? 'From catalog' : undefined)}
-            placeholder="e.g. Hinges"
-            disabled={Boolean(li.catalogItemId)}
-            sx={li.catalogItemId ? MONO_FIELD_SX : undefined}
-          />
-          <TextField
-            size="small"
-            value={li.productCode}
-            onChange={(e) => updateLineItem(li.key, 'productCode', e.target.value)}
-            error={!!errors[`li_${idx}_code`]}
-            helperText={errors[`li_${idx}_code`]}
-            placeholder="e.g. AB123"
-            disabled={Boolean(li.catalogItemId)}
-            sx={MONO_FIELD_SX}
-          />
-          <TextField
-            size="small"
-            type="number"
-            value={li.orderedQuantity}
-            onChange={(e) => updateLineItem(li.key, 'orderedQuantity', e.target.value)}
-            error={!!errors[`li_${idx}_qty`]}
-            helperText={errors[`li_${idx}_qty`]}
-            slotProps={{ htmlInput: { min: 1 } }}
-          />
-          <TextField
-            size="small"
-            type="number"
-            value={li.unitCost}
-            onChange={(e) => updateLineItem(li.key, 'unitCost', e.target.value)}
-            error={!!errors[`li_${idx}_cost`]}
-            helperText={errors[`li_${idx}_cost`]}
-            slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
-          />
-          {li.catalogItemId ? (
-            // No Order As on a custom item (see addCatalogLineItem); the cell stays so the grid lines up.
-            <Box />
-          ) : (
-            <TextField
-              size="small"
-              value={li.orderAs}
-              onChange={(e) => updateLineItem(li.key, 'orderAs', e.target.value)}
-              placeholder="e.g. ML2010"
-              sx={MONO_FIELD_SX}
-            />
-          )}
-          <IconButton
-            size="small"
-            color="error"
-            aria-label={`Remove line item ${idx + 1}`}
-            onClick={() => removeLineItem(li.key)}
-            disabled={lineItems.length <= 1}
+      {/* Item Number and Description are GP's own two text fields on a GP PO LINE ITEM. Site/shop
+          classification is set by the PM at request creation (issue #216), so there is no
+          Classification column here - register mode passes the draft's values through. */}
+      <Box sx={{ overflowX: 'auto', minWidth: 0 }}>
+        <Box sx={{ minWidth: lineGridMinWidth }}>
+          <Box
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: lineGridColumns,
+              gap: 1,
+              mb: 0.5,
+            }}
           >
-            <Trash2 {...ICON} />
-          </IconButton>
+            <Typography sx={microLabelSx}>Item Number</Typography>
+            <Typography sx={microLabelSx}>Description</Typography>
+            <Typography sx={microLabelSx}>Qty</Typography>
+            <Typography sx={microLabelSx}>U of M</Typography>
+            <Typography sx={microLabelSx}>Unit Cost</Typography>
+            {/* A cost code and a job cost flag only mean anything on a PO that has a project. */}
+            {isJob && <Typography sx={microLabelSx}>Cost Code</Typography>}
+            {isJob && <Typography sx={microLabelSx}>Job cost</Typography>}
+            <Typography sx={microLabelSx}>Order As</Typography>
+            <Box />
+          </Box>
+
+          {/* Line item rows */}
+          {lineItems.map((li, idx) => (
+            <Box
+              key={li.key}
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: lineGridColumns,
+                gap: 1,
+                mb: 1,
+                alignItems: 'start',
+              }}
+            >
+              {/* A catalogued row holds the pair the warehouse will receive the stock under, so both
+                  fields are read-only on it (#454). */}
+              <TextField
+                size="small"
+                value={li.hardwareCategory}
+                onChange={(e) => updateLineItem(li.key, 'hardwareCategory', e.target.value)}
+                error={!!errors[`li_${idx}_cat`]}
+                helperText={errors[`li_${idx}_cat`] ?? (li.catalogItemId ? 'From catalog' : undefined)}
+                placeholder="e.g. Hinges"
+                disabled={Boolean(li.catalogItemId)}
+                slotProps={{ htmlInput: { maxLength: MAX_ITEM_NUMBER } }}
+                sx={li.catalogItemId ? MONO_FIELD_SX : undefined}
+              />
+              <TextField
+                size="small"
+                value={li.productCode}
+                onChange={(e) => updateLineItem(li.key, 'productCode', e.target.value)}
+                error={!!errors[`li_${idx}_code`]}
+                helperText={errors[`li_${idx}_code`]}
+                placeholder="e.g. AB123"
+                disabled={Boolean(li.catalogItemId)}
+                slotProps={{ htmlInput: { maxLength: MAX_DESCRIPTION } }}
+                sx={MONO_FIELD_SX}
+              />
+              <TextField
+                size="small"
+                type="number"
+                value={li.orderedQuantity}
+                onChange={(e) => updateLineItem(li.key, 'orderedQuantity', e.target.value)}
+                error={!!errors[`li_${idx}_qty`]}
+                helperText={errors[`li_${idx}_qty`]}
+                slotProps={{ htmlInput: { min: 1 } }}
+              />
+              {/* Native, so the row stays one line high; the column heading is its visible label. */}
+              <TextField
+                size="small"
+                select
+                value={li.uofm}
+                onChange={(e) => updateLineItem(li.key, 'uofm', e.target.value)}
+                disabled={unitsOfMeasure.length === 0}
+                slotProps={{
+                  select: { native: true, inputProps: { 'aria-label': `Unit of measure line ${idx + 1}` } },
+                }}
+                sx={{ minWidth: 0 }}
+              >
+                {withCurrentValue(unitsOfMeasure, li.uofm).map((u) => (
+                  <option key={u} value={u}>
+                    {u}
+                  </option>
+                ))}
+              </TextField>
+              <TextField
+                size="small"
+                type="number"
+                value={li.unitCost}
+                onChange={(e) => updateLineItem(li.key, 'unitCost', e.target.value)}
+                error={!!errors[`li_${idx}_cost`]}
+                helperText={errors[`li_${idx}_cost`]}
+                slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+              />
+              {isJob && (
+                <TextField
+                  size="small"
+                  select
+                  value={li.costCode}
+                  onChange={(e) => updateLineItem(li.key, 'costCode', e.target.value)}
+                  error={!!errors[`li_${idx}_costCode`]}
+                  helperText={errors[`li_${idx}_costCode`]}
+                  disabled={!li.jobCost}
+                  slotProps={{
+                    select: { native: true, inputProps: { 'aria-label': `Cost code line ${idx + 1}` } },
+                  }}
+                  sx={{ minWidth: 0, '& select': monoSx }}
+                >
+                  <option value="">None</option>
+                  {withCurrentValue(costCodeOptions, li.costCode).map((code) => (
+                    <option key={code} value={code}>
+                      {code}
+                    </option>
+                  ))}
+                </TextField>
+              )}
+              {isJob && (
+                <Checkbox
+                  size="small"
+                  checked={li.jobCost}
+                  onChange={(e) => updateLineItem(li.key, 'jobCost', e.target.checked)}
+                  slotProps={{ input: { 'aria-label': `Job cost line ${idx + 1}` } }}
+                  sx={{ p: 0.5, justifySelf: 'start' }}
+                />
+              )}
+              {li.catalogItemId ? (
+                // No Order As on a custom item (see addCatalogLineItem); the cell stays so the grid lines up.
+                <Box />
+              ) : (
+                <TextField
+                  size="small"
+                  value={li.orderAs}
+                  onChange={(e) => updateLineItem(li.key, 'orderAs', e.target.value)}
+                  placeholder="e.g. ML2010"
+                  sx={MONO_FIELD_SX}
+                />
+              )}
+              <IconButton
+                size="small"
+                color="error"
+                aria-label={`Remove line item ${idx + 1}`}
+                onClick={() => removeLineItem(li.key)}
+                disabled={lineItems.length <= 1}
+              >
+                <Trash2 {...ICON} />
+              </IconButton>
+            </Box>
+          ))}
         </Box>
-      ))}
+      </Box>
     </Modal>
   );
 }

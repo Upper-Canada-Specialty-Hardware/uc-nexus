@@ -2,7 +2,6 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import ProjectPurchasingProgressPage from './ProjectPurchasingProgressPage';
 import HardwareStatusPage from './HardwareStatusPage';
 import UserManagementPage from './UserManagementPage';
-import BuyersPage from './BuyersPage';
 import WarehousesPage from './WarehousesPage';
 import ProjectsPage from './ProjectsPage';
 import ProjectDetailPage from './ProjectDetailPage';
@@ -25,7 +24,6 @@ export default function AdminModule() {
       <Route path="projects" element={<ProjectsPage />} />
       <Route path="projects/:id" element={<ProjectDetailPage />} />
       <Route path="users" element={<UserManagementPage />} />
-      <Route path="buyers" element={<BuyersPage />} />
       <Route path="relay-installs" element={<RelayInstallsPage />} />
       <Route path="location-cleanup" element={<LocationCleanupPage />} />
       <Route path="sharepoint-migration" element={<SharePointMigrationPage />} />

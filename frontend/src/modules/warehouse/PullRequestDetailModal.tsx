@@ -466,8 +466,8 @@ export default function PullRequestDetailModal({
             <TableHead>
               <TableRow>
                 <TableCell>Opening</TableCell>
-                <TableCell>Product Code</TableCell>
-                <TableCell>Hardware Category</TableCell>
+                <TableCell>Description</TableCell>
+                <TableCell>Item Number</TableCell>
                 <TableCell align="right">Requested Qty</TableCell>
               </TableRow>
             </TableHead>
