@@ -158,6 +158,13 @@ class POLineItem(Base):
     # the quantities and the unit cost. True on every line Nexus drafts or registers; false on a line
     # the mirror created, until somebody gives it a schedule identity.
     nexus_registered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    # The non-schedule catalog entry this line was added from (#454), when it was added that way.
+    # Order As exists only for hardware schedule items - a catalog item is ordered as the vendor sells
+    # it - so a line carrying this never carries an Order As, and the PO detail modal leaves that cell
+    # blank instead of offering the field.
+    custom_inventory_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("custom_inventory_items.id"), nullable=True
+    )
     # GP POP10110.ORD this line maps to (16384, 32768, ...). Assigned positionally at create time
     # (the relay assigns ORD = line index * 16384); used to target the GP line on a relay /receipt.
     gp_line_ord: Mapped[int | None] = mapped_column(Integer, nullable=True)

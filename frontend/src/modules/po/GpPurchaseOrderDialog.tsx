@@ -632,6 +632,9 @@ export default function GpPurchaseOrderDialog({
       classification: li.classification || null,
       // Nexus-only and optional: blank stays blank rather than borrowing the product code.
       orderAs: li.orderAs.trim() || null,
+      // The catalog entry an "Add Custom Item" row came from (#454). Saved on the line so the PO
+      // detail modal knows Order As does not apply to it.
+      customInventoryItemId: li.catalogItemId ?? null,
     }));
 
     // Same key for every retry of this action so a retry is a no-op in GP (won't post a second PO).

@@ -34,7 +34,7 @@ import { UPDATE_PO, UPDATE_PO_NOTES, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UP
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
-import MirroredScheduleLinkPanel from './MirroredScheduleLinkPanel';
+import NexusRegistrationPanel from './NexusRegistrationPanel';
 import POGenerateDialog from './POGenerateDialog';
 import { poVendorName } from './poVendorName';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
@@ -46,6 +46,9 @@ const ICON = { size: 18, strokeWidth: 1.75 } as const;
 
 /** An absent value. Rendered dimmed, so a blank field reads as "nothing here" rather than as data. */
 const EMPTY = '—';
+
+/** The stages a PO is still expecting hardware in - where its lines can still be registered in Nexus. */
+const OPEN_PO_STATUSES = new Set(['GP_REGISTERED', 'VENDOR_CONFIRMED', 'PARTIALLY_RECEIVED']);
 
 const DOC_TYPE_LABELS: Record<string, string> = {
   PO_DOCUMENT: 'PO Document',
@@ -356,8 +359,11 @@ export default function PODetailModal({
         headerName: 'Order As',
         flex: 1,
         minWidth: 130,
+        // A line from the non-schedule item catalog has no Order As at all: the field exists to carry
+        // the vendor's name for a hardware schedule item. Its cell stays blank rather than saying an
+        // absent value is missing.
         renderCell: (params) =>
-          params.value ? (
+          params.row.customInventoryItemId ? null : params.value ? (
             <Box component="span" sx={monoSx}>
               {params.value}
             </Box>
@@ -444,16 +450,17 @@ export default function PODetailModal({
         if (col.field === 'orderAs' && canEditItems) {
           return {
             ...col,
-            renderCell: (params) => (
-              <OrderAsAutocomplete
-                value={aliasEdits[params.row.id as string] ?? (params.value as string) ?? ''}
-                onChange={(next) =>
-                  setAliasEdits((prev) => ({ ...prev, [params.row.id as string]: next }))
-                }
-                options={priorMap.get(params.row.productCode as string) ?? []}
-                placeholder="Order as"
-              />
-            ),
+            renderCell: (params) =>
+              params.row.customInventoryItemId ? null : (
+                <OrderAsAutocomplete
+                  value={aliasEdits[params.row.id as string] ?? (params.value as string) ?? ''}
+                  onChange={(next) =>
+                    setAliasEdits((prev) => ({ ...prev, [params.row.id as string]: next }))
+                  }
+                  options={priorMap.get(params.row.productCode as string) ?? []}
+                  placeholder="Order as"
+                />
+              ),
           };
         }
         if (col.field === 'unitCost' && canEditItems) {
@@ -617,6 +624,13 @@ export default function PODetailModal({
           {po.origin === 'GP' && (
             <Tooltip title="Mirrored from GP - this PO was not raised through Nexus" arrow>
               <Chip label="GP-owned" size="small" variant="outlined" />
+            </Tooltip>
+          )}
+          {/* Only on a GP-born PO: a Nexus-drafted PO is registered from birth, so the chip would say
+              nothing there. */}
+          {po.origin === 'GP' && po.nexusRegistered && (
+            <Tooltip title="Every line carries its hardware category and product code from the schedule" arrow>
+              <Chip label="Nexus registered" size="small" variant="outlined" color="success" />
             </Tooltip>
           )}
           {/* A mirrored PO has no Nexus request number; only show it when there is one. */}
@@ -824,9 +838,10 @@ export default function PODetailModal({
           </Typography>
         )}
 
-        {/* Coverage-only schedule linking for a mirrored PO that has a project (gp-owned-po mirror). */}
-        {po.origin === 'GP' && po.projectId && po.lineItems.length > 0 && (
-          <MirroredScheduleLinkPanel po={po} onRefetch={onRefetch} />
+        {/* Giving a GP-born PO's lines their schedule identity. Offered while the PO is still open,
+            with or without a project - a stock PO gets the identity step alone. */}
+        {po.origin === 'GP' && OPEN_PO_STATUSES.has(po.status) && po.lineItems.length > 0 && (
+          <NexusRegistrationPanel po={po} onRefetch={onRefetch} />
         )}
 
         {/* Documents Section */}

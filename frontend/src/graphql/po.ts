@@ -33,6 +33,9 @@ export const GET_PURCHASE_ORDER = gql`
       requestNumber
       origin
       gpSyncedAt
+      # True when every one of this PO's lines is a NEXUS REGISTERED LINE - what the detail modal's
+      # "Nexus registered" chip reads.
+      nexusRegistered
       projectId
       status
       # #637: the tenant that owns the PO. A draft has one from the moment it is raised; gpCompany
@@ -85,6 +88,8 @@ export const GET_PURCHASE_ORDER = gql`
         # True when this line's category and code are the schedule's own, so the GP sync leaves them
         # alone; false while it still carries GP's item number and description.
         nexusRegistered
+        # Set when the line was added from the non-schedule item catalog; Order As does not apply to it.
+        customInventoryItemId
         manufacturer
         createdAt
         updatedAt
@@ -179,21 +184,24 @@ export const SYNC_GP_POS = gql`
   }
 `;
 
-// Attach project schedule hardware to a mirrored PO's lines for coverage tracking (gp-owned-po mirror).
-// Returns how many schedule units actually matched and linked (linkedUnits): 0 means nothing was
-// available at the requested quantity, and a value below the requested quantity is a partial link.
-export const LINK_SCHEDULE_TO_MIRRORED_PO = gql`
-  mutation LinkScheduleToMirroredPo($input: LinkScheduleToMirroredPoInput!) {
-    linkScheduleToMirroredPo(input: $input) {
-      linkedUnits
+// Give a GP-born PO's lines the hardware category and product code they are really for, so each
+// becomes a NEXUS REGISTERED LINE and the GP sync stops overwriting those two fields. On a PO with a
+// project this also ties the schedule's hardware to the lines; tiedUnits is how many units that came
+// to, so a request that matched nothing available reads as the no-op it was.
+export const NEXUS_REGISTER_PO_LINES = gql`
+  mutation NexusRegisterPoLines($input: NexusRegisterPoLinesInput!) {
+    nexusRegisterPoLines(input: $input) {
+      tiedUnits
       purchaseOrder {
         id
+        nexusRegistered
         lineItems {
           id
           hardwareCategory
           productCode
           orderedQuantity
           receivedQuantity
+          nexusRegistered
         }
       }
     }

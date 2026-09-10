@@ -40,7 +40,7 @@ from .converters import (
 from .enums import PODocumentType, POOrigin, POStatus
 from .inputs import (
     CreateDraftPOInput,
-    LinkScheduleToMirroredPoInput,
+    NexusRegisterPoLinesInput,
     RegisterPOInput,
     SavePODocumentDataInput,
     UpdatePODocumentSettingsInput,
@@ -48,7 +48,7 @@ from .inputs import (
 from .types import (
     EmailPoResult,
     GpPoSyncResult,
-    LinkScheduleResult,
+    NexusRegisterPoLinesResult,
     OpenPOSummary,
     PODocumentInfo,
     PODocumentSettings,
@@ -509,31 +509,31 @@ class POMutations:
         )
 
     @strawberry.mutation
-    def link_schedule_to_mirrored_po(
-        self, info: strawberry.Info, input: LinkScheduleToMirroredPoInput
-    ) -> LinkScheduleResult:
-        """Attach project schedule hardware to a mirrored (GP-origin) PO's lines for coverage tracking
-        (gp-owned-po mirror). Marks the named AVAILABLE schedule units IN_PO against the PO line, the
-        same linkage a Nexus draft uses. Coverage/reconciliation only - receiving never depends on it.
+    def nexus_register_po_lines(
+        self, info: strawberry.Info, input: NexusRegisterPoLinesInput
+    ) -> NexusRegisterPoLinesResult:
+        """Give a GP-born PO's lines the hardware category and product code they are really for, so
+        each becomes a NEXUS REGISTERED LINE and the OPEN-POS SYNC stops overwriting those two fields
+        with GP's item number and description.
 
-        Returns linked_units alongside the PO: a typo'd product code, or nothing AVAILABLE at the
-        requested qty, links 0 while still returning the PO, so the caller can tell a no-op from a hit
-        instead of reading a bare PO as success."""
-        links = [
+        On a PO with a project this also ties the schedule's own hardware to the lines, for the
+        outstanding quantity only. `tied_units` says how many units that came to, so a request that
+        matched no available schedule hardware reads as the no-op it was rather than as a success."""
+        lines = [
             {
-                "po_line_item_id": uuid.UUID(str(link.po_line_item_id)),
-                "hardware_category": link.hardware_category,
-                "product_code": link.product_code,
-                "quantity": link.quantity,
+                "po_line_item_id": uuid.UUID(str(line.po_line_item_id)),
+                "hardware_category": line.hardware_category,
+                "product_code": line.product_code,
+                "tie_quantity": line.tie_quantity,
             }
-            for link in input.links
+            for line in input.lines
         ]
         with SessionLocal() as session:
             tenancy.require_po_in_scope(session, uuid.UUID(str(input.po_id)), tenant_scope(info))
-            po, total = po_repository.link_schedule_to_mirrored_po(session, uuid.UUID(str(input.po_id)), links)
+            po, tied = po_repository.nexus_register_po_lines(session, uuid.UUID(str(input.po_id)), lines)
             session.commit()
-            return LinkScheduleResult(
-                linked_units=total,
+            return NexusRegisterPoLinesResult(
+                tied_units=tied,
                 purchase_order=po_to_type(po_repository.reload_po(session, po.id)),
             )
 
@@ -556,6 +556,7 @@ class POMutations:
                 "unit_cost": li.unit_cost,
                 "classification": li.classification.value if li.classification else None,
                 "order_as": li.order_as,
+                "custom_inventory_item_id": li.custom_inventory_item_id,
             }
             for li in input.line_items
         ]
@@ -697,6 +698,7 @@ class POMutations:
                 "unit_cost": li.unit_cost,
                 "classification": li.classification.value if li.classification else None,
                 "order_as": li.order_as,
+                "custom_inventory_item_id": li.custom_inventory_item_id,
             }
             for li in input.line_items
         ]

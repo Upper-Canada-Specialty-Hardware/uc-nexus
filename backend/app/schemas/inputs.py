@@ -377,6 +377,9 @@ class CreatePOLineItemInput:
     unit_cost: float
     classification: Classification | None = None
     order_as: str | None = None
+    # Set when the row was added from the non-schedule item catalog (#454). Order As belongs to
+    # hardware schedule items only, so a line with this saves no Order As whatever is sent.
+    custom_inventory_item_id: strawberry.ID | None = None
 
 
 @strawberry.input
@@ -417,6 +420,9 @@ class RegisterPOLineItemInput:
     unit_cost: float
     classification: Classification | None = None
     order_as: str | None = None
+    # Set when the row was added from the non-schedule item catalog (#454). Order As belongs to
+    # hardware schedule items only, so a line with this saves no Order As whatever is sent.
+    custom_inventory_item_id: strawberry.ID | None = None
 
 
 @strawberry.input
@@ -939,22 +945,22 @@ class MigrateSharepointInventoryInput:
 
 
 @strawberry.input
-class MirroredPoScheduleLink:
-    """One (schedule combo -> PO line) coverage link for a mirrored PO (gp-owned-po mirror). quantity
-    units of the project's own (hardware_category, product_code) schedule are marked covered by the
-    named PO line. The PO line's own GP item is unrelated to the schedule combo - this is a manual,
-    coverage-only attribution, not automatic matching."""
+class NexusRegisterPoLine:
+    """One line of a GP-born PO and the schedule identity it is really for - what makes it a NEXUS
+    REGISTERED LINE. `tie_quantity` is how many units of the project's own schedule to tie to the
+    line, at most its outstanding quantity and at most what the schedule still has available; 0 is
+    identity alone, and 0 is the only value a PO with no project accepts."""
 
     po_line_item_id: strawberry.ID
     hardware_category: str
     product_code: str
-    quantity: int
+    tie_quantity: int = 0
 
 
 @strawberry.input
-class LinkScheduleToMirroredPoInput:
+class NexusRegisterPoLinesInput:
     po_id: strawberry.ID
-    links: list[MirroredPoScheduleLink]
+    lines: list[NexusRegisterPoLine]
 
 
 @strawberry.input

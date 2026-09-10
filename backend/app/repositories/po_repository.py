@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 _UNSET = object()
 
 
+def _coerce_custom_inventory_item_id(raw) -> uuid.UUID | None:
+    """The catalog entry a PO line was added from (#454), as it arrives from the dialog: a string id,
+    a UUID, or nothing at all."""
+    if raw in (None, ""):
+        return None
+    return raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))
+
+
 def _learn_manufacturer_vendor_mappings(
     session: Session,
     *,
@@ -239,11 +247,16 @@ def create_po(
         if isinstance(classification_val, str):
             classification_val = Classification(classification_val)
 
+        catalog_item_id = _coerce_custom_inventory_item_id(li_data.get("custom_inventory_item_id"))
         order_as_raw = li_data.get("order_as")
         # #563: Hardware Category and Product Code are the line's identity and are both required; they
         # are what a PO REGISTRATION sends GP as the item number and the description. Order As is the
         # only optional field on a line - Nexus-only, never sent to GP - and persists stripped or None.
+        # A line from the non-schedule catalog has no Order As at all (see the model), so anything
+        # sent for one is dropped rather than stored.
         cleaned_order_as = order_as_raw.strip() if order_as_raw and order_as_raw.strip() else None
+        if catalog_item_id is not None:
+            cleaned_order_as = None
         if not (li_data.get("hardware_category") or "").strip():
             raise ValidationError("Hardware category is required for every line item", field="hardware_category")
         if not (li_data.get("product_code") or "").strip():
@@ -259,6 +272,7 @@ def create_po(
             unit_cost=Decimal(str(li_data["unit_cost"])) if li_data.get("unit_cost") else Decimal("0"),
             classification=classification_val,
             order_as=cleaned_order_as,
+            custom_inventory_item_id=catalog_item_id,
             # A NEXUS REGISTERED LINE from birth: the category and code above came off the schedule,
             # so the OPEN-POS SYNC must never overwrite them with GP's item number and description.
             nexus_registered=True,
@@ -394,11 +408,16 @@ def register_po_in_gp(
     # is GP POP10110.ORD = line index * 16384, assigned in the order the lines were sent to the relay
     # (== this payload order), which is what a relay /receipt targets per line.
     for idx, li_data in enumerate(line_items, start=1):
+        catalog_item_id = _coerce_custom_inventory_item_id(li_data.get("custom_inventory_item_id"))
         order_as_raw = li_data.get("order_as")
         # #563: Hardware Category and Product Code are the line's identity and are both required; they
         # are what a PO REGISTRATION sends GP as the item number and the description. Order As is the
         # only optional field on a line - Nexus-only, never sent to GP - and persists stripped or None.
+        # A line from the non-schedule catalog has no Order As at all (see the model), so anything
+        # sent for one is dropped rather than stored.
         cleaned_order_as = order_as_raw.strip() if order_as_raw and order_as_raw.strip() else None
+        if catalog_item_id is not None:
+            cleaned_order_as = None
         if not (li_data.get("hardware_category") or "").strip():
             raise ValidationError("Hardware category is required for every line item", field="hardware_category")
         if not (li_data.get("product_code") or "").strip():
@@ -427,6 +446,7 @@ def register_po_in_gp(
             poli.unit_cost = Decimal(str(unit_cost))
             poli.classification = classification_val
             poli.order_as = cleaned_order_as
+            poli.custom_inventory_item_id = catalog_item_id
             # The category and code just written are the schedule's, so this is a NEXUS REGISTERED
             # LINE whatever it was before.
             poli.nexus_registered = True
@@ -443,6 +463,7 @@ def register_po_in_gp(
                     unit_cost=Decimal(str(unit_cost)),
                     classification=classification_val,
                     order_as=cleaned_order_as,
+                    custom_inventory_item_id=catalog_item_id,
                     # A NEXUS REGISTERED LINE, like every line the draft/register path writes.
                     nexus_registered=True,
                     gp_line_ord=idx * 16384,
@@ -641,37 +662,135 @@ def _link_available_items(
     return linked
 
 
-def link_schedule_to_mirrored_po(session: Session, po_id: uuid.UUID, links: list[dict]) -> tuple[PurchaseOrder, int]:
-    """Attach project schedule hardware to a mirrored PO's lines for coverage/reconciliation only
-    (gp-owned-po mirror). Receiving never depends on this. Only valid on a GP-origin PO that has a
-    project; each link names a PO line plus a (hardware_category, product_code, quantity) of the
-    project's own schedule to mark as covered by that line. Returns (po, total units linked)."""
+def _available_schedule_units(
+    session: Session,
+    *,
+    project_id: uuid.UUID,
+    hardware_category: str,
+    product_code: str,
+) -> int:
+    """How many units of a project's schedule combo are still AVAILABLE - not yet on any PO. The
+    ceiling on what a NEXUS REGISTERED LINE may tie, and the number `_link_available_items` draws
+    from."""
+    from app.models.hardware import HardwareItem
+
+    total = session.scalar(
+        select(func.coalesce(func.sum(HardwareItem.item_quantity), 0)).where(
+            HardwareItem.project_id == project_id,
+            HardwareItem.hardware_category == hardware_category,
+            HardwareItem.product_code == product_code,
+            HardwareItem.state == HardwareItemState.AVAILABLE,
+        )
+    )
+    return int(total or 0)
+
+
+# The PO stages a GP-born PO may be given a schedule identity in: it is still open, so the hardware it
+# is bringing is still expected. A CLOSED or CANCELLED PO is never made Nexus-registered.
+_REGISTRABLE_PO_STATUSES = (POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED)
+
+
+def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict]) -> tuple[PurchaseOrder, int]:
+    """Give a GP-born PO's lines their schedule identity - make each a NEXUS REGISTERED LINE.
+
+    Each entry names a line of this PO plus the hardware category and product code that line is really
+    for, and (on a PO with a project) how many units of the schedule to tie to it. Writing the identity
+    is what stops the OPEN-POS SYNC overwriting those two fields with GP's item number and description
+    from then on.
+
+    Only an open GP-born PO can be registered: a closed or cancelled one is history, and the hardware
+    on it has already landed wherever it was going to land.
+
+    The tie covers the OUTSTANDING quantity only - ordered minus received - and never more of the
+    schedule than is still AVAILABLE. Units that arrived before Nexus knew about this PO are not tied
+    here: they are already in the building, and it is receiving, not registration, that accounts for
+    them. On a PO with no project there is no schedule to tie to and the quantity must be 0: identity
+    is the whole of the job.
+
+    A line that is already registered may be re-submitted, but only saying the same thing - inventory
+    downstream may already carry that identity, and re-pointing it here would leave it describing
+    hardware nobody has.
+
+    Returns (po, total schedule units tied)."""
     po = get_purchase_order(session, po_id)
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
     if po.origin != POOrigin.GP:
-        raise InvalidStateTransitionError("Schedule linking applies only to GP-origin purchase orders")
-    if po.project_id is None:
-        raise InvalidStateTransitionError("This purchase order has no project to link schedule hardware from")
-
-    line_ids = {li.id for li in po.line_items}
-    total = 0
-    for link in links:
-        li_id = link["po_line_item_id"]
-        if li_id not in line_ids:
-            raise ValidationError("PO line item does not belong to this purchase order", field="po_line_item_id")
-        qty = int(link.get("quantity") or 0)
-        if qty <= 0:
-            continue
-        total += _link_available_items(
-            session,
-            project_id=po.project_id,
-            hardware_category=link["hardware_category"],
-            product_code=link["product_code"],
-            quantity=qty,
-            po_line_item_id=li_id,
+        raise InvalidStateTransitionError(
+            "This purchase order was raised in Nexus - its lines already carry their schedule identity"
         )
-    return po, total
+    if po.status not in _REGISTRABLE_PO_STATUSES:
+        raise InvalidStateTransitionError(
+            f"Only an open GP-owned purchase order can be registered in Nexus; this one is {po.status.value}"
+        )
+
+    by_id = {li.id: li for li in po.line_items}
+    tied = 0
+    for entry in lines:
+        line = by_id.get(entry["po_line_item_id"])
+        if line is None:
+            raise ValidationError("PO line item does not belong to this purchase order", field="po_line_item_id")
+
+        hardware_category = (entry.get("hardware_category") or "").strip()
+        product_code = (entry.get("product_code") or "").strip()
+        if not hardware_category:
+            raise ValidationError("Hardware category is required for every line item", field="hardware_category")
+        if not product_code:
+            raise ValidationError("Product code is required for every line item", field="product_code")
+
+        # Already a NEXUS REGISTERED LINE: the identity is the one inventory may already have been
+        # received under, so it is re-confirmable but not re-pointable.
+        if line.nexus_registered and (line.hardware_category, line.product_code) != (
+            hardware_category,
+            product_code,
+        ):
+            raise ValidationError(
+                f"This line is already registered as {line.hardware_category} / {line.product_code}; "
+                "its hardware category and product code cannot be changed",
+                field="po_line_item_id",
+            )
+
+        quantity = int(entry.get("tie_quantity") or 0)
+        if quantity < 0:
+            raise ValidationError("Tie quantity cannot be negative", field="tie_quantity")
+        if po.project_id is None and quantity:
+            raise ValidationError(
+                "This purchase order has no project, so there is no schedule hardware to tie to it",
+                field="tie_quantity",
+            )
+
+        if po.project_id is not None and quantity:
+            outstanding = max(line.ordered_quantity - line.received_quantity, 0)
+            available = _available_schedule_units(
+                session,
+                project_id=po.project_id,
+                hardware_category=hardware_category,
+                product_code=product_code,
+            )
+            cap = min(outstanding, available)
+            if quantity > cap:
+                raise ValidationError(
+                    f"At most {cap} units of {hardware_category} / {product_code} can be tied to this "
+                    f"line ({outstanding} still outstanding, {available} still available on the schedule)",
+                    field="tie_quantity",
+                )
+
+        line.hardware_category = hardware_category
+        line.product_code = product_code
+        line.nexus_registered = True
+
+        if po.project_id is not None and quantity:
+            tied += _link_available_items(
+                session,
+                project_id=po.project_id,
+                hardware_category=hardware_category,
+                product_code=product_code,
+                quantity=quantity,
+                po_line_item_id=line.id,
+            )
+
+    session.flush()
+    return po, tied
 
 
 def get_open_pos_summary(

@@ -486,6 +486,9 @@ export const GET_PROJECT_SCHEDULE_PRODUCTS = gql`
       productCode
       classification
       requiredQuantity
+      # The slice of requiredQuantity still on no purchase order - the ceiling on what a GP-born PO's
+      # line may tie in the Nexus Registration panel.
+      availableQuantity
     }
   }
 `;
