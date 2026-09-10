@@ -515,7 +515,7 @@ def _validate_po_links(session: Session, entries: list[dict]) -> dict[uuid.UUID,
             claimed[line_id] = (index, category, code)
         elif (previous[1], previous[2]) != (category, code):
             raise ValidationError(
-                f"Entry {previous[0] + 1} ({previous[1]} / {previous[2]}) and entry {index + 1} "
+                f"Entry {previous[0] + 1} ({previous[1]} / {previous[2]}) and Entry {index + 1} "
                 f"({category} / {code}) are linked to the same purchase order line but disagree about "
                 "what it is for. Resolve one of them differently before migrating.",
                 field="po_line_item_id",
