@@ -191,6 +191,9 @@ describe('ImportModule deep links', () => {
 
     await screen.findByText('Riverside Tower', undefined, SLOW);
     expect(screen.queryByTestId('wizard')).not.toBeInTheDocument();
+    // Wait for the module to finish clearing the link's parameters before picking, as every sibling
+    // test does. Clicking during that clear made the purpose read as the default on slow CI runners.
+    await expectParamsCleared();
 
     fireEvent.click(screen.getByRole('button', { name: /Bay Mills/ }));
 
