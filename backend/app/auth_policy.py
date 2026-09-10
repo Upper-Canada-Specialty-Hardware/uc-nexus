@@ -219,6 +219,9 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # credentials, and the mutation writes inventory in bulk with no per-row undo.
     "sharepointInventorySnapshot": ADMIN_ROLE,
     "migrateSharepointInventory": ADMIN_ROLE,
+    # Admin-only for the same reason: it exists to serve the migration wizard's Reconcile GP PO link
+    # step, and it reads purchase orders by number in bulk.
+    "mirroredPosByNumber": ADMIN_ROLE,
     # SIGNED_IN, unlike its two neighbours: this one only reads a project's own schedule products, the
     # same thing projectHardwareSchedule already publishes to anyone signed in, and the Nexus
     # Registration panel needs it to offer a buyer the products a GP-born PO's lines could be for.

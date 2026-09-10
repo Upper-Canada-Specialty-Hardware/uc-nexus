@@ -471,6 +471,37 @@ export const GET_SHAREPOINT_INVENTORY_SNAPSHOT = gql`
         mounting
         heightInches
         widthInches
+        # The purchase order the part was bought on, plus the vendor and the order quantities. The
+        # Reconcile GP PO link step reads all four - the cell to look up, the rest as context for a
+        # person resolving a row by hand.
+        poNumber
+        supplier
+        orderedQty
+        receivedQty
+      }
+    }
+  }
+`;
+
+// The mirrored POs behind the source list's PO Number column, with their lines. Asked in slices of
+// 200 once the snapshot has arrived; a line's productCode is GP's item number and its
+// hardwareCategory is GP's item description until somebody makes it a NEXUS REGISTERED LINE.
+export const GET_MIRRORED_POS_BY_NUMBER = gql`
+  query GetMirroredPosByNumber($poNumbers: [String!]!) {
+    mirroredPosByNumber(poNumbers: $poNumbers) {
+      id
+      poNumber
+      status
+      origin
+      projectId
+      lines {
+        id
+        gpLineOrd
+        productCode
+        hardwareCategory
+        orderedQuantity
+        receivedQuantity
+        nexusRegistered
       }
     }
   }
@@ -499,6 +530,7 @@ export const MIGRATE_SHAREPOINT_INVENTORY = gql`
       stockItems
       projectLocations
       totalUnits
+      linkedEntries
       catalogItemsCreated
       catalogItemsSkipped
       catalogAttributesCreated

@@ -10,11 +10,14 @@ from decimal import Decimal
 
 import pytest
 
+from app.auth import ADMIN_ROLE
 from app.errors import ValidationError
-from app.models.enums import Classification, DestockSource, HardwareItemState
+from app.models.enums import Classification, DestockSource, HardwareItemState, POOrigin, POStatus
 from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
 from app.models.project import Opening, Project
+from app.models.purchase_order import POLineItem, PurchaseOrder
+from app.models.receiving import ReceiveLineItem, ReceiveRecord
 from app.models.stock_item import StockItem
 from app.repositories import sharepoint_migration_repository as migration_repo
 from app.repositories import stock as stock_repository
@@ -103,7 +106,7 @@ def test_stock_destination_creates_a_visible_stock_row(db_session):
     wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
     result = migration_repo.migrate_inventory(db_session, [_entry(wh)], ACTOR)
 
-    assert result == {"stock_items": 1, "project_locations": 0, "total_units": 4}
+    assert result == {"stock_items": 1, "project_locations": 0, "total_units": 4, "linked_entries": 0}
     row = db_session.query(StockItem).filter_by(product_code="1431 CPS TB EN").one()
     assert row.quantity == 4
     assert (row.aisle, row.row, row.bay) == ("A", "62", "R")
@@ -126,7 +129,7 @@ def test_project_destination_creates_an_inventory_location_with_a_stock_origin(d
     )
     db_session.flush()
 
-    assert result == {"stock_items": 0, "project_locations": 1, "total_units": 7}
+    assert result == {"stock_items": 0, "project_locations": 1, "total_units": 7, "linked_entries": 0}
     il = db_session.query(InventoryLocation).filter_by(project_id=project.id).one()
     assert il.quantity == 7
     assert il.stock_item_id is not None
@@ -149,7 +152,7 @@ def test_a_row_with_both_quantities_migrates_as_two_entries(db_session):
         ACTOR,
     )
 
-    assert result == {"stock_items": 1, "project_locations": 1, "total_units": 8}
+    assert result == {"stock_items": 1, "project_locations": 1, "total_units": 8, "linked_entries": 0}
 
 
 def test_locations_are_optional(db_session):
@@ -791,3 +794,392 @@ def test_no_catalog_items_is_a_no_op(db_session):
         "items_skipped": 0,
         "attributes_created": 0,
     }
+
+
+# --- attaching migrated stock to the GP PO LINE ITEM it was bought on ----------------------------
+
+
+def _mirrored_po(
+    session,
+    *,
+    project=None,
+    origin=POOrigin.GP,
+    status=POStatus.CLOSED,
+    ordered=10,
+    received=10,
+    po_number=None,
+    company="TUBC",
+):
+    """A mirrored PO with one line that is not a NEXUS REGISTERED LINE.
+
+    What the FIRST TIME GP COMPANY NEXUS INITIALIZATION leaves behind on a PO nobody raised in Nexus:
+    GP's cost bucket as the item number (product_code) and the part number as GP's item description
+    (hardware_category). CLOSED by default, because UBC's shelf stock was received years ago.
+    """
+    po = PurchaseOrder(
+        id=uuid.uuid4(),
+        company=company,
+        gp_company=company,
+        po_number=po_number or f"PO{uuid.uuid4().hex[:6].upper()}",
+        origin=origin,
+        project_id=project.id if project is not None else None,
+        status=status,
+    )
+    session.add(po)
+    session.flush()
+    line = POLineItem(
+        id=uuid.uuid4(),
+        po_id=po.id,
+        gp_line_ord=16384,
+        hardware_category=f"{CODE} SURFACE CLOSER",
+        product_code="HD 001",
+        ordered_quantity=ordered,
+        received_quantity=received,
+        unit_cost=Decimal("120.00"),
+        nexus_registered=False,
+    )
+    session.add(line)
+    session.flush()
+    return po, line
+
+
+def test_a_linked_project_entry_lands_as_a_receipt_against_the_line(db_session):
+    """The whole point of the link: the units stop being off-PO stock and become PO'd hardware.
+
+    The receipt is Nexus-side history only - GP counted these units when they were received years
+    ago, so the line's received quantity must not move and no GP RECEIVE ENTRY is made.
+    """
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    project = _make_project(db_session)
+    po, line = _mirrored_po(db_session, project=project)
+
+    result = migration_repo.migrate_inventory(
+        db_session,
+        [
+            _entry(
+                wh,
+                destination="PROJECT",
+                project_id=project.id,
+                quantity=4,
+                unit_cost=9.5,
+                po_line_item_id=line.id,
+            )
+        ],
+        ACTOR,
+    )
+
+    assert result == {"stock_items": 0, "project_locations": 1, "total_units": 4, "linked_entries": 1}
+    # No stock pool row at all: a linked entry takes the other branch of the origin constraint.
+    assert db_session.query(StockItem).count() == 0
+
+    receipt = db_session.query(ReceiveRecord).filter_by(po_id=po.id).one()
+    assert receipt.received_by == ACTOR
+    assert receipt.receipt_number is None
+    assert receipt.batch_number is None
+    assert receipt.notes == "SharePoint migration"
+
+    receive_line = db_session.query(ReceiveLineItem).filter_by(receive_record_id=receipt.id).one()
+    assert receive_line.po_line_item_id == line.id
+    assert receive_line.quantity_received == 4
+    assert (receive_line.hardware_category, receive_line.product_code) == (CAT, CODE)
+
+    il = db_session.query(InventoryLocation).filter_by(project_id=project.id).one()
+    assert il.po_line_item_id == line.id
+    assert il.receive_line_item_id == receive_line.id
+    assert il.stock_item_id is None
+    assert il.quantity == 4
+    # Null so valuation reads the line's GP cost, which is a better number than the SharePoint one.
+    assert il.unit_cost is None
+
+    db_session.refresh(line)
+    assert line.received_quantity == 10
+    assert line.nexus_registered is True
+    assert (line.hardware_category, line.product_code) == (CAT, CODE)
+
+
+def test_entries_on_one_po_share_a_single_receipt(db_session):
+    """One migration run is one historical delivery per PO, not one per row."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    project = _make_project(db_session)
+    po, line = _mirrored_po(db_session, project=project)
+
+    migration_repo.migrate_inventory(
+        db_session,
+        [
+            _entry(wh, destination="PROJECT", project_id=project.id, quantity=2, po_line_item_id=line.id),
+            _entry(wh, destination="PROJECT", project_id=project.id, quantity=3, po_line_item_id=line.id),
+        ],
+        ACTOR,
+    )
+
+    assert db_session.query(ReceiveRecord).filter_by(po_id=po.id).count() == 1
+    assert db_session.query(ReceiveLineItem).count() == 2
+
+
+def test_a_linked_project_entry_ties_the_marked_schedule_rows_to_the_line(db_session):
+    """Marked AND linked: the coverage reads through the PO instead of as an unattributed marking."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    project = _make_project(db_session)
+    _po, line = _mirrored_po(db_session, project=project)
+    hi = _make_hi(db_session, project, _make_opening(db_session, project.id, "A01"), quantity=3)
+
+    migration_repo.migrate_inventory(
+        db_session,
+        [_entry(wh, destination="PROJECT", project_id=project.id, quantity=3, po_line_item_id=line.id)],
+        ACTOR,
+    )
+
+    db_session.refresh(hi)
+    assert hi.state == HardwareItemState.IN_PO
+    assert hi.po_line_item_id == line.id
+
+
+def test_the_mark_records_the_line_the_units_came_off(db_session):
+    from app.models.sharepoint_migration_run import SharepointMigrationMark
+
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    project = _make_project(db_session)
+    _po, line = _mirrored_po(db_session, project=project)
+    _make_hi(db_session, project, _make_opening(db_session, project.id, "A01"), quantity=3)
+
+    migration_repo.migrate_inventory(
+        db_session,
+        [_entry(wh, destination="PROJECT", project_id=project.id, quantity=3, po_line_item_id=line.id)],
+        ACTOR,
+    )
+
+    mark = db_session.query(SharepointMigrationMark).one()
+    assert mark.po_line_item_id == line.id
+    assert mark.quantity == 3
+
+
+def test_reapply_re_ties_a_linked_mark_after_a_schedule_replace(db_session):
+    """A re-import wipes the tie with the rows; the mark is what puts it back on the same line."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    project = _make_project(db_session)
+    _po, line = _mirrored_po(db_session, project=project)
+    o1 = _make_opening(db_session, project.id, "A01")
+    old = _make_hi(db_session, project, o1, quantity=3)
+
+    migration_repo.migrate_inventory(
+        db_session,
+        [_entry(wh, destination="PROJECT", project_id=project.id, quantity=3, po_line_item_id=line.id)],
+        ACTOR,
+    )
+    assert db_session.get(HardwareItem, old.id).po_line_item_id == line.id
+
+    db_session.delete(old)
+    db_session.flush()
+    new = _make_hi(db_session, project, o1, quantity=3)
+
+    assert migration_repo.reapply_migration_marks(db_session, project.id) == 1
+    db_session.refresh(new)
+    assert new.state == HardwareItemState.IN_PO
+    assert new.po_line_item_id == line.id
+    # Idempotent: the re-tied rows already cover the target, so a second pass marks nothing.
+    assert migration_repo.reapply_migration_marks(db_session, project.id) == 0
+
+
+def test_a_linked_stock_entry_keeps_the_stock_pool_route(db_session):
+    """Ruling: the pool is fungible and a StockItem holds no purchase order, so the PO number reaches
+    the audit detail and nothing else. The line still learns what it was really for."""
+    from app.models.audit_log import InventoryAuditLog
+
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    po, line = _mirrored_po(db_session, project=None)
+
+    result = migration_repo.migrate_inventory(db_session, [_entry(wh, po_line_item_id=line.id)], ACTOR)
+
+    assert result == {"stock_items": 1, "project_locations": 0, "total_units": 4, "linked_entries": 1}
+    stock_row = db_session.query(StockItem).filter_by(product_code=CODE).one()
+    assert stock_row.quantity == 4
+    # Nothing of the receipt route: no receive record, no PO-origin inventory row.
+    assert db_session.query(ReceiveRecord).count() == 0
+    assert db_session.query(InventoryLocation).count() == 0
+
+    entries = db_session.query(InventoryAuditLog).filter_by(entity_id=stock_row.id).all()
+    assert [e.detail["poNumber"] for e in entries] == [po.po_number]
+
+    db_session.refresh(line)
+    assert line.nexus_registered is True
+    assert (line.hardware_category, line.product_code) == (CAT, CODE)
+
+
+def test_two_rows_disagreeing_about_one_line_are_refused_and_both_named(db_session):
+    """A line may carry exactly one identity. Naming only one of the pair leaves the user guessing
+    which row to re-resolve."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    _po, line = _mirrored_po(db_session, project=None)
+
+    with pytest.raises(ValidationError) as e:
+        migration_repo.migrate_inventory(
+            db_session,
+            [
+                _entry(wh, po_line_item_id=line.id),
+                _entry(wh, product_code="OTHER-1", po_line_item_id=line.id),
+            ],
+            ACTOR,
+        )
+
+    assert "Entry 1" in e.value.message and "Entry 2" in e.value.message
+    assert db_session.query(StockItem).count() == 0
+    db_session.refresh(line)
+    assert line.nexus_registered is False
+
+
+def test_a_row_repointing_an_already_registered_line_is_refused(db_session):
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    _po, line = _mirrored_po(db_session, project=None)
+    line.hardware_category = "Hinge"
+    line.product_code = "BB1279"
+    line.nexus_registered = True
+    db_session.flush()
+
+    with pytest.raises(ValidationError) as e:
+        migration_repo.migrate_inventory(db_session, [_entry(wh, po_line_item_id=line.id)], ACTOR)
+
+    assert "already registered" in e.value.message
+    db_session.refresh(line)
+    assert (line.hardware_category, line.product_code) == ("Hinge", "BB1279")
+
+
+def test_a_line_on_a_nexus_raised_po_is_refused(db_session):
+    """A Nexus PO's lines were written from a schedule; there is nothing a shelf count can teach them."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    _po, line = _mirrored_po(db_session, project=None, origin=POOrigin.NEXUS)
+
+    with pytest.raises(ValidationError) as e:
+        migration_repo.migrate_inventory(db_session, [_entry(wh, po_line_item_id=line.id)], ACTOR)
+
+    assert "raised in Nexus" in e.value.message
+    assert db_session.query(StockItem).count() == 0
+
+
+def test_an_unknown_po_line_is_refused(db_session):
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    with pytest.raises(ValidationError) as e:
+        migration_repo.migrate_inventory(db_session, [_entry(wh, po_line_item_id=uuid.uuid4())], ACTOR)
+    assert "Unknown purchase order line" in e.value.message
+
+
+# --- the PO lookup the Reconcile GP PO link step reads ------------------------------------------
+
+
+class _FakeRequest:
+    def __init__(self, token: str = "tok"):
+        self.headers = {"authorization": f"Bearer {token}"}
+
+
+def _admin_context():
+    return {
+        "request": _FakeRequest(),
+        "_auth_user_id": "u_admin",
+        "_auth_roles": [ADMIN_ROLE],
+        "_auth_company": "TUBC",
+    }
+
+
+@pytest.fixture
+def signed_in_admin(monkeypatch, db_session):
+    """An Admin/Manager whose migration resolvers run against the test's own session."""
+    from app import auth
+    from app.repositories import user_repository
+    from app.schemas import sharepoint_migration as migration_module
+
+    monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_admin"})
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [ADMIN_ROLE])
+    monkeypatch.setattr(user_repository, "get_user_company", lambda user_id: "TUBC")
+
+    class _Borrowed:
+        def __enter__(self):
+            return db_session
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(migration_module, "SessionLocal", _Borrowed)
+    return db_session
+
+
+_MIRRORED_POS_QUERY = """
+query($poNumbers: [String!]!) {
+  mirroredPosByNumber(poNumbers: $poNumbers) {
+    poNumber
+    status
+    origin
+    projectId
+    lines { gpLineOrd productCode hardwareCategory orderedQuantity receivedQuantity nexusRegistered }
+  }
+}
+"""
+
+
+def _execute(query: str, variables: dict, context: dict):
+    import asyncio
+
+    from main import schema
+
+    return asyncio.run(schema.execute(query, variable_values=variables, context_value=context))
+
+
+def test_mirrored_pos_by_number_returns_the_pos_lines(signed_in_admin, db_session):
+    project = _make_project(db_session)
+    _po, line = _mirrored_po(db_session, project=project, po_number="PO501788", ordered=6, received=6)
+
+    result = _execute(_MIRRORED_POS_QUERY, {"poNumbers": ["PO501788", "PO999999"]}, _admin_context())
+
+    assert result.errors is None, result.errors
+    rows = result.data["mirroredPosByNumber"]
+    assert len(rows) == 1
+    assert rows[0]["poNumber"] == "PO501788"
+    assert rows[0]["projectId"] == str(project.id)
+    assert rows[0]["lines"] == [
+        {
+            "gpLineOrd": 16384,
+            "productCode": "HD 001",
+            "hardwareCategory": line.hardware_category,
+            "orderedQuantity": 6,
+            "receivedQuantity": 6,
+            "nexusRegistered": False,
+        }
+    ]
+
+
+def test_mirrored_pos_by_number_refuses_more_than_two_hundred_numbers(signed_in_admin):
+    result = _execute(
+        _MIRRORED_POS_QUERY,
+        {"poNumbers": [f"PO{n:06d}" for n in range(201)]},
+        _admin_context(),
+    )
+
+    assert result.errors is not None
+    assert "200" in str(result.errors[0].message)
+
+
+def test_mirrored_pos_by_number_is_scoped_to_the_callers_company(db_session, monkeypatch):
+    """The resolver filters on the caller's scope. Reached directly because the field is admin-only
+    and an admin is deliberately unscoped, so the schema can never exercise the scoped branch."""
+    from app.schemas import sharepoint_migration as migration_module
+
+    _mirrored_po(db_session, project=None, po_number="PO600001", company="TUBC")
+    _mirrored_po(db_session, project=None, po_number="PO600002", company="TUCSH")
+
+    class _Borrowed:
+        def __enter__(self):
+            return db_session
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(migration_module, "SessionLocal", _Borrowed)
+    monkeypatch.setattr(migration_module, "tenant_scope", lambda info: "TUCSH")
+
+    rows = migration_module.SharepointMigrationQueries().mirrored_pos_by_number(None, ["PO600001", "PO600002"])
+
+    assert [r.po_number for r in rows] == ["PO600002"]
+
+
+def test_the_po_lookup_is_admin_only():
+    from app.auth_policy import ROOT_FIELD_POLICY
+
+    assert ROOT_FIELD_POLICY["mirroredPosByNumber"] == ADMIN_ROLE

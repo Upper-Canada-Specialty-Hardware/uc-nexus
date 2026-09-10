@@ -22,12 +22,24 @@ import {
   emptyCategoryCount,
   unresolvedItemTypes,
   EXCLUDE_ITEM_TYPE,
+  normalisePoCell,
+  matchPoLines,
+  poLinkCandidates,
+  buildPoLinkResolutions,
+  resolvedPoLinks,
+  poLinkCounts,
+  distinctPoNumbers,
+  chunkPoNumbers,
+  SKIP_PO_LINK,
   type SharepointInventoryItem,
   type LocationResolution,
   type InventoryItemTypeOption,
   type ItemTypeResolutions,
   type MigrationEntry,
   type MigrationClassification,
+  type GpPo,
+  type GpPoLineItem,
+  type PoLinkPick,
 } from '../sharepointMigration';
 
 function item(overrides: Partial<SharepointInventoryItem> = {}): SharepointInventoryItem {
@@ -212,6 +224,8 @@ describe('buildEntries', () => {
         aisle: 'A',
         row: '62',
         bay: 'R',
+        spItemId: '1',
+        poLineItemId: null,
       },
     ]);
   });
@@ -748,6 +762,8 @@ describe('classification step', () => {
       aisle: 'A',
       row: '62',
       bay: 'R',
+      spItemId: '1',
+      poLineItemId: null,
       ...overrides,
     };
   }
@@ -839,5 +855,393 @@ describe('classification step', () => {
     ]);
     // The Lock half needs its own pick; the Hinge half is inherited.
     expect(unclassifiedRequiredRows(rows, new Map()).map((r) => r.hardwareCategory)).toEqual(['Lock']);
+  });
+});
+
+// --- Reconcile GP PO link -----------------------------------------------------------------------
+
+describe('normalisePoCell', () => {
+  it('reads a clean PO number', () => {
+    expect(normalisePoCell('PO501788')).toEqual({ poNumber: 'PO501788', base: null });
+  });
+
+  it('trims and uppercases before reading', () => {
+    expect(normalisePoCell('  po501788 ')).toEqual({ poNumber: 'PO501788', base: null });
+  });
+
+  it('keeps a hyphen suffix as written and offers the base as the fallback', () => {
+    expect(normalisePoCell('PO094114-1')).toEqual({ poNumber: 'PO094114-1', base: 'PO094114' });
+  });
+
+  it('reads a hyphen suffix typed with spaces the same way', () => {
+    expect(normalisePoCell('PO107945 - 2')).toEqual({ poNumber: 'PO107945-2', base: 'PO107945' });
+  });
+
+  it('refuses a cell naming two purchase orders', () => {
+    expect(normalisePoCell('PO097085 + PO090457')).toEqual({
+      poNumber: null,
+      base: null,
+      reason: 'multiple',
+    });
+  });
+
+  it('refuses a cell naming four purchase orders', () => {
+    expect(normalisePoCell('PO111111, PO222222, PO333333 and PO444444')).toEqual({
+      poNumber: null,
+      base: null,
+      reason: 'multiple',
+    });
+  });
+
+  it('refuses free text', () => {
+    expect(normalisePoCell('ask the supplier')).toEqual({
+      poNumber: null,
+      base: null,
+      reason: 'unparseable',
+    });
+  });
+
+  it('gives a blank cell no candidate and no reason - it never reaches the step', () => {
+    expect(normalisePoCell('')).toEqual({ poNumber: null, base: null });
+    expect(normalisePoCell(undefined)).toEqual({ poNumber: null, base: null });
+  });
+});
+
+describe('distinctPoNumbers', () => {
+  it('collects both spellings of a hyphen-suffixed value and drops blanks', () => {
+    expect(
+      distinctPoNumbers([
+        item({ spItemId: '1', poNumber: 'PO501788' }),
+        item({ spItemId: '2', poNumber: 'PO094114-1' }),
+        item({ spItemId: '3', poNumber: '' }),
+        item({ spItemId: '4', poNumber: 'PO501788' }),
+      ]),
+    ).toEqual(['PO094114', 'PO094114-1', 'PO501788']);
+  });
+});
+
+describe('chunkPoNumbers', () => {
+  it('slices to the backend cap', () => {
+    const numbers = Array.from({ length: 450 }, (_, i) => `PO${String(i).padStart(6, '0')}`);
+    expect(chunkPoNumbers(numbers).map((c) => c.length)).toEqual([200, 200, 50]);
+  });
+});
+
+describe('Reconcile GP PO link matching', () => {
+  const PROJECT = 'p1';
+
+  function poLine(overrides: Partial<GpPoLineItem> = {}): GpPoLineItem {
+    return {
+      id: 'line-1',
+      gpLineOrd: 16384,
+      // What GP holds on a line nobody has registered: a cost bucket as the item number and the part
+      // number as the description.
+      productCode: 'HD 001',
+      hardwareCategory: '1431 CPS TB EN SURFACE CLOSER',
+      orderedQuantity: 6,
+      receivedQuantity: 6,
+      nexusRegistered: false,
+      ...overrides,
+    };
+  }
+
+  function gpPo(overrides: Partial<GpPo> = {}): GpPo {
+    return {
+      id: 'po-1',
+      poNumber: 'PO501788',
+      status: 'CLOSED',
+      origin: 'GP',
+      projectId: null,
+      lines: [poLine()],
+      ...overrides,
+    };
+  }
+
+  function poEntry(overrides: Partial<MigrationEntry> = {}): MigrationEntry {
+    return {
+      destination: 'STOCK',
+      warehouseId: 'wh1',
+      hardwareCategory: 'Surface Closer',
+      productCode: '1431 CPS TB EN',
+      quantity: 4,
+      unitCost: null,
+      projectId: null,
+      aisle: 'A',
+      row: '62',
+      bay: 'R',
+      spItemId: '1',
+      poLineItemId: null,
+      ...overrides,
+    };
+  }
+
+  const shelfRow = {
+    partNumber: 'TB-1431-CPS-EN',
+    scheduledPartNumber: '1431 CPS TB EN',
+    hardwareCategory: 'Surface Closer',
+    productCode: '1431 CPS TB EN',
+  };
+
+  describe('matchPoLines', () => {
+    it('matches the line whose GP description contains the scheduled part number', () => {
+      expect(matchPoLines(shelfRow, gpPo()).map((l) => l.id)).toEqual(['line-1']);
+    });
+
+    it('matches on the SharePoint part number too, whitespace and casing levelled', () => {
+      const found = matchPoLines(
+        shelfRow,
+        gpPo({ lines: [poLine({ hardwareCategory: 'closer  tb-1431-cps-en' })] }),
+      );
+      expect(found.map((l) => l.id)).toEqual(['line-1']);
+    });
+
+    it('returns every line that matches when several do', () => {
+      const found = matchPoLines(
+        shelfRow,
+        gpPo({
+          lines: [poLine({ id: 'a' }), poLine({ id: 'b' }), poLine({ id: 'c', hardwareCategory: 'HINGE' })],
+        }),
+      );
+      expect(found.map((l) => l.id)).toEqual(['a', 'b']);
+    });
+
+    it('returns nothing when no description names the part', () => {
+      expect(
+        matchPoLines(shelfRow, gpPo({ lines: [poLine({ hardwareCategory: 'HINGE 4.5 X 4.5' })] })),
+      ).toEqual([]);
+    });
+
+    it('never matches a registered line that says it is for something else', () => {
+      const registered = poLine({
+        nexusRegistered: true,
+        hardwareCategory: 'Hinge',
+        productCode: 'BB1279',
+      });
+      expect(matchPoLines(shelfRow, gpPo({ lines: [registered] }))).toEqual([]);
+    });
+
+    it('still matches a registered line that agrees with the row', () => {
+      const registered = poLine({
+        nexusRegistered: true,
+        hardwareCategory: 'Surface Closer',
+        productCode: '1431 CPS TB EN',
+      });
+      // Neither part number is in the description now, so the match is on the category itself.
+      const found = matchPoLines(
+        { ...shelfRow, partNumber: 'SURFACE CLOSER', scheduledPartNumber: '' },
+        gpPo({ lines: [registered] }),
+      );
+      expect(found.map((l) => l.id)).toEqual(['line-1']);
+    });
+  });
+
+  describe('poLinkCandidates', () => {
+    it('is one candidate per row that names a PO, carrying the identity the entries will write', () => {
+      const items = [item({ spItemId: '1', poNumber: 'PO501788' }), item({ spItemId: '2', poNumber: '' })];
+      const entries = [
+        poEntry({ spItemId: '1', quantity: 3 }),
+        poEntry({ spItemId: '1', quantity: 2 }),
+        poEntry({ spItemId: '2', quantity: 9 }),
+      ];
+      const candidates = poLinkCandidates(entries, items);
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0].spItemId).toBe('1');
+      expect(candidates[0].poCell).toBe('PO501788');
+      expect(candidates[0].hardwareCategory).toBe('Surface Closer');
+      expect(candidates[0].quantity).toBe(5);
+      expect(candidates[0].projectId).toBeNull();
+    });
+  });
+
+  describe('buildPoLinkResolutions', () => {
+    const candidateFor = (poCell: string, projectId: string | null = null) =>
+      poLinkCandidates([poEntry({ projectId })], [item({ spItemId: '1', poNumber: poCell })]);
+
+    it('links a row whose PO holds exactly one matching line', () => {
+      const [resolution] = buildPoLinkResolutions(
+        candidateFor('PO501788'),
+        new Map([['PO501788', gpPo()]]),
+      );
+      expect(resolution.poLineItemId).toBe('line-1');
+      expect(resolution.reason).toBeNull();
+    });
+
+    it('falls back to the base number for a hyphen-suffixed cell', () => {
+      const [resolution] = buildPoLinkResolutions(
+        candidateFor('PO094114-1'),
+        new Map([['PO094114', gpPo()]]),
+      );
+      expect(resolution.poLineItemId).toBe('line-1');
+    });
+
+    it('reports a cell that names no single PO', () => {
+      const [resolution] = buildPoLinkResolutions(candidateFor('PO097085 + PO090457'), new Map());
+      expect(resolution.reason).toBe('UNPARSEABLE_CELL');
+      expect(resolution.po).toBeNull();
+    });
+
+    it('reports a number Nexus does not hold', () => {
+      const [resolution] = buildPoLinkResolutions(candidateFor('PO501788'), new Map());
+      expect(resolution.reason).toBe('PO_NOT_IN_NEXUS');
+    });
+
+    it('will not link a row whose units are going to a different job than the PO was raised for', () => {
+      const otherJob = gpPo({ projectId: 'p2' });
+      const [resolution] = buildPoLinkResolutions(
+        candidateFor('PO501788', PROJECT),
+        new Map([['PO501788', otherJob]]),
+      );
+      expect(resolution.reason).toBe('PO_ON_A_DIFFERENT_PROJECT');
+      expect(resolution.poLineItemId).toBeNull();
+      // The person can still pick from it, so the PO and its lines come through.
+      expect(resolution.po).toBe(otherJob);
+    });
+
+    it('links normally when the PO is on the same project as the row', () => {
+      const sameJob = gpPo({ projectId: PROJECT });
+      const [resolution] = buildPoLinkResolutions(
+        candidateFor('PO501788', PROJECT),
+        new Map([['PO501788', sameJob]]),
+      );
+      expect(resolution.reason).toBeNull();
+      expect(resolution.poLineItemId).toBe('line-1');
+    });
+
+    it('links normally when the PO is on no project at all', () => {
+      const [resolution] = buildPoLinkResolutions(
+        candidateFor('PO501788', PROJECT),
+        new Map([['PO501788', gpPo({ projectId: null })]]),
+      );
+      expect(resolution.reason).toBeNull();
+      expect(resolution.poLineItemId).toBe('line-1');
+    });
+
+    it('reports several matching lines', () => {
+      const several = gpPo({ lines: [poLine({ id: 'a' }), poLine({ id: 'b' })] });
+      const [resolution] = buildPoLinkResolutions(
+        candidateFor('PO501788'),
+        new Map([['PO501788', several]]),
+      );
+      expect(resolution.reason).toBe('SEVERAL_LINES_MATCHED');
+      expect(resolution.poLineItemId).toBeNull();
+    });
+
+    it('says the PO is closed when nothing matched on a finished PO', () => {
+      const closed = gpPo({ status: 'CLOSED', lines: [poLine({ hardwareCategory: 'HINGE' })] });
+      const [resolution] = buildPoLinkResolutions(
+        candidateFor('PO501788'),
+        new Map([['PO501788', closed]]),
+      );
+      expect(resolution.reason).toBe('PO_CLOSED_NO_LINE_MATCHED');
+    });
+
+    it('says only that nothing matched when the PO is still open', () => {
+      const open = gpPo({
+        status: 'GP_REGISTERED',
+        lines: [poLine({ hardwareCategory: 'HINGE' })],
+      });
+      const [resolution] = buildPoLinkResolutions(candidateFor('PO501788'), new Map([['PO501788', open]]));
+      expect(resolution.reason).toBe('NO_LINE_MATCHED');
+    });
+  });
+
+  describe('resolvedPoLinks and poLinkCounts', () => {
+    const resolutions = buildPoLinkResolutions(
+      [
+        ...poLinkCandidates([poEntry({ spItemId: 'auto' })], [item({ spItemId: 'auto', poNumber: 'PO501788' })]),
+        ...poLinkCandidates([poEntry({ spItemId: 'picked' })], [item({ spItemId: 'picked', poNumber: 'PO000001' })]),
+        ...poLinkCandidates(
+          [poEntry({ spItemId: 'skipped' })],
+          [item({ spItemId: 'skipped', poNumber: 'PO000002' })],
+        ),
+        ...poLinkCandidates([poEntry({ spItemId: 'left' })], [item({ spItemId: 'left', poNumber: 'PO000003' })]),
+      ],
+      new Map([['PO501788', gpPo()]]),
+    );
+
+    const picks: Map<string, PoLinkPick> = new Map([
+      ['picked', 'line-picked'],
+      ['skipped', SKIP_PO_LINK],
+    ]);
+
+    it('merges the automatic links with the user picks and drops the skips', () => {
+      expect([...resolvedPoLinks(resolutions, picks)]).toEqual([
+        ['auto', 'line-1'],
+        ['picked', 'line-picked'],
+      ]);
+    });
+
+    it('counts a row left alone as unlinked, not skipped', () => {
+      expect(poLinkCounts(resolutions, picks)).toEqual({ linked: 2, skipped: 1, unlinked: 1 });
+    });
+
+    it('lets a pick override an automatic link', () => {
+      const overridden: Map<string, PoLinkPick> = new Map([['auto', 'line-other']]);
+      expect(resolvedPoLinks(resolutions, overridden).get('auto')).toBe('line-other');
+    });
+  });
+
+  describe('buildEntries with PO links', () => {
+    const shelf = new Map<string, LocationResolution>([
+      ['A-62R', { excluded: false, warehouseId: 'wh1', aisle: 'A', row: '62', bay: 'R' }],
+    ]);
+
+    it('stamps the line onto every entry of the row that shares the first entry identity', () => {
+      const { entries } = buildEntries({
+        candidates: toCandidates([
+          item({ spItemId: '1', projectInventoryQty: 3, stockQty: 2, poNumber: 'PO501788' }),
+        ]),
+        locationResolutions: shelf,
+        projectResolutions: new Map([['22713|Cowichan IPU', PROJECT]]),
+        emptyCategoryLabel: null,
+        defaultWarehouseId: 'wh1',
+        poLinks: new Map([['1', 'line-1']]),
+      });
+      expect(entries).toHaveLength(2);
+      expect(entries.map((e) => e.poLineItemId)).toEqual(['line-1', 'line-1']);
+      expect(entries.map((e) => e.spItemId)).toEqual(['1', '1']);
+    });
+
+    it('leaves an unlinked row exactly as it was', () => {
+      const { entries } = buildEntries({
+        candidates: toCandidates([item({ spItemId: '9', stockQty: 4 })]),
+        locationResolutions: shelf,
+        projectResolutions: new Map(),
+        emptyCategoryLabel: null,
+        defaultWarehouseId: 'wh1',
+      });
+      expect(entries[0].poLineItemId).toBeNull();
+    });
+
+    it('does not stamp a second identity of the same row onto one line', () => {
+      // The code is on the schedule under two categories, so the project quantity splits in two.
+      // Only the first half can carry the link - one line takes one identity.
+      const { entries } = buildEntries({
+        candidates: toCandidates([item({ spItemId: '1', projectInventoryQty: 4, poNumber: 'PO501788' })]),
+        locationResolutions: shelf,
+        projectResolutions: new Map([['22713|Cowichan IPU', PROJECT]]),
+        emptyCategoryLabel: null,
+        defaultWarehouseId: 'wh1',
+        scheduleProductsByProject: buildScheduleProductsByProject([
+          {
+            projectId: PROJECT,
+            hardwareCategory: 'Closer',
+            productCode: '1431 CPS TB EN',
+            classification: null,
+            requiredQuantity: 3,
+          },
+          {
+            projectId: PROJECT,
+            hardwareCategory: 'Surface Closer',
+            productCode: '1431 CPS TB EN',
+            classification: null,
+            requiredQuantity: 1,
+          },
+        ]),
+        poLinks: new Map([['1', 'line-1']]),
+      });
+      expect(entries).toHaveLength(2);
+      expect(entries.map((e) => e.poLineItemId)).toEqual(['line-1', null]);
+    });
   });
 });

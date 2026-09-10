@@ -1992,6 +1992,48 @@ class SharepointInventoryItem:
     mounting: str
     height_inches: str
     width_inches: str
+    # The purchase order the part was bought on, as the source list spells it - free text, blank on
+    # about a sixth of the rows and hand-edited on a handful. The wizard's Reconcile GP PO link step
+    # normalises it and looks it up as a mirrored PO. Supplier and the two order quantities come with
+    # it as context for the person resolving a row by hand.
+    po_number: str
+    supplier: str
+    ordered_qty: int
+    received_qty: int
+
+
+@strawberry.type
+class GpPoLineItem:
+    """One GP PO LINE ITEM as the migration wizard needs to see it.
+
+    On a line that is not yet a NEXUS REGISTERED LINE, `product_code` holds GP's item number (a cost
+    bucket such as HD 001) and `hardware_category` holds GP's item description (the part number as
+    somebody typed it) - which is why the wizard matches a SharePoint row against the CATEGORY field.
+    """
+
+    id: strawberry.ID
+    gp_line_ord: int | None
+    product_code: str
+    hardware_category: str
+    ordered_quantity: int
+    received_quantity: int
+    nexus_registered: bool
+
+
+@strawberry.type
+class GpPo:
+    """A purchase order looked up by its number for the Reconcile GP PO link step, with its lines.
+
+    Slim on purpose: the step shows the lines and nothing else about the PO, and the wizard asks for
+    up to 200 numbers at a time.
+    """
+
+    id: strawberry.ID
+    po_number: str
+    status: POStatus
+    origin: POOrigin
+    project_id: strawberry.ID | None
+    lines: list[GpPoLineItem]
 
 
 @strawberry.type
@@ -2026,6 +2068,9 @@ class MigrationResult:
     stock_items: int
     project_locations: int
     total_units: int
+    # Entries that attached to a GP PO LINE ITEM: their units are a receipt against that line and the
+    # line now carries the schedule's identity. The rest migrated exactly as they always have.
+    linked_entries: int = 0
     # Non-schedule products catalogued (#454). `skipped` is codes already in the catalog, which is
     # a normal outcome rather than a failure.
     catalog_items_created: int = 0

@@ -34,6 +34,12 @@ export interface SharepointInventoryItem {
   mounting?: string;
   heightInches?: string;
   widthInches?: string;
+  /** The PO Number cell, exactly as SharePoint holds it - free text, blank on about a sixth of the
+   *  rows and hand-edited on a handful ("PO094114-1", "PO097085 + PO090457"). */
+  poNumber?: string;
+  supplier?: string;
+  orderedQty?: number;
+  receivedQty?: number;
 }
 
 /** A Nexus non-schedule entity type (#454). `code` is what reaches `hardware_category`. */
@@ -236,6 +242,11 @@ export interface MigrationEntry {
   aisle: string | null;
   row: string | null;
   bay: string | null;
+  /** The SharePoint row this entry came from. One row can produce several entries, and the PO link
+   *  is decided per ROW, so the entries need to be able to say which row is theirs. */
+  spItemId: string;
+  /** The GP PO LINE ITEM the units were bought on, when the Reconcile GP PO link step found one. */
+  poLineItemId: string | null;
 }
 
 /** One schedule (category, code) pair of a mapped project. A code split across categories is
@@ -352,6 +363,9 @@ export interface BuildEntriesArgs {
   /** The mapped projects' schedule products, so a matched PROJECT row snaps to the schedule's
    *  category. Absent (still loading) leaves every row on its Part Category 1. */
   scheduleProductsByProject?: ScheduleProductsByProject;
+  /** SharePoint row id -> the GP PO LINE ITEM its units were bought on, from the Reconcile GP PO
+   *  link step. Absent leaves every entry unlinked, which is how the migration always behaved. */
+  poLinks?: Map<string, string>;
 }
 
 export interface BuildEntriesResult {
@@ -377,11 +391,28 @@ export function buildEntries({
   defaultWarehouseId,
   itemTypeResolutions = new Map(),
   scheduleProductsByProject = new Map(),
+  poLinks = new Map(),
 }: BuildEntriesArgs): BuildEntriesResult {
   const entries: MigrationEntry[] = [];
   const kept: CandidateRow[] = [];
   const excludedCounts = new Map<string, number>();
   const drop = (reason: string) => excludedCounts.set(reason, (excludedCounts.get(reason) ?? 0) + 1);
+
+  // The identity the first entry of each SharePoint row carried. A row's link is written onto the
+  // line as ONE hardware category and product code, so only the entries agreeing with that first
+  // identity carry the link - a row whose quantity splits across two schedule categories would
+  // otherwise send two conflicting identities for one line and the backend would refuse the batch.
+  const rowIdentity = new Map<string, string>();
+  const push = (entry: Omit<MigrationEntry, 'poLineItemId'>) => {
+    const identity = `${entry.hardwareCategory}|${entry.productCode}`;
+    const first = rowIdentity.get(entry.spItemId);
+    if (first === undefined) rowIdentity.set(entry.spItemId, identity);
+    const lineId = poLinks.get(entry.spItemId) ?? null;
+    entries.push({
+      ...entry,
+      poLineItemId: lineId && (first === undefined || first === identity) ? lineId : null,
+    });
+  };
 
   for (const c of candidates) {
     // The type decision comes first, and an undecided non-schedule type drops the row rather than
@@ -445,6 +476,7 @@ export function buildEntries({
       aisle: resolution.aisle,
       row: resolution.row,
       bay: resolution.bay,
+      spItemId: c.item.spItemId,
     };
     const pairs =
       !isMappedType(typeResolution) && c.destination === 'PROJECT' && projectId
@@ -463,7 +495,7 @@ export function buildEntries({
       // (takes is never empty here - the quantity and every pair's required are both >= 1.)
       if (remaining > 0) takes[0].quantity += remaining;
       for (const take of takes) {
-        entries.push({ ...base, hardwareCategory: take.hardwareCategory, quantity: take.quantity });
+        push({ ...base, hardwareCategory: take.hardwareCategory, quantity: take.quantity });
       }
       kept.push(c);
       continue;
@@ -475,7 +507,7 @@ export function buildEntries({
       continue;
     }
 
-    entries.push({ ...base, hardwareCategory: category, quantity: c.quantity });
+    push({ ...base, hardwareCategory: category, quantity: c.quantity });
     kept.push(c);
   }
 
@@ -829,4 +861,305 @@ export function buildCatalogItems(
     }
   }
   return [...byKey.values()];
+}
+
+// ---------------------------------------------------------------------------------------------
+// Reconcile GP PO link: attaching a migrated row to the GP PO LINE ITEM its units were bought on.
+//
+// UBC's FIRST TIME GP COMPANY NEXUS INITIALIZATION is complete, so every purchase order the source
+// list names should already be in Nexus as a mirrored PO. On a line that is not yet a NEXUS
+// REGISTERED LINE, GP's item number sits in `productCode` (a cost bucket such as HD 001) and GP's
+// item description sits in `hardwareCategory` (the part number as somebody typed it) - which is why
+// the matching below reads the CATEGORY field looking for a part number.
+// ---------------------------------------------------------------------------------------------
+
+/** One line of a mirrored purchase order, as the wizard's lookup returns it. */
+export interface GpPoLineItem {
+  id: string;
+  gpLineOrd: number | null;
+  /** GP's item number on an unregistered line; the schedule's product code once registered. */
+  productCode: string;
+  /** GP's item description on an unregistered line; the schedule's category once registered. */
+  hardwareCategory: string;
+  orderedQuantity: number;
+  receivedQuantity: number;
+  nexusRegistered: boolean;
+}
+
+/** A purchase order the wizard found by number, with its lines. */
+export interface GpPo {
+  id: string;
+  poNumber: string;
+  status: string;
+  origin: string;
+  projectId: string | null;
+  lines: GpPoLineItem[];
+}
+
+/** What one PO Number cell turned into. */
+export interface PoCell {
+  /** The number to look up first, or null when the cell names no single PO. */
+  poNumber: string | null;
+  /** The plain six-digit number behind a hyphen-suffixed value, looked up when the first misses. */
+  base: string | null;
+  /** Why nothing could be read out of a cell that does hold something. */
+  reason?: 'multiple' | 'unparseable';
+}
+
+const PO_TOKEN = /PO\d{6}/g;
+const PLAIN_PO = /^PO\d{6}$/;
+// "PO094114-1" and "PO107945 - 2" are the same hand-edit: a PO split across two receipts, written
+// with and without spaces. Both are looked up as typed first, in case somebody registered them that
+// way, and then as the six-digit number GP actually holds.
+const SUFFIXED_PO = /^(PO\d{6})\s*-\s*(\d{1,3})$/;
+
+/**
+ * Read one PO Number cell.
+ *
+ * The column is plain text, so it holds everything from a clean `PO501788` to a pair joined with a
+ * plus sign to a sentence. Exactly one PO is a candidate; anything else is handed to the user,
+ * because guessing which of two purchase orders a shelf quantity came off is not a guess worth
+ * making silently.
+ */
+export function normalisePoCell(raw: string | null | undefined): PoCell {
+  const cell = (raw ?? '').trim().toUpperCase().replace(/\s+/g, ' ');
+  if (!cell) return { poNumber: null, base: null };
+  if (PLAIN_PO.test(cell)) return { poNumber: cell, base: null };
+  const suffixed = SUFFIXED_PO.exec(cell);
+  if (suffixed) return { poNumber: `${suffixed[1]}-${suffixed[2]}`, base: suffixed[1] };
+  const tokens = new Set(cell.match(PO_TOKEN) ?? []);
+  return { poNumber: null, base: null, reason: tokens.size > 1 ? 'multiple' : 'unparseable' };
+}
+
+/** Every PO number the wizard has to look up, both spellings of a hyphen-suffixed value included. */
+export function distinctPoNumbers(items: SharepointInventoryItem[]): string[] {
+  const out = new Set<string>();
+  for (const item of items) {
+    const cell = normalisePoCell(item.poNumber);
+    if (cell.poNumber) out.add(cell.poNumber);
+    if (cell.base) out.add(cell.base);
+  }
+  return [...out].sort();
+}
+
+/** The backend refuses more than this in one call, so the wizard asks in slices of it. */
+export const PO_NUMBER_CHUNK = 200;
+
+export function chunkPoNumbers(numbers: string[], size = PO_NUMBER_CHUNK): string[][] {
+  const out: string[][] = [];
+  for (let i = 0; i < numbers.length; i += size) out.push(numbers.slice(i, i + size));
+  return out;
+}
+
+const collapse = (value: string) => value.trim().toUpperCase().replace(/\s+/g, ' ');
+
+/** What the matcher needs to know about a migrated row. */
+export interface PoLinkRow {
+  /** SharePoint's own part number. */
+  partNumber: string;
+  /** The TITAN-schedule equivalent, where the row records one. */
+  scheduledPartNumber: string;
+  /** The hardware category the row's entries carry - what a link would write onto the line. */
+  hardwareCategory: string;
+  /** The product code the row's entries carry - the other half of that identity. */
+  productCode: string;
+}
+
+/**
+ * The PO's lines that could be this row's hardware.
+ *
+ * GP's item description is the part number as somebody typed it, so a line is a candidate when its
+ * description contains either of the row's part numbers once whitespace and casing are levelled.
+ *
+ * A line that is already a NEXUS REGISTERED LINE and says it is for something else is never a
+ * candidate: its identity was set deliberately, inventory may already have been received under it,
+ * and re-pointing it would leave that inventory describing hardware nobody has.
+ */
+export function matchPoLines(row: PoLinkRow, po: GpPo): GpPoLineItem[] {
+  const needles = [row.partNumber, row.scheduledPartNumber].map(collapse).filter(Boolean);
+  if (needles.length === 0) return [];
+  return po.lines.filter((line) => {
+    if (
+      line.nexusRegistered &&
+      (line.hardwareCategory.trim() !== row.hardwareCategory.trim() ||
+        line.productCode.trim() !== row.productCode.trim())
+    ) {
+      return false;
+    }
+    const description = collapse(line.hardwareCategory);
+    return needles.some((needle) => description.includes(needle));
+  });
+}
+
+/** Why the Reconcile GP PO link step has to ask about a row instead of linking it on its own. */
+export type PoLinkReason =
+  | 'UNPARSEABLE_CELL'
+  | 'PO_NOT_IN_NEXUS'
+  | 'PO_ON_A_DIFFERENT_PROJECT'
+  | 'PO_CLOSED_NO_LINE_MATCHED'
+  | 'SEVERAL_LINES_MATCHED'
+  | 'NO_LINE_MATCHED';
+
+export const PO_LINK_REASON_LABELS: Record<PoLinkReason, string> = {
+  UNPARSEABLE_CELL: 'Unparseable cell',
+  PO_NOT_IN_NEXUS: 'No such PO in Nexus',
+  PO_ON_A_DIFFERENT_PROJECT: 'PO is on a different project',
+  PO_CLOSED_NO_LINE_MATCHED: 'PO closed and no line matched',
+  SEVERAL_LINES_MATCHED: 'Several lines matched',
+  NO_LINE_MATCHED: 'No line matched',
+};
+
+/** A purchase order nothing more will be received against. */
+const FINISHED_PO_STATUSES = new Set(['CLOSED', 'CANCELLED']);
+
+/** One SharePoint row with a PO cell, ready to be matched. */
+export interface PoLinkCandidate extends PoLinkRow {
+  spItemId: string;
+  /** The PO Number cell exactly as SharePoint holds it. */
+  poCell: string;
+  /** How many units of this row are migrating, across all of its entries. */
+  quantity: number;
+  /** The Nexus project the row's units are going to, from the Projects step. Null when they are
+   *  going to company stock, which belongs to no job. */
+  projectId: string | null;
+}
+
+/**
+ * One candidate per SharePoint row that carries a PO cell and survived every other exclusion.
+ *
+ * Built from the entries rather than the raw rows so the identity carried here is the one the
+ * migration will actually write - a PROJECT row snaps to its schedule's category, and that snapped
+ * category is what a link would put on the line. Rows with a blank cell never appear at all.
+ */
+export function poLinkCandidates(
+  entries: MigrationEntry[],
+  items: SharepointInventoryItem[],
+): PoLinkCandidate[] {
+  const byId = new Map(items.map((i) => [i.spItemId, i]));
+  const out = new Map<string, PoLinkCandidate>();
+  for (const entry of entries) {
+    const item = byId.get(entry.spItemId);
+    if (!item) continue;
+    const poCell = (item.poNumber ?? '').trim();
+    if (!poCell) continue;
+    const existing = out.get(entry.spItemId);
+    if (existing) {
+      existing.quantity += entry.quantity;
+      continue;
+    }
+    out.set(entry.spItemId, {
+      spItemId: entry.spItemId,
+      partNumber: item.partNumber,
+      scheduledPartNumber: item.scheduledPartNumber,
+      hardwareCategory: entry.hardwareCategory,
+      productCode: entry.productCode,
+      poCell,
+      quantity: entry.quantity,
+      projectId: entry.projectId,
+    });
+  }
+  return [...out.values()];
+}
+
+export interface PoLinkResolution extends PoLinkCandidate {
+  /** The mirrored PO the cell resolved to, or null when Nexus holds no such number. */
+  po: GpPo | null;
+  /** The line the row linked to on its own. Null when the step has to ask. */
+  poLineItemId: string | null;
+  /** Why the step has to ask. Null on an automatic link. */
+  reason: PoLinkReason | null;
+}
+
+/**
+ * Link every row that can be linked without asking, and give a reason for every row that cannot.
+ *
+ * Exactly one matching line on a purchase order Nexus holds is an automatic link. Everything else -
+ * a cell nobody can read, a number Nexus does not hold, a purchase order raised against another job,
+ * several matches, none - goes to the step with the reason, and the user picks a line or skips the
+ * row.
+ *
+ * The job check comes before the matching, because it is a fact about the purchase order rather than
+ * about any one line: a PO GP raised against a different job than the row's units are going to is
+ * evidence the number in the cell is not the number these units came off, whatever its descriptions
+ * happen to say. It is not a refusal - the person can still pick a line, and the server accepts it.
+ */
+export function buildPoLinkResolutions(
+  candidates: PoLinkCandidate[],
+  posByNumber: Map<string, GpPo>,
+): PoLinkResolution[] {
+  return candidates.map((candidate) => {
+    const cell = normalisePoCell(candidate.poCell);
+    if (!cell.poNumber) {
+      return { ...candidate, po: null, poLineItemId: null, reason: 'UNPARSEABLE_CELL' as PoLinkReason };
+    }
+    const po =
+      posByNumber.get(cell.poNumber) ?? (cell.base ? posByNumber.get(cell.base) : undefined) ?? null;
+    if (!po) {
+      return { ...candidate, po: null, poLineItemId: null, reason: 'PO_NOT_IN_NEXUS' as PoLinkReason };
+    }
+    if (po.projectId && candidate.projectId && po.projectId !== candidate.projectId) {
+      return {
+        ...candidate,
+        po,
+        poLineItemId: null,
+        reason: 'PO_ON_A_DIFFERENT_PROJECT' as PoLinkReason,
+      };
+    }
+    const matches = matchPoLines(candidate, po);
+    if (matches.length === 1) {
+      return { ...candidate, po, poLineItemId: matches[0].id, reason: null };
+    }
+    if (matches.length > 1) {
+      return { ...candidate, po, poLineItemId: null, reason: 'SEVERAL_LINES_MATCHED' as PoLinkReason };
+    }
+    return {
+      ...candidate,
+      po,
+      poLineItemId: null,
+      reason: (FINISHED_PO_STATUSES.has(po.status)
+        ? 'PO_CLOSED_NO_LINE_MATCHED'
+        : 'NO_LINE_MATCHED') as PoLinkReason,
+    };
+  });
+}
+
+/** The user's answer of "this row has no PO line worth attaching to". */
+export const SKIP_PO_LINK = 'SKIP' as const;
+
+/** A user's answer on one unresolved row: a line id, or the decision to leave it unlinked. */
+export type PoLinkPick = string | typeof SKIP_PO_LINK;
+
+/** SharePoint row id -> the line its entries attach to, automatic links and user picks together. */
+export function resolvedPoLinks(
+  resolutions: PoLinkResolution[],
+  picks: Map<string, PoLinkPick>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const resolution of resolutions) {
+    const pick = picks.get(resolution.spItemId);
+    if (pick === SKIP_PO_LINK) continue;
+    const lineId = pick || resolution.poLineItemId;
+    if (lineId) out.set(resolution.spItemId, lineId);
+  }
+  return out;
+}
+
+/**
+ * What the Review step reports: rows attached to a line, rows the user skipped, and rows left
+ * unanswered - which migrate exactly as a skipped row does.
+ */
+export function poLinkCounts(
+  resolutions: PoLinkResolution[],
+  picks: Map<string, PoLinkPick>,
+): { linked: number; skipped: number; unlinked: number } {
+  let linked = 0;
+  let skipped = 0;
+  let unlinked = 0;
+  for (const resolution of resolutions) {
+    const pick = picks.get(resolution.spItemId);
+    if (pick === SKIP_PO_LINK) skipped += 1;
+    else if (pick || resolution.poLineItemId) linked += 1;
+    else unlinked += 1;
+  }
+  return { linked, skipped, unlinked };
 }
