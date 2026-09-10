@@ -1862,13 +1862,17 @@ def _po_header_union(*, history_where: str = "") -> str:
 
 
 def _line_cost_code(row) -> str | None:
-    """'phase-step-element' from a joined WS10101 row, or None when the line books to no job. Blank
-    Cost_Code_Number_1 is the whole test: the LEFT JOIN gives every non-job line NULLs, and a job line
-    always has a phase. A missing element reads as 0, which is what GP stores for one."""
-    cc1 = (row.cc1 or "").strip()
-    if not cc1:
-        return None
-    return f"{cc1}-{(row.cc2 or '').strip()}-{int(row.elem or 0)}"
+    """The cost code a joined WS10101 row carries, or None when the line books to no job.
+
+    WS10101 stores the code as ONE assembled string in COSTCODE (char(27)), e.g. '210-200-2' - not as
+    the segmented parameters the wsi proc accepts (verified against UBC and UCSH on 2026-09-10: the
+    columns Cost_Code_Number_1/2 and Cost_Element do not exist on the table). It is passed through as
+    stored, trimmed, so the value read back off GP is byte-for-byte what a Nexus registration sent.
+    Not every code is 'phase-step-element': UCSH holds one- and three-character codes with no dash,
+    and those go through unchanged too. Every Product_Indicator = 1 (non-inventory) row has a blank
+    COSTCODE, and the LEFT JOIN gives a line with no WS10101 row at all NULLs; both read as None."""
+    code = (getattr(row, "costcode", None) or "").strip()
+    return code or None
 
 
 def _read_po_lines(conn, table: str, po_numbers: list[str], *, page_size: int) -> dict[str, list[dict]]:
@@ -1878,17 +1882,16 @@ def _read_po_lines(conn, table: str, po_numbers: list[str], *, page_size: int) -
     caller asked for and never trips the 2100-parameter ceiling.
 
     The LEFT JOIN is the line's cost code. GP keeps it on the WennSoft job-cost line table (WS10101,
-    keyed by PONUMBER + ORD), not on the PO line itself, so a PO line that books to no job simply has
-    no matching row and reports None. It is composed 'phase-step-element' - the same three-segment
-    shape list_cost_codes builds for the register dropdown - so the value read back off GP is the same
-    string a Nexus registration sent."""
+    whose primary key is (PONUMBER, ORD), so the join can never duplicate a line), not on the PO line
+    itself. A LEFT JOIN on purpose: UCSH has open PO lines with no WS10101 row at all, and an inner
+    join would silently drop them from the OPEN-POS SYNC. See _line_cost_code for the column."""
     out: dict[str, list[dict]] = {}
     for group in _chunk(po_numbers, _in_chunk(po_numbers, page_size)):
         placeholders = ",".join("?" * len(group))
         rows = conn.cursor().execute(
             f"SELECT RTRIM(l.PONUMBER) AS po, l.ORD, RTRIM(l.ITEMNMBR) AS item, RTRIM(l.ITEMDESC) AS itemdesc, "
             f"l.UNITCOST, l.QTYORDER, l.QTYCANCE, RTRIM(l.JOBNUMBR) AS job, l.POLNESTA, "
-            f"RTRIM(w.Cost_Code_Number_1) AS cc1, RTRIM(w.Cost_Code_Number_2) AS cc2, w.Cost_Element AS elem "
+            f"RTRIM(w.COSTCODE) AS costcode "
             f"FROM dbo.{table} l "
             f"LEFT JOIN dbo.WS10101 w ON w.PONUMBER = l.PONUMBER AND w.ORD = l.ORD "
             f"WHERE l.PONUMBER IN ({placeholders}) ORDER BY l.PONUMBER, l.ORD",

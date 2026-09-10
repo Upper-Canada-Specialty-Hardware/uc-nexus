@@ -25,12 +25,12 @@ def _hdr(src, po, status=2, vendor="VEND01", vendname="Acme Supply", freight=0):
     )
 
 
-def _line(po, ord_, item, qty, cancelled=0, unit_cost=10, status=2, cc1="", cc2="", elem=None):
-    """A POP10110/POP30110 row already LEFT JOINed to WS10101 - cc1/cc2/elem are the join's columns,
-    NULL-shaped (blank phase, no element) for a line that books to no job."""
+def _line(po, ord_, item, qty, cancelled=0, unit_cost=10, status=2, costcode=""):
+    """A POP10110/POP30110 row already LEFT JOINed to WS10101 - costcode is the join's one column,
+    the assembled string WS10101.COSTCODE holds, blank for a line that books to no job."""
     return _Row(po=po, ORD=ord_, item=item, itemdesc=f"{item} desc", UNITCOST=unit_cost,
                 QTYORDER=qty, QTYCANCE=cancelled, job="JOB1", POLNESTA=status,
-                cc1=cc1, cc2=cc2, elem=elem)
+                costcode=costcode)
 
 
 def _rcv(po, polnenum, received):
@@ -319,11 +319,11 @@ def test_read_pos_by_number_never_reads_more_keys_than_it_was_given():
 
 
 def test_a_job_cost_line_reports_its_wennsoft_cost_code():
-    """GP keeps the PO line's cost code on WS10101, not on the PO line. Composed 'phase-step-element',
-    the same three-segment shape the register dropdown offers."""
+    """GP keeps the PO line's cost code on WS10101, not on the PO line, as one assembled COSTCODE
+    string, and the relay passes it through exactly as stored."""
     rows = {
         "headers": [_hdr("work", "PO000010")],
-        "work_lines": [_line("PO000010", 16384, "ITEM-A", qty=5, cc1="210", cc2="200", elem=2)],
+        "work_lines": [_line("PO000010", 16384, "ITEM-A", qty=5, costcode="210-200-2")],
         "received": [],
     }
     cursor = _Cursor(rows)
@@ -348,7 +348,7 @@ def test_a_history_line_carries_its_cost_code_too():
     rows = {
         "headers": [_hdr("history", "PO000005")],
         "hist_headers": [_hdr("history", "PO000005")],
-        "hist_lines": [_line("PO000005", 16384, "ITEM-B", qty=4, cc1="310", cc2="000", elem=3)],
+        "hist_lines": [_line("PO000005", 16384, "ITEM-B", qty=4, costcode="310-000-3")],
         "received": [],
     }
     out = econnect.read_pos_by_number(_Conn(_Cursor(rows)), ["PO000005"])
@@ -389,3 +389,20 @@ def test_the_cost_code_join_leaves_the_line_read_read_only_and_keyed_the_same_wa
     assert "WHERE l.PONUMBER IN (?)" in line_sql
     assert "ORDER BY l.PONUMBER, l.ORD" in line_sql
     assert line_sql.lstrip().upper().startswith("SELECT")
+
+
+def test_a_short_wennsoft_cost_code_passes_through_unchanged():
+    """UCSH holds one- and three-character codes with no dash. COSTCODE is read as stored, never split,
+    so those reach the backend as they are instead of failing the whole page."""
+    rows = {
+        "headers": [_hdr("work", "PO000011")],
+        "work_lines": [_line("PO000011", 16384, "ITEM-C", qty=1, costcode="310")],
+        "received": [],
+    }
+    cursor = _Cursor(rows)
+    out = econnect.sync_pos(_Conn(cursor), cursor=None, page_size=5, modified_since=None, open_only=True)
+
+    assert out["pos"][0]["lines"][0]["cost_code"] == "310"
+    line_sql = next(s for s in cursor.all_sql if "POP10110" in s)
+    assert "RTRIM(w.COSTCODE) AS costcode" in line_sql
+    assert "Cost_Code_Number_1" not in line_sql
