@@ -1,9 +1,9 @@
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import ReconcileGpPoLinkStep from '../ReconcileGpPoLinkStep';
-import { SKIP_PO_LINK, type MirroredPo, type PoLinkResolution } from '../sharepointMigration';
+import { SKIP_PO_LINK, type GpPo, type PoLinkResolution } from '../sharepointMigration';
 
-const PO: MirroredPo = {
+const PO: GpPo = {
   id: 'po-1',
   poNumber: 'PO501788',
   status: 'CLOSED',
@@ -42,6 +42,7 @@ function resolution(overrides: Partial<PoLinkResolution> = {}): PoLinkResolution
     productCode: '1431 CPS TB EN',
     poCell: 'PO501788',
     quantity: 4,
+    projectId: 'p1',
     po: PO,
     poLineItemId: null,
     reason: 'SEVERAL_LINES_MATCHED',
@@ -73,6 +74,11 @@ describe('ReconcileGpPoLinkStep', () => {
         resolution({ spItemId: 'b', reason: 'PO_NOT_IN_NEXUS', po: null, poCell: 'PO999999' }),
         resolution({ spItemId: 'c', reason: 'UNPARSEABLE_CELL', po: null, poCell: 'PO097085 + PO090457' }),
         resolution({ spItemId: 'd', reason: 'PO_CLOSED_NO_LINE_MATCHED' }),
+        resolution({
+          spItemId: 'e',
+          reason: 'PO_ON_A_DIFFERENT_PROJECT',
+          po: { ...PO, projectId: 'p2' },
+        }),
       ],
     });
 
@@ -80,6 +86,7 @@ describe('ReconcileGpPoLinkStep', () => {
     expect(screen.getByText('No such PO in Nexus')).toBeInTheDocument();
     expect(screen.getByText('Unparseable cell')).toBeInTheDocument();
     expect(screen.getByText('PO closed and no line matched')).toBeInTheDocument();
+    expect(screen.getByText('PO is on a different project')).toBeInTheDocument();
     expect(screen.getByText('PO097085 + PO090457')).toBeInTheDocument();
   });
 

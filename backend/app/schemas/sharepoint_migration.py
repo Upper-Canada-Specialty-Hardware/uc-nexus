@@ -22,9 +22,9 @@ from app.services import sharepoint_inventory
 
 from .inputs import MigrateSharepointInventoryInput
 from .types import (
+    GpPo,
+    GpPoLineItem,
     MigrationResult,
-    MirroredPo,
-    MirroredPoLine,
     ProjectScheduleProduct,
     SharepointInventoryItem,
     SharepointInventorySnapshot,
@@ -65,8 +65,8 @@ def _line_order(line: POLineItem) -> tuple[int, int, str]:
     return (1, 0, str(line.id)) if line.gp_line_ord is None else (0, line.gp_line_ord, "")
 
 
-def _mirrored_line(line: POLineItem) -> MirroredPoLine:
-    return MirroredPoLine(
+def _gp_po_line_item(line: POLineItem) -> GpPoLineItem:
+    return GpPoLineItem(
         id=strawberry.ID(str(line.id)),
         gp_line_ord=line.gp_line_ord,
         product_code=line.product_code,
@@ -150,7 +150,7 @@ class SharepointMigrationQueries:
         ]
 
     @strawberry.field
-    def mirrored_pos_by_number(self, info: strawberry.Info, po_numbers: list[str]) -> list[MirroredPo]:
+    def mirrored_pos_by_number(self, info: strawberry.Info, po_numbers: list[str]) -> list[GpPo]:
         """The purchase orders behind the SharePoint list's PO Number column, with their lines.
 
         UBC's FIRST TIME GP COMPANY NEXUS INITIALIZATION is complete, so a number the source list
@@ -189,13 +189,13 @@ class SharepointMigrationQueries:
                 stmt = stmt.where(PurchaseOrder.company == scope)
             pos = list(session.scalars(stmt).unique().all())
             return [
-                MirroredPo(
+                GpPo(
                     id=strawberry.ID(str(po.id)),
                     po_number=po.po_number or "",
                     status=po.status,
                     origin=po.origin,
                     project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
-                    lines=[_mirrored_line(line) for line in sorted(po.line_items, key=_line_order)],
+                    lines=[_gp_po_line_item(line) for line in sorted(po.line_items, key=_line_order)],
                 )
                 for po in pos
             ]

@@ -2003,7 +2003,7 @@ class SharepointInventoryItem:
 
 
 @strawberry.type
-class MirroredPoLine:
+class GpPoLineItem:
     """One GP PO LINE ITEM as the migration wizard needs to see it.
 
     On a line that is not yet a NEXUS REGISTERED LINE, `product_code` holds GP's item number (a cost
@@ -2021,7 +2021,7 @@ class MirroredPoLine:
 
 
 @strawberry.type
-class MirroredPo:
+class GpPo:
     """A purchase order looked up by its number for the Reconcile GP PO link step, with its lines.
 
     Slim on purpose: the step shows the lines and nothing else about the PO, and the wizard asks for
@@ -2033,7 +2033,7 @@ class MirroredPo:
     status: POStatus
     origin: POOrigin
     project_id: strawberry.ID | None
-    lines: list[MirroredPoLine]
+    lines: list[GpPoLineItem]
 
 
 @strawberry.type

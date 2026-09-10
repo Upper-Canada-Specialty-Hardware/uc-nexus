@@ -37,8 +37,8 @@ import {
   type ItemTypeResolutions,
   type MigrationEntry,
   type MigrationClassification,
-  type MirroredPo,
-  type MirroredPoLine,
+  type GpPo,
+  type GpPoLineItem,
   type PoLinkPick,
 } from '../sharepointMigration';
 
@@ -930,7 +930,7 @@ describe('chunkPoNumbers', () => {
 describe('Reconcile GP PO link matching', () => {
   const PROJECT = 'p1';
 
-  function poLine(overrides: Partial<MirroredPoLine> = {}): MirroredPoLine {
+  function poLine(overrides: Partial<GpPoLineItem> = {}): GpPoLineItem {
     return {
       id: 'line-1',
       gpLineOrd: 16384,
@@ -945,7 +945,7 @@ describe('Reconcile GP PO link matching', () => {
     };
   }
 
-  function mirroredPo(overrides: Partial<MirroredPo> = {}): MirroredPo {
+  function gpPo(overrides: Partial<GpPo> = {}): GpPo {
     return {
       id: 'po-1',
       poNumber: 'PO501788',
@@ -984,13 +984,13 @@ describe('Reconcile GP PO link matching', () => {
 
   describe('matchPoLines', () => {
     it('matches the line whose GP description contains the scheduled part number', () => {
-      expect(matchPoLines(shelfRow, mirroredPo()).map((l) => l.id)).toEqual(['line-1']);
+      expect(matchPoLines(shelfRow, gpPo()).map((l) => l.id)).toEqual(['line-1']);
     });
 
     it('matches on the SharePoint part number too, whitespace and casing levelled', () => {
       const found = matchPoLines(
         shelfRow,
-        mirroredPo({ lines: [poLine({ hardwareCategory: 'closer  tb-1431-cps-en' })] }),
+        gpPo({ lines: [poLine({ hardwareCategory: 'closer  tb-1431-cps-en' })] }),
       );
       expect(found.map((l) => l.id)).toEqual(['line-1']);
     });
@@ -998,7 +998,7 @@ describe('Reconcile GP PO link matching', () => {
     it('returns every line that matches when several do', () => {
       const found = matchPoLines(
         shelfRow,
-        mirroredPo({
+        gpPo({
           lines: [poLine({ id: 'a' }), poLine({ id: 'b' }), poLine({ id: 'c', hardwareCategory: 'HINGE' })],
         }),
       );
@@ -1007,7 +1007,7 @@ describe('Reconcile GP PO link matching', () => {
 
     it('returns nothing when no description names the part', () => {
       expect(
-        matchPoLines(shelfRow, mirroredPo({ lines: [poLine({ hardwareCategory: 'HINGE 4.5 X 4.5' })] })),
+        matchPoLines(shelfRow, gpPo({ lines: [poLine({ hardwareCategory: 'HINGE 4.5 X 4.5' })] })),
       ).toEqual([]);
     });
 
@@ -1017,7 +1017,7 @@ describe('Reconcile GP PO link matching', () => {
         hardwareCategory: 'Hinge',
         productCode: 'BB1279',
       });
-      expect(matchPoLines(shelfRow, mirroredPo({ lines: [registered] }))).toEqual([]);
+      expect(matchPoLines(shelfRow, gpPo({ lines: [registered] }))).toEqual([]);
     });
 
     it('still matches a registered line that agrees with the row', () => {
@@ -1029,7 +1029,7 @@ describe('Reconcile GP PO link matching', () => {
       // Neither part number is in the description now, so the match is on the category itself.
       const found = matchPoLines(
         { ...shelfRow, partNumber: 'SURFACE CLOSER', scheduledPartNumber: '' },
-        mirroredPo({ lines: [registered] }),
+        gpPo({ lines: [registered] }),
       );
       expect(found.map((l) => l.id)).toEqual(['line-1']);
     });
@@ -1049,17 +1049,18 @@ describe('Reconcile GP PO link matching', () => {
       expect(candidates[0].poCell).toBe('PO501788');
       expect(candidates[0].hardwareCategory).toBe('Surface Closer');
       expect(candidates[0].quantity).toBe(5);
+      expect(candidates[0].projectId).toBeNull();
     });
   });
 
   describe('buildPoLinkResolutions', () => {
-    const candidateFor = (poCell: string) =>
-      poLinkCandidates([poEntry()], [item({ spItemId: '1', poNumber: poCell })]);
+    const candidateFor = (poCell: string, projectId: string | null = null) =>
+      poLinkCandidates([poEntry({ projectId })], [item({ spItemId: '1', poNumber: poCell })]);
 
     it('links a row whose PO holds exactly one matching line', () => {
       const [resolution] = buildPoLinkResolutions(
         candidateFor('PO501788'),
-        new Map([['PO501788', mirroredPo()]]),
+        new Map([['PO501788', gpPo()]]),
       );
       expect(resolution.poLineItemId).toBe('line-1');
       expect(resolution.reason).toBeNull();
@@ -1068,7 +1069,7 @@ describe('Reconcile GP PO link matching', () => {
     it('falls back to the base number for a hyphen-suffixed cell', () => {
       const [resolution] = buildPoLinkResolutions(
         candidateFor('PO094114-1'),
-        new Map([['PO094114', mirroredPo()]]),
+        new Map([['PO094114', gpPo()]]),
       );
       expect(resolution.poLineItemId).toBe('line-1');
     });
@@ -1084,8 +1085,39 @@ describe('Reconcile GP PO link matching', () => {
       expect(resolution.reason).toBe('PO_NOT_IN_NEXUS');
     });
 
+    it('will not link a row whose units are going to a different job than the PO was raised for', () => {
+      const otherJob = gpPo({ projectId: 'p2' });
+      const [resolution] = buildPoLinkResolutions(
+        candidateFor('PO501788', PROJECT),
+        new Map([['PO501788', otherJob]]),
+      );
+      expect(resolution.reason).toBe('PO_ON_A_DIFFERENT_PROJECT');
+      expect(resolution.poLineItemId).toBeNull();
+      // The person can still pick from it, so the PO and its lines come through.
+      expect(resolution.po).toBe(otherJob);
+    });
+
+    it('links normally when the PO is on the same project as the row', () => {
+      const sameJob = gpPo({ projectId: PROJECT });
+      const [resolution] = buildPoLinkResolutions(
+        candidateFor('PO501788', PROJECT),
+        new Map([['PO501788', sameJob]]),
+      );
+      expect(resolution.reason).toBeNull();
+      expect(resolution.poLineItemId).toBe('line-1');
+    });
+
+    it('links normally when the PO is on no project at all', () => {
+      const [resolution] = buildPoLinkResolutions(
+        candidateFor('PO501788', PROJECT),
+        new Map([['PO501788', gpPo({ projectId: null })]]),
+      );
+      expect(resolution.reason).toBeNull();
+      expect(resolution.poLineItemId).toBe('line-1');
+    });
+
     it('reports several matching lines', () => {
-      const several = mirroredPo({ lines: [poLine({ id: 'a' }), poLine({ id: 'b' })] });
+      const several = gpPo({ lines: [poLine({ id: 'a' }), poLine({ id: 'b' })] });
       const [resolution] = buildPoLinkResolutions(
         candidateFor('PO501788'),
         new Map([['PO501788', several]]),
@@ -1095,7 +1127,7 @@ describe('Reconcile GP PO link matching', () => {
     });
 
     it('says the PO is closed when nothing matched on a finished PO', () => {
-      const closed = mirroredPo({ status: 'CLOSED', lines: [poLine({ hardwareCategory: 'HINGE' })] });
+      const closed = gpPo({ status: 'CLOSED', lines: [poLine({ hardwareCategory: 'HINGE' })] });
       const [resolution] = buildPoLinkResolutions(
         candidateFor('PO501788'),
         new Map([['PO501788', closed]]),
@@ -1104,7 +1136,7 @@ describe('Reconcile GP PO link matching', () => {
     });
 
     it('says only that nothing matched when the PO is still open', () => {
-      const open = mirroredPo({
+      const open = gpPo({
         status: 'GP_REGISTERED',
         lines: [poLine({ hardwareCategory: 'HINGE' })],
       });
@@ -1124,7 +1156,7 @@ describe('Reconcile GP PO link matching', () => {
         ),
         ...poLinkCandidates([poEntry({ spItemId: 'left' })], [item({ spItemId: 'left', poNumber: 'PO000003' })]),
       ],
-      new Map([['PO501788', mirroredPo()]]),
+      new Map([['PO501788', gpPo()]]),
     );
 
     const picks: Map<string, PoLinkPick> = new Map([

@@ -874,7 +874,7 @@ export function buildCatalogItems(
 // ---------------------------------------------------------------------------------------------
 
 /** One line of a mirrored purchase order, as the wizard's lookup returns it. */
-export interface MirroredPoLine {
+export interface GpPoLineItem {
   id: string;
   gpLineOrd: number | null;
   /** GP's item number on an unregistered line; the schedule's product code once registered. */
@@ -887,13 +887,13 @@ export interface MirroredPoLine {
 }
 
 /** A purchase order the wizard found by number, with its lines. */
-export interface MirroredPo {
+export interface GpPo {
   id: string;
   poNumber: string;
   status: string;
   origin: string;
   projectId: string | null;
-  lines: MirroredPoLine[];
+  lines: GpPoLineItem[];
 }
 
 /** What one PO Number cell turned into. */
@@ -975,7 +975,7 @@ export interface PoLinkRow {
  * candidate: its identity was set deliberately, inventory may already have been received under it,
  * and re-pointing it would leave that inventory describing hardware nobody has.
  */
-export function matchPoLines(row: PoLinkRow, po: MirroredPo): MirroredPoLine[] {
+export function matchPoLines(row: PoLinkRow, po: GpPo): GpPoLineItem[] {
   const needles = [row.partNumber, row.scheduledPartNumber].map(collapse).filter(Boolean);
   if (needles.length === 0) return [];
   return po.lines.filter((line) => {
@@ -995,6 +995,7 @@ export function matchPoLines(row: PoLinkRow, po: MirroredPo): MirroredPoLine[] {
 export type PoLinkReason =
   | 'UNPARSEABLE_CELL'
   | 'PO_NOT_IN_NEXUS'
+  | 'PO_ON_A_DIFFERENT_PROJECT'
   | 'PO_CLOSED_NO_LINE_MATCHED'
   | 'SEVERAL_LINES_MATCHED'
   | 'NO_LINE_MATCHED';
@@ -1002,6 +1003,7 @@ export type PoLinkReason =
 export const PO_LINK_REASON_LABELS: Record<PoLinkReason, string> = {
   UNPARSEABLE_CELL: 'Unparseable cell',
   PO_NOT_IN_NEXUS: 'No such PO in Nexus',
+  PO_ON_A_DIFFERENT_PROJECT: 'PO is on a different project',
   PO_CLOSED_NO_LINE_MATCHED: 'PO closed and no line matched',
   SEVERAL_LINES_MATCHED: 'Several lines matched',
   NO_LINE_MATCHED: 'No line matched',
@@ -1017,6 +1019,9 @@ export interface PoLinkCandidate extends PoLinkRow {
   poCell: string;
   /** How many units of this row are migrating, across all of its entries. */
   quantity: number;
+  /** The Nexus project the row's units are going to, from the Projects step. Null when they are
+   *  going to company stock, which belongs to no job. */
+  projectId: string | null;
 }
 
 /**
@@ -1050,6 +1055,7 @@ export function poLinkCandidates(
       productCode: entry.productCode,
       poCell,
       quantity: entry.quantity,
+      projectId: entry.projectId,
     });
   }
   return [...out.values()];
@@ -1057,7 +1063,7 @@ export function poLinkCandidates(
 
 export interface PoLinkResolution extends PoLinkCandidate {
   /** The mirrored PO the cell resolved to, or null when Nexus holds no such number. */
-  po: MirroredPo | null;
+  po: GpPo | null;
   /** The line the row linked to on its own. Null when the step has to ask. */
   poLineItemId: string | null;
   /** Why the step has to ask. Null on an automatic link. */
@@ -1068,12 +1074,18 @@ export interface PoLinkResolution extends PoLinkCandidate {
  * Link every row that can be linked without asking, and give a reason for every row that cannot.
  *
  * Exactly one matching line on a purchase order Nexus holds is an automatic link. Everything else -
- * a cell nobody can read, a number Nexus does not hold, several matches, none - goes to the step
- * with the reason, and the user picks a line or skips the row.
+ * a cell nobody can read, a number Nexus does not hold, a purchase order raised against another job,
+ * several matches, none - goes to the step with the reason, and the user picks a line or skips the
+ * row.
+ *
+ * The job check comes before the matching, because it is a fact about the purchase order rather than
+ * about any one line: a PO GP raised against a different job than the row's units are going to is
+ * evidence the number in the cell is not the number these units came off, whatever its descriptions
+ * happen to say. It is not a refusal - the person can still pick a line, and the server accepts it.
  */
 export function buildPoLinkResolutions(
   candidates: PoLinkCandidate[],
-  posByNumber: Map<string, MirroredPo>,
+  posByNumber: Map<string, GpPo>,
 ): PoLinkResolution[] {
   return candidates.map((candidate) => {
     const cell = normalisePoCell(candidate.poCell);
@@ -1084,6 +1096,14 @@ export function buildPoLinkResolutions(
       posByNumber.get(cell.poNumber) ?? (cell.base ? posByNumber.get(cell.base) : undefined) ?? null;
     if (!po) {
       return { ...candidate, po: null, poLineItemId: null, reason: 'PO_NOT_IN_NEXUS' as PoLinkReason };
+    }
+    if (po.projectId && candidate.projectId && po.projectId !== candidate.projectId) {
+      return {
+        ...candidate,
+        po,
+        poLineItemId: null,
+        reason: 'PO_ON_A_DIFFERENT_PROJECT' as PoLinkReason,
+      };
     }
     const matches = matchPoLines(candidate, po);
     if (matches.length === 1) {

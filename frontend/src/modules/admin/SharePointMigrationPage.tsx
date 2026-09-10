@@ -69,7 +69,7 @@ import {
   type InventoryItemTypeOption,
   type ItemTypeResolutions,
   type MigrationClassification,
-  type MirroredPo,
+  type GpPo,
   type PoLinkPick,
 } from './sharepointMigration';
 import ReconcileGpPoLinkStep from './ReconcileGpPoLinkStep';
@@ -161,7 +161,7 @@ export default function SharePointMigrationPage() {
   // in slices of 200 (the backend's cap) fired together, and merged into one map the Reconcile GP PO
   // link step matches against. Not a useQuery because the number of slices is only known at runtime.
   const apollo = useApolloClient();
-  const [posByNumber, setPosByNumber] = useState<Map<string, MirroredPo>>(new Map());
+  const [posByNumber, setPosByNumber] = useState<Map<string, GpPo>>(new Map());
   const [poLookupLoading, setPoLookupLoading] = useState(false);
   const [poLookupError, setPoLookupError] = useState<string | null>(null);
   const [poLookupAttempt, setPoLookupAttempt] = useState(0);
@@ -185,7 +185,7 @@ export default function SharePointMigrationPage() {
       try {
         const responses = await Promise.all(
           chunkPoNumbers(numbers).map((chunk) =>
-            apollo.query<{ mirroredPosByNumber: MirroredPo[] }>({
+            apollo.query<{ mirroredPosByNumber: GpPo[] }>({
               query: GET_MIRRORED_POS_BY_NUMBER,
               variables: { poNumbers: chunk },
               fetchPolicy: 'network-only',
@@ -193,7 +193,7 @@ export default function SharePointMigrationPage() {
           ),
         );
         if (cancelled) return;
-        const merged = new Map<string, MirroredPo>();
+        const merged = new Map<string, GpPo>();
         for (const response of responses) {
           for (const po of response.data?.mirroredPosByNumber ?? []) {
             // First wins. An admin is unscoped, so the same number can come back for two companies;
