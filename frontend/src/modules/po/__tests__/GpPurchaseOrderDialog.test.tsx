@@ -26,6 +26,26 @@ configure({ asyncUtilTimeout: 15_000 });
 // Issue #216: the buyer IS the caller's GP identity (Clerk publicMetadata.gpBuyerId). Stub the hook
 // with a mutable slot so individual tests can drop the identity.
 const identity = vi.hoisted(() => ({ gpBuyerId: 'JSMITH' as string | null }));
+// The "Add Custom Item" dialog reads the catalog over GraphQL; stand it in with a picker that hands
+// back one fixed item the moment it opens, so a test can add a custom row without the catalog.
+vi.mock('../CustomItemPicker', () => ({
+  default: ({ open, onPick }: { open: boolean; onPick: (item: unknown) => void }) => {
+    if (open) {
+      onPick({
+        id: 'cat-1',
+        typeId: 'type-frame',
+        hardwareCategory: 'FRAME',
+        typeName: 'Frame',
+        productCode: 'HMF-3070',
+        description: 'Hollow metal frame 3070',
+        isActive: true,
+        values: [],
+      });
+    }
+    return null;
+  },
+}));
+
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
     displayName: 'Test Buyer',
@@ -855,14 +875,12 @@ it('says the relay is down rather than leaving the GP dropdowns silently dead', 
   expect(notices.length).toBeGreaterThan(0);
 });
 
-// --- Order As is optional; it defaults to the product code (#491, #563) -------------------------
-// The dialog required a non-empty Order As on every line, which was stricter than the system it
-// feeds: build_create_po_payload already sends (order_as or product_code) as GP's item number. A
-// draft raised without Order As values could not be registered at all without retyping the product
-// code into every row. #563: the field is no longer pre-filled with the product code - it shows the
-// stored order_as (blank when there is none), and the payload still falls back to product_code.
+// --- Order As is the only optional field on a line (#491, #563) ---------------------------------
+// Hardware Category and Product Code are both required: they are the line's identity and are what a
+// registration sends GP as the item number and the description. Order As is Nexus-only, never sent
+// to GP, and no longer borrows the product code when it is left blank - blank means blank.
 
-it('leaves Order As empty when the draft line has none, noting it defaults to the product code', async () => {
+it('leaves Order As empty when the draft line has none, and asks nothing of it', async () => {
   const noOrderAs: PurchaseOrder = {
     ...stockDraft,
     lineItems: [{ ...stockDraft.lineItems[0], orderAs: null }],
@@ -870,12 +888,12 @@ it('leaves Order As empty when the draft line has none, noting it defaults to th
   renderDialog({ registerPo: noOrderAs });
   await waitForVendorPreselect();
 
-  // #563: only the Product Code field displays HG-100 - Order As is left blank, not pre-filled.
+  // Only the Product Code field displays HG-100 - Order As is left blank, not pre-filled.
   expect(screen.getAllByDisplayValue('HG-100')).toHaveLength(1);
-  expect(screen.getByText('defaults to product code')).toBeInTheDocument();
+  expect(screen.queryByText('defaults to product code')).not.toBeInTheDocument();
 });
 
-it('registers with the product code as the item number when Order As is cleared', async () => {
+it('registers with a null Order As when the field is cleared', async () => {
   const calls: Record<string, unknown>[] = [];
   const registerMock: MockedResponse = {
     request: { query: REGISTER_PO_IN_GP, variables: () => true },
@@ -894,8 +912,38 @@ it('registers with the product code as the item number when Order As is cleared'
   await selectTaxDetail();
   fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
-  // No "Required" error on the cleared row - the product code covers it.
+  // No "Required" error on the cleared row, and nothing is substituted for the empty value.
   await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
-  const input = calls[0].input as { lineItems: { orderAs: string }[] };
-  expect(input.lineItems[0].orderAs).toBe('HG-100');
+  const input = calls[0].input as { lineItems: { orderAs: string | null }[] };
+  expect(input.lineItems[0].orderAs).toBeNull();
+});
+
+it('gives a custom item row no Order As and registers it with none', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const registerMock: MockedResponse = {
+    request: { query: REGISTER_PO_IN_GP, variables: () => true },
+    result: (vars) => {
+      calls.push(vars as Record<string, unknown>);
+      return { data: registerData() };
+    },
+  };
+  const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), registerMock]);
+  await waitForVendorPreselect();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Add Custom Item' }));
+
+  // The custom row shows the catalog's own category and code, and no Order As box at all: the field
+  // exists to translate a schedule name into the vendor's, and a custom item is already the vendor's.
+  await waitFor(() => expect(screen.getByDisplayValue('HMF-3070')).toBeInTheDocument());
+  expect(screen.getAllByPlaceholderText('e.g. ML2010')).toHaveLength(1);
+  expect(screen.queryByDisplayValue('Hollow metal frame 3070')).not.toBeInTheDocument();
+
+  fireEvent.change(screen.getAllByRole('spinbutton', { name: '' })[2], { target: { value: '2' } });
+  await selectTaxDetail();
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+
+  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  const input = calls[0].input as { lineItems: { productCode: string; orderAs: string | null }[] };
+  expect(input.lineItems[1].productCode).toBe('HMF-3070');
+  expect(input.lineItems[1].orderAs).toBeNull();
 });

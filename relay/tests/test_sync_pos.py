@@ -12,7 +12,7 @@ class _Row:
         self.__dict__.update(kw)
 
 
-def _hdr(src, po, status=2, vendor="VEND01", vendname="Acme Supply"):
+def _hdr(src, po, status=2, vendor="VEND01", vendname="Acme Supply", freight=0):
     return _Row(
         src=src,
         po=po,
@@ -20,13 +20,17 @@ def _hdr(src, po, status=2, vendor="VEND01", vendname="Acme Supply"):
         vendor=vendor,
         vendname=vendname,
         docdate=datetime(2026, 1, 2, 0, 0, 0),
+        freight=freight,
         modified=datetime(2026, 1, 3, 8, 30, 0),
     )
 
 
-def _line(po, ord_, item, qty, cancelled=0, unit_cost=10, status=2):
+def _line(po, ord_, item, qty, cancelled=0, unit_cost=10, status=2, cc1="", cc2="", elem=None):
+    """A POP10110/POP30110 row already LEFT JOINed to WS10101 - cc1/cc2/elem are the join's columns,
+    NULL-shaped (blank phase, no element) for a line that books to no job."""
     return _Row(po=po, ORD=ord_, item=item, itemdesc=f"{item} desc", UNITCOST=unit_cost,
-                QTYORDER=qty, QTYCANCE=cancelled, job="JOB1", POLNESTA=status)
+                QTYORDER=qty, QTYCANCE=cancelled, job="JOB1", POLNESTA=status,
+                cc1=cc1, cc2=cc2, elem=elem)
 
 
 def _rcv(po, polnenum, received):
@@ -309,3 +313,79 @@ def test_read_pos_by_number_never_reads_more_keys_than_it_was_given():
     econnect.read_pos_by_number(_Conn(cursor), po_nums)
     for sql, params in cursor.calls:
         assert len(params) <= econnect.MAX_PO_NUMBERS
+
+
+# --- cost code and freight: the two GP columns the mirror now reads back ---------------------------
+
+
+def test_a_job_cost_line_reports_its_wennsoft_cost_code():
+    """GP keeps the PO line's cost code on WS10101, not on the PO line. Composed 'phase-step-element',
+    the same three-segment shape the register dropdown offers."""
+    rows = {
+        "headers": [_hdr("work", "PO000010")],
+        "work_lines": [_line("PO000010", 16384, "ITEM-A", qty=5, cc1="210", cc2="200", elem=2)],
+        "received": [],
+    }
+    cursor = _Cursor(rows)
+    out = econnect.sync_pos(_Conn(cursor), cursor=None, page_size=5, modified_since=None, open_only=True)
+
+    assert out["pos"][0]["lines"][0]["cost_code"] == "210-200-2"
+    line_sql = next(s for s in cursor.all_sql if "POP10110" in s)
+    assert "LEFT JOIN dbo.WS10101 w ON w.PONUMBER = l.PONUMBER AND w.ORD = l.ORD" in line_sql
+
+
+def test_a_line_that_books_to_no_job_reports_no_cost_code():
+    rows = {
+        "headers": [_hdr("work", "PO000010")],
+        "work_lines": [_line("PO000010", 16384, "ITEM-A", qty=5)],  # LEFT JOIN miss -> blank phase
+        "received": [],
+    }
+    out = econnect.sync_pos(_Conn(_Cursor(rows)), cursor=None, page_size=5, modified_since=None, open_only=True)
+    assert out["pos"][0]["lines"][0]["cost_code"] is None
+
+
+def test_a_history_line_carries_its_cost_code_too():
+    rows = {
+        "headers": [_hdr("history", "PO000005")],
+        "hist_headers": [_hdr("history", "PO000005")],
+        "hist_lines": [_line("PO000005", 16384, "ITEM-B", qty=4, cc1="310", cc2="000", elem=3)],
+        "received": [],
+    }
+    out = econnect.read_pos_by_number(_Conn(_Cursor(rows)), ["PO000005"])
+    assert out["pos"][0]["lines"][0]["cost_code"] == "310-000-3"
+
+
+def test_the_header_carries_gps_freight_amount():
+    rows = {
+        "headers": [_hdr("work", "PO000010", freight=125.5)],
+        "work_lines": [_line("PO000010", 16384, "ITEM-A", qty=5)],
+        "received": [],
+    }
+    cursor = _Cursor(rows)
+    out = econnect.sync_pos(_Conn(cursor), cursor=None, page_size=5, modified_since=None, open_only=True)
+
+    assert out["pos"][0]["freight"] == 125.5
+    assert "FRTAMNT AS freight" in cursor.all_sql[0]
+
+
+def test_a_po_with_no_freight_reports_zero_not_none():
+    rows = {
+        "headers": [_hdr("work", "PO000010", freight=None)],
+        "work_lines": [],
+        "received": [],
+    }
+    out = econnect.sync_pos(_Conn(_Cursor(rows)), cursor=None, page_size=5, modified_since=None, open_only=True)
+    assert out["pos"][0]["freight"] == 0.0
+
+
+def test_the_cost_code_join_leaves_the_line_read_read_only_and_keyed_the_same_way():
+    """The join must not change which rows come back or how the read is bounded: still the same
+    IN-list on the PO number, still ordered by PONUMBER + ORD, still no write of any kind."""
+    rows = {"headers": [_hdr("work", "PO000010")], "work_lines": [], "received": []}
+    cursor = _Cursor(rows)
+    econnect.sync_pos(_Conn(cursor), cursor=None, page_size=5, modified_since=None, open_only=True)
+
+    line_sql = next(s for s in cursor.all_sql if "POP10110" in s)
+    assert "WHERE l.PONUMBER IN (?)" in line_sql
+    assert "ORDER BY l.PONUMBER, l.ORD" in line_sql
+    assert line_sql.lstrip().upper().startswith("SELECT")

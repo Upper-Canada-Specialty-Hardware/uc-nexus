@@ -68,6 +68,9 @@ interface POLineItem {
   orderAs: string | null;
   // GP POP10110.ORD this line maps to; present on registered/mirrored lines.
   gpLineOrd: number | null;
+  // True when hardwareCategory and productCode above came off a hardware schedule, so the GP sync
+  // leaves them alone; false while the line still carries GP's own item number and description.
+  nexusRegistered: boolean;
   // Issue #232: derived from the line's linked HardwareItem(s); drives the PO dialog's vendor suggestion.
   manufacturer: string | null;
   createdAt: string;

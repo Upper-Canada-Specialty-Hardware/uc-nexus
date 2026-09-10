@@ -150,8 +150,8 @@ def test_create_po_strips_order_as_whitespace(db_session):
     assert po.line_items[0].order_as == "ML2010"
 
 
-# #563: order_as is optional when the line has a product_code - GP's item number falls back to it
-# (services/gp_po.py). A blank order_as persists as NULL rather than being rejected.
+# #563: Order As is the ONLY optional field on a line - hardware category and product code are both
+# required, being the line's identity and what GP is sent. A blank Order As persists as NULL.
 
 
 def test_create_po_allows_missing_order_as(db_session):
@@ -194,19 +194,34 @@ def test_create_po_allows_line_item_missing_order_as(db_session):
     assert {li.order_as for li in po.line_items} == {"ML2010", None}
 
 
-def test_create_po_still_rejects_when_order_as_and_product_code_both_missing(db_session):
-    # #563 relaxed the requirement to order_as OR product_code, not neither.
+def test_create_po_rejects_a_blank_product_code_even_with_an_order_as(db_session):
+    """Product Code is required in its own right. Order As does not stand in for it: it is Nexus-only
+    and GP would be sent an empty item description."""
     line = {
         "hardware_category": "HINGE",
         "product_code": "  ",
         "ordered_quantity": 1,
         "unit_cost": 12.50,
         "classification": None,
-        "order_as": None,
+        "order_as": "ML2010",
     }
     with pytest.raises(ValidationError) as exc:
         po_repository.create_po(db_session, line_items=[line], company="TUBC")
-    assert exc.value.field == "order_as"
+    assert exc.value.field == "product_code"
+
+
+def test_create_po_rejects_a_blank_hardware_category(db_session):
+    line = {
+        "hardware_category": "   ",
+        "product_code": "AB123",
+        "ordered_quantity": 1,
+        "unit_cost": 12.50,
+        "classification": None,
+        "order_as": "ML2010",
+    }
+    with pytest.raises(ValidationError) as exc:
+        po_repository.create_po(db_session, line_items=[line], company="TUBC")
+    assert exc.value.field == "hardware_category"
 
 
 # --- #640: no PO is ever created with zero line items ---------------------------------------------
@@ -232,8 +247,9 @@ def test_create_po_rejects_an_empty_line_item_list_without_writing_a_po(db_sessi
     assert db_session.scalar(select(func.count()).select_from(PurchaseOrder)) == before
 
 
-def test_create_po_blank_order_as_payload_falls_back_to_product_code(db_session):
-    # The GP payload uses product_code as the item number when order_as is blank.
+def test_create_po_blank_order_as_still_sends_the_category_and_the_code(db_session):
+    # Order As is Nexus-only: GP's item number is the hardware category and its description is the
+    # product code, whether or not the line carries an Order As.
     payload = build_create_po_payload(
         vendor_gp_id="GPV1",
         vendor_contact_name=None,
@@ -243,7 +259,8 @@ def test_create_po_blank_order_as_payload_falls_back_to_product_code(db_session)
         po_number=None,
         line_items=[_line_item(None)],
     )
-    assert payload["lines"][0]["item_number"] == "AB123"
+    assert payload["lines"][0]["item_number"] == "HINGE"
+    assert payload["lines"][0]["item_description"] == "AB123"
 
 
 # --- issue #216: status-gated delivery dates ------------------------------------------------------

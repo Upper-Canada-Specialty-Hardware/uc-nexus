@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -152,6 +153,11 @@ class POLineItem(Base):
     # column and the whole PO's upsert failed with it. Nothing rounds to cents on the way in.
     unit_cost: Mapped[Decimal] = mapped_column(Numeric(19, 5), nullable=False)
     order_as: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Whether this is a NEXUS REGISTERED LINE: the hardware_category and product_code above are the
+    # schedule's own, not GP's, so the OPEN-POS SYNC leaves those two fields alone and overwrites only
+    # the quantities and the unit cost. True on every line Nexus drafts or registers; false on a line
+    # the mirror created, until somebody gives it a schedule identity.
+    nexus_registered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     # GP POP10110.ORD this line maps to (16384, 32768, ...). Assigned positionally at create time
     # (the relay assigns ORD = line index * 16384); used to target the GP line on a relay /receipt.
     gp_line_ord: Mapped[int | None] = mapped_column(Integer, nullable=True)

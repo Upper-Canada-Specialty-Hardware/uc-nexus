@@ -1794,7 +1794,8 @@ def insert_whrecline_row(
 # orders on po_raw (sargable - seeks the index) and only ever SELECTs po for the returned value.
 _PO_HEADER_COLS = (
     "'{src}' AS src, PONUMBER AS po_raw, RTRIM(PONUMBER) AS po, POSTATUS AS status, "
-    "RTRIM(VENDORID) AS vendor, RTRIM(VENDNAME) AS vendname, DOCDATE AS docdate, DEX_ROW_TS AS modified"
+    "RTRIM(VENDORID) AS vendor, RTRIM(VENDNAME) AS vendname, DOCDATE AS docdate, "
+    "FRTAMNT AS freight, DEX_ROW_TS AS modified"
 )
 _MAX_PO_PAGE_SIZE = 1000
 # SQL Server caps a statement at 2100 parameters, and this is the hard ceiling under it. It is no
@@ -1860,18 +1861,37 @@ def _po_header_union(*, history_where: str = "") -> str:
     return f"{work} UNION ALL {hist}"
 
 
+def _line_cost_code(row) -> str | None:
+    """'phase-step-element' from a joined WS10101 row, or None when the line books to no job. Blank
+    Cost_Code_Number_1 is the whole test: the LEFT JOIN gives every non-job line NULLs, and a job line
+    always has a phase. A missing element reads as 0, which is what GP stores for one."""
+    cc1 = (row.cc1 or "").strip()
+    if not cc1:
+        return None
+    return f"{cc1}-{(row.cc2 or '').strip()}-{int(row.elem or 0)}"
+
+
 def _read_po_lines(conn, table: str, po_numbers: list[str], *, page_size: int) -> dict[str, list[dict]]:
     """PO lines for a set of PO numbers, grouped by PO number. `table` is POP10110 (work) or POP30110
     (history). Received qty is left to the caller (work sums POP10500; history derives it). The IN-list
     is chunked at the request's own page size (_in_chunk), so a read never touches more keys than the
-    caller asked for and never trips the 2100-parameter ceiling."""
+    caller asked for and never trips the 2100-parameter ceiling.
+
+    The LEFT JOIN is the line's cost code. GP keeps it on the WennSoft job-cost line table (WS10101,
+    keyed by PONUMBER + ORD), not on the PO line itself, so a PO line that books to no job simply has
+    no matching row and reports None. It is composed 'phase-step-element' - the same three-segment
+    shape list_cost_codes builds for the register dropdown - so the value read back off GP is the same
+    string a Nexus registration sent."""
     out: dict[str, list[dict]] = {}
     for group in _chunk(po_numbers, _in_chunk(po_numbers, page_size)):
         placeholders = ",".join("?" * len(group))
         rows = conn.cursor().execute(
-            f"SELECT RTRIM(PONUMBER) AS po, ORD, RTRIM(ITEMNMBR) AS item, RTRIM(ITEMDESC) AS itemdesc, "
-            f"UNITCOST, QTYORDER, QTYCANCE, RTRIM(JOBNUMBR) AS job, POLNESTA "
-            f"FROM dbo.{table} WHERE PONUMBER IN ({placeholders}) ORDER BY PONUMBER, ORD",
+            f"SELECT RTRIM(l.PONUMBER) AS po, l.ORD, RTRIM(l.ITEMNMBR) AS item, RTRIM(l.ITEMDESC) AS itemdesc, "
+            f"l.UNITCOST, l.QTYORDER, l.QTYCANCE, RTRIM(l.JOBNUMBR) AS job, l.POLNESTA, "
+            f"RTRIM(w.Cost_Code_Number_1) AS cc1, RTRIM(w.Cost_Code_Number_2) AS cc2, w.Cost_Element AS elem "
+            f"FROM dbo.{table} l "
+            f"LEFT JOIN dbo.WS10101 w ON w.PONUMBER = l.PONUMBER AND w.ORD = l.ORD "
+            f"WHERE l.PONUMBER IN ({placeholders}) ORDER BY l.PONUMBER, l.ORD",
             *group,
         ).fetchall()
         for r in rows:
@@ -1885,6 +1905,7 @@ def _read_po_lines(conn, table: str, po_numbers: list[str], *, page_size: int) -
                     "qty_cancelled": float(r.QTYCANCE or 0),
                     "job": r.job or None,
                     "line_status": int(r.POLNESTA) if r.POLNESTA is not None else None,
+                    "cost_code": _line_cost_code(r),
                 }
             )
     return out
@@ -1915,8 +1936,8 @@ def _read_received_sums(conn, po_numbers: list[str], *, page_size: int) -> dict[
 
 def _assemble_pos(conn, headers: list, *, page_size: int) -> list[dict]:
     """Attach lines + received qty to a list of header rows (each has .src/.po/.status/.vendor/
-    .vendname/.docdate/.modified). Splits work vs history so each reads its own tables. `page_size` is
-    the caller's own page, and bounds every IN-list read below it."""
+    .vendname/.docdate/.freight/.modified). Splits work vs history so each reads its own tables.
+    `page_size` is the caller's own page, and bounds every IN-list read below it."""
     work_pos = [h.po for h in headers if h.src == "work"]
     hist_pos = [h.po for h in headers if h.src == "history"]
 
@@ -1944,6 +1965,7 @@ def _assemble_pos(conn, headers: list, *, page_size: int) -> list[dict]:
                     "qty_cancelled": ln["qty_cancelled"],
                     "job": ln["job"],
                     "line_status": ln["line_status"],
+                    "cost_code": ln["cost_code"],
                     "received": rcvd,
                 }
             )
@@ -1954,6 +1976,9 @@ def _assemble_pos(conn, headers: list, *, page_size: int) -> list[dict]:
                 "vendor_id": h.vendor or None,
                 "vendor_name": (h.vendname or "").strip() or None,
                 "doc_date": h.docdate.date().isoformat() if h.docdate is not None else None,
+                # FRTAMNT, the header's freight charge. GP owns it: a PO edited in GP after Nexus
+                # registered it converges to whatever GP ended up holding.
+                "freight": float(h.freight or 0),
                 "modified_at": h.modified.isoformat() if h.modified is not None else None,
                 "source_table": "work" if is_work else "history",
                 "lines": lines,

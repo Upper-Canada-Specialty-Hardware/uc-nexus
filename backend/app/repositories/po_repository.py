@@ -240,11 +240,14 @@ def create_po(
             classification_val = Classification(classification_val)
 
         order_as_raw = li_data.get("order_as")
+        # #563: Hardware Category and Product Code are the line's identity and are both required; they
+        # are what a PO REGISTRATION sends GP as the item number and the description. Order As is the
+        # only optional field on a line - Nexus-only, never sent to GP - and persists stripped or None.
         cleaned_order_as = order_as_raw.strip() if order_as_raw and order_as_raw.strip() else None
-        # #563: GP's item number falls back to product_code when order_as is blank (services/gp_po.py),
-        # so a line needs order_as OR product_code - not order_as specifically. Persist stripped or None.
-        if cleaned_order_as is None and not (li_data.get("product_code") or "").strip():
-            raise ValidationError("Order as or product code is required for every line item", field="order_as")
+        if not (li_data.get("hardware_category") or "").strip():
+            raise ValidationError("Hardware category is required for every line item", field="hardware_category")
+        if not (li_data.get("product_code") or "").strip():
+            raise ValidationError("Product code is required for every line item", field="product_code")
 
         poli = POLineItem(
             id=uuid.uuid4(),
@@ -256,6 +259,9 @@ def create_po(
             unit_cost=Decimal(str(li_data["unit_cost"])) if li_data.get("unit_cost") else Decimal("0"),
             classification=classification_val,
             order_as=cleaned_order_as,
+            # A NEXUS REGISTERED LINE from birth: the category and code above came off the schedule,
+            # so the OPEN-POS SYNC must never overwrite them with GP's item number and description.
+            nexus_registered=True,
             # GP assigns ORD = line index * 16384 (1-based) in this same order when the PO is pushed
             # via the relay, so record the mapping now - it's what a relay /receipt targets per line.
             gp_line_ord=idx * 16384,
@@ -389,11 +395,14 @@ def register_po_in_gp(
     # (== this payload order), which is what a relay /receipt targets per line.
     for idx, li_data in enumerate(line_items, start=1):
         order_as_raw = li_data.get("order_as")
+        # #563: Hardware Category and Product Code are the line's identity and are both required; they
+        # are what a PO REGISTRATION sends GP as the item number and the description. Order As is the
+        # only optional field on a line - Nexus-only, never sent to GP - and persists stripped or None.
         cleaned_order_as = order_as_raw.strip() if order_as_raw and order_as_raw.strip() else None
-        # #563: GP's item number falls back to product_code when order_as is blank (services/gp_po.py),
-        # so a line needs order_as OR product_code - not order_as specifically. Persist stripped or None.
-        if cleaned_order_as is None and not (li_data.get("product_code") or "").strip():
-            raise ValidationError("Order as or product code is required for every line item", field="order_as")
+        if not (li_data.get("hardware_category") or "").strip():
+            raise ValidationError("Hardware category is required for every line item", field="hardware_category")
+        if not (li_data.get("product_code") or "").strip():
+            raise ValidationError("Product code is required for every line item", field="product_code")
         qty = li_data.get("ordered_quantity")
         if qty is None or qty < 1:
             raise ValidationError("Ordered quantity must be at least 1", field="ordered_quantity")
@@ -418,6 +427,9 @@ def register_po_in_gp(
             poli.unit_cost = Decimal(str(unit_cost))
             poli.classification = classification_val
             poli.order_as = cleaned_order_as
+            # The category and code just written are the schedule's, so this is a NEXUS REGISTERED
+            # LINE whatever it was before.
+            poli.nexus_registered = True
             poli.gp_line_ord = idx * 16384
         else:
             session.add(
@@ -431,6 +443,8 @@ def register_po_in_gp(
                     unit_cost=Decimal(str(unit_cost)),
                     classification=classification_val,
                     order_as=cleaned_order_as,
+                    # A NEXUS REGISTERED LINE, like every line the draft/register path writes.
+                    nexus_registered=True,
                     gp_line_ord=idx * 16384,
                 )
             )

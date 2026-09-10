@@ -20,7 +20,7 @@ from app.repositories import gp_po_sync_repository as sync_repo
 COMPANY = "TUBC"
 
 
-def _line(ord_, item, qty, received=0, cancelled=0, unit_cost=10, job="J1"):
+def _line(ord_, item, qty, received=0, cancelled=0, unit_cost=10, job="J1", cost_code=None):
     return {
         "ord": ord_,
         "item": item,
@@ -31,11 +31,21 @@ def _line(ord_, item, qty, received=0, cancelled=0, unit_cost=10, job="J1"):
         "unit_cost": unit_cost,
         "job": job,
         "line_status": 2,
+        "cost_code": cost_code,
     }
 
 
-def _po(po_number, lines, *, source="work", vendor_id="V1", vendor_name="Acme", doc_date="2026-01-05"):
-    return {
+def _po(
+    po_number,
+    lines,
+    *,
+    source="work",
+    vendor_id="V1",
+    vendor_name="Acme",
+    doc_date="2026-01-05",
+    freight=None,
+):
+    po = {
         "po_number": po_number,
         "gp_status": 2,
         "vendor_id": vendor_id,
@@ -45,6 +55,9 @@ def _po(po_number, lines, *, source="work", vendor_id="V1", vendor_name="Acme", 
         "source_table": source,
         "lines": lines,
     }
+    if freight is not None:
+        po["freight"] = freight
+    return po
 
 
 @pytest.fixture
@@ -152,6 +165,7 @@ def test_converges_into_nexus_row_without_touching_overlay(db_session, project):
         ordered_quantity=5,
         received_quantity=0,
         unit_cost=Decimal("10.00"),
+        nexus_registered=True,
     )
     db_session.add(nexus_line)
     db_session.flush()
@@ -164,11 +178,12 @@ def test_converges_into_nexus_row_without_touching_overlay(db_session, project):
 
     row = _get(db_session, "PO200")
     assert row.origin == POOrigin.NEXUS  # origin never flips
-    # Nexus-only overlay untouched.
+    # NEXUS-ONLY FIELDS untouched.
     assert row.request_number == "PO-REQ-042"
-    assert row.cost_code == "210-200-2"
     assert row.notes == "hand-typed note"
     assert row.vendor_quote_number == "Q-999"
+    # cost_code is GP-owned now, but GP reported none on this pass, so the stored value stands.
+    assert row.cost_code == "210-200-2"
     # GP-owned facts converge: received is authoritative, status moves to partial.
     assert row.status == POStatus.PARTIALLY_RECEIVED
     assert row.line_items[0].received_quantity == 2
@@ -499,3 +514,212 @@ def test_a_closed_or_already_cancelled_row_is_never_touched(db_session, project)
     assert closed.gp_missing_since is None
     assert cancelled.gp_missing_since is None
     assert cancelled.deleted_at == cancelled_deleted_at
+
+
+# --- the NEXUS REGISTERED LINE rule -------------------------------------------------------------------
+#
+# Identity is decided per LINE, not per PO. A line whose hardware category and product code came off a
+# hardware schedule keeps them forever; every other line takes GP's item number and description on
+# every pass. That is what lets a GP-born PO be registered one line at a time.
+
+
+def _registered_line(db_session, po, ord_, *, category, product_code, ordered=5):
+    li = POLineItem(
+        id=uuid.uuid4(),
+        po_id=po.id,
+        gp_line_ord=ord_,
+        hardware_category=category,
+        product_code=product_code,
+        ordered_quantity=ordered,
+        received_quantity=0,
+        unit_cost=Decimal("10.00"),
+        nexus_registered=True,
+    )
+    db_session.add(li)
+    db_session.flush()
+    return li
+
+
+def test_a_registered_line_keeps_its_identity_while_its_quantities_converge(db_session, project):
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO700", [_line(16384, "HD 001", 5)]), _project_map(db_session)
+    )
+    db_session.flush()
+    row = _get(db_session, "PO700")
+    line = row.line_items[0]
+    line.hardware_category = "HINGE"
+    line.product_code = "HG-100"
+    line.nexus_registered = True
+    db_session.flush()
+
+    sync_repo.upsert_mirrored_po(
+        db_session,
+        COMPANY,
+        _po("PO700", [_line(16384, "HD 001", 8, received=3, unit_cost=12)]),
+        _project_map(db_session),
+    )
+    db_session.flush()
+
+    line = _get(db_session, "PO700").line_items[0]
+    assert (line.hardware_category, line.product_code) == ("HINGE", "HG-100")
+    # Quantities and unit cost are GP-owned on every line, registered or not.
+    assert line.ordered_quantity == 8
+    assert line.received_quantity == 3
+    assert line.unit_cost == Decimal("12")
+
+
+def test_an_unregistered_line_is_overwritten_with_gps_own_identity(db_session, project):
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO701", [_line(16384, "HD 001", 5)]), _project_map(db_session)
+    )
+    db_session.flush()
+
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO701", [_line(16384, "SP 001", 5)]), _project_map(db_session)
+    )
+    db_session.flush()
+
+    line = _get(db_session, "PO701").line_items[0]
+    assert line.product_code == "SP 001"
+    assert line.hardware_category == "SP 001 description"
+    assert line.nexus_registered is False
+
+
+def test_a_line_the_mirror_creates_starts_unregistered(db_session, project):
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO702", [_line(16384, "HD 001", 5)]), _project_map(db_session)
+    )
+    db_session.flush()
+
+    line = _get(db_session, "PO702").line_items[0]
+    assert line.nexus_registered is False
+    assert line.product_code == "HD 001"
+
+
+def test_registration_survives_a_line_gp_has_cancelled_to_nothing(db_session, project):
+    """The zeroing branch writes identity too, so it needs the same per-line rule as the live one."""
+    nexus = PurchaseOrder(
+        id=uuid.uuid4(),
+        po_number="PO703",
+        request_number="PO-REQ-703",
+        origin=POOrigin.NEXUS,
+        gp_company=COMPANY,
+        company=COMPANY,
+        project_id=project.id,
+        status=POStatus.GP_REGISTERED,
+    )
+    db_session.add(nexus)
+    db_session.flush()
+    _registered_line(db_session, nexus, 16384, category="HINGE", product_code="HG-100")
+
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO703", [_line(16384, "HD 001", 5, cancelled=5)]), _project_map(db_session)
+    )
+    db_session.flush()
+
+    line = _get(db_session, "PO703").line_items[0]
+    assert (line.hardware_category, line.product_code) == ("HINGE", "HG-100")
+
+
+def test_one_registered_line_and_one_not_are_treated_apart(db_session, project):
+    sync_repo.upsert_mirrored_po(
+        db_session,
+        COMPANY,
+        _po("PO704", [_line(16384, "HD 001", 5), _line(32768, "SP 001", 2)]),
+        _project_map(db_session),
+    )
+    db_session.flush()
+    row = _get(db_session, "PO704")
+    first = next(li for li in row.line_items if li.gp_line_ord == 16384)
+    first.hardware_category = "HINGE"
+    first.product_code = "HG-100"
+    first.nexus_registered = True
+    db_session.flush()
+
+    sync_repo.upsert_mirrored_po(
+        db_session,
+        COMPANY,
+        _po("PO704", [_line(16384, "HD 002", 5), _line(32768, "SP 002", 2)]),
+        _project_map(db_session),
+    )
+    db_session.flush()
+
+    row = _get(db_session, "PO704")
+    registered = next(li for li in row.line_items if li.gp_line_ord == 16384)
+    mirrored = next(li for li in row.line_items if li.gp_line_ord == 32768)
+    assert (registered.hardware_category, registered.product_code) == ("HINGE", "HG-100")
+    assert mirrored.product_code == "SP 002"
+
+
+# --- cost code and freight, now GP-OWNED FIELDS -------------------------------------------------------
+
+
+def test_freight_lands_in_shipping_cost(db_session, project):
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO710", [_line(16384, "IT1", 5)], freight=125.5), _project_map(db_session)
+    )
+    db_session.flush()
+    assert _get(db_session, "PO710").shipping_cost == Decimal("125.50")
+
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO710", [_line(16384, "IT1", 5)], freight=0), _project_map(db_session)
+    )
+    db_session.flush()
+    # GP dropping the charge to zero is a real value, not an absent one.
+    assert _get(db_session, "PO710").shipping_cost == Decimal("0.00")
+
+
+def test_cost_code_comes_from_the_first_line_carrying_one(db_session, project):
+    sync_repo.upsert_mirrored_po(
+        db_session,
+        COMPANY,
+        _po("PO711", [_line(16384, "IT1", 5), _line(32768, "IT2", 2, cost_code="210-200-2")]),
+        _project_map(db_session),
+    )
+    db_session.flush()
+    assert _get(db_session, "PO711").cost_code == "210-200-2"
+
+
+def test_lines_that_disagree_on_a_cost_code_keep_the_first(db_session, project, caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="app.repositories.gp_po_sync_repository"):
+        sync_repo.upsert_mirrored_po(
+            db_session,
+            COMPANY,
+            _po(
+                "PO712", [_line(16384, "IT1", 5, cost_code="210-200-2"), _line(32768, "IT2", 2, cost_code="310-000-3")]
+            ),
+            _project_map(db_session),
+        )
+    db_session.flush()
+    assert _get(db_session, "PO712").cost_code == "210-200-2"
+    assert "more than one cost code" in caplog.text
+
+
+def test_a_relay_that_sends_neither_key_leaves_both_values_alone(db_session, project):
+    """The relay ships separately from the backend. Until the workstation is updated the keys are
+    simply absent, and absent must not read as zero - that would wipe what registration typed."""
+    nexus = PurchaseOrder(
+        id=uuid.uuid4(),
+        po_number="PO713",
+        request_number="PO-REQ-713",
+        origin=POOrigin.NEXUS,
+        gp_company=COMPANY,
+        company=COMPANY,
+        project_id=project.id,
+        status=POStatus.GP_REGISTERED,
+        cost_code="210-200-2",
+        shipping_cost=Decimal("42.00"),
+    )
+    db_session.add(nexus)
+    db_session.flush()
+    _registered_line(db_session, nexus, 16384, category="HINGE", product_code="HG-100")
+
+    # _po() omits "freight" unless asked, and _line() carries cost_code None: an old relay's payload.
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO713", [_line(16384, "IT1", 5)]), _project_map(db_session))
+    db_session.flush()
+
+    row = _get(db_session, "PO713")
+    assert row.shipping_cost == Decimal("42.00")
+    assert row.cost_code == "210-200-2"

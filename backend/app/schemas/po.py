@@ -407,9 +407,12 @@ class POQueries:
 
         Project, not vendor: the vendor that used to scope this was the local contact record, which
         is gone with the table, and the GP vendor is not chosen until register time. Project, not
-        global: `order_as` is the GP line's item number, so a global list would offer one supplier's
-        catalogue number while raising a PO for another. A null project_id means a stock PO and
-        scopes to the other project-less POs."""
+        global: `order_as` is one supplier's catalogue number for the product, so a global list would
+        offer the number of a supplier this PO is not being raised with. A null project_id means a
+        stock PO and scopes to the other project-less POs.
+
+        Order As is Nexus-only - a PO REGISTRATION sends GP the hardware category as the item number
+        and the product code as the description, and never this value."""
         with SessionLocal() as session:
             scope = tenant_scope(info)
             pid = uuid.UUID(str(project_id)) if project_id else None

@@ -132,10 +132,11 @@ constraint.
    - CAD. USD is ~3% of real POs and is tracked as relay hardening; the relay assumes CAD today.
 
 8. line.item_number (GP ITEMNMBR, char <=31) and line.item_description (char <=101)
-   - item_number from the line's `order_as` (how we actually order it, e.g. `ML2010`) when present, else
-     `product_code`; item_description a composed string from `product_code` + `hardware_category`
-   - non-inventoried GP lines accept a free item string, so this is flexible; confirm the order_as vs
-     product_code choice against how purchasing reads a GP PO before prod. truncate to the GP lengths.
+   - item_number is the line's `hardware_category`; item_description is its `product_code`. the wider
+     of the two GP fields therefore holds the product code, which is the value that can run long.
+   - `order_as` is Nexus-only and is never sent to GP at all.
+   - non-inventoried GP lines accept a free item string, so both are free text. truncate to the GP
+     lengths: a category over 30 characters is cut (and logged), never a reason to refuse the PO.
 
 9. line.quantity / line.unit_cost / line.uofm / line.location_code
    - quantity = `ordered_quantity`, unit_cost = the line's `unit_cost`, uofm = "Each"

@@ -5,9 +5,12 @@ The UC Nexus fields (vendor, buyer, job, cost code, line items) map onto POHeade
 in relay/src/ucnexus_relay/models.py - kept here as pure functions so createPo and
 registerPoInGp (which both push a create_po job) share one mapping instead of drifting apart."""
 
+import logging
 from datetime import date
 
 from app.errors import ValidationError
+
+logger = logging.getLogger(__name__)
 
 _LOCATION_CODE = "VANCOUVER"
 _UOFM = "Each"
@@ -49,8 +52,12 @@ def validate_create_po_inputs(
         raise ValidationError("A cost code is required for a project-linked PO", field="cost_code")
 
     for li in line_items:
-        if not (li.get("order_as") or "").strip() and not (li.get("product_code") or "").strip():
-            raise ValidationError("Order as is required for every line item", field="order_as")
+        # Both halves of the line's GP identity are required: the category becomes GP's item number and
+        # the code its description. Order As is the one optional field and reaches GP not at all.
+        if not (li.get("hardware_category") or "").strip():
+            raise ValidationError("Hardware category is required for every line item", field="hardware_category")
+        if not (li.get("product_code") or "").strip():
+            raise ValidationError("Product code is required for every line item", field="product_code")
         qty = li.get("ordered_quantity")
         if qty is None or qty < 1:
             raise ValidationError("Ordered quantity must be at least 1", field="ordered_quantity")
@@ -78,6 +85,12 @@ def build_create_po_payload(
     with hardware_category, product_code, ordered_quantity, unit_cost, order_as. job_number present
     means every line is job-cost (product_indicator=2); absent means non-inventoried (1).
 
+    The GP PO LINE ITEM identity a PO REGISTRATION writes: item number is the schedule's hardware
+    category, item description is its product code. Order As is Nexus-only and is never sent to GP,
+    so nothing in the payload reads it. GP's item number is 30 characters and its description 100, so
+    an over-long category is truncated (and logged) rather than refused - a PO must never fail to
+    register over the width of a label.
+
     Issue #257 GP header charges: tax_detail_id is the GP purchase tax detail the relay computes tax
     from (CAD only; the relay resolves currency from the vendor). freight_amount maps from the PO's
     shipping_cost, misc_amount + trade_discount are the new register-form inputs. None -> 0 (the relay
@@ -88,9 +101,15 @@ def build_create_po_payload(
     lines = []
     for li in line_items:
         product_code = li["product_code"].strip()
-        order_as = (li.get("order_as") or "").strip()
-        item_number = (order_as or product_code)[:_MAX_ITEM_NUMBER]
-        item_description = f"{product_code} {li['hardware_category'].strip()}".strip()[:_MAX_ITEM_DESCRIPTION]
+        hardware_category = li["hardware_category"].strip()
+        item_number = hardware_category[:_MAX_ITEM_NUMBER]
+        if len(hardware_category) > _MAX_ITEM_NUMBER:
+            logger.info(
+                "create_po payload: hardware category %r cut to %s characters for GP's item number",
+                hardware_category,
+                _MAX_ITEM_NUMBER,
+            )
+        item_description = product_code[:_MAX_ITEM_DESCRIPTION]
         lines.append(
             {
                 "item_number": item_number,

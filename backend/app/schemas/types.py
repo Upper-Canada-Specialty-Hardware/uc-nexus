@@ -391,6 +391,10 @@ class POLineItem:
     unit_cost: float
     order_as: str | None
     gp_line_ord: int | None
+    # A NEXUS REGISTERED LINE: hardwareCategory and productCode above are the schedule's own, so the
+    # OPEN-POS SYNC leaves them alone. False on a mirrored line still carrying GP's item number and
+    # description.
+    nexus_registered: bool
     # Issue #232: derived (not stored) - the TITAN manufacturer of the HardwareItem rows this line
     # covers, for the PO dialog's vendor suggestion. Null when no linked item carries a manufacturer.
     manufacturer: str | None
@@ -616,6 +620,10 @@ class PurchaseOrder:
     origin: POOrigin
     # When the mirror sync last wrote GP-derived fields onto this row; null on a never-synced NEXUS PO.
     gp_synced_at: datetime | None
+    # Derived (not stored): every one of this PO's lines is a NEXUS REGISTERED LINE. False on a PO with
+    # no lines at all, and on any PO still holding one line that carries GP's own item number and
+    # description. The paged register does not publish it - its rows never load the line collection.
+    nexus_registered: bool
     project_id: strawberry.ID | None
     status: POStatus
     cost_code: str | None
