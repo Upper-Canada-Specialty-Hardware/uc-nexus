@@ -79,13 +79,6 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # --- admin.py -------------------------------------------------------------------------
     # Both walk a whole project's openings and put purchasing next to fulfilment, which is the
     # admin Opening Status page and nothing else.
-    # --- buyer.py -------------------------------------------------------------------------
-    # `buyerAssignments` is the PO dialog's read of the CALLER's own row, so any signed-in user;
-    # `allBuyerAssignments` is the whole table (which buyer owns which project) and is admin (#428).
-    "allBuyerAssignments": ADMIN_ROLE,
-    "buyerAssignments": SIGNED_IN,
-    "deleteBuyerAssignment": ADMIN_ROLE,
-    "saveBuyerAssignment": ADMIN_ROLE,
     # --- custom_items.py ------------------------------------------------------------------
     # The catalog of non-schedule inventory - frames, specialties, consumables (#454). SIGNED_IN
     # throughout: the issue puts maintenance in warehouse users' hands and there is no Clerk role for
@@ -158,8 +151,8 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # Give a GP-born PO's lines their schedule identity - the NEXUS REGISTERED LINE write.
     "nexusRegisterPoLines": SIGNED_IN,
     "deletePoDocument": SIGNED_IN,
-    # Signed-in, not admin: which projects a caller may raise a PO against is decided inside the
-    # resolver from the caller's own GP buyer assignment (#216), not by role.
+    # Signed-in, not admin: raising and registering a PO is ordinary purchasing work, and the PO is
+    # pushed as the caller's own GP buyer identity, which the resolver enforces.
     "emailPoToVendor": SIGNED_IN,
     "registerPoInGp": SIGNED_IN,
     "savePoDocumentData": SIGNED_IN,
@@ -198,9 +191,11 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "gpDivisions": SIGNED_IN,
     "gpEmployees": ADMIN_ROLE,
     "gpJobs": SIGNED_IN,
+    "gpPoEntryOptions": SIGNED_IN,
     "gpPoTotals": SIGNED_IN,
     "gpTaxDetails": SIGNED_IN,
     "gpTaxSchedules": SIGNED_IN,
+    "gpVendorAddresses": SIGNED_IN,
     "gpVendors": SIGNED_IN,
     "relayAdoptWindow": ADMIN_ROLE,
     "relayEvents": ADMIN_ROLE,

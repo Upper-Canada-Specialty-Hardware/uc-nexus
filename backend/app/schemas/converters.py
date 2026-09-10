@@ -13,8 +13,6 @@ from app.repositories import project_repository, shipping_repository
 
 from .enums import GpOutboxStatus, RelayEventKind, RequestStage
 from .types import (
-    BuyerAssignment,
-    BuyerAssignmentProject,
     ClerkUser,
     DeficiencyReview,
     DeficientItemRow,
@@ -27,10 +25,14 @@ from .types import (
     GpJob,
     GpOutboxEntry,
     GpOutboxSummary,
+    GpPoEntryOptions,
     GpSetupIssue,
+    GpShippingMethod,
+    GpSite,
     GpTaxDetail,
     GpTaxSchedule,
     GpVendor,
+    GpVendorAddress,
     InventoryLocation,
     Notification,
     Opening,
@@ -105,6 +107,9 @@ def po_line_item_to_type(li) -> POLineItem:
         unit_cost=float(li.unit_cost),
         order_as=li.order_as,
         gp_line_ord=li.gp_line_ord,
+        cost_code=li.cost_code,
+        uofm=li.uofm,
+        job_cost=li.job_cost,
         nexus_registered=li.nexus_registered,
         custom_inventory_item_id=(
             strawberry.ID(str(li.custom_inventory_item_id)) if li.custom_inventory_item_id else None
@@ -251,6 +256,42 @@ def gp_vendor_to_type(v: dict) -> GpVendor:
         # older relays predate the currency field (issue #257); default to CAD so a mixed-version
         # relay doesn't break the vendor dropdown.
         currency=v.get("currency") or "CAD",
+        # The vendor card's own PO defaults. A relay too old to send them leaves all three null and
+        # the register-PO form uses its own defaults instead.
+        shipping_method=v.get("shipping_method"),
+        purchase_address_code=v.get("purchase_address_code"),
+        contact=v.get("contact"),
+    )
+
+
+def gp_shipping_method_to_type(m: dict) -> GpShippingMethod:
+    return GpShippingMethod(id=m["id"], description=m.get("description"))
+
+
+def gp_site_to_type(s: dict) -> GpSite:
+    return GpSite(code=s["code"], description=s.get("description"))
+
+
+def gp_po_entry_options_to_type(result: dict) -> GpPoEntryOptions:
+    return GpPoEntryOptions(
+        shipping_methods=[gp_shipping_method_to_type(m) for m in (result.get("shipping_methods") or [])],
+        sites=[gp_site_to_type(s) for s in (result.get("sites") or [])],
+        units_of_measure=list(result.get("units_of_measure") or []),
+    )
+
+
+def gp_vendor_address_to_type(a: dict) -> GpVendorAddress:
+    return GpVendorAddress(
+        code=a["code"],
+        contact=a.get("contact"),
+        address1=a.get("address1"),
+        address2=a.get("address2"),
+        address3=a.get("address3"),
+        city=a.get("city"),
+        state=a.get("state"),
+        postal_code=a.get("postal_code"),
+        country=a.get("country"),
+        phone=a.get("phone"),
     )
 
 
@@ -383,20 +424,6 @@ def clerk_user_to_type(u: dict) -> ClerkUser:
         gp_buyer_id=u.get("gp_buyer_id"),
         company=u.get("company"),
         image_url=u["image_url"],
-    )
-
-
-def buyer_assignment_to_type(a) -> BuyerAssignment:
-    return BuyerAssignment(
-        buyer_id=a.buyer_id,
-        projects=[
-            BuyerAssignmentProject(
-                id=strawberry.ID(str(p.id)),
-                project_id=p.project_id,
-                description=p.description,
-            )
-            for p in a.projects
-        ],
     )
 
 

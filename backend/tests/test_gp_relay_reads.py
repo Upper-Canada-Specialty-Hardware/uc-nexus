@@ -94,6 +94,128 @@ def test_gp_vendors_currency_defaults_to_cad_for_older_relay(monkeypatch):
     assert asyncio.run(run())[0].currency == "CAD"
 
 
+def test_gp_vendors_carries_the_vendor_cards_own_po_defaults(monkeypatch):
+    _install_fake_gateway(
+        monkeypatch,
+        {
+            "vendors": [
+                {
+                    "vendor_id": "V1",
+                    "vendor_name": "Acme",
+                    "vendor_class": None,
+                    "status": 1,
+                    "currency": "CAD",
+                    "shipping_method": "LOCAL DELIVERY",
+                    "purchase_address_code": "PRIMARY",
+                    "contact": "Jane Vendor",
+                }
+            ]
+        },
+    )
+
+    async def run():
+        return await Query().gp_vendors(FakeInfo(), company="TUBC")
+
+    vendor = asyncio.run(run())[0]
+    assert vendor.shipping_method == "LOCAL DELIVERY"
+    assert vendor.purchase_address_code == "PRIMARY"
+    assert vendor.contact == "Jane Vendor"
+
+
+def test_a_relay_too_old_to_send_the_vendor_defaults_leaves_them_null(monkeypatch):
+    """The register form then falls back to its own defaults, which is what it did before the vendor
+    card was read at all."""
+    _install_fake_gateway(
+        monkeypatch,
+        {"vendors": [{"vendor_id": "V1", "vendor_name": "Acme", "vendor_class": None, "status": 1}]},
+    )
+
+    async def run():
+        return await Query().gp_vendors(FakeInfo(), company="TUBC")
+
+    vendor = asyncio.run(run())[0]
+    assert (vendor.shipping_method, vendor.purchase_address_code, vendor.contact) == (None, None, None)
+
+
+def test_gp_po_entry_options_maps_relay_result_to_type(monkeypatch):
+    fake = _install_fake_gateway(
+        monkeypatch,
+        {
+            "company": "TUBC",
+            "shipping_methods": [{"id": "LOCAL DELIVERY", "description": "Our truck"}, {"id": "PICKUP"}],
+            "sites": [{"code": "VANCOUVER", "description": "Vancouver warehouse"}],
+            "units_of_measure": ["Each", "Box"],
+        },
+    )
+
+    async def run():
+        return await Query().gp_po_entry_options(FakeInfo(), company="TUBC")
+
+    options = asyncio.run(run())
+    assert [(m.id, m.description) for m in options.shipping_methods] == [
+        ("LOCAL DELIVERY", "Our truck"),
+        ("PICKUP", None),
+    ]
+    assert [(s.code, s.description) for s in options.sites] == [("VANCOUVER", "Vancouver warehouse")]
+    assert options.units_of_measure == ["Each", "Box"]
+    assert fake.calls == [("TUBC", "list_po_entry_options", None)]
+
+
+def test_gp_po_entry_options_tolerates_a_reply_missing_a_list(monkeypatch):
+    """One list a relay does not send yet is an empty picker, not a broken form."""
+    _install_fake_gateway(monkeypatch, {"company": "TUBC", "sites": [{"code": "VANCOUVER"}]})
+
+    async def run():
+        return await Query().gp_po_entry_options(FakeInfo(), company="TUBC")
+
+    options = asyncio.run(run())
+    assert options.shipping_methods == []
+    assert options.units_of_measure == []
+    assert options.sites[0].code == "VANCOUVER"
+
+
+def test_gp_vendor_addresses_scopes_the_call_to_the_vendor(monkeypatch):
+    fake = _install_fake_gateway(
+        monkeypatch,
+        {
+            "company": "TUBC",
+            "vendor_id": "ING100",
+            "addresses": [
+                {
+                    "code": "PRIMARY",
+                    "contact": "Jane Vendor",
+                    "address1": "1 Main St",
+                    "address2": None,
+                    "address3": None,
+                    "city": "Vancouver",
+                    "state": "BC",
+                    "postal_code": "V5K 0A1",
+                    "country": "Canada",
+                    "phone": "6045551234",
+                }
+            ],
+        },
+    )
+
+    async def run():
+        return await Query().gp_vendor_addresses(FakeInfo(), company="TUBC", vendor_id="ING100")
+
+    addresses = asyncio.run(run())
+    assert len(addresses) == 1
+    assert addresses[0].code == "PRIMARY"
+    assert addresses[0].contact == "Jane Vendor"
+    assert addresses[0].city == "Vancouver"
+    assert addresses[0].postal_code == "V5K 0A1"
+    assert fake.calls == [("TUBC", "list_vendor_addresses", {"vendor_id": "ING100"})]
+
+
+def test_the_register_po_reads_are_open_to_any_signed_in_user():
+    """Both back the register-PO form, which is a PO-user screen, and neither returns anything a
+    vendor list does not - so they sit with gpVendors rather than with the admin-gated reads."""
+    assert ROOT_FIELD_POLICY["gpPoEntryOptions"] == SIGNED_IN
+    assert ROOT_FIELD_POLICY["gpVendorAddresses"] == SIGNED_IN
+
+
 def test_gp_tax_details_maps_relay_result_to_type(monkeypatch):
     fake = _install_fake_gateway(
         monkeypatch,

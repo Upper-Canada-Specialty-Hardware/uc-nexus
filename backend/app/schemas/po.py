@@ -18,7 +18,6 @@ from app.errors import (
 )
 from app.models.enums import PODocumentType as PODocumentTypeDB
 from app.repositories import (
-    buyer_repository,
     po_document_settings_repository,
     po_repository,
     project_repository,
@@ -166,10 +165,20 @@ def _prepare_register_po(
     project_id=None,
     scope=None,
     gp_company=None,
+    shipping_method=None,
+    vendor_address_code=None,
+    site=None,
+    doc_date=None,
+    contact=None,
+    comment=None,
 ) -> dict:
     """Read-only pre-flight for register_po_in_gp: confirm the PO is a registerable DRAFT, resolve the
     job number, pre-validate, and build the relay create_po payload (po_number=None; GP assigns it).
-    A lean scalar read - the resolver never needs the PO's documents here."""
+    A lean scalar read - the resolver never needs the PO's documents here.
+
+    `contact` is the Confirm With name, and the register form sends the vendor's own contact as its
+    default - which is why nothing here asks the relay for it. A round trip to GP just to fill a
+    field the dialog already had in hand would put another read in front of every registration."""
     from sqlalchemy import select
 
     from app.models.enums import POStatus
@@ -195,10 +204,9 @@ def _prepare_register_po(
             raise InvalidStateTransitionError(f"Only a Draft PO can be registered in GP; this one is {po.status.value}")
 
         # #316: a draft with no project may be given one here, and it has to take effect BEFORE the
-        # payload is built - the GP job number and the issue #216 buyer gating both key off it, so
-        # validating against the old (absent) project would push the PO to GP under the wrong job.
-        # An override is ignored once the PO has a project; the repository enforces the same rule at
-        # write time, so the two cannot disagree.
+        # payload is built - the GP job number keys off it, so validating against the old (absent)
+        # project would push the PO to GP under the wrong job. An override is ignored once the PO has
+        # a project; the repository enforces the same rule at write time, so the two cannot disagree.
         effective_project_id = po.project_id if po.project_id is not None else project_id
 
         job_number = None
@@ -222,26 +230,7 @@ def _prepare_register_po(
         # still applies when the live check cannot run.
         project_repository.require_gp_setup_ok(session, effective_project_id)
 
-        # Issue #216: registering a draft is the ordering action - same strict buyer gating.
-        buyer_repository.validate_buyer_can_order(session, buyer_id, effective_project_id)
-
         manufacturers = _resolve_line_manufacturers(session, effective_project_id, line_items_data)
-
-    # #488: job POs carry the project number as a suffix, so two purchasers registering at the same
-    # moment produce visibly distinct, traceable numbers. A stock PO has no project and gets none.
-    #
-    # GP's PONUMBER is char(17) and 'PO' + 7 digits leaves 7 for '-' + suffix, so a project number
-    # over 6 characters cannot fit. That drops the suffix rather than refusing the PO: the suffix is
-    # a traceability nicety, and blocking somebody from ordering hardware because their job number
-    # is long would be a far worse failure than a PO without it. The relay keeps a hard cap anyway,
-    # because a number that reached GP truncated could never be matched back.
-    po_number_suffix = job_number or None
-    if po_number_suffix and 9 + 1 + len(po_number_suffix) > gp_po._MAX_PO_NUMBER:
-        logger.info(
-            "Project number %s is too long for a GP PO-number suffix; registering without one",
-            po_number_suffix,
-        )
-        po_number_suffix = None
 
     gp_po.validate_create_po_inputs(
         job_number=job_number,
@@ -249,6 +238,10 @@ def _prepare_register_po(
         po_number=None,
         line_items=line_items_data,
     )
+    # No PO-number suffix. The project number used to be appended to GP's reserved number so two
+    # purchasers registering at the same moment produced visibly distinct numbers; GP's own number is
+    # already unique, and the suffix made a Nexus-registered PO's number unlike every other number in
+    # the company. The relay still accepts one, so nothing on the workstation has to change.
     payload = gp_po.build_create_po_payload(
         vendor_gp_id=gp_vendor_id,
         vendor_contact_name=None,
@@ -257,12 +250,17 @@ def _prepare_register_po(
         cost_code=cost_code,
         po_number=None,
         line_items=line_items_data,
-        po_number_suffix=po_number_suffix,
         # Issue #257: freight maps from the PO's shipping_cost; misc + trade discount are new inputs.
         tax_detail_id=tax_detail_id,
         freight_amount=shipping_cost,
         misc_amount=miscellaneous,
         trade_discount=trade_discount,
+        shipping_method=shipping_method,
+        vendor_address_code=vendor_address_code,
+        site=site,
+        doc_date=doc_date,
+        contact=contact,
+        comment=comment,
     )
     # build_create_po_payload emits one line per line_items_data entry, in order, so index-align the
     # resolved manufacturers onto the relay payload lines (the relay caps/RTRIMs to USRDEFND1's char(50)).
@@ -541,8 +539,7 @@ class POMutations:
     def create_draft_po(self, info: strawberry.Info, input: CreateDraftPOInput) -> PurchaseOrder:
         """Issue #256: manual PO creation lands as a plain DRAFT - no relay round-trip, no GP fields,
         no buyer involved. Registering the draft into GP (register_po_in_gp) is the separate,
-        conscious user action where GP vendor / buyer identity / cost code are captured and the
-        issue #216 assignment gating applies.
+        conscious user action where GP vendor / buyer identity / cost code are captured.
 
         The caller is recorded as the request's originator, from the Clerk token rather than an
         argument (#427). A receive against this PO later asks them whether the shipment stays in the
@@ -557,6 +554,9 @@ class POMutations:
                 "classification": li.classification.value if li.classification else None,
                 "order_as": li.order_as,
                 "custom_inventory_item_id": li.custom_inventory_item_id,
+                "cost_code": li.cost_code,
+                "uofm": li.uofm,
+                "job_cost": li.job_cost,
             }
             for li in input.line_items
         ]
@@ -699,6 +699,9 @@ class POMutations:
                 "classification": li.classification.value if li.classification else None,
                 "order_as": li.order_as,
                 "custom_inventory_item_id": li.custom_inventory_item_id,
+                "cost_code": li.cost_code,
+                "uofm": li.uofm,
+                "job_cost": li.job_cost,
             }
             for li in input.line_items
         ]
@@ -722,6 +725,12 @@ class POMutations:
             project_id=register_project_id,
             scope=tenant_scope(info),
             gp_company=input.gp_company,
+            shipping_method=input.shipping_method,
+            vendor_address_code=input.vendor_address_code,
+            site=input.site,
+            doc_date=input.doc_date,
+            contact=input.contact,
+            comment=input.comment,
         )
 
         # #425 live re-check. The job number is read back off the payload rather than returned
@@ -806,6 +815,10 @@ class POMutations:
             buyer_id=input.buyer_id,
             shipping_cost=input.shipping_cost,
             tariff_amount=input.tariff_amount,
+            # #691: a draft with no project, registered with one chosen in the dialog, must land ON
+            # that project. This was omitted, so the online path dropped the choice while the outbox
+            # replay - which reads the same value out of persist_context - kept it.
+            project_id=register_project_id,
         )
         return RegisterPOResult(queued=False, outbox_entry_id=None, purchase_order=po)
 

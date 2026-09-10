@@ -29,8 +29,10 @@ from .converters import (
     gp_customer_to_type,
     gp_employee_to_type,
     gp_job_to_type,
+    gp_po_entry_options_to_type,
     gp_tax_detail_to_type,
     gp_tax_schedule_to_type,
+    gp_vendor_address_to_type,
     gp_vendor_to_type,
     relay_event_to_type,
     relay_install_to_type,
@@ -45,10 +47,12 @@ from .types import (
     GpCustomerAddress,
     GpEmployee,
     GpJob,
+    GpPoEntryOptions,
     GpPoTotals,
     GpTaxDetail,
     GpTaxSchedule,
     GpVendor,
+    GpVendorAddress,
     RelayAdoptWindow,
     RelayEnrollResult,
     RelayEvent,
@@ -202,6 +206,24 @@ class RelayQueries:
         """Live active vendor list (PM00200) via the connected relay."""
         result = await relay_gateway.relay_call(resolve_gp_company(info, company), "list_vendors")
         return [gp_vendor_to_type(v) for v in result["vendors"]]
+
+    @strawberry.field
+    async def gp_po_entry_options(self, info: strawberry.Info, company: str) -> GpPoEntryOptions:
+        """The choices GP's own Purchase Order Entry offers - shipping methods (SY03000), sites
+        (IV40700) and units of measure - read live through the connected relay for the register-PO
+        form. One call rather than three, because the form opens needing all of them at once."""
+        result = await relay_gateway.relay_call(resolve_gp_company(info, company), "list_po_entry_options")
+        return gp_po_entry_options_to_type(result or {})
+
+    @strawberry.field
+    async def gp_vendor_addresses(self, info: strawberry.Info, company: str, vendor_id: str) -> list[GpVendorAddress]:
+        """One vendor's address codes (PM00300) via the connected relay, for the register-PO purchase
+        address picker. Scoped to the vendor because an address code belongs to one vendor card, and
+        GP validates the code the PO is sent to against that card."""
+        result = await relay_gateway.relay_call(
+            resolve_gp_company(info, company), "list_vendor_addresses", {"vendor_id": vendor_id}
+        )
+        return [gp_vendor_address_to_type(a) for a in (result or {}).get("addresses") or []]
 
     @strawberry.field
     async def gp_buyers(self, info: strawberry.Info, company: str) -> list[str]:

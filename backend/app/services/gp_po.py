@@ -12,19 +12,37 @@ from app.errors import ValidationError
 
 logger = logging.getLogger(__name__)
 
-_LOCATION_CODE = "VANCOUVER"
+_SITE = "VANCOUVER"
+_SHIPPING_METHOD = "LOCAL DELIVERY"
+_VENDOR_ADDRESS_CODE = "PRIMARY"
 _UOFM = "Each"
 # PAIRED EDIT: these GP column-width limits mirror the pydantic Field(max_length=...) on the relay's
-# models.py (POLine.item_number=30 / item_description=100, POHeader.confirm_with=20, ReceiptLine.
-# rack_location=255). They can't share a constant across the backend and relay packages, so if GP's
-# column widths ever change, edit BOTH sides - changing one alone lets an over-length value pass here
-# and get rejected as an opaque invalid_payload at the relay, or vice-versa.
+# models.py (POLine.item_number=30 / item_description=100 / uofm=9, POHeader.confirm_with=20 /
+# contact=61 / comment=500, ReceiptLine.rack_location=255). They can't share a constant across the
+# backend and relay packages, so if GP's column widths ever change, edit BOTH sides - changing one
+# alone lets an over-length value pass here and get rejected as an opaque invalid_payload at the
+# relay, or vice-versa.
 _MAX_CONFIRM_WITH = 20
+_MAX_CONTACT = 61
+_MAX_COMMENT = 500
 _MAX_ITEM_NUMBER = 30
 _MAX_ITEM_DESCRIPTION = 100
+_MAX_UOFM = 9
 _MAX_RACK_LOCATION = 255
 # GP PONUMBER is char(17); the relay reserves GP's next number when none is supplied.
 _MAX_PO_NUMBER = 17
+
+
+def line_is_job_cost(li: dict, *, has_project: bool) -> bool:
+    """Whether one line books to the job. The input's own answer wins; null means "job-cost when this
+    PO has a project", which is the rule every registration applied before the flag existed."""
+    explicit = li.get("job_cost")
+    return has_project if explicit is None else bool(explicit)
+
+
+def line_uofm(li: dict) -> str:
+    """The line's unit of measure. Null or blank is 'Each', which is what GP has been sent all along."""
+    return (li.get("uofm") or "").strip() or _UOFM
 
 
 def validate_create_po_inputs(
@@ -45,15 +63,12 @@ def validate_create_po_inputs(
         if len(po_number.strip()) > _MAX_PO_NUMBER:
             raise ValidationError(f"PO number must be at most {_MAX_PO_NUMBER} characters", field="po_number")
 
-    is_job = job_number is not None
-    if is_job and not (cost_code and cost_code.strip()):
-        # a job-linked PO makes every line job-cost (product_indicator=2), which GP requires a cost code
-        # for; without this the relay rejects the whole payload as invalid.
-        raise ValidationError("A cost code is required for a project-linked PO", field="cost_code")
+    has_project = job_number is not None
 
     for li in line_items:
-        # Both halves of the line's GP identity are required: the category becomes GP's item number and
-        # the code its description. Order As is the one optional field and reaches GP not at all.
+        # Both halves of the line's GP identity are required: hardware_category becomes GP's item
+        # number and product_code its description. Order As is the one optional field and reaches GP
+        # not at all.
         if not (li.get("hardware_category") or "").strip():
             raise ValidationError("Hardware category is required for every line item", field="hardware_category")
         if not (li.get("product_code") or "").strip():
@@ -64,6 +79,17 @@ def validate_create_po_inputs(
         unit_cost = li.get("unit_cost")
         if unit_cost is not None and unit_cost < 0:
             raise ValidationError("Unit cost must be zero or greater", field="unit_cost")
+        if len(line_uofm(li)) > _MAX_UOFM:
+            raise ValidationError(f"Unit of measure must be at most {_MAX_UOFM} characters", field="uofm")
+        if line_is_job_cost(li, has_project=has_project):
+            if not has_project:
+                # GP books a job-cost line against a job number, and this PO has none to give it.
+                raise ValidationError("A purchase order with no project cannot have a job-cost line", field="job_cost")
+            line_cost_code = (li.get("cost_code") or "").strip() or (cost_code or "").strip()
+            if not line_cost_code:
+                # GP requires a cost code on a job-cost line (product_indicator 2); without this the
+                # relay rejects the whole payload as invalid.
+                raise ValidationError("A cost code is required for every job-cost line", field="cost_code")
 
 
 def build_create_po_payload(
@@ -80,10 +106,18 @@ def build_create_po_payload(
     freight_amount: float | None = None,
     misc_amount: float | None = None,
     trade_discount: float | None = None,
+    shipping_method: str | None = None,
+    vendor_address_code: str | None = None,
+    site: str | None = None,
+    doc_date: date | None = None,
+    contact: str | None = None,
+    comment: str | None = None,
 ) -> dict:
-    """line_items: the same dicts create_po/register_po_in_gp build for the repository call, each
-    with hardware_category, product_code, ordered_quantity, unit_cost, order_as. job_number present
-    means every line is job-cost (product_indicator=2); absent means non-inventoried (1).
+    """line_items: the same dicts create_po/register_po_in_gp build for the repository call, each with
+    hardware_category, product_code, ordered_quantity, unit_cost, order_as, and the three fields GP
+    takes per line - cost_code, uofm and job_cost. A job-cost line is GP's product_indicator 2 and
+    carries the job number and a cost code; every other line is non-inventoried (1) and carries
+    neither. A null job_cost on a line means "job-cost when this PO has a project".
 
     The GP PO LINE ITEM identity a PO REGISTRATION writes: item number is the schedule's hardware
     category, item description is its product code. Order As is Nexus-only and is never sent to GP,
@@ -94,9 +128,19 @@ def build_create_po_payload(
     Issue #257 GP header charges: tax_detail_id is the GP purchase tax detail the relay computes tax
     from (CAD only; the relay resolves currency from the vendor). freight_amount maps from the PO's
     shipping_cost, misc_amount + trade_discount are the new register-form inputs. None -> 0 (the relay
-    POHeader charge fields are non-null Decimals)."""
-    is_job = job_number is not None
-    confirm_with = (vendor_contact_name or buyer_id).strip()[:_MAX_CONFIRM_WITH]
+    POHeader charge fields are non-null Decimals).
+
+    The rest of the header is what GP's Purchase Order Entry takes: the shipping method, the vendor's
+    purchase address code, the site every line is stocked at, the document date, the contact, and the
+    comment. Each defaults to what every registration has sent so far, except the contact, which is
+    sent only when the form actually set one - see the header below."""
+    has_project = job_number is not None
+    header_site = (site or "").strip() or _SITE
+    header_cost_code = (cost_code or "").strip() or None
+    # GP's Confirm With is the person at the vendor this PO was placed with. The register form sends
+    # the vendor's own contact as its default; with neither that nor an explicit value, the buyer id
+    # is the only name anybody has.
+    confirm_with = (contact or vendor_contact_name or buyer_id).strip()[:_MAX_CONFIRM_WITH]
 
     lines = []
     for li in line_items:
@@ -110,17 +154,19 @@ def build_create_po_payload(
                 _MAX_ITEM_NUMBER,
             )
         item_description = product_code[:_MAX_ITEM_DESCRIPTION]
+        is_job_line = line_is_job_cost(li, has_project=has_project)
+        line_cost_code = (li.get("cost_code") or "").strip() or header_cost_code
         lines.append(
             {
                 "item_number": item_number,
                 "item_description": item_description,
                 "quantity": li["ordered_quantity"],
                 "unit_cost": li["unit_cost"],
-                "location_code": _LOCATION_CODE,
-                "uofm": _UOFM,
-                "product_indicator": 2 if is_job else 1,
-                "job_number": job_number if is_job else None,
-                "cost_code": cost_code if is_job else None,
+                "location_code": header_site,
+                "uofm": line_uofm(li),
+                "product_indicator": 2 if (is_job_line and has_project) else 1,
+                "job_number": job_number if (is_job_line and has_project) else None,
+                "cost_code": line_cost_code if (is_job_line and has_project) else None,
             }
         )
 
@@ -129,13 +175,23 @@ def build_create_po_payload(
             "vendor_id": vendor_gp_id,
             "buyer_id": buyer_id,
             "confirm_with": confirm_with,
-            "doc_date": date.today().isoformat(),
+            "doc_date": (doc_date or date.today()).isoformat(),
             # Issue #257: GP header charges. None -> 0 for the non-null relay Decimals; tax_detail_id
             # stays None when no detail was picked (relay then writes no tax).
             "tax_detail_id": tax_detail_id,
             "freight_amount": freight_amount or 0,
             "misc_amount": misc_amount or 0,
             "trade_discount": trade_discount or 0,
+            "shipping_method": (shipping_method or "").strip() or _SHIPPING_METHOD,
+            "vendor_address_code": (vendor_address_code or "").strip() or _VENDOR_ADDRESS_CODE,
+            # The site every line without one of its own is stocked at.
+            "site": header_site,
+            # The EXPLICIT contact only, and null when the form sent none. The relay leaves the GP
+            # parameter out altogether for a null, and that parameter's name is not verified on the
+            # workstation yet - so a wrong name can only ever fail a PO that actually set a contact,
+            # never one that did not. Confirm With, which is verified, still falls back.
+            "contact": (contact or "").strip()[:_MAX_CONTACT] or None,
+            "comment": (comment or "").strip()[:_MAX_COMMENT] or None,
         },
         "lines": lines,
         "po_number": po_number,

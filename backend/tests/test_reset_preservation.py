@@ -11,7 +11,6 @@ All pure string/metadata work, so they need no Postgres and run in the local sui
 import pytest
 from sqlalchemy import inspect as sa_inspect
 
-from app.models.buyer_assignment import BuyerAssignment
 from app.models.project import Project
 from app.models.relay_install import RelayInstall
 from app.services.reset_preservation import (
@@ -83,14 +82,6 @@ def test_projects_are_not_preserved():
     """GP owns jobs, so projects are re-adopted by the forced sync after the rebuild instead of being
     restored. Preserving them would resurrect projects deleted in GP and defeat the reset."""
     assert Project not in PRESERVED_MODELS
-
-
-def test_buyer_assignments_are_preserved():
-    """Who may order for which project is setup, not project data: GP knows nothing about it, so a
-    reset that dropped it would cost an admin a round of re-entry in Admin -> Buyers. The project
-    links themselves survive as (assignment, job number) pairs and are relinked after the GP sync."""
-    assert BuyerAssignment in PRESERVED_MODELS
-    assert "buyer_id" in preserved_columns(BuyerAssignment, _all_columns(BuyerAssignment))
 
 
 def test_preserved_models_carry_json_columns():

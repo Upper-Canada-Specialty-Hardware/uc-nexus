@@ -24,7 +24,7 @@ from datetime import datetime
 
 import pytest
 
-from app.errors import RelayBusyError
+from app.errors import RelayBusyError, RelayUnavailableError
 from app.services import gp_load, gp_po_sync, gp_window
 
 
@@ -329,7 +329,7 @@ def _run_scheduler(
 ):
     """Drive run_forever against a fake clock and return the log of what it did, in order:
     ("all", ...) for an all-companies pass, ("backfill", company), ("incremental", company),
-    ("sleep", seconds).
+    ("new-po-check", company), ("sleep", seconds).
 
     `wake_at` is {turn number: seconds the interrupted sleep actually consumed} - what a wake() looks
     like from the loop's side."""
@@ -343,6 +343,7 @@ def _run_scheduler(
     # A copy, so a test that seeded the queue keeps its seed and one that did not starts empty.
     monkeypatch.setattr(gp_po_sync, "_requested", set(gp_po_sync._requested))
     monkeypatch.setattr(gp_po_sync, "POLL_SECONDS", 900.0)
+    monkeypatch.setattr(gp_po_sync, "NEW_PO_CHECK_SECONDS", 120.0)
     monkeypatch.setattr(gp_po_sync.gp_load, "HELLO_GRACE_SECONDS", 15.0)
     monkeypatch.setattr(gp_po_sync.gp_load, "paused", lambda: paused)
     monkeypatch.setattr(gp_po_sync.relay_gateway, "_socket", object())
@@ -372,6 +373,10 @@ def _run_scheduler(
         events.append(("incremental", company))
         return {"mode": "incremental", "backfill_done": True, "created": 0, "updated": 0, "skipped": 0, "pos": 0}
 
+    async def fake_new_po_check(company, **kwargs):
+        events.append(("new-po-check", company))
+        return {"mode": "new-po-check", "created": 0, "updated": 0, "skipped": 0, "pos": 0}
+
     async def fake_wait(seconds):
         events.append(("sleep", round(seconds, 3)))
         turns["n"] += 1
@@ -384,6 +389,7 @@ def _run_scheduler(
     monkeypatch.setattr(gp_po_sync, "run_once", fake_run_once)
     monkeypatch.setattr(gp_po_sync, "_run_backfill", fake_backfill)
     monkeypatch.setattr(gp_po_sync, "_run_incremental", fake_incremental)
+    monkeypatch.setattr(gp_po_sync, "_new_po_check", fake_new_po_check)
     monkeypatch.setattr(gp_po_sync, "_wait", fake_wait)
 
     with pytest.raises(_LoopStopped):
@@ -391,14 +397,33 @@ def _run_scheduler(
     return events
 
 
+def _big_schedules(events: list[tuple]) -> list[tuple]:
+    """`events` without the NEW PO CHECK entries. That schedule runs at the top of every turn, so it
+    lands in front of whatever the turn goes on to choose; these tests are about which of the two big
+    schedules the turn chose."""
+    return [e for e in events if e[0] != "new-po-check"]
+
+
 def test_a_company_is_refreshed_then_left_alone_for_the_poll_interval(monkeypatch):
     """POLL_SECONDS is the minimum gap between passes of the SAME company, not a wait between
-    requests. Its first pass runs at once; the second waits out the interval."""
-    events = _run_scheduler(monkeypatch, companies=["A"], draining=set(), max_turns=3)
+    requests. Its first pass runs at once, and NEW PO CHECKs fill the interval until the next one."""
+    events = _run_scheduler(monkeypatch, companies=["A"], draining=set(), max_turns=4)
 
-    assert events[0] == ("incremental", "A")
-    assert events[1] == ("sleep", 0.0)  # nothing owed between a pass and whatever is due next
-    assert events[2] == ("sleep", 900.0)  # nothing else to do, so wait for A to age out
+    assert _big_schedules(events)[0] == ("incremental", "A")
+    assert _big_schedules(events)[1] == ("sleep", 0.0)  # nothing owed between a pass and what is next
+    # One full pass in four turns, and every wait of any length is the check's two minutes.
+    assert [c for kind, c in events if kind == "incremental"] == ["A"]
+    assert {s for kind, s in events if kind == "sleep" and s} == {120.0}
+
+
+def test_the_open_book_comes_round_again_only_after_the_poll_interval(monkeypatch):
+    """The NEW PO CHECK running in between must not bring the full pass forward: A's open book is
+    walked again at 900 seconds and not a moment sooner."""
+    events = _run_scheduler(monkeypatch, companies=["A"], draining=set(), max_turns=12)
+
+    passes = [i for i, e in enumerate(events) if e == ("incremental", "A")]
+    assert len(passes) >= 2
+    assert sum(s for kind, s in events[: passes[1]] if kind == "sleep") == 900.0
 
 
 def test_every_mirrored_company_is_refreshed_before_any_is_refreshed_twice(monkeypatch):
@@ -407,10 +432,12 @@ def test_every_mirrored_company_is_refreshed_before_any_is_refreshed_twice(monke
     assert [c for kind, c in events if kind == "incremental"][:3] == ["A", "B", "C"]
 
 
-def test_with_nothing_to_do_the_loop_sleeps_until_the_soonest_company_is_due(monkeypatch):
+def test_with_nothing_to_do_the_loop_sleeps_until_the_soonest_thing_is_due(monkeypatch):
+    """Each company is on two schedules now, so "the soonest" is whichever comes first - the NEW PO
+    CHECK at two minutes rather than the open book at fifteen."""
     events = _run_scheduler(monkeypatch, companies=["A"], draining=set(), max_turns=4)
 
-    assert ("sleep", 900.0) in events
+    assert ("sleep", 120.0) in events
 
 
 def test_a_stalled_company_leaves_the_backfill_rotation(monkeypatch):
@@ -1012,7 +1039,7 @@ def test_a_stalled_company_hands_the_window_back_to_the_refresh(monkeypatch):
         monkeypatch, companies=["DRAIN", "MIRRORED"], draining={"DRAIN"}, stalls={"DRAIN"}, max_turns=4
     )
 
-    assert events[0] == ("backfill", "DRAIN")  # tried once
+    assert _big_schedules(events)[0] == ("backfill", "DRAIN")  # tried once
     assert ("incremental", "MIRRORED") in events  # then the refresh got the turn
 
 
@@ -1024,7 +1051,7 @@ def test_a_requested_company_jumps_the_rotation(monkeypatch):
 
     events = _run_scheduler(monkeypatch, companies=["A", "B", "C"], draining=set(), max_turns=3)
 
-    assert events[0] == ("incremental", "C")
+    assert _big_schedules(events)[0] == ("incremental", "C")
 
 
 def test_a_requested_company_is_only_walked_once(monkeypatch):
@@ -1233,7 +1260,7 @@ def test_a_requested_refresh_still_waits_for_the_backfill_inside_the_window(monk
 
     events = _run_scheduler(monkeypatch, companies=["DRAIN", "MIRRORED"], draining={"DRAIN"}, max_turns=3)
 
-    assert events[0] == ("backfill", "DRAIN")
+    assert _big_schedules(events)[0] == ("backfill", "DRAIN")
     assert not [e for e in events if e[0] == "incremental"]
 
 
@@ -1244,4 +1271,193 @@ def test_a_requested_refresh_is_served_at_once_during_the_working_day(monkeypatc
 
     events = _run_scheduler(monkeypatch, companies=["DRAIN", "MIRRORED"], draining={"DRAIN"}, max_turns=3)
 
-    assert events[0] == ("incremental", "MIRRORED")
+    assert _big_schedules(events)[0] == ("incremental", "MIRRORED")
+
+
+# --- the NEW PO CHECK ---------------------------------------------------------------------------------
+#
+# One page above the highest number a company already holds, every NEW_PO_CHECK_SECONDS. A full open
+# book takes tens of minutes to walk and is only started every POLL_SECONDS, so without this a PO
+# raised in GP could sit out of the register for most of an hour.
+
+
+def _stub_new_po_check(monkeypatch, *, highest, pos=()):
+    """Stub the cursor read, the relay page and the persist. Returns the request log."""
+    asked: list[tuple] = []
+    monkeypatch.setattr(gp_po_sync, "_highest_gp_po_number", lambda c: highest)
+    monkeypatch.setattr(
+        gp_po_sync,
+        "_persist_page",
+        lambda company, page, next_cursor, *, is_backfill: _counts(
+            stored_cursor=None, backfill_done=False, created=len(page)
+        ),
+    )
+
+    async def fake_paced_call(company, op, payload=None, *, reads, **kwargs):
+        asked.append((op, payload, reads, kwargs.get("background")))
+        return _paced({"pos": list(pos), "next_cursor": None})
+
+    monkeypatch.setattr(gp_po_sync.gp_load, "paced_call", fake_paced_call)
+    return asked
+
+
+def test_the_new_po_check_reads_one_page_above_the_newest_number_held(monkeypatch):
+    asked = _stub_new_po_check(monkeypatch, highest="PO0001234", pos=[{"po_number": "PO0001235"}])
+
+    result = asyncio.run(gp_po_sync._new_po_check("TUBC"))
+
+    assert len(asked) == 1
+    op, payload, reads, background = asked[0]
+    assert op == "sync_pos"
+    assert payload == {"open_only": True, "cursor": "PO0001234", "page_size": gp_load.READ_BATCH}
+    # Charged to the shared budget like any other page, and marked timer-driven so the relay's busy
+    # gate can refuse it the way it refuses every other scheduled read.
+    assert reads == gp_load.READ_BATCH
+    assert background is True
+    assert result["created"] == 1
+
+
+def test_the_new_po_check_is_skipped_when_the_company_holds_no_gp_number(monkeypatch):
+    """Nothing to read from. A company whose history has not been drawn down yet is the FIRST TIME GP
+    COMPANY NEXUS INITIALIZATION's job, not this one's."""
+    asked = _stub_new_po_check(monkeypatch, highest=None)
+
+    result = asyncio.run(gp_po_sync._new_po_check("TUBC"))
+
+    assert asked == []
+    assert result["pos"] == 0
+
+
+def test_the_new_po_check_logs_the_page_it_read(monkeypatch, caplog):
+    _stub_new_po_check(monkeypatch, highest="PO0001234", pos=[{"po_number": "PO0001235"}])
+
+    with caplog.at_level(logging.INFO, logger="app.services.gp_po_sync"):
+        asyncio.run(gp_po_sync._new_po_check("TUBC"))
+
+    line = next(r.message for r in caplog.records if "new-po check" in r.message)
+    assert "cursor=PO0001234" in line
+    assert "TUBC" in line
+
+
+def test_each_company_is_checked_in_turn_and_then_left_alone_for_the_gap(monkeypatch):
+    events = _run_scheduler(monkeypatch, companies=["A", "B"], draining=set(), max_turns=10)
+
+    # Both companies before either is checked twice, and never twice inside one 120-second gap.
+    assert [c for kind, c in events if kind == "new-po-check"][:4] == ["A", "B", "A", "B"]
+
+
+def test_a_company_still_backfilling_is_never_new_po_checked(monkeypatch):
+    """Its open POs are inside the history it is drawing down, and it holds no full number range yet
+    for a cursor to sit at the end of."""
+    events = _run_scheduler(monkeypatch, companies=["DRAIN"], draining={"DRAIN"}, max_turns=4)
+
+    assert not [e for e in events if e[0] == "new-po-check"]
+
+
+def test_no_new_po_check_runs_while_gp_load_says_gp_is_too_busy(monkeypatch):
+    events = _run_scheduler(monkeypatch, companies=["A"], draining=set(), max_turns=3, paused=True)
+
+    assert not [e for e in events if e[0] == "new-po-check"]
+
+
+def _arm_mid_pass_checks(monkeypatch, asked, *, raises=None, mirrored=("TUBC",)):
+    """Put every company in `mirrored` due for a NEW PO CHECK, and record each one the surrounding
+    pass runs into the same request log the page stubs write to."""
+    monkeypatch.setattr(gp_po_sync, "_last_new_po_check", {})
+    monkeypatch.setattr(gp_po_sync.gp_load, "paused", lambda: False)
+    monkeypatch.setattr(gp_po_sync.relay_gateway, "_socket", object())
+    monkeypatch.setattr(gp_po_sync.relay_gateway, "_companies", frozenset(mirrored))
+    monkeypatch.setattr(gp_po_sync, "_backfill_phase", lambda cs: ([], list(cs)))
+
+    async def fake_check(company, **kwargs):
+        asked.append(("new-po-check", company))
+        if raises is not None:
+            raise raises
+        return {"mode": "new-po-check", "created": 0, "updated": 0, "skipped": 0, "pos": 0}
+
+    monkeypatch.setattr(gp_po_sync, "_new_po_check", fake_check)
+
+
+def test_a_check_due_mid_walk_runs_between_two_open_pages(monkeypatch):
+    """One company's open book is twenty minutes or more, and with several mirrored the next is due
+    the moment it ends - so a check that waited for a gap between passes would wait hours."""
+    asked = _open_book(monkeypatch, [([{"po_number": "PO1"}], "PO1"), ([{"po_number": "PO2"}], None)])
+    _arm_mid_pass_checks(monkeypatch, asked)
+
+    asyncio.run(gp_po_sync._run_incremental("TUBC"))
+
+    kinds = [a[0] for a in asked]
+    first_check = kinds.index("new-po-check")
+    assert kinds[:first_check].count("sync_pos") == 1  # one page had gone out
+    assert "sync_pos" in kinds[first_check:]  # and one was still to come
+
+
+def test_a_check_due_mid_drain_runs_between_two_backfill_pages(monkeypatch):
+    """Same for the history drain, which runs for hours at a stretch."""
+    asked: list[tuple] = []
+    monkeypatch.setattr(gp_po_sync, "_load_cursor", lambda c: "C0")
+
+    async def fake_paced_call(company, op, payload=None, *, reads, **kwargs):
+        asked.append(("sync_pos", payload))
+        return _paced({"pos": [{"po_number": "PO1"}], "next_cursor": "advance"})
+
+    monkeypatch.setattr(gp_po_sync.gp_load, "paced_call", fake_paced_call)
+    n = {"i": 0}
+
+    def fake_persist(company, pos, next_cursor, *, is_backfill):
+        n["i"] += 1
+        return _counts(stored_cursor=f"C{n['i']}", backfill_done=False)
+
+    monkeypatch.setattr(gp_po_sync, "_persist_page", fake_persist)
+    _arm_mid_pass_checks(monkeypatch, asked)
+    monkeypatch.setattr(gp_po_sync, "_load_cursor", lambda c: f"C{n['i']}")
+
+    asyncio.run(gp_po_sync._run_backfill("TUBC", max_pages=2))
+
+    kinds = [a[0] for a in asked]
+    first_check = kinds.index("new-po-check")
+    assert kinds[:first_check].count("sync_pos") == 1
+    assert "sync_pos" in kinds[first_check:]
+
+
+def test_a_check_that_fails_mid_pass_does_not_stop_the_pass(monkeypatch, caplog):
+    """The check is one page nobody is waiting on. The walk it interrupted is the pass that matters,
+    and a relay that drops while the check is out must not take it down."""
+    asked = _open_book(monkeypatch, [([{"po_number": "PO1"}], "PO1"), ([{"po_number": "PO2"}], None)])
+    _arm_mid_pass_checks(monkeypatch, asked, raises=RelayUnavailableError("the relay went away"))
+
+    with caplog.at_level(logging.INFO, logger="app.services.gp_po_sync"):
+        result = asyncio.run(gp_po_sync._run_incremental("TUBC"))
+
+    assert len([a for a in asked if a[0] == "sync_pos"]) == 2  # both pages still walked
+    assert ("finish", None) in asked  # and the walk was closed out properly
+    assert result["mode"] == "incremental"
+    assert "new-po check for TUBC failed" in caplog.text
+
+
+def test_a_failed_check_is_not_retried_after_every_page(monkeypatch):
+    """It is stamped before the read, so a company whose check fails waits out its own gap rather
+    than costing a request per page for the rest of the pass."""
+    asked = _open_book(
+        monkeypatch,
+        [([{"po_number": "PO1"}], "PO1"), ([{"po_number": "PO2"}], "PO2"), ([{"po_number": "PO3"}], None)],
+    )
+    _arm_mid_pass_checks(monkeypatch, asked, raises=RelayUnavailableError("the relay went away"))
+
+    asyncio.run(gp_po_sync._run_incremental("TUBC"))
+
+    assert len([a for a in asked if a[0] == "new-po-check"]) == 1
+
+
+def test_the_new_po_check_gap_default_and_env_parse(monkeypatch):
+    monkeypatch.setattr(gp_po_sync, "_env_warned", set())
+    monkeypatch.delenv("GP_PO_SYNC_NEW_PO_CHECK_SECONDS", raising=False)
+    assert gp_po_sync._env_number("GP_PO_SYNC_NEW_PO_CHECK_SECONDS", 120.0, float, minimum=30.0) == 120.0
+
+    monkeypatch.setenv("GP_PO_SYNC_NEW_PO_CHECK_SECONDS", "300")
+    assert gp_po_sync._env_number("GP_PO_SYNC_NEW_PO_CHECK_SECONDS", 120.0, float, minimum=30.0) == 300.0
+
+    # Anything under the floor would put a read on GP every few seconds per company for no gain.
+    monkeypatch.setattr(gp_po_sync, "_env_warned", set())
+    monkeypatch.setenv("GP_PO_SYNC_NEW_PO_CHECK_SECONDS", "5")
+    assert gp_po_sync._env_number("GP_PO_SYNC_NEW_PO_CHECK_SECONDS", 120.0, float, minimum=30.0) == 120.0

@@ -21,10 +21,18 @@ from app.models.enums import (
 from app.models.purchase_order import PODocument, PODocumentData, POLineItem, PurchaseOrder
 from app.models.receive_draft import ReceiveDraft
 from app.models.receiving import ReceiveRecord
+from app.services import gp_po
 
 logger = logging.getLogger(__name__)
 
 _UNSET = object()
+
+
+def _line_cost_code(li_data: dict, po_cost_code: str | None) -> str | None:
+    """The cost code one line books to: its own, or the PO's when the line names none. Nexus held a
+    single cost code per PO before GP's per-line code was carried, so the PO's is the fallback that
+    keeps every existing caller writing what it always wrote."""
+    return (li_data.get("cost_code") or "").strip() or po_cost_code
 
 
 def _coerce_custom_inventory_item_id(raw) -> uuid.UUID | None:
@@ -212,6 +220,10 @@ def create_po(
     request_number = generate_next_request_number(session)
 
     cleaned_cost_code = cost_code.strip() if cost_code and cost_code.strip() else None
+    # A line books to the job exactly when the PO has one, unless the caller says otherwise per line.
+    has_project = project_id is not None
+    # The job-cost lines' codes in payload order, which is where the PO's own column comes from below.
+    job_cost_line_codes: list[str | None] = []
 
     po = PurchaseOrder(
         id=uuid.uuid4(),
@@ -262,6 +274,12 @@ def create_po(
         if not (li_data.get("product_code") or "").strip():
             raise ValidationError("Product code is required for every line item", field="product_code")
 
+        line_job_cost = gp_po.line_is_job_cost(li_data, has_project=has_project)
+        # GP takes these three per line. A job-cost line without a code of its own books to the PO's;
+        # a line that books to no job carries none at all.
+        line_cost_code = _line_cost_code(li_data, cleaned_cost_code) if line_job_cost else None
+        if line_job_cost:
+            job_cost_line_codes.append(line_cost_code)
         poli = POLineItem(
             id=uuid.uuid4(),
             po_id=po.id,
@@ -273,6 +291,9 @@ def create_po(
             classification=classification_val,
             order_as=cleaned_order_as,
             custom_inventory_item_id=catalog_item_id,
+            job_cost=line_job_cost,
+            cost_code=line_cost_code,
+            uofm=gp_po.line_uofm(li_data),
             # A NEXUS REGISTERED LINE from birth: the category and code above came off the schedule,
             # so the OPEN-POS SYNC must never overwrite them with GP's item number and description.
             nexus_registered=True,
@@ -281,6 +302,11 @@ def create_po(
             gp_line_ord=idx * 16384,
         )
         session.add(poli)
+
+    # The PO-level code is now DERIVED from the lines - the register column and the queued-write label
+    # both read it, and GP holds the real one per line. A PO with no job-cost line at all keeps
+    # whatever the caller passed, which is what a stock draft carries forward to its registration.
+    po.cost_code = next((c for c in job_cost_line_codes if c), None) or cleaned_cost_code
 
     session.flush()
 
@@ -403,6 +429,12 @@ def register_po_in_gp(
 
     existing = {li.id: li for li in po.line_items}
     seen_ids: set[uuid.UUID] = set()
+    cleaned_cost_code = cost_code.strip() if cost_code and cost_code.strip() else None
+    # Read after the #316 project adoption above, so a draft that has just gained a project has
+    # job-cost lines rather than non-inventoried ones.
+    has_project = po.project_id is not None
+    # The job-cost lines' codes in payload order, which is where the PO's own column comes from below.
+    job_cost_line_codes: list[str | None] = []
 
     # Reconcile the incoming lines against the draft's lines by id: update kept, create added. gp_line_ord
     # is GP POP10110.ORD = line index * 16384, assigned in the order the lines were sent to the relay
@@ -433,6 +465,14 @@ def register_po_in_gp(
         if isinstance(classification_val, str):
             classification_val = Classification(classification_val)
 
+        line_job_cost = gp_po.line_is_job_cost(li_data, has_project=has_project)
+        # GP takes these three per line. A job-cost line without a code of its own books to the PO's;
+        # a line that books to no job carries none at all.
+        line_cost_code = _line_cost_code(li_data, cleaned_cost_code) if line_job_cost else None
+        line_uofm = gp_po.line_uofm(li_data)
+        if line_job_cost:
+            job_cost_line_codes.append(line_cost_code)
+
         raw_id = li_data.get("id")
         if raw_id:
             lid = uuid.UUID(str(raw_id))
@@ -447,6 +487,9 @@ def register_po_in_gp(
             poli.classification = classification_val
             poli.order_as = cleaned_order_as
             poli.custom_inventory_item_id = catalog_item_id
+            poli.job_cost = line_job_cost
+            poli.cost_code = line_cost_code
+            poli.uofm = line_uofm
             # The category and code just written are the schedule's, so this is a NEXUS REGISTERED
             # LINE whatever it was before.
             poli.nexus_registered = True
@@ -464,6 +507,9 @@ def register_po_in_gp(
                     classification=classification_val,
                     order_as=cleaned_order_as,
                     custom_inventory_item_id=catalog_item_id,
+                    job_cost=line_job_cost,
+                    cost_code=line_cost_code,
+                    uofm=line_uofm,
                     # A NEXUS REGISTERED LINE, like every line the draft/register path writes.
                     nexus_registered=True,
                     gp_line_ord=idx * 16384,
@@ -490,7 +536,9 @@ def register_po_in_gp(
     po.vendor_name_snapshot = cleaned_vendor_name_snapshot
     if buyer_id and buyer_id.strip():
         po.buyer_id = buyer_id.strip()
-    po.cost_code = cost_code.strip() if cost_code and cost_code.strip() else None
+    # DERIVED from the lines, which are what GP actually books against: the PO's column is the summary
+    # the register shows and the queued-write label reads, not the authority.
+    po.cost_code = next((c for c in job_cost_line_codes if c), None) or cleaned_cost_code
     po.shipping_cost = _coerce_order_cost(shipping_cost, "shipping_cost")
     po.tariff_amount = _coerce_order_cost(tariff_amount, "tariff_amount")
     po.po_number = cleaned_po_number

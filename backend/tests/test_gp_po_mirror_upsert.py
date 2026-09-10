@@ -580,8 +580,10 @@ def test_an_unregistered_line_is_overwritten_with_gps_own_identity(db_session, p
     db_session.flush()
 
     line = _get(db_session, "PO701").line_items[0]
-    assert line.product_code == "SP 001"
-    assert line.hardware_category == "SP 001 description"
+    # GP's item number into hardware_category and its description into product_code - the same way
+    # round as a NEXUS REGISTERED LINE holds them.
+    assert line.hardware_category == "SP 001"
+    assert line.product_code == "SP 001 description"
     assert line.nexus_registered is False
 
 
@@ -593,7 +595,8 @@ def test_a_line_the_mirror_creates_starts_unregistered(db_session, project):
 
     line = _get(db_session, "PO702").line_items[0]
     assert line.nexus_registered is False
-    assert line.product_code == "HD 001"
+    assert line.hardware_category == "HD 001"
+    assert line.product_code == "HD 001 description"
 
 
 def test_registration_survives_a_line_gp_has_cancelled_to_nothing(db_session, project):
@@ -648,7 +651,7 @@ def test_one_registered_line_and_one_not_are_treated_apart(db_session, project):
     registered = next(li for li in row.line_items if li.gp_line_ord == 16384)
     mirrored = next(li for li in row.line_items if li.gp_line_ord == 32768)
     assert (registered.hardware_category, registered.product_code) == ("HINGE", "HG-100")
-    assert mirrored.product_code == "SP 002"
+    assert (mirrored.hardware_category, mirrored.product_code) == ("SP 002", "SP 002 description")
 
 
 # --- cost code and freight, now GP-OWNED FIELDS -------------------------------------------------------
@@ -680,21 +683,90 @@ def test_cost_code_comes_from_the_first_line_carrying_one(db_session, project):
     assert _get(db_session, "PO711").cost_code == "210-200-2"
 
 
-def test_lines_that_disagree_on_a_cost_code_keep_the_first(db_session, project, caplog):
+def test_lines_that_disagree_on_a_cost_code_each_keep_their_own(db_session, project):
+    """The PO's own column is the first line's code and nothing more - a summary for the register.
+    Each line stores what GP actually books it against, so a PO built on two codes is represented
+    faithfully line by line."""
+    sync_repo.upsert_mirrored_po(
+        db_session,
+        COMPANY,
+        _po("PO712", [_line(16384, "IT1", 5, cost_code="210-200-2"), _line(32768, "IT2", 2, cost_code="310-000-3")]),
+        _project_map(db_session),
+    )
+    db_session.flush()
+    row = _get(db_session, "PO712")
+    assert row.cost_code == "210-200-2"
+    by_ord = {li.gp_line_ord: li for li in row.line_items}
+    assert by_ord[16384].cost_code == "210-200-2"
+    assert by_ord[32768].cost_code == "310-000-3"
+    # Both carry GP's job number, so both are job-cost lines.
+    assert by_ord[16384].job_cost is True
+    assert by_ord[32768].job_cost is True
+
+
+def test_a_line_with_no_gp_job_is_not_a_job_cost_line(db_session, project):
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO714", [_line(16384, "IT1", 5, job="J1", cost_code="210-200-2")]), pm
+    )
+    db_session.flush()
+    assert _get(db_session, "PO714").line_items[0].job_cost is True
+
+    # GP takes the job off the line: it books to nothing now, and the code goes with the job.
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO714", [_line(16384, "IT1", 5, job=None)]), pm)
+    db_session.flush()
+    line = _get(db_session, "PO714").line_items[0]
+    assert line.job_cost is False
+    assert line.cost_code is None
+
+
+def test_a_relay_too_old_to_read_the_line_cost_code_leaves_it_alone(db_session, project):
+    """Same rule as the PO's own cost code: absent is not blank, and a workstation that has not been
+    updated must not wipe what a registration typed."""
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO717", [_line(16384, "IT1", 5, cost_code="210-200-2")]), pm)
+    db_session.flush()
+
+    # _line() carries cost_code None unless asked, which is an old relay's payload.
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO717", [_line(16384, "IT1", 5)]), pm)
+    db_session.flush()
+
+    assert _get(db_session, "PO717").line_items[0].cost_code == "210-200-2"
+
+
+def test_a_gp_read_with_no_lines_is_not_mirrored(db_session, project, caplog):
+    """A PO somebody has opened in GP's Purchase Order Entry and not yet given a line to. Mirroring
+    the header alone would put a PO for no hardware in the register, receivable by nobody."""
     import logging
 
     with caplog.at_level(logging.INFO, logger="app.repositories.gp_po_sync_repository"):
-        sync_repo.upsert_mirrored_po(
-            db_session,
-            COMPANY,
-            _po(
-                "PO712", [_line(16384, "IT1", 5, cost_code="210-200-2"), _line(32768, "IT2", 2, cost_code="310-000-3")]
-            ),
-            _project_map(db_session),
-        )
+        action = sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO715", []), _project_map(db_session))
     db_session.flush()
-    assert _get(db_session, "PO712").cost_code == "210-200-2"
-    assert "more than one cost code" in caplog.text
+
+    assert action == "skipped"
+    assert _get(db_session, "PO715") is None
+    assert "has no lines in GP yet" in caplog.text
+
+
+def test_a_lineless_read_leaves_a_row_that_already_exists_alone(db_session, project):
+    """GP momentarily reporting a PO with no lines must not converge quantities or status against an
+    empty line set - the row is left exactly as the last real read wrote it."""
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO716", [_line(16384, "IT1", 5, received=2)]), _project_map(db_session)
+    )
+    db_session.flush()
+    before = _get(db_session, "PO716")
+    synced_at = before.gp_synced_at
+
+    action = sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO716", []), _project_map(db_session))
+    db_session.flush()
+
+    assert action == "skipped"
+    row = _get(db_session, "PO716")
+    assert row.status == POStatus.PARTIALLY_RECEIVED
+    assert row.gp_synced_at == synced_at
+    assert len(row.line_items) == 1
+    assert row.line_items[0].ordered_quantity == 5
 
 
 def test_a_relay_that_sends_neither_key_leaves_both_values_alone(db_session, project):
@@ -723,3 +795,40 @@ def test_a_relay_that_sends_neither_key_leaves_both_values_alone(db_session, pro
     row = _get(db_session, "PO713")
     assert row.shipping_cost == Decimal("42.00")
     assert row.cost_code == "210-200-2"
+
+
+# --- the NEW PO CHECK's cursor ------------------------------------------------------------------------
+
+
+def test_the_new_po_cursor_is_the_highest_gp_number_this_company_holds(db_session, project):
+    pm = _project_map(db_session)
+    for number in ("PO0000900", "PO0000902", "PO0000901"):
+        sync_repo.upsert_mirrored_po(db_session, COMPANY, _po(number, [_line(16384, "IT1", 1)]), pm)
+    db_session.flush()
+
+    assert sync_repo.highest_gp_po_number(db_session, COMPANY) == "PO0000902"
+
+
+def test_the_new_po_cursor_ignores_a_number_that_is_not_gps_own_shape(db_session, project):
+    """A hand-typed number sorts above every real one, and parking the cursor there would hide every
+    PO GP is about to mint behind it."""
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO0000910", [_line(16384, "IT1", 1)]), pm)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO0000910-REV2", [_line(16384, "IT1", 1)]), pm)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("MANUAL-4", [_line(16384, "IT1", 1)]), pm)
+    db_session.flush()
+
+    assert sync_repo.highest_gp_po_number(db_session, COMPANY) == "PO0000910"
+
+
+def test_the_new_po_cursor_is_scoped_to_one_company(db_session, project):
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO0000920", [_line(16384, "IT1", 1)]), pm)
+    sync_repo.upsert_mirrored_po(db_session, "UCSH", _po("PO0000999", [_line(16384, "IT1", 1)]), pm)
+    db_session.flush()
+
+    assert sync_repo.highest_gp_po_number(db_session, COMPANY) == "PO0000920"
+
+
+def test_a_company_with_no_gp_number_has_no_cursor(db_session, project):
+    assert sync_repo.highest_gp_po_number(db_session, "UBC") is None

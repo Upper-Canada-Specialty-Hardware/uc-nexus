@@ -20,7 +20,7 @@ import uuid
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.enums import HardwareItemState, POOrigin, POStatus
@@ -115,20 +115,15 @@ def _match_project_id(lines: list[dict], project_map: dict[str, uuid.UUID]) -> u
     return project_map.get(next(iter(jobs)))
 
 
-def _gp_cost_code(lines: list[dict], po_number: str) -> str | None:
-    """The cost code a mirrored PO carries: the first one any of its lines reports. Nexus holds one
-    cost code per PO and GP holds one per line, so a PO whose lines disagree cannot be represented
-    faithfully - the first wins and the disagreement is logged, which is the only way anybody finds
-    out that a GP PO was built that way."""
-    codes = [code for code in ((ln.get("cost_code") or "").strip() for ln in lines) if code]
-    if not codes:
-        return None
-    distinct = sorted(set(codes))
-    if len(distinct) > 1:
-        logger.info(
-            "gp po sync: %s has lines on more than one cost code (%s); keeping %s", po_number, distinct, codes[0]
-        )
-    return codes[0]
+def _gp_cost_code(lines: list[dict]) -> str | None:
+    """The PO-level cost code a mirrored PO carries: the first one any of its lines reports. Every line
+    now stores its own, so this is only the summary the register column shows - a PO whose lines book
+    to different codes is represented faithfully line by line whatever this says."""
+    for line in lines:
+        code = (line.get("cost_code") or "").strip()
+        if code:
+            return code
+    return None
 
 
 def _apply_gp_costs(row: PurchaseOrder, po: dict, lines: list[dict]) -> None:
@@ -142,7 +137,7 @@ def _apply_gp_costs(row: PurchaseOrder, po: dict, lines: list[dict]) -> None:
     freight = po.get("freight")
     if freight is not None:
         row.shipping_cost = Decimal(str(freight)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    cost_code = _gp_cost_code(lines, row.po_number)
+    cost_code = _gp_cost_code(lines)
     if cost_code is not None:
         row.cost_code = cost_code
 
@@ -160,21 +155,43 @@ def _apply_gp_line_identity(li: POLineItem, gp_line: dict) -> None:
     """Write GP's item number and description onto a line, unless it is a NEXUS REGISTERED LINE - one
     whose category and code came off a hardware schedule. Those two fields are the whole of what the
     registration buys: inventory received against the line lands under the schedule's product, so
-    letting a later OPEN-POS SYNC put GP's cost bucket back would undo it every fifteen minutes."""
+    letting a later OPEN-POS SYNC put GP's cost bucket back would undo it every fifteen minutes.
+
+    Item number into `hardware_category` and description into `product_code`, the same way round as a
+    NEXUS REGISTERED LINE holds them, so the register's Item Number and Description columns read the
+    same on every row whatever raised the PO."""
     if li.nexus_registered:
         return
-    li.product_code = (gp_line.get("item") or "").strip() or _GP_CATEGORY_FALLBACK
-    li.hardware_category = (gp_line.get("itemdesc") or "").strip() or _GP_CATEGORY_FALLBACK
+    li.hardware_category = (gp_line.get("item") or "").strip() or _GP_CATEGORY_FALLBACK
+    li.product_code = (gp_line.get("itemdesc") or "").strip() or _GP_CATEGORY_FALLBACK
+
+
+def _apply_gp_line_entry_fields(li: POLineItem, gp_line: dict) -> None:
+    """How GP books this line: whether it is job-cost, and against which cost code. GP-OWNED on every
+    line whether registered or not - these describe the booking, not what the line is for, so the
+    NEXUS REGISTERED LINE rule does not apply to them. Unit of measure is not read back from GP at
+    all, so a line keeps whatever it already had.
+
+    A line GP reports a job number on is a job-cost line; one it reports no job on books to nothing,
+    and its cost code goes with the job. On a job-cost line an ABSENT code leaves the stored value
+    alone rather than blanking it, for the same reason _apply_gp_costs does: a relay too old to read
+    the code back must not wipe what a registration typed."""
+    li.job_cost = bool((gp_line.get("job") or "").strip())
+    cost_code = (gp_line.get("cost_code") or "").strip()
+    if cost_code:
+        li.cost_code = cost_code
+    elif not li.job_cost:
+        li.cost_code = None
 
 
 def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> None:
     """Match GP lines onto the PO's line rows by gp_line_ord. Received qty is GP's (authoritative) but
-    floored at what Nexus already stored; ordered qty and unit cost are GP-owned on every line without
-    exception. product_code / hardware_category are the one pair decided per line: a NEXUS REGISTERED
-    LINE keeps the schedule's own, anything else takes GP's item number and description. A line the
-    mirror creates here starts unregistered, because nothing has given it a schedule identity yet.
-    Existing lines absent from GP are left untouched rather than deleted, so mirrored inventory is
-    never orphaned.
+    floored at what Nexus already stored; ordered qty, unit cost, the line's cost code and whether it
+    is a job-cost line are GP-owned on every line without exception. hardware_category / product_code
+    are the one pair decided per line: a NEXUS REGISTERED LINE keeps the schedule's own, anything else
+    takes GP's item number and description. A line the mirror creates here starts unregistered,
+    because nothing has given it a schedule identity yet. Existing lines absent from GP are left
+    untouched rather than deleted, so mirrored inventory is never orphaned.
 
     A line GP has cancelled to nothing orderable (net <= 0, or a fractional remainder that rounds below
     one whole unit) is skipped when it is NEW - there is nothing to mirror. When it ALREADY exists it is
@@ -203,6 +220,7 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
                 li.ordered_quantity = max(1, received_qty)
                 li.unit_cost = unit_cost
                 _apply_gp_line_identity(li, ln)
+                _apply_gp_line_entry_fields(li, ln)
             continue
 
         if li is None:
@@ -210,13 +228,15 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
                 id=uuid.uuid4(),
                 po_id=po.id,
                 gp_line_ord=ord_,
-                product_code=(ln.get("item") or "").strip() or _GP_CATEGORY_FALLBACK,
-                hardware_category=(ln.get("itemdesc") or "").strip() or _GP_CATEGORY_FALLBACK,
+                hardware_category=(ln.get("item") or "").strip() or _GP_CATEGORY_FALLBACK,
+                product_code=(ln.get("itemdesc") or "").strip() or _GP_CATEGORY_FALLBACK,
                 ordered_quantity=ordered_qty,
                 received_quantity=received_qty,
                 unit_cost=unit_cost,
                 classification=None,
                 nexus_registered=False,
+                cost_code=(ln.get("cost_code") or "").strip() or None,
+                job_cost=bool((ln.get("job") or "").strip()),
             )
             session.add(li)
             po.line_items.append(li)
@@ -225,6 +245,7 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
             li.received_quantity = received_qty
             li.unit_cost = unit_cost
             _apply_gp_line_identity(li, ln)
+            _apply_gp_line_entry_fields(li, ln)
 
 
 def _release_linked_hardware(session: Session, po: PurchaseOrder) -> None:
@@ -302,7 +323,8 @@ def upsert_mirrored_po(
     pending_registration: frozenset[str] = frozenset(),
 ) -> str:
     """Upsert one GP purchase order into a local row keyed by (company, po_number). Returns
-    'created' | 'updated' | 'skipped'. Never touches NEXUS_ONLY_FIELDS. Caller commits."""
+    'created' | 'updated' | 'skipped'. Never touches NEXUS_ONLY_FIELDS. A read with no lines at all is
+    skipped outright - see below. Caller commits."""
     po_number = (po.get("po_number") or "").strip()
     if not po_number:
         return "skipped"
@@ -312,6 +334,15 @@ def upsert_mirrored_po(
         return "skipped"
 
     lines = po.get("lines") or []
+    if not lines:
+        # A PO somebody has opened in GP's Purchase Order Entry and not yet given a line to. Mirroring
+        # it would put a header with nothing on it in the register, where it reads as a PO for no
+        # hardware and can be neither received nor closed; and on a row that already exists, writing
+        # the header alone would converge quantities and status against an empty line set. GP will
+        # report it again with its lines, and the next pass mirrors it then.
+        logger.info("gp po sync: %s %s has no lines in GP yet; not mirrored this pass", company, po_number)
+        return "skipped"
+
     stage = derive_po_stage(po.get("source_table") or "work", lines)
     project_id = _match_project_id(lines, project_map)
     vendor_id = (po.get("vendor_id") or "").strip() or None
@@ -483,6 +514,22 @@ def finish_open_pass(session: Session, company: str) -> None:
     state = get_or_create_sync_state(session, company)
     state.open_book_cursor = None
     state.open_pass_started_at = None
+
+
+def highest_gp_po_number(session: Session, company: str) -> str | None:
+    """The newest plain GP purchase-order number this company holds, or None when it holds none.
+
+    The cursor a NEW PO CHECK reads from: GP mints numbers in ascending order, so one page of what
+    sorts above this is the whole of what has been raised since the last pass looked. Restricted to
+    'PO' followed by digits, which is the shape GP's own numbering produces - a hand-typed number
+    ('PO0000123-REV2', 'MANUAL-4') sorts above every real one and would park the cursor past
+    everything GP is about to mint."""
+    return session.scalar(
+        select(func.max(PurchaseOrder.po_number)).where(
+            PurchaseOrder.company == company,
+            PurchaseOrder.po_number.op("~")("^PO[0-9]+$"),
+        )
+    )
 
 
 def po_numbers_left_open(session: Session, company: str, since: datetime) -> list[str]:

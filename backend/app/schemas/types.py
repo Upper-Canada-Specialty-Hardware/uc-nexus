@@ -218,6 +218,56 @@ class GpVendor:
     # GP CURNCYID (issue #257: the vendor dictates the PO currency). Blank in GP -> 'CAD'. Shown
     # read-only on the register-PO form; USD vendors have no tax-detail dropdown.
     currency: str
+    # What GP's own vendor card says a PO to this vendor defaults to: the shipping method, the
+    # purchase address code, and the contact. Null when the vendor card leaves the field blank, and
+    # null on a relay too old to send them, so the form falls back to its own defaults.
+    shipping_method: str | None
+    purchase_address_code: str | None
+    contact: str | None
+
+
+@strawberry.type
+class GpShippingMethod:
+    """One of the shipping methods GP's own setup defines (SY03000), for the register-PO picker."""
+
+    id: str
+    description: str | None
+
+
+@strawberry.type
+class GpSite:
+    """One of the sites GP stocks against (IV40700). Every line of a PO is entered at one of these."""
+
+    code: str
+    description: str | None
+
+
+@strawberry.type
+class GpPoEntryOptions:
+    """Everything GP's Purchase Order Entry offers as a choice on the header and the lines, read live
+    in one call because the register-PO form opens needing all of it at once."""
+
+    shipping_methods: list[GpShippingMethod]
+    sites: list[GpSite]
+    # Bare strings, like gpBuyers and gpDivisions: the unit's own name is the only label GP has for it.
+    units_of_measure: list[str]
+
+
+@strawberry.type
+class GpVendorAddress:
+    """One address on a GP vendor card (PM00300). The register-PO form picks the purchase address the
+    PO is sent to, and shows the rest of the block so the person can tell one code from another."""
+
+    code: str
+    contact: str | None
+    address1: str | None
+    address2: str | None
+    address3: str | None
+    city: str | None
+    state: str | None
+    postal_code: str | None
+    country: str | None
+    phone: str | None
 
 
 @strawberry.type
@@ -383,6 +433,8 @@ class VendorSuggestion:
 class POLineItem:
     id: strawberry.ID
     po_id: strawberry.ID
+    # GP's Item Number and GP's Description, in that order, on every line. The PO screens head the two
+    # columns that way.
     hardware_category: str
     product_code: str
     classification: Classification | None
@@ -391,9 +443,14 @@ class POLineItem:
     unit_cost: float
     order_as: str | None
     gp_line_ord: int | None
+    # What GP's Purchase Order Entry holds per line: the job cost code this line books to, its unit of
+    # measure, and whether it is a job-cost line (GP's Product Indicator) rather than a
+    # non-inventoried one.
+    cost_code: str | None
+    uofm: str | None
+    job_cost: bool
     # A NEXUS REGISTERED LINE: hardwareCategory and productCode above are the schedule's own, so the
-    # OPEN-POS SYNC leaves them alone. False on a mirrored line still carrying GP's item number and
-    # description.
+    # OPEN-POS SYNC leaves them alone. False on a mirrored line still carrying GP's own pair.
     nexus_registered: bool
     # Set when the line was added from the non-schedule item catalog (#454). Order As belongs to
     # hardware schedule items only, so the PO detail modal shows no Order As on a line that has this.
@@ -1830,23 +1887,6 @@ class ClerkUser:
     # company assigned can read nothing until an admin gives them one.
     company: str | None
     image_url: str
-
-
-@strawberry.type
-class BuyerAssignmentProject:
-    """Slim project ref for buyer assignments (the full Project type carries openings)."""
-
-    id: strawberry.ID
-    project_id: str
-    description: str | None
-
-
-@strawberry.type
-class BuyerAssignment:
-    """Issue #216: the projects a GP buyer may create POs for."""
-
-    buyer_id: str
-    projects: list[BuyerAssignmentProject]
 
 
 @strawberry.type

@@ -131,6 +131,15 @@ class PurchaseOrder(Base):
 
 
 class POLineItem(Base):
+    """Nexus's copy of one GP PO LINE ITEM.
+
+    The two identity columns hold GP's own pair, the same way round on every line whatever the PO's
+    origin: `hardware_category` is GP's ITEM NUMBER and `product_code` is GP's ITEM DESCRIPTION. Every
+    screen heads those two columns Item Number and Description. A line raised off a hardware schedule
+    fills them with the schedule's hardware category and product code and is a NEXUS REGISTERED LINE,
+    so the OPEN-POS SYNC leaves them alone; every other line takes GP's values on every pass.
+    """
+
     __tablename__ = "po_line_items"
     __table_args__ = (
         Index("ix_po_line_items_po_id", "po_id"),
@@ -140,7 +149,9 @@ class POLineItem(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     po_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("purchase_orders.id"), nullable=False)
+    # GP's item number.
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
+    # GP's item description.
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     classification: Mapped[Classification | None] = mapped_column(
         Enum(Classification, name="classification", create_constraint=True),
@@ -153,6 +164,15 @@ class POLineItem(Base):
     # column and the whole PO's upsert failed with it. Nothing rounds to cents on the way in.
     unit_cost: Mapped[Decimal] = mapped_column(Numeric(19, 5), nullable=False)
     order_as: Mapped[str | None] = mapped_column(String, nullable=True)
+    # GP's Purchase Order Entry takes these three per LINE, so Nexus holds them per line too. The
+    # cost code is the job's code this line books to (null on a line that books to no job);
+    # `job_cost` is GP's Product Indicator - true means a job-cost line (2), false a non-inventoried
+    # one (1) - and `uofm` is the unit of measure, 'Each' unless the buyer picks another.
+    # purchase_orders.cost_code stays as the PO-level summary the register column and the queued-write
+    # label read, derived from the first job-cost line.
+    cost_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    uofm: Mapped[str | None] = mapped_column(String(9), nullable=True)
+    job_cost: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     # Whether this is a NEXUS REGISTERED LINE: the hardware_category and product_code above are the
     # schedule's own, not GP's, so the OPEN-POS SYNC leaves those two fields alone and overwrites only
     # the quantities and the unit cost. True on every line Nexus drafts or registers; false on a line
