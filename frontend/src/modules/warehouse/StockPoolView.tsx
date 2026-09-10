@@ -181,7 +181,7 @@ export default function StockPoolView() {
   const columns: GridColDef<StockItem>[] = [
     {
       field: 'hardwareCategory',
-      headerName: 'Category',
+      headerName: 'Item Number',
       flex: 1,
       minWidth: 140,
       // Non-schedule stock carries its item type's code here (#454); show the type's name where the
@@ -201,7 +201,7 @@ export default function StockPoolView() {
     },
     {
       field: 'productCode',
-      headerName: 'Product Code',
+      headerName: 'Description',
       flex: 1,
       minWidth: 140,
       renderCell: ({ value }) => (

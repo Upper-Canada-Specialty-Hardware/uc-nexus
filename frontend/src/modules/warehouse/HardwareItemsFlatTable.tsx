@@ -237,10 +237,10 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
 
   const columns = useMemo<GridColDef<GridRow>[]>(() => {
     const cols: GridColDef<GridRow>[] = [
-      { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 150 },
+      { field: 'hardwareCategory', headerName: 'Item Number', flex: 1, minWidth: 150 },
       {
         field: 'productCode',
-        headerName: 'Product Code',
+        headerName: 'Description',
         flex: 1,
         minWidth: 140,
         renderCell: (params) => (

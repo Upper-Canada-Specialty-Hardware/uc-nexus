@@ -90,9 +90,9 @@ export default function ReceiveLinesEditor({
           <Table size="small" sx={{ '& td, & th': { px: 1 } }}>
             <TableHead>
               <TableRow>
-                <TableCell sx={microLabelSx}>Product Code</TableCell>
+                <TableCell sx={microLabelSx}>Description</TableCell>
                 <TableCell sx={microLabelSx}>Ordered As</TableCell>
-                <TableCell sx={microLabelSx}>Hardware Category</TableCell>
+                <TableCell sx={microLabelSx}>Item Number</TableCell>
                 <TableCell sx={numHeadSx} align="right">
                   Ordered Qty
                 </TableCell>

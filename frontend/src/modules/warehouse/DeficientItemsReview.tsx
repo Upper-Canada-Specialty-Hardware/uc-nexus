@@ -51,10 +51,10 @@ export default function DeficientItemsReview() {
         />
       ),
     },
-    { field: 'hardwareCategory', headerName: 'Category', flex: 1, minWidth: 140 },
+    { field: 'hardwareCategory', headerName: 'Item Number', flex: 1, minWidth: 140 },
     {
       field: 'productCode',
-      headerName: 'Product Code',
+      headerName: 'Description',
       flex: 1,
       minWidth: 140,
       renderCell: ({ value }) => (

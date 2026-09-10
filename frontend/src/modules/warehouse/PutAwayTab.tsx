@@ -480,7 +480,7 @@ export default function PutAwayTab() {
                     <Table size="small">
                       <TableHead>
                         <TableRow>
-                          <TableCell>Product Code</TableCell>
+                          <TableCell>Description</TableCell>
                           {showWarehouse && <TableCell>Warehouse</TableCell>}
                           <TableCell align="right">Qty</TableCell>
                           <TableCell>PO#</TableCell>
@@ -636,8 +636,8 @@ export default function PutAwayTab() {
             <Table size="small">
               <TableHead>
                 <TableRow>
-                  <TableCell>Product Code</TableCell>
-                  <TableCell>Category</TableCell>
+                  <TableCell>Description</TableCell>
+                  <TableCell>Item Number</TableCell>
                   {showStockWarehouse && <TableCell>Warehouse</TableCell>}
                   <TableCell align="right">Qty</TableCell>
                   <TableCell>Received</TableCell>

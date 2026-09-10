@@ -342,18 +342,21 @@ export default function PODetailModal({
 
   const lineItemColumns = useMemo<GridColDef[]>(() => {
     const allCols: GridColDef[] = [
+      // GP's own two text fields on the line, in GP's own order: the item number, then what it
+      // is called. On a NEXUS REGISTERED LINE they are the schedule's hardware category and
+      // product code instead.
       {
-        field: 'productCode',
-        headerName: 'Product Code',
+        field: 'hardwareCategory',
+        headerName: 'Item Number',
         flex: 1,
-        minWidth: 130,
+        minWidth: 140,
         renderCell: (params) => (
           <Box component="span" sx={monoSx}>
             {params.value}
           </Box>
         ),
       },
-      { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 150 },
+      { field: 'productCode', headerName: 'Description', flex: 1.4, minWidth: 180 },
       {
         field: 'orderAs',
         headerName: 'Order As',
@@ -395,6 +398,23 @@ export default function PODetailModal({
         type: 'number',
         valueFormatter: (value: number) => `$${(value ?? 0).toFixed(2)}`,
       },
+      {
+        field: 'costCode',
+        headerName: 'Cost Code',
+        flex: 0.8,
+        minWidth: 120,
+        renderCell: (params) =>
+          params.value ? (
+            <Box component="span" sx={monoSx}>
+              {params.value as string}
+            </Box>
+          ) : (
+            <Box component="span" sx={{ color: 'text.disabled' }}>
+              {EMPTY}
+            </Box>
+          ),
+      },
+      { field: 'uofm', headerName: 'U of M', flex: 0.5, minWidth: 90 },
       {
         field: 'lineTotal',
         headerName: 'Line Total',
@@ -753,6 +773,11 @@ export default function PODetailModal({
               <InfoField label="Preferred Delivery Date" value={formatDate(po.preferredDeliveryDate)} />
               <InfoField label="Expected Delivery Date" value={formatDate(po.expectedDeliveryDate)} />
               <InfoField label="Order Date" value={formatDate(po.orderedAt)} />
+              {/* GP's own header fields - shipping method, vendor address, site, PO date, contact
+                  and comment - belong here, beside the order date. They are entered on the register
+                  dialog, but the PO the API returns does not carry them back yet, so there is
+                  nothing to read: rather than invent fields the query has no answer for, this is
+                  the spot they go in when it does. */}
               {/* A PO with a project shows it in the list; here only its absence is worth a line -
                   the modal has the project's id, not its human number. */}
               {!po.projectId && <InfoField label="Project" value="No Project" />}
