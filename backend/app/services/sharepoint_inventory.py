@@ -58,6 +58,16 @@ _FIELDS = (
     "Mounting",
     "Height_x0020_in_x0020_inches",
     "Width_x0020_in_x0020_inches",
+    # The purchase order the part was bought on, plus the vendor and the quantities that order
+    # carried. UBC's FIRST TIME GP COMPANY NEXUS INITIALIZATION is complete, so every one of these
+    # numbers should already exist in Nexus as a mirrored PO - which is what lets the wizard attach a
+    # migrated shelf quantity to the GP PO LINE ITEM it arrived on. The column is plain text and
+    # hand-edited on a few rows ("PO094114-1", "PO097085 + PO090457"), so the wizard normalises it
+    # rather than trusting it; the truncated internal name really does end at "Numbe".
+    "Purchase_x0020_Order_x0020_Numbe",
+    "Supplier",
+    "Ordered_x0020_Qty",
+    "Received_x0020_Qty",
 )
 
 _PAGE_SIZE = 2000

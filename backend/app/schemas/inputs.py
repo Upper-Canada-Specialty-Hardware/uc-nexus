@@ -901,6 +901,9 @@ class MigrationEntryInput:
     aisle: str | None = None
     row: str | None = None
     bay: str | None = None
+    # The GP PO LINE ITEM this row's units were bought on, when the wizard's Reconcile GP PO link step
+    # found one. Absent is the ordinary case and migrates exactly as it always has.
+    po_line_item_id: strawberry.ID | None = None
 
 
 @strawberry.input

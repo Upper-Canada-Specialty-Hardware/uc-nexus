@@ -9,9 +9,13 @@ human makes once and the backend has no basis to make alone.
 import uuid
 
 import strawberry
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
+from app.errors import ValidationError
+from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.repositories import sharepoint_migration_repository, tenancy
 from app.repositories import warehouse as warehouse_repository
 from app.services import sharepoint_inventory
@@ -19,10 +23,16 @@ from app.services import sharepoint_inventory
 from .inputs import MigrateSharepointInventoryInput
 from .types import (
     MigrationResult,
+    MirroredPo,
+    MirroredPoLine,
     ProjectScheduleProduct,
     SharepointInventoryItem,
     SharepointInventorySnapshot,
 )
+
+# The most PO numbers one call may ask about. The wizard chunks its distinct numbers to this; the cap
+# exists so a hand-written query cannot turn a `WHERE po_number IN (...)` into a table scan.
+_MAX_PO_NUMBERS = 200
 
 
 def _to_int(value) -> int:
@@ -47,6 +57,24 @@ def _to_float(value) -> float:
 
 def _to_str(value) -> str:
     return str(value).strip() if value is not None else ""
+
+
+def _line_order(line: POLineItem) -> tuple[int, int, str]:
+    """GP's own line order where the mirror recorded it, creation order otherwise. A line with no
+    `gp_line_ord` sorts last rather than first, so a Nexus-added line never displaces GP's."""
+    return (1, 0, str(line.id)) if line.gp_line_ord is None else (0, line.gp_line_ord, "")
+
+
+def _mirrored_line(line: POLineItem) -> MirroredPoLine:
+    return MirroredPoLine(
+        id=strawberry.ID(str(line.id)),
+        gp_line_ord=line.gp_line_ord,
+        product_code=line.product_code,
+        hardware_category=line.hardware_category,
+        ordered_quantity=line.ordered_quantity,
+        received_quantity=line.received_quantity,
+        nexus_registered=line.nexus_registered,
+    )
 
 
 @strawberry.type
@@ -79,6 +107,12 @@ class SharepointMigrationQueries:
                 mounting=_to_str(r.get("Mounting")),
                 height_inches=_to_str(r.get("Height_x0020_in_x0020_inches")),
                 width_inches=_to_str(r.get("Width_x0020_in_x0020_inches")),
+                # The internal name really is truncated at "Numbe" - SharePoint cut it to 32
+                # characters when the column was created.
+                po_number=_to_str(r.get("Purchase_x0020_Order_x0020_Numbe")),
+                supplier=_to_str(r.get("Supplier")),
+                ordered_qty=_to_int(r.get("Ordered_x0020_Qty")),
+                received_qty=_to_int(r.get("Received_x0020_Qty")),
             )
             for r in rows
         ]
@@ -115,6 +149,57 @@ class SharepointMigrationQueries:
             for row in rows
         ]
 
+    @strawberry.field
+    def mirrored_pos_by_number(self, info: strawberry.Info, po_numbers: list[str]) -> list[MirroredPo]:
+        """The purchase orders behind the SharePoint list's PO Number column, with their lines.
+
+        UBC's FIRST TIME GP COMPANY NEXUS INITIALIZATION is complete, so a number the source list
+        carries should already be in Nexus as a mirrored PO. The Reconcile GP PO link step reads this
+        once for the whole wizard and matches each migrated row against the returned lines.
+
+        Matched on the number EXACTLY, not case-insensitively: the unique index the mirror converges
+        on is (gp_company, po_number), and folding case here would trade it for a scan of every PO in
+        the database. GP writes these numbers uppercase and the wizard uppercases the cell before
+        asking. A number nobody holds simply does not come back, which is the step's first reason.
+
+        One query, lines eagerly loaded - a lazy load per PO would be 200 round trips per chunk.
+        """
+        wanted = sorted({n.strip() for n in po_numbers if n and n.strip()})
+        if len(wanted) > _MAX_PO_NUMBERS:
+            raise ValidationError(
+                f"At most {_MAX_PO_NUMBERS} purchase order numbers can be looked up at a time; "
+                f"{len(wanted)} were asked for",
+                field="poNumbers",
+            )
+        if not wanted:
+            return []
+
+        with SessionLocal() as session:
+            scope = tenant_scope(info)
+            stmt = (
+                select(PurchaseOrder)
+                .options(selectinload(PurchaseOrder.line_items))
+                .where(
+                    PurchaseOrder.po_number.in_(wanted),
+                    PurchaseOrder.deleted_at.is_(None),
+                )
+                .order_by(PurchaseOrder.po_number, PurchaseOrder.created_at)
+            )
+            if scope is not None:
+                stmt = stmt.where(PurchaseOrder.company == scope)
+            pos = list(session.scalars(stmt).unique().all())
+            return [
+                MirroredPo(
+                    id=strawberry.ID(str(po.id)),
+                    po_number=po.po_number or "",
+                    status=po.status,
+                    origin=po.origin,
+                    project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
+                    lines=[_mirrored_line(line) for line in sorted(po.line_items, key=_line_order)],
+                )
+                for po in pos
+            ]
+
 
 @strawberry.type
 class SharepointMigrationMutations:
@@ -136,6 +221,7 @@ class SharepointMigrationMutations:
                 "aisle": e.aisle,
                 "row": e.row,
                 "bay": e.bay,
+                "po_line_item_id": uuid.UUID(str(e.po_line_item_id)) if e.po_line_item_id else None,
             }
             for e in input.entries
         ]
@@ -167,6 +253,7 @@ class SharepointMigrationMutations:
                 stock_items=result["stock_items"],
                 project_locations=result["project_locations"],
                 total_units=result["total_units"],
+                linked_entries=result["linked_entries"],
                 catalog_items_created=catalog["items_created"],
                 catalog_items_skipped=catalog["items_skipped"],
                 catalog_attributes_created=catalog["attributes_created"],

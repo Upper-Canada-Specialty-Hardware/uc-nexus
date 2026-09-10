@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   Box,
   Typography,
@@ -24,11 +24,12 @@ import {
   Divider,
   LinearProgress,
 } from '@mui/material';
-import { useQuery, useMutation } from '@apollo/client/react';
+import { useQuery, useMutation, useApolloClient } from '@apollo/client/react';
 import { useNavigate } from 'react-router-dom';
 import {
   GET_SHAREPOINT_INVENTORY_SNAPSHOT,
   GET_PROJECT_SCHEDULE_PRODUCTS,
+  GET_MIRRORED_POS_BY_NUMBER,
   MIGRATE_SHAREPOINT_INVENTORY,
 } from '../../graphql/admin';
 import { GET_PROJECTS, GET_WAREHOUSES } from '../../graphql/shared';
@@ -56,13 +57,22 @@ import {
   unresolvedItemTypes,
   isMappedType,
   EXCLUDE_ITEM_TYPE,
+  distinctPoNumbers,
+  chunkPoNumbers,
+  poLinkCandidates,
+  buildPoLinkResolutions,
+  resolvedPoLinks,
+  poLinkCounts,
   type SharepointInventoryItem,
   type LocationResolution,
   type NexusProject,
   type InventoryItemTypeOption,
   type ItemTypeResolutions,
   type MigrationClassification,
+  type MirroredPo,
+  type PoLinkPick,
 } from './sharepointMigration';
+import ReconcileGpPoLinkStep from './ReconcileGpPoLinkStep';
 
 interface ScheduleProductRow {
   projectId: string;
@@ -87,7 +97,20 @@ interface Warehouse {
   isActive: boolean;
 }
 
-const STEPS = ['Fetch', 'Locations', 'Projects', 'Types', 'Categories', 'Classification', 'Review'] as const;
+const STEPS = [
+  'Fetch',
+  'Locations',
+  'Projects',
+  'Types',
+  'Categories',
+  'Classification',
+  'Reconcile GP PO link',
+  'Review',
+] as const;
+
+const CLASSIFICATION_STEP = 5;
+const PO_LINK_STEP = 6;
+const REVIEW_STEP = 7;
 
 const UNCATEGORIZED = 'Uncategorized';
 
@@ -117,6 +140,7 @@ export default function SharePointMigrationPage() {
     stockItems: number;
     projectLocations: number;
     totalUnits: number;
+    linkedEntries: number;
     catalogItemsCreated: number;
     catalogItemsSkipped: number;
     catalogAttributesCreated: number;
@@ -132,6 +156,66 @@ export default function SharePointMigrationPage() {
     () => warehouses.find((w) => w.isPrimary)?.id ?? warehouses[0]?.id ?? '',
     [warehouses],
   );
+
+  // The mirrored POs behind the source list's PO Number column. Read once the snapshot has arrived,
+  // in slices of 200 (the backend's cap) fired together, and merged into one map the Reconcile GP PO
+  // link step matches against. Not a useQuery because the number of slices is only known at runtime.
+  const apollo = useApolloClient();
+  const [posByNumber, setPosByNumber] = useState<Map<string, MirroredPo>>(new Map());
+  const [poLookupLoading, setPoLookupLoading] = useState(false);
+  const [poLookupError, setPoLookupError] = useState<string | null>(null);
+  const [poLookupAttempt, setPoLookupAttempt] = useState(0);
+  const poNumbers = useMemo(() => distinctPoNumbers(items), [items]);
+  // A join, not the array itself: the array is rebuilt on every render of a new snapshot object and
+  // would re-fire the whole lookup even when the numbers are identical.
+  const poNumbersKey = poNumbers.join(',');
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const lookUp = async () => {
+      const numbers = poNumbersKey ? poNumbersKey.split(',') : [];
+      if (numbers.length === 0) {
+        setPosByNumber(new Map());
+        setPoLookupError(null);
+        return;
+      }
+      setPoLookupLoading(true);
+      setPoLookupError(null);
+      try {
+        const responses = await Promise.all(
+          chunkPoNumbers(numbers).map((chunk) =>
+            apollo.query<{ mirroredPosByNumber: MirroredPo[] }>({
+              query: GET_MIRRORED_POS_BY_NUMBER,
+              variables: { poNumbers: chunk },
+              fetchPolicy: 'network-only',
+            }),
+          ),
+        );
+        if (cancelled) return;
+        const merged = new Map<string, MirroredPo>();
+        for (const response of responses) {
+          for (const po of response.data?.mirroredPosByNumber ?? []) {
+            // First wins. An admin is unscoped, so the same number can come back for two companies;
+            // the source list is one company's, and picking either is better than dropping both.
+            if (!merged.has(po.poNumber)) merged.set(po.poNumber, po);
+          }
+        }
+        setPosByNumber(merged);
+      } catch (e) {
+        if (!cancelled) {
+          setPoLookupError(e instanceof Error ? e.message : 'Could not read the purchase orders');
+        }
+      } finally {
+        if (!cancelled) setPoLookupLoading(false);
+      }
+    };
+
+    void lookUp();
+    return () => {
+      cancelled = true;
+    };
+  }, [apollo, poNumbersKey, poLookupAttempt]);
 
   const candidates = useMemo(() => toCandidates(items), [items]);
   const locations = useMemo(() => distinctLocations(candidates), [candidates]);
@@ -196,17 +280,16 @@ export default function SharePointMigrationPage() {
     [spItemTypes, typeOptions, itemTypeOverrides],
   );
 
-  const built = useMemo(
-    () =>
-      buildEntries({
-        candidates,
-        locationResolutions,
-        projectResolutions,
-        emptyCategoryLabel,
-        defaultWarehouseId,
-        itemTypeResolutions,
-        scheduleProductsByProject,
-      }),
+  const buildArgs = useMemo(
+    () => ({
+      candidates,
+      locationResolutions,
+      projectResolutions,
+      emptyCategoryLabel,
+      defaultWarehouseId,
+      itemTypeResolutions,
+      scheduleProductsByProject,
+    }),
     [
       candidates,
       locationResolutions,
@@ -217,6 +300,34 @@ export default function SharePointMigrationPage() {
       scheduleProductsByProject,
     ],
   );
+
+  // Built twice, on purpose. The first pass answers what is migrating at all, which is what the
+  // Reconcile GP PO link step has to know before it can match a row to a GP PO LINE ITEM - the
+  // identity it matches on is the snapped schedule category the entry ends up carrying. The second
+  // pass stamps the links the step settled onto the entries the mutation actually sends.
+  const preLink = useMemo(() => buildEntries(buildArgs), [buildArgs]);
+
+  const [poLinkPicks, setPoLinkPicks] = useState<Map<string, PoLinkPick>>(new Map());
+  const poResolutions = useMemo(
+    () => buildPoLinkResolutions(poLinkCandidates(preLink.entries, items), posByNumber),
+    [preLink.entries, items, posByNumber],
+  );
+  const poLinks = useMemo(
+    () => resolvedPoLinks(poResolutions, poLinkPicks),
+    [poResolutions, poLinkPicks],
+  );
+  const poCounts = useMemo(() => poLinkCounts(poResolutions, poLinkPicks), [poResolutions, poLinkPicks]);
+
+  const setPoLink = useCallback((spItemId: string, pick: PoLinkPick | null) => {
+    setPoLinkPicks((prev) => {
+      const next = new Map(prev);
+      if (pick === null) next.delete(spItemId);
+      else next.set(spItemId, pick);
+      return next;
+    });
+  }, []);
+
+  const built = useMemo(() => buildEntries({ ...buildArgs, poLinks }), [buildArgs, poLinks]);
 
   // From what survived, not from every candidate - the catalog must describe what actually migrated.
   const catalogItems = useMemo(
@@ -281,6 +392,7 @@ export default function SharePointMigrationPage() {
               aisle: e.aisle,
               row: e.row,
               bay: e.bay,
+              poLineItemId: e.poLineItemId,
             })),
             catalogItems: catalogItems.map((c) => ({
               typeId: c.typeId,
@@ -354,7 +466,9 @@ export default function SharePointMigrationPage() {
         </Typography>
       </FadeIn>
 
-      <Stepper activeStep={step} sx={{ mb: 3 }}>
+      {/* Wrapping, because the eighth step's label is a phrase: at phone width the row has to fall
+          onto a second line rather than widen the page. */}
+      <Stepper activeStep={step} sx={{ mb: 3, flexWrap: 'wrap', rowGap: 1 }}>
         {STEPS.map((label) => (
           <Step key={label}>
             <StepLabel>{label}</StepLabel>
@@ -369,6 +483,9 @@ export default function SharePointMigrationPage() {
               <AlertTitle>Migration complete</AlertTitle>
               {result.totalUnits} units across {result.stockItems} stock rows and{' '}
               {result.projectLocations} project inventory rows.
+              {result.linkedEntries > 0 && (
+                <> {result.linkedEntries} of them were attached to the PO line they were bought on.</>
+              )}
               {(result.catalogItemsCreated > 0 || result.catalogItemsSkipped > 0) && (
                 <>
                   {' '}
@@ -748,7 +865,7 @@ export default function SharePointMigrationPage() {
             </Card>
           )}
 
-          {step === 5 && (
+          {step === CLASSIFICATION_STEP && (
             <Card variant="outlined">
               <CardContent>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
@@ -832,7 +949,18 @@ export default function SharePointMigrationPage() {
             </Card>
           )}
 
-          {step === 6 && (
+          {step === PO_LINK_STEP && (
+            <ReconcileGpPoLinkStep
+              resolutions={poResolutions}
+              picks={poLinkPicks}
+              onPick={setPoLink}
+              loading={poLookupLoading}
+              error={poLookupError}
+              onRetry={() => setPoLookupAttempt((n) => n + 1)}
+            />
+          )}
+
+          {step === REVIEW_STEP && (
             <Card variant="outlined">
               <CardContent>
                 <Stack direction="row" spacing={3} sx={{ mb: 2, flexWrap: 'wrap' }}>
@@ -855,6 +983,13 @@ export default function SharePointMigrationPage() {
                     }
                   />
                 </Stack>
+                {poResolutions.length > 0 && (
+                  <Stack direction="row" spacing={3} sx={{ mb: 2, flexWrap: 'wrap' }}>
+                    <Stat label="Rows linked to a PO line" value={poCounts.linked} />
+                    <Stat label="Rows skipped" value={poCounts.skipped} />
+                    <Stat label="Rows left unlinked" value={poCounts.unlinked} />
+                  </Stack>
+                )}
                 {costlessCount === built.entries.length && built.entries.length > 0 && (
                   <Alert severity="warning" sx={{ mb: 2 }}>
                     <AlertTitle>No entry carries a unit cost</AlertTitle>
@@ -962,7 +1097,8 @@ export default function SharePointMigrationPage() {
                 // Everything past the project mapping also waits on the schedule-products read - the
                 // snap, the classification rows and the marking are all built from it.
                 disabled={
-                  (step === 5 && unclassifiedRequired.length > 0) || (step >= 2 && scheduleProductsBlocked)
+                  (step === CLASSIFICATION_STEP && unclassifiedRequired.length > 0) ||
+                  (step >= 2 && scheduleProductsBlocked)
                 }
                 onClick={() => setStep((s) => s + 1)}
               >

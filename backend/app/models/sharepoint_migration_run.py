@@ -28,12 +28,12 @@ class SharepointMigrationRun(Base):
 class SharepointMigrationMark(Base):
     """The purchased-marking a migration run intended for one (project, category, code): N units.
 
-    The marking itself lives as null-linked IN_PO HardwareItem rows, and those are rows a schedule
-    re-import is free to wipe (`replace_schedule` deletes every HardwareItem). Without this record
-    the marking would silently vanish with them and every rollup would read the project as
-    never-purchased again. Finalize re-applies the recorded N against whatever rows the new schedule
-    carries - see `import_repository`'s re-apply step. `quantity` is the coverage TARGET (what the
-    migration landed on the shelf), not the row count the greedy pass happened to mark.
+    The marking itself lives as IN_PO HardwareItem rows, and those are rows a schedule re-import is
+    free to wipe (`replace_schedule` deletes every HardwareItem). Without this record the marking
+    would silently vanish with them and every rollup would read the project as never-purchased again.
+    Finalize re-applies the recorded N against whatever rows the new schedule carries - see
+    `import_repository`'s re-apply step. `quantity` is the coverage TARGET (what the migration landed
+    on the shelf), not the row count the greedy pass happened to mark.
     """
 
     __tablename__ = "sharepoint_migration_marks"
@@ -45,4 +45,8 @@ class SharepointMigrationMark(Base):
     hardware_category: Mapped[str] = mapped_column(String, nullable=False)
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The GP PO LINE ITEM the migrated units were bought on, when the wizard found one. The marked
+    # rows carry it too, so a re-apply after a schedule replace re-ties them to the same line instead
+    # of leaving them null-linked. Null is the ordinary marking, which names no PO Nexus holds.
+    po_line_item_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("po_line_items.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
