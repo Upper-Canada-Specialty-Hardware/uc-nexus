@@ -41,6 +41,7 @@ import PODetailModal from './PODetailModal';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import CreatePOChooser from './CreatePOChooser';
 import RelayStatusChip from '../../relay/RelayStatusChip';
+import GpCompanyLabel from '../../relay/GpCompanyLabel';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
 import { isStatusCardActive, toggleStatusCard } from './statusCardFilter';
@@ -285,7 +286,7 @@ function SortHeader({ field, label, align = 'left', hug = true, sortState, onSor
   );
 }
 
-const PO_TABLE_COLUMN_COUNT = 9;
+const PO_TABLE_COLUMN_COUNT = 10;
 
 // --- Single register row ---
 
@@ -296,11 +297,9 @@ interface POTableRowProps {
   onOpen: () => void;
   // #353 PR E: this PO has a GP write on the outbox. Joined client-side, not a per-row resolver.
   gpWriteQueued: boolean;
-  // #637: only Admin/Manager sees more than one company's POs here, so only they get the column.
-  showCompany: boolean;
 }
 
-function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, showCompany }: POTableRowProps) {
+function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued }: POTableRowProps) {
   const hugSx = { width: '1%', whiteSpace: 'nowrap' as const };
   return (
     <TableRow
@@ -326,9 +325,7 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, sho
           </Typography>
         )}
       </TableCell>
-      {showCompany && (
-        <TableCell sx={{ ...hugSx, ...monoSx, color: 'text.secondary' }}>{po.company}</TableCell>
-      )}
+      <TableCell sx={{ ...hugSx, ...monoSx, color: 'text.secondary' }}>{po.company}</TableCell>
       <TableCell sx={hugSx}>
         {po.poNumber ? (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
@@ -403,7 +400,7 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, sho
 
 function POListPage() {
   const navigate = useNavigate();
-  const { isAdmin } = useIdentity();
+  const { isAdmin, company } = useIdentity();
   const { showToast } = useToast();
   const [selectedPOId, setSelectedPOId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -431,9 +428,6 @@ function POListPage() {
 
   const relay = useRelayStatus();
   const relayConnected = relay.connected;
-  // #637: the register is the combined view for an admin - every company's POs at once - so the row
-  // has to say which company's it is. A scoped caller only ever gets their own; no column needed.
-  const columnCount = isAdmin ? PO_TABLE_COLUMN_COUNT + 1 : PO_TABLE_COLUMN_COUNT;
 
   // #353 PR E: which POs have a GP write still on the outbox, joined onto rows client-side on
   // entityKey (`po:<id>`) rather than as a per-row resolver (which would be an N+1).
@@ -573,9 +567,28 @@ function POListPage() {
   return (
     <Box>
       <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1, mb: 2 }}>
-        <Typography variant="h5" sx={{ flex: 1 }}>
-          Purchase Orders
-        </Typography>
+        {/* Whose purchase orders these are, beside the title rather than under it so the answer
+            costs no vertical space. A scoped user is told the one GP company every row belongs to;
+            Admin/Manager, who sees them all at once, is told that instead. */}
+        <Box
+          sx={{
+            flex: 1,
+            minWidth: 0,
+            display: 'flex',
+            alignItems: 'baseline',
+            flexWrap: 'wrap',
+            columnGap: 1.25,
+          }}
+        >
+          <Typography variant="h5">Purchase Orders</Typography>
+          <Typography component="div" variant="body2" color="text.secondary" sx={{ minWidth: 0 }}>
+            {isAdmin ? (
+              'All companies'
+            ) : company ? (
+              <GpCompanyLabel code={company} gpCompanies={relay.gpCompanies} />
+            ) : null}
+          </Typography>
+        </Box>
         <RelayStatusChip connected={relayConnected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
         {isAdmin && (
           <Button
@@ -726,7 +739,7 @@ function POListPage() {
           <TableHead>
             <TableRow>
               <TableCell sx={{ width: '1%', whiteSpace: 'nowrap' }}>Project</TableCell>
-              {isAdmin && <TableCell sx={{ width: '1%', whiteSpace: 'nowrap' }}>Company</TableCell>}
+              <TableCell sx={{ width: '1%', whiteSpace: 'nowrap' }}>Company</TableCell>
               <SortHeader field="poNumber" label="PO / Request #" sortState={sort} onSort={handleSortClick} />
               <SortHeader field="status" label="Status" sortState={sort} onSort={handleSortClick} />
               <SortHeader field="vendor" label="Vendor" hug={false} sortState={sort} onSort={handleSortClick} />
@@ -742,14 +755,14 @@ function POListPage() {
           <TableBody>
             {pageLoading && (
               <TableRow>
-                <TableCell colSpan={columnCount} align="center" sx={{ py: 4 }}>
+                <TableCell colSpan={PO_TABLE_COLUMN_COUNT} align="center" sx={{ py: 4 }}>
                   <CircularProgress size={24} />
                 </TableCell>
               </TableRow>
             )}
             {!pageLoading && rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={columnCount} align="center" sx={{ py: 4 }}>
+                <TableCell colSpan={PO_TABLE_COLUMN_COUNT} align="center" sx={{ py: 4 }}>
                   <Typography variant="body2" color="text.secondary">
                     No purchase orders match the current filters.
                   </Typography>
@@ -765,7 +778,6 @@ function POListPage() {
                   projectName={projectNameOf(po)}
                   onOpen={() => handleOpenPO(po.id)}
                   gpWriteQueued={queuedPoIds.has(po.id)}
-                  showCompany={isAdmin}
                 />
               ))}
           </TableBody>
