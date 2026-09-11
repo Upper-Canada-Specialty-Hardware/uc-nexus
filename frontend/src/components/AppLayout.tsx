@@ -23,6 +23,7 @@ import {
 import { useColorScheme } from '@mui/material/styles';
 import { UserButton } from '@clerk/clerk-react';
 import NotificationBell from './NotificationBell';
+import TopBarCompany from './TopBarCompany';
 import GpQueueChip from '../relay/GpQueueChip';
 import GpOutboxWatcher from '../relay/GpOutboxWatcher';
 import ConfirmDialog from './ConfirmDialog';
@@ -177,6 +178,10 @@ export default function AppLayout() {
           <Box sx={{ mr: 0.5 }}>
             <GpQueueChip />
           </Box>
+
+          {/* The GP company a scoped user is assigned to. Renders nothing for Admin/Manager, who is
+              unscoped, so the bar is unchanged for them. */}
+          <TopBarCompany />
 
           <NotificationBell />
 

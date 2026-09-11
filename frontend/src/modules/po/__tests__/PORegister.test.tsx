@@ -1,4 +1,4 @@
-import { render, screen, within, configure } from '@testing-library/react';
+import { render, screen, waitFor, within, configure } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
@@ -16,20 +16,28 @@ configure({ asyncUtilTimeout: 15_000 });
 vi.mock('../POGenerateDialog', () => ({ default: () => null }));
 vi.mock('../GpPurchaseOrderDialog', () => ({ default: () => null }));
 
-// #637: the Company column only renders for an Admin/Manager, who is the one caller that sees more
-// than one company's POs at once.
+// The register reads differently for the two kinds of caller - an Admin/Manager sees every company's
+// POs at once, a scoped user only their own - so the identity is switchable per test.
+const identity = vi.hoisted(() => ({ isAdmin: true, company: null as string | null }));
+
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
-    displayName: 'Admin',
-    userId: 'user_admin',
-    roles: ['Admin/Manager'],
-    hasRole: () => true,
-    isAdmin: true,
+    displayName: identity.isAdmin ? 'Admin' : 'Bev Buyer',
+    userId: identity.isAdmin ? 'user_admin' : 'user_buyer',
+    roles: identity.isAdmin ? ['Admin/Manager'] : [],
+    hasRole: (role: string) => identity.isAdmin && role === 'Admin/Manager',
+    isAdmin: identity.isAdmin,
+    isDbAdmin: false,
     gpBuyerId: null,
-    company: null,
+    company: identity.company,
     user: null,
   }),
 }));
+
+beforeEach(() => {
+  identity.isAdmin = true;
+  identity.company = null;
+});
 
 const INFINITE = Number.POSITIVE_INFINITY;
 
@@ -166,4 +174,27 @@ it('shows the tenant on a registered row too', async () => {
   renderRegister();
 
   expect(await companyCellOf('PO-2001')).toHaveTextContent('UCSH');
+});
+
+// The heading answers "whose purchase orders am I looking at?", which nothing on the page said.
+it('tells an Admin/Manager the table is every company at once', async () => {
+  renderRegister();
+
+  expect(await screen.findByText('All companies')).toBeInTheDocument();
+});
+
+it('names the scoped user’s own GP company in the heading, and still gives them the column', async () => {
+  identity.isAdmin = false;
+  identity.company = 'TUBC';
+  renderRegister();
+
+  // The heading carries the code and GP's name for it; the row carries the code. The name arrives
+  // with the relay poll, a beat after the heading itself, so it is waited for rather than asserted
+  // on the first frame.
+  const heading = (await screen.findByText('Purchase Orders')).parentElement as HTMLElement;
+  await waitFor(() => expect(heading).toHaveTextContent('Test UBC'));
+  expect(heading).toHaveTextContent('TUBC');
+  expect(screen.queryByText('All companies')).toBeNull();
+
+  expect(await companyCellOf('PO-REQ-001')).toHaveTextContent('TUBC');
 });
