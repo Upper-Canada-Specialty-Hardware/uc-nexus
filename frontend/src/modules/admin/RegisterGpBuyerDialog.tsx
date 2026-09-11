@@ -74,8 +74,8 @@ export default function RegisterGpBuyerDialog({
     // The dropdowns this feeds read gpBuyersDetailed, so the new row is pulled in behind the write.
     // NOT awaited: awaitRefetchQueries folds a refetch failure into the mutation's, which would report
     // a buyer GP really did register as a failed registration if the relay dropped in the window right
-    // after taCreateBuyer committed. Nothing depends on the refetch having landed either - GpBuyerSelect
-    // renders an id that isn't in the list yet from its own held-value fallback.
+    // after taCreateBuyer committed. Nothing depends on the refetch having landed either - the caller
+    // takes the registered id straight from onRegistered, list or no list.
     refetchQueries: [{ query: GET_GP_BUYERS_DETAILED, variables: { company } }],
     onCompleted: (data) => {
       showToast(`Buyer '${data.createGpBuyer.buyerId}' registered in GP`, 'success');
