@@ -52,7 +52,7 @@ const USER = {
   email: 'jay@example.com',
   roles: ['PO User'],
   gpBuyerId: null as string | null,
-  // The buyer field lists the buyer master of THIS company, so the fixture account has one; the
+  // The buyer list is the buyer master of THIS company, so the fixture account has one; the
   // no-company case is its own test below.
   company: COMPANY as string | null,
   imageUrl: '',
@@ -135,88 +135,214 @@ function renderPage(mocks: MockedResponse[]) {
 async function openEditDialog() {
   const cell = await screen.findByText('jay@example.com', {}, GRID_TIMEOUT);
   fireEvent.click(cell);
-  return screen.findByRole('combobox', { name: /GP Buyer ID/i });
+  return screen.findByRole('dialog');
 }
 
-test('the GP buyer field is a dropdown of the buyers registered in GP', async () => {
-  // #409: free text meant an admin had to open GP to see what was registered, and a typo only
-  // surfaced later as a rejected PO.
+/** The Choose…/Change… button that swaps the dialog body for the buyer chooser. */
+function chooseButton() {
+  return screen.getByRole('button', { name: /^(Choose|Change)/ });
+}
+
+/** Open the chooser and wait for its tags to be listed. */
+async function openChooser() {
+  await waitFor(() => expect(chooseButton()).not.toBeDisabled());
+  fireEvent.click(chooseButton());
+  return screen.findByRole('button', { name: 'donr' });
+}
+
+// --- the GP identity group (#699) ----------------------------------------------------------------
+
+test('the GP identity group is hidden until PO User is checked', async () => {
+  // Only a PO User raises POs, so only a PO User has any use for a GP buyer id.
+  renderPage([relayStatusMock(true), usersMock({ ...USER, roles: [] }), buyersMock]);
+
+  await openEditDialog();
+  expect(screen.queryByText('GP identity')).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('checkbox', { name: 'PO User' }));
+  expect(await screen.findByText('GP identity')).toBeInTheDocument();
+  expect(screen.getByText('Not set')).toBeInTheDocument();
+});
+
+test('the chooser lists every registered buyer id as a tag, with no descriptions', async () => {
+  // The ruling for #699: the id alone is enough, so the description GP holds is not shown at all.
   renderPage([relayStatusMock(true), usersMock(), buyersMock]);
 
-  const field = await openEditDialog();
-  await waitFor(() => expect(field).not.toBeDisabled());
-  fireEvent.mouseDown(field);
-  fireEvent.click(field);
+  await openEditDialog();
+  await openChooser();
 
-  expect(await screen.findByText(/donr - Don Roberton/)).toBeInTheDocument();
-  expect(screen.getByText(/mira - Accounting/)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'donr' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'mira' })).toBeInTheDocument();
+  expect(screen.queryByText(/Don Roberton/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Accounting/)).not.toBeInTheDocument();
+  expect(screen.getByText('2 buyers registered in TUBC')).toBeInTheDocument();
 });
 
-test('the buyer field is disabled when the relay is not connected', async () => {
-  // Blocking beats a free-text fallback here: a wrong buyer id is written to Clerk and looks correct
-  // until someone tries to raise a PO.
-  renderPage([relayStatusMock(false), usersMock()]);
+test('the filter narrows the tags to the ids that contain what was typed', async () => {
+  renderPage([relayStatusMock(true), usersMock(), buyersMock]);
 
-  const field = await openEditDialog();
-  await waitFor(() => expect(field).toBeDisabled());
-  expect(screen.getByText(/relay is not connected/i)).toBeInTheDocument();
+  await openEditDialog();
+  await openChooser();
+
+  fireEvent.change(screen.getByRole('textbox', { name: /Filter buyer ids/i }), {
+    target: { value: 'MIR' },
+  });
+
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'donr' })).not.toBeInTheDocument());
+  expect(screen.getByRole('button', { name: 'mira' })).toBeInTheDocument();
+  expect(screen.getByText('1 of 2 buyers')).toBeInTheDocument();
 });
 
-test('a relay too old for the buyer read says so instead of showing an empty dropdown', async () => {
-  renderPage([relayStatusMock(true), usersMock(), buyersUnsupportedMock]);
+test('a filter that matches no buyer says so instead of showing an empty area', async () => {
+  renderPage([relayStatusMock(true), usersMock(), buyersMock]);
 
-  const field = await openEditDialog();
-  await waitFor(() => expect(field).toBeDisabled());
-  expect(await screen.findByText(/too old to list GP buyers/i)).toBeInTheDocument();
+  await openEditDialog();
+  await openChooser();
+
+  fireEvent.change(screen.getByRole('textbox', { name: /Filter buyer ids/i }), {
+    target: { value: 'zzz' },
+  });
+
+  expect(await screen.findByText(/No registered buyer matches that filter/i)).toBeInTheDocument();
 });
 
-test('an already-linked buyer still shows while the relay is down', async () => {
-  // Rendering the field empty over a link that is really there would read as "not set".
-  renderPage([relayStatusMock(false), usersMock({ ...USER, gpBuyerId: 'donr' })]);
-
-  const field = (await openEditDialog()) as HTMLInputElement;
-  await waitFor(() => expect(field).toBeDisabled());
-  expect(field.value).toBe('donr');
-});
-
-test('registering a new buyer selects it without a second trip through the dropdown', async () => {
-  const createMock: MockedResponse = {
-    request: { query: CREATE_GP_BUYER, variables: { buyerId: 'newbuyer', description: 'New Buyer' } },
-    result: { data: { createGpBuyer: { buyerId: 'newbuyer', description: 'New Buyer', __typename: 'GpBuyer' } } },
-  };
-  const buyersAfterMock: MockedResponse = {
-    request: { query: GET_GP_BUYERS_DETAILED, variables: { company: COMPANY } },
+test('picking a tag and pressing Use this identity writes the id on save', async () => {
+  let written: string | null = null;
+  const rolesMock: MockedResponse = {
+    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: ['PO User'] } },
     maxUsageCount: INFINITE,
-    result: {
-      data: {
-        gpBuyersDetailed: [
-          { buyerId: 'donr', description: 'Don Roberton', __typename: 'GpBuyer' },
-          { buyerId: 'newbuyer', description: 'New Buyer', __typename: 'GpBuyer' },
-        ],
-      },
+    result: { data: { updateUserRoles: USER } },
+  };
+  const buyerWriteMock: MockedResponse = {
+    request: { query: UPDATE_USER_GP_BUYER_ID, variables: { userId: 'user_1', gpBuyerId: 'donr' } },
+    maxUsageCount: INFINITE,
+    result: () => {
+      written = 'donr';
+      return { data: { updateUserGpBuyerId: { ...USER, gpBuyerId: 'donr' } } };
     },
   };
-  renderPage([relayStatusMock(true), usersMock(), buyersMock, createMock, buyersAfterMock]);
+  renderPage([relayStatusMock(true), usersMock(), buyersMock, rolesMock, buyerWriteMock]);
 
-  const field = (await openEditDialog()) as HTMLInputElement;
-  await waitFor(() => expect(field).not.toBeDisabled());
-  fireEvent.mouseDown(field);
-  fireEvent.click(field);
-  fireEvent.click(await screen.findByText(/Register new GP buyer/i));
+  await openEditDialog();
+  fireEvent.click(await openChooser());
+  fireEvent.click(screen.getByRole('button', { name: /Use this identity/i }));
 
-  fireEvent.change(await screen.findByRole('textbox', { name: /Buyer ID/i }), {
-    target: { value: 'newbuyer' },
-  });
-  fireEvent.change(screen.getByRole('textbox', { name: /Description/i }), {
-    target: { value: 'New Buyer' },
-  });
-  fireEvent.click(screen.getByRole('button', { name: /^Register$/i }));
+  // Back in the summary, with the picked id showing.
+  expect(await screen.findByRole('button', { name: /^Change/ })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
 
-  await waitFor(() => expect(field.value).toMatch(/newbuyer/));
+  await waitFor(() => expect(written).toBe('donr'), GRID_TIMEOUT);
 });
 
-test('saving an unchanged buyer does not re-write it to Clerk', async () => {
-  // The buyer mutation is a Clerk PATCH, and while the relay is down the disabled field still holds
+test('Back leaves the chooser without taking the pick', async () => {
+  renderPage([relayStatusMock(true), usersMock(), buyersMock]);
+
+  await openEditDialog();
+  fireEvent.click(await openChooser());
+  fireEvent.click(screen.getByRole('button', { name: /^Back$/i }));
+
+  expect(await screen.findByText('Not set')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /^Choose/ })).toBeInTheDocument();
+});
+
+test('nothing is picked for an account with no GP identity, so Use this identity starts disabled', async () => {
+  // #699: a buyer id is never proposed from a name, an email or anything else. The admin chooses.
+  renderPage([relayStatusMock(true), usersMock(), buyersMock]);
+
+  await openEditDialog();
+  await openChooser();
+
+  expect(screen.getByRole('button', { name: /Use this identity/i })).toBeDisabled();
+  expect(screen.getByText(/Nothing picked yet/i)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'donr' })).toHaveAttribute('aria-pressed', 'false');
+  expect(screen.getByRole('button', { name: 'mira' })).toHaveAttribute('aria-pressed', 'false');
+});
+
+test('Change opens the chooser on the identity the account already holds', async () => {
+  renderPage([relayStatusMock(true), usersMock({ ...USER, gpBuyerId: 'mira' }), buyersMock]);
+
+  await openEditDialog();
+  await openChooser();
+
+  expect(screen.getByRole('button', { name: 'mira', pressed: true })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'donr', pressed: false })).toBeInTheDocument();
+  expect(screen.getByText(/Picked:/)).toBeInTheDocument();
+});
+
+// --- the PO User gate (#699) ---------------------------------------------------------------------
+
+test('unchecking PO User warns that Save clears the identity, and Save clears it', async () => {
+  let written: string | null | undefined;
+  const rolesMock: MockedResponse = {
+    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: [] } },
+    maxUsageCount: INFINITE,
+    result: { data: { updateUserRoles: { ...USER, roles: [] } } },
+  };
+  const buyerWriteMock: MockedResponse = {
+    request: { query: UPDATE_USER_GP_BUYER_ID, variables: { userId: 'user_1', gpBuyerId: null } },
+    maxUsageCount: INFINITE,
+    result: () => {
+      written = null;
+      return { data: { updateUserGpBuyerId: { ...USER, gpBuyerId: null, roles: [] } } };
+    },
+  };
+  renderPage([
+    relayStatusMock(true),
+    usersMock({ ...USER, gpBuyerId: 'donr' }),
+    buyersMock,
+    rolesMock,
+    buyerWriteMock,
+  ]);
+
+  await openEditDialog();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'PO User' }));
+
+  expect(await screen.findByText(/Save will clear the GP identity/i)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /^Change/ })).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+  await waitFor(() => expect(written).toBeNull(), GRID_TIMEOUT);
+});
+
+test('re-checking PO User before saving keeps the identity and writes nothing', async () => {
+  // The clearing decision belongs to Save alone, so a stray click on the checkbox costs nothing.
+  let buyerWrites = 0;
+  const rolesMock: MockedResponse = {
+    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: ['PO User'] } },
+    maxUsageCount: INFINITE,
+    result: { data: { updateUserRoles: { ...USER, gpBuyerId: 'donr' } } },
+  };
+  const buyerWriteMock: MockedResponse = {
+    request: { query: UPDATE_USER_GP_BUYER_ID },
+    maxUsageCount: INFINITE,
+    variableMatcher: () => true,
+    result: () => {
+      buyerWrites += 1;
+      return { data: { updateUserGpBuyerId: { ...USER, gpBuyerId: 'donr' } } };
+    },
+  };
+  renderPage([
+    relayStatusMock(true),
+    usersMock({ ...USER, gpBuyerId: 'donr' }),
+    buyersMock,
+    rolesMock,
+    buyerWriteMock,
+  ]);
+
+  await openEditDialog();
+  const poUser = screen.getByRole('checkbox', { name: 'PO User' });
+  fireEvent.click(poUser);
+  expect(await screen.findByText(/Save will clear the GP identity/i)).toBeInTheDocument();
+  fireEvent.click(poUser);
+  expect(await screen.findByRole('button', { name: /^Change/ })).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+  await waitFor(() => expect(screen.getByText(/User updated successfully/i)).toBeInTheDocument(), GRID_TIMEOUT);
+  expect(buyerWrites).toBe(0);
+});
+
+test('saving an unchanged identity does not re-write it to Clerk', async () => {
+  // The buyer mutation is a Clerk PATCH, and while the relay is down the locked field still holds
   // the stored id - an unconditional write would fire on every unrelated save.
   const rolesMock: MockedResponse = {
     request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: ['PO User', 'Warehouse Staff'] } },
@@ -247,36 +373,90 @@ test('saving an unchanged buyer does not re-write it to Clerk', async () => {
   expect(buyerWrites).toBe(0);
 });
 
-test('the buyer field names the company whose buyer master it lists', async () => {
+// --- when the buyer list can't be read (#409) ----------------------------------------------------
+
+test('with the relay down the stored identity still shows and cannot be changed', async () => {
+  // Blocking beats a free-text fallback here: a wrong buyer id is written to Clerk and looks correct
+  // until someone tries to raise a PO. Rendering it empty would read as "not set".
+  renderPage([relayStatusMock(false), usersMock({ ...USER, gpBuyerId: 'donr' })]);
+
+  // Scoped to the dialog: the grid row behind it carries the same id in its GP Buyer column.
+  const dialog = within(await openEditDialog());
+  await waitFor(() => expect(chooseButton()).toBeDisabled());
+  expect(dialog.getByText('donr')).toBeInTheDocument();
+  expect(dialog.getByText(/relay is not connected/i)).toBeInTheDocument();
+});
+
+test('a relay too old for the buyer read says so rather than offering an empty chooser', async () => {
+  renderPage([relayStatusMock(true), usersMock(), buyersUnsupportedMock]);
+
+  await openEditDialog();
+  await waitFor(() => expect(chooseButton()).toBeDisabled());
+  expect(await screen.findByText(/too old to list GP buyers/i)).toBeInTheDocument();
+});
+
+test('with no company chosen the identity waits instead of listing another company', async () => {
+  renderPage([relayStatusMock(true), usersMock({ ...USER, company: null }), buyersMock]);
+
+  await openEditDialog();
+  expect(chooseButton()).toBeDisabled();
+  expect(screen.getByText(/Choose the company first/i)).toBeInTheDocument();
+});
+
+test('the helper text names the company whose buyer master the chooser lists', async () => {
   // A buyer id belongs to one company's buyer master and the admin has to see which one, or the
   // account is linked to a buyer GP refuses at registration weeks later (#691).
   renderPage([relayStatusMock(true), usersMock(), buyersMock]);
 
-  const field = await openEditDialog();
-  expect(field).toHaveAccessibleName(/GP Buyer ID \(TUBC\)/);
-  expect(screen.getByText(/GP buyers registered in TUBC/i)).toBeInTheDocument();
+  await openEditDialog();
+  expect(await screen.findByText(/GP buyers registered in TUBC/i)).toBeInTheDocument();
 });
 
-test('with no company chosen the buyer field waits instead of listing another company', async () => {
-  renderPage([relayStatusMock(true), usersMock({ ...USER, company: null }), buyersMock]);
+test('registering a new buyer takes it as the identity and returns to the summary', async () => {
+  const createMock: MockedResponse = {
+    request: { query: CREATE_GP_BUYER, variables: { buyerId: 'newbuyer', description: 'New Buyer' } },
+    result: { data: { createGpBuyer: { buyerId: 'newbuyer', description: 'New Buyer', __typename: 'GpBuyer' } } },
+  };
+  const buyersAfterMock: MockedResponse = {
+    request: { query: GET_GP_BUYERS_DETAILED, variables: { company: COMPANY } },
+    maxUsageCount: INFINITE,
+    result: {
+      data: {
+        gpBuyersDetailed: [
+          { buyerId: 'donr', description: 'Don Roberton', __typename: 'GpBuyer' },
+          { buyerId: 'newbuyer', description: 'New Buyer', __typename: 'GpBuyer' },
+        ],
+      },
+    },
+  };
+  renderPage([relayStatusMock(true), usersMock(), buyersMock, createMock, buyersAfterMock]);
 
-  const field = await openEditDialog();
-  expect(field).toBeDisabled();
-  expect(screen.getByText(/Choose the company first/i)).toBeInTheDocument();
+  await openEditDialog();
+  await openChooser();
+  fireEvent.click(screen.getByRole('button', { name: /Register new GP buyer/i }));
+
+  fireEvent.change(await screen.findByRole('textbox', { name: /Buyer ID/i }), {
+    target: { value: 'newbuyer' },
+  });
+  fireEvent.change(screen.getByRole('textbox', { name: /Description/i }), {
+    target: { value: 'New Buyer' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: /^Register$/i }));
+
+  expect(await screen.findByText('newbuyer')).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByRole('button', { name: /^Change/ })).toBeInTheDocument());
 });
 
-test('changing the company clears the picked buyer', async () => {
+test('changing the company clears the picked identity', async () => {
   renderPage([relayStatusMock(true), usersMock({ ...USER, gpBuyerId: 'donr' }), buyersMock]);
 
-  const buyerField = (await openEditDialog()) as HTMLInputElement;
-  expect(buyerField.value).toMatch(/donr/);
+  const dialog = within(await openEditDialog());
+  expect(dialog.getByText('donr')).toBeInTheDocument();
 
   fireEvent.mouseDown(await screen.findByRole('combobox', { name: /^Company$/i }));
   fireEvent.click(await screen.findByRole('option', { name: 'UCSH UC Shop' }));
 
-  await waitFor(() =>
-    expect((screen.getByRole('combobox', { name: /GP Buyer ID/i }) as HTMLInputElement).value).toBe(''),
-  );
+  expect(await screen.findByText('Not set')).toBeInTheDocument();
 });
 
 // --- company assignment (#637) -------------------------------------------------------------------
