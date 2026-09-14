@@ -37,6 +37,8 @@ import CompanyGate from './CompanyGate';
 const CRUMB_LABELS: Record<string, string> = {
   po: 'Purchase Orders',
   import: 'Start a Request',
+  // Title-casing the slug gives 'Nexus Gp Traffic'; GP is an initialism everywhere else in the app.
+  'nexus-gp-traffic': 'Nexus GP Traffic',
 };
 
 /** A record id in the path (#637's /app/admin/projects/:id). Title-casing a uuid reads as garbage. */
