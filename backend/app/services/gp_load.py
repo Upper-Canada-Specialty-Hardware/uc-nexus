@@ -419,6 +419,24 @@ class GpLoadPolicy:
         """Seconds before `n` reads could be acquired. For a loop deciding what to do next."""
         return self._bucket.wait_for(n)
 
+    def budget(self) -> dict:
+        """The GP READ LIMIT as a reader of GP SYNC STATE sees it: the ceiling, the per-request cap, and
+        how much of the allowance exists right now. `reads_available` may be NEGATIVE - the pressure
+        brake spends tokens with no read to show for them - and that is a fact worth showing rather than
+        clamping, because it is the difference between "waiting its turn" and "paying off a penalty"."""
+        return {
+            "reads_per_minute": READS_PER_MINUTE,
+            "read_batch": READ_BATCH,
+            "reads_available": self._bucket.tokens(),
+        }
+
+    def resume_check_in_seconds(self) -> float | None:
+        """How long until the next probe asks GP whether the GP CPU PAUSE can lift. None when nothing is
+        paused, because `probe_due_at` is meaningless then."""
+        if not self.paused:
+            return None
+        return max(0.0, self._probe_at - time.monotonic())
+
     @property
     def bucket(self) -> TokenBucket:
         return self._bucket

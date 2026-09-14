@@ -95,6 +95,12 @@ def relay_health(host: str = "127.0.0.1", port: int = 7321) -> dict:
             # not. Only the running relay knows this - it is read from GP, not from config.toml.
             "companies": body.get("companies") or [],
             "companies_error": body.get("companies_error"),
+            # NEXUS GP TRAFFIC: this relay's own RELAY TRAFFIC record, and the GP SYNC STATE the
+            # backend last pushed. Carried through here rather than read in a second request, because
+            # the tab polls on the same 3s timer the status panel does. A serve process older than the
+            # feature reports neither, which the tab renders as "not received" instead of an error.
+            "traffic": body.get("traffic") or {},
+            "gp_sync_state": body.get("gp_sync_state"),
         }
     except (OSError, json.JSONDecodeError):
         return {"running": False}
@@ -222,6 +228,22 @@ class Api:
 
     def get_logs(self, limit: int = 200) -> list[dict]:
         return recent_log_events(limit=int(limit))
+
+    def get_traffic(self) -> dict:
+        """Everything the NEXUS GP TRAFFIC tab renders, in one call: this relay's own RELAY TRAFFIC
+        record, the GP SYNC STATE the backend last pushed, and the GP companies this relay serves.
+
+        All of it comes out of the single /health read relay_health already makes - the tab polls every
+        three seconds, and a second round-trip per tick would buy nothing. With the relay stopped there
+        is no record to read, so the traffic block is empty and no sync state has arrived."""
+        cfg = config_summary()
+        health = relay_health(cfg.get("host", "127.0.0.1"), cfg.get("port", 7321))
+        return {
+            "relay": health,
+            "traffic": health.get("traffic") or {},
+            "gp_sync_state": health.get("gp_sync_state"),
+            "companies": health.get("companies") or [],
+        }
 
     # --- setup wizard ---------------------------------------------------------------------------------
 
@@ -363,11 +385,11 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
 <style>
   :root { color-scheme: dark; }
   body { font-family: 'Segoe UI', system-ui, sans-serif; margin: 0; background:#12151c; color:#e6e8ee; }
-  header { padding:14px 18px; background:#0d1017; border-bottom:1px solid #232838; display:flex; align-items:center; gap:12px; }
+  header { padding:14px 18px; background:#0d1017; border-bottom:1px solid #232838; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
   header h1 { font-size:16px; margin:0; font-weight:600; }
   .dot { width:11px; height:11px; border-radius:50%; background:#5a6072; box-shadow:0 0 0 3px rgba(255,255,255,0.04); }
   .dot.ok { background:#2ecc71; } .dot.bad { background:#e74c3c; } .dot.warn { background:#f39c12; }
-  nav { display:flex; gap:4px; }
+  nav { display:flex; gap:4px; flex-wrap:wrap; }
   .tab { background:transparent; border:1px solid transparent; color:#8b93a7; padding:4px 12px; border-radius:7px; cursor:pointer; font-size:12.5px; }
   .tab.active { background:#20283a; color:#e6e8ee; border-color:#2c364b; }
   main { padding:16px 18px; }
@@ -396,11 +418,26 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
   .actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:4px; }
   .result { font-size:12.5px; min-height:16px; margin:2px 0 4px; }
   .result .ok { color:#5be29a; } .result .bad { color:#f0857b; }
+  /* The Nexus GP Traffic tab. The window is 560px wide at its narrowest, and it has no horizontal
+     scroll to reveal anything pushed off the side, so every table here lays out fixed and every cell
+     wraps: a column sized to its longest value would widen the page instead of wrapping in place. */
+  #view-traffic table { table-layout:fixed; }
+  #view-traffic th, #view-traffic td { padding:3px 6px; overflow-wrap:anywhere; }
+  /* Squarer than the round lozenge elsewhere: a pill here can hold a value long enough to wrap onto a
+     second line at 560px, and a wrapped 999px radius reads as a blob rather than as a tag. */
+  #view-traffic .pill { max-width:100%; border-radius:7px; }
+  #view-traffic .bad { color:#f0857b; }
+  /* Neither good nor bad: work nobody is waiting on, which is most of what the mirror does. */
+  #view-traffic .pill.bg { background:rgba(127,178,255,.15); color:#7fb2ff; }
+  .lines { display:flex; flex-direction:column; gap:7px; font-size:12.5px; }
+  .line { display:flex; flex-wrap:wrap; align-items:center; gap:6px; min-width:0; }
+  .line > * { min-width:0; }
 </style></head>
 <body>
   <header><span id="hdot" class="dot"></span><h1>UC Nexus Relay</h1><span id="hstate" class="muted"></span>
     <span style="flex:1"></span>
     <nav><button id="tab-status" class="tab active" onclick="showView('status')">Status</button>
+      <button id="tab-traffic" class="tab" onclick="showView('traffic')">Nexus GP Traffic</button>
       <button id="tab-setup" class="tab" onclick="showView('setup')">Setup</button>
       <button id="tab-updates" class="tab" onclick="showView('updates')">Updates</button></nav>
     <span id="uiver" class="muted"></span></header>
@@ -421,6 +458,49 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
           <button onclick="refresh()">Refresh</button></div>
         <div class="logwrap"><table><thead><tr><th>Time</th><th>Level</th><th>Message</th><th>Detail</th></tr></thead>
           <tbody id="logs"></tbody></table></div>
+      </div>
+    </section>
+    <section id="view-traffic" hidden>
+      <div class="card">
+        <h2>Backend sync</h2>
+        <div class="lines">
+          <div class="line" id="t-state"></div>
+          <div class="line" id="t-pacing"></div>
+          <div class="line" id="t-activity"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Per company</h2>
+        <table>
+          <colgroup><col style="width:15%"><col style="width:19%"><col style="width:24%"><col style="width:13%"><col style="width:14%"><col style="width:15%"></colgroup>
+          <thead><tr><th>Company</th><th>First-time initialization</th><th>Open-PO sync</th><th>New PO check</th><th>Jobs sync</th><th>Mirrored POs</th></tr></thead>
+          <tbody id="t-companies"></tbody></table>
+      </div>
+      <div class="card">
+        <h2>Pending writes</h2>
+        <div class="line" id="t-pending"></div>
+      </div>
+      <div class="card">
+        <h2>Running now</h2>
+        <table>
+          <colgroup><col style="width:18%"><col style="width:28%"><col style="width:16%"><col style="width:20%"><col style="width:18%"></colgroup>
+          <thead><tr><th>Started</th><th>Op</th><th>Company</th><th>Background</th><th>Elapsed</th></tr></thead>
+          <tbody id="t-running"></tbody></table>
+      </div>
+      <div class="card">
+        <div class="bar"><h2 style="margin:0">Recent</h2><span style="flex:1"></span>
+          <label class="muted"><input type="checkbox" id="t-bgonly" onchange="refreshTraffic()"> background only</label></div>
+        <div class="logwrap"><table>
+          <colgroup><col style="width:13%"><col style="width:18%"><col style="width:14%"><col style="width:13%"><col style="width:9%"><col style="width:9%"><col style="width:24%"></colgroup>
+          <thead><tr><th>Time</th><th>Op</th><th>Company</th><th>Result</th><th>ms</th><th>GP CPU</th><th>Summary</th></tr></thead>
+          <tbody id="t-recent"></tbody></table></div>
+      </div>
+      <div class="card">
+        <h2 id="t-totals-heading">Totals</h2>
+        <table>
+          <colgroup><col style="width:18%"><col style="width:34%"><col style="width:16%"><col style="width:16%"><col style="width:16%"></colgroup>
+          <thead><tr><th>Company</th><th>Op</th><th>Count</th><th>Errors</th><th>Avg ms</th></tr></thead>
+          <tbody id="t-totals"></tbody></table>
       </div>
     </section>
     <section id="view-setup" hidden>
@@ -474,13 +554,28 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
   }
   function result(id, ok, text) { $(id).innerHTML = `<span class="${ok ? 'ok' : 'bad'}">${esc(text)}</span>`; }
 
+  // Which tab is showing. The 3s timer polls only that one: the Status tab reads config.toml and the
+  // log through get_status, the Nexus GP Traffic tab reads /health through get_traffic, and doing both
+  // every tick would be work for a panel nobody is looking at.
+  let _view = 'status';
+
   function showView(v) {
-    for (const name of ['status', 'setup', 'updates']) {
+    _view = v;
+    for (const name of ['status', 'traffic', 'setup', 'updates']) {
       $('view-' + name).hidden = v !== name;
       $('tab-' + name).classList.toggle('active', v === name);
     }
+    if (v === 'traffic') refreshTraffic();
     if (v === 'setup') loadSetup();
     if (v === 'updates') loadUpdates();
+  }
+
+  // The header dot and caption, shared by both polls: whichever tab is showing, the window has just
+  // been told the channel state and the header must not go stale because the operator moved tabs.
+  function setHeader(st) {
+    const connected = st === 'connected';
+    $('hdot').className = 'dot ' + (connected ? 'ok' : (st === 'unknown' ? '' : 'bad'));
+    $('hstate').innerText = connected ? 'connected to backend' : ('channel: ' + st);
   }
 
   async function refresh() {
@@ -488,8 +583,7 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
     const s = await window.pywebview.api.get_status();
     $('uiver').innerText = 'ui ' + s.ui_version;
     const st = s.channel.state, connected = st === 'connected';
-    $('hdot').className = 'dot ' + (connected ? 'ok' : (st === 'unknown' ? '' : 'bad'));
-    $('hstate').innerText = connected ? 'connected to backend' : ('channel: ' + st);
+    setHeader(st);
     const c = s.config, r = s.relay, a = s.autostart;
     // One row per channel, but only once there is more than one to tell apart (#414). A single-channel
     // relay - every workstation, normally - keeps the panel it has always had.
@@ -514,6 +608,197 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
     $('logs').innerHTML = logs.slice().reverse().map(l =>
       `<tr><td class="muted">${esc(l.time)}</td><td class="lvl ${l.level||''}">${esc(l.level)}</td>`+
       `<td>${esc(l.message)}</td><td class="muted">${esc(l.detail)}</td></tr>`).join('');
+  }
+
+  // --- Nexus GP Traffic ------------------------------------------------------------------------------
+  // What is crossing between Nexus and GP right now, and what has already crossed: this relay's own
+  // record of the jobs it has run, and the sync state the backend pushes down the channel. Every time
+  // shown is worked out here from an ISO timestamp, so it reads in the operator's own clock, and a
+  // missing one renders as a dash rather than throwing and blanking the tab.
+  function num(n) { return (n === null || n === undefined || isNaN(Number(n))) ? '-' : Number(n).toLocaleString(); }
+  function rounded(n) { return (n === null || n === undefined) ? '-' : num(Math.round(Number(n))); }
+  function muted(t) { return `<span class="muted">${esc(t)}</span>`; }
+  function ago(iso) {
+    if (!iso) return null;
+    const t = Date.parse(iso);
+    if (isNaN(t)) return null;
+    const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+    if (s < 60) return s + 's ago';
+    if (s < 3600) return Math.round(s / 60) + 'm ago';
+    if (s < 86400) return Math.round(s / 3600) + 'h ago';
+    return Math.round(s / 86400) + 'd ago';
+  }
+  function clock(iso) { const d = iso ? new Date(iso) : null; return (d && !isNaN(d.getTime())) ? d.toLocaleTimeString() : '-'; }
+  function stamp(iso) { const d = iso ? new Date(iso) : null; return (d && !isNaN(d.getTime())) ? d.toLocaleString() : '-'; }
+
+  // The one line that says what the backend is doing at this instant, in the same plain words the
+  // Nexus admin page uses. An unrecognised kind is shown verbatim rather than swallowed: a backend
+  // newer than this relay is then still readable.
+  function activityWords(a) {
+    if (!a || !a.kind) return 'idle';
+    const at = a.company ? ' for ' + a.company : '';
+    const page = (a.page === null || a.page === undefined) ? '' : ', page ' + a.page;
+    const from = a.cursor ? ' from ' + a.cursor : '';
+    if (a.kind === 'initialization') return 'first-time initialization' + at + from;
+    if (a.kind === 'open-pos-sync') return 'open-PO sync' + at + page + from;
+    if (a.kind === 'open-pos-reconciliation') return 'reconciliation' + at;
+    if (a.kind === 'new-po-check') return 'new PO check' + at;
+    if (a.kind === 'jobs-sync') return 'jobs sync' + at;
+    if (a.kind === 'paused') return 'paused';
+    if (a.kind === 'idle') return 'idle';
+    return a.kind;
+  }
+
+  function backendSyncLines(relay, sync) {
+    const state = (sync && sync.state) || null;
+    const chState = relay && relay.running ? ((relay.channel || {}).state || 'unknown') : 'not running';
+    let pills = pill(chState === 'connected', 'backend channel: ' + esc(chState), chState === 'unknown');
+    if (!state) {
+      // Either the backend has nothing to say yet, or it is older than this feature. The relay cannot
+      // tell those apart, so the line says both rather than implying a fault.
+      pills += pill(false, 'not received - the backend has not sent it yet, or this relay is on an older backend', true);
+    } else {
+      pills += pill(true, 'as of ' + esc(ago(sync.received_at) || 'just now'));
+      pills += pill(!!state.po_sync_enabled, 'PO mirror ' + (state.po_sync_enabled ? 'on' : 'off'), !state.po_sync_enabled);
+      pills += pill(!!state.job_sync_enabled, 'Jobs sync ' + (state.job_sync_enabled ? 'on' : 'off'), !state.job_sync_enabled);
+    }
+    $('t-state').innerHTML = pills;
+
+    const p = state && state.pacing;
+    if (!p) {
+      $('t-pacing').innerHTML = muted('GP read limit: not reported');
+    } else {
+      let line = muted('GP read limit: ' + num(p.reads_per_minute) + ' POs per minute, ' +
+        rounded(p.reads_available) + ' available; batch ' + num(p.read_batch));
+      if (p.paused) {
+        const secs = (p.resume_check_in_seconds === null || p.resume_check_in_seconds === undefined)
+          ? '' : ', next check in ' + Math.max(0, Math.round(p.resume_check_in_seconds)) + 's';
+        line += pill(false, esc('PAUSED - ' + (p.paused_reason || 'GP is busy') + secs));
+      } else {
+        line += pill(true, esc((p.sql_cpu_pct === null || p.sql_cpu_pct === undefined)
+          ? 'reads allowed, GP CPU not visible' : 'reads allowed, GP CPU ' + p.sql_cpu_pct + '%'));
+      }
+      $('t-pacing').innerHTML = line;
+    }
+
+    let doing = muted('Doing now:') + ` <span>${esc(activityWords(state && state.activity))}</span>`;
+    const w = state && state.initialization_window;
+    if (w) doing += muted('Initialization window ' + (w.label || '') + ': ' + (w.open ? 'open' : 'closed'));
+    $('t-activity').innerHTML = doing;
+  }
+
+  function initializationCell(c) {
+    if (c.initialization_done) return pill(true, 'done');
+    // The PO it is up to goes under the pill rather than inside it: a cursor is 8 characters wider than
+    // this column, and a pill it had to wrap inside would read as a blob.
+    if (c.initialization_cursor) return pill(false, 'in progress', true) + `<div class="muted">from ${esc(c.initialization_cursor)}</div>`;
+    return muted('not started');
+  }
+  function openPassCell(c) {
+    if (c.open_pass_started_at) {
+      return esc((c.open_pass_cursor ? 'running from ' + c.open_pass_cursor : 'running from start') +
+        ', started ' + (ago(c.open_pass_started_at) || 'just now'));
+    }
+    const last = c.last_open_pass;
+    if (!last) return muted('never');
+    const parts = [num(last.pages) + ' pages', num(last.pos) + ' open', num(last.left_open_table) + ' left the open table'];
+    // Cancellations are named only when there are some: at this width a standing "0 cancelled" would
+    // cost a line of wrapping in every row to say nothing.
+    if (Number(last.cancelled || 0) > 0) parts.push(num(last.cancelled) + ' cancelled');
+    return esc('last finished ' + (ago(c.last_open_pass_finished_at) || 'recently') + ': ' + parts.join(', '));
+  }
+  function newPoCheckCell(c) {
+    if (!c.last_new_po_check_at) return muted('never');
+    return esc((ago(c.last_new_po_check_at) || 'just now') + ', ' + num(c.last_new_po_check_pos || 0) + ' new');
+  }
+  function jobsSyncCell(c) {
+    if (!c.last_jobs_sync_at) return muted('never');
+    const j = c.last_jobs_sync;
+    const counts = j ? ', ' + num(j.adopted) + ' adopted of ' + num(j.total) : '';
+    return esc((ago(c.last_jobs_sync_at) || 'just now') + counts);
+  }
+  function mirroredCell(c) { return esc(num(c.mirrored_pos) + ' (' + num(c.open_pos) + ' open)'); }
+
+  function companyRows(state, discovered) {
+    const rows = (state && state.companies) || [];
+    if (!rows.length) {
+      return `<tr><td colspan="6" class="muted">${esc(state
+        ? 'the backend named no companies' : 'waiting for the backend to send its sync state')}</td></tr>`;
+    }
+    // A name the backend did not carry is filled in from what this relay itself discovered in GP, so
+    // the column reads the same here as it does on the Nexus admin page.
+    const names = {};
+    (discovered || []).forEach(c => { names[c.id] = c.name; });
+    return rows.map(c => {
+      const name = c.name || names[c.company];
+      const company = esc(c.company) + (name && name !== c.company ? `<div class="muted">${esc(name)}</div>` : '');
+      return `<tr><td>${company}</td><td>${initializationCell(c)}</td><td>${openPassCell(c)}</td>` +
+        `<td>${newPoCheckCell(c)}</td><td>${jobsSyncCell(c)}</td><td>${mirroredCell(c)}</td></tr>`;
+    }).join('');
+  }
+
+  function pendingWritesLine(state) {
+    const w = state && state.pending_writes;
+    if (!w) return muted('not reported');
+    const text = num(w.pending) + ' pending, ' + num(w.in_flight) + ' in flight, ' + num(w.failed) + ' failed';
+    let html = Number(w.failed || 0) > 0 ? `<span class="bad">${esc(text)}</span>` : `<span>${esc(text)}</span>`;
+    if (w.oldest_pending_at) html += muted('oldest pending since ' + stamp(w.oldest_pending_at));
+    return html;
+  }
+
+  function runningRows(traffic) {
+    const rows = (traffic && traffic.running) || [];
+    if (!rows.length) return '<tr><td colspan="5" class="muted">nothing in flight</td></tr>';
+    return rows.map(r =>
+      `<tr><td class="muted">${esc(clock(r.started_at))}</td><td>${esc(r.op)}</td><td>${esc(r.company)}</td>` +
+      `<td>${r.background ? '<span class="pill bg">background</span>' : muted('-')}</td>` +
+      `<td>${rounded(r.elapsed_ms)} ms</td></tr>`).join('');
+  }
+
+  function recentRows(traffic) {
+    let rows = ((traffic && traffic.recent) || []).slice();
+    if ($('t-bgonly').checked) rows = rows.filter(r => r.background);
+    rows = rows.slice(-100).reverse();  // the record is newest last; the operator reads newest first
+    if (!rows.length) return '<tr><td colspan="7" class="muted">nothing yet</td></tr>';
+    return rows.map(r => {
+      const cpu = (r.cost && r.cost.cpu_ms !== null && r.cost.cpu_ms !== undefined) ? num(r.cost.cpu_ms) : '-';
+      return `<tr><td class="muted">${esc(clock(r.started_at))}</td><td>${esc(r.op)}</td><td>${esc(r.company)}</td>` +
+        `<td>${r.ok ? pill(true, 'ok') : pill(false, esc(r.error_code || 'error'))}</td>` +
+        `<td>${rounded(r.elapsed_ms)}</td><td>${cpu}</td><td class="muted">${esc(r.summary || '')}</td></tr>`;
+    }).join('');
+  }
+
+  function totalsRows(traffic) {
+    const totals = (traffic && traffic.totals) || {};
+    const out = [];
+    Object.keys(totals).sort().forEach(company => {
+      const byOp = totals[company] || {};
+      Object.keys(byOp).sort().forEach(op => {
+        const t = byOp[op] || {};
+        const avg = t.count ? Math.round(t.elapsed_ms / t.count) : 0;
+        const errors = Number(t.errors || 0) > 0 ? `<span class="bad">${num(t.errors)}</span>` : num(t.errors);
+        // A companyless op (server_load asks about the server, not about a company) is booked under
+        // "" and shown as a dash rather than as a blank cell nobody can account for.
+        out.push(`<tr><td>${esc(company || '-')}</td><td>${esc(op)}</td><td>${num(t.count)}</td>` +
+          `<td>${errors}</td><td>${num(avg)}</td></tr>`);
+      });
+    });
+    return out.length ? out.join('') : '<tr><td colspan="5" class="muted">nothing yet</td></tr>';
+  }
+
+  async function refreshTraffic() {
+    if (!window.pywebview) return;
+    const d = await window.pywebview.api.get_traffic();
+    const relay = d.relay || {}, sync = d.gp_sync_state, traffic = d.traffic || {};
+    const state = (sync && sync.state) || null;
+    setHeader(relay.running ? ((relay.channel || {}).state || 'unknown') : 'disconnected');
+    backendSyncLines(relay, sync);
+    $('t-companies').innerHTML = companyRows(state, d.companies);
+    $('t-pending').innerHTML = pendingWritesLine(state);
+    $('t-running').innerHTML = runningRows(traffic);
+    $('t-recent').innerHTML = recentRows(traffic);
+    $('t-totals-heading').innerText = traffic.since ? 'Totals since ' + stamp(traffic.since) : 'Totals';
+    $('t-totals').innerHTML = totalsRows(traffic);
   }
 
   async function loadSetup() {
@@ -605,5 +890,11 @@ _HTML = """<!doctype html><html><head><meta charset="utf-8"><title>UC Nexus Rela
     await window.pywebview.api.shutdown_app();
   }
 
-  window.addEventListener('pywebviewready', () => { refresh(); setInterval(() => { if ($('auto').checked) refresh(); }, 3000); });
+  // One poll per tick, for the tab that is showing. The auto-refresh tick lives on the Status tab but
+  // governs both: it is the window's single "keep this live" switch.
+  function tick() {
+    if (!$('auto').checked) return;
+    if (_view === 'traffic') refreshTraffic(); else refresh();
+  }
+  window.addEventListener('pywebviewready', () => { refresh(); setInterval(tick, 3000); });
 </script></body></html>"""

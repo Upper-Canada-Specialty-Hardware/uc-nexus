@@ -45,6 +45,12 @@ Inventory Value
 - AVERAGE DOOR COST - The single per-company dollar value that every DOORS ON HAND row is multiplied by. Code: inventory_value_settings.average_door_cost
 - OSSA - Off Site Storage Agreement, a flag on a project. Code: projects.off_site_storage_agreement
 
+Monitoring
+
+- NEXUS GP TRAFFIC - The dashboard: the relay window tab and the Nexus admin page showing what is crossing between Nexus and GP right now and what has already crossed. Code: route `/app/admin/nexus-gp-traffic`, `NexusGpTrafficPage`, relay tab `traffic`
+- GP SYNC STATE - The backend's account of its own sync work: per company, whether the FIRST TIME GP COMPANY NEXUS INITIALIZATION is done or where it is up to, the OPEN-POS SYNC in progress and the last one finished, the last NEW PO CHECK, the last GP JOBS SYNC, plus the GP READ LIMIT balance, whether the GP CPU PAUSE is on, and PENDING GP WRITES counts. One thing served two ways: the `gpSyncState` GraphQL query and the `gp_sync_state` frame pushed to the relay. Code: `app/services/gp_sync_state.py`, `gpSyncState`, frame type `gp_sync_state`
+- RELAY TRAFFIC - The relay's own in-memory record of the jobs it is running now and the jobs it has finished since it started. Code: `channel.traffic_snapshot`, relay health block `traffic`
+
 Purchase Orders
 
 - GP PO LINE ITEM - One line on a purchase order in GP: item number, item description, ordered quantity, unit cost, received quantity and job number. On every PO not made by Nexus the item number is a cost bucket and the description is the part number. On a Nexus-made PO the item number is the hardware category and the description is the product code. Nexus's own line record mirrors it by line ordinal. Code: POP10110 / POP30110 row, POLineItem.gp_line_ord; item number = po_line_items.hardware_category, description = po_line_items.product_code, cost code = po_line_items.cost_code

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { parseServerDate, parseServerDay } from '../serverDate';
+import { fmtDate, fmtRelative, parseServerDate, parseServerDay } from '../serverDate';
 
 // `parseServerDay` and a bare `new Date` are the SAME function on a UTC runner, and CI is a UTC
 // runner - so on UTC alone every assertion below passes just as happily against the #238 bug as
@@ -60,5 +60,43 @@ describe('parseServerDay', () => {
     expect(parseServerDay('2026-07-29T06:00:00.123456').getTime()).toBe(
       Date.UTC(2026, 6, 29, 6, 0, 0, 123),
     );
+  });
+});
+
+/** An instant that many minutes in the past, written the way the backend writes one. */
+const minutesAgo = (m: number, zoneless = false) => {
+  const iso = new Date(Date.now() - m * 60_000 - 30_000).toISOString();
+  return zoneless ? iso.replace('Z', '') : iso;
+};
+
+describe('fmtRelative', () => {
+  it('reads an age at the scale a person would say it', () => {
+    expect(fmtRelative(minutesAgo(0))).toBe('just now');
+    expect(fmtRelative(minutesAgo(5))).toBe('5m ago');
+    expect(fmtRelative(minutesAgo(2 * 60))).toBe('2h ago');
+    expect(fmtRelative(minutesAgo(3 * 24 * 60))).toBe('3d ago');
+  });
+
+  it('gives up on the age past a week and names the day instead', () => {
+    const old = new Date(Date.now() - 30 * 24 * 60 * 60_000);
+    expect(fmtRelative(old.toISOString())).toBe(old.toLocaleDateString());
+  });
+
+  it('reads a zone-less server timestamp as UTC, not as local time', () => {
+    // The #238 trap: parsed as local, a five-minute-old timestamp in a behind-UTC zone reads as
+    // hours in the future and this prints "just now" for the rest of the afternoon.
+    expect(fmtRelative(minutesAgo(5, true))).toBe('5m ago');
+  });
+
+  it('prints the em dash for an absent timestamp', () => {
+    expect(fmtRelative(null)).toBe('—');
+    expect(fmtRelative(undefined)).toBe('—');
+    expect(fmtDate(null)).toBe('—');
+  });
+});
+
+describe('fmtDate', () => {
+  it('writes the instant in the viewer locale, having read it as UTC', () => {
+    expect(fmtDate('2026-07-29T06:00:00')).toBe(new Date(Date.UTC(2026, 6, 29, 6)).toLocaleString());
   });
 });

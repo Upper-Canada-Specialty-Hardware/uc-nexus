@@ -7,6 +7,7 @@ import ProjectsPage from './ProjectsPage';
 import ProjectDetailPage from './ProjectDetailPage';
 import LocationCleanupPage from './LocationCleanupPage';
 import RelayInstallsPage from './RelayInstallsPage';
+import NexusGpTrafficPage from './NexusGpTrafficPage';
 import SharePointMigrationPage from './SharePointMigrationPage';
 import DbAccessPage from './DbAccessPage';
 import InventoryValuePage from './InventoryValuePage';
@@ -25,6 +26,7 @@ export default function AdminModule() {
       <Route path="projects/:id" element={<ProjectDetailPage />} />
       <Route path="users" element={<UserManagementPage />} />
       <Route path="relay-installs" element={<RelayInstallsPage />} />
+      <Route path="nexus-gp-traffic" element={<NexusGpTrafficPage />} />
       <Route path="location-cleanup" element={<LocationCleanupPage />} />
       <Route path="sharepoint-migration" element={<SharePointMigrationPage />} />
       <Route path="db-access" element={<DbAccessPage />} />

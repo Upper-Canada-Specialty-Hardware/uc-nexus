@@ -41,7 +41,10 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import time
+from collections import deque
+from datetime import datetime, timezone
 
 import pyodbc
 import websockets
@@ -76,6 +79,184 @@ _UNKNOWN_STATE = {"connected": False, "state": "unknown"}
 # a job from a PR-environment channel is just as real a GP write as one from production.
 _INFLIGHT = 0
 _LAST_JOB_AT: float | None = None
+
+# The GP SYNC STATE each backend last pushed, keyed by channel URL: the backend's own account of its
+# sync work, sent down the socket it already holds as a {"type": "gp_sync_state", ...} frame. The relay
+# stores it and hands it to the desktop window; it never reads a decision out of it. One copy per URL
+# so two backends' accounts never overwrite each other - see _handle_gp_sync_state_frame, which is
+# where the frame arrives, and gp_sync_state_snapshot, which is what /health publishes.
+_GP_SYNC_STATE: dict[str, dict] = {}
+
+# RELAY TRAFFIC: this process's own record of the jobs it is running now and the jobs it has finished
+# since it started. It rides out on /health so the desktop window's NEXUS GP TRAFFIC tab can show what
+# is crossing between Nexus and GP - which op, for which company, how long it took, whether it worked
+# and what it cost GP - instead of an operator reading that out of relay.log by eye.
+#
+# In memory and nowhere else, deliberately: nothing new is written to disk, so a restart starts the
+# history over. `recent` is bounded at TRAFFIC_RECENT_MAX rows because the point is the recent past
+# rather than an audit trail.
+#
+# One lock over all four structures: finishing a job moves a row out of _RUNNING and into both _RECENT
+# and _TOTALS, and a /health read must never catch that half applied. Jobs run on their own threads
+# (asyncio.to_thread) while /health is served on a threadpool worker, so this is the same real race
+# db.cost_snapshot guards against.
+TRAFFIC_RECENT_MAX = 300
+
+_TRAFFIC_LOCK = threading.Lock()
+_RUNNING: dict[str, dict] = {}
+_RECENT: deque[dict] = deque(maxlen=TRAFFIC_RECENT_MAX)
+_TOTALS: dict[str, dict[str, dict]] = {}
+_TRAFFIC_SINCE = datetime.now(timezone.utc)
+# Serial number for a job frame that carried no id of its own. The backend always sends one, but an
+# unidentified job is still a GP round-trip and has to be counted; without a key of its own every such
+# job would overwrite the last one in _RUNNING.
+_TRAFFIC_SEQ = 0
+
+
+def _utc_iso(moment: datetime | None = None) -> str:
+    """The one timestamp format the traffic block publishes: ISO 8601 UTC with a trailing Z, so the
+    window's JavaScript can parse it with Date.parse and show it in the operator's own clock."""
+    return (moment or datetime.now(timezone.utc)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _traffic_start(job: dict, url: str) -> dict:
+    """Book a job as running and hand back its row, which _traffic_finish closes.
+
+    The row carries the monotonic start under a private key, so the elapsed time is measured on a clock
+    that cannot step backwards when the workstation's wall clock is corrected; every other field on it
+    is published as-is."""
+    global _TRAFFIC_SEQ
+
+    frame = job if isinstance(job, dict) else {}
+    job_id = frame.get("id")
+    with _TRAFFIC_LOCK:
+        if not isinstance(job_id, (str, int)) or job_id == "":
+            _TRAFFIC_SEQ += 1
+            job_id = f"unidentified-{_TRAFFIC_SEQ}"
+        row = {
+            "id": str(job_id),
+            "op": frame.get("op") or "",
+            # Companyless ops (server_load) are recorded against "" rather than dropped: what they cost
+            # and how often they run is exactly what the pacing questions are about.
+            "company": frame.get("company") or "",
+            "background": frame.get("background") is True,
+            "started_at": _utc_iso(),
+            "url": url,
+            "_monotonic": time.monotonic(),
+        }
+        _RUNNING[row["id"]] = row
+    return row
+
+
+def _traffic_finish(row: dict, payload: dict, reply: dict) -> None:
+    """Close a job's row: out of `running`, onto the end of `recent`, and into the company's totals."""
+    elapsed_ms = round((time.monotonic() - row["_monotonic"]) * 1000, 1)
+    body = reply if isinstance(reply, dict) else {}
+    ok = body.get("ok") is True
+    error = body.get("error")
+    # errors.error_body puts the machine-readable code under "error"; a refused background op reads
+    # "server_busy" here, which is the one error an operator is meant to see and not worry about.
+    error_code = error.get("error") if isinstance(error, dict) else None
+    finished = {
+        "id": row["id"],
+        "op": row["op"],
+        "company": row["company"],
+        "background": row["background"],
+        "started_at": row["started_at"],
+        "elapsed_ms": elapsed_ms,
+        "ok": ok,
+        "error_code": None if ok else error_code,
+        "cost": body.get("cost"),
+        "summary": _summarise(row["op"], payload, body),
+    }
+    with _TRAFFIC_LOCK:
+        _RUNNING.pop(row["id"], None)
+        _RECENT.append(finished)
+        totals = _TOTALS.setdefault(row["company"], {}).setdefault(
+            row["op"], {"count": 0, "ok": 0, "errors": 0, "elapsed_ms": 0.0}
+        )
+        totals["count"] += 1
+        totals["ok" if ok else "errors"] += 1
+        totals["elapsed_ms"] = round(totals["elapsed_ms"] + elapsed_ms, 1)
+
+
+def _summarise(op: str, payload: dict, reply: dict) -> str | None:
+    """One short plain-words line saying what a finished job actually did, or None for an op with
+    nothing worth saying about it.
+
+    Pure, and it never raises: it reads a payload some backend sent and a result a handler built, and a
+    surprise in either has to cost the summary line rather than the traffic row it belongs to."""
+    try:
+        payload = payload if isinstance(payload, dict) else {}
+        # A job that failed gets no line: its error code already says what happened, and a summary built
+        # from the result it never produced would read as "0 POs from start" - a successful empty page.
+        if not isinstance(reply, dict) or reply.get("ok") is not True:
+            return None
+        result = reply.get("result")
+        if not isinstance(result, dict):
+            return None
+        if op == "sync_pos":
+            cursor = payload.get("cursor")
+            cursor = cursor.strip() if isinstance(cursor, str) else ""
+            where = f"from {cursor}" if cursor else "from start"
+            open_only = " (open only)" if payload.get("open_only") else ""
+            return f"{len(result.get('pos') or [])} POs {where}{open_only}"
+        if op == "read_pos_by_number":
+            return f"{len(result.get('pos') or [])} POs by number"
+        if op == "list_jobs":
+            return f"{len(result.get('jobs') or [])} jobs"
+        if op == "job_setup_health":
+            return f"{len(result.get('jobs') or [])} jobs checked"
+        if op == "create_po":
+            po_number = result.get("po_number")
+            return f"PO {po_number}" if po_number else None
+        if op == "create_receipt":
+            receipt = result.get("receipt_number")
+            return f"receipt {receipt}" if receipt else None
+        if op == "server_load":
+            cpu = result.get("sql_cpu_pct")
+            return None if cpu is None else f"CPU {cpu}%"
+    except Exception:  # noqa: BLE001 - a summary is a nicety; it must never cost the row it describes
+        logger.debug("could not summarise a job", extra={"category": "traffic_summary_failed", "op": op})
+    return None
+
+
+def traffic_snapshot() -> dict:
+    """The traffic block /health publishes: what is in flight, what has recently finished, and the
+    totals since this process started.
+
+    Copied out under the lock for the same reason db.cost_snapshot is: /health is a sync def serialised
+    on a threadpool worker while GP jobs keep finishing on their own threads. A running row's elapsed
+    time is computed here rather than stored, so it is the age at the moment of the read."""
+    now = time.monotonic()
+    with _TRAFFIC_LOCK:
+        return {
+            "since": _utc_iso(_TRAFFIC_SINCE),
+            "running": [
+                {
+                    **{key: value for key, value in row.items() if not key.startswith("_")},
+                    "elapsed_ms": round((now - row["_monotonic"]) * 1000, 1),
+                }
+                for row in _RUNNING.values()
+            ],
+            "recent": [dict(row) for row in _RECENT],
+            "totals": {
+                company: {op: dict(totals) for op, totals in by_op.items()}
+                for company, by_op in _TOTALS.items()
+            },
+        }
+
+
+def reset_traffic() -> None:
+    """Empty the record. For tests: it is module-level and runs from process start, so one test's jobs
+    would otherwise land in the next one's snapshot."""
+    global _TRAFFIC_SINCE, _TRAFFIC_SEQ
+    with _TRAFFIC_LOCK:
+        _RUNNING.clear()
+        _RECENT.clear()
+        _TOTALS.clear()
+        _TRAFFIC_SINCE = datetime.now(timezone.utc)
+        _TRAFFIC_SEQ = 0
 
 
 def channel_state_snapshot() -> dict:
@@ -118,6 +299,9 @@ def forget_channel(url: str) -> None:
     app's channel panel would go on listing a backend nobody is dialling any more - which reads as a
     broken connection rather than a removed one."""
     _STATES.pop(url, None)
+    # And its GP SYNC STATE with it: that backend's account of its own sync work is only as current as
+    # the socket it arrived on, so a retired channel's copy must not go on being rendered as news.
+    _GP_SYNC_STATE.pop(url, None)
 
 
 def _mark_connected(url: str) -> None:
@@ -791,8 +975,8 @@ def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
     it instead of learning company_not_allowed on the round-trip. Both are empty and `companies_error`
     carries the reason when that master could not be read - a relay that cannot tell which companies
     exist serves none of them. `features` says what this build understands beyond jobs - "channels" means
-    it accepts a pushed preview-channel list, so a backend talking to an older relay knows not to bother
-    sending one."""
+    it accepts a pushed preview-channel list and "gp_sync_state" that it accepts the backend's account of
+    its own sync work, so a backend talking to an older relay knows not to bother sending either."""
     from . import updater  # lazy: keep channel import-light and avoid any package load-order coupling
 
     served, names, error = _served_companies(channel_allowed)
@@ -804,7 +988,7 @@ def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
         "companies": served,
         "company_names": names,
         "companies_error": error,
-        "features": ["channels"],
+        "features": ["channels", "gp_sync_state"],
     }
 
 
@@ -858,18 +1042,27 @@ async def _run_once(url: str, secret: str, cfg) -> None:
                 finally:
                     send_queue.task_done()
 
-        async def _dispatch_job(job: dict) -> None:
+        async def _dispatch_job(job: dict, url: str) -> None:
             # try/finally so a crashing or cancelled job cannot leak the counter: a stuck _INFLIGHT
             # would wedge the update poller into deferring forever, which looks exactly like "updates
             # silently stopped working".
             global _INFLIGHT, _LAST_JOB_AT
             _INFLIGHT += 1
+            # The channel this job arrived on rides along on the RELAY TRAFFIC row: a job from a
+            # preview backend is real GP work, and an operator looking at the tab has to be able to
+            # tell whose work it was.
+            entry = _traffic_start(job, url)
+            reply: dict = {}
             try:
                 reply = await _handle_job(job, allowed_companies)
                 await send_queue.put(reply)
             finally:
                 _INFLIGHT -= 1
                 _LAST_JOB_AT = time.monotonic()
+                # The traffic row closes in the same finally and for the same reason: a job that was
+                # cancelled or crashed and stayed in `running` would read on the tab as GP work stuck
+                # in flight forever. With no reply to read it lands as a failure, which it was.
+                _traffic_finish(entry, (job.get("payload") if isinstance(job, dict) else None) or {}, reply)
 
         async def _company_refresher() -> None:
             # Re-discover on a timer and re-announce only when THIS channel's answer actually changed
@@ -903,7 +1096,12 @@ async def _run_once(url: str, secret: str, cfg) -> None:
                     # The preview-environment list, pushed rather than polled. Nothing to answer.
                     _handle_channels_frame(job, url)
                     continue
-                task = asyncio.create_task(_dispatch_job(job))
+                if isinstance(job, dict) and job.get("type") == "gp_sync_state":
+                    # The backend's account of its own sync work, pushed rather than polled. Nothing to
+                    # answer: it is stored for /health and the desktop window to render.
+                    _handle_gp_sync_state_frame(job, url)
+                    continue
+                task = asyncio.create_task(_dispatch_job(job, url))
                 jobs.add(task)
                 task.add_done_callback(jobs.discard)
         finally:
@@ -1127,6 +1325,49 @@ def _handle_channels_frame(frame: dict, url: str) -> None:
     )
     if _wake is not None:
         _wake.set()
+
+
+def _handle_gp_sync_state_frame(frame: dict, url: str) -> None:
+    """Take a {"type": "gp_sync_state", ...} push and keep it as this channel's GP SYNC STATE.
+
+    Accepted from ANY channel, unlike the pushed channel list above. That frame names the next hosts a
+    GP-credentialed process will dial, so only production's word is taken for it; this one names no
+    host and changes no behaviour at all. It is stored, published on /health and rendered in the
+    desktop window's NEXUS GP TRAFFIC tab, so the worst a preview backend can do with it is misdescribe
+    its own sync work to whoever is reading that backend's row.
+
+    One copy per URL, so two backends' accounts never overwrite each other, and a frame that does not
+    carry a company list is dropped rather than stored: the tab renders `companies` as a table, and a
+    stored frame without one would replace a usable account with a blank one."""
+    if not isinstance(frame, dict) or not isinstance(frame.get("companies"), list):
+        logger.warning(
+            "ignored a gp sync state frame that carried no company list",
+            extra={"category": "gp_sync_state_rejected", "url": url},
+        )
+        return
+    _GP_SYNC_STATE[url] = {
+        "received_at": _utc_iso(),
+        # `type` is the envelope, not the account - everything else is stored verbatim and read by
+        # nothing in this process. The relay renders GP SYNC STATE; the backend owns what it means.
+        "state": {key: value for key, value in frame.items() if key != "type"},
+    }
+
+
+def gp_sync_state_snapshot() -> dict | None:
+    """The gp_sync_state block /health publishes: the PRIMARY channel's copy, or the first one stored
+    when no primary has sent one (a dev checkout dialling localhost, or a workstation whose production
+    backend is older than this feature while a preview one is not). None until any frame has arrived,
+    which is what the window renders as "not received"."""
+    # Copied once before it is walked, for the reason channel_state_snapshot spells out: /health is
+    # served on a threadpool worker while the read loop can be inserting a key on the event loop.
+    stored = list(_GP_SYNC_STATE.items())
+    if not stored:
+        return None
+    # primary_url hands back production's URL when it is among them and the first one otherwise, so
+    # this is both the choice and the fallback in one call.
+    chosen = primary_url([url for url, _ in stored])
+    copy = dict(stored)[chosen]
+    return {"received_at": copy["received_at"], "url": chosen, "state": copy["state"]}
 
 
 def _warn_if_no_primary(urls: list[str]) -> None:

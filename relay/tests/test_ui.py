@@ -185,6 +185,72 @@ def test_api_delegates(monkeypatch):
     assert api.get_logs(50) == [{"n": 50}]
 
 
+def test_relay_health_carries_the_traffic_record_and_the_pushed_sync_state(monkeypatch):
+    # The two NEXUS GP TRAFFIC blocks ride out on the same /health read the status panel already makes,
+    # so the tab costs no second round-trip per poll.
+    import json as _json
+    from io import BytesIO
+
+    body = _json.dumps(
+        {
+            "status": "ok",
+            "traffic": {"since": "2026-09-14T12:00:00.000Z", "running": [], "recent": [], "totals": {}},
+            "gp_sync_state": {"received_at": "2026-09-14T12:00:05.000Z", "url": "wss://x/relay-link", "state": {}},
+        }
+    ).encode()
+
+    class _Resp:
+        def __enter__(self):
+            return BytesIO(body)
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(ui.urllib.request, "urlopen", lambda url, timeout=3: _Resp())
+    health = ui.relay_health()
+    assert health["traffic"]["since"] == "2026-09-14T12:00:00.000Z"
+    assert health["gp_sync_state"]["url"] == "wss://x/relay-link"
+
+
+def test_get_traffic_returns_the_tab_s_four_blocks(monkeypatch):
+    traffic = {"since": "2026-09-14T12:00:00.000Z", "running": [], "recent": [{"op": "sync_pos"}], "totals": {}}
+    sync_state = {"received_at": "2026-09-14T12:00:05.000Z", "url": "wss://x/relay-link", "state": {"companies": []}}
+    monkeypatch.setattr(
+        ui,
+        "relay_health",
+        lambda host="127.0.0.1", port=7321: {
+            "running": True,
+            "channel": {"state": "connected"},
+            "companies": [{"id": "UBC", "name": "Upper Canada"}],
+            "traffic": traffic,
+            "gp_sync_state": sync_state,
+        },
+    )
+    got = ui.Api().get_traffic()
+    assert set(got) == {"relay", "traffic", "gp_sync_state", "companies"}
+    assert got["traffic"] == traffic
+    assert got["gp_sync_state"] == sync_state
+    assert got["companies"] == [{"id": "UBC", "name": "Upper Canada"}]
+    assert got["relay"]["channel"]["state"] == "connected"
+
+
+def test_get_traffic_reports_empty_blocks_when_the_relay_is_not_running(monkeypatch):
+    # There is no record to read when the process holding it is not up. The tab renders that as "not
+    # received" rather than as an error, so the blocks have to be empty rather than missing.
+    monkeypatch.setattr(ui, "relay_health", lambda host="127.0.0.1", port=7321: {"running": False})
+    got = ui.Api().get_traffic()
+    assert got == {"relay": {"running": False}, "traffic": {}, "gp_sync_state": None, "companies": []}
+
+
+def test_the_window_has_a_nexus_gp_traffic_tab():
+    # The tab, its section and the poll that keeps it live: the three halves of the page that a later
+    # edit to the HTML could silently drop.
+    assert 'id="tab-traffic"' in ui._HTML and ">Nexus GP Traffic<" in ui._HTML
+    assert 'id="view-traffic"' in ui._HTML
+    assert "refreshTraffic()" in ui._HTML
+    assert "get_traffic" in ui._HTML
+
+
 def test_config_summary_shows_baked_infra_when_file_omits_it(tmp_path):
     # config.toml now carries only [auth]; SQL server + backend must come from the baked defaults.
     p = _cfg(tmp_path, '[auth]\nshared_secret = "x"\n')

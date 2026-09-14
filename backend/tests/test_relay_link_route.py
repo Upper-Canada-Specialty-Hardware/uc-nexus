@@ -587,6 +587,31 @@ def test_an_adopted_socket_is_pushed_the_channels_too(monkeypatch):
     asyncio.run(run())
 
 
+def test_an_adopted_socket_asks_for_the_gp_sync_state_push_at_once(monkeypatch):
+    # Same reasoning as the channels push above (#679): the adopt path consumes the hello itself, so
+    # without its own wake an adopted relay's NEXUS GP TRAFFIC tab sits empty for a whole push interval.
+    monkeypatch.setattr(main.preview_registry, "channels", lambda: [])
+    woken: list[str] = []
+    monkeypatch.setattr(main.gp_sync_state, "wake", lambda: woken.append("state"))
+
+    async def run():
+        ws = _FakeRelaySocket(
+            [
+                {"type": "hello", "build": "relay-v0.2.0", "ops": [], "companies": ["TUBC"], "features": []},
+                WebSocketDisconnect(),
+            ]
+        )
+        gateway.try_register(ws)
+        try:
+            with pytest.raises(WebSocketDisconnect):
+                await main._serve_relay_link(ws, require_hello=True)
+        finally:
+            gateway.unregister(ws)
+
+    asyncio.run(run())
+    assert woken == ["state"]
+
+
 # --- what the handshake records (#654) -------------------------------------------------------------
 
 

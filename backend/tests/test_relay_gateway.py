@@ -832,6 +832,80 @@ def test_a_failed_channel_push_does_not_reach_the_caller():
     asyncio.run(run())  # must not raise
 
 
+# --- the GP SYNC STATE frame (#679) -----------------------------------------------------------------
+# Same push contract as the channel list, for the same reason: a build that never advertised the
+# feature would read the frame as a job reply and log an uncorrelated id.
+
+
+def test_push_gp_sync_state_sends_the_document_to_a_relay_that_asked_for_it():
+    async def run():
+        gateway = RelayGateway()
+        ws = FakeWebSocket()
+        gateway.try_register(ws)
+        gateway.note_hello("relay-v0.3.0", ["sync_pos"], ["TUBC"], ["channels", "gp_sync_state"])
+
+        await gateway.push_gp_sync_state({"generated_at": "2026-09-14T12:00:00Z", "companies": []})
+
+        # The type is added to the document rather than wrapping it: the relay stores the frame minus
+        # its type, so a nested payload would be one indirection the other side does not expect.
+        assert ws.sent == [
+            {"type": "gp_sync_state", "generated_at": "2026-09-14T12:00:00Z", "companies": []},
+        ]
+
+    asyncio.run(run())
+
+
+def test_push_gp_sync_state_is_a_no_op_for_a_relay_that_does_not_speak_it():
+    async def run():
+        gateway = RelayGateway()
+        ws = FakeWebSocket()
+        gateway.try_register(ws)
+        gateway.note_hello("relay-v0.2.0", ["sync_pos"], ["TUBC"], ["channels"])
+
+        await gateway.push_gp_sync_state({"generated_at": "2026-09-14T12:00:00Z"})
+
+        assert ws.sent == []
+
+    asyncio.run(run())
+
+
+def test_push_gp_sync_state_is_a_no_op_with_nothing_connected():
+    async def run():
+        await RelayGateway().push_gp_sync_state({"generated_at": "2026-09-14T12:00:00Z"})
+
+    asyncio.run(run())  # must not raise
+
+
+def test_a_failed_gp_sync_state_push_is_warned_about_and_not_raised(caplog):
+    """A dashboard frame is an advisory; the socket's own teardown path owns a dead connection."""
+
+    class _Broken(FakeWebSocket):
+        async def send_json(self, data):
+            raise RuntimeError("socket is gone")
+
+    async def run():
+        gateway = RelayGateway()
+        ws = _Broken()
+        gateway.try_register(ws)
+        gateway.note_hello("relay-v0.3.0", [], ["TUBC"], ["gp_sync_state"])
+        await gateway.push_gp_sync_state({"generated_at": "2026-09-14T12:00:00Z"})
+
+    with caplog.at_level(logging.WARNING, logger="app.services.relay_gateway"):
+        asyncio.run(run())  # must not raise
+
+    assert any("could not push the GP sync state" in r.message for r in caplog.records)
+
+
+def test_has_feature_is_false_for_a_relay_that_advertised_none():
+    gateway = RelayGateway()
+    ws = FakeWebSocket()
+    gateway.try_register(ws)
+    gateway.note_hello("relay-v0.1.0-build.30", ["list_vendors"], ["TUBC"])
+
+    assert gateway.has_feature("gp_sync_state") is False
+    assert gateway.has_feature("channels") is False
+
+
 # --- connection history: the in-memory stamps and the events written (#654) ------------------------
 
 
