@@ -580,3 +580,83 @@ export const REVOKE_POSTGRES_ADMIN = gql`
     revokePostgresAdmin(dbRole: $dbRole)
   }
 `;
+
+// ---------------------------------------------------------------------------
+// NEXUS GP TRAFFIC (#679). This is the GP SYNC STATE document behind the admin page of the same
+// name: what the mirror is doing at this instant, how far each GP company has got, where the GP READ
+// LIMIT stands, and how the PENDING GP WRITES queue looks. Admin-gated on the backend and polled
+// every five seconds. The type carries no id for Apollo to normalize on, so one document selects the
+// whole shape rather than letting a second, narrower one replace it in the cache on every poll.
+// ---------------------------------------------------------------------------
+
+export const GET_GP_SYNC_STATE = gql`
+  query GetGpSyncState {
+    gpSyncState {
+      generatedAt
+      relay {
+        connected
+        build
+        companies
+        installId
+      }
+      poSyncEnabled
+      jobSyncEnabled
+      pacing {
+        readsPerMinute
+        readBatch
+        readsAvailable
+        paused
+        pausedReason
+        resumeCheckInSeconds
+        cpuPausePct
+        sqlCpuPct
+        sqlCpuSampledAt
+      }
+      initializationWindow {
+        label
+        open
+      }
+      activity {
+        kind
+        company
+        page
+        cursor
+        startedAt
+      }
+      companies {
+        company
+        name
+        initializationDone
+        initializationCursor
+        openPassStartedAt
+        openPassCursor
+        lastOpenPassFinishedAt
+        lastOpenPass {
+          pages
+          pos
+          leftOpenTable
+          missingInGp
+          cancelled
+          created
+          updated
+        }
+        lastNewPoCheckAt
+        lastNewPoCheckPos
+        lastJobsSyncAt
+        lastJobsSync {
+          total
+          adopted
+        }
+        mirroredPos
+        openPos
+      }
+      pendingWrites {
+        pending
+        inFlight
+        failed
+        oldestPendingAt
+        lastDrainedAt
+      }
+    }
+  }
+`;

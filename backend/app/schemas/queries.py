@@ -17,6 +17,7 @@ from .custom_items import CustomItemQueries
 from .dashboard import DashboardQueries
 from .db_access import DbAccessQueries
 from .gp_outbox import GpOutboxQueries
+from .gp_sync_state import GpSyncStateQueries
 from .imports import ImportQueries
 from .inventory_value import InventoryValueQueries
 from .notification import NotificationQueries
@@ -37,6 +38,7 @@ class Query(
     DashboardQueries,
     DbAccessQueries,
     GpOutboxQueries,
+    GpSyncStateQueries,
     ImportQueries,
     InventoryValueQueries,
     NotificationQueries,

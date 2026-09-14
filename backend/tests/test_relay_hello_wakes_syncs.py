@@ -45,6 +45,15 @@ def woken(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def state_woken(monkeypatch):
+    """Record the GP SYNC STATE pushes the hello asks for (#679), kept apart from the sync wakes above
+    because this one is owed on EVERY hello - a relay serving no companies still has a tab to fill."""
+    calls: list[str] = []
+    monkeypatch.setattr(main.gp_sync_state, "wake", lambda: calls.append("state"))
+    return calls
+
+
 def _read(websocket):
     with pytest.raises(RuntimeError):
         asyncio.run(main._relay_read_loop(websocket))
@@ -75,3 +84,32 @@ def test_ordinary_frames_wake_nobody(woken, monkeypatch):
     _read(FakeWebSocket([{"type": "pong"}, {"id": "nope", "ok": True, "result": None}]))
 
     assert woken == []
+
+
+def test_a_hello_asks_for_a_gp_sync_state_push_at_once(woken, state_woken, monkeypatch):
+    """Otherwise the relay window's NEXUS GP TRAFFIC tab shows nothing for up to a push interval after
+    connecting, which reads exactly like a backend too old to send the frame at all (#679)."""
+    monkeypatch.setattr(main.relay_gateway, "_socket", object())
+
+    _read(FakeWebSocket([{"type": "hello", "build": "relay-v1", "ops": ["sync_pos"], "companies": ["TUBC"]}]))
+
+    assert state_woken == ["state"]
+
+
+def test_a_hello_that_discovered_nothing_still_asks_for_the_state_push(woken, state_woken, monkeypatch):
+    """A relay serving no companies has nothing for the sync loops to do, but its tab still has to say
+    so - and "no companies" is one of the facts GP SYNC STATE carries."""
+    monkeypatch.setattr(main.relay_gateway, "_socket", object())
+
+    _read(FakeWebSocket([{"type": "hello", "build": "relay-v1", "companies": []}]))
+
+    assert woken == []
+    assert state_woken == ["state"]
+
+
+def test_ordinary_frames_ask_for_no_state_push(woken, state_woken, monkeypatch):
+    monkeypatch.setattr(main.relay_gateway, "_socket", object())
+
+    _read(FakeWebSocket([{"type": "pong"}, {"id": "nope", "ok": True, "result": None}]))
+
+    assert state_woken == []

@@ -43,7 +43,7 @@ import GpCompanyLabel from '../../relay/GpCompanyLabel';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { FONT_MONO, microLabelSx, monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
-import { parseServerDate } from '../../utils/serverDate';
+import { fmtDate, fmtRelative, parseServerDate } from '../../utils/serverDate';
 
 interface RelayInstall {
   id: string;
@@ -97,23 +97,6 @@ const EVENT_KIND_COLOR: Record<string, 'default' | 'info' | 'success' | 'warning
   REFUSED_SECRET: 'error',
   ADOPTED: 'info',
 };
-
-function fmtDate(v: string | null | undefined): string {
-  return v ? parseServerDate(v).toLocaleString() : '—';
-}
-
-function fmtRelative(v: string | null | undefined): string {
-  if (!v) return '—';
-  const date = parseServerDate(v);
-  const min = Math.floor((Date.now() - date.getTime()) / 60_000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const day = Math.floor(hr / 24);
-  if (day < 7) return `${day}d ago`;
-  return date.toLocaleDateString();
-}
 
 /** wss://uc-nexus-pr-661.up.railway.app/relay-link -> uc-nexus-pr-661. The full url is the tooltip. */
 function previewChannelName(url: string): string {

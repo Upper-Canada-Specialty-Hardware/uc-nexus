@@ -32,6 +32,7 @@ from app.services import (
     gp_job_sync,
     gp_outbox_worker,
     gp_po_sync,
+    gp_sync_state,
     preview_announce,
     preview_clone_role,
     preview_registry,
@@ -181,6 +182,11 @@ async def lifespan(_app: FastAPI):
         tasks.append(asyncio.create_task(gp_job_sync.run_forever()))
     if gp_po_sync.enabled():
         tasks.append(asyncio.create_task(gp_po_sync.run_forever()))
+    # Hands the connected relay this backend's own GP SYNC STATE every few seconds, so the NEXUS GP
+    # TRAFFIC tab on the workstation shows MIRROR PROGRESS and pacing and not only what the relay saw.
+    # Inert until a relay advertising the feature connects (#679).
+    if gp_sync_state.enabled():
+        tasks.append(asyncio.create_task(gp_sync_state.run_forever()))
     # Production ages out preview announcements; a preview that wants the real workstation relay
     # announces itself to production. Neither runs anywhere else (#654).
     if preview_registry.enabled():
@@ -280,6 +286,9 @@ async def _relay_read_loop(websocket: WebSocket) -> None:
                 message.get("companies_error"),
             )
             await relay_gateway.push_channels(preview_registry.channels())
+            # And the first GP SYNC STATE goes out now rather than up to a push interval later, so the
+            # relay window's NEXUS GP TRAFFIC tab has something to show the moment it connects (#679).
+            gp_sync_state.wake()
             # The company list arrives HERE, not at try_register - and the sync loops were woken back
             # there, when `companies` was still empty. Without this second nudge each loop sits on its
             # own timer with a pending all-companies pass it cannot run, which on 2026-09-03 left the
@@ -343,6 +352,9 @@ async def _await_hello(websocket: WebSocket) -> bool:
         message.get("companies_error"),
     )
     await relay_gateway.push_channels(preview_registry.channels())
+    # The same immediate GP SYNC STATE push the read loop's hello branch asks for (#679): an adopted
+    # relay's NEXUS GP TRAFFIC tab must not wait out a push interval that a re-enrolled one does not.
+    gp_sync_state.wake()
     return True
 
 

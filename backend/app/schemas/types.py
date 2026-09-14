@@ -1964,6 +1964,132 @@ class GpOutboxSummary:
     last_drained_at: datetime | None = None
 
 
+# --- GP SYNC STATE, the backend half of NEXUS GP TRAFFIC (#679) -------------------------------------
+# One document mirroring app/services/gp_sync_state.py's snapshot field for field, because the relay
+# window's tab is handed the same document as a pushed frame and the two surfaces must not drift.
+
+
+@strawberry.type
+class GpSyncStateRelay:
+    """Who is on the other end of the socket right now."""
+
+    connected: bool
+    build: str | None = None
+    companies: list[str] = strawberry.field(default_factory=list)
+    install_id: strawberry.ID | None = None
+
+
+@strawberry.type
+class GpSyncPacing:
+    """What the scheduled GP reads are allowed to do at this instant: the GP READ LIMIT balance, and
+    whether the GP CPU PAUSE is holding everything still."""
+
+    reads_per_minute: int
+    read_batch: int
+    # May be NEGATIVE: the pressure brake spends budget with no read to show for it, and a balance
+    # being paid off is a different state from one merely waiting its turn.
+    reads_available: float
+    paused: bool
+    paused_reason: str | None = None
+    # Seconds until the next probe asks GP whether the pause can lift. Null when nothing is paused.
+    resume_check_in_seconds: float | None = None
+    cpu_pause_pct: float = 0.0
+    # GP's own SQL CPU, from the newest sample any relay reply carried. Null for the whole life of a
+    # relay whose SQL login lacks VIEW SERVER STATE, which is why the pause can be inert.
+    sql_cpu_pct: int | None = None
+    sql_cpu_sampled_at: datetime | None = None
+
+
+@strawberry.type
+class GpSyncWindow:
+    """The OVERNIGHT INITIALIZATION WINDOW: when the history drain may run, and whether it may now."""
+
+    label: str
+    open: bool
+
+
+@strawberry.type
+class GpSyncActivity:
+    """What the two sync loops are doing at this instant. `kind` is one of initialization,
+    open-pos-sync, open-pos-reconciliation, new-po-check, jobs-sync, paused, idle."""
+
+    kind: str
+    company: str | None = None
+    page: int | None = None
+    cursor: str | None = None
+    started_at: datetime | None = None
+
+
+@strawberry.type
+class GpSyncLastOpenPass:
+    """What a company's last finished OPEN-POS SYNC moved. `left_open_table` is how many POs Nexus
+    still held open that GP did not list, and `missing_in_gp` how many of those GP had no record of."""
+
+    pages: int
+    pos: int
+    left_open_table: int
+    missing_in_gp: int
+    cancelled: int
+    created: int
+    updated: int
+
+
+@strawberry.type
+class GpSyncLastJobsSync:
+    """What a company's last GP JOBS SYNC found: how many jobs GP reported, and how many of them
+    became projects."""
+
+    total: int
+    adopted: int
+
+
+@strawberry.type
+class GpSyncCompanyState:
+    """One GP company's row on NEXUS GP TRAFFIC: its MIRROR PROGRESS, its last passes, and how much of
+    GP's purchasing it now holds."""
+
+    company: str
+    name: str | None = None
+    initialization_done: bool = False
+    initialization_cursor: str | None = None
+    open_pass_started_at: datetime | None = None
+    open_pass_cursor: str | None = None
+    last_open_pass_finished_at: datetime | None = None
+    last_open_pass: GpSyncLastOpenPass | None = None
+    last_new_po_check_at: datetime | None = None
+    last_new_po_check_pos: int | None = None
+    last_jobs_sync_at: datetime | None = None
+    last_jobs_sync: GpSyncLastJobsSync | None = None
+    mirrored_pos: int = 0
+    open_pos: int = 0
+
+
+@strawberry.type
+class GpSyncPendingWrites:
+    """PENDING GP WRITES, the same counts the queue chip shows."""
+
+    pending: int
+    in_flight: int
+    failed: int
+    oldest_pending_at: datetime | None = None
+    last_drained_at: datetime | None = None
+
+
+@strawberry.type
+class GpSyncState:
+    """The whole GP SYNC STATE document (#679)."""
+
+    generated_at: datetime
+    relay: GpSyncStateRelay
+    po_sync_enabled: bool
+    job_sync_enabled: bool
+    pacing: GpSyncPacing
+    initialization_window: GpSyncWindow
+    activity: GpSyncActivity
+    companies: list[GpSyncCompanyState]
+    pending_writes: GpSyncPendingWrites
+
+
 @strawberry.type
 class RegisterPOResult:
     """#353 PR E: registering a PO can now be ACCEPTED without reaching GP.

@@ -129,6 +129,35 @@ def request_refresh(company: str) -> None:
     wake()
 
 
+# --- what this loop is doing, for GP SYNC STATE (#679) -----------------------------------------------
+# Three records a reader of NEXUS GP TRAFFIC needs and the scheduler does not: what is happening right
+# now, how each company's last OPEN-POS SYNC went, and when each company was last NEW PO CHECKed.
+#
+# WALL CLOCK, deliberately, and separate from the monotonic maps above. Those exist to decide what runs
+# next and are meaningless on a screen; these exist to be read by a person, so they carry
+# datetime.utcnow() and are formatted once, in gp_sync_state.snapshot(). Module level for the same
+# reason _last_new_po_check is: the page loops that stamp them are several call frames from the loop.
+_activity: dict | None = None
+_last_open_pass: dict[str, dict] = {}
+_last_new_po_check_result: dict[str, dict] = {}
+
+
+def activity() -> dict | None:
+    """What this loop is doing at this instant, or None when it is between passes. A copy, so a reader
+    cannot hold a reference to the record the next page overwrites."""
+    return dict(_activity) if _activity else None
+
+
+def last_open_passes() -> dict[str, dict]:
+    """The last finished OPEN-POS SYNC per company: when it ended and what it moved."""
+    return {company: dict(record) for company, record in _last_open_pass.items()}
+
+
+def last_new_po_checks() -> dict[str, dict]:
+    """The last NEW PO CHECK per company: when it ran and how many POs it found."""
+    return {company: dict(record) for company, record in _last_new_po_check_result.items()}
+
+
 def enabled() -> bool:
     """Env kill switch, default on, so the mirror can be stopped without a code deploy."""
     return os.getenv("GP_PO_SYNC_ENABLED", "true").lower() not in ("false", "0", "no")
@@ -238,77 +267,92 @@ async def _run_backfill(company: str, *, max_pages: int, background: bool = True
 
     Every page logs one INFO line. The fifteen-hour drain that pinned GP's CPU wrote nothing at all, so
     there was no way to see it running; the budget bounds the rate, so the lines cannot flood."""
+    global _activity
     created = updated = skipped = pos_seen = 0
     done = False
     stalled = False
     pages = 0
     pass_started = time.monotonic()
-    for page in range(max_pages):
-        # Checked before every page, not once per pass: a pass that starts at 04:55 stops at 05:00
-        # rather than running on into the morning. The page already in flight finishes and persists
-        # its cursor, and the drain picks up from there when the window reopens.
-        if not BACKFILL_WINDOW.allows(datetime.utcnow()):
-            logger.info(
-                "gp po sync: %s backfill paused for the day after %s page(s); window is %s",
+    try:
+        for page in range(max_pages):
+            # Checked before every page, not once per pass: a pass that starts at 04:55 stops at 05:00
+            # rather than running on into the morning. The page already in flight finishes and persists
+            # its cursor, and the drain picks up from there when the window reopens.
+            if not BACKFILL_WINDOW.allows(datetime.utcnow()):
+                logger.info(
+                    "gp po sync: %s backfill paused for the day after %s page(s); window is %s",
+                    company,
+                    pages,
+                    BACKFILL_WINDOW.label,
+                )
+                break
+            cursor = await asyncio.to_thread(_load_cursor, company)
+            # Stamped with the cursor in hand and before the request goes out, so the wait for budget -
+            # which is most of a page's wall time - reads as this page rather than as nothing at all.
+            _activity = {
+                "kind": "initialization",
+                "company": company,
+                "page": page + 1,
+                "cursor": cursor,
+                "started_at": datetime.utcnow(),
+            }
+            # paced_call spends READ_BATCH of the shared budget before the request goes out, waiting if
+            # the bucket is short. That wait IS the gap between pages - there is no delay of our own, and
+            # no "last page" special case, because the debt is left on the bucket for whoever reads next.
+            call = await gp_load.paced_call(
                 company,
-                pages,
-                BACKFILL_WINDOW.label,
+                "sync_pos",
+                {"cursor": cursor, "page_size": gp_load.READ_BATCH},
+                reads=gp_load.READ_BATCH,
+                background=background,
             )
-            break
-        cursor = await asyncio.to_thread(_load_cursor, company)
-        # paced_call spends READ_BATCH of the shared budget before the request goes out, waiting if
-        # the bucket is short. That wait IS the gap between pages - there is no delay of our own, and
-        # no "last page" special case, because the debt is left on the bucket for whoever reads next.
-        call = await gp_load.paced_call(
-            company,
-            "sync_pos",
-            {"cursor": cursor, "page_size": gp_load.READ_BATCH},
-            reads=gp_load.READ_BATCH,
-            background=background,
-        )
-        result = call["result"]
-        relay_ms = call["elapsed_ms"]
-        pos = (result or {}).get("pos") or []
-        next_cursor = (result or {}).get("next_cursor")
-        persist_started = time.monotonic()
-        counts = await asyncio.to_thread(_persist_page, company, pos, next_cursor, is_backfill=True)
-        persist_ms = (time.monotonic() - persist_started) * 1000
-        created += counts["created"]
-        updated += counts["updated"]
-        skipped += counts["skipped"]
-        pos_seen += len(pos)
-        pages += 1
-        logger.info(
-            "gp po sync: %s backfill page %s/%s cursor=%s pos=%s created=%s updated=%s skipped=%s "
-            "stored_cursor=%s relay_ms=%.0f persist_ms=%.0f cpu_ms=%s sql_cpu_pct=%s waited=%.1fs",
-            company,
-            page + 1,
-            max_pages,
-            cursor,
-            len(pos),
-            counts["created"],
-            counts["updated"],
-            counts["skipped"],
-            counts["stored_cursor"],
-            relay_ms,
-            persist_ms,
-            call["cpu_ms"],
-            call["sql_cpu_pct"],
-            call["waited"],
-        )
-        # Between pages, not between passes: a history drain runs for hours and a PO raised in GP
-        # meanwhile must not wait for it to finish.
-        await _run_due_new_po_checks()
-        if counts["backfill_done"]:
-            done = True
-            break
-        # The cursor advances only over POs that persisted. If it did not move past the cursor we sent -
-        # the relay returned the same keyset, or this page's leading PO failed to persist - stop this pass
-        # so run_forever waits out the poll interval instead of re-reading the same page in a tight loop.
-        if counts["stored_cursor"] is None or counts["stored_cursor"] == cursor:
-            logger.warning("gp po sync: backfill cursor did not advance past %s; pausing this pass", cursor)
-            stalled = True
-            break
+            result = call["result"]
+            relay_ms = call["elapsed_ms"]
+            pos = (result or {}).get("pos") or []
+            next_cursor = (result or {}).get("next_cursor")
+            persist_started = time.monotonic()
+            counts = await asyncio.to_thread(_persist_page, company, pos, next_cursor, is_backfill=True)
+            persist_ms = (time.monotonic() - persist_started) * 1000
+            created += counts["created"]
+            updated += counts["updated"]
+            skipped += counts["skipped"]
+            pos_seen += len(pos)
+            pages += 1
+            logger.info(
+                "gp po sync: %s backfill page %s/%s cursor=%s pos=%s created=%s updated=%s skipped=%s "
+                "stored_cursor=%s relay_ms=%.0f persist_ms=%.0f cpu_ms=%s sql_cpu_pct=%s waited=%.1fs",
+                company,
+                page + 1,
+                max_pages,
+                cursor,
+                len(pos),
+                counts["created"],
+                counts["updated"],
+                counts["skipped"],
+                counts["stored_cursor"],
+                relay_ms,
+                persist_ms,
+                call["cpu_ms"],
+                call["sql_cpu_pct"],
+                call["waited"],
+            )
+            # Between pages, not between passes: a history drain runs for hours and a PO raised in GP
+            # meanwhile must not wait for it to finish.
+            await _run_due_new_po_checks()
+            if counts["backfill_done"]:
+                done = True
+                break
+            # The cursor advances only over POs that persisted. If it did not move past the cursor we sent -
+            # the relay returned the same keyset, or this page's leading PO failed to persist - stop this pass
+            # so run_forever waits out the poll interval instead of re-reading the same page in a tight loop.
+            if counts["stored_cursor"] is None or counts["stored_cursor"] == cursor:
+                logger.warning("gp po sync: backfill cursor did not advance past %s; pausing this pass", cursor)
+                stalled = True
+                break
+    finally:
+        # The pass is over however it ended - drained, stalled, out of window, or raised. A stale
+        # 'doing now' outlives the work it describes, which is worse than saying nothing.
+        _activity = None
     logger.info(
         "gp po sync: %s backfill pass drained %s page(s) pos=%s created=%s updated=%s skipped=%s "
         "done=%s stalled=%s elapsed_ms=%.0f",
@@ -353,77 +397,110 @@ async def _run_incremental(company: str, *, background: bool = True) -> dict:
     open POs takes ten times as long rather than ten times as much of GP at once. The walk resumes
     from its stored cursor after a restart; step 2 keys off gp_synced_at against the walk's start time,
     so it survives a restart too."""
+    global _activity
     started_at = datetime.utcnow()
     cursor, pass_started_at = await asyncio.to_thread(_begin_open_pass, company, started_at)
     created = updated = skipped = pos_seen = 0
     pages = 0
     pass_clock = time.monotonic()
 
-    while True:
-        call = await gp_load.paced_call(
-            company,
-            "sync_pos",
-            {"open_only": True, "cursor": cursor, "page_size": gp_load.READ_BATCH},
-            reads=gp_load.READ_BATCH,
-            background=background,
-        )
-        result = call["result"] or {}
-        pos = result.get("pos") or []
-        next_cursor = result.get("next_cursor")
-        persist_started = time.monotonic()
-        counts = await asyncio.to_thread(_persist_page, company, pos, None, is_backfill=False)
-        persist_ms = (time.monotonic() - persist_started) * 1000
-        created += counts["created"]
-        updated += counts["updated"]
-        skipped += counts["skipped"]
-        pos_seen += len(pos)
-        pages += 1
-        await asyncio.to_thread(_advance_open_pass, company, next_cursor)
+    try:
+        while True:
+            _activity = {
+                "kind": "open-pos-sync",
+                "company": company,
+                "page": pages + 1,
+                "cursor": cursor,
+                "started_at": datetime.utcnow(),
+            }
+            call = await gp_load.paced_call(
+                company,
+                "sync_pos",
+                {"open_only": True, "cursor": cursor, "page_size": gp_load.READ_BATCH},
+                reads=gp_load.READ_BATCH,
+                background=background,
+            )
+            result = call["result"] or {}
+            pos = result.get("pos") or []
+            next_cursor = result.get("next_cursor")
+            persist_started = time.monotonic()
+            counts = await asyncio.to_thread(_persist_page, company, pos, None, is_backfill=False)
+            persist_ms = (time.monotonic() - persist_started) * 1000
+            created += counts["created"]
+            updated += counts["updated"]
+            skipped += counts["skipped"]
+            pos_seen += len(pos)
+            pages += 1
+            await asyncio.to_thread(_advance_open_pass, company, next_cursor)
+            logger.info(
+                "gp po sync: %s open page %s cursor=%s pos=%s created=%s updated=%s skipped=%s "
+                "next_cursor=%s relay_ms=%.0f persist_ms=%.0f cpu_ms=%s sql_cpu_pct=%s waited=%.1fs",
+                company,
+                pages,
+                cursor,
+                len(pos),
+                counts["created"],
+                counts["updated"],
+                counts["skipped"],
+                next_cursor,
+                call["elapsed_ms"],
+                persist_ms,
+                call["cpu_ms"],
+                call["sql_cpu_pct"],
+                call["waited"],
+            )
+            # Between pages, not between passes: this walk is twenty minutes or more, and the next
+            # company's is due the moment it ends, so a check that waited for a gap would never run.
+            await _run_due_new_po_checks()
+            if not next_cursor:
+                break
+            if next_cursor == cursor:
+                # The relay handed back the keyset it was given. Stop rather than walk the same page
+                # forever; the next pass re-reads from the stored cursor.
+                logger.warning("gp po sync: %s open-book cursor did not advance past %s; ending pass", company, cursor)
+                break
+            cursor = next_cursor
+
+        # The OPEN-POS RECONCILIATION is the second half of the pass and can take as long as the walk
+        # on a company with hundreds of closures, so it says so rather than leaving the last page up.
+        _activity = {
+            "kind": "open-pos-reconciliation",
+            "company": company,
+            "page": None,
+            "cursor": None,
+            "started_at": datetime.utcnow(),
+        }
+        closed = await _sweep_closed(company, pass_started_at, background=background)
+        await asyncio.to_thread(_finish_open_pass, company)
         logger.info(
-            "gp po sync: %s open page %s cursor=%s pos=%s created=%s updated=%s skipped=%s "
-            "next_cursor=%s relay_ms=%.0f persist_ms=%.0f cpu_ms=%s sql_cpu_pct=%s waited=%.1fs",
+            "gp po sync: %s open book refreshed - %s page(s), %s open POs, %s left the open table, "
+            "%s missing in GP, %s cancelled as deleted, created=%s updated=%s skipped=%s in %.0fms",
             company,
             pages,
-            cursor,
-            len(pos),
-            counts["created"],
-            counts["updated"],
-            counts["skipped"],
-            next_cursor,
-            call["elapsed_ms"],
-            persist_ms,
-            call["cpu_ms"],
-            call["sql_cpu_pct"],
-            call["waited"],
+            pos_seen,
+            closed["stale"],
+            closed["marked"],
+            closed["cancelled"],
+            created,
+            updated,
+            skipped,
+            (time.monotonic() - pass_clock) * 1000,
         )
-        # Between pages, not between passes: this walk is twenty minutes or more, and the next
-        # company's is due the moment it ends, so a check that waited for a gap would never run.
-        await _run_due_new_po_checks()
-        if not next_cursor:
-            break
-        if next_cursor == cursor:
-            # The relay handed back the keyset it was given. Stop rather than walk the same page
-            # forever; the next pass re-reads from the stored cursor.
-            logger.warning("gp po sync: %s open-book cursor did not advance past %s; ending pass", company, cursor)
-            break
-        cursor = next_cursor
 
-    closed = await _sweep_closed(company, pass_started_at, background=background)
-    await asyncio.to_thread(_finish_open_pass, company)
-    logger.info(
-        "gp po sync: %s open book refreshed - %s page(s), %s open POs, %s left the open table, "
-        "%s missing in GP, %s cancelled as deleted, created=%s updated=%s skipped=%s in %.0fms",
-        company,
-        pages,
-        pos_seen,
-        closed["stale"],
-        closed["marked"],
-        closed["cancelled"],
-        created,
-        updated,
-        skipped,
-        (time.monotonic() - pass_clock) * 1000,
-    )
+        # What NEXUS GP TRAFFIC shows as this company's last finished OPEN-POS SYNC: the same counts
+        # the line above logs, kept per company so the page can report a pass nobody was watching.
+        _last_open_pass[company] = {
+            "finished_at": datetime.utcnow(),
+            "pages": pages,
+            "pos": pos_seen,
+            "left_open_table": closed["stale"],
+            "missing_in_gp": closed["marked"],
+            "cancelled": closed["cancelled"],
+            "created": created,
+            "updated": updated,
+        }
+    finally:
+        _activity = None
     return {
         "mode": "incremental",
         "backfill_done": True,
@@ -502,45 +579,62 @@ async def _new_po_check(company: str, *, background: bool = True) -> dict:
     A company that holds no plain GP number yet has nothing to read from - its history has not been
     drawn down - and is skipped rather than read from the beginning, which is what the FIRST TIME GP
     COMPANY NEXUS INITIALIZATION is for."""
+    global _activity
     cursor = await asyncio.to_thread(_highest_gp_po_number, company)
     if not cursor:
         logger.info("gp po sync: %s new-po check skipped; no GP PO number held yet", company)
+        # A skip is still a check that ran, so it is stamped: "2m ago, 0 new" is the truth here, and
+        # leaving the last stamp behind would show a check that happened long before this one.
+        _last_new_po_check_result[company] = {"at": datetime.utcnow(), "pos": 0}
         return {"mode": "new-po-check", "created": 0, "updated": 0, "skipped": 0, "pos": 0}
 
-    call = await gp_load.paced_call(
-        company,
-        "sync_pos",
-        {"open_only": True, "cursor": cursor, "page_size": gp_load.READ_BATCH},
-        reads=gp_load.READ_BATCH,
-        background=background,
-    )
-    result = call["result"] or {}
-    pos = result.get("pos") or []
-    persist_started = time.monotonic()
-    counts = await asyncio.to_thread(_persist_page, company, pos, None, is_backfill=False)
-    persist_ms = (time.monotonic() - persist_started) * 1000
-    logger.info(
-        "gp po sync: %s new-po check cursor=%s pos=%s created=%s updated=%s skipped=%s "
-        "relay_ms=%.0f persist_ms=%.0f cpu_ms=%s sql_cpu_pct=%s waited=%.1fs",
-        company,
-        cursor,
-        len(pos),
-        counts["created"],
-        counts["updated"],
-        counts["skipped"],
-        call["elapsed_ms"],
-        persist_ms,
-        call["cpu_ms"],
-        call["sql_cpu_pct"],
-        call["waited"],
-    )
-    return {
-        "mode": "new-po-check",
-        "created": counts["created"],
-        "updated": counts["updated"],
-        "skipped": counts["skipped"],
-        "pos": len(pos),
+    _activity = {
+        "kind": "new-po-check",
+        "company": company,
+        "page": None,
+        "cursor": cursor,
+        "started_at": datetime.utcnow(),
     }
+    try:
+        call = await gp_load.paced_call(
+            company,
+            "sync_pos",
+            {"open_only": True, "cursor": cursor, "page_size": gp_load.READ_BATCH},
+            reads=gp_load.READ_BATCH,
+            background=background,
+        )
+        result = call["result"] or {}
+        pos = result.get("pos") or []
+        persist_started = time.monotonic()
+        counts = await asyncio.to_thread(_persist_page, company, pos, None, is_backfill=False)
+        persist_ms = (time.monotonic() - persist_started) * 1000
+        logger.info(
+            "gp po sync: %s new-po check cursor=%s pos=%s created=%s updated=%s skipped=%s "
+            "relay_ms=%.0f persist_ms=%.0f cpu_ms=%s sql_cpu_pct=%s waited=%.1fs",
+            company,
+            cursor,
+            len(pos),
+            counts["created"],
+            counts["updated"],
+            counts["skipped"],
+            call["elapsed_ms"],
+            persist_ms,
+            call["cpu_ms"],
+            call["sql_cpu_pct"],
+            call["waited"],
+        )
+        # Stamped where the read succeeded. A check that could not reach GP leaves the previous stamp
+        # standing, because "when GP was last asked and answered" is the fact the page is reporting.
+        _last_new_po_check_result[company] = {"at": datetime.utcnow(), "pos": len(pos)}
+        return {
+            "mode": "new-po-check",
+            "created": counts["created"],
+            "updated": counts["updated"],
+            "skipped": counts["skipped"],
+            "pos": len(pos),
+        }
+    finally:
+        _activity = None
 
 
 async def _sweep_closed(company: str, pass_started_at: datetime, *, background: bool = True) -> dict:
@@ -897,7 +991,7 @@ async def run_forever() -> None:
     There is NO all-companies sweep. A wake() (a relay reconnect, the hello landing) only cuts the
     sleep short so the schedules resume; the rotation carries on where it left off. Sweeping every
     company on every reconnect is what re-issued both of those unbounded reads after the first pin."""
-    global _wake_event, _loop
+    global _wake_event, _loop, _activity
     _wake_event = asyncio.Event()
     _loop = asyncio.get_running_loop()
     logger.info("gp po sync started")
@@ -906,6 +1000,11 @@ async def run_forever() -> None:
     # A restarted loop owes every mirrored company a NEW PO CHECK at once. The map itself is module
     # state because the page loops run the check too - see _run_due_new_po_checks.
     _last_new_po_check.clear()
+    # And the GP SYNC STATE records describe THIS process's work, so a restart starts them empty rather
+    # than reporting a pass that a loop which no longer exists ran.
+    _activity = None
+    _last_open_pass.clear()
+    _last_new_po_check_result.clear()
     stalled: set[str] = set()
     # Whether the "backfill is waiting for its window" line has already been logged. One line per
     # transition, not one per check.

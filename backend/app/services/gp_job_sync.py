@@ -17,6 +17,7 @@ an env kill switch, and a wake() the relay registration path calls so a reconnec
 import asyncio
 import logging
 import os
+from datetime import datetime
 
 from sqlalchemy import select
 
@@ -70,6 +71,26 @@ _wake_event: asyncio.Event | None = None
 # and cleared again when it stops - handing a coroutine to a loop that is no longer running never
 # completes, so a stale value here would block the reset for the whole timeout and then lie about why.
 _loop: asyncio.AbstractEventLoop | None = None
+
+
+# --- what this sync is doing, for GP SYNC STATE (#679) -----------------------------------------------
+# What is happening right now and how each company's last GP JOBS SYNC went. Wall clock, because these
+# are read by a person on NEXUS GP TRAFFIC rather than used to decide what runs next, and formatted
+# once, in gp_sync_state.snapshot().
+_activity: dict | None = None
+_last_run: dict[str, dict] = {}
+
+
+def activity() -> dict | None:
+    """Which company's jobs are being read at this instant, or None between passes. A copy, so a reader
+    cannot hold a reference to the record the next company overwrites."""
+    return dict(_activity) if _activity else None
+
+
+def last_runs() -> dict[str, dict]:
+    """The last GP JOBS SYNC per company: when it ran, how many jobs GP reported and how many of them
+    became projects."""
+    return {company: dict(record) for company, record in _last_run.items()}
 
 
 def enabled() -> bool:
@@ -239,6 +260,7 @@ async def run_once(*, background: bool = False) -> tuple[int, int]:
     `background` marks these reads as timer-driven on the wire, which is what the relay's busy gate
     keys on. It defaults FALSE, so the admin Sync from GP button and the /admin/reset-data re-adoption
     are served rather than refused; run_forever passes True for its own passes."""
+    global _activity
     companies = relay_gateway.companies
     if not companies:
         raise RelayUnavailableError(
@@ -249,6 +271,13 @@ async def run_once(*, background: bool = False) -> tuple[int, int]:
     adopted = 0
     failures = 0
     for company in companies:
+        _activity = {
+            "kind": "jobs-sync",
+            "company": company,
+            "page": None,
+            "cursor": None,
+            "started_at": datetime.utcnow(),
+        }
         try:
             # Charged the flat estimate before it goes out: one list_jobs is roughly a hundred rows,
             # and it draws on the same budget as every PO read, so the two syncs cannot between them
@@ -260,6 +289,9 @@ async def run_once(*, background: bool = False) -> tuple[int, int]:
             total += company_total
             adopted += company_adopted
             await _stamp_setup_health(company, [j.get("job_number") for j in jobs], background=background)
+            # Stamped where the company's pass finished, so a company whose read failed keeps the
+            # record of the last one that worked rather than claiming this one did.
+            _last_run[company] = {"at": datetime.utcnow(), "total": company_total, "adopted": company_adopted}
         except asyncio.CancelledError:
             raise
         except RelayBusyError:
@@ -274,6 +306,10 @@ async def run_once(*, background: bool = False) -> tuple[int, int]:
         except Exception as e:  # noqa: BLE001 - one company must not cost every other company its pass
             failures += 1
             logger.info("gp job sync: pass for %s failed (%s); other companies continue", company, e)
+        finally:
+            # However this company ended, it is no longer the one being read. A stale "doing now"
+            # outlives the work it describes, which is worse than saying nothing.
+            _activity = None
 
     if failures and failures == len(companies):
         # Nothing was read at all, which the admin Sync from GP button has to surface as a failure

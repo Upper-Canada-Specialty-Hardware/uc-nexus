@@ -27,3 +27,33 @@ export function parseServerDay(value: string): Date {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : parseServerDate(value);
 }
+
+/** The em dash every admin screen prints where a server timestamp is absent. */
+const ABSENT = '—';
+
+/**
+ * A server instant as the viewer's own locale writes it, for the places that exist to be lined up
+ * against something else - a deploy log line, a GP batch. Missing values print the em dash rather
+ * than an empty cell, so a column of timestamps stays a column.
+ */
+export function fmtDate(v: string | null | undefined): string {
+  return v ? parseServerDate(v).toLocaleString() : ABSENT;
+}
+
+/**
+ * The same instant written as an age ("5m ago"), which is what gets scanned on a page that is
+ * watching something happen. Anything a week old or more falls back to the calendar date, because
+ * past that point the exact day is the useful reading, not the distance.
+ */
+export function fmtRelative(v: string | null | undefined): string {
+  if (!v) return ABSENT;
+  const date = parseServerDate(v);
+  const min = Math.floor((Date.now() - date.getTime()) / 60_000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d ago`;
+  return date.toLocaleDateString();
+}

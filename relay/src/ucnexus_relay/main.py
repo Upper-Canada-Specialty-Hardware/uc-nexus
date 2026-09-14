@@ -128,6 +128,12 @@ def create_app() -> FastAPI:
             # from the server's own per-session accounting - see db.py. A copy of a handful of
             # integers; nothing is read from GP to answer this.
             "gp_cost": db.cost_snapshot(),
+            # NEXUS GP TRAFFIC, relay half. `traffic` is this relay's own record of the jobs it is
+            # running and has run since it started; `gp_sync_state` is the backend's account of its own
+            # sync work, as last pushed down the channel, or null if none has arrived. Both are copies
+            # of what is already in memory; nothing is read from GP to answer this either.
+            "traffic": channel.traffic_snapshot(),
+            "gp_sync_state": channel.gp_sync_state_snapshot(),
         }
 
     @app.get("/info")

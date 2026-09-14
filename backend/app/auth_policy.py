@@ -115,6 +115,11 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "gpOutboxSummary": SIGNED_IN,
     "cancelGpOutboxEntry": ADMIN_ROLE,
     "retryGpOutboxEntry": ADMIN_ROLE,
+    # --- gp_sync_state.py -----------------------------------------------------------------
+    # The Nexus half of NEXUS GP TRAFFIC (#679): what the GP sync loops are doing right now, per
+    # company, plus the GP READ LIMIT balance and the PENDING GP WRITES counts. Operations rather than
+    # work, and it names the relay build and install, so it sits with the other relay reads at admin.
+    "gpSyncState": ADMIN_ROLE,
     # --- imports.py -----------------------------------------------------------------------
     "projectExcludedItems": SIGNED_IN,
     "projectHardwareSchedule": SIGNED_IN,

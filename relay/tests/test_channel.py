@@ -547,8 +547,9 @@ def test_hello_frame_names_the_companies_this_workstation_serves(serving):
 
 def test_hello_frame_advertises_the_channels_feature():
     # How the backend knows this build will accept a pushed preview-channel list rather than treating
-    # the frame as an unknown job.
-    assert channel._hello_frame()["features"] == ["channels"]
+    # the frame as an unknown job. "gp_sync_state" answers the same question for the backend's account
+    # of its own sync work - see test_channel_gp_sync_state.py.
+    assert "channels" in channel._hello_frame()["features"]
 
 
 # --- push a project's site details onto its GP job (issue #497) ---

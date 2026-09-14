@@ -1461,3 +1461,153 @@ def test_the_new_po_check_gap_default_and_env_parse(monkeypatch):
     monkeypatch.setattr(gp_po_sync, "_env_warned", set())
     monkeypatch.setenv("GP_PO_SYNC_NEW_PO_CHECK_SECONDS", "5")
     assert gp_po_sync._env_number("GP_PO_SYNC_NEW_PO_CHECK_SECONDS", 120.0, float, minimum=30.0) == 120.0
+
+
+# --- what the loop tells GP SYNC STATE (#679) --------------------------------------------------------
+# NEXUS GP TRAFFIC reads three records this module keeps: what is happening right now, how each
+# company's last OPEN-POS SYNC went, and when each company was last NEW PO CHECKed. They are stamped by
+# the page loops rather than the scheduler, because the scheduler is several frames away from the work
+# - and a "doing now" that outlives the work it describes is worse than saying nothing, so every one of
+# them is cleared in a finally.
+
+
+@pytest.fixture
+def _traffic_records(monkeypatch):
+    """Fresh GP SYNC STATE records for one test. Module state in production on purpose - the page loops
+    write them - so without this a test would read what the previous one left."""
+    monkeypatch.setattr(gp_po_sync, "_activity", None)
+    monkeypatch.setattr(gp_po_sync, "_last_open_pass", {})
+    monkeypatch.setattr(gp_po_sync, "_last_new_po_check_result", {})
+
+
+def test_a_backfill_page_says_which_page_of_which_company_it_is_on(monkeypatch, _traffic_records):
+    seen: list[dict] = []
+    n = _advancing_pages(monkeypatch)
+
+    def watching_persist(company, pos, next_cursor, *, is_backfill):
+        seen.append(gp_po_sync.activity())
+        n["i"] += 1
+        return _counts(stored_cursor=f"C{n['i']}", backfill_done=False)
+
+    monkeypatch.setattr(gp_po_sync, "_persist_page", watching_persist)
+
+    asyncio.run(gp_po_sync._run_backfill("TUBC", max_pages=2))
+
+    assert [a["kind"] for a in seen] == ["initialization", "initialization"]
+    assert [a["company"] for a in seen] == ["TUBC", "TUBC"]
+    assert [a["page"] for a in seen] == [1, 2]
+    assert seen[0]["cursor"] == "C0"  # the keyset the page went out with, not the one it came back with
+    assert all(a["started_at"] is not None for a in seen)
+    # And the pass is over, so nothing claims to be running.
+    assert gp_po_sync.activity() is None
+
+
+def test_a_backfill_that_raises_still_clears_what_it_was_doing(monkeypatch, _traffic_records):
+    monkeypatch.setattr(gp_po_sync, "_load_cursor", lambda c: "C0")
+
+    async def exploding(company, op, payload=None, *, reads, **kwargs):
+        raise RelayUnavailableError("the relay went away mid-page")
+
+    monkeypatch.setattr(gp_po_sync.gp_load, "paced_call", exploding)
+
+    with pytest.raises(RelayUnavailableError):
+        asyncio.run(gp_po_sync._run_backfill("TUBC", max_pages=2))
+
+    assert gp_po_sync.activity() is None
+
+
+def test_an_open_book_pass_reports_its_pages_then_its_reconciliation(monkeypatch, _traffic_records):
+    seen: list[tuple] = []
+    asked = _open_book(monkeypatch, [([{"po_number": "PO1"}], "PO1"), ([{"po_number": "PO2"}], None)], stale=["PO7"])
+    inner = gp_po_sync.gp_load.paced_call
+
+    async def watching_paced_call(company, op, payload=None, *, reads, **kwargs):
+        current = gp_po_sync.activity()
+        seen.append((op, current["kind"], current["company"], current["page"], current["cursor"]))
+        return await inner(company, op, payload, reads=reads, **kwargs)
+
+    monkeypatch.setattr(gp_po_sync.gp_load, "paced_call", watching_paced_call)
+
+    asyncio.run(gp_po_sync._run_incremental("TUBC"))
+
+    assert seen == [
+        ("sync_pos", "open-pos-sync", "TUBC", 1, None),
+        ("sync_pos", "open-pos-sync", "TUBC", 2, "PO1"),
+        # The by-number re-read is the second half of the pass and can take as long as the walk, so it
+        # is named rather than left showing the last page.
+        ("read_pos_by_number", "open-pos-reconciliation", "TUBC", None, None),
+    ]
+    assert gp_po_sync.activity() is None
+    assert asked  # the walk really ran
+
+
+def test_a_finished_open_book_pass_records_what_it_moved(monkeypatch, _traffic_records):
+    _open_book(monkeypatch, [([{"po_number": "PO1"}], "PO1"), ([{"po_number": "PO2"}], None)], stale=["PO7", "PO8"])
+
+    asyncio.run(gp_po_sync._run_incremental("TUBC"))
+
+    record = gp_po_sync.last_open_passes()["TUBC"]
+    assert record["finished_at"] is not None
+    assert record["pages"] == 2
+    assert record["pos"] == 2
+    assert record["left_open_table"] == 2  # both POs had left GP's open table
+    assert record["missing_in_gp"] == 0
+    assert record["cancelled"] == 0
+    assert (record["created"], record["updated"]) == (0, 0)
+
+
+def test_the_last_open_pass_is_kept_per_company(monkeypatch, _traffic_records):
+    _open_book(monkeypatch, [([{"po_number": "PO1"}], None)])
+    asyncio.run(gp_po_sync._run_incremental("TUBC"))
+    _open_book(monkeypatch, [([{"po_number": "PO9"}], None)])
+    asyncio.run(gp_po_sync._run_incremental("UCSH"))
+
+    assert sorted(gp_po_sync.last_open_passes()) == ["TUBC", "UCSH"]
+
+
+def test_a_new_po_check_says_so_while_it_runs_and_records_what_it_found(monkeypatch, _traffic_records):
+    seen: list[dict] = []
+    _stub_new_po_check(monkeypatch, highest="PO0001234", pos=[{"po_number": "PO0001235"}])
+    inner = gp_po_sync.gp_load.paced_call
+
+    async def watching_paced_call(company, op, payload=None, *, reads, **kwargs):
+        seen.append(gp_po_sync.activity())
+        return await inner(company, op, payload, reads=reads, **kwargs)
+
+    monkeypatch.setattr(gp_po_sync.gp_load, "paced_call", watching_paced_call)
+
+    asyncio.run(gp_po_sync._new_po_check("TUBC"))
+
+    assert seen[0]["kind"] == "new-po-check"
+    assert seen[0]["company"] == "TUBC"
+    assert seen[0]["cursor"] == "PO0001234"
+    assert gp_po_sync.activity() is None
+    record = gp_po_sync.last_new_po_checks()["TUBC"]
+    assert record["pos"] == 1
+    assert record["at"] is not None
+
+
+def test_a_skipped_new_po_check_is_still_recorded(monkeypatch, _traffic_records):
+    """ "2m ago, 0 new" is the truth for a company with no GP number to read from, and leaving the
+    previous stamp standing would show a check that happened long before this one."""
+    _stub_new_po_check(monkeypatch, highest=None)
+
+    asyncio.run(gp_po_sync._new_po_check("TUBC"))
+
+    assert gp_po_sync.last_new_po_checks()["TUBC"]["pos"] == 0
+    assert gp_po_sync.activity() is None
+
+
+def test_the_accessors_hand_out_copies(monkeypatch, _traffic_records):
+    monkeypatch.setattr(
+        gp_po_sync,
+        "_activity",
+        {"kind": "open-pos-sync", "company": "TUBC", "page": 1, "cursor": None, "started_at": datetime.utcnow()},
+    )
+    monkeypatch.setattr(gp_po_sync, "_last_open_pass", {"TUBC": {"pages": 1}})
+
+    gp_po_sync.activity()["company"] = "TAMPERED"
+    gp_po_sync.last_open_passes()["TUBC"]["pages"] = 99
+
+    assert gp_po_sync.activity()["company"] == "TUBC"
+    assert gp_po_sync.last_open_passes()["TUBC"]["pages"] == 1

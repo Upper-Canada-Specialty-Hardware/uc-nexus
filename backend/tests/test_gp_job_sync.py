@@ -334,6 +334,49 @@ def test_one_companys_failure_does_not_cost_the_others_their_pass(monkeypatch):
         assert [r.company for r in rows] == ["UCSH"]
 
 
+# --- what the sync tells GP SYNC STATE (#679) -------------------------------------------------------
+
+
+def test_each_companys_pass_is_recorded_for_nexus_gp_traffic(monkeypatch):
+    """The per-company row on NEXUS GP TRAFFIC reads "12m ago, 0 adopted" from here."""
+    monkeypatch.setattr(gp_job_sync, "_last_run", {})
+    monkeypatch.setattr(gp_job_sync, "_activity", None)
+    _relay(monkeypatch, company=["TUBC", "UCSH"], jobs=[{"job_number": "SYNC-380-A", "job_name": "Shared"}])
+
+    asyncio.run(gp_job_sync.run_once())
+
+    runs = gp_job_sync.last_runs()
+    assert sorted(runs) == ["TUBC", "UCSH"]
+    assert runs["TUBC"]["total"] == 1
+    assert runs["TUBC"]["adopted"] == 1
+    assert runs["TUBC"]["at"] is not None
+    # And nothing claims to still be reading jobs once the pass is over.
+    assert gp_job_sync.activity() is None
+
+
+def test_a_company_whose_read_failed_keeps_the_record_of_its_last_good_pass(monkeypatch):
+    """Stamping a failure would report a GP JOBS SYNC that never read anything, which is worse than
+    showing the age of the last one that did."""
+    monkeypatch.setattr(gp_job_sync, "_last_run", {})
+    monkeypatch.setattr(gp_job_sync, "_activity", None)
+
+    async def _call_with_meta(company, op, payload=None, timeout=None, *, background=False):
+        if company == "TUBC" and op == "list_jobs":
+            raise RuntimeError("GP is down for this company")
+        if op == "job_setup_health":
+            return {"jobs": []}, NO_META
+        return {"jobs": [{"job_number": "SYNC-380-B", "job_name": "Second job"}]}, NO_META
+
+    monkeypatch.setattr(type(gp_job_sync.relay_gateway), "companies", property(lambda self: ["TUBC", "UCSH"]))
+    monkeypatch.setattr(type(gp_job_sync.relay_gateway), "connected", property(lambda self: True))
+    monkeypatch.setattr(gp_job_sync.relay_gateway, "relay_call_with_meta", _call_with_meta)
+
+    asyncio.run(gp_job_sync.run_once())
+
+    assert list(gp_job_sync.last_runs()) == ["UCSH"]
+    assert gp_job_sync.activity() is None
+
+
 def test_the_live_single_job_check_filters_to_that_job(monkeypatch):
     calls = _relay(monkeypatch, health=[{"job_number": "SYNC-380-B", "ok": False, "issues": []}])
 

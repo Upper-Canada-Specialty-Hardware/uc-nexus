@@ -93,6 +93,11 @@ DISCONNECT_REASON_SHUTDOWN = "closed for server shutdown"
 # older relay would treat the frame as a job reply and log an uncorrelated id.
 CHANNELS_FEATURE = "channels"
 
+# The hello feature flag a relay sets to say it understands a pushed {"type": "gp_sync_state"} frame
+# (#679). Absent on every build that predates NEXUS GP TRAFFIC, and push_gp_sync_state is a no-op
+# without it for the same reason push_channels is: an older relay would read the frame as a job reply.
+GP_SYNC_STATE_FEATURE = "gp_sync_state"
+
 # What a relay too old to discover its own GP companies leaves behind. The hello frame is the
 # only place that list comes from now, so a build that omits it serves nothing - and saying why beats
 # an empty picker with no explanation.
@@ -414,6 +419,12 @@ class RelayGateway:
             return {}
         return {normalize_company(k): v for k, v in value.items() if normalize_company(k)}
 
+    def has_feature(self, name: str) -> bool:
+        """Did the connected relay advertise this capability on its hello frame? False for a build old
+        enough not to list any, which is the answer every push path wants: say nothing to a relay that
+        cannot read it."""
+        return self._features is not None and name in self._features
+
     async def push_channels(self, urls: Sequence[str]) -> None:
         """Hand the connected relay the full list of preview backends it should ALSO be dialling (#654).
 
@@ -428,12 +439,33 @@ class RelayGateway:
         socket = self._socket
         if socket is None:
             return
-        if self._features is None or CHANNELS_FEATURE not in self._features:
+        if not self.has_feature(CHANNELS_FEATURE):
             return
         try:
             await socket.send_json({"type": "channels", "urls": list(urls)})
         except Exception as e:
             logger.warning("could not push preview channels to the relay: %s", e)
+
+    async def push_gp_sync_state(self, snapshot: dict) -> None:
+        """Hand the connected relay this backend's own GP SYNC STATE (#679), so the NEXUS GP TRAFFIC tab
+        on the workstation can show MIRROR PROGRESS and pacing and not only the traffic the relay itself
+        observes.
+
+        Always the WHOLE document, never a delta: the relay holds the last copy it was given and shows
+        its age, so a lost frame costs one interval rather than leaving the two sides disagreeing.
+
+        A no-op with nothing connected or with a relay that predates the feature, and failures are
+        swallowed - a dashboard frame is an advisory, and the socket's own teardown path owns a
+        genuinely dead connection."""
+        socket = self._socket
+        if socket is None:
+            return
+        if not self.has_feature(GP_SYNC_STATE_FEATURE):
+            return
+        try:
+            await socket.send_json({"type": "gp_sync_state", **snapshot})
+        except Exception as e:
+            logger.warning("could not push the GP sync state to the relay: %s", e)
 
     def note_pong(self) -> None:
         """Called by the route's read loop for each {"type": "pong"} the relay sends. Clears the miss

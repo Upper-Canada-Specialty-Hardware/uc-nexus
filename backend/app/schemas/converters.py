@@ -4,6 +4,8 @@ Each converter only reads relationships its callers eagerly loaded - see the Gra
 performance rules in CLAUDE.md before adding a field that walks a new relationship.
 """
 
+from datetime import datetime
+
 import strawberry
 
 from app.models.enums import ShippingOutRequestStatus as ShippingOutRequestStatusDB
@@ -29,6 +31,15 @@ from .types import (
     GpSetupIssue,
     GpShippingMethod,
     GpSite,
+    GpSyncActivity,
+    GpSyncCompanyState,
+    GpSyncLastJobsSync,
+    GpSyncLastOpenPass,
+    GpSyncPacing,
+    GpSyncPendingWrites,
+    GpSyncState,
+    GpSyncStateRelay,
+    GpSyncWindow,
     GpTaxDetail,
     GpTaxSchedule,
     GpVendor,
@@ -1119,4 +1130,115 @@ def gp_outbox_summary_to_type(data: dict) -> GpOutboxSummary:
         failed=data["failed"],
         oldest_pending_at=data["oldest_pending_at"],
         last_drained_at=data["last_drained_at"],
+    )
+
+
+def _gp_sync_time(value) -> datetime | None:
+    """A GP SYNC STATE timestamp back into a datetime.
+
+    The snapshot carries ISO 8601 UTC with a trailing Z, because the same document is pushed to the
+    relay as JSON. Every stamp but one is written by this process; the exception is the GP SQL sample's
+    `sampled_at`, which comes off the wire from the relay - so an unparseable value is read as "not
+    known" rather than failing the whole query."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _gp_sync_cpu_pct(value) -> int | None:
+    """GP's SQL CPU as a whole percent. The relay reports an integer; anything else off the wire is
+    rounded rather than allowed to fail an Int field, and a non-number is read as no reading."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return round(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def gp_sync_state_to_type(snapshot: dict) -> GpSyncState:
+    """The GP SYNC STATE document as the `gpSyncState` query answers it (#679). Field for field with
+    the dict pushed to the relay - see app/services/gp_sync_state.py."""
+    relay = snapshot["relay"]
+    pacing = snapshot["pacing"]
+    window = snapshot["initialization_window"]
+    activity = snapshot["activity"]
+    pending = snapshot["pending_writes"]
+    return GpSyncState(
+        generated_at=_gp_sync_time(snapshot["generated_at"]),
+        relay=GpSyncStateRelay(
+            connected=relay["connected"],
+            build=relay["build"],
+            companies=list(relay["companies"]),
+            install_id=strawberry.ID(relay["install_id"]) if relay["install_id"] else None,
+        ),
+        po_sync_enabled=snapshot["po_sync_enabled"],
+        job_sync_enabled=snapshot["job_sync_enabled"],
+        pacing=GpSyncPacing(
+            reads_per_minute=pacing["reads_per_minute"],
+            read_batch=pacing["read_batch"],
+            reads_available=pacing["reads_available"],
+            paused=pacing["paused"],
+            paused_reason=pacing["paused_reason"],
+            resume_check_in_seconds=pacing["resume_check_in_seconds"],
+            cpu_pause_pct=pacing["cpu_pause_pct"],
+            sql_cpu_pct=_gp_sync_cpu_pct(pacing["sql_cpu_pct"]),
+            sql_cpu_sampled_at=_gp_sync_time(pacing["sql_cpu_sampled_at"]),
+        ),
+        initialization_window=GpSyncWindow(label=window["label"], open=window["open"]),
+        activity=GpSyncActivity(
+            kind=activity["kind"],
+            company=activity["company"],
+            page=activity["page"],
+            cursor=activity["cursor"],
+            started_at=_gp_sync_time(activity["started_at"]),
+        ),
+        companies=[_gp_sync_company_to_type(c) for c in snapshot["companies"]],
+        pending_writes=GpSyncPendingWrites(
+            pending=pending["pending"],
+            in_flight=pending["in_flight"],
+            failed=pending["failed"],
+            oldest_pending_at=_gp_sync_time(pending["oldest_pending_at"]),
+            last_drained_at=_gp_sync_time(pending["last_drained_at"]),
+        ),
+    )
+
+
+def _gp_sync_company_to_type(data: dict) -> GpSyncCompanyState:
+    last_open_pass = data["last_open_pass"]
+    last_jobs_sync = data["last_jobs_sync"]
+    return GpSyncCompanyState(
+        company=data["company"],
+        name=data["name"],
+        initialization_done=data["initialization_done"],
+        initialization_cursor=data["initialization_cursor"],
+        open_pass_started_at=_gp_sync_time(data["open_pass_started_at"]),
+        open_pass_cursor=data["open_pass_cursor"],
+        last_open_pass_finished_at=_gp_sync_time(data["last_open_pass_finished_at"]),
+        last_open_pass=(
+            GpSyncLastOpenPass(
+                pages=last_open_pass["pages"],
+                pos=last_open_pass["pos"],
+                left_open_table=last_open_pass["left_open_table"],
+                missing_in_gp=last_open_pass["missing_in_gp"],
+                cancelled=last_open_pass["cancelled"],
+                created=last_open_pass["created"],
+                updated=last_open_pass["updated"],
+            )
+            if last_open_pass
+            else None
+        ),
+        last_new_po_check_at=_gp_sync_time(data["last_new_po_check_at"]),
+        last_new_po_check_pos=data["last_new_po_check_pos"],
+        last_jobs_sync_at=_gp_sync_time(data["last_jobs_sync_at"]),
+        last_jobs_sync=(
+            GpSyncLastJobsSync(total=last_jobs_sync["total"], adopted=last_jobs_sync["adopted"])
+            if last_jobs_sync
+            else None
+        ),
+        mirrored_pos=data["mirrored_pos"],
+        open_pos=data["open_pos"],
     )
