@@ -133,11 +133,11 @@ test('the stats come from adminProjectDetail, not from walking the project', asy
 });
 
 test('every PO status is listed, including the ones this project has none of', async () => {
-  // A missing Draft segment is itself worth seeing - it says nothing is waiting to be registered.
+  // A missing Nexus Draft segment is itself worth seeing - it says nothing is waiting to be registered.
   renderPage([detailMock()]);
 
   expect(await screen.findByText('GP-Registered')).toBeInTheDocument();
-  expect(screen.getByText('Draft')).toBeInTheDocument();
+  expect(screen.getByText('Nexus Draft')).toBeInTheDocument();
   expect(screen.getByText('Cancelled')).toBeInTheDocument();
 });
 
