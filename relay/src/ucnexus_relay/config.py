@@ -40,7 +40,6 @@ class CorsCfg(BaseModel):
     # Baked: the Nexus frontend origins (dev-determined infra, not a per-workstation setting).
     allowed_origins: list[str] = [
         "https://frontend-production-34fc.up.railway.app",
-        "https://ucnexus-frontend-production.up.railway.app",
         "http://localhost:5173",
         "http://localhost:8000",
     ]
