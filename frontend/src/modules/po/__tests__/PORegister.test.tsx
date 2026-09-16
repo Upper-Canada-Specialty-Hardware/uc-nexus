@@ -183,6 +183,30 @@ it('tells an Admin/Manager the table is every company at once', async () => {
   expect(await screen.findByText('All companies')).toBeInTheDocument();
 });
 
+// #682: the strip used to be one flat row, which said nothing about who decides a PO's status. The
+// draft count sits in its own captioned box because Nexus owns it; the other five arrive from GP.
+it('splits the status strip into a Nexus box and a GP box', async () => {
+  renderRegister();
+
+  expect(await screen.findByText('NEXUS')).toBeInTheDocument();
+  const gpBox = screen.getByText('GP STATUSES').parentElement as HTMLElement;
+
+  expect(screen.getByRole('button', { name: 'Filter by Nexus Draft' })).toBeInTheDocument();
+
+  for (const label of [
+    'Filter by GP-Registered',
+    'Filter by Vendor Confirmed',
+    'Filter by Partially Received',
+    'Filter by Closed',
+    'Filter by Cancelled',
+  ]) {
+    expect(within(gpBox).getByRole('button', { name: label })).toBeInTheDocument();
+  }
+
+  expect(within(gpBox).queryByRole('button', { name: 'Filter by Total' })).toBeNull();
+  expect(within(gpBox).queryByRole('button', { name: 'Filter by Nexus Draft' })).toBeNull();
+});
+
 it('names the scoped user’s own GP company in the heading, and still gives them the column', async () => {
   identity.isAdmin = false;
   identity.company = 'TUBC';

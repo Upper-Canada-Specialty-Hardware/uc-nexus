@@ -212,17 +212,39 @@ interface POStatistics {
 // `status` is the po_status the segment filters the table to when clicked (#316); null on Total, which
 // clears the status filter. Clicking the active segment clears it too, so the strip doubles as the
 // status filter and never traps you in a filtered view.
-const STAT_CARDS: { label: string; key: keyof POStatistics; status: string | null }[] = [
-  { label: 'Total', key: 'total', status: null },
-  { label: 'Draft', key: 'draft', status: 'DRAFT' },
-  { label: 'GP-Registered', key: 'gpRegistered', status: 'GP_REGISTERED' },
-  { label: 'Vendor Confirmed', key: 'vendorConfirmed', status: 'VENDOR_CONFIRMED' },
-  { label: 'Partially Received', key: 'partiallyReceived', status: 'PARTIALLY_RECEIVED' },
-  { label: 'Closed', key: 'closed', status: 'CLOSED' },
-  // Mirror-CANCELLED rows (deleted_at NULL) still count into Total, so without a segment for them the
-  // strip would stop summing to Total and those rows would be unreachable by any status filter.
-  { label: 'Cancelled', key: 'cancelled', status: 'CANCELLED' },
+//
+// The segments sit in two captioned boxes (#682) because the reader cannot otherwise tell who decides
+// a PO's status: a draft only ever exists in Nexus, while the five statuses in the second box are
+// written from GP by the OPEN-POS SYNC.
+interface StatCard {
+  label: string;
+  key: keyof POStatistics;
+  status: string | null;
+}
+
+const STAT_CARD_GROUPS: { caption: string; cards: StatCard[] }[] = [
+  {
+    caption: 'NEXUS',
+    cards: [
+      { label: 'Total', key: 'total', status: null },
+      { label: 'Nexus Draft', key: 'draft', status: 'DRAFT' },
+    ],
+  },
+  {
+    caption: 'GP STATUSES',
+    cards: [
+      { label: 'GP-Registered', key: 'gpRegistered', status: 'GP_REGISTERED' },
+      { label: 'Vendor Confirmed', key: 'vendorConfirmed', status: 'VENDOR_CONFIRMED' },
+      { label: 'Partially Received', key: 'partiallyReceived', status: 'PARTIALLY_RECEIVED' },
+      { label: 'Closed', key: 'closed', status: 'CLOSED' },
+      // Mirror-CANCELLED rows (deleted_at NULL) still count into Total, so without a segment for them
+      // the strip would stop summing to Total and those rows would be unreachable by any status filter.
+      { label: 'Cancelled', key: 'cancelled', status: 'CANCELLED' },
+    ],
+  },
 ];
+
+const STAT_CARD_COUNT = STAT_CARD_GROUPS.reduce((n, g) => n + g.cards.length, 0);
 
 // The register defaults to the open work rather than the full company history the backfill loads:
 // what is live and being acted on. Total (and the Cancelled/Closed segments) reach the rest.
@@ -343,7 +365,7 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued }: P
             <Box component="span" sx={{ ...monoSx, color: 'text.secondary' }}>
               {po.requestNumber ?? '-'}
             </Box>
-            <Chip label="Draft" size="small" variant="outlined" sx={{ height: 20, fontSize: '0.7rem' }} />
+            <Chip label="Nexus Draft" size="small" variant="outlined" sx={{ height: 20, fontSize: '0.7rem' }} />
           </Box>
         )}
       </TableCell>
@@ -621,66 +643,85 @@ function POListPage() {
         </Button>
       </Box>
 
-      {/* Status strip. Clicking a segment filters the table to that status (#316). */}
+      {/* Status strip. Clicking a segment filters the table to that status (#316). Each box carries a
+          caption naming who owns the statuses inside it (#682). */}
       <FadeIn>
-        <Paper
-          variant="outlined"
-          sx={{ mb: 2.5, display: 'flex', flexWrap: 'wrap', alignItems: 'stretch', overflow: 'hidden' }}
-        >
-          <StaggerList count={STAT_CARDS.length}>
-            {STAT_CARDS.map((card, i) => {
-              const active = isStatusCardActive({ statuses }, card.status);
-              const count = stats?.[card.key] ?? 0;
-              const zero = !statsLoading && count === 0;
-              return (
-                <StaggerItem key={card.key} style={{ display: 'flex' }}>
-                  <ButtonBase
-                    onClick={() => handleCardClick(card.status)}
-                    aria-pressed={active}
-                    aria-label={`Filter by ${card.label}`}
-                    sx={{
-                      display: 'flex',
-                      alignItems: 'baseline',
-                      gap: 0.75,
-                      px: 2,
-                      py: 1.25,
-                      borderLeft: i === 0 ? 'none' : '1px solid',
-                      borderLeftColor: 'divider',
-                      borderBottom: '2px solid',
-                      borderBottomColor: active ? 'secondary.main' : 'transparent',
-                      '&:hover': { backgroundColor: 'action.hover' },
-                    }}
-                  >
-                    <Typography
-                      component="span"
-                      sx={{
-                        ...tabularSx,
-                        fontSize: '1.25rem',
-                        fontWeight: 700,
-                        lineHeight: 1,
-                        color: zero ? 'text.secondary' : 'text.primary',
-                        opacity: zero ? 0.6 : 1,
-                      }}
-                    >
-                      {statsLoading ? '–' : <AnimatedNumber value={count} />}
-                    </Typography>
-                    <Typography
-                      component="span"
-                      sx={{
-                        ...microLabelSx,
-                        whiteSpace: 'nowrap',
-                        color: active ? 'text.primary' : 'text.secondary',
-                        opacity: zero ? 0.6 : 1,
-                      }}
-                    >
-                      {card.label}
-                    </Typography>
-                  </ButtonBase>
-                </StaggerItem>
-              );
-            })}
-          </StaggerList>
-        </Paper>
+        <StaggerList count={STAT_CARD_COUNT}>
+          <Box sx={{ display: 'flex', gap: 1.5, flexWrap: 'wrap', alignItems: 'stretch', mb: 2.5 }}>
+            {STAT_CARD_GROUPS.map((group) => (
+              <Box
+                key={group.caption}
+                sx={{ minWidth: 0, display: 'flex', flexDirection: 'column' }}
+              >
+                <Typography component="div" sx={{ ...microLabelSx, textAlign: 'center', mb: 0.5 }}>
+                  {group.caption}
+                </Typography>
+                <Paper
+                  variant="outlined"
+                  sx={{
+                    flex: 1,
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    alignItems: 'stretch',
+                    overflow: 'hidden',
+                  }}
+                >
+                  {group.cards.map((card, i) => {
+                    const active = isStatusCardActive({ statuses }, card.status);
+                    const count = stats?.[card.key] ?? 0;
+                    const zero = !statsLoading && count === 0;
+                    return (
+                      <StaggerItem key={card.key} style={{ display: 'flex' }}>
+                        <ButtonBase
+                          onClick={() => handleCardClick(card.status)}
+                          aria-pressed={active}
+                          aria-label={`Filter by ${card.label}`}
+                          sx={{
+                            display: 'flex',
+                            alignItems: 'baseline',
+                            gap: 0.75,
+                            px: 2,
+                            py: 1.25,
+                            borderLeft: i === 0 ? 'none' : '1px solid',
+                            borderLeftColor: 'divider',
+                            borderBottom: '2px solid',
+                            borderBottomColor: active ? 'secondary.main' : 'transparent',
+                            '&:hover': { backgroundColor: 'action.hover' },
+                          }}
+                        >
+                          <Typography
+                            component="span"
+                            sx={{
+                              ...tabularSx,
+                              fontSize: '1.25rem',
+                              fontWeight: 700,
+                              lineHeight: 1,
+                              color: zero ? 'text.secondary' : 'text.primary',
+                              opacity: zero ? 0.6 : 1,
+                            }}
+                          >
+                            {statsLoading ? '–' : <AnimatedNumber value={count} />}
+                          </Typography>
+                          <Typography
+                            component="span"
+                            sx={{
+                              ...microLabelSx,
+                              whiteSpace: 'nowrap',
+                              color: active ? 'text.primary' : 'text.secondary',
+                              opacity: zero ? 0.6 : 1,
+                            }}
+                          >
+                            {card.label}
+                          </Typography>
+                        </ButtonBase>
+                      </StaggerItem>
+                    );
+                  })}
+                </Paper>
+              </Box>
+            ))}
+          </Box>
+        </StaggerList>
       </FadeIn>
 
       {/* Filter bar: search reaches full history; project + origin narrow it. Server-driven. */}

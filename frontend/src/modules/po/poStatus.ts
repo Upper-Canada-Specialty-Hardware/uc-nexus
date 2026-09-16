@@ -17,7 +17,10 @@ export const PO_STATUS_CHIP_COLOR: Record<string, PoStatusChipColor> = {
 export const PO_STATUS_VALUES = Object.keys(PO_STATUS_CHIP_COLOR);
 
 // Labels that don't follow the generic Title_Case rule (e.g. GP_REGISTERED -> "GP-Registered").
+// DRAFT reads as "Nexus Draft" because it is the one status Nexus owns outright: every other status
+// is written by the OPEN-POS SYNC from GP, and the label says so wherever a status chip appears.
 const PO_STATUS_LABELS: Record<string, string> = {
+  DRAFT: 'Nexus Draft',
   GP_REGISTERED: 'GP-Registered',
 };
 
