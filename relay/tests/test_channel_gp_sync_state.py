@@ -117,7 +117,7 @@ def test_forgetting_a_channel_drops_its_copy(clean_channel_states):
 def test_the_hello_advertises_the_gp_sync_state_feature():
     # How the backend knows this build will accept its sync state rather than treat the frame as an
     # unknown job. An older relay advertises only "channels", so the backend never sends one.
-    assert channel._hello_frame()["features"] == ["channels", "gp_sync_state"]
+    assert "gp_sync_state" in channel._hello_frame()["features"]
 
 
 # --- the frame arriving on the socket ----------------------------------------------------------------

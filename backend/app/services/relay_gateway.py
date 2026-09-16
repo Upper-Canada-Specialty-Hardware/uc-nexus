@@ -98,6 +98,13 @@ CHANNELS_FEATURE = "channels"
 # without it for the same reason push_channels is: an older relay would read the frame as a job reply.
 GP_SYNC_STATE_FEATURE = "gp_sync_state"
 
+# The hello feature flag a relay sets to say it reads the `idempotency_key` on a create_po payload,
+# stamps it on the PO it writes into GP, and answers a repeat of the same key with the PO it already
+# made instead of reserving a second number. Absent on every build that predates it, and PO
+# REGISTRATION refuses to push to such a build: the whole reason a timeout may now be queued is that
+# the relay, not this backend, can tell a retry from a new order.
+CREATE_PO_IDEMPOTENCY_FEATURE = "create_po_idempotency"
+
 # What a relay too old to discover its own GP companies leaves behind. The hello frame is the
 # only place that list comes from now, so a build that omits it serves nothing - and saying why beats
 # an empty picker with no explanation.
@@ -424,6 +431,15 @@ class RelayGateway:
         enough not to list any, which is the answer every push path wants: say nothing to a relay that
         cannot read it."""
         return self._features is not None and name in self._features
+
+    def require_feature(self, name: str, op: str) -> None:
+        """Refuse an op whose safety depends on a relay capability.
+
+        Used by the write paths that are only correct against a relay advertising the feature, so an
+        older build is turned away with the existing update-the-relay message before anything is sent
+        - rather than after GP has already run the write."""
+        if not self.has_feature(name):
+            raise RelayOpUnsupportedError(op)
 
     async def push_channels(self, urls: Sequence[str]) -> None:
         """Hand the connected relay the full list of preview backends it should ALSO be dialling (#654).

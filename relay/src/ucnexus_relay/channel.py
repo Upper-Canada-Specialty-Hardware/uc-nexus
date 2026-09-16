@@ -209,7 +209,11 @@ def _summarise(op: str, payload: dict, reply: dict) -> str | None:
             return f"{len(result.get('jobs') or [])} jobs checked"
         if op == "create_po":
             po_number = result.get("po_number")
-            return f"PO {po_number}" if po_number else None
+            if not po_number:
+                return None
+            # A retry that recognised the PO an earlier attempt had already registered: GP was read,
+            # nothing was written, and the row should not read as a second registration.
+            return f"PO {po_number} (existing)" if result.get("existing") else f"PO {po_number}"
         if op == "create_receipt":
             receipt = result.get("receipt_number")
             return f"receipt {receipt}" if receipt else None
@@ -563,10 +567,29 @@ def _run_read_pos_by_number(company: str, payload: dict) -> dict:
     return {"company": company, **result}
 
 
+# One lock per GP company, so create_po runs one at a time within a company and freely across
+# companies - see _run_create_po for why a second create has to wait. Jobs run on their own threads
+# (asyncio.to_thread), so the dict itself is handed out under its own lock; a plain setdefault from
+# two threads at once can build two locks for one company and serialise neither.
+_CREATE_PO_LOCKS: dict[str, threading.Lock] = {}
+_CREATE_PO_LOCKS_GUARD = threading.Lock()
+
+
+def _create_po_lock(company: str) -> threading.Lock:
+    with _CREATE_PO_LOCKS_GUARD:
+        return _CREATE_PO_LOCKS.setdefault(company, threading.Lock())
+
+
 def _run_create_po(company: str, payload: dict) -> dict:
     ops.check_company_served(company)
     request = models.CreatePoRequest(company=company, **payload)
-    with db.get_connection(company) as conn:
+    # One create at a time per company. A retry recognises an earlier attempt by the PO that attempt
+    # wrote, so a retry arriving while the first attempt is still inside GP has to wait for it: run
+    # together, both would look for the key, both would miss, and both would reserve a number - which
+    # is the very thing the key exists to prevent. The lock is held around the WHOLE connection block,
+    # because the lookup only sees a committed PO. A create takes one to two seconds, so waiting on
+    # one costs nothing; a create for another company is not held up at all.
+    with _create_po_lock(company), db.get_connection(company) as conn:
         try:
             response = ops.create_po_op(conn, company=company, request=request)
             conn.commit()
@@ -962,6 +985,13 @@ def _served_companies(channel_allowed: list[str] | None) -> tuple[list[str], dic
     return served, {c: discovered.names[c] for c in served}, discovered.error
 
 
+# The feature string saying this build understands a create_po that carries an idempotency key: it
+# stamps the key on the PO's record note in GP and looks it up before reserving a number, so retrying
+# a create the backend stopped waiting for returns the PO the first attempt made rather than a second
+# one. A backend that does not see this string is talking to a relay where a retry is not safe.
+CREATE_PO_IDEMPOTENCY_FEATURE = "create_po_idempotency"
+
+
 def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
     """The relay's identity frame, sent right after the channel connects (issue #315) and again on the
     same socket whenever the discovered companies change. It carries the build tag and the exact op-set
@@ -975,8 +1005,9 @@ def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
     it instead of learning company_not_allowed on the round-trip. Both are empty and `companies_error`
     carries the reason when that master could not be read - a relay that cannot tell which companies
     exist serves none of them. `features` says what this build understands beyond jobs - "channels" means
-    it accepts a pushed preview-channel list and "gp_sync_state" that it accepts the backend's account of
-    its own sync work, so a backend talking to an older relay knows not to bother sending either."""
+    it accepts a pushed preview-channel list, "gp_sync_state" that it accepts the backend's account of
+    its own sync work, and "create_po_idempotency" that a create_po carrying an idempotency key can be
+    retried safely, so a backend talking to an older relay knows not to bother sending any of them."""
     from . import updater  # lazy: keep channel import-light and avoid any package load-order coupling
 
     served, names, error = _served_companies(channel_allowed)
@@ -988,7 +1019,7 @@ def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
         "companies": served,
         "company_names": names,
         "companies_error": error,
-        "features": ["channels", "gp_sync_state"],
+        "features": ["channels", "gp_sync_state", CREATE_PO_IDEMPOTENCY_FEATURE],
     }
 
 

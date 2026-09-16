@@ -7,7 +7,13 @@ from datetime import datetime
 import pytest
 from sqlalchemy import select
 
-from app.errors import InvalidStateTransitionError, ValidationError
+from app.errors import (
+    InvalidStateTransitionError,
+    RelayOpUnsupportedError,
+    RelayTimeoutError,
+    RelayUnavailableError,
+    ValidationError,
+)
 from app.models.enums import HardwareItemState, POStatus
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
@@ -15,6 +21,7 @@ from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.repositories import import_repository, po_repository
 from app.schemas import po as po_schema
 from app.services.gp_po import build_create_po_payload
+from app.services.relay_gateway import CREATE_PO_IDEMPOTENCY_FEATURE
 
 
 def _make_project(session) -> Project:
@@ -736,6 +743,9 @@ def test_the_register_resolver_lands_a_stock_draft_on_the_project_the_dialog_cho
         return None
 
     monkeypatch.setattr(po_schema.gp_job_sync, "check_job_setup_live", _live_check)
+    # A connected relay of a build that takes the attempt's key, which is what a create_po is pushed to.
+    monkeypatch.setattr(po_schema.relay_gateway, "_socket", object())
+    monkeypatch.setattr(po_schema.relay_gateway, "_features", frozenset({CREATE_PO_IDEMPOTENCY_FEATURE}))
 
     async def _relay_call(company, op, payload=None, timeout=None):
         return {"po_number": "PO0000691", "company": "TUBC"}
@@ -769,6 +779,195 @@ def test_the_register_resolver_lands_a_stock_draft_on_the_project_the_dialog_cho
 
     assert result.queued is False
     assert po_repository.reload_po(db_session, draft.id).project_id == project.id
+
+
+# --- the relay never came back with a number -----------------------------------------------------
+# PO REGISTRATION queues every failed push on PENDING GP WRITES, including the two that used to
+# surface to the user: the relay not answering in time, and the socket dying with the job on the wire.
+# The relay stamps the attempt's key on the PO it creates and hands that same PO back when the key
+# returns, so a retry can no longer reserve a second number - which is also why a relay that has not
+# advertised the capability is refused before anything is sent.
+
+
+def _stub_the_register_resolvers_world(
+    monkeypatch, db_session, *, relay_call, features=(CREATE_PO_IDEMPOTENCY_FEATURE,), connected=True
+):
+    """Everything the register resolver reaches for outside its own transaction: the caller's identity
+    and tenant scope, the idempotency ledger, the live GP job check, and the relay. `features` is what
+    the connected relay advertised on its hello frame, and `connected` whether one is there at all -
+    the capability is only asked of a relay that is."""
+    _use_test_session(monkeypatch, db_session)
+    monkeypatch.setattr(po_schema, "current_user", lambda info: {"user_id": "user_1"})
+    monkeypatch.setattr(po_schema, "tenant_scope", lambda info: None)
+    monkeypatch.setattr(po_schema.user_repository, "get_user_gp_buyer_id", lambda user_id: "mira")
+    monkeypatch.setattr(po_schema.gp_idempotency, "load", lambda key: None)
+    monkeypatch.setattr(po_schema.gp_idempotency, "record_relay_result", lambda key, op, result: None)
+    monkeypatch.setattr(po_schema.gp_idempotency, "stamp_result_id", lambda *a, **k: None)
+
+    async def _live_check(company, job_number):
+        return None
+
+    monkeypatch.setattr(po_schema.gp_job_sync, "check_job_setup_live", _live_check)
+    monkeypatch.setattr(po_schema.relay_gateway, "_socket", object() if connected else None)
+    monkeypatch.setattr(po_schema.relay_gateway, "_features", frozenset(features))
+    monkeypatch.setattr(po_schema.relay_gateway, "relay_call", relay_call)
+
+
+def _run_register(draft, key):
+    """Register the draft's single line, the way the dialog does."""
+    import asyncio
+
+    from app.schemas.inputs import RegisterPOInput, RegisterPOLineItemInput
+
+    line = draft.line_items[0]
+    return asyncio.run(
+        po_schema.POMutations().register_po_in_gp(
+            None,
+            RegisterPOInput(
+                po_id=str(draft.id),
+                gp_vendor_id="GPV1",
+                gp_vendor_name="GP Vendor",
+                gp_company="TUBC",
+                buyer_id="mira",
+                line_items=[
+                    RegisterPOLineItemInput(
+                        id=str(line.id),
+                        hardware_category=line.hardware_category,
+                        product_code=line.product_code,
+                        ordered_quantity=line.ordered_quantity,
+                        unit_cost=float(line.unit_cost),
+                    )
+                ],
+                idempotency_key=key,
+            ),
+        )
+    )
+
+
+def _queued_write(key):
+    """The queued row as it was actually committed - read in its own session, because the enqueue the
+    resolver calls opens its own too. None when nothing was queued under this key."""
+    from sqlalchemy import select as sa_select
+
+    from app.database import SessionLocal
+    from app.models.gp_outbox import GpWriteOutbox
+
+    with SessionLocal() as session:
+        row = session.scalars(sa_select(GpWriteOutbox).where(GpWriteOutbox.idempotency_key == key)).first()
+        if row is None:
+            return None
+        return {"op": row.op, "relay_op": row.relay_op, "payload": row.payload, "status": row.status}
+
+
+def _delete_queued_write(key) -> None:
+    from sqlalchemy import select as sa_select
+
+    from app.database import SessionLocal
+    from app.models.gp_outbox import GpWriteOutbox
+
+    with SessionLocal() as session:
+        row = session.scalars(sa_select(GpWriteOutbox).where(GpWriteOutbox.idempotency_key == key)).first()
+        if row is not None:
+            session.delete(row)
+            session.commit()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RelayTimeoutError("relay did not reply in time"),
+        RelayUnavailableError("relay disconnected", dispatched=True),
+    ],
+    ids=["timeout", "dispatched disconnect"],
+)
+def test_a_registration_the_relay_never_answered_is_queued(monkeypatch, db_session, failure):
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        raise failure
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call)
+
+    try:
+        result = _run_register(draft, key)
+
+        assert result.queued is True
+        assert result.outbox_entry_id is not None
+        queued = _queued_write(key)
+        assert queued is not None
+        assert (queued["op"], queued["relay_op"]) == ("register_po_in_gp", "create_po")
+        # The stored payload is what the worker replays, so the key has to be in it.
+        assert queued["payload"]["idempotency_key"] == key
+        # Nothing was registered: the PO is still a draft until the worker drains the row.
+        assert po_repository.reload_po(db_session, draft.id).status == POStatus.DRAFT
+    finally:
+        _delete_queued_write(key)
+
+
+def test_a_registration_with_no_relay_connected_at_all_is_still_queued(monkeypatch, db_session):
+    """The case the queue was built for. Nothing connected advertises no capability, so the
+    capability is only asked of a relay that is actually there - otherwise every registration during
+    an outage would be told to update a relay that is not even running. The worker asks again before
+    it drains the row, so an out-of-date relay still never gets the push."""
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        raise RelayUnavailableError("no relay is currently connected")
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call, features=(), connected=False)
+
+    try:
+        result = _run_register(draft, key)
+
+        assert result.queued is True
+        assert _queued_write(key)["relay_op"] == "create_po"
+    finally:
+        _delete_queued_write(key)
+
+
+def test_a_relay_that_cannot_recognise_the_key_is_refused_before_the_push(monkeypatch, db_session):
+    """An older relay would read a retry as a new order and reserve a second PO number, so the
+    registration is turned away with the update-the-relay message rather than pushed and queued."""
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    calls: list = []
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        calls.append(op)
+        return {"po_number": "PO0000800", "company": "TUBC"}
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call, features=())
+
+    try:
+        with pytest.raises(RelayOpUnsupportedError):
+            _run_register(draft, key)
+
+        assert calls == []
+        assert _queued_write(key) is None
+        assert po_repository.reload_po(db_session, draft.id).status == POStatus.DRAFT
+    finally:
+        _delete_queued_write(key)
+
+
+def test_the_push_carries_the_attempt_key_at_the_top_of_the_payload(monkeypatch, db_session):
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    pushed: list = []
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        pushed.append(payload)
+        return {"po_number": "PO0000801", "company": "TUBC"}
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call)
+
+    result = _run_register(draft, key)
+
+    assert result.queued is False
+    assert len(pushed) == 1
+    assert pushed[0]["idempotency_key"] == key
+    assert "idempotency_key" not in pushed[0]["header"]
 
 
 def test_register_rejects_a_blank_hardware_category(db_session):

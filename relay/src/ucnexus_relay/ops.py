@@ -55,6 +55,11 @@ def check_company_served(company: str) -> None:
 def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> models.CreatePoResponse:
     h = request.header
 
+    # The PO's record note, when the backend named this registration attempt: the key goes into GP
+    # behind the note icon on the PO, and step 0e below reads it back to recognise a retry. A request
+    # carrying no key writes no note, which is every PO registered before this existed.
+    note = f"UC Nexus registration key {request.idempotency_key}" if request.idempotency_key else None
+
     # 0. buyer: normally the Create PO dropdown sends a buyer_id picked from GP's registered buyers
     #    (POP00101, see list_buyers). If omitted, fall back to the [gp.buyers] config (by_host ->
     #    by_login -> default). The value MUST be a registered GP buyer.
@@ -176,6 +181,47 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
                 account_index=account_index,
             )
 
+    # 0d. what the PO comes to: the line subtotal, and the tax the relay computes from the picked
+    #     detail's rate (GP does not compute PO tax under header-level taxes - see step 5, which is
+    #     where the detail is actually written). Both are worked out here, ahead of anything that
+    #     writes, so the retry branch below can answer with the same figures a create would return
+    #     without registering anything. A tax detail GP does not hold is refused here rather than at
+    #     step 5, which only means an unregisterable PO is now refused before a number is reserved.
+    subtotal = sum(line.quantity * line.unit_cost for line in request.lines)
+    tax_amount = Decimal(0)
+    if h.tax_detail_id:
+        pct = econnect.get_tax_detail_percent(conn, h.tax_detail_id)
+        if pct is None:
+            raise RelayOpError(
+                "tax_detail_not_found",
+                f"tax detail '{h.tax_detail_id}' is not a GP purchase tax detail "
+                f"(TX00201 TXDTLTYP=2) for {company}",
+            )
+        tax_amount = (subtotal * pct / Decimal(100)).quantize(Decimal("0.01"))
+
+    # 0e. a retry of an attempt GP may already have finished. The backend stops waiting for this op
+    #     after 30 seconds, but the relay and GP do not stop with it: the PO lands, and a plain retry
+    #     would reserve a second number for the same registration. The key the backend sent rides on
+    #     the PO's record note, so reading it back here recognises the PO the earlier attempt made and
+    #     hands it straight back. Nothing is written on this path - not the number, not the header,
+    #     not a line - and the response carries the same figures the create would have returned.
+    if request.idempotency_key:
+        already_registered = econnect.find_po_by_registration_note(
+            conn, key=request.idempotency_key, buyer_id=buyer_id, doc_date=h.doc_date
+        )
+        if already_registered:
+            return models.CreatePoResponse(
+                po_number=already_registered,
+                company=company,
+                lines_created=len(request.lines),
+                subtotal=subtotal,
+                doc_date=h.doc_date,
+                vendor_id=h.vendor_id,
+                currency=currency,
+                tax_amount=tax_amount,
+                existing=True,
+            )
+
     # 1. PO number: use UC Nexus's own number if supplied, else reserve GP's next 'PO' number. A
     #    client-supplied number is rejected if it's already used anywhere in GP - active OR history.
     if request.po_number:
@@ -225,6 +271,7 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         null_tax_schedule=is_foreign,
         contact=h.contact,
         comment=h.comment,
+        note=note,
     )
 
     # 3. lines. ORD is dictated here rather than left to eConnect (issue #538) - see create_po_line.
@@ -258,19 +305,10 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         )
 
     # 5. subtotal + order-time charges. GP does NOT compute PO tax under header-level taxes, so when a
-    #    tax detail was picked the relay looks up its rate, computes the tax, inserts the detail
-    #    (taPopIvcTaxInsert) BEFORE the final header, then sets USINGHEADERLEVELTAXES=1 + that TAXAMNT.
-    subtotal = sum(line.quantity * line.unit_cost for line in request.lines)
-    tax_amount = Decimal(0)
+    #    tax detail was picked the relay's own computed tax (step 0d) is what the PO carries: the
+    #    detail is inserted (taPopIvcTaxInsert) BEFORE the final header, which then sets
+    #    USINGHEADERLEVELTAXES=1 + that TAXAMNT.
     if h.tax_detail_id:
-        pct = econnect.get_tax_detail_percent(conn, h.tax_detail_id)
-        if pct is None:
-            raise RelayOpError(
-                "tax_detail_not_found",
-                f"tax detail '{h.tax_detail_id}' is not a GP purchase tax detail "
-                f"(TX00201 TXDTLTYP=2) for {company}",
-            )
-        tax_amount = (subtotal * pct / Decimal(100)).quantize(Decimal("0.01"))
         econnect.insert_po_tax_detail(
             conn,
             po_number=po_number,
@@ -300,6 +338,7 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         null_tax_schedule=is_foreign,
         contact=h.contact,
         comment=h.comment,
+        note=note,
     )
 
     return models.CreatePoResponse(

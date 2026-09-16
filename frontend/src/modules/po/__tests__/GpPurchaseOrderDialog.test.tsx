@@ -809,6 +809,9 @@ describe('GpPurchaseOrderDialog', () => {
     expect(await screen.findByText('GP could not complete this operation')).toBeInTheDocument();
     expect(screen.getByText('eConnect: vendor on hold')).toBeInTheDocument();
     expect(screen.getByText('RELAY_CALL_FAILED')).toBeInTheDocument();
+    // GP rejected the PO and the relay rolled the whole thing back, so the toast may promise that a
+    // retry cannot leave a second PO behind.
+    expect(await screen.findByText(/A retry won't create a duplicate\./)).toBeInTheDocument();
     expect(onSubmitted).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
@@ -819,6 +822,30 @@ describe('GpPurchaseOrderDialog', () => {
     const retryKey = (calls[1].input as Record<string, unknown>).idempotencyKey;
     expect(firstKey).toMatch(UUID_RE);
     expect(retryKey).toBe(firstKey);
+  });
+
+  it('makes no no-duplicate promise when the relay call timed out', async () => {
+    // A timeout leaves GP possibly holding the PO, so the toast must not say a retry is free of
+    // duplicates. Register puts a timed-out write on the outbox instead of failing, so this code
+    // should no longer reach the dialog from here - the wording still has to be honest if it does.
+    const timeoutMock: MockedResponse = {
+      request: { query: REGISTER_PO_IN_GP, variables: () => true },
+      result: {
+        errors: [
+          new GraphQLError('relay did not answer in time', { extensions: { code: 'RELAY_TIMEOUT' } }),
+        ],
+      },
+    };
+    const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), timeoutMock]);
+    await waitForVendorPreselect();
+    await selectTaxDetail();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    expect(
+      await screen.findByText('Could not complete the PO in GP - see the error detail below.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/A retry won't create a duplicate/)).toBeNull();
+    expect(onSubmitted).not.toHaveBeenCalled();
   });
 
   it('keeps the idempotency key when the registration is queued on the GP outbox', async () => {
@@ -839,6 +866,13 @@ describe('GpPurchaseOrderDialog', () => {
     await selectTaxDetail();
 
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+    // Queued covers an unreachable relay and a GP confirmation that did not arrive in time, so the
+    // wording names neither reason and only promises the registration completes itself.
+    expect(
+      await screen.findByText(
+        "Queued. GP has not confirmed this PO yet. It will register itself; you don't need to redo it.",
+      ),
+    ).toBeInTheDocument();
     await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
 
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));

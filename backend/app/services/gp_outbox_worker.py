@@ -24,6 +24,7 @@ from app.errors import (
 )
 from app.repositories import gp_outbox_repository
 from app.services import gp_idempotency
+from app.services.relay_gateway import CREATE_PO_IDEMPOTENCY_FEATURE
 from app.services.relay_gateway import gateway as relay_gateway
 
 logger = logging.getLogger(__name__)
@@ -175,10 +176,36 @@ async def _drain_one(row_id: uuid.UUID) -> None:
         if state is not None and state.relay_result is not None:
             relay_result = state.relay_result
         else:
+            if relay_op == "create_po":
+                # PO REGISTRATION is queued in cases a receipt never is, and every one of them rests
+                # on the relay recognising the attempt's key. A build that does not is refused here,
+                # and the RelayOpUnsupportedError branch below leaves the row waiting for the
+                # workstation to update rather than pushing a PO that could be ordered twice.
+                relay_gateway.require_feature(CREATE_PO_IDEMPOTENCY_FEATURE, relay_op)
             relay_result = await relay_gateway.relay_call(company, relay_op, payload)
+            if isinstance(relay_result, dict) and relay_result.get("existing"):
+                # The earlier attempt did reach GP after all; this one got that PO back rather than a
+                # second one. Worth a line, because it is the only visible trace of the double push.
+                logger.info("gp outbox: relay returned the PO it already made for this key", extra={"label": label})
             await asyncio.to_thread(gp_idempotency.record_relay_result, key, op, relay_result)
     except RelayUnavailableError as e:
         if e.dispatched:
+            if relay_op == "create_po":
+                # The job was on the wire when the socket died, so GP may already hold this PO - but
+                # it holds it under this key, and the relay hands that same PO back instead of
+                # reserving a second number. Asking again is safe; the attempt budget still bounds a
+                # GP that is permanently too slow to answer.
+                await asyncio.to_thread(
+                    _finish,
+                    row_id,
+                    "mark_retry",
+                    error=str(e.message),
+                    error_code=e.code,
+                    bump_attempts=True,
+                    retry_in_seconds=POLL_SECONDS,
+                )
+                await _fail_if_exhausted(row_id)
+                return
             # The job was on the wire when the socket died: GP may hold the write. Retrying could
             # duplicate it, so this needs a human who can look in GP.
             await asyncio.to_thread(
@@ -199,6 +226,20 @@ async def _drain_one(row_id: uuid.UUID) -> None:
         )
         return
     except RelayTimeoutError as e:
+        if relay_op == "create_po":
+            # Same reasoning as the dispatched disconnect above: the relay finds the PO it already
+            # made for this key, so asking again cannot order twice. Bounded by the attempt budget.
+            await asyncio.to_thread(
+                _finish,
+                row_id,
+                "mark_retry",
+                error=str(e.message),
+                error_code=e.code,
+                bump_attempts=True,
+                retry_in_seconds=POLL_SECONDS,
+            )
+            await _fail_if_exhausted(row_id)
+            return
         # Same ambiguity as a dispatched disconnect - the job reached the relay and we do not know
         # what GP did with it.
         await asyncio.to_thread(
