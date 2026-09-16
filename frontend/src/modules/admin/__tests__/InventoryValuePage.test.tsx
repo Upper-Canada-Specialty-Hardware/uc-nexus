@@ -134,6 +134,25 @@ it('shows the three figures as currency with their hardware/doors split', async 
   expect(screen.getByText(/hardware \$59\.25 · doors \$1,250\.00/)).toBeInTheDocument();
 });
 
+it('stacks each figure card above its caption without a flex column to collapse it', async () => {
+  renderPage();
+
+  const card = (await screen.findByText(currency(1309.25))).closest('.MuiCard-root');
+  const tile = card?.parentElement;
+  if (!card || !tile) throw new Error('no tile around the OSSA figure');
+
+  // jsdom does no layout, so the collapse itself cannot be measured here - what can be locked in is
+  // the shape that caused it. StatCard's tile carries `flex: 1 1 0`, right for the row of tiles it
+  // was written for; make its wrapper a flex column and that becomes a zero-height basis, which the
+  // Card then clips to its label row. The wrapper stays a plain block.
+  expect(tile.style.display).toBe('');
+  expect(tile.style.flexDirection).toBe('');
+  // Label, figure and caption all present, with the caption the card's own next line.
+  expect(card).toHaveTextContent('OSSA');
+  expect(card).toHaveTextContent(currency(1309.25));
+  expect(card.nextElementSibling).toHaveTextContent('hardware $59.25 · doors $1,250.00');
+});
+
 it('subtotals each group of the doors table from the rows on screen', async () => {
   renderPage();
 

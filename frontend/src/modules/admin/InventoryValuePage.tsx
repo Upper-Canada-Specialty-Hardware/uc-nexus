@@ -301,7 +301,12 @@ function CountedList({ title, items }: { title: string; items: Array<[string, st
 
 function FigureTile({ label, icon, bucket }: { label: string; icon: ReactNode; bucket: Bucket }) {
   return (
-    <StaggerItem style={{ flex: '1 1 0', minWidth: 170, display: 'flex', flexDirection: 'column' }}>
+    // A plain block, not a flex column. StatCard's tile carries `flex: 1 1 0`, which is correct in
+    // the row of tiles it was written for, but in a column it becomes a zero-height basis - and the
+    // Card hides its overflow, so the card collapsed onto its label row and clipped the figure away.
+    // Stacked as blocks, the card keeps its own height and the caption falls in underneath it; the
+    // tiles still share the row equally and wrap through the flex row they sit in.
+    <StaggerItem style={{ flex: '1 1 0', minWidth: 170 }}>
       {/* A string value, not a number: currency wants its symbol and grouping, and AnimatedNumber
           counts bare digits. */}
       <StatCard icon={icon} label={label} value={CURRENCY.format(bucket.totalValue)} />

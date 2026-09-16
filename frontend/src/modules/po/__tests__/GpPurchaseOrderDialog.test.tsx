@@ -345,6 +345,13 @@ async function openSelect(label: string) {
   return await screen.findByRole('listbox');
 }
 
+// A search field (#689): the text has to be typed into a focused input. Unfocused, MUI wipes it back
+// to the selected option the next time anything re-renders the dialog.
+function typeInto(input: HTMLElement, text: string) {
+  input.focus();
+  fireEvent.change(input, { target: { value: text } });
+}
+
 async function closeSelect() {
   await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
 }
@@ -722,10 +729,10 @@ describe('GpPurchaseOrderDialog', () => {
     // rather than linking a Nexus-local record that has no PM00200 counterpart.
     expect(screen.queryByLabelText('Vendor')).toBeNull();
 
-    // Any project is draftable (buyer gating applies at registration, not drafting).
-    const projectListbox = await openSelect('Project (Optional)');
-    fireEvent.click(await within(projectListbox).findByText('Main St Job'));
-    await closeSelect();
+    // Any project is draftable (buyer gating applies at registration, not drafting). #689: the field
+    // is a search box, so the job is found by typing rather than by scrolling a list of every project.
+    typeInto(screen.getByLabelText('Project (Optional)'), 'Main St');
+    fireEvent.click(await screen.findByText('Main St Job'));
 
     fireEvent.change(screen.getByLabelText('Preferred delivery date'), {
       target: { value: '2026-09-15' },
@@ -912,6 +919,18 @@ it('lets a stock draft with no project pick one at register time', async () => {
   const project = await screen.findByLabelText(/^Project/i);
   expect(project).not.toBeDisabled();
   expect(screen.getByText(/this draft has no project yet/i)).toBeTruthy();
+});
+
+// #689: the field used to be a list of every project, scannable by name only. A PO user knows the job
+// by its number, and JOB-200's name says nothing about 200.
+it('finds a project by its number, not only by its name', async () => {
+  renderDialog({ registerPo: stockDraft });
+
+  const project = await screen.findByLabelText(/^Project/i);
+  typeInto(project, 'JOB-200');
+
+  expect(await screen.findByText('Elm St Job')).toBeInTheDocument();
+  expect(screen.queryByText('Main St Job')).toBeNull();
 });
 
 it('keeps Project locked on a draft imported against a project, and says why', async () => {

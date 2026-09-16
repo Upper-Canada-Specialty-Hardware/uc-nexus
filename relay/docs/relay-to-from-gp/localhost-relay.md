@@ -71,7 +71,7 @@ A small Windows application that runs on the user's machine, listens for HTTP re
 ```
 ┌──────────────────────────┐
 │  UC Nexus (browser)      │
-│  https://ucnexus.app     │
+│  production frontend     │
 └──────────────────────────┘
           │
           │  fetch('http://localhost:7321/po', {...})
@@ -884,7 +884,7 @@ shared_secret = "REPLACE_ME_RANDOM_TOKEN"
 
 [cors]
 allowed_origins = [
-  "https://ucnexus-frontend-production.up.railway.app",
+  "https://frontend-production-34fc.up.railway.app",
   "http://localhost:5173"
 ]
 
@@ -1237,7 +1237,7 @@ If this fails, every later step will too — fix the driver / network / auth bef
 
 ```python
 ALLOWED_ORIGINS = [
-    "https://ucnexus-frontend-production.up.railway.app",
+    "https://frontend-production-34fc.up.railway.app",
     "http://localhost:5173",
     "http://localhost:8000",
 ]

@@ -183,7 +183,9 @@ function TrafficTile({
   accent?: StatCardAccent;
 }) {
   return (
-    <StaggerItem style={{ flex: '1 1 0', minWidth: 170, display: 'flex', flexDirection: 'column' }}>
+    // A plain block, not a flex column, for the same reason as the INVENTORY VALUE figure tiles: the
+    // stat card's own flex basis collapses to nothing inside a column and the card clips its figure.
+    <StaggerItem style={{ flex: '1 1 0', minWidth: 170 }}>
       <StatCard icon={icon} label={label} value={value} accent={accent} />
       <Typography
         variant="caption"
