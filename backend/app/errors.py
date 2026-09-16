@@ -77,8 +77,10 @@ class RelayUnavailableError(AppError):
     the job never left the backend - no socket, wrong company, send failure - which means GP cannot
     possibly have run it, so the write is safe to queue and retry. It is True when the job WAS on the
     wire and the socket then died (`RelayGateway._fail_all`): GP may have committed and the reply was
-    simply lost, so a blind retry could post a second receipt or reserve a second PO number. A
-    dispatched failure must surface to the user exactly as it does today and must never be enqueued."""
+    simply lost, so a blind retry could post a second receipt. A dispatched receipt failure must
+    surface to the user and must never be enqueued. A dispatched PO REGISTRATION failure is the one
+    exception: the relay recognises the attempt's idempotency key and hands back the PO it already
+    made, so that write is queued on PENDING GP WRITES and asked again (issue #687)."""
 
     def __init__(self, message: str = "no relay is currently connected", dispatched: bool = False):
         super().__init__(message, "RELAY_UNAVAILABLE")

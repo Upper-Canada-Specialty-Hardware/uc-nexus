@@ -13,6 +13,7 @@ from app.errors import (
     GpSetupInvalidError,
     InvalidStateTransitionError,
     NotFoundError,
+    RelayTimeoutError,
     RelayUnavailableError,
     ValidationError,
 )
@@ -26,6 +27,7 @@ from app.repositories import (
 )
 from app.services import email as email_service
 from app.services import gp_idempotency, gp_job_sync, gp_outbox_enqueue, gp_po, gp_po_sync, storage
+from app.services.relay_gateway import CREATE_PO_IDEMPOTENCY_FEATURE
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import (
@@ -69,6 +71,16 @@ logger = logging.getLogger(__name__)
 # record id. The sync DB and Clerk work is offloaded via asyncio.to_thread so no Postgres connection is
 # held across the relay round-trip and the event loop running the /relay-link read loop is never
 # blocked on a sync call.
+#
+# When the relay push fails, PO REGISTRATION queues the write on PENDING GP WRITES and the user is
+# told it will post itself - EVERY failure, including the relay not answering in time and the socket
+# dying with the job already on the wire. Those two used to surface as errors, because a retry with
+# nothing to recognise it by could reserve a second PO number in GP. The relay now takes the attempt's
+# idempotency key on the create_po payload, stamps it on the PO it creates, and returns that same PO
+# when the key comes back, so a retry can no longer double-order - which is why this resolver refuses
+# to push to a relay that has not advertised CREATE_PO_IDEMPOTENCY_FEATURE at all. GP RECEIVE ENTRY
+# has no such key and is unchanged: a receipt that timed out is still an ambiguous failure a human
+# has to look up in GP.
 
 
 def _load_po_type(po_id: uuid.UUID) -> PurchaseOrder:
@@ -171,6 +183,7 @@ def _prepare_register_po(
     doc_date=None,
     contact=None,
     comment=None,
+    idempotency_key=None,
 ) -> dict:
     """Read-only pre-flight for register_po_in_gp: confirm the PO is a registerable DRAFT, resolve the
     job number, pre-validate, and build the relay create_po payload (po_number=None; GP assigns it).
@@ -261,6 +274,9 @@ def _prepare_register_po(
         doc_date=doc_date,
         contact=contact,
         comment=comment,
+        # The attempt's key goes to GP with the order, so the relay can recognise a second push of
+        # this same registration as the same order rather than a new one.
+        idempotency_key=idempotency_key,
     )
     # build_create_po_payload emits one line per line_items_data entry, in order, so index-align the
     # resolved manufacturers onto the relay payload lines (the relay caps/RTRIMs to USRDEFND1's char(50)).
@@ -731,6 +747,7 @@ class POMutations:
             doc_date=input.doc_date,
             contact=input.contact,
             comment=input.comment,
+            idempotency_key=key,
         )
 
         # #425 live re-check. The job number is read back off the payload rather than returned
@@ -775,15 +792,23 @@ class POMutations:
         if state is not None and state.relay_result is not None:
             gp_result = state.relay_result
         else:
+            # Refused before anything is sent: a relay that does not recognise the key cannot tell a
+            # retry of this registration from a second order, and the queueing below assumes it can.
+            # Only asked of a relay that is actually there - a disconnected one advertises nothing,
+            # and turning that into "update the relay" would break the case the queue exists for.
+            # Nothing is lost by waiting: the worker asks the same question before it drains the row,
+            # so an out-of-date relay still never gets the push.
+            if relay_gateway.connected:
+                relay_gateway.require_feature(CREATE_PO_IDEMPOTENCY_FEATURE, "create_po")
             try:
                 gp_result = await relay_gateway.relay_call(input.gp_company, "create_po", payload)
-            except RelayUnavailableError as e:
-                # #353 PR E: the relay is unreachable but the job never left the backend, so GP cannot
-                # have run it - queue it and tell the user it will post itself. A DISPATCHED failure
-                # is re-raised: GP may hold the write, and a blind retry would reserve a second PO
-                # number.
-                if not gp_outbox_enqueue.may_enqueue(e):
-                    raise
+            except (RelayUnavailableError, RelayTimeoutError):
+                # #353 PR E: the relay did not come back with a PO number, so queue the write and tell
+                # the user it will post itself. All three ways that can happen are queued now - the
+                # relay is not there, the socket died with the job on the wire, or the relay did not
+                # answer in time. The last two used to surface to the user, because a retry might have
+                # reserved a second PO number in GP; the relay recognises the attempt's key now and
+                # answers with the PO it already made, so asking again cannot double-order.
                 project_id, label = await asyncio.to_thread(_po_outbox_identity, pid)
                 entry_id = await asyncio.to_thread(
                     gp_outbox_enqueue.enqueue,

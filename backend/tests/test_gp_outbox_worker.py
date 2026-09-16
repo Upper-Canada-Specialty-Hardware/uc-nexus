@@ -32,7 +32,7 @@ def _enqueue_committed(op: str = "create_receive", company: str = "TUBC") -> tup
             payload={"po_number": "0000123"},
             persist_context={"po_id": str(uuid.uuid4())},
             entity_key=f"po:{uuid.uuid4()}",
-            label="Receive against PO 0000123",
+            label="Receive against PO 0000123" if op == "create_receive" else "Register PO 0000123 in GP",
         )
         row_id = row.id
         session.commit()
@@ -76,6 +76,13 @@ def _stub_relay(monkeypatch, result=None, raises=None, calls=None):
     monkeypatch.setattr(gp_outbox_worker.relay_gateway, "relay_call", _call)
 
 
+def _stub_relay_features(monkeypatch, *features):
+    """What the connected relay advertised on its hello frame. A create_po row is only pushed to a
+    relay that recognises the attempt's key, so the tests that get as far as the push have to say so.
+    Spelled as the literal wire string the relay puts on that frame, not as the backend's constant."""
+    monkeypatch.setattr(gp_outbox_worker.relay_gateway, "_features", frozenset(features))
+
+
 def _stub_persist(monkeypatch, raises=None, seen=None):
     def _handler(context, relay_result, key):
         if seen is not None:
@@ -99,7 +106,8 @@ def test_a_relay_down_row_stays_pending_and_does_not_burn_an_attempt(_migrate_da
 
 
 def test_a_dispatched_disconnect_fails_as_ambiguous_and_is_never_retried(_migrate_database, monkeypatch):
-    # The job was already on the wire: GP may hold the write, so an automatic retry could double-post.
+    # A GP RECEIVE ENTRY that was already on the wire: GP may hold the receipt, nothing on it carries
+    # the attempt's key, so an automatic retry could post a second one.
     row_id, _key = _enqueue_committed()
     try:
         _stub_relay(monkeypatch, raises=RelayUnavailableError("relay disconnected", dispatched=True))
@@ -112,11 +120,64 @@ def test_a_dispatched_disconnect_fails_as_ambiguous_and_is_never_retried(_migrat
 
 
 def test_a_timeout_fails_as_ambiguous(_migrate_database, monkeypatch):
+    # Again the receipt: the relay took the job and said nothing, and nobody can tell from here
+    # whether GP wrote it.
     row_id, _key = _enqueue_committed()
     try:
         _stub_relay(monkeypatch, raises=RelayTimeoutError("relay did not answer"))
         asyncio.run(gp_outbox_worker._drain_one(row_id))
         assert _read(row_id)["failure_kind"] == "ambiguous"
+    finally:
+        _delete(row_id)
+
+
+# --- PO REGISTRATION is the exception ------------------------------------------------------------
+# The relay stamps the attempt's key on the PO it creates in GP and answers a repeat of that key with
+# the PO it already made, so the two failures that are ambiguous for a receipt are merely unanswered
+# for a create_po: ask again. The attempt budget still bounds a GP that never answers at all.
+
+
+def test_a_create_po_that_timed_out_is_asked_again_rather_than_failed(_migrate_database, monkeypatch):
+    row_id, _key = _enqueue_committed(op="register_po_in_gp")
+    try:
+        _stub_relay_features(monkeypatch, "create_po_idempotency")
+        _stub_relay(monkeypatch, raises=RelayTimeoutError("relay did not answer"))
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert state["status"] == "PENDING"
+        assert state["failure_kind"] is None
+        assert state["attempts"] == 1  # unlike an outage, this one counts
+    finally:
+        _delete(row_id)
+
+
+def test_a_create_po_whose_socket_died_mid_flight_is_asked_again(_migrate_database, monkeypatch):
+    row_id, _key = _enqueue_committed(op="register_po_in_gp")
+    try:
+        _stub_relay_features(monkeypatch, "create_po_idempotency")
+        _stub_relay(monkeypatch, raises=RelayUnavailableError("relay disconnected", dispatched=True))
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert state["status"] == "PENDING"
+        assert state["failure_kind"] is None
+        assert state["attempts"] == 1
+    finally:
+        _delete(row_id)
+
+
+def test_a_create_po_is_never_pushed_to_a_relay_that_cannot_recognise_the_key(_migrate_database, monkeypatch):
+    """Retrying against an older build could reserve a second PO number, so the row waits for the
+    workstation to update instead - the same treatment as an op the relay has never heard of."""
+    row_id, _key = _enqueue_committed(op="register_po_in_gp")
+    try:
+        _stub_relay_features(monkeypatch)
+        calls: list = []
+        _stub_relay(monkeypatch, result={"po_number": "PO0000900"}, calls=calls)
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert calls == []
+        assert state["status"] == "PENDING"
+        assert state["attempts"] == 1
     finally:
         _delete(row_id)
 

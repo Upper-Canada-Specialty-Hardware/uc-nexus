@@ -912,11 +912,13 @@ export default function GpPurchaseOrderDialog({
         const result = resp.data?.registerPoInGp;
         queued = Boolean(result?.queued);
         if (queued) {
-          // #353 PR E: accepted but not in GP yet. The PO stays DRAFT and the list shows it as
-          // queued; the idempotency key is now owned by the outbox row, so a resubmit is a no-op
-          // rather than a second registration.
+          // #353 PR E: accepted but not in GP yet. Queued now covers two outcomes - the relay was
+          // unreachable, or GP did not confirm the write within the wait - and in both the write sits
+          // on the outbox and completes itself. The PO stays DRAFT and the list shows it as queued;
+          // the idempotency key is now owned by the outbox row, so a resubmit is a no-op rather than
+          // a second registration.
           showToast(
-            "Queued — the GP relay is offline. This PO will register itself when it reconnects; you don't need to redo it.",
+            "Queued. GP has not confirmed this PO yet. It will register itself; you don't need to redo it.",
             'info',
           );
         } else {
@@ -954,11 +956,17 @@ export default function GpPurchaseOrderDialog({
       // the mutation reported failure, and reusing the key makes the retry safe.
       // Surface the full GP error persistently (issue #187) so the user can screenshot it; the toast
       // just points at the detail panel.
-      setGpError(extractGpError(err) ?? { message: isRegister ? 'Failed to push PO to GP' : 'Failed to create the draft PO' });
+      const gpErr = extractGpError(err);
+      setGpError(gpErr ?? { message: isRegister ? 'Failed to push PO to GP' : 'Failed to create the draft PO' });
+      // The no-duplicate promise holds when GP rejected the PO (the relay rolls the whole PO back) and
+      // when the relay is too old to serve the call (nothing was sent at all). It does not hold for a
+      // timeout or a dropped connection, where GP may be holding the PO, so it is not made for those.
+      const mayHoldInGp = gpErr?.code === 'RELAY_TIMEOUT' || gpErr?.code === 'RELAY_UNAVAILABLE';
+      const registerFailureText = mayHoldInGp
+        ? 'Could not complete the PO in GP - see the error detail below.'
+        : "Could not complete the PO in GP - see the error detail below. A retry won't create a duplicate.";
       showToast(
-        isRegister
-          ? "Could not complete the PO in GP - see the error detail below. A retry won't create a duplicate."
-          : 'Could not create the draft PO - see the error detail below.',
+        isRegister ? registerFailureText : 'Could not create the draft PO - see the error detail below.',
         'error',
       );
     } finally {

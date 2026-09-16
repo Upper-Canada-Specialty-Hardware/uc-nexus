@@ -139,6 +139,13 @@ is a named refusal rather than a raw eConnect error halfway through the transact
 `taPoHdr` at all - both `taPoHdr` calls (create, and the subtotal update that upserts the same header)
 send exactly the same set, so the update can never blank what the create wrote.
 
+the request may also carry an `idempotency_key` naming the registration attempt. the relay writes it
+into the PO's record note (`taPoHdr NOTETEXT`, which lands on `SY03900` under the note index the
+header carries in `PONOTIDS_1`) and, before it reserves a number, looks that key up over `POP10100`
+and then `POP30100`: a key it finds comes back as that PO with `existing: true`, and nothing at all is
+written. that is what makes a retry safe when the backend gave up waiting on a create GP went on to
+finish. a request with no key writes no note and runs no lookup, exactly as before.
+
 the two reads that feed that dialog are `list_po_entry_options` (the company's shipping methods,
 sites and units of measure in one answer) and `list_vendor_addresses` (one vendor's address codes).
 `list_vendors` also carries each vendor's own `shipping_method`, `purchase_address_code` and

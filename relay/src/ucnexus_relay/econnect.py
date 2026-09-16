@@ -12,7 +12,7 @@ Orchestration (all inside one BEGIN..COMMIT held by the caller's connection):
 """
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 _DB_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")  # custom_db comes from trusted config, but validate before interpolating
@@ -74,6 +74,53 @@ def po_number_in_use(conn, po_number: str) -> str | None:
     return None
 
 
+# Where a PO's own record note lives, for the registration-key lookup below. A GP note is a row in the
+# note master SY03900 keyed by NOTEINDX; a PO header carries nine note indexes (PONOTIDS_1..9) and the
+# FIRST is the header's own - the WennSoft proc SVC_POP_Make_PO (docs/relay-to-from-gp/wennsoft-procs)
+# reserves a fresh index into PONOTIDS_1 when it creates a header and fills the rest in from the site,
+# the vendor, the payment term and the shipping method. eConnect's NOTETEXT is expected to fill that
+# same index. Both names, like _NOTE_TEXT_PARAM itself, are workstation-verifiable assumptions.
+_PO_NOTE_INDEX_COLUMN = "PONOTIDS_1"
+_NOTE_TABLE = "SY03900"
+
+# How far back of a PO's document date the registration-key lookup reads. A retry follows the attempt
+# it is retrying by seconds, so a week is generous; it is here to bound the rows the join touches, not
+# to express a rule. Also a workstation-verifiable assumption: it holds only while a retry cannot
+# arrive later than this, which is what the backend's own retry window decides.
+_REGISTRATION_NOTE_DAYS = 7
+
+
+def find_po_by_registration_note(conn, *, key: str, buyer_id: str, doc_date: date) -> str | None:
+    """Read-only: the PO carrying this registration key on its record note, or None.
+
+    This is what makes a create_po retry safe. The backend waits 30 seconds for a create and then gives
+    up, but the relay and GP carry on and the PO lands - so a plain retry would reserve a second number
+    for the same registration. create_po_op stamps the attempt's key into the header's note, and this
+    finds it: active POs (POP10100) first, then history (POP30100), in that order so the common case
+    never reads history at all.
+
+    The BUYERID and DOCDATE narrowing is what keeps this cheap. On its own, a LIKE over the note master
+    is a scan of every note in the company - customers, vendors, jobs, every PO ever raised. Pinned to
+    one buyer and to POs dated within the last _REGISTRATION_NOTE_DAYS, the join touches a handful of
+    headers and reads only their notes.
+
+    Matching on a substring is safe because the key is a UUID: it cannot appear in a note somebody
+    typed, and it cannot collide with another attempt's key. Table, note column and note table are
+    compile-time constants; only the buyer, the date and the key are bound."""
+    like = f"%{key}%"
+    since = doc_date - timedelta(days=_REGISTRATION_NOTE_DAYS)
+    for table in ("POP10100", "POP30100"):
+        row = conn.cursor().execute(
+            f"SELECT TOP 1 h.PONUMBER FROM dbo.{table} h "
+            f"JOIN dbo.{_NOTE_TABLE} n ON n.NOTEINDX = h.{_PO_NOTE_INDEX_COLUMN} "
+            f"WHERE h.BUYERID = ? AND h.DOCDATE >= ? AND CAST(n.TXTFIELD AS varchar(max)) LIKE ?",
+            buyer_id, since, like,
+        ).fetchone()
+        if row is not None:
+            return (row[0] or "").strip()
+    return None
+
+
 def _exec_tapohdr(conn, fields: dict) -> None:
     """Build + EXEC dbo.taPoHdr from an ordered {param: value} map (param name minus the @I_v prefix),
     always appending UpdateIfExists=1 + the OUTPUT error params. One place wires the header upsert so
@@ -113,13 +160,17 @@ def _foreign_currency_fields(rate_type: str | None, exchange_date: date | None, 
 # taPoHdr's own parameter names for the PO's contact and comment - the two free-text header fields
 # GP's Purchase Order Entry takes that PO REGISTRATION did not send until now. CONTACT is the person
 # at the vendor the PO is addressed to (POP10100.CONTACT); COMMNTID + CMMTTEXT are GP's comment pair,
-# and the text lands on POP10150. All three are listed on taPoHdr in the eConnect schema
-# (docs/relay-to-from-gp/econnect-reference/POPTransaction.xsd), but VERIFY ON THE WORKSTATION that
-# the live proc takes them under these names. They sit here, one name per constant, so a correction
-# is a one-line edit rather than a hunt through the two SQL builders that send them.
+# and the text lands on POP10150. NOTETEXT is taPoHdr's record-note parameter - the note a GP user
+# sees behind the note icon on the PO - and its text lands in the note master SY03900, linked from the
+# note index the header carries first (see _PO_NOTE_INDEX_COLUMN). All four are listed on
+# taPoHdr in the eConnect schema (docs/relay-to-from-gp/econnect-reference/POPTransaction.xsd), but
+# VERIFY ON THE WORKSTATION that the live proc takes them under these names. They sit here, one name
+# per constant, so a correction is a one-line edit rather than a hunt through the two SQL builders
+# that send them.
 _CONTACT_PARAM = "CONTACT"
 _COMMENT_ID_PARAM = "COMMNTID"
 _COMMENT_TEXT_PARAM = "CMMTTEXT"
+_NOTE_TEXT_PARAM = "NOTETEXT"
 
 # GP's header comment is a pair: an id naming a comment out of the company's comment master, and the
 # text itself. Nexus writes free text rather than picking a master comment, so the id goes blank -
@@ -147,6 +198,20 @@ def _contact_and_comment_fields(contact: str | None, comment: str | None) -> dic
     return fields
 
 
+def _note_fields(note: str | None) -> dict:
+    """The taPoHdr field carrying the PO's record note, omitted entirely when the caller sent None.
+
+    Omitting rather than sending a blank is the same reasoning the contact and the comment follow:
+    eConnect only writes a header field it is actually passed, so a parameter name that turns out to
+    be wrong can fail only a PO that set a note - never one that left it alone, which is every PO
+    registered before this existed.
+
+    Sent on BOTH taPoHdr calls (create_po_header and update_po_header_subtotal), because the second
+    call upserts the same header: a note written by the create and omitted by the update is a note
+    the update could leave behind."""
+    return {_NOTE_TEXT_PARAM: note} if note is not None else {}
+
+
 def create_po_header(
     conn,
     *,
@@ -165,12 +230,13 @@ def create_po_header(
     null_tax_schedule: bool = False,
     contact: str | None = None,
     comment: str | None = None,
+    note: str | None = None,
 ) -> None:
     """Create the PO header. SUBTOTAL is NOT passed here (no lines exist yet); update_po_header_subtotal
     sets it after the lines land. For a foreign-currency PO (issue #257), rate_type/exchange_date let
     eConnect resolve the exchange rate and null_tax_schedule blanks TAXSCHID. contact and comment are
-    the two free-text header fields; each is left out of the EXEC entirely when None - see
-    _contact_and_comment_fields."""
+    the two free-text header fields, and note is the PO's record note; each is left out of the EXEC
+    entirely when None - see _contact_and_comment_fields and _note_fields."""
     fields = {
         "POTYPE": po_type,
         "PONUMBER": po_number,
@@ -185,6 +251,7 @@ def create_po_header(
     }
     fields.update(_foreign_currency_fields(rate_type, exchange_date, null_tax_schedule))
     fields.update(_contact_and_comment_fields(contact, comment))
+    fields.update(_note_fields(note))
     _exec_tapohdr(conn, fields)
 
 
@@ -409,6 +476,7 @@ def update_po_header_subtotal(
     null_tax_schedule: bool = False,
     contact: str | None = None,
     comment: str | None = None,
+    note: str | None = None,
 ) -> None:
     """Re-call taPoHdr with UpdateIfExists=1 + the computed SUBTOTAL (validated now against the line
     totals from steps 3-4) and the order-time GP charges (issue #257): trade discount, freight, misc,
@@ -419,7 +487,7 @@ def update_po_header_subtotal(
     using_header_taxes=1 tells GP to use the passed TAXAMNT rather than compute one - GP does NOT
     calculate PO tax under header-level taxes (verified live). rate_type/exchange_date/null_tax_schedule
     carry the foreign-currency handling (re-sent here so the UpdateIfExists upsert can't revert the
-    rate or re-default a blanked TAXSCHID), and contact/comment are re-sent for exactly the same
+    rate or re-default a blanked TAXSCHID), and contact/comment/note are re-sent for exactly the same
     reason - this call upserts the same header, so it has to send the set create_po_header sent."""
     fields = {
         "POTYPE": po_type,
@@ -443,6 +511,7 @@ def update_po_header_subtotal(
     }
     fields.update(_foreign_currency_fields(rate_type, exchange_date, null_tax_schedule))
     fields.update(_contact_and_comment_fields(contact, comment))
+    fields.update(_note_fields(note))
     _exec_tapohdr(conn, fields)
 
 

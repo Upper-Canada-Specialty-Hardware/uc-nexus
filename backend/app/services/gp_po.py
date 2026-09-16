@@ -102,6 +102,7 @@ def build_create_po_payload(
     po_number: str | None,
     line_items: list[dict],
     po_number_suffix: str | None = None,
+    idempotency_key: str | None = None,
     tax_detail_id: str | None = None,
     freight_amount: float | None = None,
     misc_amount: float | None = None,
@@ -198,6 +199,11 @@ def build_create_po_payload(
         # #488: the relay composes '<reserved>-<suffix>' when it reserves the number itself. Ignored
         # when po_number is explicit, which is taken as given.
         "po_number_suffix": po_number_suffix,
+        # The attempt's key, which the relay stamps on the PO it creates in GP so the same key coming
+        # back returns that PO instead of reserving a second number. It lives in the payload rather
+        # than beside it because a queued write replays the STORED payload: the key rides along on
+        # every retry the outbox makes, with nothing to re-derive.
+        "idempotency_key": idempotency_key,
     }
 
 

@@ -304,6 +304,38 @@ def test_an_over_long_product_code_is_cut_to_gps_description_width():
     assert payload["lines"][0]["item_description"] == ("C" * 150)[:100]
 
 
+def test_the_attempt_key_travels_beside_the_po_number_not_inside_the_header():
+    """The relay reads `idempotency_key` at the top of the create_po payload, stamps it on the PO it
+    writes into GP, and answers a repeat of the same key with that PO instead of reserving a second
+    number. Putting it in the header would hide it from the relay entirely."""
+    payload = gp_po.build_create_po_payload(
+        vendor_gp_id="ING100",
+        vendor_contact_name=None,
+        buyer_id="mira",
+        job_number=None,
+        cost_code=None,
+        po_number=None,
+        line_items=[_line_item()],
+        idempotency_key="7f1c9a3e-key",
+    )
+    assert payload["idempotency_key"] == "7f1c9a3e-key"
+    assert "idempotency_key" not in payload["header"]
+
+
+def test_a_payload_built_without_a_key_carries_a_null_one():
+    # The field is always present so the relay reads one shape; a caller with no key sends null.
+    payload = gp_po.build_create_po_payload(
+        vendor_gp_id="ING100",
+        vendor_contact_name=None,
+        buyer_id="mira",
+        job_number=None,
+        cost_code=None,
+        po_number=None,
+        line_items=[_line_item()],
+    )
+    assert payload["idempotency_key"] is None
+
+
 def test_build_create_receipt_payload_dedupes_and_joins_rack_locations():
     payload = gp_po.build_create_receipt_payload(
         po_number="PO0000001",

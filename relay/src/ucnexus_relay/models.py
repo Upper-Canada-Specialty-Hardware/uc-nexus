@@ -83,6 +83,11 @@ class CreatePoRequest(BaseModel):
     # carry no clue which job they belong to; the suffix makes both visible. Only used when
     # po_number is absent - an explicit number is taken as given.
     po_number_suffix: str | None = Field(default=None, max_length=8, pattern=r"^[A-Za-z0-9]+$")
+    # The key identifying this registration attempt, so a retry of it is recognised rather than
+    # registered a second time. The relay stamps it on the PO's record note in GP and looks it up
+    # before reserving a number - see econnect.find_po_by_registration_note. Absent is exactly the
+    # behaviour a relay had before this field existed: no note is written and no lookup is run.
+    idempotency_key: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def normalize_po_number(self):
@@ -108,6 +113,9 @@ class CreatePoResponse(BaseModel):
     # chosen tax detail (0 when none was picked). Returned so the backend can snapshot them.
     currency: str = "CAD"
     tax_amount: Decimal = Decimal(0)
+    # True when this PO was FOUND by its registration key rather than created: an earlier attempt the
+    # backend stopped waiting for had already registered it, and this call wrote nothing at all.
+    existing: bool = False
 
 
 # --- receiving (workflow 2) ---

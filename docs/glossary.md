@@ -36,7 +36,7 @@ NEXUS TO GP WRITES
 
 - PO REGISTRATION - A PO drafted in Nexus is sent to GP. GP assigns the number and books the job cost, and Nexus stores the number. The register shows it as GP-Registered. Code: register_po_in_gp, relay create_po
 - GP RECEIVE ENTRY - The warehouse receives against a PO and Nexus writes the receipt into GP, where it waits in a batch for someone to post inside GP. Code: relay create_receipt
-- PENDING GP WRITES - NEXUS TO GP WRITES held while the relay is unreachable and sent automatically when it returns. A write that may already have reached GP is never retried blindly. Code: gp_outbox
+- PENDING GP WRITES - NEXUS TO GP WRITES held while the relay is unreachable, or while GP has not confirmed a PO REGISTRATION in time, and sent automatically when they can be. A write that may already have reached GP is retried only when the relay can recognise it: PO REGISTRATION can, GP RECEIVE ENTRY cannot. Code: gp_outbox
 
 Inventory Value
 
