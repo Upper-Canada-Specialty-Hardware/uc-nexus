@@ -167,15 +167,11 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
   const [busy, setBusy] = useState(false);
   const working = busy || saving || uploading;
 
-  // Include the current value in the option list even if the live list doesn't have it (a saved
-  // free-text buyer, or a shipping method that was later removed from settings), so it still shows.
+  // Include the saved buyer in the option list even when the live list doesn't have it, so a buyer
+  // that GP no longer returns still shows.
   const buyerOptions = useMemo(
     () => Array.from(new Set([...buyers, ...(buyerName ? [buyerName] : [])])),
     [buyers, buyerName],
-  );
-  const shippingMethodOptions = useMemo(
-    () => Array.from(new Set([...settings.shippingMethods, ...(shippingMethod ? [shippingMethod] : [])])),
-    [settings.shippingMethods, shippingMethod],
   );
 
   const num = (s: string): number => {
@@ -334,18 +330,11 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
             fullWidth size="small" multiline minRows={3}
             helperText="Free text. Leave empty to print nothing under Ship To."
           />
-          <FormControl fullWidth size="small">
-            <InputLabel>Shipping method</InputLabel>
-            <Select
-              label="Shipping method" value={shippingMethod}
-              onChange={(e) => setShippingMethod(e.target.value)}
-            >
-              <MenuItem value=""><em>None</em></MenuItem>
-              {shippingMethodOptions.map((m) => (
-                <MenuItem key={m} value={m}>{m}</MenuItem>
-              ))}
-            </Select>
-          </FormControl>
+          <TextField
+            label="Shipping method" value={shippingMethod}
+            onChange={(e) => setShippingMethod(e.target.value)}
+            fullWidth size="small"
+          />
 
           <SectionHeading>Header details</SectionHeading>
           <Stack direction="row" spacing={2}>
