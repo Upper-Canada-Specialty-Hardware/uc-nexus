@@ -496,6 +496,24 @@ const theme = createTheme({
       },
     },
 
+    // An autocomplete popup usually opens over a dialog, which is the same paper colour, and every
+    // Paper here is elevation 0 with no gradient. Without a rule of its own the open list is an
+    // invisible rectangle, so it takes the menu's border plus a drop shadow to read as a layer
+    // floating above the form.
+    MuiAutocomplete: {
+      styleOverrides: {
+        paper: ({ theme }) => ({
+          borderRadius: 6,
+          border: '1px solid',
+          borderColor: theme.vars.palette.divider,
+          boxShadow: '0 6px 20px rgba(29, 27, 23, 0.16)',
+          ...theme.applyStyles('dark', {
+            boxShadow: '0 6px 20px rgba(0, 0, 0, 0.55)',
+          }),
+        }),
+      },
+    },
+
     MuiStepIcon: {
       styleOverrides: {
         root: ({ theme }) => ({

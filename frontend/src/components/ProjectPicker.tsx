@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
-import { Autocomplete, Box, Chip, TextField, Typography } from '@mui/material';
+import type { ReactNode } from 'react';
+import { Autocomplete, Box, Chip, TextField, Typography, createFilterOptions } from '@mui/material';
 import type { SxProps, Theme } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import { GET_PROJECTS } from '../graphql/shared';
@@ -22,9 +23,19 @@ interface Props {
    * rather than an options list so the picker still owns the one read of `projects`.
    */
   filter?: (project: Project) => boolean;
+  /** The line under the field. Used where the caller has something to say about the pick (#689). */
+  helperText?: ReactNode;
 }
 
 const projectLabel = (p: Project) => p.description || p.projectId;
+
+/**
+ * A project is known by its number as often as by its name, so typing either one matches (#689).
+ * The option list already shows both, and the PO table's own project filter searches the same pair.
+ */
+const projectFilterOptions = createFilterOptions<Project>({
+  stringify: (p) => `${p.projectId} ${p.description ?? ''}`,
+});
 
 /**
  * A searchable single-project selector (#589). Returns the whole Project so callers get the #425 GP
@@ -42,6 +53,7 @@ export default function ProjectPicker({
   sx,
   disabled,
   filter,
+  helperText,
 }: Props) {
   const { data, loading } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const options = useMemo(() => {
@@ -62,6 +74,7 @@ export default function ProjectPicker({
       disabled={disabled}
       isOptionEqualToValue={(opt, val) => opt.id === val.id}
       getOptionLabel={projectLabel}
+      filterOptions={projectFilterOptions}
       renderOption={(props, p) => {
         const { key, ...optionProps } = props;
         return (
@@ -97,7 +110,21 @@ export default function ProjectPicker({
         );
       }}
       renderInput={(params) => (
-        <TextField {...params} label={label} placeholder={placeholder} size={size} />
+        <TextField
+          {...params}
+          label={label}
+          placeholder={placeholder}
+          helperText={helperText}
+          size={size}
+          // The label is held in the outline notch rather than left to shrink on its own (#689). An
+          // unshrunk label sits inside the field, exactly where the placeholder prints, and the only
+          // thing keeping the two apart is MUI hiding the placeholder through vendor-prefixed
+          // selectors (::-webkit-input-placeholder and its siblings) - a fragile guard next to the
+          // plain ::placeholder rule Tailwind's reset ships, and this field was reported with the
+          // label printed over the placeholder. Notched, the label sits above the outline, so the two
+          // cannot overlap however the cascade lands, and the placeholder reads as the hint it is.
+          slotProps={{ inputLabel: { ...params.InputLabelProps, shrink: true } }}
+        />
       )}
     />
   );
