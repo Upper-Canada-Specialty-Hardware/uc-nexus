@@ -23,7 +23,7 @@ from app.errors import (
     RelayUnavailableError,
 )
 from app.repositories import gp_outbox_repository
-from app.services import gp_idempotency
+from app.services import gp_idempotency, gp_processing
 from app.services.relay_gateway import CREATE_PO_IDEMPOTENCY_FEATURE
 from app.services.relay_gateway import gateway as relay_gateway
 
@@ -288,6 +288,26 @@ async def _drain_one(row_id: uuid.UUID) -> None:
 
     await asyncio.to_thread(_finish, row_id, "mark_succeeded")
     logger.info("gp outbox: drained", extra={"label": label, "op": op})
+    if op == "register_po_in_gp":
+        await _run_gp_processing_after_drain(company, context)
+
+
+async def _run_gp_processing_after_drain(company: str, context: dict) -> None:
+    """GP-PROCESSING for a registration the queue just posted, as a best effort.
+
+    A queued PO REGISTRATION deserves the same complete row as an online one, and the person who
+    queued it is long gone, so there is nobody to offer a retry to. That is exactly why a failure here
+    is only logged: the row IS registered, the write succeeded, and the next NEW PO CHECK or OPEN-POS
+    SYNC fills the PO in anyway. Failing or retrying the outbox row over it would re-run a GP write
+    that has already committed."""
+    po_id = context.get("po_id")
+    if not po_id:
+        return
+    try:
+        po_number = await gp_processing.run_gp_processing(company, uuid.UUID(str(po_id)))
+        logger.info("gp outbox: read PO %s back from GP after draining its registration", po_number)
+    except Exception:  # noqa: BLE001 - the registration stands; the sync fills the PO in regardless
+        logger.exception("gp outbox: could not read PO %s back from GP after registering it", po_id)
 
 
 async def _fail_if_exhausted(row_id: uuid.UUID) -> None:

@@ -19,9 +19,15 @@ interface ModalProps extends Omit<DialogProps, 'title' | 'onClose'> {
    * title-bar X calls it with no reason at all, so an explicit close is never refused.
    */
   onClose: (event?: object, reason?: 'backdropClick' | 'escapeKeyDown') => void;
+  /**
+   * Take the title-bar X away, for the stretch of a dialog that genuinely cannot be abandoned - work
+   * already under way that the dialog is the only place to see through. An X that refuses to close
+   * reads as a broken button, so the honest thing is not to offer one.
+   */
+  hideCloseButton?: boolean;
 }
 
-export default function Modal({ title, children, actions, onClose, ...props }: ModalProps) {
+export default function Modal({ title, children, actions, onClose, hideCloseButton, ...props }: ModalProps) {
   return (
     <Dialog
       onClose={onClose}
@@ -32,16 +38,18 @@ export default function Modal({ title, children, actions, onClose, ...props }: M
       sx={{ '& .MuiDialog-container': { overscrollBehavior: 'contain' } }}
       {...props}
     >
-      <DialogTitle sx={{ fontWeight: 700, pr: 6, py: 1.75 }}>
+      <DialogTitle sx={{ fontWeight: 700, pr: hideCloseButton ? 3 : 6, py: 1.75 }}>
         {title}
-        <IconButton
-          onClick={() => onClose()}
-          aria-label="Close"
-          size="small"
-          sx={{ position: 'absolute', right: 12, top: 12, color: 'text.secondary' }}
-        >
-          <X size={18} strokeWidth={1.75} />
-        </IconButton>
+        {!hideCloseButton && (
+          <IconButton
+            onClick={() => onClose()}
+            aria-label="Close"
+            size="small"
+            sx={{ position: 'absolute', right: 12, top: 12, color: 'text.secondary' }}
+          >
+            <X size={18} strokeWidth={1.75} />
+          </IconButton>
+        )}
       </DialogTitle>
       {/* overscrollBehavior: contain stops scroll chaining (#316). Without it, scrolling inside the
           modal and hitting the top or bottom hands the remaining scroll to whatever is behind it, so

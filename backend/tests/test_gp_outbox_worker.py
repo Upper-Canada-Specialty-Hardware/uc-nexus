@@ -336,6 +336,87 @@ def test_a_receipt_queued_before_drafts_existed_still_drains(_migrate_database, 
         _delete(row_id)
 
 
+# --- GP-PROCESSING after a drained registration (#702) --------------------------------------------
+# A queued PO REGISTRATION deserves the same complete PO an online one gets, so the drain reads the PO
+# back from GP too. Nobody is waiting on it, so it is a best effort: a failure is logged and the row
+# still succeeds, because the registration DID post and the next sync fills the PO in regardless.
+
+
+def _stub_gp_processing(monkeypatch, seen=None, raises=None):
+    async def _run(company, po_id):
+        if seen is not None:
+            seen.append((company, po_id))
+        if raises is not None:
+            raise raises
+        return "PO0000900"
+
+    monkeypatch.setattr(gp_outbox_worker.gp_processing, "run_gp_processing", _run)
+
+
+def _register_persist_context(row_id: uuid.UUID, po_id: uuid.UUID) -> None:
+    from app.database import SessionLocal
+    from app.models.gp_outbox import GpWriteOutbox
+
+    with SessionLocal() as session:
+        row = session.get(GpWriteOutbox, row_id)
+        row.persist_context = {"po_id": str(po_id)}
+        session.commit()
+
+
+def test_a_drained_registration_reads_its_po_back_from_gp(_migrate_database, monkeypatch):
+    po_id = uuid.uuid4()
+    row_id, _key = _enqueue_committed(op="register_po_in_gp")
+    try:
+        _register_persist_context(row_id, po_id)
+        _stub_relay_features(monkeypatch, "create_po_idempotency")
+        _stub_relay(monkeypatch, result={"po_number": "PO0000900", "company": "TUBC"})
+        monkeypatch.setitem(gp_outbox_worker._HANDLERS, "register_po_in_gp", lambda *a: None)
+        seen: list = []
+        _stub_gp_processing(monkeypatch, seen=seen)
+
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+
+        assert _read(row_id)["status"] == "SUCCEEDED"
+        assert seen == [("TUBC", po_id)]
+    finally:
+        _delete(row_id)
+
+
+def test_a_failed_read_back_never_fails_the_drained_row(_migrate_database, monkeypatch):
+    row_id, _key = _enqueue_committed(op="register_po_in_gp")
+    try:
+        _register_persist_context(row_id, uuid.uuid4())
+        _stub_relay_features(monkeypatch, "create_po_idempotency")
+        _stub_relay(monkeypatch, result={"po_number": "PO0000900", "company": "TUBC"})
+        monkeypatch.setitem(gp_outbox_worker._HANDLERS, "register_po_in_gp", lambda *a: None)
+        _stub_gp_processing(monkeypatch, raises=RelayTimeoutError("relay did not answer"))
+
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+
+        state = _read(row_id)
+        assert state["status"] == "SUCCEEDED"
+        assert state["attempts"] == 0  # no retry: the GP write already committed
+    finally:
+        _delete(row_id)
+
+
+def test_a_drained_receipt_is_not_read_back(_migrate_database, monkeypatch):
+    # GP RECEIVE ENTRY is not a registration; there is no newly numbered PO to complete.
+    row_id, _key = _enqueue_committed()
+    try:
+        _stub_relay(monkeypatch, result={"receipt": "R1"})
+        _stub_persist(monkeypatch)
+        seen: list = []
+        _stub_gp_processing(monkeypatch, seen=seen)
+
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+
+        assert _read(row_id)["status"] == "SUCCEEDED"
+        assert seen == []
+    finally:
+        _delete(row_id)
+
+
 @pytest.mark.parametrize(
     "env, expected",
     [("true", True), ("1", True), ("", True), ("false", False), ("0", False), ("no", False)],

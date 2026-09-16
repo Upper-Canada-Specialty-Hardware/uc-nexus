@@ -1,9 +1,9 @@
-import { render, screen, waitFor, within, configure } from '@testing-library/react';
+import { act, render, screen, waitFor, within, configure } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import POModule from '../index';
-import { PURCHASE_ORDERS_PAGE, GET_PO_STATISTICS } from '../../../graphql/po';
+import { PURCHASE_ORDERS_PAGE, GET_PO_STATISTICS, GET_PURCHASE_ORDER } from '../../../graphql/po';
 import { GET_PROJECTS, GET_GP_OUTBOX, GET_RELAY_STATUS } from '../../../graphql/shared';
 
 // The register mounts five queries and a full MUI table; jsdom is slow enough at that to trip the
@@ -14,7 +14,24 @@ configure({ asyncUtilTimeout: 15_000 });
 // Neither dialog is under test here, and POGenerateDialog drags in @react-pdf/renderer at module
 // level (PODetailModal imports it, and the register imports PODetailModal).
 vi.mock('../POGenerateDialog', () => ({ default: () => null }));
-vi.mock('../GpPurchaseOrderDialog', () => ({ default: () => null }));
+
+// The register dialog stands in for itself so a test can fire the hand-off it makes when a PO has
+// reached GP and GP's copy has been read back (#702).
+const dialog = vi.hoisted(() => ({
+  props: null as { onRegistered: (id: string) => void } | null,
+}));
+vi.mock('../GpPurchaseOrderDialog', () => ({
+  default: (props: { onRegistered: (id: string) => void }) => {
+    dialog.props = props;
+    return null;
+  },
+}));
+
+// The detail itself is not under test; what is, is that the page opens it, and for which PO.
+vi.mock('../PODetailModal', () => ({
+  default: ({ open, po }: { open: boolean; po: { id: string } }) =>
+    open ? <div>PO detail for {po.id}</div> : null,
+}));
 
 // The register reads differently for the two kinds of caller - an Admin/Manager sees every company's
 // POs at once, a scoped user only their own - so the identity is switchable per test.
@@ -141,7 +158,50 @@ function mocks(): MockedResponse[] {
       },
       maxUsageCount: INFINITE,
     },
+    purchaseOrderMock(),
   ];
+}
+
+/** The full PO the detail read answers with - the same field set GET_PURCHASE_ORDER asks for. */
+function purchaseOrderMock(): MockedResponse {
+  return {
+    request: { query: GET_PURCHASE_ORDER, variables: () => true },
+    maxUsageCount: INFINITE,
+    result: {
+      data: {
+        purchaseOrder: {
+          __typename: 'PurchaseOrder',
+          id: 'po-registered',
+          poNumber: 'PO-2001',
+          requestNumber: null,
+          origin: 'NEXUS',
+          gpSyncedAt: '2026-07-02T12:00:05Z',
+          nexusRegistered: true,
+          projectId: null,
+          status: 'GP_REGISTERED',
+          company: 'UCSH',
+          gpCompany: 'UCSH',
+          gpVendorId: 'V-ACE',
+          vendorNameSnapshot: 'Ace Hardware Co',
+          buyerId: 'JSMITH',
+          vendorQuoteNumber: null,
+          costCode: '310-000-3',
+          shippingCost: 25,
+          tariffAmount: null,
+          notes: null,
+          preferredDeliveryDate: null,
+          expectedDeliveryDate: null,
+          orderedAt: '2026-01-05T00:00:00Z',
+          createdAt: '2026-07-01T12:00:00Z',
+          updatedAt: '2026-07-02T12:00:05Z',
+          documentData: null,
+          lineItems: [],
+          receiveRecords: [],
+          documents: [],
+        },
+      },
+    },
+  };
 }
 
 function renderRegister() {
@@ -221,4 +281,18 @@ it('names the scoped user’s own GP company in the heading, and still gives the
   expect(screen.queryByText('All companies')).toBeNull();
 
   expect(await companyCellOf('PO-REQ-001')).toHaveTextContent('TUBC');
+});
+
+
+// #702: registering used to drop the person back on the PO table in front of a row they then had to
+// find. The register dialog now hands the PO over once GP's copy has been read back, and the page
+// opens that PO.
+it('opens the detail of a purchase order the register dialog has just finished', async () => {
+  renderRegister();
+  await screen.findByText('PO-2001');
+  expect(screen.queryByText(/^PO detail for/)).toBeNull();
+
+  act(() => dialog.props?.onRegistered('po-registered'));
+
+  expect(await screen.findByText('PO detail for po-registered')).toBeInTheDocument();
 });

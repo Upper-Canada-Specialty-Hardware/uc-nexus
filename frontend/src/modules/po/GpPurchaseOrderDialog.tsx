@@ -4,6 +4,7 @@ import {
   Box,
   Button,
   Checkbox,
+  CircularProgress,
   FormControlLabel,
   IconButton,
   MenuItem,
@@ -11,13 +12,14 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { Trash2, Plus, RefreshCw, Tag } from 'lucide-react';
+import { Trash2, Plus, RefreshCw, Tag, Check, TriangleAlert } from 'lucide-react';
 import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import {
   CREATE_DRAFT_PO,
   REGISTER_PO_IN_GP,
+  RUN_GP_PROCESSING,
   GET_GP_COST_CODES,
   GET_GP_VENDORS,
   GET_GP_TAX_DETAILS,
@@ -239,12 +241,64 @@ function bestGuessGpVendor(
   return { vendorId: partial?.vendorId ?? null, vendorName: partial?.vendorName ?? null, confident: false };
 }
 
+/** One line of the register progress panel: what is happening, and where it has got to. */
+function ProcessingStep({
+  state,
+  label,
+  detail,
+}: {
+  state: 'done' | 'running' | 'failed';
+  label: string;
+  detail: string;
+}) {
+  return (
+    <Stack direction="row" spacing={1.25} alignItems="flex-start">
+      {/* A fixed gutter so the two labels line up whatever mark is in front of them. */}
+      <Box sx={{ width: 20, flexShrink: 0, display: 'flex', justifyContent: 'center', pt: '3px' }}>
+        {state === 'running' ? (
+          <CircularProgress size={16} />
+        ) : state === 'done' ? (
+          <Check size={18} strokeWidth={2.25} color="var(--mui-palette-success-main)" />
+        ) : (
+          <TriangleAlert size={18} strokeWidth={2} color="var(--mui-palette-warning-main)" />
+        )}
+      </Box>
+      {/* minWidth 0 so a long GP message wraps instead of widening the dialog. */}
+      <Box sx={{ minWidth: 0 }}>
+        <Typography sx={{ fontWeight: 600, lineHeight: 1.4 }}>{label}</Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-word' }}>
+          {detail}
+        </Typography>
+      </Box>
+    </Stack>
+  );
+}
+
 // --- Props ---
+
+/**
+ * The two-stage panel that replaces the form once GP has taken the purchase order: stage one is the
+ * push GP has already answered, stage two is GP-PROCESSING reading GP's copy back. Null while the
+ * form is up. `error` set means stage two failed - the PO is registered either way.
+ */
+interface GpProcessingState {
+  poId: string;
+  poNumber: string;
+  running: boolean;
+  error: GpError | null;
+}
 
 interface GpPurchaseOrderDialogProps {
   open: boolean;
   onClose: () => void;
   onSubmitted: () => void;
+  /**
+   * The PO reached GP and GP's copy has been read back (or the user chose to open it anyway). The
+   * caller shows that PO - a registration that leaves the person hunting for the PO they just raised
+   * is what #702 is about. Distinct from onSubmitted, which still answers a saved draft and a
+   * registration that went onto PENDING GP WRITES, neither of which has a GP PO to open.
+   */
+  onRegistered: (poId: string) => void;
   defaultProjectId?: string;
   // Relay status owned by the PO page (single source of truth). null while its first check is in
   // flight. When omitted, the dialog queries relayStatus itself so it stays usable standalone.
@@ -259,6 +313,7 @@ export default function GpPurchaseOrderDialog({
   open,
   onClose,
   onSubmitted,
+  onRegistered,
   defaultProjectId,
   relayConnected: relayConnectedProp,
   registerPo,
@@ -326,6 +381,10 @@ export default function GpPurchaseOrderDialog({
     // durable outbox; the PO comes back still DRAFT.
     registerPoInGp: { queued: boolean; outboxEntryId: string | null; purchaseOrder: { poNumber: string | null } };
   }>(REGISTER_PO_IN_GP);
+  // GP-PROCESSING (#702): the read-back that fills in everything GP owns - its document date, the
+  // freight, the per-line cost codes as GP stored them - before the person is shown the PO.
+  const [runGpProcessing] = useMutation<{ runGpProcessing: { id: string } }>(RUN_GP_PROCESSING);
+  const [processing, setProcessing] = useState<GpProcessingState | null>(null);
 
   // One idempotency key per user action (create or register), reused across retries so a retry is a
   // no-op in GP instead of a second PO. Reset on a fresh open and after a successful submit; kept on
@@ -557,6 +616,8 @@ export default function GpPurchaseOrderDialog({
     // to blank for a draft that carries none, and the stale-code check below still applies.
     setCostCode(registerPo?.costCode ?? '');
     setErrors({});
+    // A fresh open starts on the form, never on the last registration's progress panel.
+    setProcessing(null);
     if (registerPo) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time form seed on open, guarded by seededRef
       setProjectId(registerPo.projectId ?? '');
@@ -832,6 +893,32 @@ export default function GpPurchaseOrderDialog({
     return Object.keys(errs).length === 0;
   }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, effectiveContact, comment, isJob, costCode, costCodes, shippingCost, tariffAmount, isForeignCurrency, taxDetailId, gpTaxDetails.length, taxDetailsOpUnsupported, taxDetailsFailed, miscellaneous, tradeDiscount]);
 
+  /**
+   * Stage two: read the PO back out of GP and hand the finished PO to the caller. Also what "Try
+   * again" re-runs. A failure is not a failed registration - the PO is in GP and stays in GP - so the
+   * panel says so and offers to open it anyway.
+   */
+  const runProcessing = useCallback(
+    async (poId: string, poNumber: string) => {
+      setProcessing({ poId, poNumber, running: true, error: null });
+      try {
+        await runGpProcessing({ variables: { poId } });
+        // Done, so a later reopen starts a fresh action.
+        idempotencyKeyRef.current = null;
+        showToast(`PO ${poNumber} registered in GP`, 'success');
+        onRegistered(poId);
+      } catch (err: unknown) {
+        setProcessing({
+          poId,
+          poNumber,
+          running: false,
+          error: extractGpError(err) ?? { message: 'GP did not answer with its copy of the purchase order.' },
+        });
+      }
+    },
+    [runGpProcessing, showToast, onRegistered],
+  );
+
   const handleSubmit = useCallback(async () => {
     if (!validate()) return;
 
@@ -875,6 +962,9 @@ export default function GpPurchaseOrderDialog({
     setGpBusy(true);
     // Set when the registration went onto the GP outbox instead of reaching GP (#353 PR E).
     let queued = false;
+    // Set when GP took the PO and GP-PROCESSING is what finishes this action: the dialog stays up on
+    // its progress panel, and stage two - not the code below - clears the key and answers the caller.
+    let readBack: { poId: string; poNumber: string } | null = null;
     try {
       // GP-first, server-side (issue #199): the resolver pushes to GP via the relay before persisting
       // anything, so a GP rejection changes nothing in UC Nexus.
@@ -923,7 +1013,9 @@ export default function GpPurchaseOrderDialog({
             'info',
           );
         } else {
-          showToast(`PO ${result?.purchaseOrder?.poNumber} registered in GP`, 'success');
+          // GP has the PO and has given it a number. The person stays here, watching GP-PROCESSING,
+          // rather than being dropped back on the PO table in front of a half-filled row.
+          readBack = { poId: registerPo.id, poNumber: result?.purchaseOrder?.poNumber ?? '' };
         }
       } else {
         // Issue #256: manual creation lands as a plain DRAFT - no relay, no GP fields. Registering
@@ -947,11 +1039,14 @@ export default function GpPurchaseOrderDialog({
 
       // Succeeded: clear the key so a later reopen starts a new action. NOT when the write was
       // queued (#353 PR E) - the outbox row owns that key, and reusing it is exactly what makes a
-      // resubmit-while-queued return the same entry instead of registering the PO twice.
-      if (!queued) {
+      // resubmit-while-queued return the same entry instead of registering the PO twice. Not when
+      // GP-PROCESSING has taken over either: stage two clears it when it lands.
+      if (!queued && !readBack) {
         idempotencyKeyRef.current = null;
       }
-      onSubmitted();
+      if (!readBack) {
+        onSubmitted();
+      }
     } catch (err: unknown) {
       // Keep idempotencyKeyRef so a retry reuses the same key - the GP write may have committed even if
       // the mutation reported failure, and reusing the key makes the retry safe.
@@ -972,6 +1067,9 @@ export default function GpPurchaseOrderDialog({
       );
     } finally {
       setGpBusy(false);
+    }
+    if (readBack) {
+      await runProcessing(readBack.poId, readBack.poNumber);
     }
   }, [
     validate,
@@ -1001,6 +1099,7 @@ export default function GpPurchaseOrderDialog({
     isRegister,
     createDraftPo,
     registerPoInGp,
+    runProcessing,
     showToast,
     onSubmitted,
   ]);
@@ -1102,6 +1201,69 @@ export default function GpPurchaseOrderDialog({
       </Button>
     </Stack>
   );
+
+  // While the panel is up there is nothing to cancel and nothing to resubmit: the PO is in GP. The
+  // only buttons are the ones a failed read-back earns.
+  const processingActions = processing?.error ? (
+    <Stack direction="row" spacing={1}>
+      <Button onClick={() => void runProcessing(processing.poId, processing.poNumber)}>Try again</Button>
+      <Button
+        variant="contained"
+        onClick={() => {
+          idempotencyKeyRef.current = null;
+          onRegistered(processing.poId);
+        }}
+      >
+        Open the PO anyway
+      </Button>
+    </Stack>
+  ) : undefined;
+
+  if (processing) {
+    return (
+      <Modal
+        open={open}
+        title={title}
+        // Nothing here can be abandoned: GP holds the purchase order, and this is the only place the
+        // rest of it is being watched. The backdrop, Escape and the title-bar X are all taken away.
+        onClose={() => {}}
+        disableEscapeKeyDown
+        hideCloseButton
+        actions={processingActions}
+        // Two short lines of progress do not need the form's width.
+        maxWidth="sm"
+      >
+        <Stack spacing={2} sx={{ py: 0.5 }}>
+          <Stack spacing={1.5}>
+            <ProcessingStep
+              state="done"
+              label="Sending to GP"
+              detail={processing.poNumber ? `GP assigned ${processing.poNumber}` : 'GP has the purchase order'}
+            />
+            <ProcessingStep
+              state={processing.error ? 'failed' : 'running'}
+              label="GP-Processing"
+              detail={
+                processing.error
+                  ? "GP's copy of the purchase order could not be read back yet."
+                  : 'Reading the purchase order back from GP so it opens complete.'
+              }
+            />
+          </Stack>
+          {processing.error && (
+            <>
+              <Alert severity="warning">
+                {processing.poNumber ? `PO ${processing.poNumber} is` : 'The purchase order is'} registered in
+                GP and stays registered - nothing needs redoing. Only reading GP's copy back failed, so a
+                few values are still blank. The GP sync fills them in within a few minutes.
+              </Alert>
+              <GpErrorAlert error={processing.error} title="GP's copy could not be read back" />
+            </>
+          )}
+        </Stack>
+      </Modal>
+    );
+  }
 
   return (
     <Modal open={open} title={title} onClose={onClose} actions={actions} maxWidth="md">

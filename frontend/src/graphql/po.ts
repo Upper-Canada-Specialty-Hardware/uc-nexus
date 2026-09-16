@@ -23,110 +23,121 @@ export const GET_PO_DOCUMENT_DOWNLOAD_URL = gql`
   }
 `;
 
-// One PO with the full detail the PO modal renders (gp-owned-po mirror). The register list is slim
-// (purchaseOrdersPage), so opening a row fetches its lines/documents/receives here on demand.
+// Everything the PO detail view reads off one purchase order (gp-owned-po mirror). A fragment rather
+// than a selection set written out twice: GP-PROCESSING (#702) answers with the same PO, so the two
+// have to ask for the same fields or the read-back would write the ones it omitted into the cache as
+// absent.
+export const PURCHASE_ORDER_DETAIL_FIELDS = gql`
+  fragment PurchaseOrderDetailFields on PurchaseOrder {
+    id
+    poNumber
+    requestNumber
+    origin
+    gpSyncedAt
+    # True when every one of this PO's lines is a NEXUS REGISTERED LINE - what the detail modal's
+    # "Nexus registered" chip reads.
+    nexusRegistered
+    projectId
+    status
+    # #637: the tenant that owns the PO. A draft has one from the moment it is raised; gpCompany
+    # is only stamped at GP registration.
+    company
+    gpCompany
+    gpVendorId
+    vendorNameSnapshot
+    buyerId
+    vendorQuoteNumber
+    costCode
+    shippingCost
+    tariffAmount
+    notes
+    preferredDeliveryDate
+    expectedDeliveryDate
+    orderedAt
+    createdAt
+    updatedAt
+    documentData {
+      id
+      poId
+      vendorAddress
+      buyerName
+      currency
+      shipTo
+      shippingMethod
+      quotationNumber
+      freight
+      miscellaneous
+      taxAmount
+      taxLabel
+      tariffAmount
+      requiredByOverride
+      includeFsc
+      includeUsaTariff
+      includeCustoms
+    }
+    lineItems {
+      id
+      poId
+      hardwareCategory
+      productCode
+      classification
+      orderedQuantity
+      receivedQuantity
+      unitCost
+      orderAs
+      # GP's own three per-line fields: the job cost code the line books to, its unit of measure,
+      # and whether GP books it to the job at all.
+      costCode
+      uofm
+      jobCost
+      gpLineOrd
+      # True when this line's category and code are the schedule's own, so the GP sync leaves them
+      # alone; false while it still carries GP's item number and description.
+      nexusRegistered
+      # Set when the line was added from the non-schedule item catalog; Order As does not apply to it.
+      customInventoryItemId
+      manufacturer
+      createdAt
+      updatedAt
+    }
+    receiveRecords {
+      id
+      poId
+      receivedAt
+      receivedBy
+      createdAt
+      lineItems {
+        id
+        receiveRecordId
+        poLineItemId
+        hardwareCategory
+        productCode
+        quantityReceived
+        createdAt
+      }
+    }
+    documents {
+      id
+      poId
+      fileName
+      contentType
+      fileSize
+      documentType
+      uploadedAt
+      downloadUrl
+    }
+  }
+`;
+
+// One PO with the full detail the PO modal renders. The register list is slim (purchaseOrdersPage),
+// so opening a row fetches its lines/documents/receives here on demand.
 export const GET_PURCHASE_ORDER = gql`
   query GetPurchaseOrder($id: ID!) {
     purchaseOrder(id: $id) {
-      id
-      poNumber
-      requestNumber
-      origin
-      gpSyncedAt
-      # True when every one of this PO's lines is a NEXUS REGISTERED LINE - what the detail modal's
-      # "Nexus registered" chip reads.
-      nexusRegistered
-      projectId
-      status
-      # #637: the tenant that owns the PO. A draft has one from the moment it is raised; gpCompany
-      # is only stamped at GP registration.
-      company
-      gpCompany
-      gpVendorId
-      vendorNameSnapshot
-      buyerId
-      vendorQuoteNumber
-      costCode
-      shippingCost
-      tariffAmount
-      notes
-      preferredDeliveryDate
-      expectedDeliveryDate
-      orderedAt
-      createdAt
-      updatedAt
-      documentData {
-        id
-        poId
-        vendorAddress
-        buyerName
-        currency
-        shipTo
-        shippingMethod
-        quotationNumber
-        freight
-        miscellaneous
-        taxAmount
-        taxLabel
-        tariffAmount
-        requiredByOverride
-        includeFsc
-        includeUsaTariff
-        includeCustoms
-      }
-      lineItems {
-        id
-        poId
-        hardwareCategory
-        productCode
-        classification
-        orderedQuantity
-        receivedQuantity
-        unitCost
-        orderAs
-        # GP's own three per-line fields: the job cost code the line books to, its unit of measure,
-        # and whether GP books it to the job at all.
-        costCode
-        uofm
-        jobCost
-        gpLineOrd
-        # True when this line's category and code are the schedule's own, so the GP sync leaves them
-        # alone; false while it still carries GP's item number and description.
-        nexusRegistered
-        # Set when the line was added from the non-schedule item catalog; Order As does not apply to it.
-        customInventoryItemId
-        manufacturer
-        createdAt
-        updatedAt
-      }
-      receiveRecords {
-        id
-        poId
-        receivedAt
-        receivedBy
-        createdAt
-        lineItems {
-          id
-          receiveRecordId
-          poLineItemId
-          hardwareCategory
-          productCode
-          quantityReceived
-          createdAt
-        }
-      }
-      documents {
-        id
-        poId
-        fileName
-        contentType
-        fileSize
-        documentType
-        uploadedAt
-        downloadUrl
-      }
+      ...PurchaseOrderDetailFields
     }
   }
+  ${PURCHASE_ORDER_DETAIL_FIELDS}
 `;
 
 // The company-scale register (gp-owned-po mirror): server-driven paging/search/sort. Rows are slim -
@@ -493,6 +504,20 @@ export const REGISTER_PO_IN_GP = gql`
       }
     }
   }
+`;
+
+// GP-PROCESSING (#702): read the PO Nexus just registered straight back out of GP and apply GP's own
+// copy to it - GP's document date, its freight, the per-line cost codes as GP stored them, the
+// received quantities. Without it the PO stays half filled until the next sync, minutes later, which
+// is what the person who just registered it opens. Answers with the whole PO so the detail the dialog
+// hands the user next is already in the cache.
+export const RUN_GP_PROCESSING = gql`
+  mutation RunGpProcessing($poId: ID!) {
+    runGpProcessing(poId: $poId) {
+      ...PurchaseOrderDetailFields
+    }
+  }
+  ${PURCHASE_ORDER_DETAIL_FIELDS}
 `;
 
 export const CREATE_DRAFT_PO = gql`
