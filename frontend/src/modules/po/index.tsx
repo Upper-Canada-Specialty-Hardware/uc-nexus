@@ -889,6 +889,13 @@ function POListPage() {
           setCreateOpen(false);
           handleRefetch();
         }}
+        // #702: a PO that reached GP and was read back opens on its own detail, rather than leaving
+        // the person to find the row they just raised in the PO table.
+        onRegistered={(id) => {
+          setCreateOpen(false);
+          handleRefetch();
+          handleOpenPO(id);
+        }}
         relayConnected={relayConnected}
       />
     </Box>

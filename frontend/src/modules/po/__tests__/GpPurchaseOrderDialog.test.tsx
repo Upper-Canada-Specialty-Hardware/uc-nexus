@@ -7,6 +7,7 @@ import type { PurchaseOrder } from '../index';
 import {
   CREATE_DRAFT_PO,
   REGISTER_PO_IN_GP,
+  RUN_GP_PROCESSING,
   GET_GP_COST_CODES,
   GET_GP_VENDORS,
   GET_GP_TAX_DETAILS,
@@ -253,6 +254,7 @@ function baseMocks(connected = true): MockedResponse[] {
     vendorAddressesMock('V-ACE', ['PRIMARY', 'REMIT']),
     vendorAddressesMock('V-ALL', ['PRIMARY', 'REMIT']),
     vendorAddressesMock('V-USD', ['PRIMARY']),
+    gpProcessingMock(),
   ];
 }
 
@@ -270,6 +272,77 @@ function costCodesMock(): MockedResponse {
       },
     },
     maxUsageCount: INFINITE,
+  };
+}
+
+// #702: what GP-PROCESSING answers with - the whole PO, GP's own values on it. The mutation asks for
+// the same fields the detail query does, so the mock has to carry all of them.
+function processedPo(overrides: Record<string, unknown> = {}) {
+  return {
+    __typename: 'PurchaseOrder',
+    id: 'po-1',
+    poNumber: 'PO-2001',
+    requestNumber: 'REQ-001',
+    origin: 'NEXUS',
+    gpSyncedAt: '2026-07-02T12:00:05Z',
+    nexusRegistered: true,
+    projectId: null,
+    status: 'GP_REGISTERED',
+    company: 'TUBC',
+    gpCompany: 'UCS',
+    gpVendorId: 'V-ACE',
+    vendorNameSnapshot: 'Ace Hardware Co',
+    buyerId: 'JSMITH',
+    vendorQuoteNumber: null,
+    costCode: '310-000-3',
+    shippingCost: 25,
+    tariffAmount: null,
+    notes: null,
+    preferredDeliveryDate: null,
+    expectedDeliveryDate: null,
+    // GP's own document date, which is the whole point of the read-back.
+    orderedAt: '2026-01-05T00:00:00Z',
+    createdAt: '2026-07-01T12:00:00Z',
+    updatedAt: '2026-07-02T12:00:05Z',
+    documentData: null,
+    lineItems: [
+      {
+        __typename: 'POLineItem',
+        id: 'li-1',
+        poId: 'po-1',
+        hardwareCategory: 'Hinges',
+        productCode: 'HG-100',
+        classification: null,
+        orderedQuantity: 10,
+        receivedQuantity: 0,
+        unitCost: 2.5,
+        orderAs: 'ML2010',
+        costCode: '310-000-3',
+        uofm: 'Each',
+        jobCost: false,
+        gpLineOrd: 16384,
+        nexusRegistered: true,
+        customInventoryItemId: null,
+        manufacturer: null,
+        createdAt: '2026-07-01T12:00:00Z',
+        updatedAt: '2026-07-02T12:00:05Z',
+      },
+    ],
+    receiveRecords: [],
+    documents: [],
+    ...overrides,
+  };
+}
+
+/** The read-back succeeding. `calls` collects the variables it was asked with. */
+function gpProcessingMock(calls?: Record<string, unknown>[]): MockedResponse {
+  return {
+    request: { query: RUN_GP_PROCESSING, variables: () => true },
+    maxUsageCount: INFINITE,
+    result: (vars) => {
+      calls?.push(vars as Record<string, unknown>);
+      return { data: { runGpProcessing: processedPo() } };
+    },
   };
 }
 
@@ -322,6 +395,7 @@ function renderDialog(
 ) {
   const onClose = vi.fn();
   const onSubmitted = vi.fn();
+  const onRegistered = vi.fn();
   render(
     <MockedProvider mocks={mocks}>
       <ToastProvider>
@@ -329,13 +403,14 @@ function renderDialog(
           open
           onClose={onClose}
           onSubmitted={onSubmitted}
+          onRegistered={onRegistered}
           relayConnected
           {...props}
         />
       </ToastProvider>
     </MockedProvider>,
   );
-  return { onClose, onSubmitted };
+  return { onClose, onSubmitted, onRegistered };
 }
 
 // MUI TextField select: the label is wired to the combobox div via aria-labelledby.
@@ -411,7 +486,7 @@ describe('GpPurchaseOrderDialog', () => {
         return { data: registerData() };
       },
     };
-    const { onSubmitted } = renderDialog(
+    const { onSubmitted, onRegistered } = renderDialog(
       { registerPo: { ...stockDraft, vendorNameSnapshot: 'Ace' } },
       [...baseMocks(), registerMock],
     );
@@ -430,7 +505,7 @@ describe('GpPurchaseOrderDialog', () => {
     await selectTaxDetail();
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
-    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    await waitFor(() => expect(onRegistered).toHaveBeenCalled());
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ input: { gpVendorId: 'V-ACE', taxDetailId: 'ON HST - P' } });
   });
@@ -444,7 +519,7 @@ describe('GpPurchaseOrderDialog', () => {
         return { data: registerData() };
       },
     };
-    const { onSubmitted } = renderDialog({ registerPo: projectDraft }, [
+    const { onRegistered } = renderDialog({ registerPo: projectDraft }, [
       ...baseMocks(),
       costCodesMock(),
       registerMock,
@@ -469,7 +544,7 @@ describe('GpPurchaseOrderDialog', () => {
     await selectTaxDetail();
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
-    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    await waitFor(() => expect(onRegistered).toHaveBeenCalled());
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual({
       input: {
@@ -525,7 +600,7 @@ describe('GpPurchaseOrderDialog', () => {
         return { data: registerData() };
       },
     };
-    const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), registerMock]);
+    const { onSubmitted, onRegistered } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), registerMock]);
     await waitForVendorPreselect();
 
     // No tax detail picked yet -> blocked with a clear message; nothing reaches GP.
@@ -537,7 +612,7 @@ describe('GpPurchaseOrderDialog', () => {
     // Pick it and the PO registers, carrying the chosen detail.
     await selectTaxDetail();
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
-    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    await waitFor(() => expect(onRegistered).toHaveBeenCalled());
     expect(calls[0]).toMatchObject({ input: { taxDetailId: 'ON HST - P' } });
   });
 
@@ -555,11 +630,11 @@ describe('GpPurchaseOrderDialog', () => {
     const mocksNoTax = baseMocks().map((m) =>
       m.request.query === GET_GP_TAX_DETAILS ? { ...m, result: { data: { gpTaxDetails: [] } } } : m,
     );
-    const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [...mocksNoTax, registerMock]);
+    const { onRegistered } = renderDialog({ registerPo: stockDraft }, [...mocksNoTax, registerMock]);
     await waitForVendorPreselect();
 
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
-    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    await waitFor(() => expect(onRegistered).toHaveBeenCalled());
     expect(calls[0]).toMatchObject({ input: { taxDetailId: null } });
   });
 
@@ -586,7 +661,7 @@ describe('GpPurchaseOrderDialog', () => {
           }
         : m,
     );
-    const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [...opUnsupportedMocks, registerMock]);
+    const { onSubmitted, onRegistered } = renderDialog({ registerPo: stockDraft }, [...opUnsupportedMocks, registerMock]);
     await waitForVendorPreselect();
 
     // The out-of-date banner shows and the manual id field replaces the dropdown.
@@ -602,7 +677,7 @@ describe('GpPurchaseOrderDialog', () => {
     // Type the id (interior spaces preserved) and the PO registers carrying it.
     fireEvent.change(manualField, { target: { value: '  ON HST - P  ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
-    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    await waitFor(() => expect(onRegistered).toHaveBeenCalled());
     expect(calls[0]).toMatchObject({ input: { taxDetailId: 'ON HST - P' } });
   });
 
@@ -628,7 +703,7 @@ describe('GpPurchaseOrderDialog', () => {
           }
         : m,
     );
-    const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [...failedTaxMocks, registerMock]);
+    const { onSubmitted, onRegistered } = renderDialog({ registerPo: stockDraft }, [...failedTaxMocks, registerMock]);
     await waitForVendorPreselect();
 
     // Generic (non-out-of-date) banner + a required manual field.
@@ -650,7 +725,7 @@ describe('GpPurchaseOrderDialog', () => {
     // A real id registers.
     fireEvent.change(manualField, { target: { value: 'PST 7%' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
-    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    await waitFor(() => expect(onRegistered).toHaveBeenCalled());
     expect(calls[0]).toMatchObject({ input: { taxDetailId: 'PST 7%' } });
   });
 
@@ -665,13 +740,13 @@ describe('GpPurchaseOrderDialog', () => {
     };
     // A draft whose vendor name exact-matches the USD vendor auto-preselects it (confident).
     const usdDraft = { ...stockDraft, vendorNameSnapshot: 'US Supplier Co' };
-    const { onSubmitted } = renderDialog({ registerPo: usdDraft }, [...baseMocks(), registerMock]);
+    const { onRegistered } = renderDialog({ registerPo: usdDraft }, [...baseMocks(), registerMock]);
     await waitFor(() => expect(screen.getByLabelText('GP Vendor')).toHaveTextContent('US Supplier Co'));
 
     // Foreign currency: the tax detail is not applicable and not required to register.
     expect(screen.getByLabelText('Currency')).toHaveValue('USD');
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
-    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    await waitFor(() => expect(onRegistered).toHaveBeenCalled());
     // No tax detail sent; the relay resolves the GP exchange rate + blanks TAXSCHID server-side.
     expect(calls[0]).toMatchObject({ input: { gpVendorId: 'V-USD', taxDetailId: null } });
   });
@@ -796,7 +871,7 @@ describe('GpPurchaseOrderDialog', () => {
         return { data: registerData() };
       },
     };
-    const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [
+    const { onSubmitted, onRegistered } = renderDialog({ registerPo: stockDraft }, [
       ...baseMocks(),
       failMock,
       okMock,
@@ -815,7 +890,7 @@ describe('GpPurchaseOrderDialog', () => {
     expect(onSubmitted).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
-    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    await waitFor(() => expect(onRegistered).toHaveBeenCalled());
 
     expect(calls).toHaveLength(2);
     const firstKey = (calls[0].input as Record<string, unknown>).idempotencyKey;
@@ -971,7 +1046,7 @@ it('registers with a null Order As when the field is cleared', async () => {
       return { data: registerData() };
     },
   };
-  const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [
+  const { onRegistered } = renderDialog({ registerPo: stockDraft }, [
     ...baseMocks(),
     registerMock,
   ]);
@@ -982,7 +1057,7 @@ it('registers with a null Order As when the field is cleared', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
   // No "Required" error on the cleared row, and nothing is substituted for the empty value.
-  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  await waitFor(() => expect(onRegistered).toHaveBeenCalled());
   const input = calls[0].input as { lineItems: { orderAs: string | null }[] };
   expect(input.lineItems[0].orderAs).toBeNull();
 });
@@ -996,7 +1071,7 @@ it('gives a custom item row no Order As and registers it with none', async () =>
       return { data: registerData() };
     },
   };
-  const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), registerMock]);
+  const { onRegistered } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), registerMock]);
   await waitForVendorPreselect();
 
   fireEvent.click(screen.getByRole('button', { name: 'Add Custom Item' }));
@@ -1011,7 +1086,7 @@ it('gives a custom item row no Order As and registers it with none', async () =>
   await selectTaxDetail();
   fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
-  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  await waitFor(() => expect(onRegistered).toHaveBeenCalled());
   const input = calls[0].input as {
     lineItems: { productCode: string; orderAs: string | null; customInventoryItemId: string | null }[];
   };
@@ -1040,7 +1115,7 @@ function registerCallCollector(calls: Record<string, unknown>[]): MockedResponse
 
 it('registers a hand-typed line with its own cost code, unit of measure and job cost flag', async () => {
   const calls: Record<string, unknown>[] = [];
-  const { onSubmitted } = renderDialog({ registerPo: projectDraft }, [
+  const { onRegistered } = renderDialog({ registerPo: projectDraft }, [
     ...baseMocks(),
     costCodesMock(),
     registerCallCollector(calls),
@@ -1063,7 +1138,7 @@ it('registers a hand-typed line with its own cost code, unit of measure and job 
   await selectTaxDetail();
   fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
-  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  await waitFor(() => expect(onRegistered).toHaveBeenCalled());
   const input = calls[0].input as { lineItems: Record<string, unknown>[] };
   expect(input.lineItems[0]).toMatchObject({ costCode: '310-000-3', uofm: 'Each', jobCost: true });
   expect(input.lineItems[1]).toMatchObject({
@@ -1077,7 +1152,7 @@ it('registers a hand-typed line with its own cost code, unit of measure and job 
 
 it('blocks a job cost line that names no cost code, and says so on that row', async () => {
   const calls: Record<string, unknown>[] = [];
-  const { onSubmitted } = renderDialog({ registerPo: projectDraft }, [
+  const { onSubmitted, onRegistered } = renderDialog({ registerPo: projectDraft }, [
     ...baseMocks(),
     costCodesMock(),
     registerCallCollector(calls),
@@ -1105,7 +1180,7 @@ it('blocks a job cost line that names no cost code, and says so on that row', as
   fireEvent.click(screen.getByLabelText('Job cost line 2'));
   fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
-  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  await waitFor(() => expect(onRegistered).toHaveBeenCalled());
   const input = calls[0].input as { lineItems: Record<string, unknown>[] };
   expect(input.lineItems[1]).toMatchObject({ costCode: null, jobCost: false });
 });
@@ -1134,7 +1209,7 @@ it('fills every job cost line from the one pick above the grid', async () => {
 
 it('sends the GP header fields, seeded from GP defaults and changeable', async () => {
   const calls: Record<string, unknown>[] = [];
-  const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [
+  const { onRegistered } = renderDialog({ registerPo: stockDraft }, [
     ...baseMocks(),
     registerCallCollector(calls),
   ]);
@@ -1160,7 +1235,7 @@ it('sends the GP header fields, seeded from GP defaults and changeable', async (
   await selectTaxDetail();
   fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
-  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  await waitFor(() => expect(onRegistered).toHaveBeenCalled());
   expect(calls[0]).toMatchObject({
     input: {
       shippingMethod: 'PICKUP',
@@ -1200,7 +1275,7 @@ it('falls back to read-only GP defaults when the relay cannot serve the pick lis
         }
       : m,
   );
-  const { onSubmitted } = renderDialog({ registerPo: stockDraft }, [
+  const { onRegistered } = renderDialog({ registerPo: stockDraft }, [
     ...opUnsupportedMocks,
     registerCallCollector(calls),
   ]);
@@ -1215,7 +1290,7 @@ it('falls back to read-only GP defaults when the relay cannot serve the pick lis
   await selectTaxDetail();
   fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
-  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  await waitFor(() => expect(onRegistered).toHaveBeenCalled());
   expect(calls[0]).toMatchObject({
     input: { shippingMethod: 'LOCAL DELIVERY', vendorAddressCode: 'PRIMARY', site: 'VANCOUVER' },
   });
@@ -1223,7 +1298,7 @@ it('falls back to read-only GP defaults when the relay cannot serve the pick lis
 
 it('registers a project PO on its per-line cost codes, with nothing picked above the grid', async () => {
   const calls: Record<string, unknown>[] = [];
-  const { onSubmitted } = renderDialog({ registerPo: projectDraft }, [
+  const { onRegistered } = renderDialog({ registerPo: projectDraft }, [
     ...baseMocks(),
     costCodesMock(),
     registerCallCollector(calls),
@@ -1236,9 +1311,136 @@ it('registers a project PO on its per-line cost codes, with nothing picked above
   await selectTaxDetail();
   fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
-  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  await waitFor(() => expect(onRegistered).toHaveBeenCalled());
   const input = calls[0].input as { costCode: string; lineItems: Record<string, unknown>[] };
   // The PO header carries the first job cost line's code, since nobody picked one above the grid.
   expect(input.costCode).toBe('520-000-2');
   expect(input.lineItems[0]).toMatchObject({ costCode: '520-000-2', jobCost: true });
+});
+
+
+// --- GP-PROCESSING, the second half of registering (#702) ----------------------------------------
+// Registering used to end the moment GP answered: the dialog closed, the person landed back on the PO
+// table, and the PO they opened was missing GP's document date, its freight and its per-line cost
+// codes until the next sync. Now the dialog stays up on a two-stage panel, reads GP's copy back, and
+// hands the finished PO to the caller.
+
+async function registerStockDraft() {
+  await waitForVendorPreselect();
+  await selectTaxDetail();
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+}
+
+function gpProcessingFailureMock(): MockedResponse {
+  return {
+    request: { query: RUN_GP_PROCESSING, variables: () => true },
+    maxUsageCount: INFINITE,
+    result: {
+      errors: [
+        new GraphQLError('relay did not answer in time', { extensions: { code: 'RELAY_TIMEOUT' } }),
+      ],
+    },
+  };
+}
+
+/** The base mocks with the read-back swapped for `mock` - it is in baseMocks, so it has to be replaced. */
+function withGpProcessing(mock: MockedResponse): MockedResponse[] {
+  return baseMocks().map((m) => (m.request.query === RUN_GP_PROCESSING ? mock : m));
+}
+
+it('shows the two-stage panel and reads the PO back from GP before handing it over', async () => {
+  const processingCalls: Record<string, unknown>[] = [];
+  const { onRegistered, onSubmitted } = renderDialog({ registerPo: stockDraft }, [
+    ...withGpProcessing(gpProcessingMock(processingCalls)),
+    registerCallCollector([]),
+  ]);
+  await registerStockDraft();
+
+  // The form is gone; the panel names both stages, with GP's number on the one already done.
+  expect(await screen.findByText('Sending to GP')).toBeInTheDocument();
+  expect(screen.getByText('GP assigned PO-2001')).toBeInTheDocument();
+  expect(screen.getByText('GP-Processing')).toBeInTheDocument();
+
+  await waitFor(() => expect(onRegistered).toHaveBeenCalledWith('po-1'));
+  // The read-back is for the PO that was just registered, and this path never answers onSubmitted -
+  // there is a GP PO to open.
+  expect(processingCalls).toEqual([{ poId: 'po-1' }]);
+  expect(onSubmitted).not.toHaveBeenCalled();
+  expect(await screen.findByText('PO PO-2001 registered in GP')).toBeInTheDocument();
+});
+
+it('cannot be dismissed while the read-back is running', async () => {
+  // GP holds the PO and this is the only place the rest of it is being watched, so the backdrop, the
+  // title-bar X and the action buttons are all taken away.
+  const { onClose } = renderDialog({ registerPo: stockDraft }, [
+    ...withGpProcessing(gpProcessingFailureMock()),
+    registerCallCollector([]),
+  ]);
+  await registerStockDraft();
+
+  expect(await screen.findByText('GP-Processing')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+
+  const backdrop = document.querySelector('.MuiBackdrop-root');
+  expect(backdrop).not.toBeNull();
+  fireEvent.click(backdrop as Element);
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+it('says the PO is registered when the read-back fails, and offers both ways on', async () => {
+  const { onRegistered } = renderDialog({ registerPo: stockDraft }, [
+    ...withGpProcessing(gpProcessingFailureMock()),
+    registerCallCollector([]),
+  ]);
+  await registerStockDraft();
+
+  // The registration is not in doubt; only GP's copy of it is.
+  expect(await screen.findByText(/registered in GP and stays registered/)).toBeInTheDocument();
+  expect(screen.getByText(/The GP sync fills them in within a few minutes\./)).toBeInTheDocument();
+  // The relay's own failure detail, for the screenshot (issue #187).
+  expect(screen.getByText("GP's copy could not be read back")).toBeInTheDocument();
+  expect(screen.getByText('RELAY_TIMEOUT')).toBeInTheDocument();
+
+  expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Open the PO anyway' }));
+  expect(onRegistered).toHaveBeenCalledWith('po-1');
+});
+
+it('re-runs the read-back from Try again', async () => {
+  const processingCalls: Record<string, unknown>[] = [];
+  // Fails first, then succeeds: the same button has to be able to finish the job.
+  const { onRegistered } = renderDialog({ registerPo: stockDraft }, [
+    ...baseMocks().filter((m) => m.request.query !== RUN_GP_PROCESSING),
+    { ...gpProcessingFailureMock(), maxUsageCount: 1 },
+    gpProcessingMock(processingCalls),
+    registerCallCollector([]),
+  ]);
+  await registerStockDraft();
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+
+  await waitFor(() => expect(onRegistered).toHaveBeenCalledWith('po-1'));
+  expect(processingCalls).toEqual([{ poId: 'po-1' }]);
+});
+
+it('never reads back a registration that only went onto the queue', async () => {
+  // A queued PO REGISTRATION has no GP number yet, so there is nothing to read back and nothing to
+  // open. That path is unchanged: the queued toast, and onSubmitted.
+  const processingCalls: Record<string, unknown>[] = [];
+  const queuedMock: MockedResponse = {
+    request: { query: REGISTER_PO_IN_GP, variables: () => true },
+    maxUsageCount: INFINITE,
+    result: { data: queuedRegisterData() },
+  };
+  const { onSubmitted, onRegistered } = renderDialog({ registerPo: stockDraft }, [
+    ...withGpProcessing(gpProcessingMock(processingCalls)),
+    queuedMock,
+  ]);
+  await registerStockDraft();
+
+  await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+  expect(onRegistered).not.toHaveBeenCalled();
+  expect(processingCalls).toEqual([]);
+  expect(screen.queryByText('GP-Processing')).toBeNull();
 });
