@@ -630,7 +630,6 @@ class PODocumentSettings:
     tax_numbers: str
     mandatory_bullets: list[str]
     shipping_accounts: list[str]
-    shipping_methods: list[str]
     customs_broker_block: str
     fsc_note: str
     usa_tariff_note: str

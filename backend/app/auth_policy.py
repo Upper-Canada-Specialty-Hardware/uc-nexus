@@ -160,6 +160,9 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # pushed as the caller's own GP buyer identity, which the resolver enforces.
     "emailPoToVendor": SIGNED_IN,
     "registerPoInGp": SIGNED_IN,
+    # GP-PROCESSING, the read-back the register dialog waits on. Signed-in for the same reason
+    # registering is: it is the second half of one ordinary purchasing action, on the caller's own PO.
+    "runGpProcessing": SIGNED_IN,
     "savePoDocumentData": SIGNED_IN,
     "updatePo": SIGNED_IN,
     "updatePoNotes": SIGNED_IN,

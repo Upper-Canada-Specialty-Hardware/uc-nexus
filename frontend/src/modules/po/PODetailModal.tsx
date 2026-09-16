@@ -1053,6 +1053,13 @@ export default function PODetailModal({
           onRefetch();
           onClose();
         }}
+        // #702: the PO is already open behind this dialog, and it is now the registered PO complete
+        // with GP's own values. Stay on it instead of closing back to the PO table, which is where
+        // the person had to go hunting for the PO they had just registered.
+        onRegistered={() => {
+          setRegisterOpen(false);
+          onRefetch();
+        }}
       />
 
       {/* Confirm: Cancel PO */}

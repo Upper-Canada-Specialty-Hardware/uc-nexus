@@ -26,7 +26,15 @@ from app.repositories import (
     user_repository,
 )
 from app.services import email as email_service
-from app.services import gp_idempotency, gp_job_sync, gp_outbox_enqueue, gp_po, gp_po_sync, storage
+from app.services import (
+    gp_idempotency,
+    gp_job_sync,
+    gp_outbox_enqueue,
+    gp_po,
+    gp_po_sync,
+    gp_processing,
+    storage,
+)
 from app.services.relay_gateway import CREATE_PO_IDEMPOTENCY_FEATURE
 from app.services.relay_gateway import gateway as relay_gateway
 
@@ -86,6 +94,29 @@ logger = logging.getLogger(__name__)
 def _load_po_type(po_id: uuid.UUID) -> PurchaseOrder:
     with SessionLocal() as session:
         return po_to_type(po_repository.reload_po(session, po_id))
+
+
+def _load_po_detail_type(po_id: uuid.UUID) -> PurchaseOrder:
+    """The PO with everything the detail view reads - lines, documents, document data and receipts.
+
+    `_load_po_type` above answers a register, whose caller reads a handful of scalars. GP-PROCESSING
+    answers the same shape the detail query asks for, because its whole point is that the PO opens
+    complete; anything it left out would be written into the cache as absent."""
+    with SessionLocal() as session:
+        po = po_repository.get_purchase_order(session, po_id)
+        if po is None:
+            raise NotFoundError(f"Purchase order {po_id} not found")
+        return po_to_type(po, po_repository.get_receive_records_for_po(session, po.id))
+
+
+def _gp_processing_company(po_id: uuid.UUID, scope: str | None) -> str:
+    """The tenant check and the readiness check in one read, before the relay round trip.
+
+    #637: refused as NOT FOUND for a caller outside the PO's company, exactly as registering is."""
+    with SessionLocal() as session:
+        tenancy.require_po_in_scope(session, po_id, scope)
+        company, _po_number = gp_processing.readable_po(session, po_id)
+        return company
 
 
 def _po_outbox_identity(po_id: uuid.UUID) -> tuple[uuid.UUID | None, str]:
@@ -848,6 +879,26 @@ class POMutations:
         return RegisterPOResult(queued=False, outbox_entry_id=None, purchase_order=po)
 
     @strawberry.mutation
+    async def run_gp_processing(self, info: strawberry.Info, po_id: strawberry.ID) -> PurchaseOrder:
+        """GP-PROCESSING (#702): read this PO back from GP by number and apply GP's copy to it.
+
+        A PO REGISTRATION records only what the relay hands back and dates the PO at the moment of
+        the push, so until the next NEW PO CHECK or OPEN-POS SYNC the row was missing GP's document
+        date, its freight, the per-line cost codes as GP stored them, the received quantities and the
+        synced-from-GP stamp - which is what the person who just registered it opened and read as
+        corrupted data. This runs immediately after the registration, with the person waiting on it,
+        so the PO is complete before they see it.
+
+        The whole of the write is the mirror's own upsert, so the GP-OWNED FIELDS converge and the
+        NEXUS-ONLY FIELDS do not. The relay's own failures propagate with their codes intact: the
+        dialog tells the user the PO IS registered and offers to open it anyway, because the next
+        sync fills the PO in regardless."""
+        pid = uuid.UUID(str(po_id))
+        company = await asyncio.to_thread(_gp_processing_company, pid, tenant_scope(info))
+        await gp_processing.run_gp_processing(company, pid)
+        return await asyncio.to_thread(_load_po_detail_type, pid)
+
+    @strawberry.mutation
     def update_po(
         self,
         info: strawberry.Info,
@@ -971,7 +1022,6 @@ class POMutations:
                 "tax_numbers",
                 "mandatory_bullets",
                 "shipping_accounts",
-                "shipping_methods",
                 "customs_broker_block",
                 "fsc_note",
                 "usa_tariff_note",
