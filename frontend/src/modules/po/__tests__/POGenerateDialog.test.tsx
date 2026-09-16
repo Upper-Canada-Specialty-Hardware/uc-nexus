@@ -86,8 +86,6 @@ function settingsMock(): MockedResponse {
           taxNumbers: 'HST 123456789',
           mandatoryBullets: ['Quote this PO number on every packing slip.'],
           shippingAccounts: ['Purolator 1234'],
-          // Still served by the settings page; the dialog no longer offers them as picks.
-          shippingMethods: ['LOCAL DELIVERY', 'PICKUP'],
           customsBrokerBlock: 'Broker block',
           fscNote: 'FSC note',
           usaTariffNote: 'Tariff note',

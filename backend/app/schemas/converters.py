@@ -411,7 +411,6 @@ def po_document_settings_to_type(s) -> PODocumentSettings:
         tax_numbers=s.tax_numbers,
         mandatory_bullets=list(s.mandatory_bullets or []),
         shipping_accounts=list(s.shipping_accounts or []),
-        shipping_methods=list(s.shipping_methods or []),
         customs_broker_block=s.customs_broker_block,
         fsc_note=s.fsc_note,
         usa_tariff_note=s.usa_tariff_note,

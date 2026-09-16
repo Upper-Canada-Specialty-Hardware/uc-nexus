@@ -36,7 +36,6 @@ interface PODocumentSettings {
   taxNumbers: string;
   mandatoryBullets: string[];
   shippingAccounts: string[];
-  shippingMethods: string[];
   customsBrokerBlock: string;
   fscNote: string;
   usaTariffNote: string;

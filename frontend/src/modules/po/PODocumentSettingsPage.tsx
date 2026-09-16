@@ -24,7 +24,6 @@ interface PODocumentSettings {
   taxNumbers: string;
   mandatoryBullets: string[];
   shippingAccounts: string[];
-  shippingMethods: string[];
   customsBrokerBlock: string;
   fscNote: string;
   usaTariffNote: string;
@@ -70,7 +69,6 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
   const [taxNumbers, setTaxNumbers] = useState(settings.taxNumbers);
   const [mandatoryBullets, setMandatoryBullets] = useState(toLines(settings.mandatoryBullets));
   const [shippingAccounts, setShippingAccounts] = useState(toLines(settings.shippingAccounts));
-  const [shippingMethods, setShippingMethods] = useState(toLines(settings.shippingMethods));
   const [customsBrokerBlock, setCustomsBrokerBlock] = useState(settings.customsBrokerBlock);
   const [fscNote, setFscNote] = useState(settings.fscNote);
   const [usaTariffNote, setUsaTariffNote] = useState(settings.usaTariffNote);
@@ -93,7 +91,6 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
           taxNumbers,
           mandatoryBullets: fromLines(mandatoryBullets),
           shippingAccounts: fromLines(shippingAccounts),
-          shippingMethods: fromLines(shippingMethods),
           customsBrokerBlock,
           fscNote,
           usaTariffNote,
@@ -135,12 +132,6 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
             fullWidth
           />
         </Stack>
-        <TextField
-          label="Shipping methods" value={shippingMethods}
-          onChange={(e) => setShippingMethods(e.target.value)}
-          fullWidth multiline minRows={3}
-          helperText="Dropdown options for the generate dialog's Shipping Method, one per line."
-        />
 
         <SectionHeading>Tax &amp; mandatory notes</SectionHeading>
         <TextField
