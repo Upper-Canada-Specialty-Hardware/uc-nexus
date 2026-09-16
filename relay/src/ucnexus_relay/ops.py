@@ -338,7 +338,6 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         null_tax_schedule=is_foreign,
         contact=h.contact,
         comment=h.comment,
-        note=note,
     )
 
     return models.CreatePoResponse(
