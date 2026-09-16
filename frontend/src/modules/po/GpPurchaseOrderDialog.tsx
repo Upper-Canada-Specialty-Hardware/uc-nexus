@@ -29,7 +29,7 @@ import { GET_PROJECTS } from '../../graphql/shared';
 import { useIdentity } from '../../hooks/useIdentity';
 import type { Project } from '../../types/project';
 import { isGpSetupBroken } from '../../types/project';
-import GpSetupQuarantineBanner, { GpSetupBadge } from '../../components/GpSetupQuarantineBanner';
+import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import type { PurchaseOrder } from './index';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
@@ -40,6 +40,7 @@ import { computeManufacturerVendorHint, type ManufacturerSuggestion } from './ma
 import GpErrorAlert from '../../components/GpErrorAlert';
 import { extractGpError, isRelayOpUnsupported, type GpError } from '../../graphql/gpError';
 import CustomItemPicker from './CustomItemPicker';
+import ProjectPicker from '../../components/ProjectPicker';
 import { monoSx, microLabelSx } from '../../theme';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
@@ -1120,14 +1121,17 @@ export default function GpPurchaseOrderDialog({
       )}
       {/* Header Fields */}
       <Stack spacing={2} sx={{ mb: 3 }}>
-        <TextField
-          select
+        {/* #689: a searchable picker rather than a list of every project, because a PO user knows the
+            job by its number as often as by its name and types either one. Clearing the field leaves
+            the PO with no project, which is a stock PO. #425 still holds: a quarantined project is
+            badged in the option list, not hidden from it - what it cannot take is a registration. */}
+        <ProjectPicker
+          value={selectedProject}
+          onChange={(p) => setProjectId(p?.id ?? '')}
           label={isRegister ? 'Project' : 'Project (Optional)'}
-          value={projectId}
-          onChange={(e) => setProjectId(e.target.value)}
-          size="small"
-          fullWidth
+          placeholder="Search by project number or name, or leave empty for a stock PO"
           disabled={projectLocked}
+          sx={{ maxWidth: 'none' }}
           helperText={
             projectLocked
               ? "Locked: the line items were imported against this project's hardware schedule"
@@ -1135,17 +1139,7 @@ export default function GpPurchaseOrderDialog({
                 ? 'This draft has no project yet - set it before registering, or leave it as a stock PO'
                 : ' '
           }
-        >
-          <MenuItem value="">No Project (stock PO)</MenuItem>
-          {/* #425: badged in the picker, not hidden from it. A quarantined project is still the right
-              project for a draft; what it cannot take is a registration. */}
-          {projects.map((p) => (
-            <MenuItem key={p.id} value={p.id} sx={{ gap: 1 }}>
-              {p.description || p.projectId}
-              <GpSetupBadge project={p} />
-            </MenuItem>
-          ))}
-        </TextField>
+        />
 
         {isRegister ? (
           <Box>
