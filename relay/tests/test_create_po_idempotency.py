@@ -169,18 +169,23 @@ def test_a_po_with_no_key_never_reads_the_note_table(stubbed):
 
 # --- a key GP has not seen: the PO is registered, carrying the key ---
 
-def test_the_key_is_stamped_on_both_header_calls(stubbed):
-    # both, because the second call upserts the same header - one that omitted the note would leave
-    # the retry nothing to find.
+def test_the_key_is_stamped_on_the_header_create_only(stubbed):
+    # The create writes the note; the subtotal upsert must NOT send it again. taPoHdr writes a note
+    # master row on every call that passes NOTETEXT, and the second one lands at NOTEINDX 0 as an
+    # orphan (seen live on TUBC PO0000135). The contact and comment are different: they are header
+    # columns, so both calls carry them.
     conn = _FakeConn()
 
     response = ops.create_po_op(conn, company="TUBC", request=_request(idempotency_key=_KEY))
 
     calls = conn.tapohdr_calls()
     assert len(calls) == 2
-    for sql, params in calls:
-        assert "@I_vNOTETEXT = ?" in sql
-        assert _NOTE in params
+    create_sql, create_params = calls[0]
+    subtotal_sql, subtotal_params = calls[1]
+    assert "@I_vNOTETEXT = ?" in create_sql
+    assert _NOTE in create_params
+    assert "NOTETEXT" not in subtotal_sql
+    assert _NOTE not in subtotal_params
     assert response.existing is False
 
 

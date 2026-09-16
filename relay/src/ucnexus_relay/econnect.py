@@ -206,9 +206,12 @@ def _note_fields(note: str | None) -> dict:
     be wrong can fail only a PO that set a note - never one that left it alone, which is every PO
     registered before this existed.
 
-    Sent on BOTH taPoHdr calls (create_po_header and update_po_header_subtotal), because the second
-    call upserts the same header: a note written by the create and omitted by the update is a note
-    the update could leave behind."""
+    Sent on the FIRST taPoHdr call only (create_po_header), unlike the contact and the comment, which
+    both calls carry. Those two are header columns, so the upsert must re-send them or lose them; the
+    note is a row in GP's note master, and taPoHdr writes one on EVERY call that passes NOTETEXT.
+    Verified live on TUBC (PO0000135, 2026-09-16): sending it on both calls left the header's own
+    note at PONOTIDS_1 plus an orphan copy at NOTEINDX 0 that no document can reach. The subtotal
+    upsert does not touch the note the create wrote."""
     return {_NOTE_TEXT_PARAM: note} if note is not None else {}
 
 
@@ -476,7 +479,6 @@ def update_po_header_subtotal(
     null_tax_schedule: bool = False,
     contact: str | None = None,
     comment: str | None = None,
-    note: str | None = None,
 ) -> None:
     """Re-call taPoHdr with UpdateIfExists=1 + the computed SUBTOTAL (validated now against the line
     totals from steps 3-4) and the order-time GP charges (issue #257): trade discount, freight, misc,
@@ -487,8 +489,9 @@ def update_po_header_subtotal(
     using_header_taxes=1 tells GP to use the passed TAXAMNT rather than compute one - GP does NOT
     calculate PO tax under header-level taxes (verified live). rate_type/exchange_date/null_tax_schedule
     carry the foreign-currency handling (re-sent here so the UpdateIfExists upsert can't revert the
-    rate or re-default a blanked TAXSCHID), and contact/comment/note are re-sent for exactly the same
-    reason - this call upserts the same header, so it has to send the set create_po_header sent."""
+    rate or re-default a blanked TAXSCHID), and contact/comment are re-sent for exactly the same
+    reason - this call upserts the same header, so it has to send the set create_po_header sent. The
+    record note is the one exception: it is NOT re-sent here - see _note_fields."""
     fields = {
         "POTYPE": po_type,
         "PONUMBER": po_number,
@@ -511,7 +514,6 @@ def update_po_header_subtotal(
     }
     fields.update(_foreign_currency_fields(rate_type, exchange_date, null_tax_schedule))
     fields.update(_contact_and_comment_fields(contact, comment))
-    fields.update(_note_fields(note))
     _exec_tapohdr(conn, fields)
 
 
