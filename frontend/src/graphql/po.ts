@@ -337,7 +337,6 @@ export const PO_DOCUMENT_SETTINGS_FIELDS = `
   taxNumbers
   mandatoryBullets
   shippingAccounts
-  shippingMethods
   customsBrokerBlock
   fscNote
   usaTariffNote
@@ -658,7 +657,6 @@ export const UPDATE_PO_DOCUMENT_SETTINGS = gql`
       taxNumbers
       mandatoryBullets
       shippingAccounts
-      shippingMethods
       customsBrokerBlock
       fscNote
       usaTariffNote
