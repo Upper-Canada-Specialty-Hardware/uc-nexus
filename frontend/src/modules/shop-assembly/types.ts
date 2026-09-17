@@ -5,6 +5,11 @@
  * The arithmetic is here rather than inside the component for the reason `modules/import/composer`
  * gives: the numbers are the part that has to be exactly right, and they are worth testing without
  * rendering anything.
+ *
+ * Nothing here fills a quantity in for the manager. The allocation starts empty, every unit on it
+ * was typed, and an opening is on the batch exactly when one of its lines carries a quantity - so
+ * there is no separate record of which openings are in, and no way for one to disagree with the
+ * numbers.
  */
 
 export type OpeningStatus = 'PENDING' | 'BATCHED' | 'DISMISSED';
@@ -114,52 +119,44 @@ export function allLines(review: AllocationReview | null | undefined): Allocatio
 }
 
 /**
- * Seed every line at `min(owed, what is left of its product's pool)`, opening by opening.
+ * What is left of a product's pool for this line once every OTHER line of the same product, on any
+ * opening, has taken what it currently holds.
  *
- * First-opening-first rather than spreading thinly. Half the hardware for one door gets that door
- * onto the bench; a tenth of it on ten doors gets nothing anywhere, and the manager would have to
- * undo the spread by hand before they could dispatch anything at all. Whoever wants a different
- * split moves the numbers themselves, which is the point of allocating at all.
+ * This is the Free column, and it is why the review works from a project-wide pool rather than a
+ * pre-split share: entering opening A's hinges lowers what opening B can still take, and the
+ * manager has to watch that happen rather than discover it when the batch is refused. It is not
+ * capped at what the opening is owed, because the column answers "how much of this product is
+ * there", not "how much of it may go on this line".
  */
-export function seedAllocation(review: AllocationReview | null | undefined): Allocation {
-  const remaining = new Map<string, number>();
-  const allocation: Allocation = new Map();
-  for (const opening of review?.openings ?? []) {
-    for (const line of opening.lines) {
-      const combo = comboKey(line);
-      if (!remaining.has(combo)) remaining.set(combo, line.availableQuantity);
-      const free = remaining.get(combo) ?? 0;
-      const take = Math.max(0, Math.min(free, line.requestedQuantity));
-      allocation.set(lineKey(line), take);
-      remaining.set(combo, free - take);
-    }
-  }
-  return allocation;
-}
-
-/**
- * What is left of a product's pool once every OTHER included line has taken its share.
- *
- * This is the ceiling one input may be raised to, and it is why the review shows a project-wide
- * number rather than a pre-split one: raising opening A's hinges lowers what opening B may take, and
- * the manager has to see that happen rather than discover it when the batch is refused.
- */
-export function ceilingFor(
-  line: AllocationLine,
-  allocation: Allocation,
-  included: Set<string>,
-  lines: AllocationLine[],
-): number {
+export function freeFor(line: AllocationLine, allocation: Allocation, lines: AllocationLine[]): number {
   const combo = comboKey(line);
   const key = lineKey(line);
   let takenElsewhere = 0;
   for (const other of lines) {
     const otherKey = lineKey(other);
     if (otherKey === key || comboKey(other) !== combo) continue;
-    if (!included.has(other.openingNumber)) continue;
     takenElsewhere += allocation.get(otherKey) ?? 0;
   }
-  return Math.max(0, Math.min(line.requestedQuantity, line.availableQuantity - takenElsewhere));
+  return Math.max(0, line.availableQuantity - takenElsewhere);
+}
+
+/**
+ * The most this line may be raised to: what is free for it, and never more than the opening is
+ * owed. It is both the Send input's max and the clamp its every keystroke goes through.
+ */
+export function ceilingFor(line: AllocationLine, allocation: Allocation, lines: AllocationLine[]): number {
+  return Math.min(line.requestedQuantity, freeFor(line, allocation, lines));
+}
+
+/**
+ * Whether any of the opening's lines has stock behind it at all.
+ *
+ * The boxes start empty, so `openingCoverage` reads NONE both for an opening nobody has typed into
+ * yet and for one there is nothing on the shelf for. Only this tells the two apart, and they need
+ * different words: the first is waiting for a decision, the second cannot be batched at all.
+ */
+export function hasAnythingFree(lines: AllocationLine[]): boolean {
+  return lines.some((line) => line.availableQuantity > 0);
 }
 
 export type OpeningCoverage = 'FULL' | 'PARTIAL' | 'NONE';
@@ -176,7 +173,8 @@ export function openingCoverage(lines: AllocationLine[], allocation: Allocation)
   return allocated >= owed ? 'FULL' : 'PARTIAL';
 }
 
-/** Per-product totals across the whole batch: owed, free, and what it would take (#644). */
+/** Per-product totals across every opening on the request: owed, free, and what this batch would
+ *  take (#644). */
 export interface ProductSummaryRow {
   hardwareCategory: string;
   productCode: string;
@@ -188,11 +186,9 @@ export interface ProductSummaryRow {
 export function productSummary(
   review: AllocationReview | null | undefined,
   allocation: Allocation,
-  included: Set<string>,
 ): ProductSummaryRow[] {
   const rows = new Map<string, ProductSummaryRow>();
   for (const line of allLines(review)) {
-    if (!included.has(line.openingNumber)) continue;
     const key = comboKey(line);
     const row = rows.get(key) ?? {
       hardwareCategory: line.hardwareCategory,
@@ -221,21 +217,19 @@ export interface BatchLineInput {
 }
 
 /**
- * The exact payload the batch sends: every included opening's lines that carry a quantity.
+ * The exact payload the batch sends: every line, on any opening, that carries a quantity.
  *
  * A line allocated nothing is dropped rather than sent as a zero - it would reserve nothing and put
- * a pick on the sheet the warehouse cannot fill. An opening whose lines are ALL zero therefore names
- * itself nowhere in the payload, and so is not batched at all: it stays pending for a later batch,
- * which is exactly what should happen to an opening whose hardware has not arrived.
+ * a pick on the sheet the warehouse cannot fill. An opening whose boxes are ALL empty therefore
+ * names itself nowhere in the payload, and so is not batched at all: it stays pending for a later
+ * batch, which is exactly what should happen to an opening whose hardware has not arrived.
  */
 export function buildBatchLines(
   review: AllocationReview | null | undefined,
   allocation: Allocation,
-  included: Set<string>,
 ): BatchLineInput[] {
   const lines: BatchLineInput[] = [];
   for (const line of allLines(review)) {
-    if (!included.has(line.openingNumber)) continue;
     const quantity = allocation.get(lineKey(line)) ?? 0;
     if (quantity <= 0) continue;
     lines.push({
@@ -252,7 +246,6 @@ export function buildBatchLines(
 export function batchedOpeningNumbers(
   review: AllocationReview | null | undefined,
   allocation: Allocation,
-  included: Set<string>,
 ): string[] {
-  return [...new Set(buildBatchLines(review, allocation, included).map((l) => l.openingNumber))];
+  return [...new Set(buildBatchLines(review, allocation).map((l) => l.openingNumber))];
 }

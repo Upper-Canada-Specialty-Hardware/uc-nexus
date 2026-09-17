@@ -1,11 +1,12 @@
 /**
- * The batch composer's arithmetic (#646/#643).
+ * The batch composer's arithmetic (#646/#643/#706).
  *
- * Two openings wanting the same product compete for ONE pool, and every rule here follows from that:
- * the seed spends the pool down opening by opening, the per-input ceiling is what is left of it once
- * the rest of the batch has taken its share, and the payload drops a zero rather than sending a pick
- * nobody can fill. Tested without rendering anything, because these numbers are what decides how
- * much hardware leaves the building.
+ * Two openings wanting the same product compete for ONE pool, and every rule here follows from
+ * that: what is free for a line is the pool less what the other openings' boxes hold, the per-input
+ * ceiling is that figure capped at what the opening is owed, and the payload drops a zero rather
+ * than sending a pick nobody can fill. Nothing is filled in for the manager, so an opening is on
+ * the batch exactly when one of its lines carries a quantity. Tested without rendering anything,
+ * because these numbers are what decides how much hardware leaves the building.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -13,10 +14,11 @@ import {
   batchedOpeningNumbers,
   buildBatchLines,
   ceilingFor,
+  freeFor,
+  hasAnythingFree,
   lineKey,
   openingCoverage,
   productSummary,
-  seedAllocation,
   type AllocationLine,
   type AllocationReview,
 } from '../types';
@@ -43,29 +45,31 @@ function review(...openings: { openingNumber: string; lines: AllocationLine[] }[
   };
 }
 
-describe('seedAllocation', () => {
-  it('fills the first opening before the second out of one shared pool', () => {
-    // Three hinges on the shelf, two doors wanting two each. First-opening-first gets one door onto
-    // the bench; a spread of 1.5 each would get neither there and the manager would have to undo it.
-    const r = review(
-      { openingNumber: 'A01', lines: [line('A01', 'HG-100', 2, 3)] },
-      { openingNumber: 'A02', lines: [line('A02', 'HG-100', 2, 3)] },
-    );
+describe('freeFor', () => {
+  const first = line('A01', 'HG-100', 5, 6);
+  const second = line('A02', 'HG-100', 5, 6);
+  const lines = [first, second];
 
-    const seeded = seedAllocation(r);
+  it('is the pool less what the other openings are holding', () => {
+    const allocation = new Map([[lineKey(second), 2]]);
 
-    expect(seeded.get('A01|HINGE|HG-100')).toBe(2);
-    expect(seeded.get('A02|HINGE|HG-100')).toBe(1);
+    // Six hinges on the shelf and A02 is holding two, so four of them are still A01's to take.
+    expect(freeFor(first, allocation, lines)).toBe(4);
   });
 
-  it('never allocates past what an opening is owed, however much is free', () => {
-    const r = review({ openingNumber: 'A01', lines: [line('A01', 'HG-100', 2, 50)] });
-    expect(seedAllocation(r).get('A01|HINGE|HG-100')).toBe(2);
+  it('floors at zero rather than reporting a negative pool', () => {
+    const scarce = line('A01', 'HG-100', 4, 2);
+    const rival = line('A02', 'HG-100', 4, 2);
+    const allocation = new Map([[lineKey(rival), 3]]);
+
+    expect(freeFor(scarce, allocation, [scarce, rival])).toBe(0);
   });
 
-  it('gives an opening with nothing free a zero rather than a negative', () => {
-    const r = review({ openingNumber: 'A01', lines: [line('A01', 'HG-100', 4, 0)] });
-    expect(seedAllocation(r).get('A01|HINGE|HG-100')).toBe(0);
+  it('is not capped at what the opening is owed, because the column is the pool', () => {
+    // Owed two, fifty on the shelf: the Free column says fifty. What may go on THIS line is the
+    // ceiling's job, not this one's.
+    const owedTwo = line('A01', 'HG-100', 2, 50);
+    expect(freeFor(owedTwo, new Map(), [owedTwo])).toBe(50);
   });
 });
 
@@ -74,30 +78,35 @@ describe('ceilingFor', () => {
   const second = line('A02', 'HG-100', 5, 6);
   const lines = [first, second];
 
-  it('is what the pool has left once the other included openings have taken theirs', () => {
+  it('is what the pool has left once the other openings have taken theirs', () => {
     const allocation = new Map([
       [lineKey(first), 4],
       [lineKey(second), 2],
     ]);
-    const included = new Set(['A01', 'A02']);
 
     // Six on the shelf, A02 holding 2, so A01 may be raised to 4 - not to the 5 it is owed.
-    expect(ceilingFor(first, allocation, included, lines)).toBe(4);
+    expect(ceilingFor(first, allocation, lines)).toBe(4);
   });
 
-  it('ignores an opening that is not in the batch, because it is not competing', () => {
-    const allocation = new Map([
-      [lineKey(first), 4],
-      [lineKey(second), 2],
-    ]);
-    const included = new Set(['A01']);
+  it('ignores an opening with an empty box, because it is holding nothing', () => {
+    const allocation = new Map([[lineKey(first), 4]]);
 
-    expect(ceilingFor(first, allocation, included, lines)).toBe(5);
+    expect(ceilingFor(first, allocation, lines)).toBe(5);
   });
 
   it('never exceeds what the opening is owed', () => {
     const owedTwo = line('A01', 'HG-100', 2, 50);
-    expect(ceilingFor(owedTwo, new Map(), new Set(['A01']), [owedTwo])).toBe(2);
+    expect(ceilingFor(owedTwo, new Map(), [owedTwo])).toBe(2);
+  });
+});
+
+describe('hasAnythingFree', () => {
+  it('is false when every line has an empty pool behind it, which is the one unfixable case', () => {
+    expect(hasAnythingFree([line('A01', 'HG-100', 4, 0), line('A01', 'CL-1', 1, 0)])).toBe(false);
+  });
+
+  it('is true as soon as one line has stock behind it, however little', () => {
+    expect(hasAnythingFree([line('A01', 'HG-100', 4, 0), line('A01', 'CL-1', 1, 1)])).toBe(true);
   });
 });
 
@@ -120,60 +129,72 @@ describe('openingCoverage', () => {
     expect(openingCoverage(lines, allocation)).toBe('PARTIAL');
   });
 
-  it('is NONE when nothing is allocatable, which is what keeps the opening pending', () => {
+  it('is NONE while the boxes are empty, which is what keeps the opening pending', () => {
     expect(openingCoverage(lines, new Map())).toBe('NONE');
   });
 });
 
 describe('buildBatchLines', () => {
+  const a01Hinge = line('A01', 'HG-100', 2, 2);
+  const a01Closer = line('A01', 'CL-1', 1, 0);
+  const a02Hinge = line('A02', 'HG-100', 2, 0);
   const r = review(
-    { openingNumber: 'A01', lines: [line('A01', 'HG-100', 2, 2), line('A01', 'CL-1', 1, 0)] },
-    { openingNumber: 'A02', lines: [line('A02', 'HG-100', 2, 0)] },
+    { openingNumber: 'A01', lines: [a01Hinge, a01Closer] },
+    { openingNumber: 'A02', lines: [a02Hinge] },
   );
 
-  it('drops a zero line rather than sending a pick the warehouse cannot fill', () => {
-    const allocation = seedAllocation(r);
-    const included = new Set(['A01', 'A02']);
+  const allocation = new Map([
+    [lineKey(a01Hinge), 2],
+    [lineKey(a01Closer), 0],
+    [lineKey(a02Hinge), 0],
+  ]);
 
-    expect(buildBatchLines(r, allocation, included)).toEqual([
+  it('drops a zero line rather than sending a pick the warehouse cannot fill', () => {
+    expect(buildBatchLines(r, allocation)).toEqual([
       { openingNumber: 'A01', hardwareCategory: 'HINGE', productCode: 'HG-100', allocatedQuantity: 2 },
     ]);
   });
 
-  it('leaves an opening with nothing allocatable off the batch entirely, so it stays pending', () => {
-    const allocation = seedAllocation(r);
-    // A02 is ticked, but every one of its lines is zero, so it names itself nowhere in the payload.
-    expect(batchedOpeningNumbers(r, allocation, new Set(['A01', 'A02']))).toEqual(['A01']);
+  it('leaves an opening whose every box is empty off the batch entirely, so it stays pending', () => {
+    // A02 is on the screen like any other opening, but it names itself nowhere in the payload.
+    expect(batchedOpeningNumbers(r, allocation)).toEqual(['A01']);
   });
 
-  it('sends nothing for an opening the manager left out', () => {
-    const allocation = seedAllocation(r);
-    expect(buildBatchLines(r, allocation, new Set(['A02']))).toEqual([]);
+  it('sends nothing at all while every box on the request is empty', () => {
+    expect(buildBatchLines(r, new Map())).toEqual([]);
+    expect(batchedOpeningNumbers(r, new Map())).toEqual([]);
   });
 });
 
 describe('productSummary', () => {
   it('sums owed and allocated across openings but never sums the pool itself', () => {
+    const a01 = line('A01', 'HG-100', 2, 3);
+    const a02 = line('A02', 'HG-100', 2, 3);
     const r = review(
-      { openingNumber: 'A01', lines: [line('A01', 'HG-100', 2, 3)] },
-      { openingNumber: 'A02', lines: [line('A02', 'HG-100', 2, 3)] },
+      { openingNumber: 'A01', lines: [a01] },
+      { openingNumber: 'A02', lines: [a02] },
     );
-    const allocation = seedAllocation(r);
+    const allocation = new Map([
+      [lineKey(a01), 2],
+      [lineKey(a02), 1],
+    ]);
 
-    expect(productSummary(r, allocation, new Set(['A01', 'A02']))).toEqual([
+    expect(productSummary(r, allocation)).toEqual([
       { hardwareCategory: 'HINGE', productCode: 'HG-100', owed: 4, available: 3, allocated: 3 },
     ]);
   });
 
-  it('counts only the openings actually in the batch', () => {
+  it('still counts what an untouched opening is owed, while it sends nothing', () => {
+    const a01 = line('A01', 'HG-100', 2, 9);
+    const a02 = line('A02', 'HG-100', 2, 9);
     const r = review(
-      { openingNumber: 'A01', lines: [line('A01', 'HG-100', 2, 9)] },
-      { openingNumber: 'A02', lines: [line('A02', 'HG-100', 2, 9)] },
+      { openingNumber: 'A01', lines: [a01] },
+      { openingNumber: 'A02', lines: [a02] },
     );
-    const allocation = seedAllocation(r);
+    const allocation = new Map([[lineKey(a01), 2]]);
 
-    expect(productSummary(r, allocation, new Set(['A01']))).toEqual([
-      { hardwareCategory: 'HINGE', productCode: 'HG-100', owed: 2, available: 9, allocated: 2 },
+    expect(productSummary(r, allocation)).toEqual([
+      { hardwareCategory: 'HINGE', productCode: 'HG-100', owed: 4, available: 9, allocated: 2 },
     ]);
   });
 });

@@ -1,8 +1,9 @@
 /**
- * The manager's batch review form (#643/#644).
+ * The manager's batch review form (#643/#644/#706).
  *
  * The arithmetic is pinned in batchAllocation.test.ts; what is worth rendering is the shape of the
- * decision: one opening at a time with prev/next, a per-opening include toggle, the product summary
+ * decision: one opening at a time with prev/next, every Send box starting empty so nothing is sent
+ * that was not typed, an opening on the batch exactly when it holds a quantity, the product summary
  * collapsed until asked for, and a Create batch that names how many openings it would dispatch.
  */
 
@@ -50,6 +51,12 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof BatchReviewP
   return props;
 }
 
+/** The detail row's cells, in header order: Product Code, Hardware Category, Owed, Free, Send, Short. */
+function cellsFor(openingNumber: string, productCode: string) {
+  const row = screen.getByLabelText(`Send ${productCode} for ${openingNumber}`).closest('tr')!;
+  return within(row).getAllByRole('cell');
+}
+
 describe('BatchReviewPanel', () => {
   it('opens on the first pending opening and walks to the next', () => {
     renderPanel();
@@ -65,43 +72,55 @@ describe('BatchReviewPanel', () => {
     expect(screen.getByLabelText('Send HG-100 for A02')).toBeInTheDocument();
   });
 
-  it('seeds each opening at what the shared pool can still cover, in order', () => {
-    // Three hinges, two doors owed two each: the first takes 2 and the second gets what is left.
+  it('starts every box empty, so nothing is dispatched that was not typed', () => {
     renderPanel();
 
-    expect(screen.getByLabelText('Send HG-100 for A01')).toHaveValue(2);
+    expect(screen.getByLabelText('Send HG-100 for A01')).toHaveValue(null);
+    expect(screen.getByText('Nothing entered')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create batch (0 openings)' })).toBeDisabled();
+    expect(screen.getByText('Enter a quantity on at least one opening.')).toBeInTheDocument();
+
     fireEvent.click(screen.getByLabelText('Next opening'));
-    expect(screen.getByLabelText('Send HG-100 for A02')).toHaveValue(1);
+    expect(screen.getByLabelText('Send HG-100 for A02')).toHaveValue(null);
   });
 
-  it('shows the shortfall a partial batch would forfeit, and says so', () => {
-    renderPanel();
-    fireEvent.click(screen.getByLabelText('Next opening'));
-
-    // A02 is owed 2 and can only have 1, so batching it gives up the other one for good.
-    expect(
-      screen.getByText(/Batching this opening sends what is here and forfeits the rest/),
-    ).toBeInTheDocument();
-  });
-
-  it('counts only the openings a batch would actually dispatch', () => {
-    renderPanel();
-
-    expect(screen.getByRole('button', { name: 'Create batch (2 openings)' })).toBeEnabled();
-
-    fireEvent.click(screen.getByLabelText('Include A02 in this batch'));
-
-    expect(screen.getByRole('button', { name: 'Create batch (1 opening)' })).toBeEnabled();
-  });
-
-  it('sends only the included openings lines, dropping a zero', () => {
+  it('puts an opening on the batch the moment it holds a quantity', () => {
     const props = renderPanel();
-    fireEvent.click(screen.getByLabelText('Include A02 in this batch'));
+
+    fireEvent.change(screen.getByLabelText('Send HG-100 for A01'), { target: { value: '2' } });
+
+    expect(screen.getByText('In this batch')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Create batch (1 opening)' }));
 
     expect(props.onCreateBatch).toHaveBeenCalledWith([
       { openingNumber: 'A01', hardwareCategory: 'HINGE', productCode: 'HG-100', allocatedQuantity: 2 },
     ]);
+  });
+
+  it('lowers what the next opening can take as the first one takes units', () => {
+    // Three hinges for two doors owed two each: once A01 holds 2, only 1 is left for A02.
+    renderPanel();
+
+    fireEvent.change(screen.getByLabelText('Send HG-100 for A01'), { target: { value: '2' } });
+    fireEvent.click(screen.getByLabelText('Next opening'));
+
+    expect(cellsFor('A02', 'HG-100')[3]).toHaveTextContent('1');
+  });
+
+  it('warns about the forfeit only once the opening holds part of what it is owed', () => {
+    renderPanel();
+    fireEvent.click(screen.getByLabelText('Next opening'));
+
+    // Nothing entered yet, so nothing is being given up yet.
+    expect(
+      screen.queryByText(/Batching this opening sends what is here and forfeits the rest/),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Send HG-100 for A02'), { target: { value: '1' } });
+
+    expect(
+      screen.getByText(/Batching this opening sends what is here and forfeits the rest/),
+    ).toBeInTheDocument();
   });
 
   it('refuses a batch with nothing on it and says which fix', () => {
@@ -113,9 +132,17 @@ describe('BatchReviewPanel', () => {
     });
 
     expect(screen.getByRole('button', { name: 'Create batch (0 openings)' })).toBeDisabled();
-    expect(screen.getByText('Tick at least one opening and give it a quantity.')).toBeInTheDocument();
+    expect(screen.getByText('Enter a quantity on at least one opening.')).toBeInTheDocument();
     // The #645 case: an opening with nothing free is not dispatched as an empty cart.
     expect(screen.getByText(/it cannot go on a batch/)).toBeInTheDocument();
+  });
+
+  it('has no include control to disagree with the quantities (#706)', () => {
+    renderPanel();
+
+    expect(screen.queryByLabelText('Include A02 in this batch')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'In this batch' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Not in this batch' })).not.toBeInTheDocument();
   });
 
   it('keeps the product summary collapsed until it is asked for (#644)', () => {
@@ -134,7 +161,7 @@ describe('BatchReviewPanel', () => {
   it('explains itself rather than hiding the actions when the caller is not a manager', () => {
     renderPanel({ disabledReason: 'Allocating is the manager’s.' });
 
-    expect(screen.getByRole('button', { name: 'Create batch (2 openings)' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Create batch (0 openings)' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Dismiss remaining' })).toBeDisabled();
     expect(screen.getByText('Allocating is the manager’s.')).toBeInTheDocument();
   });
