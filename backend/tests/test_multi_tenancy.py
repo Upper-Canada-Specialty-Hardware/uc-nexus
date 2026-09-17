@@ -20,7 +20,7 @@ be driven in a test at all.
 """
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -271,7 +271,7 @@ def _po(session, company, *, project=None, status=POStatus.GP_REGISTERED, number
         status=status,
         gp_company=company,
         vendor_name_snapshot="Acme",
-        ordered_at=datetime.utcnow(),
+        ordered_at=date.today(),
     )
     session.add(po)
     session.flush()

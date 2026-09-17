@@ -36,7 +36,8 @@ import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import NexusRegistrationPanel from './NexusRegistrationPanel';
 import POGenerateDialog from './POGenerateDialog';
-import { poVendorName } from './poVendorName';
+import { poVendorLabel, NO_GP_VENDOR, NO_GP_VENDOR_HINT } from './poVendorName';
+import { formatPoOrderDate, isGpEmptyDate, NO_GP_DATE_HINT } from './poOrderDate';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
 import { monoSx, tabularSx, microLabelSx } from '../../theme';
 import { FadeIn } from '../../motion';
@@ -758,7 +759,11 @@ export default function PODetailModal({
               }}
             >
               <InfoField label="PO Number" value={po.poNumber} placeholder="Not assigned" mono />
-              <InfoField label="Vendor" value={poVendorName(po)} />
+              <InfoField
+                label="Vendor"
+                value={poVendorLabel(po)}
+                title={poVendorLabel(po) === NO_GP_VENDOR ? NO_GP_VENDOR_HINT : undefined}
+              />
               <InfoField label="Vendor Quote #" value={po.vendorQuoteNumber} mono />
               <InfoField
                 label="Shipping Costs"
@@ -772,7 +777,13 @@ export default function PODetailModal({
               />
               <InfoField label="Preferred Delivery Date" value={formatDate(po.preferredDeliveryDate)} />
               <InfoField label="Expected Delivery Date" value={formatDate(po.expectedDeliveryDate)} />
-              <InfoField label="Order Date" value={formatDate(po.orderedAt)} />
+              {/* #701: an order date is GP's document date, a calendar date. An empty one in GP
+                  (1900-01-01) says so in plain words instead of printing the turn of the century. */}
+              <InfoField
+                label="Order Date"
+                value={po.orderedAt ? formatPoOrderDate(po.orderedAt) : null}
+                title={isGpEmptyDate(po.orderedAt) ? NO_GP_DATE_HINT : undefined}
+              />
               {/* GP's own header fields - shipping method, vendor address, site, PO date, contact
                   and comment - belong here, beside the order date. They are entered on the register
                   dialog, but the PO the API returns does not carry them back yet, so there is
@@ -1090,6 +1101,7 @@ function InfoField({
   mono = false,
   numeric = false,
   wrap = false,
+  title,
 }: {
   label: string;
   value: string | null | undefined;
@@ -1097,6 +1109,8 @@ function InfoField({
   mono?: boolean;
   numeric?: boolean;
   wrap?: boolean;
+  /** Hover for a value that needs explaining - what GP holds where a field reads as empty (#701). */
+  title?: string;
 }) {
   const empty = !value || value === EMPTY;
   return (
@@ -1107,6 +1121,7 @@ function InfoField({
       <Typography
         component="div"
         variant="body2"
+        title={title}
         sx={{
           ...(mono && !empty ? monoSx : {}),
           ...(numeric ? tabularSx : {}),

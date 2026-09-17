@@ -9,6 +9,7 @@ import { pdf } from '@react-pdf/renderer';
 import { GET_PO_DOCUMENT_SETTINGS, GET_GP_BUYERS, GET_GP_PO_TOTALS, GET_PROJECT_SHIP_TO, SAVE_PO_DOCUMENT_DATA, UPLOAD_PO_DOCUMENT } from '../../graphql/po';
 import { useToast } from '../../components/Toast';
 import { poVendorName } from './poVendorName';
+import { isGpEmptyDate } from './poOrderDate';
 import PurchaseOrderDocument, { type PurchaseOrderDocumentProps } from './PurchaseOrderDocument';
 import type { PurchaseOrder } from './index';
 import { monoSx, microLabelSx } from '../../theme';
@@ -202,9 +203,13 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
 
   const buildDocProps = useCallback((): PurchaseOrderDocumentProps => {
     const requiredByLabel = formatDocDate(requiredBy);
+    // #701: GP's empty document date (1900-01-01) is not a date to print on a document sent to a
+    // vendor. It falls back to today exactly as a PO carrying no order date at all does - the plain
+    // words the PO table shows belong on screen, never here.
+    const orderDate = isGpEmptyDate(po.orderedAt) ? '' : formatDocDate(po.orderedAt);
     return {
       poNumber: po.poNumber ?? po.requestNumber ?? '',
-      date: formatDocDate(po.orderedAt) || new Date().toLocaleDateString(),
+      date: orderDate || new Date().toLocaleDateString(),
       requiredBy: requiredByLabel,
       quotationNumber: quotationNumber || null,
       companyFromAddress: settings.companyFromAddress,

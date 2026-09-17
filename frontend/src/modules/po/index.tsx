@@ -52,6 +52,8 @@ import { useToast } from '../../components/Toast';
 import { monoSx, tabularSx, microLabelSx } from '../../theme';
 import { AnimatedNumber, FadeIn, StaggerItem, StaggerList } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
+import { formatPoOrderDate, isGpEmptyDate, NO_GP_DATE_HINT } from './poOrderDate';
+import { poVendorLabel, NO_GP_VENDOR, NO_GP_VENDOR_HINT } from './poVendorName';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
 
@@ -323,6 +325,12 @@ interface POTableRowProps {
 
 function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued }: POTableRowProps) {
   const hugSx = { width: '1%', whiteSpace: 'nowrap' as const };
+  // #701: where a PO raised in GP carries no vendor, or no document date, the cell says so in plain
+  // words. A bare dash left the reader unable to tell an empty field in GP from Nexus failing to
+  // read one.
+  const vendorLabel = poVendorLabel(po);
+  const noGpVendor = vendorLabel === NO_GP_VENDOR;
+  const noGpDate = isGpEmptyDate(po.orderedAt);
   return (
     <TableRow
       hover
@@ -381,9 +389,17 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued }: P
       </TableCell>
       {/* The one stretch column: absorbs the slack and truncates instead of widening the table. */}
       <TableCell sx={{ maxWidth: 0 }}>
-        <Typography variant="body2" noWrap title={po.vendorNameSnapshot || undefined}>
-          {po.vendorNameSnapshot || '-'}
-        </Typography>
+        {noGpVendor ? (
+          <Tooltip title={NO_GP_VENDOR_HINT} arrow>
+            <Typography variant="body2" noWrap>
+              {NO_GP_VENDOR}
+            </Typography>
+          </Tooltip>
+        ) : (
+          <Typography variant="body2" noWrap title={vendorLabel || undefined}>
+            {vendorLabel || '-'}
+          </Typography>
+        )}
       </TableCell>
       <TableCell sx={{ ...hugSx, maxWidth: 150 }}>
         <Typography variant="body2" noWrap title={po.createdBy || undefined} sx={{ maxWidth: 142 }}>
@@ -394,7 +410,13 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued }: P
         {parseServerDate(po.createdAt).toLocaleDateString()}
       </TableCell>
       <TableCell sx={{ ...hugSx, ...tabularSx }}>
-        {po.orderedAt ? parseServerDate(po.orderedAt).toLocaleDateString() : '-'}
+        {noGpDate ? (
+          <Tooltip title={NO_GP_DATE_HINT} arrow>
+            <Box component="span">{formatPoOrderDate(po.orderedAt)}</Box>
+          </Tooltip>
+        ) : (
+          formatPoOrderDate(po.orderedAt)
+        )}
       </TableCell>
       <TableCell sx={{ ...hugSx, ...tabularSx }} align="right">
         {po.lineItemCount}

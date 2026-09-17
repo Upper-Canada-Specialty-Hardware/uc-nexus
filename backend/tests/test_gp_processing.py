@@ -13,7 +13,7 @@ company stubbed, the way the other schema tests stub it (#637).
 
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -67,7 +67,7 @@ def _registered_po(
     nexus_registered=True,
 ):
     """A PO as a PO REGISTRATION leaves it: GP's number and company stamped, ordered_at set to the
-    moment of the push, and none of GP's own values on it yet. A `po_number` of None is a PO GP has
+    day of the push, and none of GP's own values on it yet. A `po_number` of None is a PO GP has
     not numbered - a draft, or a registration that never landed."""
     po = PurchaseOrder(
         id=uuid.uuid4(),
@@ -78,8 +78,8 @@ def _registered_po(
         origin=POOrigin.NEXUS,
         project_id=project.id,
         status=status,
-        # What the registration stamped: now, not GP's document date.
-        ordered_at=datetime(2026, 3, 1, 14, 30),
+        # What the registration stamped: today, not GP's document date.
+        ordered_at=date(2026, 3, 1),
         notes="Call the site before delivery",
         vendor_quote_number="Q-9",
         tariff_amount=Decimal("4.00"),
@@ -161,9 +161,9 @@ def test_gps_copy_lands_on_the_po_and_the_overlay_survives(monkeypatch, db_sessi
 
     db_session.refresh(po)
     db_session.refresh(line)
-    # GP-OWNED FIELDS: GP's document date replaces the moment of the push, freight lands as the
+    # GP-OWNED FIELDS: GP's document date replaces the day of the push, freight lands as the
     # shipping cost, the line takes GP's cost code, unit cost and received quantity.
-    assert po.ordered_at == datetime(2026, 1, 5, 0, 0)
+    assert po.ordered_at == date(2026, 1, 5)
     assert po.shipping_cost == Decimal("12.50")
     assert po.cost_code == "310-000-3"
     assert line.cost_code == "310-000-3"

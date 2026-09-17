@@ -15,6 +15,7 @@ import {
   TableRow,
   ToggleButton,
   ToggleButtonGroup,
+  Tooltip,
 } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
@@ -33,7 +34,7 @@ import {
   GET_RECENT_RECEIVE_RECORDS,
   GET_PENDING_DRAFT_SUMMARIES,
 } from '../../graphql/warehouse';
-import { poVendorName } from '../po/poVendorName';
+import { poVendorLabel, NO_GP_VENDOR, NO_GP_VENDOR_HINT } from '../po/poVendorName';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import { parseServerDate, parseServerDay } from '../../utils/serverDate';
@@ -294,7 +295,27 @@ export default function ReceivingPage() {
           </Typography>
         ),
       },
-      { field: 'vendorName', headerName: 'Vendor', flex: 1 },
+      {
+        field: 'vendorName',
+        headerName: 'Vendor',
+        flex: 1,
+        // #701: a PO raised in GP with no vendor on it yet says so in plain words, and the hover
+        // says whose gap it is. Every other row prints the vendor name exactly as it did before.
+        renderCell: (params) => {
+          const label = params.value as string;
+          return label === NO_GP_VENDOR ? (
+            <Tooltip title={NO_GP_VENDOR_HINT} arrow>
+              <Typography component="span" variant="body2" noWrap>
+                {label}
+              </Typography>
+            </Tooltip>
+          ) : (
+            <Typography component="span" variant="body2" noWrap>
+              {label}
+            </Typography>
+          );
+        },
+      },
       { field: 'projectName', headerName: 'Project', flex: 1 },
       {
         field: 'expectedDeliveryDate',
@@ -369,7 +390,7 @@ export default function ReceivingPage() {
       (openPOsData?.openPosSummary ?? []).map((po) => ({
         id: po.id,
         poNumber: po.poNumber ?? '\u2014',
-        vendorName: poVendorName(po) || '\u2014',
+        vendorName: poVendorLabel(po) || '\u2014',
         projectName: po.projectId ? (projectMap.get(po.projectId) ?? '\u2014') : 'Stock PO',
         expectedDeliveryDate: po.expectedDeliveryDate,
         pendingLines: po.pendingLineCount,

@@ -3,8 +3,9 @@
 import base64
 import logging
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
@@ -21,11 +22,21 @@ from app.models.enums import (
 from app.models.purchase_order import PODocument, PODocumentData, POLineItem, PurchaseOrder
 from app.models.receive_draft import ReceiveDraft
 from app.models.receiving import ReceiveRecord
-from app.services import gp_po
+from app.services import gp_po, gp_window
 
 logger = logging.getLogger(__name__)
 
 _UNSET = object()
+
+
+def _registration_date() -> date:
+    """The calendar date a PO REGISTRATION dates the PO at: today in Toronto, where the people raising
+    them are, rather than today in UTC - which is already tomorrow for anyone working an evening.
+
+    It only ever stands in for GP's own document date: GP-PROCESSING reads the PO straight back and
+    overwrites this with GP's, so this is what the PO reads while the registration is still a PENDING
+    GP WRITE."""
+    return datetime.now(ZoneInfo(gp_window.DEFAULT_TZ)).date()
 
 
 def _line_cost_code(li_data: dict, po_cost_code: str | None) -> str | None:
@@ -323,7 +334,7 @@ def create_po(
         # on it.
         if po.gp_vendor_id is not None:
             po.status = POStatus.GP_REGISTERED
-            po.ordered_at = datetime.utcnow()
+            po.ordered_at = _registration_date()
         session.flush()
 
     # Learn manufacturer -> vendor from this PO once it is GP-registered (issue #232). The helper
@@ -544,7 +555,7 @@ def register_po_in_gp(
     po.po_number = cleaned_po_number
     po.gp_company = cleaned_company
     po.status = POStatus.GP_REGISTERED
-    po.ordered_at = datetime.utcnow()
+    po.ordered_at = _registration_date()
     session.flush()
 
     # Learn manufacturer -> vendor from this now-registered PO (issue #232). Best-effort, savepoint-
