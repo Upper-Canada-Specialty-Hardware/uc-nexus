@@ -258,6 +258,7 @@ def test_create_po_blank_order_as_still_sends_the_category_and_the_code(db_sessi
         cost_code=None,
         po_number=None,
         line_items=[_line_item(None)],
+        site="VANCOUVER",
     )
     assert payload["lines"][0]["item_number"] == "HINGE"
     assert payload["lines"][0]["item_description"] == "AB123"

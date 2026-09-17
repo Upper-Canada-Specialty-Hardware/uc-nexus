@@ -25,6 +25,7 @@ def test_build_create_po_payload_non_job_line():
         cost_code=None,
         po_number=None,
         line_items=[_line_item()],
+        site="VANCOUVER",
     )
     assert payload["header"]["vendor_id"] == "ING100"
     assert payload["header"]["buyer_id"] == "mira"
@@ -53,6 +54,7 @@ def test_build_create_po_payload_defaults_gp_charges_to_zero_without_tax_detail(
         cost_code=None,
         po_number=None,
         line_items=[_line_item()],
+        site="VANCOUVER",
     )
     h = payload["header"]
     assert h["tax_detail_id"] is None
@@ -76,6 +78,7 @@ def test_build_create_po_payload_maps_gp_charges_with_freight_from_shipping_cost
         freight_amount=25.0,
         misc_amount=5.0,
         trade_discount=2.0,
+        site="VANCOUVER",
     )
     h = payload["header"]
     assert h["tax_detail_id"] == "ON HST - P"
@@ -85,7 +88,8 @@ def test_build_create_po_payload_maps_gp_charges_with_freight_from_shipping_cost
 
 
 def test_build_create_po_payload_header_defaults_match_what_gp_entry_expects():
-    """Every header field the register form can leave blank has one answer, and these are they."""
+    """Every header field the register form can leave blank has one answer, and these are they. The
+    site is not among them: it is picked from the company's own GP sites and always sent."""
     from datetime import date
 
     payload = gp_po.build_create_po_payload(
@@ -96,19 +100,43 @@ def test_build_create_po_payload_header_defaults_match_what_gp_entry_expects():
         cost_code=None,
         po_number=None,
         line_items=[_line_item()],
+        site="VANCOUVER",
     )
     h = payload["header"]
     assert h["shipping_method"] == "LOCAL DELIVERY"
     assert h["vendor_address_code"] == "PRIMARY"
-    assert h["site"] == "VANCOUVER"
     assert h["doc_date"] == date.today().isoformat()
     # The form set no contact, so none is sent - the relay then leaves the GP parameter out entirely.
     assert h["contact"] is None
     # Confirm With still falls back, because that field is verified in GP.
     assert h["confirm_with"] == "mira"
     assert h["comment"] is None
-    # And the site is what every line without one of its own is stocked at.
+    # The site given is carried on the header and on every line without one of its own.
+    assert h["site"] == "VANCOUVER"
     assert payload["lines"][0]["location_code"] == "VANCOUVER"
+
+
+def test_build_create_po_payload_refuses_a_po_with_no_site():
+    """A site code only means something in the company that holds it, so there is nothing to fall back
+    on. A PO REGISTRATION that names no site is refused here, before anything reaches GP."""
+    import pytest
+
+    from app.errors import ValidationError
+
+    for missing in (None, "", "   "):
+        with pytest.raises(ValidationError) as excinfo:
+            gp_po.build_create_po_payload(
+                vendor_gp_id="ING100",
+                vendor_contact_name=None,
+                buyer_id="mira",
+                job_number=None,
+                cost_code=None,
+                po_number=None,
+                line_items=[_line_item()],
+                site=missing,
+            )
+        assert excinfo.value.field == "site"
+        assert "site" in excinfo.value.message.lower()
 
 
 def test_build_create_po_payload_carries_the_header_the_form_sent():
@@ -149,6 +177,7 @@ def test_the_vendors_own_contact_names_confirm_with_but_is_not_sent_as_the_conta
         cost_code=None,
         po_number=None,
         line_items=[_line_item()],
+        site="VANCOUVER",
     )
     assert payload["header"]["contact"] is None
     assert payload["header"]["confirm_with"] == "Jane Vendor"
@@ -165,6 +194,7 @@ def test_a_long_contact_and_comment_are_cut_to_gps_widths():
         line_items=[_line_item()],
         contact="C" * 100,
         comment="M" * 600,
+        site="VANCOUVER",
     )
     assert payload["header"]["contact"] == "C" * 61
     assert payload["header"]["comment"] == "M" * 500
@@ -184,6 +214,7 @@ def test_the_register_path_sends_no_po_number_suffix():
         cost_code="310-000-3",
         po_number=None,
         line_items=[_line_item()],
+        site="VANCOUVER",
     )
     assert payload["po_number_suffix"] is None
 
@@ -200,6 +231,7 @@ def test_each_line_carries_its_own_cost_code_and_unit_of_measure():
             _line_item(cost_code="210-200-2", uofm="Box"),
             _line_item(),  # neither, so the PO's cost code and Each
         ],
+        site="VANCOUVER",
     )
     first, second = payload["lines"]
     assert (first["cost_code"], first["uofm"]) == ("210-200-2", "Box")
@@ -215,6 +247,7 @@ def test_a_line_marked_not_job_cost_is_non_inventoried_even_on_a_job_po():
         cost_code="310-000-3",
         po_number=None,
         line_items=[_line_item(job_cost=False), _line_item()],
+        site="VANCOUVER",
     )
     plain, job = payload["lines"]
     assert plain["product_indicator"] == 1
@@ -234,6 +267,7 @@ def test_build_create_po_payload_job_cost_line_carries_job_and_cost_code():
         cost_code="310-000-3",
         po_number="ucnexus-42",
         line_items=[_line_item()],
+        site="VANCOUVER",
     )
     assert payload["po_number"] == "ucnexus-42"
     # no vendor contact name - falls back to the buyer id
@@ -256,6 +290,7 @@ def test_order_as_never_reaches_gp_whatever_it_holds():
             cost_code=None,
             po_number=None,
             line_items=[line_item],
+            site="VANCOUVER",
         )
         assert payload["lines"][0]["item_number"] == "HINGE"
         assert payload["lines"][0]["item_description"] == "AB123"
@@ -270,6 +305,7 @@ def test_build_create_po_payload_trims_the_category_and_the_code():
         cost_code=None,
         po_number=None,
         line_items=[_line_item(hardware_category="  HINGE  ", product_code="  AB123  ")],
+        site="VANCOUVER",
     )
     assert payload["lines"][0]["item_number"] == "HINGE"
     assert payload["lines"][0]["item_description"] == "AB123"
@@ -285,6 +321,7 @@ def test_build_create_po_payload_truncates_confirm_with_and_item_number():
         cost_code=None,
         po_number=None,
         line_items=[_line_item(hardware_category="B" * 50)],
+        site="VANCOUVER",
     )
     assert payload["header"]["confirm_with"] == long_name[:20]
     # GP's ITEMNMBR is 30 characters. An over-long category is cut, never a reason to refuse the PO.
@@ -300,6 +337,7 @@ def test_an_over_long_product_code_is_cut_to_gps_description_width():
         cost_code=None,
         po_number=None,
         line_items=[_line_item(product_code="C" * 150)],
+        site="VANCOUVER",
     )
     assert payload["lines"][0]["item_description"] == ("C" * 150)[:100]
 
@@ -317,6 +355,7 @@ def test_the_attempt_key_travels_beside_the_po_number_not_inside_the_header():
         po_number=None,
         line_items=[_line_item()],
         idempotency_key="7f1c9a3e-key",
+        site="VANCOUVER",
     )
     assert payload["idempotency_key"] == "7f1c9a3e-key"
     assert "idempotency_key" not in payload["header"]
@@ -332,6 +371,7 @@ def test_a_payload_built_without_a_key_carries_a_null_one():
         cost_code=None,
         po_number=None,
         line_items=[_line_item()],
+        site="VANCOUVER",
     )
     assert payload["idempotency_key"] is None
 

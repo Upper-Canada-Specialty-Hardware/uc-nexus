@@ -12,6 +12,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from pydantic import ValidationError
 
 from ucnexus_relay import econnect, models, ops
 from ucnexus_relay.econnect import create_po_header, update_po_header_subtotal
@@ -147,7 +148,13 @@ _REFUSALS = ("shipping_method_not_registered", "site_not_registered", "vendor_ad
 
 
 def _po(*, lines=None, **header):
-    fields = dict(vendor_id="ING100", buyer_id="mira", confirm_with="mira", doc_date=date(2026, 1, 1))
+    fields = dict(
+        vendor_id="ING100",
+        buyer_id="mira",
+        confirm_with="mira",
+        doc_date=date(2026, 1, 1),
+        site="VANCOUVER",
+    )
     fields.update(header)
     return models.CreatePoRequest(
         company="TUBC",
@@ -188,6 +195,15 @@ def test_an_unregistered_shipping_method_is_refused_by_name(monkeypatch):
     assert excinfo.value.code == "shipping_method_not_registered"
     assert "BY DRONE" in excinfo.value.message
     assert "TUBC" in excinfo.value.message
+
+
+def test_a_header_with_no_site_never_becomes_a_request():
+    """A site code only exists in the company that set it up, so the relay has nothing to fall back on.
+    A PO REGISTRATION that names none is refused at the model boundary, before any GP connection."""
+    with pytest.raises(ValidationError) as excinfo:
+        models.POHeader(vendor_id="ING100", buyer_id="mira", confirm_with="mira", doc_date=date(2026, 1, 1))
+
+    assert any(err["loc"] == ("site",) for err in excinfo.value.errors())
 
 
 def test_a_site_gp_does_not_hold_is_refused_by_name(monkeypatch):

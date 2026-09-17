@@ -136,10 +136,11 @@ interface GpTaxDetailOption {
   percent: number; // GP TXDTLPCT
 }
 
-// What GP falls back to when a header field is left unsaid, and the caps its own fields carry.
+// What GP falls back to when a header field is left unsaid, and the caps its own fields carry. The
+// site has no entry here on purpose: a site code only exists in the company that set it up, so it is
+// always picked from that company's own GP list.
 const DEFAULT_SHIPPING_METHOD = 'LOCAL DELIVERY';
 const DEFAULT_VENDOR_ADDRESS_CODE = 'PRIMARY';
-const DEFAULT_SITE = 'VANCOUVER';
 const DEFAULT_UOFM = 'Each';
 const MAX_ITEM_NUMBER = 30;
 const MAX_DESCRIPTION = 100;
@@ -181,14 +182,26 @@ interface GpPickFieldProps {
   readOnly: boolean;
   readOnlyHelper: string;
   minWidth: number;
+  /** A validation failure on this field, shown in place of any other helper text. */
+  error?: string;
 }
 
 /**
  * A GP header pick that survives a list the relay cannot serve (an out-of-date build, a failed read,
  * or a company that defines none): the control becomes a read-only field holding the value the
- * registration will carry, so registering is never blocked on a list loading.
+ * registration will carry, so registering is never blocked on a list loading. A field with no default
+ * to hold - the site - then sits blank and says why, and its own validation refuses the registration.
  */
-function GpPickField({ label, value, onChange, options, readOnly, readOnlyHelper, minWidth }: GpPickFieldProps) {
+function GpPickField({
+  label,
+  value,
+  onChange,
+  options,
+  readOnly,
+  readOnlyHelper,
+  minWidth,
+  error,
+}: GpPickFieldProps) {
   if (readOnly) {
     return (
       <TextField
@@ -197,11 +210,15 @@ function GpPickField({ label, value, onChange, options, readOnly, readOnlyHelper
         size="small"
         sx={{ minWidth, '& input': monoSx }}
         disabled
-        helperText={readOnlyHelper}
+        error={!!error}
+        helperText={error || readOnlyHelper}
+        slotProps={{ inputLabel: { shrink: true } }}
       />
     );
   }
-  const shown = options.some((o) => o.value === value) ? options : [{ value, label: value }, ...options];
+  // A blank value is "nothing picked yet", so it stays out of the menu - prepending it would put an
+  // unlabelled row above the real options.
+  const shown = !value || options.some((o) => o.value === value) ? options : [{ value, label: value }, ...options];
   return (
     <TextField
       select
@@ -210,6 +227,8 @@ function GpPickField({ label, value, onChange, options, readOnly, readOnlyHelper
       onChange={(e) => onChange(e.target.value)}
       size="small"
       sx={{ minWidth, '& .MuiSelect-select': monoSx }}
+      error={!!error}
+      helperText={error}
     >
       {shown.map((o) => (
         <MenuItem key={o.value} value={o.value}>
@@ -347,8 +366,9 @@ export default function GpPurchaseOrderDialog({
   // GP vendor is picked at register time (#509).
   const [preferredDeliveryDate, setPreferredDeliveryDate] = useState('');
   const [costCode, setCostCode] = useState('');
-  // GP's own header fields. An empty pick means "whatever the vendor card, then GP, defaults to";
-  // the effective values below are what the registration actually sends.
+  // GP's own header fields. An empty shipping method or vendor address means "whatever the vendor
+  // card, then GP, defaults to"; the effective values below are what the registration actually sends.
+  // An empty site means nothing has been picked yet, and the registration is refused until one is.
   const [shippingMethod, setShippingMethod] = useState('');
   const [vendorAddressCode, setVendorAddressCode] = useState('');
   const [site, setSite] = useState('');
@@ -466,7 +486,9 @@ export default function GpPurchaseOrderDialog({
   const effectiveShippingMethod = shippingMethod || selectedVendor?.shippingMethod || DEFAULT_SHIPPING_METHOD;
   const effectiveVendorAddressCode =
     vendorAddressCode || selectedVendor?.purchaseAddressCode || DEFAULT_VENDOR_ADDRESS_CODE;
-  const effectiveSite = site || DEFAULT_SITE;
+  // The site is the one header field with nothing to fall back on, so it starts blank and is required.
+  // The single exception is a company whose GP holds exactly one site: there is nothing to choose.
+  const effectiveSite = site || (sites.length === 1 ? sites[0].code : '');
   const effectiveContact = contactEdited ? contact : selectedVendor?.contact || gpBuyerId || '';
 
   // Issue #257: live GP purchase tax details (TX00201, TXDTLTYP=2) for the tax-detail dropdown.
@@ -849,6 +871,15 @@ export default function GpPurchaseOrderDialog({
       else if (!vendorConfirmed) errs.vendor = 'Confirm the suggested GP vendor before registering';
       // Issue #216: the PO is pushed as the caller's own GP buyer identity.
       if (!gpBuyerId) errs.buyer = 'Your account has no GP buyer identity - ask an Admin to set it in User Management';
+      // The site GP stocks every line at. It has no default - a site code only exists in the company
+      // that set it up - so a registration that names none is refused here, before it reaches GP,
+      // which would refuse it as an unregistered site.
+      if (!effectiveSite) {
+        errs.site =
+          sites.length === 0
+            ? 'The site list could not be read from GP - a PO cannot be registered without a site'
+            : 'Choose the GP site';
+      }
       // GP's own caps on the two header text fields.
       if (effectiveContact.trim().length > MAX_CONTACT) errs.contact = `At most ${MAX_CONTACT} characters`;
       if (comment.trim().length > MAX_COMMENT) errs.comment = `At most ${MAX_COMMENT} characters`;
@@ -891,7 +922,7 @@ export default function GpPurchaseOrderDialog({
       errs.tradeDiscount = 'Must be >= 0';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, effectiveContact, comment, isJob, costCode, costCodes, shippingCost, tariffAmount, isForeignCurrency, taxDetailId, gpTaxDetails.length, taxDetailsOpUnsupported, taxDetailsFailed, miscellaneous, tradeDiscount]);
+  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, effectiveSite, sites.length, effectiveContact, comment, isJob, costCode, costCodes, shippingCost, tariffAmount, isForeignCurrency, taxDetailId, gpTaxDetails.length, taxDetailsOpUnsupported, taxDetailsFailed, miscellaneous, tradeDiscount]);
 
   /**
    * Stage two: read the PO back out of GP and hand the finished PO to the caller. Also what "Try
@@ -1547,9 +1578,10 @@ export default function GpPurchaseOrderDialog({
             readOnly={sites.length === 0}
             readOnlyHelper={
               entryOptionsUnsupported
-                ? 'Relay out of date - the GP default is used'
-                : 'The GP default is used'
+                ? 'Relay out of date - site list not available'
+                : 'Site list not available from GP'
             }
+            error={errors.site}
             minWidth={200}
           />
           <TextField

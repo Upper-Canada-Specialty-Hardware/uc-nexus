@@ -472,9 +472,11 @@ class RegisterPOInput:
     tax_detail_id: str | None = None
     miscellaneous: float | None = None
     trade_discount: float | None = None
-    # The rest of what GP's Purchase Order Entry header takes. Null means the default in every case:
-    # LOCAL DELIVERY, the vendor's PRIMARY purchase address, the VANCOUVER site, today's date, the
-    # vendor's contact (falling back to the buyer id), and no comment.
+    # The rest of what GP's Purchase Order Entry header takes. Null means the default: LOCAL DELIVERY,
+    # the vendor's PRIMARY purchase address, today's date, the vendor's contact (falling back to the
+    # buyer id), and no comment. The site is the exception - it has no default, because a site code is
+    # only valid in the company that holds it. The field stays optional here so an older client's
+    # request still parses, and a request that names no site is refused when the payload is built.
     shipping_method: str | None = None
     vendor_address_code: str | None = None
     site: str | None = None

@@ -480,6 +480,7 @@ def test_register_allows_a_blank_order_as(db_session):
         cost_code=None,
         po_number="PO0000102",
         line_items=[line_input],
+        site="VANCOUVER",
     )
     # Order As blank or not, GP gets the category as the item number and the code as the description.
     assert payload["lines"][0]["item_number"] == "HINGE"
@@ -560,6 +561,7 @@ def test_prepare_register_po_attaches_manufacturer_per_line(monkeypatch, db_sess
         buyer_id="mira",
         cost_code="210-200-2",
         line_items_data=[_register_line("HINGE", "HG-100", "ALIAS-100"), _register_line("LOCK", "LK-200", "ALIAS-200")],
+        site="VANCOUVER",
     )
 
     assert [line["manufacturer"] for line in payload["lines"]] == ["SCHLAGE", "SARGENT"]
@@ -585,6 +587,7 @@ def test_prepare_register_po_accepts_any_cost_code(monkeypatch, db_session):
         buyer_id="mira",
         cost_code="900-000-9",  # 'Misc.' - never in anyone's designated list
         line_items_data=[_register_line("HINGE", "HG-100", "ALIAS-100")],
+        site="VANCOUVER",
     )
 
     assert payload["lines"][0]["cost_code"] == "900-000-9"
@@ -625,6 +628,7 @@ def test_prepare_register_po_disagreeing_items_take_first_non_null_and_log(monke
             buyer_id="mira",
             cost_code="210-200-2",
             line_items_data=[_register_line("HINGE", "HG-100", "ALIAS-100")],
+            site="VANCOUVER",
         )
 
     assert payload["lines"][0]["manufacturer"] == "SCHLAGE"
@@ -773,6 +777,7 @@ def test_the_register_resolver_lands_a_stock_draft_on_the_project_the_dialog_cho
                 project_id=str(project.id),
                 cost_code="210-200-2",
                 idempotency_key=str(uuid.uuid4()),
+                site="VANCOUVER",
             ),
         )
     )
@@ -839,6 +844,7 @@ def _run_register(draft, key):
                     )
                 ],
                 idempotency_key=key,
+                site="VANCOUVER",
             ),
         )
     )

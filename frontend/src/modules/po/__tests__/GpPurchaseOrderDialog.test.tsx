@@ -124,8 +124,11 @@ const projectDraft: PurchaseOrder = {
   lineItems: [{ ...stockDraft.lineItems[0], jobCost: true }],
 };
 
-// GP's own header pick lists, and the addresses it holds for a vendor.
-function entryOptionsMock(): MockedResponse {
+// GP's own header pick lists, and the addresses it holds for a vendor. One site unless a test says
+// otherwise: a company with a single site has nothing to choose, so the dialog preselects it.
+const ONE_SITE = [{ code: 'VANCOUVER', description: 'Vancouver warehouse' }];
+
+function entryOptionsMock(sites: { code: string; description: string | null }[] = ONE_SITE): MockedResponse {
   return {
     request: { query: GET_GP_PO_ENTRY_OPTIONS, variables: { company: 'UCS' } },
     result: {
@@ -136,16 +139,18 @@ function entryOptionsMock(): MockedResponse {
             { id: 'LOCAL DELIVERY', description: 'Local delivery', __typename: 'GpShippingMethod' },
             { id: 'PICKUP', description: 'Customer pickup', __typename: 'GpShippingMethod' },
           ],
-          sites: [
-            { code: 'VANCOUVER', description: 'Vancouver warehouse', __typename: 'GpSite' },
-            { code: 'CALGARY', description: 'Calgary warehouse', __typename: 'GpSite' },
-          ],
+          sites: sites.map((s) => ({ ...s, __typename: 'GpSite' })),
           unitsOfMeasure: ['Each', 'Box', 'Case'],
         },
       },
     },
     maxUsageCount: INFINITE,
   };
+}
+
+/** The base mocks, with GP answering the pick lists for a company that holds exactly `sites`. */
+function withSites(sites: { code: string; description: string | null }[]): MockedResponse[] {
+  return baseMocks().map((m) => (m.request.query === GET_GP_PO_ENTRY_OPTIONS ? entryOptionsMock(sites) : m));
 }
 
 function vendorAddressesMock(vendorId: string, codes: string[]): MockedResponse {
@@ -1234,7 +1239,8 @@ it('sends the GP header fields, seeded from GP defaults and changeable', async (
   ]);
   await waitForVendorPreselect();
 
-  // The Ace vendor card names none of them, so the header starts on GP's own defaults.
+  // The Ace vendor card names none of them, so the header starts on GP's own defaults. The site is
+  // not one of those - it is preselected because this company's GP holds exactly one.
   expect(screen.getByLabelText('Shipping method')).toHaveTextContent('LOCAL DELIVERY');
   expect(screen.getByLabelText('Vendor address')).toHaveTextContent('PRIMARY');
   expect(screen.getByLabelText('Site')).toHaveTextContent('VANCOUVER');
@@ -1243,9 +1249,6 @@ it('sends the GP header fields, seeded from GP defaults and changeable', async (
 
   const shipping = await openSelect('Shipping method');
   fireEvent.click(within(shipping).getByText(/PICKUP/));
-  await closeSelect();
-  const site = await openSelect('Site');
-  fireEvent.click(within(site).getByText(/CALGARY/));
   await closeSelect();
   fireEvent.change(screen.getByLabelText('PO date'), { target: { value: '2026-09-20' } });
   fireEvent.change(screen.getByLabelText('Contact'), { target: { value: 'Dana Reid' } });
@@ -1259,7 +1262,7 @@ it('sends the GP header fields, seeded from GP defaults and changeable', async (
     input: {
       shippingMethod: 'PICKUP',
       vendorAddressCode: 'PRIMARY',
-      site: 'CALGARY',
+      site: 'VANCOUVER',
       docDate: '2026-09-20',
       contact: 'Dana Reid',
       comment: 'Hold for pickup',
@@ -1280,7 +1283,7 @@ it("follows the picked vendor's own shipping method, address and contact", async
   expect(screen.getByLabelText('Contact')).toHaveValue('Allegion Desk');
 });
 
-it('falls back to read-only GP defaults when the relay cannot serve the pick lists, and still registers', async () => {
+it('falls back to read-only GP defaults when the relay cannot serve the pick lists, but will not guess a site', async () => {
   const calls: Record<string, unknown>[] = [];
   // A relay too old to serve list_po_entry_options answers RELAY_OP_UNSUPPORTED.
   const opUnsupportedMocks = baseMocks().map((m) =>
@@ -1300,19 +1303,94 @@ it('falls back to read-only GP defaults when the relay cannot serve the pick lis
   ]);
   await waitForVendorPreselect();
 
-  // The dropdowns become read-only fields holding exactly what will be sent.
+  // The shipping method and the vendor address become read-only fields holding what GP defaults to.
   await waitFor(() => expect(screen.getByLabelText('Shipping method')).toBeDisabled());
   expect(screen.getByLabelText('Shipping method')).toHaveValue('LOCAL DELIVERY');
-  expect(screen.getByLabelText('Site')).toHaveValue('VANCOUVER');
   expect(screen.getAllByText(/Relay out of date/).length).toBeGreaterThan(0);
+  // The site has no default to hold, so it sits blank and says the list could not be read.
+  expect(screen.getByLabelText('Site')).toBeDisabled();
+  expect(screen.getByLabelText('Site')).toHaveValue('');
+  expect(screen.getByText('Relay out of date - site list not available')).toBeInTheDocument();
+
+  await selectTaxDetail();
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+
+  // Nothing reaches GP: a PO REGISTRATION without a site would be refused there as an unknown site.
+  expect(
+    await screen.findByText('The site list could not be read from GP - a PO cannot be registered without a site'),
+  ).toBeInTheDocument();
+  expect(calls).toHaveLength(0);
+  expect(onRegistered).not.toHaveBeenCalled();
+});
+
+it('registers on the only site the company has, without asking', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const { onRegistered } = renderDialog({ registerPo: stockDraft }, [
+    ...baseMocks(),
+    registerCallCollector(calls),
+  ]);
+  await waitForVendorPreselect();
+
+  // One site in GP is nothing to choose between, so it is already picked.
+  expect(screen.getByLabelText('Site')).toHaveTextContent('VANCOUVER');
 
   await selectTaxDetail();
   fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
   await waitFor(() => expect(onRegistered).toHaveBeenCalled());
-  expect(calls[0]).toMatchObject({
-    input: { shippingMethod: 'LOCAL DELIVERY', vendorAddressCode: 'PRIMARY', site: 'VANCOUVER' },
-  });
+  expect(calls[0]).toMatchObject({ input: { site: 'VANCOUVER' } });
+});
+
+it('starts the site blank when GP holds several, and refuses to register until one is picked', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const { onRegistered } = renderDialog({ registerPo: stockDraft }, [
+    ...withSites([
+      { code: 'VANCOUVER', description: 'Vancouver warehouse' },
+      { code: 'CALGARY', description: 'Calgary warehouse' },
+    ]),
+    registerCallCollector(calls),
+  ]);
+  await waitForVendorPreselect();
+  await selectTaxDetail();
+
+  // Neither site is the obvious one, so nothing is picked for the buyer.
+  const siteField = screen.getByLabelText('Site');
+  expect(siteField).not.toHaveTextContent('VANCOUVER');
+  expect(siteField).not.toHaveTextContent('CALGARY');
+
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+  expect(await screen.findByText('Choose the GP site')).toBeInTheDocument();
+  expect(calls).toHaveLength(0);
+
+  const site = await openSelect('Site');
+  fireEvent.click(within(site).getByText(/CALGARY/));
+  await closeSelect();
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+
+  await waitFor(() => expect(onRegistered).toHaveBeenCalled());
+  expect(calls[0]).toMatchObject({ input: { site: 'CALGARY' } });
+});
+
+it('refuses to register when GP served no sites at all', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const { onRegistered } = renderDialog({ registerPo: stockDraft }, [
+    ...withSites([]),
+    registerCallCollector(calls),
+  ]);
+  await waitForVendorPreselect();
+  await selectTaxDetail();
+
+  // Read-only with nothing in it, because there is no site to fall back on.
+  await waitFor(() => expect(screen.getByLabelText('Site')).toBeDisabled());
+  expect(screen.getByLabelText('Site')).toHaveValue('');
+  expect(screen.getByText('Site list not available from GP')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
+  expect(
+    await screen.findByText('The site list could not be read from GP - a PO cannot be registered without a site'),
+  ).toBeInTheDocument();
+  expect(calls).toHaveLength(0);
+  expect(onRegistered).not.toHaveBeenCalled();
 });
 
 it('registers a project PO on its per-line cost codes, with nothing picked above the grid', async () => {

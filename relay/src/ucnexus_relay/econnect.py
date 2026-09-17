@@ -269,7 +269,7 @@ def create_po_line(
     quantity: Decimal,
     unit_cost: Decimal,
     line_ord: int,
-    location_code: str = "VANCOUVER",
+    location_code: str,
     uofm: str = "Each",
     manufacturer: str | None = None,
     po_type: int = 1,

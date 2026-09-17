@@ -12,7 +12,6 @@ from app.errors import ValidationError
 
 logger = logging.getLogger(__name__)
 
-_SITE = "VANCOUVER"
 _SHIPPING_METHOD = "LOCAL DELIVERY"
 _VENDOR_ADDRESS_CODE = "PRIMARY"
 _UOFM = "Each"
@@ -133,10 +132,14 @@ def build_create_po_payload(
 
     The rest of the header is what GP's Purchase Order Entry takes: the shipping method, the vendor's
     purchase address code, the site every line is stocked at, the document date, the contact, and the
-    comment. Each defaults to what every registration has sent so far, except the contact, which is
-    sent only when the form actually set one - see the header below."""
+    comment. The shipping method and the vendor address code default to what every registration has
+    sent so far, and the contact is sent only when the form actually set one - see the header below.
+    The site has no default: it has to be one of the sites the company's own GP holds (IV40700), so a
+    PO REGISTRATION that names none is refused here rather than by the relay."""
     has_project = job_number is not None
-    header_site = (site or "").strip() or _SITE
+    header_site = (site or "").strip()
+    if not header_site:
+        raise ValidationError("A GP site is required to register a PO", field="site")
     header_cost_code = (cost_code or "").strip() or None
     # GP's Confirm With is the person at the vendor this PO was placed with. The register form sends
     # the vendor's own contact as its default; with neither that nor an explicit value, the buyer id

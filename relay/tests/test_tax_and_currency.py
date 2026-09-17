@@ -195,6 +195,7 @@ def _usd_po_request():
             buyer_id="BUYER1",
             confirm_with="test",
             doc_date=date(2026, 8, 26),
+            site="VANCOUVER",
         ),
         lines=[
             models.POLine(
