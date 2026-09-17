@@ -6,7 +6,6 @@ import {
   Alert,
   Box,
   Button,
-  Checkbox,
   Chip,
   CircularProgress,
   Divider,
@@ -31,10 +30,11 @@ import {
   batchedOpeningNumbers,
   buildBatchLines,
   ceilingFor,
+  freeFor,
+  hasAnythingFree,
   lineKey,
   openingCoverage,
   productSummary,
-  seedAllocation,
   type Allocation,
   type AllocationReview,
   type BatchLineInput,
@@ -58,13 +58,21 @@ interface BatchReviewPanelProps {
 const NUM_COL = { ...tabularSx, width: 1, whiteSpace: 'nowrap' } as const;
 
 /**
- * The Shop Assembly Manager's batch composer (#643/#644).
+ * The Shop Assembly Manager's batch composer (#643/#644/#706).
  *
  * The walk is one opening at a time because that is the unit of the decision: batching an opening
  * consumes it, remainder and all, so the manager has to look at each door's lines rather than skim a
- * flat list of two hundred. The rail on the left is the walk made addressable - prev/next, and a
- * click to jump - and it earns its width by carrying each opening's include state and coverage,
- * which is the whole of what the manager needs to see about the openings they are not looking at.
+ * flat list of two hundred.
+ *
+ * Every Send box starts EMPTY. What leaves the building is the manager's decision, and a sheet that
+ * arrives already filled in is a default in everything but name - it gets pressed through unread,
+ * and the openings it quietly half-filled have forfeited the rest. So an opening is on the batch
+ * exactly when one of its boxes holds a quantity, which is why there is no include control to keep
+ * in step with the numbers.
+ *
+ * The rail on the left is the walk made addressable - prev/next, and a click to jump - and it earns
+ * its width by carrying each opening's state, read from its own quantities: nothing on the shelf,
+ * part of what it is owed, all of it, or not yet touched.
  *
  * The product summary is COLLAPSED by default (#644). It answers a different question - "does this
  * batch fit what is on the shelf" - which matters once, at the end, not on every door.
@@ -83,12 +91,11 @@ export default function BatchReviewPanel({
   const lines = useMemo(() => allLines(review), [review]);
 
   const [allocation, setAllocation] = useState<Allocation>(new Map());
-  const [included, setIncluded] = useState<Set<string>>(new Set());
   const [cursor, setCursor] = useState(0);
-  // The offer the state below was seeded from. Re-seeding on every render would discard the
-  // manager's manual moves; re-seeding on a genuinely different offer (a batch landed, stock
-  // arrived) is the correct answer rather than a loss.
-  const [seededFor, setSeededFor] = useState<string | null>(null);
+  // The offer the state below belongs to. Clearing on every render would throw away what the
+  // manager has typed; clearing on a genuinely different offer (a batch landed, stock arrived) is
+  // the correct answer rather than a loss, because the quantities were chosen against the old one.
+  const [clearedFor, setClearedFor] = useState<string | null>(null);
 
   const signature = useMemo(
     () =>
@@ -102,23 +109,14 @@ export default function BatchReviewPanel({
   // Adjusted during render rather than in an effect, which is the React-documented shape for
   // "reset state when the input changes": an effect would paint one frame of the previous request's
   // numbers under the new one's opening list.
-  if (review && seededFor !== signature) {
-    const seeded = seedAllocation(review);
-    setSeededFor(signature);
-    setAllocation(seeded);
-    // Every opening the seed could put something on starts included; one with nothing allocatable
-    // starts out, because it cannot be batched at all and a ticked box promising otherwise is a lie.
-    setIncluded(
-      new Set(
-        review.openings
-          .filter((o) => o.lines.some((l) => (seeded.get(lineKey(l)) ?? 0) > 0))
-          .map((o) => o.openingNumber),
-      ),
-    );
+  if (review && clearedFor !== signature) {
+    setClearedFor(signature);
+    setAllocation(new Map());
     setCursor(0);
   }
 
   const current = openings[Math.min(cursor, Math.max(openings.length - 1, 0))] ?? null;
+  const currentCoverage = current ? openingCoverage(current.lines, allocation) : 'NONE';
 
   const setLineQuantity = useCallback(
     (key: string, value: number) => {
@@ -131,21 +129,9 @@ export default function BatchReviewPanel({
     [],
   );
 
-  const toggleOpening = useCallback((openingNumber: string) => {
-    setIncluded((prev) => {
-      const next = new Set(prev);
-      if (next.has(openingNumber)) next.delete(openingNumber);
-      else next.add(openingNumber);
-      return next;
-    });
-  }, []);
-
-  const batchLines = useMemo(() => buildBatchLines(review, allocation, included), [review, allocation, included]);
-  const batchOpenings = useMemo(
-    () => batchedOpeningNumbers(review, allocation, included),
-    [review, allocation, included],
-  );
-  const summary = useMemo(() => productSummary(review, allocation, included), [review, allocation, included]);
+  const batchLines = useMemo(() => buildBatchLines(review, allocation), [review, allocation]);
+  const batchOpenings = useMemo(() => batchedOpeningNumbers(review, allocation), [review, allocation]);
+  const summary = useMemo(() => productSummary(review, allocation), [review, allocation]);
   const overAllocated = summary.filter((row) => row.allocated > row.available);
 
   // A disabled button with nothing beside it reads as broken, so each blocker says which - and when
@@ -158,7 +144,7 @@ export default function BatchReviewPanel({
         ? 'One product is allocated past what is free - lower it before dispatching.'
         : `${overAllocated.length} products are allocated past what is free - lower them before dispatching.`
       : batchLines.length === 0
-        ? 'Tick at least one opening and give it a quantity.'
+        ? 'Enter a quantity on at least one opening.'
         : leftWaiting > 0
           ? `Reserves the hardware and puts a pull on the warehouse floor. ${plural(
               leftWaiting,
@@ -204,7 +190,6 @@ export default function BatchReviewPanel({
         >
           {openings.map((opening, index) => {
             const coverage = openingCoverage(opening.lines, allocation);
-            const isIncluded = included.has(opening.openingNumber);
             const isCurrent = index === cursor;
             return (
               <Box
@@ -214,9 +199,7 @@ export default function BatchReviewPanel({
                 aria-label={`Go to ${opening.openingNumber}`}
                 aria-current={isCurrent || undefined}
                 onClick={() => setCursor(index)}
-                // Guarded so Space on the nested checkbox toggles it without also jumping the walk.
                 onKeyDown={(e) => {
-                  if (e.target !== e.currentTarget) return;
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
                     setCursor(index);
@@ -240,21 +223,14 @@ export default function BatchReviewPanel({
                   },
                 }}
               >
-                <Checkbox
-                  size="small"
-                  checked={isIncluded}
-                  disabled={busy}
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={() => toggleOpening(opening.openingNumber)}
-                  sx={{ p: 0.25 }}
-                  inputProps={{ 'aria-label': `Include ${opening.openingNumber} in this batch` }}
-                />
                 <Typography sx={{ ...monoSx, flexGrow: 1, minWidth: 0 }} noWrap>
                   {opening.openingNumber}
                 </Typography>
-                {/* Only a shortfall carries a hue. A fully covered opening is the expected outcome
-                    and recedes rather than being celebrated down the whole rail - which also keeps
-                    the status hues on this screen meaning "something is missing here". */}
+                {/* A hue only where there is something to say. Red is the one state the manager
+                    cannot fix from here - nothing on the shelf for this door - and amber is a
+                    partial batch, which forfeits the rest. A fully covered opening recedes to grey
+                    rather than being celebrated down the whole rail, and an opening nobody has
+                    typed into yet gets no dot at all, so a freshly opened request is quiet. */}
                 <Box
                   aria-hidden
                   sx={{
@@ -262,12 +238,13 @@ export default function BatchReviewPanel({
                     height: 7,
                     borderRadius: '50%',
                     flexShrink: 0,
-                    bgcolor:
-                      coverage === 'NONE'
-                        ? 'error.main'
-                        : coverage === 'PARTIAL'
-                          ? 'warning.main'
-                          : 'action.disabled',
+                    bgcolor: !hasAnythingFree(opening.lines)
+                      ? 'error.main'
+                      : coverage === 'PARTIAL'
+                        ? 'warning.main'
+                        : coverage === 'FULL'
+                          ? 'action.disabled'
+                          : 'transparent',
                   }}
                 />
               </Box>
@@ -299,22 +276,19 @@ export default function BatchReviewPanel({
               <ChevronRight size={18} strokeWidth={1.75} />
             </IconButton>
             <Box sx={{ flexGrow: 1 }} />
-            {/* Outlined and ink whichever way it reads: the screen already spends its one amber on
-                Create batch, and a second filled accent here would compete with it. The state is
-                carried by the label, the tick, and the rail checkbox this mirrors. */}
+            {/* A readout, not a control: whether this opening is on the batch is decided in the
+                Send boxes below, and a button here would be a second place to say the same thing.
+                Outlined rather than filled because the screen spends its one accent on Create
+                batch. */}
             {current && (
-              <Button
+              <Chip
                 size="small"
                 variant="outlined"
-                color="primary"
-                disabled={busy}
-                startIcon={
-                  included.has(current.openingNumber) ? <Check size={16} strokeWidth={2} /> : undefined
-                }
-                onClick={() => toggleOpening(current.openingNumber)}
-              >
-                {included.has(current.openingNumber) ? 'In this batch' : 'Not in this batch'}
-              </Button>
+                color={currentCoverage === 'NONE' ? 'default' : 'primary'}
+                icon={currentCoverage === 'NONE' ? undefined : <Check size={14} strokeWidth={2} />}
+                label={currentCoverage === 'NONE' ? 'Nothing entered' : 'In this batch'}
+                sx={currentCoverage === 'NONE' ? { color: 'text.disabled', borderColor: 'divider' } : undefined}
+              />
             )}
           </Stack>
 
@@ -336,7 +310,8 @@ export default function BatchReviewPanel({
                     {current.lines.map((line) => {
                       const key = lineKey(line);
                       const allocated = allocation.get(key) ?? 0;
-                      const ceiling = ceilingFor(line, allocation, included, lines);
+                      const free = freeFor(line, allocation, lines);
+                      const ceiling = ceilingFor(line, allocation, lines);
                       const short = line.requestedQuantity - allocated;
                       return (
                         <TableRow key={key} hover>
@@ -345,23 +320,26 @@ export default function BatchReviewPanel({
                           <TableCell align="right" sx={NUM_COL}>
                             {line.requestedQuantity}
                           </TableCell>
-                          {/* The pool this line competes for, not a share of it. The ceiling below
-                              is what is left of it once the other included openings have taken
-                              theirs, which is why raising one door lowers another's headroom. */}
+                          {/* What this opening can still take: the pool less what every other
+                              opening's boxes already hold, which is why entering a quantity on one
+                              door lowers another's headroom. The tooltip is the whole pool, as it
+                              stood before this batch touched it. */}
                           <TableCell align="right" sx={NUM_COL}>
                             <Tooltip
                               arrow
-                              title={`${ceiling} still free for this opening once the rest of the batch has taken its share`}
+                              title={`${line.availableQuantity} free across the project before this batch`}
                             >
-                              <span>{line.availableQuantity}</span>
+                              <span>{free}</span>
                             </Tooltip>
                           </TableCell>
                           <TableCell align="right" sx={NUM_COL}>
                             <TextField
                               size="small"
                               type="number"
-                              value={allocated}
-                              disabled={busy || !included.has(current.openingNumber)}
+                              // Empty rather than a zero: a box showing 0 reads as an answer already
+                              // given, and none has been given until the manager types one.
+                              value={allocated > 0 ? allocated : ''}
+                              disabled={busy}
                               onChange={(e) => {
                                 const raw = Number(e.target.value);
                                 const next = Number.isFinite(raw) ? Math.floor(raw) : 0;
@@ -375,14 +353,16 @@ export default function BatchReviewPanel({
                               }}
                             />
                           </TableCell>
-                          {/* A zero here is the good outcome, so it recedes; anything above it is
-                              what the manager is choosing to forfeit by batching this opening. */}
+                          {/* What batching this opening would forfeit, so it only carries a hue
+                              once there is something to forfeit. On an opening with empty boxes
+                              the figure is simply what it is owed, and colouring that would make a
+                              freshly opened request a wall of amber. */}
                           <TableCell
                             align="right"
                             sx={{
                               ...NUM_COL,
-                              color: short > 0 ? 'warning.main' : 'text.disabled',
-                              fontWeight: short > 0 ? 600 : 400,
+                              color: short > 0 && currentCoverage !== 'NONE' ? 'warning.main' : 'text.disabled',
+                              fontWeight: short > 0 && currentCoverage !== 'NONE' ? 600 : 400,
                             }}
                           >
                             {short}
@@ -394,19 +374,18 @@ export default function BatchReviewPanel({
                 </Table>
               </TableContainer>
 
-              {openingCoverage(current.lines, allocation) === 'NONE' && (
+              {!hasAnythingFree(current.lines) && (
                 <Alert severity="info" sx={{ mt: 1 }}>
                   Nothing is free for this opening, so it cannot go on a batch. Leave it out and it
                   stays waiting until stock arrives.
                 </Alert>
               )}
-              {openingCoverage(current.lines, allocation) === 'PARTIAL' &&
-                included.has(current.openingNumber) && (
-                  <Alert severity="warning" sx={{ mt: 1 }}>
-                    Batching this opening sends what is here and forfeits the rest - the batch is the
-                    decision for it. Leave it out to keep the whole of what it is owed waiting.
-                  </Alert>
-                )}
+              {currentCoverage === 'PARTIAL' && (
+                <Alert severity="warning" sx={{ mt: 1 }}>
+                  Batching this opening sends what is here and forfeits the rest - the batch is the
+                  decision for it. Clear its boxes to keep the whole of what it is owed waiting.
+                </Alert>
+              )}
             </FadeIn>
           )}
         </Box>
