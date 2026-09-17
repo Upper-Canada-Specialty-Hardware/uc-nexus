@@ -75,7 +75,11 @@ class UserMutations:
 
         The one thing the gate cannot decide is the "DB Admin" tier, which sits above Admin/Manager:
         `_enforce_db_admin_grant_rules` restricts granting/removing it to a DB Admin and refuses a
-        standalone one, for every caller."""
+        standalone one, for every caller.
+
+        A roles list without PO User also gives the account's GP buyer identity back, in the same
+        write - the repository keeps that pairing (#687 gap 6), so a demotion made anywhere clears
+        the identity registerPoInGp gates on."""
         _enforce_db_admin_grant_rules(info, target_user_id=user_id, new_roles=roles)
         return clerk_user_to_type(user_repository.update_user_roles(user_id, roles))
 
@@ -93,7 +97,8 @@ class UserMutations:
     @strawberry.mutation
     def update_user_gp_buyer_id(self, info: strawberry.Info, user_id: str, gp_buyer_id: str | None = None) -> ClerkUser:
         """Issue #216: link a UC Nexus account to the GP BUYERID it acts as (null clears). The PO
-        dialog auto-uses the caller's identity and createPo/registerPoInGp enforce it."""
+        dialog auto-uses the caller's identity and createPo/registerPoInGp enforce it. Refused for
+        an account that does not hold PO User (#687 gap 6): the identity is that role's alone."""
         return clerk_user_to_type(user_repository.update_user_gp_buyer_id(user_id, gp_buyer_id))
 
     @strawberry.mutation

@@ -11,6 +11,12 @@ CLERK_API_BASE = "https://api.clerk.com/v1"
 # module. A manager can assign to a plain user or to another manager.
 SHOP_ASSEMBLY_ROLES = ("Shop Assembly User", "Shop Assembly Manager")
 
+# The role a GP buyer identity exists for (#699, #687 gap 6). Only a PO User raises POs, so an
+# identity is refused on any other account and is given back the moment the role goes - enforced
+# here, on the server, and not only in the Edit User dialog, so a role removed in the Clerk dashboard
+# or by a direct mutation cannot leave an identity behind that still registers POs into GP.
+PO_USER_ROLE = "PO User"
+
 _client = httpx.Client(base_url=CLERK_API_BASE, timeout=30.0)
 
 
@@ -148,8 +154,13 @@ def _merge_public_metadata(user_id: str, patch: dict) -> dict:
 
 
 def update_user_roles(user_id: str, roles: list[str]) -> dict:
-    """Update a Clerk user's roles in publicMetadata."""
-    return _merge_public_metadata(user_id, {"roles": roles})
+    """Update a Clerk user's roles in publicMetadata. An account that no longer holds PO_USER_ROLE
+    gives its GP buyer identity back in the same write: a null value removes the key under Clerk's
+    metadata merge, exactly as update_user_gp_buyer_id clears it."""
+    patch: dict = {"roles": roles}
+    if PO_USER_ROLE not in roles:
+        patch["gpBuyerId"] = None
+    return _merge_public_metadata(user_id, patch)
 
 
 def update_user_name(user_id: str, first_name: str, last_name: str) -> dict:
@@ -167,8 +178,18 @@ def update_user_name(user_id: str, first_name: str, last_name: str) -> dict:
 
 def update_user_gp_buyer_id(user_id: str, gp_buyer_id: str | None) -> dict:
     """Issue #216: set (or clear, with None) the GP BUYERID this UC Nexus account acts as. The PO
-    dialog auto-uses it and the create/register mutations enforce it server-side."""
+    dialog auto-uses it and the create/register mutations enforce it server-side.
+
+    Setting one is refused unless the account holds PO_USER_ROLE, so "no GP identity" keeps meaning
+    "not a PO User" for registerPoInGp, which gates on the identity alone. Clearing is always allowed.
+    The dialog saves roles before the identity, so checking PO User and typing an id in one save
+    passes this check."""
     cleaned = (gp_buyer_id or "").strip() or None
+    if cleaned is not None and PO_USER_ROLE not in get_user_roles(user_id):
+        raise ValidationError(
+            f"A GP buyer identity can only be set on a {PO_USER_ROLE}; give the account that role first.",
+            field="gp_buyer_id",
+        )
     return _merge_public_metadata(user_id, {"gpBuyerId": cleaned})
 
 
