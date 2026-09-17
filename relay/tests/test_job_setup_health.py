@@ -266,7 +266,13 @@ def test_account_index_missing_from_the_chart_is_false():
 def _job_cost_po():
     return models.CreatePoRequest(
         company="TUBC",
-        header=models.POHeader(vendor_id="ING100", buyer_id="MIRA", confirm_with="Mira", doc_date=date(2026, 7, 30)),
+        header=models.POHeader(
+            vendor_id="ING100",
+            buyer_id="MIRA",
+            confirm_with="Mira",
+            doc_date=date(2026, 7, 30),
+            site="VANCOUVER",
+        ),
         lines=[
             models.POLine(
                 item_number="ML2010",

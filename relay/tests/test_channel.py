@@ -200,7 +200,12 @@ def test_company_not_allowed_returns_a_clean_error():
 
 
 _PO_PAYLOAD = {
-    "header": {"vendor_id": "ING100", "confirm_with": "mira", "doc_date": "2026-01-01"},
+    "header": {
+        "vendor_id": "ING100",
+        "confirm_with": "mira",
+        "doc_date": "2026-01-01",
+        "site": "VANCOUVER",
+    },
     "lines": [{"item_number": "I1", "item_description": "d", "quantity": 1, "unit_cost": 1}],
 }
 

@@ -62,6 +62,7 @@ def _create(conn, **overrides):
         quantity=Decimal("2"),
         unit_cost=Decimal("12.50"),
         line_ord=16384,
+        location_code="VANCOUVER",
     )
     kwargs.update(overrides)
     create_po_line(conn, **kwargs)
@@ -147,4 +148,5 @@ def test_line_ord_is_required():
             item_description="AB123 HINGE",
             quantity=Decimal("2"),
             unit_cost=Decimal("12.50"),
+            location_code="VANCOUVER",
         )

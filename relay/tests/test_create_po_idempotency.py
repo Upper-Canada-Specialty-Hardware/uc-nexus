@@ -83,7 +83,13 @@ class _FakeConn:
 
 
 def _request(*, header: dict | None = None, **overrides) -> models.CreatePoRequest:
-    fields = dict(vendor_id="ING100", buyer_id="mira", confirm_with="mira", doc_date=date(2026, 9, 16))
+    fields = dict(
+        vendor_id="ING100",
+        buyer_id="mira",
+        confirm_with="mira",
+        doc_date=date(2026, 9, 16),
+        site="VANCOUVER",
+    )
     fields.update(header or {})
     kwargs = dict(
         company="TUBC",
@@ -305,6 +311,7 @@ _PAYLOAD = {
         "buyer_id": "mira",
         "confirm_with": "mira",
         "doc_date": "2026-09-16",
+        "site": "VANCOUVER",
     },
     "lines": [
         {"item_number": "ML2010", "item_description": "ML2010 LOCK", "quantity": "2", "unit_cost": "12.50"}

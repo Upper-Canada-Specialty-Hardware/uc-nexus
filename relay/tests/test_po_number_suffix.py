@@ -22,7 +22,11 @@ def _request(**overrides) -> models.CreatePoRequest:
     kwargs = dict(
         company="TUBC",
         header=models.POHeader(
-            vendor_id="ING100", buyer_id="MIRA", confirm_with="Mira", doc_date=date(2026, 8, 6)
+            vendor_id="ING100",
+            buyer_id="MIRA",
+            confirm_with="Mira",
+            doc_date=date(2026, 8, 6),
+            site="VANCOUVER",
         ),
         lines=[
             models.POLine(

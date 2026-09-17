@@ -17,8 +17,7 @@ class POLine(BaseModel):
     quantity: Decimal
     unit_cost: Decimal
     # The GP site this line is placed at (IV40700.LOCNCODE). None means "wherever the PO says":
-    # create_po_op fills it from the header's site, which is itself defaulted, so a caller that sends
-    # neither still gets VANCOUVER exactly as it did before the header carried a site.
+    # create_po_op fills it from the header's site, which every PO has to name.
     location_code: str | None = None
     uofm: str = "Each"
     product_indicator: int = 1  # 1 = Non-Inventoried, 2 = Job Cost
@@ -62,11 +61,13 @@ class POHeader(BaseModel):
     freight_amount: Decimal = Decimal(0)
     misc_amount: Decimal = Decimal(0)
     # The rest of what GP's Purchase Order Entry takes, so a PO raised in Nexus is not a thinner
-    # document than one typed in GP. site is the GP site (IV40700.LOCNCODE) every line is placed at
-    # unless the line names its own; create_po_op does that fill. contact is the person at the vendor
-    # the PO is addressed to (taPoHdr CONTACT -> POP10100.CONTACT). comment is free text GP keeps on
-    # POP10150. contact and comment are optional and, when absent, are not sent to taPoHdr at all.
-    site: str = "VANCOUVER"
+    # document than one typed in GP. site is the GP site (IV40700.LOCNCODE, char(11)) every line is
+    # placed at unless the line names its own; create_po_op does that fill. It is required and has no
+    # default: a site code only exists in the company that set it up, so there is no one code every
+    # company would accept. contact is the person at the vendor the PO is addressed to (taPoHdr
+    # CONTACT -> POP10100.CONTACT). comment is free text GP keeps on POP10150. contact and comment are
+    # optional and, when absent, are not sent to taPoHdr at all.
+    site: str = Field(..., max_length=11)
     contact: str | None = Field(default=None, max_length=61)
     comment: str | None = Field(default=None, max_length=500)
 
