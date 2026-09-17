@@ -81,6 +81,8 @@ function row(overrides: Record<string, unknown>) {
 }
 
 // A Nexus draft (no GP registration yet, so no gpCompany) beside a mirrored GP row that has both.
+// The last three are the #701 cases: an order date GP filled in, the empty date GP writes when
+// nobody dated the header, and a GP-raised PO with no vendor on it yet.
 const ROWS = [
   row({ id: 'po-draft', requestNumber: 'PO-REQ-001', status: 'DRAFT', company: 'TUBC', gpCompany: null }),
   row({
@@ -90,6 +92,41 @@ const ROWS = [
     origin: 'GP',
     company: 'UCSH',
     gpCompany: 'UCSH',
+  }),
+  row({
+    id: 'po-dated',
+    poNumber: 'PO-2002',
+    status: 'GP_REGISTERED',
+    origin: 'GP',
+    company: 'UCSH',
+    gpCompany: 'UCSH',
+    orderedAt: '2026-01-05',
+  }),
+  row({
+    id: 'po-no-gp-date',
+    poNumber: 'PO-2003',
+    status: 'GP_REGISTERED',
+    origin: 'GP',
+    company: 'UCSH',
+    gpCompany: 'UCSH',
+    orderedAt: '1900-01-01',
+  }),
+  row({
+    id: 'po-no-gp-vendor',
+    poNumber: 'PO-2004',
+    status: 'GP_REGISTERED',
+    origin: 'GP',
+    company: 'UCSH',
+    gpCompany: 'UCSH',
+    vendorNameSnapshot: null,
+  }),
+  row({
+    id: 'po-draft-no-vendor',
+    requestNumber: 'PO-REQ-002',
+    status: 'DRAFT',
+    company: 'TUBC',
+    gpCompany: null,
+    vendorNameSnapshot: null,
   }),
 ];
 
@@ -191,7 +228,7 @@ function purchaseOrderMock(): MockedResponse {
           notes: null,
           preferredDeliveryDate: null,
           expectedDeliveryDate: null,
-          orderedAt: '2026-01-05T00:00:00Z',
+          orderedAt: '2026-01-05',
           createdAt: '2026-07-01T12:00:00Z',
           updatedAt: '2026-07-02T12:00:05Z',
           documentData: null,
@@ -218,8 +255,14 @@ function renderRegister() {
 
 /** The Company cell of the row carrying `label` - column 1, after Project. */
 async function companyCellOf(label: string) {
+  return cellOf(label, 1);
+}
+
+/** One cell of the row carrying `label`, by column index. The columns are Project, Company, PO
+ *  number, Status, Vendor, Raised by, Created, Order Date, Items, and the chevron. */
+async function cellOf(label: string, index: number) {
   const tr = (await screen.findByText(label)).closest('tr');
-  return within(tr as HTMLElement).getAllByRole('cell')[1];
+  return within(tr as HTMLElement).getAllByRole('cell')[index];
 }
 
 // #637: the column used to read gpCompany, which a draft never has, so every draft printed "-" and
@@ -281,6 +324,38 @@ it('names the scoped user’s own GP company in the heading, and still gives the
   expect(screen.queryByText('All companies')).toBeNull();
 
   expect(await companyCellOf('PO-REQ-001')).toHaveTextContent('TUBC');
+});
+
+
+// --- #701: what the Order Date and Vendor cells say when GP has nothing in them -------------------
+
+// The order date is GP's document date, a calendar date. It used to be read as a UTC instant, so
+// every one of them printed a day early for a viewer behind UTC.
+it('prints the calendar day GP holds as the order date', async () => {
+  renderRegister();
+
+  expect(await cellOf('PO-2002', 7)).toHaveTextContent(new Date(2026, 0, 5).toLocaleDateString());
+});
+
+// 1900-01-01 is what GP holds on a header nobody dated, and it is mirrored exactly as GP holds it.
+it('says so in plain words where GP holds an empty document date', async () => {
+  renderRegister();
+
+  expect(await cellOf('PO-2003', 7)).toHaveTextContent('No date in GP');
+});
+
+it('says so in plain words where a PO from GP has no vendor on it yet', async () => {
+  renderRegister();
+
+  expect(await cellOf('PO-2004', 4)).toHaveTextContent('No vendor in GP');
+});
+
+// A Nexus draft has no vendor until it is registered into GP, which is not a gap worth naming.
+it('leaves a Nexus draft with no vendor on the dash it has always printed', async () => {
+  renderRegister();
+
+  expect(await cellOf('PO-REQ-002', 4)).toHaveTextContent('-');
+  expect(await cellOf('PO-REQ-002', 4)).not.toHaveTextContent('No vendor in GP');
 });
 
 

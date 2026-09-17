@@ -701,7 +701,7 @@ class PurchaseOrder:
     notes: str | None
     preferred_delivery_date: date | None
     expected_delivery_date: date | None
-    ordered_at: datetime | None
+    ordered_at: date | None
     created_at: datetime
     updated_at: datetime
     line_items: list[POLineItem]
@@ -1244,7 +1244,7 @@ class POListRow:
     # #632: who raised it, resolved server-side - the Clerk display name for a Nexus request, the GP
     # buyer id for a mirrored row that has no Nexus author, null when neither is known.
     created_by: str | None
-    ordered_at: datetime | None
+    ordered_at: date | None
     expected_delivery_date: date | None
     created_at: datetime
     gp_synced_at: datetime | None
@@ -1271,7 +1271,7 @@ class OpenPOSummary:
     gp_vendor_id: str | None
     vendor_name_snapshot: str | None
     notes: str | None
-    ordered_at: datetime | None
+    ordered_at: date | None
     expected_delivery_date: date | None
     pending_line_count: int
     pending_quantity: int

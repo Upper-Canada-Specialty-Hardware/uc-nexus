@@ -2,7 +2,7 @@
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 from sqlalchemy import select
@@ -152,7 +152,10 @@ def test_register_keeps_all_lines_and_advances(db_session):
     assert po.gp_vendor_id == "GPV1"
     assert po.vendor_name_snapshot == "GP Vendor"
     assert po.cost_code == "210-200-2"
-    assert po.ordered_at is not None
+    # #701: the order date is a calendar date, never an instant - this one stands in for GP's own
+    # document date until GP-PROCESSING reads it back. `datetime` subclasses `date`, so the exact
+    # type is what has to be asserted for this to catch a regression at all.
+    assert type(po.ordered_at) is date
 
     by_code = {li.product_code: li for li in db_session.scalars(select(POLineItem).where(POLineItem.po_id == po.id))}
     # gp_line_ord is assigned positionally in payload order (GP POP10110.ORD = index * 16384).

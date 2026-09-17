@@ -57,7 +57,7 @@ function makePo(overrides: Partial<PurchaseOrder> = {}): PurchaseOrder {
     notes: null,
     preferredDeliveryDate: null,
     expectedDeliveryDate: null,
-    orderedAt: '2026-08-01T12:00:00Z',
+    orderedAt: '2026-08-01',
     createdAt: '2026-07-01T12:00:00Z',
     updatedAt: '2026-07-01T12:00:00Z',
     lineItems: [makeLineItem({ id: 'li-1' })],

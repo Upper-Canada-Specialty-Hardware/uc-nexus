@@ -306,7 +306,7 @@ function processedPo(overrides: Record<string, unknown> = {}) {
     preferredDeliveryDate: null,
     expectedDeliveryDate: null,
     // GP's own document date, which is the whole point of the read-back.
-    orderedAt: '2026-01-05T00:00:00Z',
+    orderedAt: '2026-01-05',
     createdAt: '2026-07-01T12:00:00Z',
     updatedAt: '2026-07-02T12:00:05Z',
     documentData: null,

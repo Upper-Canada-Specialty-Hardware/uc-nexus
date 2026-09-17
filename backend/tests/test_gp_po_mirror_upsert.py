@@ -7,7 +7,7 @@ finds it in neither GP table only stamps it, the second cancels it like a void, 
 back from GP in between is never cancelled at all."""
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -795,6 +795,42 @@ def test_a_relay_that_sends_neither_key_leaves_both_values_alone(db_session, pro
     row = _get(db_session, "PO713")
     assert row.shipping_cost == Decimal("42.00")
     assert row.cost_code == "210-200-2"
+
+
+# --- GP's document date ------------------------------------------------------------------------------
+
+
+def test_the_document_date_is_stored_as_the_calendar_date_gp_holds(db_session, project):
+    """#701: GP's DOCDATE is a calendar date. It used to land in a datetime column as midnight, which
+    the PO table then read as an instant and printed a day early."""
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO720", [_line(16384, "IT1", 5)]), _project_map(db_session))
+    db_session.flush()
+    assert _get(db_session, "PO720").ordered_at == date(2026, 1, 5)
+
+
+def test_gps_empty_document_date_is_stored_exactly_as_gp_holds_it(db_session, project):
+    """1900-01-01 is what GP puts on a header nobody dated. GP is the authority for the GP-OWNED
+    FIELDS and the copy is overwritten, never compared, so the mirror stores what it is handed and
+    never maps it to nothing. The PO table is where it is read as an empty date."""
+    sync_repo.upsert_mirrored_po(
+        db_session,
+        COMPANY,
+        _po("PO721", [_line(16384, "IT1", 5)], doc_date="1900-01-01"),
+        _project_map(db_session),
+    )
+    db_session.flush()
+    assert _get(db_session, "PO721").ordered_at == date(1900, 1, 1)
+
+
+def test_a_read_with_no_document_date_leaves_the_stored_one_alone(db_session, project):
+    """A relay that sends no doc_date at all is absent, not empty: the stored date stays put rather
+    than being blanked on every pass."""
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO722", [_line(16384, "IT1", 5)]), pm)
+    db_session.flush()
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO722", [_line(16384, "IT1", 5)], doc_date=None), pm)
+    db_session.flush()
+    assert _get(db_session, "PO722").ordered_at == date(2026, 1, 5)
 
 
 # --- the NEW PO CHECK's cursor ------------------------------------------------------------------------

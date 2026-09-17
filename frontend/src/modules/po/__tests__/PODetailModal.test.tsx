@@ -412,6 +412,36 @@ describe('PODetailModal', () => {
     expect(screen.queryByText('SHOULD-NOT-SHOW')).not.toBeInTheDocument();
   });
 
+  // --- #701: what the Order Date and Vendor fields say when GP has nothing in them ---
+
+  // The order date is GP's document date, a calendar date. It used to be read as a UTC instant, so
+  // it printed a day early for a viewer behind UTC - this file runs in America/Denver.
+  it('prints the calendar day GP holds as the order date', () => {
+    renderModal({ ...registeredPo, origin: 'GP', orderedAt: '2026-01-05' }, []);
+
+    expect(screen.getByText(new Date(2026, 0, 5).toLocaleDateString())).toBeInTheDocument();
+  });
+
+  // 1900-01-01 is what GP holds on a header nobody dated, and it is mirrored exactly as GP holds it.
+  it('says so in plain words where GP holds an empty document date', () => {
+    renderModal({ ...registeredPo, origin: 'GP', orderedAt: '1900-01-01' }, []);
+
+    expect(screen.getByText('No date in GP')).toBeInTheDocument();
+  });
+
+  it('says so in plain words where a PO from GP has no vendor on it yet', () => {
+    renderModal({ ...registeredPo, origin: 'GP', vendorNameSnapshot: null }, []);
+
+    expect(screen.getByText('No vendor in GP')).toBeInTheDocument();
+  });
+
+  // A Nexus draft has no vendor until it is registered into GP, which is not a gap worth naming.
+  it('leaves a Nexus draft with no vendor on the placeholder it has always shown', () => {
+    renderModal({ ...draftPo, vendorNameSnapshot: null }, []);
+
+    expect(screen.queryByText('No vendor in GP')).toBeNull();
+  });
+
   it('marks a GP-born PO Nexus registered once every line carries a schedule identity', () => {
     renderModal({ ...registeredPo, origin: 'GP', nexusRegistered: true }, []);
 

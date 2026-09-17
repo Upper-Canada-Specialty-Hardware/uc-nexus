@@ -119,7 +119,9 @@ class PurchaseOrder(Base):
     # entered after the PO is GP-Registered (and before receiving starts).
     preferred_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     expected_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    ordered_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # GP's document date off the PO header - a calendar date, never an instant (#701). The
+    # registration stamps today's date here and GP-PROCESSING overwrites it with GP's own.
+    ordered_at: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)

@@ -142,11 +142,16 @@ def _apply_gp_costs(row: PurchaseOrder, po: dict, lines: list[dict]) -> None:
         row.cost_code = cost_code
 
 
-def _parse_doc_date(doc_date: str | None) -> datetime | None:
+def _parse_doc_date(doc_date: str | None) -> date | None:
+    """GP's document date off the PO header, as the calendar date it is (#701).
+
+    GP writes 1900-01-01 on a header nobody dated, and that value is stored exactly as GP holds it:
+    GP is the authority for the GP-OWNED FIELDS and the copy is overwritten, never compared. Reading
+    it as an empty date is the PO table's job, not the mirror's."""
     if not doc_date:
         return None
     try:
-        return datetime.combine(date.fromisoformat(doc_date), datetime.min.time())
+        return date.fromisoformat(doc_date)
     except ValueError:
         return None
 

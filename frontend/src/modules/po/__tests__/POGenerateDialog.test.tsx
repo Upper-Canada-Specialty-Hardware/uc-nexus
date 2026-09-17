@@ -16,9 +16,14 @@ vi.setConfig({ testTimeout: 60_000 });
 configure({ asyncUtilTimeout: 15_000 });
 
 // The PDF itself is not under test, and rendering one under jsdom is slow; stand in for the
-// renderer and the document so the dialog's save path can be exercised on its own.
+// renderer and the document so the dialog's save path can be exercised on its own. The stub keeps
+// the props the dialog hands the document, which is where a test reads what would be printed.
+const printed = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
 vi.mock('@react-pdf/renderer', () => ({
-  pdf: () => ({ toBlob: () => Promise.resolve(new Blob(['%PDF-1.4'], { type: 'application/pdf' })) }),
+  pdf: (element: { props: Record<string, unknown> }) => {
+    printed.props = element.props;
+    return { toBlob: () => Promise.resolve(new Blob(['%PDF-1.4'], { type: 'application/pdf' })) };
+  },
 }));
 vi.mock('../PurchaseOrderDocument', () => ({ default: () => null }));
 
@@ -169,12 +174,12 @@ function saveMock(calls: Record<string, unknown>[]): MockedResponse {
   };
 }
 
-function renderDialog(mocks: MockedResponse[]) {
+function renderDialog(mocks: MockedResponse[], override: Partial<PurchaseOrder> = {}) {
   const onRefetch = vi.fn();
   render(
     <MockedProvider mocks={mocks}>
       <ToastProvider>
-        <POGenerateDialog open po={po} onClose={vi.fn()} onRefetch={onRefetch} />
+        <POGenerateDialog open po={{ ...po, ...override }} onClose={vi.fn()} onRefetch={onRefetch} />
       </ToastProvider>
     </MockedProvider>,
   );
@@ -223,5 +228,42 @@ describe('POGenerateDialog shipping method', () => {
 
     await waitFor(() => expect(onRefetch).toHaveBeenCalled());
     expect(calls[0]).toMatchObject({ input: { shippingMethod: null } });
+  });
+});
+
+// #701: 1900-01-01 is GP's empty document date, mirrored exactly as GP holds it. The PO table says
+// so in plain words; a document sent to a vendor must not - it falls back to today, the way a PO
+// carrying no order date at all always has.
+describe('POGenerateDialog order date', () => {
+  beforeEach(() => {
+    printed.props = null;
+    URL.createObjectURL = vi.fn(() => 'blob:generated-po');
+    window.open = vi.fn();
+  });
+
+  it('dates the document today when GP holds an empty document date (issue #701)', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const { onRefetch } = renderDialog([settingsMock(), buyersMock(), totalsMock(), saveMock(calls)], {
+      orderedAt: '1900-01-01',
+    });
+
+    await screen.findByRole('textbox', { name: 'Shipping method' });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate & preview' }));
+
+    await waitFor(() => expect(onRefetch).toHaveBeenCalled());
+    expect(printed.props?.date).toBe(new Date().toLocaleDateString());
+  });
+
+  it('prints the document date GP holds when it has one (issue #701)', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const { onRefetch } = renderDialog([settingsMock(), buyersMock(), totalsMock(), saveMock(calls)], {
+      orderedAt: '2026-01-05',
+    });
+
+    await screen.findByRole('textbox', { name: 'Shipping method' });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate & preview' }));
+
+    await waitFor(() => expect(onRefetch).toHaveBeenCalled());
+    expect(printed.props?.date).toBe(new Date(2026, 0, 5).toLocaleDateString());
   });
 });
