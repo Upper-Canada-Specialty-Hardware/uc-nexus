@@ -52,6 +52,9 @@ def clerk(monkeypatch):
     def _make(**kw):
         fake = _FakeClerk(**kw)
         monkeypatch.setattr(user_repository, "_client", fake)
+        # The header builder refuses to run without a Clerk secret, which CI does not have; nothing
+        # here reaches Clerk anyway.
+        monkeypatch.setattr(user_repository, "_headers", lambda: {})
         return fake
 
     return _make
