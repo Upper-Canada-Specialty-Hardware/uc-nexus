@@ -61,6 +61,13 @@ Tenancy
 
 - GP COMPANY NEXUS TENANT - The separation of everything in Nexus into one tenant per GP company. Every project, PO, request, inventory row, pull and user scope belongs to exactly one GP company, and nothing is read or written across that line. Code: projects.company, auth.tenant_scope, repositories/tenancy.py
 
+Roles
+
+- UC NEXUS ADMIN - The role that runs Nexus itself: every module, every GP company, and every action whose judgement spans more than one tenant, such as which user belongs to which company, relay installs, NEXUS GP TRAFFIC, SharePoint migration and the reset procedure. The only role the GP COMPANY NEXUS TENANT line does not pin. DB Admin stacks on it. Code: NEXUS_ADMIN_ROLE, role string "UC Nexus Admin"
+- TENANT OWNER - The role that runs one GP company inside Nexus: every module in it, every module manager's powers in it, every company-facing dashboard filtered to it, and the module roles of the people in it. Never anything across the tenant line. Code: TENANT_OWNER_ROLE, role string "Tenant Owner"
+- PO MANAGER - The manager tier of the PO module: opens the module and owns its Document Settings. Code: PO_MANAGER_ROLE, role string "PO Manager"
+- SHIPPING MANAGER - The manager tier of the Shipping module: opens the module, keeps the shipment methods list, and accepts, rejects and reopens shipping requests. Code: SHIPPING_MANAGER_ROLE, role string "Shipping Manager"
+
 Navigation
 
 - PAGE HEADER - The row at the top of every page below a module landing: a link naming the parent page as the way back, the page title, its description, and the page's own action buttons on the right. Module landings and Home have no parent link. Code: `components/PageHeader.tsx`
