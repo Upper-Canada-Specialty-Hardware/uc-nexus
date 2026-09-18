@@ -578,12 +578,6 @@ const theme = createTheme({
       },
     },
 
-    MuiBreadcrumbs: {
-      styleOverrides: {
-        root: { fontSize: '0.875rem' },
-      },
-    },
-
     MuiSkeleton: {
       styleOverrides: {
         root: { borderRadius: 3 },

@@ -22,6 +22,7 @@ import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import DataTable from '../../components/DataTable';
 import SelectionActionBar, { BarButton } from '../../components/SelectionActionBar';
+import PageHeader from '../../components/PageHeader';
 import ReceiveModal from './ReceiveModal';
 import ReceivingHistory from './ReceivingHistory';
 import MyReceiveDraftsView from './MyReceiveDraftsView';
@@ -443,56 +444,49 @@ export default function ReceivingPage() {
 
   return (
     <Box sx={{ position: 'relative', minHeight: '60vh' }}>
-      <Box
-        sx={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'flex-start',
-          gap: 2,
-          flexWrap: 'wrap',
-          mb: 2.5,
-        }}
-      >
-        <Box>
-          <Typography variant="h5" sx={{ mb: 0.5 }}>
-            Receiving
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
+      <PageHeader
+        title="Receiving"
+        parent={{ label: 'Warehouse', to: '/app/warehouse' }}
+        description={
+          <>
             {view === 'receive' &&
               'Count hardware off a purchase order and into a rack location, and see what is still owed. Receives are submitted as drafts and post to GP when a Warehouse Manager approves them; a PO leaves this list while its receive waits.'}
             {view === 'drafts' &&
               'Your counted receives, waiting on a Warehouse Manager. Nothing here has reached GP or inventory yet.'}
             {view === 'history' &&
               'Every purchase order that reached GP, and what has landed against it. Open a row for its receipts.'}
-          </Typography>
-        </Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-          {/* The manager's queue is a different screen, not a fourth tab: it works everybody's
-              drafts, while these three views are all about this user's dock. */}
-          {canReview && (
-            <Button size="small" variant="outlined" component={RouterLink} to="/app/warehouse/receive-approvals">
-              Approvals
-              {pendingDraftsByPoId.size > 0 && ` (${pendingDraftCount})`}
-            </Button>
-          )}
-          {/* Three views of the same dock, not three pages: what is owed, what you have counted, and
-              what already arrived. The History side keeps the completed POs the Receive side drops
-              (#447). */}
-          <ToggleButtonGroup
-            size="small"
-            exclusive
-            value={view}
-            onChange={(_e, next: ReceivingView | null) => {
-              if (next) setView(next);
-            }}
-            aria-label="Receiving view"
-          >
-            <ToggleButton value="receive">Receive</ToggleButton>
-            <ToggleButton value="drafts">My Drafts</ToggleButton>
-            <ToggleButton value="history">History</ToggleButton>
-          </ToggleButtonGroup>
-        </Box>
-      </Box>
+          </>
+        }
+        actions={
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+            {/* The manager's queue is a different screen, not a fourth tab: it works everybody's
+                drafts, while these three views are all about this user's dock. */}
+            {canReview && (
+              <Button size="small" variant="outlined" component={RouterLink} to="/app/warehouse/receive-approvals">
+                Approvals
+                {pendingDraftsByPoId.size > 0 && ` (${pendingDraftCount})`}
+              </Button>
+            )}
+            {/* Three views of the same dock, not three pages: what is owed, what you have counted, and
+                what already arrived. The History side keeps the completed POs the Receive side drops
+                (#447). */}
+            <ToggleButtonGroup
+              size="small"
+              exclusive
+              value={view}
+              onChange={(_e, next: ReceivingView | null) => {
+                if (next) setView(next);
+              }}
+              aria-label="Receiving view"
+            >
+              <ToggleButton value="receive">Receive</ToggleButton>
+              <ToggleButton value="drafts">My Drafts</ToggleButton>
+              <ToggleButton value="history">History</ToggleButton>
+            </ToggleButtonGroup>
+          </Box>
+        }
+        sx={{ mb: 2.5 }}
+      />
 
       {view === 'drafts' && <MyReceiveDraftsView />}
       {view === 'history' && <ReceivingHistory projects={projects} projectMap={projectMap} />}

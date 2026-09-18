@@ -35,6 +35,7 @@ import {
   DELETE_RELAY_INSTALL,
 } from '../../graphql/admin';
 import ConfirmDialog from '../../components/ConfirmDialog';
+import PageHeader from '../../components/PageHeader';
 import GpWriteQueuePanel from './GpWriteQueuePanel';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
@@ -442,33 +443,30 @@ export default function RelayInstallsPage() {
   return (
     <Box>
       <FadeIn>
-        <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 2 }}>
-          <Box>
-            <Typography variant="h5" sx={{ mb: 0.25 }}>
-              Relay Installs
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Provision a one-time enrollment token, then enroll the relay from its Setup tab.
-            </Typography>
-          </Box>
-          <Stack direction="row" spacing={2} alignItems="center">
-            <RelayStatusChip connected={relay.connected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
-            {/* Issue #315: show the live relay build so an out-of-date relay is visible at a glance. A
-                connected relay too old to advertise its build (pre-hello-frame) reports null -> 'build
-                unknown', itself a signal it needs updating. */}
-            {relay.connected && (
-              <Chip
-                size="small"
-                variant="outlined"
-                label={relay.build ? `build: ${relay.build}` : 'build unknown'}
-                sx={{ fontFamily: FONT_MONO, textTransform: 'none' }}
-              />
-            )}
-            <Button variant="contained" onClick={() => setProvisionOpen(true)}>
-              Provision install
-            </Button>
-          </Stack>
-        </Stack>
+        <PageHeader
+          title="Relay Installs"
+          parent={{ label: 'Admin', to: '/app/admin' }}
+          description="Provision a one-time enrollment token, then enroll the relay from its Setup tab."
+          actions={
+            <Stack direction="row" spacing={2} alignItems="center">
+              <RelayStatusChip connected={relay.connected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
+              {/* Issue #315: show the live relay build so an out-of-date relay is visible at a glance. A
+                  connected relay too old to advertise its build (pre-hello-frame) reports null -> 'build
+                  unknown', itself a signal it needs updating. */}
+              {relay.connected && (
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={relay.build ? `build: ${relay.build}` : 'build unknown'}
+                  sx={{ fontFamily: FONT_MONO, textTransform: 'none' }}
+                />
+              )}
+              <Button variant="contained" onClick={() => setProvisionOpen(true)}>
+                Provision install
+              </Button>
+            </Stack>
+          }
+        />
       </FadeIn>
 
       {/* Link health on one line: when it last came up, when it last went down and why, and what GP

@@ -60,3 +60,7 @@ Purchase Orders
 Tenancy
 
 - GP COMPANY NEXUS TENANT - The separation of everything in Nexus into one tenant per GP company. Every project, PO, request, inventory row, pull and user scope belongs to exactly one GP company, and nothing is read or written across that line. Code: projects.company, auth.tenant_scope, repositories/tenancy.py
+
+Navigation
+
+- PAGE HEADER - The row at the top of every page below a module landing: a link naming the parent page as the way back, the page title, its description, and the page's own action buttons on the right. Module landings and Home have no parent link. Code: `components/PageHeader.tsx`

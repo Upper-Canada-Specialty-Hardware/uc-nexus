@@ -13,7 +13,7 @@ import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
 import { GET_RECEIVES } from '../../graphql/warehouse';
 import { GET_PROJECTS } from '../../graphql/shared';
-import BackToModule from '../../components/BackToModule';
+import PageHeader from '../../components/PageHeader';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
 import type { Project } from '../../types/project';
@@ -138,14 +138,12 @@ export default function ReceivesPage() {
 
   return (
     <Box sx={{ p: 3 }}>
-      <BackToModule to="/app/warehouse" label="Warehouse" />
-      <Typography variant="h5" sx={{ mb: 0.5 }}>
-        Receives
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        Every delivery written down against a purchase order, whatever stage it reached - including
-        the ones that were rejected.
-      </Typography>
+      <PageHeader
+        title="Receives"
+        parent={{ label: 'Warehouse', to: '/app/warehouse' }}
+        description="Every delivery written down against a purchase order, whatever stage it reached - including the ones that were rejected."
+        sx={{ mb: 3 }}
+      />
 
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 2 }}>
         <TextField

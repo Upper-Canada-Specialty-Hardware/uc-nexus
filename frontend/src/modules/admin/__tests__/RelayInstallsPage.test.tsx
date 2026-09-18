@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
+import { MemoryRouter } from 'react-router-dom';
 import RelayInstallsPage from '../RelayInstallsPage';
 import {
   RELAY_INSTALLS,
@@ -144,9 +145,11 @@ function windowMock(armed: unknown): MockedResponse {
 function renderPage(mocks: MockedResponse[]) {
   return render(
     <MockedProvider mocks={[...mocks, eventsMock([])]}>
-      <ToastProvider>
-        <RelayInstallsPage />
-      </ToastProvider>
+      <MemoryRouter>
+        <ToastProvider>
+          <RelayInstallsPage />
+        </ToastProvider>
+      </MemoryRouter>
     </MockedProvider>,
   );
 }

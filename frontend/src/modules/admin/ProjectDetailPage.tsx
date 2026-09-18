@@ -18,6 +18,7 @@ import { useMutation, useQuery } from '@apollo/client/react';
 import { GET_ADMIN_PROJECT_DETAIL, GET_ADMIN_PROJECTS, SET_PROJECT_ARCHIVED } from '../../graphql/admin';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
 import ConfirmDialog from '../../components/ConfirmDialog';
+import PageHeader from '../../components/PageHeader';
 import { GpSetupBadge } from '../../components/GpSetupQuarantineBanner';
 import { isGpSetupBroken } from '../../types/project';
 import { useIdentity } from '../../hooks/useIdentity';
@@ -175,18 +176,10 @@ export default function ProjectDetailPage() {
   return (
     <Box>
       <FadeIn>
-        <Box
-          sx={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            justifyContent: 'space-between',
-            flexWrap: 'wrap',
-            gap: 2,
-            mb: 2,
-          }}
-        >
-          <Box sx={{ minWidth: 0 }}>
-            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 0.25 }}>
+        <PageHeader
+          parent={{ label: 'Projects', to: '/app/admin/projects' }}
+          title={
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
               <Typography variant="h5" sx={{ ...monoSx, fontWeight: 700 }}>
                 {project.projectId}
               </Typography>
@@ -195,32 +188,36 @@ export default function ProjectDetailPage() {
               {project.archived && <Chip label="Archived" size="small" color="warning" />}
               {isGpSetupBroken(project) && <GpSetupBadge project={project} />}
             </Stack>
-            <Typography variant="body2" color="text.secondary">
+          }
+          description={
+            <>
               {project.description || 'No description'}
               {project.client ? ` · ${project.client}` : ''}
-            </Typography>
-          </Box>
-          <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
-            <Button
-              variant="outlined"
-              size="small"
-              startIcon={<Pencil {...ICON} />}
-              onClick={() => setEditOpen(true)}
-            >
-              Edit details
-            </Button>
-            <Button
-              variant="outlined"
-              size="small"
-              color={project.archived ? 'primary' : 'warning'}
-              startIcon={project.archived ? <ArchiveRestore {...ICON} /> : <Archive {...ICON} />}
-              onClick={() => setArchiveConfirmOpen(true)}
-              disabled={archiving}
-            >
-              {project.archived ? 'Restore' : 'Archive'}
-            </Button>
-          </Stack>
-        </Box>
+            </>
+          }
+          actions={
+            <Stack direction="row" spacing={1}>
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<Pencil {...ICON} />}
+                onClick={() => setEditOpen(true)}
+              >
+                Edit details
+              </Button>
+              <Button
+                variant="outlined"
+                size="small"
+                color={project.archived ? 'primary' : 'warning'}
+                startIcon={project.archived ? <ArchiveRestore {...ICON} /> : <Archive {...ICON} />}
+                onClick={() => setArchiveConfirmOpen(true)}
+                disabled={archiving}
+              >
+                {project.archived ? 'Restore' : 'Archive'}
+              </Button>
+            </Stack>
+          }
+        />
       </FadeIn>
 
       {/* What the project currently holds. Each tile that has a module behind it is a door into it.

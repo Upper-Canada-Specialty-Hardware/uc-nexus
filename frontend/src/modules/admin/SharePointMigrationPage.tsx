@@ -34,6 +34,7 @@ import {
 } from '../../graphql/admin';
 import { GET_PROJECTS, GET_WAREHOUSES } from '../../graphql/shared';
 import { useToast } from '../../components/Toast';
+import PageHeader from '../../components/PageHeader';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import { useInventoryItemTypes } from '../../hooks/useCustomItems';
@@ -458,12 +459,11 @@ export default function SharePointMigrationPage() {
   return (
     <Box>
       <FadeIn>
-        <Typography variant="h5" sx={{ mb: 0.25 }}>
-          SharePoint Inventory Migration
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          One-time import of the legacy inventory list into Nexus stock and project inventory.
-        </Typography>
+        <PageHeader
+          title="SharePoint Inventory Migration"
+          parent={{ label: 'Admin', to: '/app/admin' }}
+          description="One-time import of the legacy inventory list into Nexus stock and project inventory."
+        />
       </FadeIn>
 
       {/* Wrapping, because the eighth step's label is a phrase: at phone width the row has to fall

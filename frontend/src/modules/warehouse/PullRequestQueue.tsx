@@ -8,6 +8,7 @@ import { GET_PULL_REQUESTS } from '../../graphql/warehouse';
 import DataTable from '../../components/DataTable';
 import PullRequestDetailModal from './PullRequestDetailModal';
 import { pullPhase } from './pullPhase';
+import PageHeader from '../../components/PageHeader';
 import { monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
 
@@ -232,34 +233,24 @@ function PullRequestColumn({ source, heading }: PullRequestColumnProps) {
 export default function PullRequestQueue() {
   return (
     <Box>
-      <Stack
-        direction="row"
-        spacing={2}
-        alignItems="flex-start"
-        justifyContent="space-between"
+      <PageHeader
+        title="Pull Request Queue"
+        parent={{ label: 'Warehouse', to: '/app/warehouse' }}
+        description="Every request to take hardware out of inventory. Open a row to start its pick, stage the carts and complete it."
+        actions={
+          /* Completed and cancelled pulls drop off the active board; history is where they still
+             live. */
+          <Button
+            component={RouterLink}
+            to="/app/warehouse/pull-requests/history"
+            size="small"
+            startIcon={<History size={16} strokeWidth={1.75} />}
+          >
+            Pull request history
+          </Button>
+        }
         sx={{ mb: 1.5 }}
-      >
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="h5" sx={{ mb: 0.5 }}>
-            Pull Request Queue
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Every request to take hardware out of inventory. Open a row to start its pick, stage the
-            carts and complete it.
-          </Typography>
-        </Box>
-        {/* Completed and cancelled pulls drop off the active board; history is where they still
-            live. */}
-        <Button
-          component={RouterLink}
-          to="/app/warehouse/pull-requests/history"
-          size="small"
-          startIcon={<History size={16} strokeWidth={1.75} />}
-          sx={{ flexShrink: 0 }}
-        >
-          Pull request history
-        </Button>
-      </Stack>
+      />
 
       {/* Both queues, side by side above lg and stacked below it. minWidth:0 rides on each column so
           the pair fills the row without ever widening the page. */}

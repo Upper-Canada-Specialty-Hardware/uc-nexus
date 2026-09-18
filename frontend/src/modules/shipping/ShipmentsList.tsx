@@ -62,6 +62,7 @@ import {
   type WarehouseAddress,
 } from './deliveryRequest';
 import { CONTAINER_TYPE_LABEL, isStacked } from './staging';
+import PageHeader from '../../components/PageHeader';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import { parseServerDate, parseServerDay } from '../../utils/serverDate';
@@ -240,11 +241,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
 
   return (
     <FadeIn>
-      {heading && (
-        <Typography variant="h5" sx={{ mb: 2 }}>
-          {heading}
-        </Typography>
-      )}
+      {heading && <PageHeader title={heading} parent={{ label: 'Shipping', to: '/app/shipping' }} />}
 
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 2 }}>
         <TextField

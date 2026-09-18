@@ -24,6 +24,7 @@ import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_LOCATION_DUPLICATES, MERGE_LOCATIONS } from '../../graphql/admin';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { useToast } from '../../components/Toast';
+import PageHeader from '../../components/PageHeader';
 import { FONT_MONO, microLabelSx, monoSx } from '../../theme';
 import { FadeIn, StaggerList, StaggerItem } from '../../motion';
 
@@ -151,11 +152,12 @@ export default function LocationCleanupPage() {
   return (
     <Box>
       <FadeIn>
-        <Typography variant="h5" sx={{ mb: 0.25 }}>Location Cleanup</Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-          Groups of location strings that collide after normalization (case-insensitive, whitespace
-          collapsed). Merge each variant into a canonical form so the warehouse data stays consistent.
-        </Typography>
+        <PageHeader
+          title="Location Cleanup"
+          parent={{ label: 'Admin', to: '/app/admin' }}
+          description="Groups of location strings that collide after normalization (case-insensitive, whitespace collapsed). Merge each variant into a canonical form so the warehouse data stays consistent."
+          sx={{ mb: 3 }}
+        />
       </FadeIn>
 
       {warehouseIdsWithDupes.size > 1 && (

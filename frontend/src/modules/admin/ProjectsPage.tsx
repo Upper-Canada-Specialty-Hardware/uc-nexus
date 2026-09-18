@@ -7,6 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { GET_ADMIN_PROJECTS, SYNC_GP_JOBS } from '../../graphql/admin';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
+import PageHeader from '../../components/PageHeader';
 import { extractGpError } from '../../graphql/gpError';
 import { GpSetupBadge } from '../../components/GpSetupQuarantineBanner';
 import { isGpSetupBroken } from '../../types/project';
@@ -168,39 +169,35 @@ export default function ProjectsPage() {
   return (
     <Box>
       <FadeIn>
-        <Box sx={{ mb: 2, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 2 }}>
-          <Box>
-            <Typography variant="h5" sx={{ mb: 0.25 }}>
-              Projects
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Every job in GP becomes a project automatically, in the company that holds it. Click a row to open the
-              project - details, archiving, and what it currently holds.
-            </Typography>
-          </Box>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexShrink: 0 }}>
-            {/* #637: archived jobs are off every picker, so they are out of the way by default and
-                one switch away when someone needs to un-archive one. */}
-            <FormControlLabel
-              control={<Switch size="small" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />}
-              label={
-                <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
-                  {archivedCount > 0 ? `Show archived (${archivedCount})` : 'Show archived'}
-                </Typography>
-              }
-              sx={{ mr: 0 }}
-            />
-            <Button
-              variant="outlined"
-              size="small"
-              startIcon={<RefreshCw size={16} strokeWidth={1.75} />}
-              onClick={handleSync}
-              disabled={syncing}
-            >
-              {syncing ? 'Syncing…' : 'Sync from GP'}
-            </Button>
-          </Box>
-        </Box>
+        <PageHeader
+          title="Projects"
+          parent={{ label: 'Admin', to: '/app/admin' }}
+          description="Every job in GP becomes a project automatically, in the company that holds it. Click a row to open the project - details, archiving, and what it currently holds."
+          actions={
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+              {/* #637: archived jobs are off every picker, so they are out of the way by default and
+                  one switch away when someone needs to un-archive one. */}
+              <FormControlLabel
+                control={<Switch size="small" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />}
+                label={
+                  <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
+                    {archivedCount > 0 ? `Show archived (${archivedCount})` : 'Show archived'}
+                  </Typography>
+                }
+                sx={{ mr: 0 }}
+              />
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<RefreshCw size={16} strokeWidth={1.75} />}
+                onClick={handleSync}
+                disabled={syncing}
+              >
+                {syncing ? 'Syncing…' : 'Sync from GP'}
+              </Button>
+            </Box>
+          }
+        />
       </FadeIn>
 
       <DataGrid

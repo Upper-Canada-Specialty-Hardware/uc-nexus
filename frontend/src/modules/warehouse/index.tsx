@@ -13,9 +13,7 @@ import StockPoolView from './StockPoolView';
 import DeficientItemsReview from './DeficientItemsReview';
 import CustomItemsPage from './CustomItemsPage';
 
-// No per-page "back to Warehouse" affordance: the app shell's breadcrumbs and the persistent nav
-// rail both already carry the way back, and a third one stacked above every page's own header was
-// the module's most repeated piece of visual noise.
+// No per-page "back to Warehouse" bar: the PAGE HEADER on every page names the way back.
 export default function WarehouseModule() {
   return (
     <Routes>

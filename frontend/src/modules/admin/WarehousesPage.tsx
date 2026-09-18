@@ -4,7 +4,6 @@ import {
   Button,
   Chip,
   IconButton,
-  Stack,
   Typography,
   Dialog,
   DialogTitle,
@@ -17,6 +16,7 @@ import { useQuery, useMutation } from '@apollo/client/react';
 import { DELETE_WAREHOUSE } from '../../graphql/admin';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { useToast } from '../../components/Toast';
+import PageHeader from '../../components/PageHeader';
 import { useIdentity } from '../../hooks/useIdentity';
 import { monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
@@ -184,19 +184,16 @@ export default function WarehousesPage() {
   return (
     <Box>
       <FadeIn>
-        <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 2 }}>
-          <Box>
-            <Typography variant="h5" sx={{ mb: 0.25 }}>
-              Warehouses
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Physical buildings inventory lives in. Click a row to edit.
-            </Typography>
-          </Box>
-          <Button variant="contained" onClick={handleCreate}>
-            Create Warehouse
-          </Button>
-        </Stack>
+        <PageHeader
+          title="Warehouses"
+          parent={{ label: 'Admin', to: '/app/admin' }}
+          description="Physical buildings inventory lives in. Click a row to edit."
+          actions={
+            <Button variant="contained" onClick={handleCreate}>
+              Create Warehouse
+            </Button>
+          }
+        />
       </FadeIn>
 
       <DataGrid

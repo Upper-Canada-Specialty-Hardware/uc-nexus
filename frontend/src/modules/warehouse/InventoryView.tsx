@@ -1,11 +1,13 @@
 import { useState } from 'react';
-import { Box, Button, Typography } from '@mui/material';
+import { Box, Button } from '@mui/material';
 import { LayoutGrid } from 'lucide-react';
 import HardwareItemsTab from './HardwareItemsTab';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
-import { microLabelSx } from '../../theme';
+import PageHeader from '../../components/PageHeader';
 import { FadeIn } from '../../motion';
 import type { Project } from '../../types/project';
+
+const WAREHOUSE_PARENT = { label: 'Warehouse', to: '/app/warehouse' };
 
 export default function InventoryView() {
   const [selectedProject, setSelectedProject] = useState<Project | 'all' | null>('all');
@@ -14,6 +16,7 @@ export default function InventoryView() {
     return (
       <ProjectLandingPage
         title="Inventory"
+        parent={WAREHOUSE_PARENT}
         onSelect={(p) => setSelectedProject(p === null ? 'all' : p)}
       />
     );
@@ -25,35 +28,23 @@ export default function InventoryView() {
 
   return (
     <Box>
-      {/* One way back, not three: the app shell's breadcrumbs cover "Warehouse", so the only
-          navigation this page owns is the project switch it actually controls. */}
-      <Box
-        sx={{
-          display: 'flex',
-          alignItems: 'flex-end',
-          justifyContent: 'space-between',
-          gap: 2,
-          flexWrap: 'wrap',
-          mb: 2,
-        }}
-      >
-        <Box sx={{ minWidth: 0 }}>
-          <Typography component="div" sx={microLabelSx}>
-            Inventory
-          </Typography>
-          <Typography variant="h5" sx={{ lineHeight: 1.2 }}>
-            {projectLabel}
-          </Typography>
-        </Box>
-        <Button
-          size="small"
-          variant="outlined"
-          startIcon={<LayoutGrid size={18} strokeWidth={1.75} />}
-          onClick={() => setSelectedProject(null)}
-        >
-          Projects
-        </Button>
-      </Box>
+      {/* The PAGE HEADER names the way back to Warehouse; the only navigation this page owns is the
+          project switch it actually controls. */}
+      <PageHeader
+        title="Inventory"
+        parent={WAREHOUSE_PARENT}
+        description={projectLabel}
+        actions={
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<LayoutGrid size={18} strokeWidth={1.75} />}
+            onClick={() => setSelectedProject(null)}
+          >
+            Projects
+          </Button>
+        }
+      />
 
       <FadeIn y={8}>
         <Box sx={{ mt: 2 }}>

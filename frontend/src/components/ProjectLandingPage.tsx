@@ -20,6 +20,7 @@ import { GpSetupBadge } from './GpSetupQuarantineBanner';
 import { monoSx, microLabelSx } from '../theme';
 import { StaggerList, StaggerItem } from '../motion';
 import { getRecentProjectIds, pushRecentProject } from '../utils/recentProjects';
+import PageHeader from './PageHeader';
 
 interface ProjectLandingPageProps {
   title: string;
@@ -27,6 +28,8 @@ interface ProjectLandingPageProps {
   showAllProjects?: boolean;
   createButton?: ReactNode;
   emptyStateText?: string;
+  /** The page above this one, for callers that sit inside a module rather than at its root. */
+  parent?: { label: string; to: string };
 }
 
 const CELL = { xs: 12, sm: 6, md: 4 } as const;
@@ -50,6 +53,7 @@ export default function ProjectLandingPage({
   showAllProjects = true,
   createButton,
   emptyStateText,
+  parent,
 }: ProjectLandingPageProps) {
   const { data, loading, error } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const projects = useMemo(() => data?.projects ?? [], [data?.projects]);
@@ -90,26 +94,13 @@ export default function ProjectLandingPage({
     : 'Select a project to continue.';
 
   const header = (
-    <Box
-      sx={{
-        display: 'flex',
-        alignItems: 'flex-start',
-        justifyContent: 'space-between',
-        gap: 2,
-        flexWrap: 'wrap',
-        mb: 2.5,
-      }}
-    >
-      <Box sx={{ minWidth: 0 }}>
-        <Typography variant="h5" sx={{ mb: 0.5 }}>
-          {title}
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          {subtitle}
-        </Typography>
-      </Box>
-      {createButton}
-    </Box>
+    <PageHeader
+      title={title}
+      parent={parent}
+      description={subtitle}
+      actions={createButton}
+      sx={{ mb: 2.5 }}
+    />
   );
 
   if (loading) {
