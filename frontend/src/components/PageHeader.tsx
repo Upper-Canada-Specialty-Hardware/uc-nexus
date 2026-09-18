@@ -43,7 +43,11 @@ export default function PageHeader({
         ...(Array.isArray(sx) ? sx : [sx]),
       ]}
     >
-      <Box sx={{ minWidth: 0 }}>
+      {/* A flex basis, not just minWidth: 0. Without one, a long description makes this block as wide
+          as the row and pushes the actions onto a line of their own. With a basis the description
+          wraps inside the space the actions leave, and the actions only drop below it when the row
+          is genuinely too narrow for both, as on a phone. */}
+      <Box sx={{ flex: '1 1 280px', minWidth: 0 }}>
         {parent && (
           <Link
             component={RouterLink}
