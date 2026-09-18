@@ -83,7 +83,9 @@ function isActive(pathname: string, itemPath: string): boolean {
 }
 
 function requiredRolesLabel(roles: string[]): string {
-  return `Requires the ${roles.join(' or ')} role`;
+  // "A, B or C", so a three-role module does not read as a chain of "or"s.
+  const list = roles.length > 1 ? `${roles.slice(0, -1).join(', ')} or ${roles[roles.length - 1]}` : roles[0];
+  return `Requires the ${list} role`;
 }
 
 interface NavContentProps {

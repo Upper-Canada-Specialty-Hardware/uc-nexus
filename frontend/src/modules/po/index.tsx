@@ -634,17 +634,17 @@ function POListPage() {
           </Typography>
         </Box>
         <RelayStatusChip connected={relayConnected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
-        {isNexusAdmin && (
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<RefreshCw {...ICON} />}
-            onClick={handleSyncGpPos}
-            disabled={syncing || !relayConnected}
-          >
-            {syncing ? 'Syncing…' : 'Sync from GP'}
-          </Button>
-        )}
+        {/* #744: everyone who works the PO table may bring the mirror up to date. The server scopes
+            the pass to the caller's own company, so this is never a cross-company action. */}
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<RefreshCw {...ICON} />}
+          onClick={handleSyncGpPos}
+          disabled={syncing || !relayConnected}
+        >
+          {syncing ? 'Syncing…' : 'Sync from GP'}
+        </Button>
         {/* #729: Document Settings is the PO MANAGER's, with the TENANT OWNER beside them - the
             same any-of the server enforces on updatePoDocumentSettings. */}
         {(ownsTenant || hasRole('PO Manager')) && (
