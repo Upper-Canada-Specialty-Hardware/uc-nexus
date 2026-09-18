@@ -56,3 +56,7 @@ Purchase Orders
 
 - GP PO LINE ITEM - One line on a purchase order in GP: item number, item description, ordered quantity, unit cost, received quantity and job number. On every PO not made by Nexus the item number is a cost bucket and the description is the part number. On a Nexus-made PO the item number is the hardware category and the description is the product code. Nexus's own line record mirrors it by line ordinal. Code: POP10110 / POP30110 row, POLineItem.gp_line_ord; item number = po_line_items.hardware_category, description = po_line_items.product_code, cost code = po_line_items.cost_code
 - NEXUS REGISTERED LINE - A GP PO LINE ITEM whose Nexus copy carries the schedule's hardware category and product code, so the OPEN-POS SYNC leaves those two fields alone. A PO is Nexus-registered when every line is a NEXUS REGISTERED LINE. Code: po_line_items.nexus_registered
+
+Tenancy
+
+- GP COMPANY NEXUS TENANT - The separation of everything in Nexus into one tenant per GP company. Every project, PO, request, inventory row, pull and user scope belongs to exactly one GP company, and nothing is read or written across that line. Code: projects.company, auth.tenant_scope, repositories/tenancy.py
