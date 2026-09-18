@@ -19,7 +19,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from app import auth
-from app.auth import ADMIN_ROLE
+from app.auth import NEXUS_ADMIN_ROLE
 from app.models.enums import POStatus
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
@@ -184,7 +184,7 @@ def test_the_resolver_carries_every_field_the_repository_returns(db_session, mon
     future field added to the type but dropped from the resolver's constructor fails here without
     this test ever being edited - which is exactly how #474 got out."""
     monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_dashboard"})
-    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [ADMIN_ROLE])
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [NEXUS_ADMIN_ROLE])
 
     class _BorrowedSession:
         """Hands the resolver the test's transaction-bound session instead of a fresh one, so it
@@ -207,7 +207,7 @@ def test_the_resolver_carries_every_field_the_repository_returns(db_session, mon
     context = {
         "request": _FakeRequest("tok"),
         "_auth_user_id": "u_dashboard",
-        "_auth_roles": [ADMIN_ROLE],
+        "_auth_roles": [NEXUS_ADMIN_ROLE],
         "_auth_company": None,
     }
     result = asyncio.run(schema.execute(query, context_value=context))

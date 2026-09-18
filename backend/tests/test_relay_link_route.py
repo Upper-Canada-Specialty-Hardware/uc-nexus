@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from starlette.websockets import WebSocketDisconnect  # noqa: E402
 
 import main  # noqa: E402
-from app.auth import ADMIN_ROLE  # noqa: E402
+from app.auth import NEXUS_ADMIN_ROLE  # noqa: E402
 from app.database import SessionLocal  # noqa: E402
 from app.models.enums import RelayEventKind  # noqa: E402
 from app.models.relay_install import RelayInstall  # noqa: E402
@@ -450,7 +450,7 @@ class _FakeInfo:
     in test_resolver_auth_gates."""
 
     def __init__(self, user_id: str = "user_admin"):
-        self.context = {"request": None, "_auth_user_id": user_id, "_auth_roles": [ADMIN_ROLE]}
+        self.context = {"request": None, "_auth_user_id": user_id, "_auth_roles": [NEXUS_ADMIN_ROLE]}
 
 
 def test_delete_refuses_the_install_holding_the_live_connection(_migrate_database):

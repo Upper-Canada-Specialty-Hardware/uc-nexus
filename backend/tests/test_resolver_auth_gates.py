@@ -24,7 +24,7 @@ import uuid
 import pytest
 
 from app import auth
-from app.auth import ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE
+from app.auth import NEXUS_ADMIN_ROLE, WAREHOUSE_MANAGERS
 from app.auth_policy import OPEN_OPERATIONS, ROOT_FIELD_POLICY, SIGNED_IN, enforce_root_field
 from app.errors import AppError
 from app.repositories import user_repository
@@ -133,38 +133,38 @@ def test_an_admin_field_refuses_a_signed_in_non_admin(monkeypatch, signed_in):
     result = _execute("{ relayInstalls { id } }", token=signed_in)
 
     assert _codes(result) == {"FORBIDDEN"}
-    assert _messages(result) == {f"{ADMIN_ROLE} role required"}
+    assert _messages(result) == {f"{NEXUS_ADMIN_ROLE} role required"}
     assert not any("SessionLocal" in m for m in _messages(result))
 
 
 def test_an_admin_field_admits_an_admin(monkeypatch, signed_in):
     """The other half of the same check - a gate that refuses everyone is not a gate either."""
-    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [ADMIN_ROLE])
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [NEXUS_ADMIN_ROLE])
     _explodes(monkeypatch, relay_module)
 
     result = _execute("{ relayInstalls { id } }", token=signed_in)
 
     assert any("SessionLocal" in m for m in _messages(result)), (
-        f"an Admin/Manager was refused relayInstalls: {_messages(result)}"
+        f"a {NEXUS_ADMIN_ROLE} was refused relayInstalls: {_messages(result)}"
     )
 
 
 @pytest.mark.parametrize("field", ["rejectReceiveDraft"])
 def test_rejecting_a_receive_draft_takes_either_manager_role(field, monkeypatch, signed_in):
-    """The any-of requirement, in all three directions.
+    """The any-of requirement, in every direction.
 
-    Two roles satisfy it, which is the reason ROOT_FIELD_POLICY entries may be a frozenset at all.
-    There is no implicit admin bypass in this codebase, so Admin/Manager has to be named in the set
+    Three roles satisfy it, which is the reason ROOT_FIELD_POLICY entries may be a frozenset at all.
+    There is no implicit admin bypass in this codebase, so a tenant owner has to be named in the set
     to hold; a warehouse account that only counts trucks must not hold it either way.
 
-    The shop-assembly manager's board names the other non-Admin role in the table since #646 (see
-    test_shop_assembly_batch_schema.py); this is the warehouse half of the same shape.
+    The shop-assembly manager's board names the other module-manager tier in the table since #646
+    (see test_shop_assembly_batch_schema.py); this is the warehouse half of the same shape.
 
     `approveReceiveDraft` is not pinned here. Its table entry is SIGNED_IN and the real role check is
-    `_authorize_draft_approval` inside the resolver - a plain Admin/Manager gate, exercised in
+    `_authorize_draft_approval` inside the resolver - the same WAREHOUSE_MANAGERS set, exercised in
     test_receive_drafts.py through the approve flow rather than against the policy table.
     """
-    assert ROOT_FIELD_POLICY[field] == frozenset({ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE})
+    assert ROOT_FIELD_POLICY[field] == WAREHOUSE_MANAGERS
 
     def _roles(roles):
         monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: roles)
@@ -173,9 +173,9 @@ def test_rejecting_a_receive_draft_takes_either_manager_role(field, monkeypatch,
     with pytest.raises(AppError) as excinfo:
         enforce_root_field(field, {"request": _FakeRequest("tok")})
     assert excinfo.value.code == "FORBIDDEN"
-    assert excinfo.value.message == f"{ADMIN_ROLE} or {WAREHOUSE_MANAGER_ROLE} role required"
+    assert excinfo.value.message == f"{' or '.join(sorted(WAREHOUSE_MANAGERS))} role required"
 
-    for role in (WAREHOUSE_MANAGER_ROLE, ADMIN_ROLE):
+    for role in sorted(WAREHOUSE_MANAGERS):
         _roles([role])
         enforce_root_field(field, {"request": _FakeRequest("tok")})
 
@@ -367,7 +367,7 @@ def test_the_role_lookup_is_not_repeated_across_root_fields(monkeypatch, signed_
     dashboard fires several admin queries; they now share one."""
     role_lookups = []
     monkeypatch.setattr(
-        user_repository, "get_user_roles", lambda user_id: (role_lookups.append(user_id), [ADMIN_ROLE])[1]
+        user_repository, "get_user_roles", lambda user_id: (role_lookups.append(user_id), [NEXUS_ADMIN_ROLE])[1]
     )
     _explodes(monkeypatch, relay_module)
 
@@ -381,7 +381,9 @@ def test_two_requests_do_not_share_an_identity(monkeypatch):
     A process-global cache would be the same optimisation and a much worse bug: one user's roles
     served to another."""
     monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": f"u_{token}"})
-    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [ADMIN_ROLE] if user_id == "u_a" else [])
+    monkeypatch.setattr(
+        user_repository, "get_user_roles", lambda user_id: [NEXUS_ADMIN_ROLE] if user_id == "u_a" else []
+    )
     _explodes(monkeypatch, relay_module)
 
     admitted = _execute("{ relayInstalls { id } }", token="a")
@@ -401,7 +403,7 @@ def test_admin_stats_authorizes_and_answers_with_one_clerk_call(monkeypatch, sig
     monkeypatch.setattr(
         user_repository,
         "list_users",
-        lambda: (rosters.append(1), [{"id": "u_caller", "roles": [ADMIN_ROLE]}])[1],
+        lambda: (rosters.append(1), [{"id": "u_caller", "roles": [NEXUS_ADMIN_ROLE]}])[1],
     )
     monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: (role_lookups.append(user_id), [])[1])
     from app.schemas import dashboard as dashboard_module
@@ -411,7 +413,7 @@ def test_admin_stats_authorizes_and_answers_with_one_clerk_call(monkeypatch, sig
     result = _execute("{ adminStats { userCount } }", token=signed_in)
 
     assert any("SessionLocal" in m for m in _messages(result)), (
-        f"adminStats was refused for an Admin/Manager: {_messages(result)}"
+        f"adminStats was refused for a {NEXUS_ADMIN_ROLE}: {_messages(result)}"
     )
     assert len(rosters) == 1, f"the Clerk roster was fetched {len(rosters)} times"
     assert role_lookups == [], "adminStats still pays a separate per-user role lookup on top of the roster"
@@ -422,7 +424,7 @@ def test_the_roster_is_not_fetched_for_a_field_that_does_not_need_it(monkeypatch
     stays on the single-user lookup rather than pulling every Clerk account to authorize one."""
     rosters = []
     monkeypatch.setattr(user_repository, "list_users", lambda: (rosters.append(1), [])[1])
-    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [ADMIN_ROLE])
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [NEXUS_ADMIN_ROLE])
     _explodes(monkeypatch, relay_module)
 
     _execute("{ relayInstalls { id } }", token=signed_in)
@@ -451,7 +453,7 @@ def test_the_user_management_page_reads_the_roster_it_was_authorized_from(monkey
         "first_name": "A",
         "last_name": "B",
         "email": "a@b.c",
-        "roles": [ADMIN_ROLE],
+        "roles": [NEXUS_ADMIN_ROLE],
         "gp_buyer_id": None,
         "image_url": "",
     }

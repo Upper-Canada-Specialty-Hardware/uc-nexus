@@ -9,7 +9,7 @@ units are unclaimable until someone reconciles the two. This flag is what surfac
 import uuid
 from datetime import datetime
 
-from app.auth import ADMIN_ROLE
+from app.auth import NEXUS_ADMIN_ROLE
 from app.models.enums import Classification, HardwareItemState
 from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
@@ -23,7 +23,7 @@ class _AdminInfo:
     """An ADMIN caller. `tenant_scope` (#637) reads the per-request role memo and answers None for
     one, so these reads span companies exactly as they did before tenancy existed."""
 
-    context = {"_auth_roles": [ADMIN_ROLE]}
+    context = {"_auth_roles": [NEXUS_ADMIN_ROLE]}
 
 
 def _make_project(session) -> Project:

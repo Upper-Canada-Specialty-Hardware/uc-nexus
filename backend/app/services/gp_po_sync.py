@@ -759,15 +759,25 @@ def _backfill_phase(companies: list[str]) -> tuple[list[str], list[str]]:
 
 
 async def run_once(
-    *, backfill_max_pages: int | None = None, all_companies: bool = False, background: bool = False
+    *,
+    backfill_max_pages: int | None = None,
+    all_companies: bool = False,
+    background: bool = False,
+    only_company: str | None = None,
 ) -> dict:
     """One sync pass for ONE of the companies the connected relay serves (#637): backfill a batch of
     pages if that company's history is not fully mirrored yet, otherwise run one incremental pass for
     it. Returns an aggregate result dict (mode, counts, backfill_done, stalled).
 
     ONE COMPANY PER CALL, round robin (_next_company). `all_companies=True` covers all of them in one
-    call and belongs ONLY to the deliberate paths: the admin syncGpPos button and /admin/reset-data,
-    where a person is waiting and expects every company to be looked at.
+    call and belongs ONLY to the deliberate paths: the unscoped syncGpPos button and
+    /admin/reset-data, where a person is waiting and expects every company to be looked at.
+
+    `only_company` narrows the pass to exactly one, and wins over `all_companies`. It is what a
+    scoped caller's Sync from GP does since #729: the button opened to everyone who works the PO
+    table, and a TENANT OWNER or a PO User pressing it must not set every other company's mirror
+    going. The name is matched against the companies the relay actually serves, so an unserved one
+    is a no-op pass rather than a request GP would refuse.
 
     run_forever NEVER uses it. Sweeping every company on a reconnect is what re-issued two unbounded
     open-book reads minutes after the first of them had already pinned GP's CPU on 2026-09-03; a wake
@@ -800,7 +810,13 @@ async def run_once(
             "The GP relay is not connected, so purchase orders cannot be mirrored from GP. "
             "Start the relay and try again."
         )
-    targets = companies if all_companies else [_next_company(companies, key="adhoc")]
+    if only_company:
+        wanted = only_company.strip().upper()
+        targets = [c for c in companies if c.strip().upper() == wanted]
+    elif all_companies:
+        targets = companies
+    else:
+        targets = [_next_company(companies, key="adhoc")]
 
     created = updated = skipped = pos_seen = 0
     modes: list[str] = []

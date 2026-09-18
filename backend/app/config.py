@@ -19,7 +19,7 @@ CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
 TESTING_ENABLED = os.getenv("TESTING_ENABLED", "").lower() in ("true", "1", "yes")
 
 # The dedicated e2e testing Clerk account (preview-env autonomy plan). Not a real person: a user
-# created once in the Clerk dashboard and granted Admin/Manager in its publicMetadata.roles. Set on
+# created once in the Clerk dashboard and granted UC Nexus Admin in its publicMetadata.roles. Set on
 # PRODUCTION so every preview inherits it, and it is load-bearing in two places at once:
 #   - GET /testing/session mints a sign-in ticket for THIS id and nothing else (the hands-off preview
 #     sign-in link that lives in a PR comment).
@@ -38,7 +38,7 @@ TESTING_SESSION_KEY_HASH = os.getenv("TESTING_SESSION_KEY_HASH", "")
 
 # SHA-256 hex of the shared testing sign-in secret (#422). /testing/clerk-sign-in mints a REAL Clerk
 # session - every environment shares the production Clerk instance - so TESTING_ENABLED alone is an
-# environment switch, not an auth gate. A caller must either already hold an Admin/Manager session or
+# environment switch, not an auth gate. A caller must either already hold a UC Nexus Admin session or
 # present this digest's preimage in X-Testing-Secret, the bootstrap path for a fresh PR environment
 # where no session exists yet. A hash is a verifier, not a credential, so Railway stores nothing
 # replayable. Blank disables the secret path, leaving only the admin path.

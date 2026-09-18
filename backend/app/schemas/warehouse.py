@@ -6,8 +6,7 @@ import uuid
 import strawberry
 
 from app.auth import (
-    ADMIN_ROLE,
-    WAREHOUSE_MANAGER_ROLE,
+    WAREHOUSE_MANAGERS,
     ForbiddenError,
     caller_roles,
     current_user,
@@ -268,7 +267,7 @@ def _is_warehouse_manager(info) -> bool:
     """Whether the caller may act on somebody else's draft. Reads the per-request role memo, so this
     adds no Clerk call on a field whose policy already resolved roles."""
     roles = set(caller_roles(info.context))
-    return bool(roles & {ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE})
+    return bool(roles & WAREHOUSE_MANAGERS)
 
 
 def _load_draft_type(draft_id: uuid.UUID) -> ReceiveDraft:
@@ -278,12 +277,12 @@ def _load_draft_type(draft_id: uuid.UUID) -> ReceiveDraft:
 
 
 def _authorize_draft_approval(info, user_id: str, draft_id: uuid.UUID) -> None:
-    """Refuse a draft approval to anyone but a Warehouse Manager or Admin.
+    """Refuse a draft approval to anyone but a Warehouse Manager or a tenant owner.
 
     `user_id` / `draft_id` are unused now that approval is a plain role gate; kept in the signature
     so the two call sites (the live approve and the outbox-queued approve) share one check.
     """
-    if set(caller_roles(info.context)) & {ADMIN_ROLE, WAREHOUSE_MANAGER_ROLE}:
+    if set(caller_roles(info.context)) & WAREHOUSE_MANAGERS:
         return
     raise ForbiddenError("Only a Warehouse Manager can approve this receive.")
 
@@ -818,8 +817,8 @@ class WarehouseQueries:
 
     @strawberry.field
     def location_duplicates(self, info: strawberry.Info) -> list[LocationDuplicateGroup]:
-        """Admin-gated (#415): the admin Location Cleanup page is the only reader, and it is the
-        list `mergeLocations` acts on."""
+        """Role-gated (#415, #729): the Tenant Owner module's Location Cleanup page is the only
+        reader, and it is the list `mergeLocations` acts on. Filtered to the caller's own company."""
         with SessionLocal() as session:
             groups = warehouse_repository.get_location_duplicates(session, company=tenant_scope(info))
             return [
@@ -1519,12 +1518,13 @@ class WarehouseMutations:
         to_row: str,
         to_bay: str,
     ) -> LocationMergeResult:
-        """Admin-gated (#415): rewrites the location of every inventory row and stock item at the
-        source location, within one warehouse. warehouse_id is required - a location string is one
-        physical place only within a warehouse, so an unscoped merge would rewrite rows that share the
-        string in a warehouse the admin never looked at. Its audit rows name the admin who ran it
-        (#427) rather than the literal "Admin/Manager" - the gate already proves the role, so the row
-        may as well say which admin, given a merge can touch hundreds of rows at once."""
+        """Role-gated (#415, #729): rewrites the location of every inventory row and stock item at
+        the source location, within one warehouse. warehouse_id is required - a location string is
+        one physical place only within a warehouse, so an unscoped merge would rewrite rows that
+        share the string in a warehouse the caller never looked at. Its audit rows name the person
+        who ran it (#427) rather than the literal "Admin/Manager" the rows used to carry - the gate
+        already proves the role, so the row may as well say who, given a merge can touch hundreds of
+        rows at once."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
@@ -1577,8 +1577,9 @@ class WarehouseMutations:
                 session,
                 name=input.name,
                 code=input.code,
-                # A warehouse belongs to a company (#637). A scoped caller can only raise one for
-                # their own; an Admin/Manager is unscoped and names it on the input.
+                # A warehouse belongs to a company (#637). A scoped caller - a TENANT OWNER
+                # included - can only raise one for their own; a UC NEXUS ADMIN is unscoped and
+                # names it on the input.
                 company=tenant_scope(info) or input.company or "",
                 address=input.address,
                 city=input.city,
@@ -1593,15 +1594,20 @@ class WarehouseMutations:
 
     @strawberry.mutation
     def update_warehouse(self, info: strawberry.Info, id: strawberry.ID, input: UpdateWarehouseInput) -> Warehouse:
+        scope = tenant_scope(info)
         with SessionLocal() as session:
-            tenancy.require_warehouse_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
+            tenancy.require_warehouse_in_scope(session, uuid.UUID(str(id)), scope)
+            # The scope check above proves the building is the caller's; this one stops them sending
+            # it somewhere else. Moving a warehouse between companies is a UC NEXUS ADMIN decision
+            # (#729) - a scoped caller re-sending their own company is the edit form round-tripping
+            # every field, which the repository already treats as a no-op.
+            if scope is not None and (input.company or "").strip():
+                tenancy.require_company_in_scope(input.company, scope)
             wh = warehouse_admin_repository.update_warehouse(
                 session,
                 uuid.UUID(str(id)),
                 name=input.name,
                 code=input.code,
-                # #637: admin-only, like the mutation. A scoped caller never reaches this with a
-                # different company - the scope check above already refused them the row.
                 company=input.company,
                 address=input.address,
                 city=input.city,

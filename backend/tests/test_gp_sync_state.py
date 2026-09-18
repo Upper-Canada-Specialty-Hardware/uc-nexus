@@ -21,7 +21,7 @@ from datetime import datetime
 import pytest
 
 from app import auth
-from app.auth import ADMIN_ROLE
+from app.auth import NEXUS_ADMIN_ROLE
 from app.models.enums import POStatus
 from app.models.gp_po_sync_state import GpPoSyncState
 from app.models.purchase_order import PurchaseOrder
@@ -528,7 +528,7 @@ def _sign_in(monkeypatch, roles):
 
 
 def test_an_admin_gets_the_whole_document(stubbed, monkeypatch):
-    _sign_in(monkeypatch, [ADMIN_ROLE])
+    _sign_in(monkeypatch, [NEXUS_ADMIN_ROLE])
 
     result = _execute(GP_SYNC_STATE_QUERY)
 
@@ -553,7 +553,7 @@ def test_an_admin_gets_the_whole_document(stubbed, monkeypatch):
 
 def test_the_document_still_answers_with_no_relay_connected(monkeypatch):
     """Nothing on the socket is when somebody opens the page, so this is the case that must not fail."""
-    _sign_in(monkeypatch, [ADMIN_ROLE])
+    _sign_in(monkeypatch, [NEXUS_ADMIN_ROLE])
     monkeypatch.setattr(gp_sync_state, "relay_gateway", _FakeGateway(connected=False, build=None, companies=()))
     monkeypatch.setattr(gp_sync_state, "_read_db", lambda companies_hint: _db(companies_hint or ("TUBC",)))
     monkeypatch.setattr(gp_load, "policy", gp_load.GpLoadPolicy())
@@ -574,4 +574,4 @@ def test_a_signed_in_non_admin_is_refused(monkeypatch):
 
     assert result.errors
     assert result.errors[0].extensions["code"] == "FORBIDDEN"
-    assert result.errors[0].message == f"{ADMIN_ROLE} role required"
+    assert result.errors[0].message == f"{NEXUS_ADMIN_ROLE} role required"

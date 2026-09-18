@@ -25,7 +25,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.auth import ADMIN_ROLE, ForbiddenError, caller_company, tenant_scope
+from app.auth import NEXUS_ADMIN_ROLE, TENANT_OWNERS, ForbiddenError, caller_company, tenant_scope
 from app.auth_policy import ROOT_FIELD_POLICY
 from app.errors import NotFoundError, ValidationError
 from app.models.enums import POStatus, PullRequestSource, PullRequestStatus, ShippingOutRequestStatus
@@ -66,17 +66,18 @@ class _Info:
         self.context = _ctx(roles, company)
 
 
-def test_an_admin_is_unscoped():
-    """None means "no restriction", and it is the ADMIN answer alone. The admin surface - projects,
-    relay installs, the outbox, user management - exists to look across companies."""
-    assert tenant_scope(_Info([ADMIN_ROLE], company="TUBC")) is None
+def test_a_uc_nexus_admin_is_unscoped():
+    """None means "no restriction", and it is the UC NEXUS ADMIN answer alone (#729). That role
+    exists for the work that spans tenants - relay installs, user company assignment, the SharePoint
+    migration."""
+    assert tenant_scope(_Info([NEXUS_ADMIN_ROLE], company="TUBC")) is None
 
 
 def test_everyone_else_is_pinned_to_their_own_company():
     assert tenant_scope(_Info(["Warehouse Manager"], company="TUBC")) == "TUBC"
 
 
-def test_a_non_admin_with_no_company_is_refused_rather_than_shown_nothing():
+def test_a_scoped_caller_with_no_company_is_refused_rather_than_shown_nothing():
     """Scoping them to nothing would render an empty application, which is indistinguishable from the
     data having gone. The message names the fix instead."""
     with pytest.raises(ForbiddenError) as e:
@@ -120,10 +121,11 @@ def test_an_unassigned_account_is_memoised_too(monkeypatch):
 # --- updateUserCompany -------------------------------------------------------------------------
 
 
-def test_assigning_a_company_is_admin_only():
-    """It decides which company's rows an account can read and write at all, so it sits at the bar
-    `updateUserRoles` beside it sets."""
-    assert ROOT_FIELD_POLICY["updateUserCompany"] == ADMIN_ROLE
+def test_assigning_a_company_is_uc_nexus_admin_only():
+    """It decides which company's rows an account can read and write at all, so it is the one
+    user-management field a TENANT OWNER may not touch (#729) - the boundary they are themselves
+    confined to is not theirs to move."""
+    assert ROOT_FIELD_POLICY["updateUserCompany"] == NEXUS_ADMIN_ROLE
 
 
 def test_the_company_is_stored_trimmed_and_uppercased(monkeypatch):
@@ -163,12 +165,12 @@ def test_an_over_length_company_is_refused_against_gps_own_width():
         user_repository.normalize_company("A" * 16)
 
 
-# --- the archive + admin detail policy ---------------------------------------------------------
+# --- the archive + project detail policy -------------------------------------------------------
 
 
-def test_archiving_and_the_admin_detail_are_admin_only():
-    assert ROOT_FIELD_POLICY["setProjectArchived"] == ADMIN_ROLE
-    assert ROOT_FIELD_POLICY["adminProjectDetail"] == ADMIN_ROLE
+def test_archiving_and_the_project_detail_belong_to_a_tenant_owner():
+    assert ROOT_FIELD_POLICY["setProjectArchived"] == TENANT_OWNERS
+    assert ROOT_FIELD_POLICY["adminProjectDetail"] == TENANT_OWNERS
 
 
 # --- the company reaches the wire ---------------------------------------------------------------

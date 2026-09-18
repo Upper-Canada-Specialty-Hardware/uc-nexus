@@ -1,12 +1,12 @@
 """GET /testing/clerk-sign-in must refuse anonymous callers (#422).
 
 The endpoint mints a REAL Clerk sign-in token - every environment shares the production Clerk
-instance - so an ungated call is an impersonation primitive for any staff account, Admin/Manager
-included. It shipped gated on TESTING_ENABLED alone, and that variable was true on the shared
+instance - so an ungated call is an impersonation primitive for any staff account, a UC Nexus
+Admin included. It shipped gated on TESTING_ENABLED alone, and that variable was true on the shared
 production backend, so anyone who knew the URL could sign in as anyone (#424 flipped the variable;
 this pins the auth that should have been there regardless).
 
-Two credentials open it: an existing Admin/Manager session, or the shared testing secret in
+Two credentials open it: an existing UC Nexus Admin session, or the shared testing secret in
 X-Testing-Secret - the bootstrap path for a fresh PR environment where no session exists yet. The
 success-path tests fake the Clerk Backend API; nothing here may hit api.clerk.com.
 """
