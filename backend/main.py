@@ -737,12 +737,12 @@ def get_clerk_sign_in_token(request: Request, email: str = "jayp@ucsh.com"):
     Gated twice, like /admin/reset-data (#422). TESTING_ENABLED keeps it off any deployment that is
     not a test target, checked first so a production deployment refuses outright rather than leaking
     whether the caller's credential would have been good enough. Then the caller must prove they are
-    already an Admin/Manager, or present the shared testing secret in X-Testing-Secret - the
+    already a UC Nexus Admin, or present the shared testing secret in X-Testing-Secret - the
     bootstrap path for a fresh PR environment, where the whole point of this endpoint is that no
     session exists yet. Auth is not optional here: every environment shares the production Clerk
-    instance, so what this mints is a real session for a real staff account, Admin/Manager included,
-    and with only the environment switch this route was a full impersonation primitive on any
-    deployment where the switch was left on."""
+    instance, so what this mints is a real session for a real staff account, a UC Nexus Admin
+    included, and with only the environment switch this route was a full impersonation primitive on
+    any deployment where the switch was left on."""
     import hashlib
     import hmac
 

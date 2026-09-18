@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from app.auth import ADMIN_ROLE
+from app.auth import NEXUS_ADMIN_ROLE, TENANT_OWNERS
 from app.auth_policy import ROOT_FIELD_POLICY
 from app.errors import RelayCallError, RelayUnavailableError, ValidationError
 from app.schemas import relay as relay_module
@@ -22,7 +22,7 @@ class _FakeInfo:
     # An ADMIN caller, seeded straight into the per-request role memo. `tenant_scope` reads it (#637)
     # and answers None for an admin, so these tests exercise the relay gating rather than tenancy -
     # without the seed the lookup would try to verify a JWT off a request that is not there.
-    context = {"request": None, "_auth_roles": [ADMIN_ROLE]}
+    context = {"request": None, "_auth_roles": [NEXUS_ADMIN_ROLE]}
 
 
 def _relay(monkeypatch, *, company="TUBC", result=None, raises=None):
@@ -49,15 +49,18 @@ def _create(**kwargs):
     return asyncio.run(RelayMutations().create_gp_buyer(_FakeInfo(), **fields))
 
 
-def test_requires_an_admin():
+def test_requires_a_tenant_owner():
     """Registering a buyer writes to the accounting system of record.
+
+    A tenant owner's, since #729: the sub-step lives inside the GP identity chooser on the Edit User
+    dialog, so it sits at the bar its host page sets.
 
     Since #423 the gate is the policy table, applied by the schema extension before the resolver, so
     the requirement is asserted where it is now decided; `test_resolver_auth_gates.py` covers that the
     extension enforces the table and refuses before the body runs. The tests below therefore call the
     resolver directly with no auth setup at all - what they are about is the guard order INSIDE the
     body, which is unchanged."""
-    assert ROOT_FIELD_POLICY["createGpBuyer"] == ADMIN_ROLE
+    assert ROOT_FIELD_POLICY["createGpBuyer"] == TENANT_OWNERS
 
 
 def test_no_relay_stops_before_gp(monkeypatch):

@@ -24,7 +24,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.auth import ADMIN_ROLE
+from app.auth import NEXUS_ADMIN_ROLE
 from app.errors import AppError, RelayUnavailableError, ValidationError
 from app.models.enums import NotificationType, POStatus, ReceiveDraftStatus
 from app.models.notification import Notification
@@ -512,8 +512,8 @@ class _Info:
     def __init__(self):
         # Seeded with the caller's roles, which is where `tenant_scope` reads them from (#637): a
         # Warehouse Manager with no company assigned would otherwise be refused before the approval
-        # logic under test ran. ADMIN_ROLE makes the caller unscoped, which is what these are about.
-        self.context = {"_auth_roles": [ADMIN_ROLE, "Warehouse Manager"]}
+        # logic under test ran. NEXUS_ADMIN_ROLE makes the caller unscoped, which is what these are about.
+        self.context = {"_auth_roles": [NEXUS_ADMIN_ROLE, "Warehouse Manager"]}
 
 
 @pytest.fixture

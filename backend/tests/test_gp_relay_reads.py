@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.auth import ADMIN_ROLE
+from app.auth import NEXUS_ADMIN_ROLE, TENANT_OWNERS
 from app.auth_policy import ROOT_FIELD_POLICY, SIGNED_IN
 from app.errors import RelayUnavailableError, ValidationError
 from app.schemas import relay as relay_module
@@ -26,7 +26,7 @@ from app.services.relay_gateway import RelayGateway
 class FakeInfo:
     # An ADMIN caller, seeded into the per-request role memo so `tenant_scope` (#637) answers None -
     # unscoped - without trying to verify a JWT off a request that is not there.
-    context = {"request": None, "_auth_roles": [ADMIN_ROLE]}
+    context = {"request": None, "_auth_roles": [NEXUS_ADMIN_ROLE]}
 
 
 class FakeGateway:
@@ -264,12 +264,12 @@ def test_gp_buyers_detailed_maps_relay_result_to_type(monkeypatch):
     assert fake.calls == [("TUBC", "list_buyers_detailed", None)]
 
 
-def test_gp_buyers_detailed_requires_an_admin():
+def test_gp_buyers_detailed_requires_a_tenant_owner():
     """The bare-id `gpBuyers` backs the Create PO dropdown and stays open to any signed-in user; the
-    descriptions turn the same list into a staff roster, so that one is admin. Asserted against the
-    policy table because that is what decides it now - `test_resolver_auth_gates.py` covers that the
-    extension actually enforces the table."""
-    assert ROOT_FIELD_POLICY["gpBuyersDetailed"] == ADMIN_ROLE
+    descriptions turn the same list into a staff roster, so that one is a tenant owner's. Asserted
+    against the policy table because that is what decides it now - `test_resolver_auth_gates.py`
+    covers that the extension actually enforces the table."""
+    assert ROOT_FIELD_POLICY["gpBuyersDetailed"] == TENANT_OWNERS
     assert ROOT_FIELD_POLICY["gpBuyers"] == SIGNED_IN
 
 
@@ -338,11 +338,11 @@ def test_gp_cost_code_master_scopes_the_call_to_the_division(monkeypatch):
     assert fake.calls == [("TUBC", "list_cost_code_master", {"division": "VANCOUVER"})]
 
 
-def test_gp_cost_code_master_requires_an_admin():
-    """Its only consumer is the admin-only create-job dialog, so it sits at the bar the createGpJob it
-    feeds already sets. `gpCostCodes` - the per-job read behind the register-PO dropdown - stays open
-    to any signed-in user, because every PO screen needs it."""
-    assert ROOT_FIELD_POLICY["gpCostCodeMaster"] == ADMIN_ROLE
+def test_gp_cost_code_master_requires_a_tenant_owner():
+    """Its only consumer is the create-job dialog, so it sits at the bar the createGpJob it feeds
+    already sets. `gpCostCodes` - the per-job read behind the register-PO dropdown - stays open to
+    any signed-in user, because every PO screen needs it."""
+    assert ROOT_FIELD_POLICY["gpCostCodeMaster"] == TENANT_OWNERS
     assert ROOT_FIELD_POLICY["gpCostCodes"] == SIGNED_IN
 
 
@@ -450,10 +450,10 @@ def test_gp_employees_maps_relay_result_to_type(monkeypatch):
     assert fake.calls == [("TUBC", "list_employees", None)]
 
 
-def test_gp_employees_requires_an_admin():
+def test_gp_employees_requires_a_tenant_owner():
     """Every other gp_* read is open to any signed-in user; this one returns the payroll master with
-    staff names, and its only consumer is the admin-only create-job dialog."""
-    assert ROOT_FIELD_POLICY["gpEmployees"] == ADMIN_ROLE
+    staff names, and its only consumer is the create-job dialog."""
+    assert ROOT_FIELD_POLICY["gpEmployees"] == TENANT_OWNERS
     assert ROOT_FIELD_POLICY["gpDivisions"] == SIGNED_IN
 
 
@@ -625,4 +625,4 @@ def test_relay_events_bounds_the_limit(monkeypatch, asked, expected):
 def test_relay_events_is_gated_like_relay_installs():
     """These rows name installs, builds and refused credentials - relay-credential territory, not
     working data, so they sit at the same bar as the install list itself."""
-    assert ROOT_FIELD_POLICY["relayEvents"] == ROOT_FIELD_POLICY["relayInstalls"] == ADMIN_ROLE
+    assert ROOT_FIELD_POLICY["relayEvents"] == ROOT_FIELD_POLICY["relayInstalls"] == NEXUS_ADMIN_ROLE

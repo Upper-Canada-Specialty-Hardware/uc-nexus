@@ -70,10 +70,11 @@ class ProjectQueries:
 
     @strawberry.field
     def admin_projects(self, info: strawberry.Info) -> list[Project]:
-        """Admin/Manager-only project list with all editable fields for the admin Projects page.
+        """The Tenant Owner module's project list, with all editable fields.
 
         Includes archived rows - the page is where archiving is undone, so hiding them would make an
-        archived project unreachable - and spans every company, because Admin/Manager is unscoped."""
+        archived project unreachable - and covers the caller's own company, or every company for the
+        unscoped UC NEXUS ADMIN."""
         with SessionLocal() as session:
             rows = project_repository.list_projects_with_opening_counts(
                 session, company=tenant_scope(info), include_archived=True
@@ -90,9 +91,15 @@ class ProjectQueries:
 
     @strawberry.field
     def admin_project_detail(self, info: strawberry.Info, id: strawberry.ID) -> AdminProjectDetail | None:
-        """What the admin Projects page shows when a row is opened (#637) - the project plus the three
-        rollups that answer "is anything still live on this job" before somebody archives it."""
+        """What the Tenant Owner module's Projects page shows when a row is opened (#637) - the
+        project plus the three rollups that answer "is anything still live on this job" before
+        somebody archives it.
+
+        Scoped by id (#729). It used to assume an unscoped caller, which was true while the only
+        role that could reach it was exempt from the tenant line; a TENANT OWNER is not, so another
+        company's project reads as absent here exactly as it does everywhere else."""
         with SessionLocal() as session:
+            tenancy.require_project_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             detail = project_repository.get_admin_project_detail(session, uuid.UUID(str(id)))
             if detail is None:
                 return None
@@ -152,12 +159,12 @@ class ProjectMutations:
         existing job is left exactly as GP has it, the picked codes are NOT applied to it, and
         created=false plus the zero count is how the client is told that.
 
-        Admin-only. Creating a job writes to the accounting system of record.
+        A tenant owner's action. Creating a job writes to the accounting system of record.
 
         `input.company` names the GP company the job is created in and becomes the project's tenant
-        (#637). It is validated against the connected relay's enrolled companies and, for a non-admin
-        caller, against their own - though this field is admin-gated, so the second check only ever
-        matters if the policy is loosened later.
+        (#637). It is validated against the connected relay's enrolled companies and, for a scoped
+        caller, against their own - which since #729 is the ordinary case, because a TENANT OWNER is
+        pinned to one company and only the UC NEXUS ADMIN is not.
         """
 
         company = resolve_gp_company(info, input.company)
@@ -255,7 +262,7 @@ class ProjectMutations:
 
     @strawberry.mutation
     async def sync_gp_jobs(self, info: strawberry.Info) -> GpJobSyncResult:
-        """Admin: run one pass of the GP job sync now, instead of waiting out the poll interval.
+        """Run one pass of the GP job sync now, instead of waiting out the poll interval.
 
         The background service already does this on a timer and on every relay reconnect, so this is
         for the case where someone wants to see the result immediately - after creating a job directly
@@ -314,10 +321,14 @@ class ProjectMutations:
     def set_project_archived(self, info: strawberry.Info, id: strawberry.ID, archived: bool) -> Project:
         """Hide a project from the picker every module reads, or bring it back (#637).
 
-        Admin-only, and deliberately the whole of what archiving does: nothing about the project's POs,
-        inventory, pull requests or shipments changes. It is a decision about what people can START new
-        work against, not a lifecycle state."""
+        A tenant owner's decision, and deliberately the whole of what archiving does: nothing about
+        the project's POs, inventory, pull requests or shipments changes. It is a decision about what
+        people can START new work against, not a lifecycle state.
+
+        Scoped by id (#729), for the same reason `adminProjectDetail` beside it now is: a TENANT
+        OWNER is pinned to their company, so another company's project is not theirs to archive."""
         with SessionLocal() as session:
+            tenancy.require_project_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             project = project_repository.set_project_archived(session, uuid.UUID(str(id)), archived)
             session.commit()
             session.refresh(project)
