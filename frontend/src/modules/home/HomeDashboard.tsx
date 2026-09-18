@@ -8,6 +8,7 @@ import {
   Warehouse,
   Wrench,
   Truck,
+  Building2,
   ShieldCheck,
   ChevronRight,
 } from 'lucide-react';
@@ -121,7 +122,7 @@ const ICON = { size: 18, strokeWidth: 1.75 } as const;
  * The modules a person can open, for the "Jump back in" launcher. The nav rail carries the same
  * destinations; this repeats them with a line of what each is for, so the home screen answers "where
  * do I go" for someone who does not yet know the rail by its icons. Home itself is omitted - you are
- * already on it. Role gating mirrors the rail (an Admin/Manager sees everything).
+ * already on it. Role gating mirrors the rail (a UC NEXUS ADMIN sees everything).
  */
 interface LauncherItem {
   label: string;
@@ -137,44 +138,51 @@ const LAUNCHER_ITEMS: LauncherItem[] = [
     path: '/app/po',
     caption: 'Raise, register and receive POs',
     icon: <ReceiptText {...ICON} />,
-    requiredRoles: ['PO User'],
+    requiredRoles: ['PO User', 'PO Manager', 'Tenant Owner'],
   },
   {
     label: 'Warehouse',
     path: '/app/warehouse',
     caption: 'Receiving, put-away, picks and stock',
     icon: <Warehouse {...ICON} />,
-    requiredRoles: ['Warehouse Staff', 'Warehouse Manager'],
+    requiredRoles: ['Warehouse Staff', 'Warehouse Manager', 'Tenant Owner'],
   },
   {
     label: 'Shop Assembly',
     path: '/app/shop-assembly',
     caption: 'Hardware requests for the bench',
     icon: <Wrench {...ICON} />,
-    requiredRoles: ['Shop Assembly User', 'Shop Assembly Manager'],
+    requiredRoles: ['Shop Assembly User', 'Shop Assembly Manager', 'Tenant Owner'],
   },
   {
     label: 'Shipping',
     path: '/app/shipping',
     caption: 'Stage and ship project hardware',
     icon: <Truck {...ICON} />,
-    requiredRoles: ['Shipping Out'],
+    requiredRoles: ['Shipping Out', 'Shipping Manager', 'Tenant Owner'],
   },
   {
-    label: 'Admin',
-    path: '/app/admin',
-    caption: 'Projects, users, buyers and setup',
+    label: 'Tenant Owner',
+    path: '/app/tenant-owner',
+    caption: "Projects, warehouses, dashboards and your company's users",
+    icon: <Building2 {...ICON} />,
+    requiredRoles: ['Tenant Owner'],
+  },
+  {
+    label: 'UC Nexus Admin',
+    path: '/app/nexus-admin',
+    caption: 'Users, relay, GP traffic and system setup',
     icon: <ShieldCheck {...ICON} />,
-    requiredRoles: ['Admin/Manager'],
+    requiredRoles: ['UC Nexus Admin'],
   },
 ];
 
 export default function HomeDashboard() {
-  const { displayName, hasRole, isAdmin } = useIdentity();
+  const { displayName, hasRole, isNexusAdmin } = useIdentity();
   const navigate = useNavigate();
 
   const accessibleModules = LAUNCHER_ITEMS.filter(
-    (m) => isAdmin || m.requiredRoles.some((role) => hasRole(role)),
+    (m) => isNexusAdmin || m.requiredRoles.some((role) => hasRole(role)),
   );
 
   const { data: statsData, loading: statsLoading, error: statsError } = useQuery<HomeStatsData>(

@@ -246,13 +246,13 @@ function OpenPassCell({ row }: { row: GpSyncCompanyState }) {
 }
 
 export default function NexusGpTrafficPage() {
-  const { isAdmin } = useIdentity();
+  const { isNexusAdmin } = useIdentity();
   // Nothing on this page is readable without the admin query, so the relay poll is skipped alongside
   // it rather than left running behind the warning.
-  const relay = useRelayStatus({ skip: !isAdmin });
+  const relay = useRelayStatus({ skip: !isNexusAdmin });
 
   const { data, loading, error } = useQuery<{ gpSyncState: GpSyncState }>(GET_GP_SYNC_STATE, {
-    skip: !isAdmin,
+    skip: !isNexusAdmin,
     pollInterval: POLL_MS,
     fetchPolicy: 'cache-and-network',
   });
@@ -266,8 +266,12 @@ export default function NexusGpTrafficPage() {
     [state?.companies],
   );
 
-  if (!isAdmin) {
-    return <Alert severity="warning">Nexus GP Traffic is available to admins only.</Alert>;
+  if (!isNexusAdmin) {
+    return (
+      <Alert severity="warning">
+        You do not have permission to see Nexus GP Traffic. The UC Nexus Admin role is required.
+      </Alert>
+    );
   }
 
   const pacing = state?.pacing;
@@ -278,7 +282,7 @@ export default function NexusGpTrafficPage() {
       <FadeIn>
         <PageHeader
           title="Nexus GP Traffic"
-          parent={{ label: 'Admin', to: '/app/admin' }}
+          parent={{ label: 'UC Nexus Admin', to: '/app/nexus-admin' }}
           description="What is crossing between Nexus and GP right now, and what has already crossed."
           actions={
             <Stack direction="row" spacing={1.5} alignItems="center" sx={{ minWidth: 0 }}>
@@ -460,7 +464,7 @@ export default function NexusGpTrafficPage() {
               {`oldest pending since ${fmtDate(writes.oldestPendingAt)}`}
             </Typography>
           )}
-          <Link component={RouterLink} to="/app/admin/relay-installs" variant="body2" underline="hover">
+          <Link component={RouterLink} to="/app/nexus-admin/relay-installs" variant="body2" underline="hover">
             Open the write queue
           </Link>
         </Stack>

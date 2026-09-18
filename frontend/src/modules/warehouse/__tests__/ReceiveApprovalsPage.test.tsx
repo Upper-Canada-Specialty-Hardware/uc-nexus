@@ -10,7 +10,7 @@ import { GET_PROJECTS } from '../../../graphql/shared';
 // is a real gate rather than navigation tidiness. The role check is on the page (routes in this app
 // are authenticated, pages say what they need), which is why it is worth a test of its own.
 
-const mockIdentity = vi.hoisted(() => ({ roles: [] as string[], isAdmin: false }));
+const mockIdentity = vi.hoisted(() => ({ roles: [] as string[] }));
 
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
@@ -18,7 +18,11 @@ vi.mock('../../../hooks/useIdentity', () => ({
     userId: 'u_test',
     roles: mockIdentity.roles,
     hasRole: (role: string) => mockIdentity.roles.includes(role),
-    isAdmin: mockIdentity.isAdmin,
+    isNexusAdmin: mockIdentity.roles.includes('UC Nexus Admin'),
+    isTenantOwner: mockIdentity.roles.includes('Tenant Owner'),
+    ownsTenant: mockIdentity.roles.some(
+      (r) => r === 'UC Nexus Admin' || r === 'Tenant Owner',
+    ),
     gpBuyerId: null,
     user: null,
   }),
@@ -104,7 +108,6 @@ vi.setConfig({ testTimeout: 30_000 });
 describe('ReceiveApprovalsPage', () => {
   beforeEach(() => {
     mockIdentity.roles = [];
-    mockIdentity.isAdmin = false;
   });
 
   it('refuses a warehouse user who cannot approve, and points them at their own drafts', async () => {
@@ -124,8 +127,8 @@ describe('ReceiveApprovalsPage', () => {
     expect(screen.getByText('Riverside Tower')).toBeInTheDocument();
   });
 
-  it('admits an admin, because there is no implicit bypass anywhere else either', async () => {
-    mockIdentity.isAdmin = true;
+  it('admits a Tenant Owner, who holds every manager power inside their company', async () => {
+    mockIdentity.roles = ['Tenant Owner'];
     renderPage([draftsMock('PENDING_APPROVAL', [draft()])]);
 
     expect(await screen.findByText('PO-123', undefined, SLOW)).toBeInTheDocument();

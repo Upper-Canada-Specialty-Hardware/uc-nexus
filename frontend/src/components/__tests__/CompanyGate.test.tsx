@@ -4,7 +4,7 @@ import CompanyGate from '../CompanyGate';
 // #637: a tenant IS a GP company. The gate is the difference between "your account is not finished"
 // and an app that silently renders nothing anywhere, so each of its three states is pinned here.
 const identity = vi.hoisted(() => ({
-  isAdmin: false,
+  isNexusAdmin: false,
   company: null as string | null,
   user: { primaryEmailAddress: { emailAddress: 'jay@example.com' } } as unknown,
 }));
@@ -15,7 +15,9 @@ vi.mock('../../hooks/useIdentity', () => ({
     userId: 'user_1',
     roles: [],
     hasRole: () => false,
-    isAdmin: identity.isAdmin,
+    isNexusAdmin: identity.isNexusAdmin,
+    isTenantOwner: false,
+    ownsTenant: identity.isNexusAdmin,
     isDbAdmin: false,
     gpBuyerId: null,
     company: identity.company,
@@ -24,7 +26,7 @@ vi.mock('../../hooks/useIdentity', () => ({
 }));
 
 beforeEach(() => {
-  identity.isAdmin = false;
+  identity.isNexusAdmin = false;
   identity.company = null;
   identity.user = { primaryEmailAddress: { emailAddress: 'jay@example.com' } };
 });
@@ -60,8 +62,8 @@ test('an assigned user sees the routes', () => {
   expect(screen.queryByText(/no company assigned/i)).not.toBeInTheDocument();
 });
 
-test('Admin/Manager is unscoped, so no company is needed', () => {
-  identity.isAdmin = true;
+test('a UC Nexus Admin is unscoped, so no company is needed', () => {
+  identity.isNexusAdmin = true;
   renderGate();
 
   expect(screen.getByText('module routes')).toBeInTheDocument();

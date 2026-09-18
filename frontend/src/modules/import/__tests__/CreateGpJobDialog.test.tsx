@@ -24,9 +24,11 @@ vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
     displayName: 'Admin',
     userId: 'user_admin',
-    roles: ['Admin/Manager'],
+    roles: ['UC Nexus Admin'],
     hasRole: () => true,
-    isAdmin: true,
+    isNexusAdmin: true,
+    isTenantOwner: false,
+    ownsTenant: true,
     gpBuyerId: null,
     company: null,
     user: null,

@@ -150,11 +150,11 @@ export default function DbAccessPage() {
   const { data: usersData } = useQuery<{ users: RosterUser[] }>(GET_USERS, { skip: !mintOpen });
   const mintedIds = useMemo(() => new Set(admins.map((a) => a.clerkUserId)), [admins]);
   const eligibleUsers = useMemo(
-    // Backend refuses a non-Admin/Manager target and a user who already holds a live grant; mirror both
-    // here so the picker only offers what will succeed.
+    // Backend refuses a target who is not a UC NEXUS ADMIN, and a user who already holds a live
+    // grant; mirror both here so the picker only offers what will succeed.
     () =>
       (usersData?.users ?? [])
-        .filter((u) => u.roles.includes('Admin/Manager') && !mintedIds.has(u.id))
+        .filter((u) => u.roles.includes('UC Nexus Admin') && !mintedIds.has(u.id))
         .sort((a, b) => userLabel(a).localeCompare(userLabel(b))),
     [usersData, mintedIds],
   );
@@ -334,7 +334,7 @@ export default function DbAccessPage() {
       <FadeIn>
         <PageHeader
           title="Database Access"
-          parent={{ label: 'Admin', to: '/app/admin' }}
+          parent={{ label: 'UC Nexus Admin', to: '/app/nexus-admin' }}
           description="Mint, rotate and revoke direct Postgres logins for MS Access over the public proxy."
           actions={
             <Button variant="contained" onClick={() => setMintOpen(true)}>
@@ -495,8 +495,8 @@ export default function DbAccessPage() {
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
             <Typography variant="body2" color="text.secondary">
-              Only Admin/Manager holders without a live login are listed. Direct read-write access goes
-              only to people already trusted with the whole app.
+              Only UC Nexus Admin holders without a live login are listed. Direct read-write access
+              goes only to people already trusted with the whole app.
             </Typography>
             <TextField
               select

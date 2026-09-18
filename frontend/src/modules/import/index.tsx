@@ -32,7 +32,7 @@ const PURPOSES: ImportPurpose[] = ['po', 'assembly', 'schedule'];
 const DEFAULT_PURPOSE: ImportPurpose = 'schedule';
 
 export default function ImportModule() {
-  const { isAdmin } = useIdentity();
+  const { ownsTenant } = useIdentity();
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -132,9 +132,9 @@ export default function ImportModule() {
         // GP, so an empty list means GP has no jobs yet - or the relay has never connected.
         emptyStateText="No projects yet. Projects appear automatically for every job in GP."
         createButton={
-          // Creating a job writes to the accounting system of record, so it's Admin/Manager only.
+          // Creating a job writes to the accounting system of record, so it is the TENANT OWNER's.
           // Everyone else still gets the landing page, just without the button.
-          isAdmin ? (
+          ownsTenant ? (
             <Button
               variant="contained"
               size="large"
@@ -147,7 +147,7 @@ export default function ImportModule() {
         }
         onSelect={handleSelect}
       />
-      {isAdmin && <CreateGpJobDialog open={createOpen} onClose={() => setCreateOpen(false)} />}
+      {ownsTenant && <CreateGpJobDialog open={createOpen} onClose={() => setCreateOpen(false)} />}
       {selectedProject && (
         <ImportWizard
           open={wizardOpen}

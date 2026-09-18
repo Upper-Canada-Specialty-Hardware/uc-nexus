@@ -17,7 +17,7 @@ export interface Project {
   /** #632: the XML the schedule on file came from (#627 capture). Null on projects last imported
    *  before it existed - the name records on the next fresh upload. */
   scheduleFilename?: string | null;
-  /** #637: the GP company (tenant) that owns this job. Every project has one; only Admin/Manager
+  /** #637: the GP company (tenant) that owns this job. Every project has one; only a UC Nexus Admin
    *  ever sees more than their own, which is why the pickers badge it for them alone. */
   company: string;
   openingCount: number;
