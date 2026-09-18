@@ -4,15 +4,17 @@ import RelayStatusChip from '../RelayStatusChip';
 // The indicator says two different things depending on who is looking, and getting that backwards is
 // exactly the bug this covers: a scoped user reading "TUBC +2" understands it as "I am on three
 // companies" when every row they will ever see belongs to one.
-const identity = vi.hoisted(() => ({ isAdmin: true, company: null as string | null }));
+const identity = vi.hoisted(() => ({ isNexusAdmin: true, company: null as string | null }));
 
 vi.mock('../../hooks/useIdentity', () => ({
   useIdentity: () => ({
     displayName: 'Jay Puzon',
     userId: 'user_1',
-    roles: identity.isAdmin ? ['Admin/Manager'] : [],
-    hasRole: (role: string) => identity.isAdmin && role === 'Admin/Manager',
-    isAdmin: identity.isAdmin,
+    roles: identity.isNexusAdmin ? ['UC Nexus Admin'] : [],
+    hasRole: (role: string) => identity.isNexusAdmin && role === 'UC Nexus Admin',
+    isNexusAdmin: identity.isNexusAdmin,
+    isTenantOwner: false,
+    ownsTenant: identity.isNexusAdmin,
     isDbAdmin: false,
     gpBuyerId: null,
     company: identity.company,
@@ -28,7 +30,7 @@ const GP_COMPANIES = [
 ];
 
 beforeEach(() => {
-  identity.isAdmin = true;
+  identity.isNexusAdmin = true;
   identity.company = null;
 });
 
@@ -36,7 +38,7 @@ function renderChip(connected: boolean | null, companies: string[] = COMPANIES) 
   render(<RelayStatusChip connected={connected} companies={companies} gpCompanies={GP_COMPANIES} />);
 }
 
-it('shows Admin/Manager the relay’s whole reach, named as GP names it', async () => {
+it('shows a UC Nexus Admin the relay’s whole reach, named as GP names it', async () => {
   renderChip(true);
 
   const chip = screen.getByText('TUBC +2');
@@ -48,7 +50,7 @@ it('shows Admin/Manager the relay’s whole reach, named as GP names it', async 
 });
 
 it('shows a scoped user their own company and nothing else', async () => {
-  identity.isAdmin = false;
+  identity.isNexusAdmin = false;
   identity.company = 'TUBC';
   renderChip(true);
 
@@ -65,7 +67,7 @@ it('shows a scoped user their own company and nothing else', async () => {
 });
 
 it('warns when the connected relay is not serving the scoped user’s company', async () => {
-  identity.isAdmin = false;
+  identity.isNexusAdmin = false;
   identity.company = 'TUBC';
   renderChip(true, ['UCSH', 'UBC']);
 
@@ -78,7 +80,7 @@ it('warns when the connected relay is not serving the scoped user’s company', 
 });
 
 it('says nothing about a company while the relay is down', () => {
-  identity.isAdmin = false;
+  identity.isNexusAdmin = false;
   identity.company = 'TUBC';
   renderChip(false);
 

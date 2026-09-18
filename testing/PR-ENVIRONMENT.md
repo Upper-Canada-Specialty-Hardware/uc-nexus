@@ -18,7 +18,7 @@ PRs get nothing, by design - there would be nothing to sign into.
 The comment carries four things:
 
 - the sign-in link, `<backend>/testing/session?key=<K>`. Navigate it once and you land on `/app` as the
-  dedicated e2e account (Admin/Manager). It mints a fresh Clerk ticket every visit, so it never goes
+  dedicated e2e account (UC Nexus Admin). It mints a fresh Clerk ticket every visit, so it never goes
   stale and survives a DevAction reset.
 - the agent protocol, verbatim (below). It is the procedure, not a summary of one.
 - one relay line: `relay: connected, companies TUBC`, or `relay: DOWN` and what to do about it.
@@ -191,7 +191,7 @@ fails silently when it is missing.
   It should list `production` alongside every `uc-nexus-pr-<N>`. An `errors` array instead means the
   token type is wrong or the project id is.
 - **`E2E_CLERK_USER_ID` on the production backend**, so every fork inherits it. It names the dedicated
-  e2e account the sign-in link mints - not a person, Admin/Manager, and refused on production
+  e2e account the sign-in link mints - not a person, UC Nexus Admin, and refused on production
   (`app/auth._reject_e2e_account_in_production`), which is what makes the link safe to sit in a public
   PR comment.
 - **`PREVIEW_TESTING_SIGN_IN_SECRET_HASH` on the production backend**, inherited by every fork, for the

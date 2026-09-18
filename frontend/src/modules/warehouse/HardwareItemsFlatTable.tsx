@@ -10,7 +10,7 @@ import { useQuery } from '@apollo/client/react';
 import { TriangleAlert } from 'lucide-react';
 import { GET_INVENTORY_ROWS } from '../../graphql/warehouse';
 import { useCustomInventoryItems, catalogKey } from '../../hooks/useCustomItems';
-import InventoryCorrectionModal from '../admin/InventoryCorrectionModal';
+import InventoryCorrectionModal from '../tenant-owner/InventoryCorrectionModal';
 import AuditHistoryDrawer from './AuditHistoryDrawer';
 import SpotCheckModal from './SpotCheckModal';
 import DestockInventoryModal from './stock/DestockInventoryModal';

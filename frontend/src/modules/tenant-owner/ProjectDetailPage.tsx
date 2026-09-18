@@ -87,14 +87,14 @@ function StatTile({
 
 export default function ProjectDetailPage() {
   const { id = '' } = useParams<{ id: string }>();
-  const { isAdmin } = useIdentity();
+  const { ownsTenant } = useIdentity();
   const { showToast } = useToast();
   const [editOpen, setEditOpen] = useState(false);
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
 
   const { data, loading, error } = useQuery<{ adminProjectDetail: AdminProjectDetail | null }>(
     GET_ADMIN_PROJECT_DETAIL,
-    { variables: { id }, skip: !isAdmin || !id, fetchPolicy: 'cache-and-network' },
+    { variables: { id }, skip: !ownsTenant || !id, fetchPolicy: 'cache-and-network' },
   );
 
   const detail = data?.adminProjectDetail ?? null;
@@ -131,10 +131,10 @@ export default function ProjectDetailPage() {
   const inventoryOnHand = detail?.inventoryOnHand ?? 0;
   const openRequests = detail?.openShippingRequestCount ?? 0;
 
-  if (!isAdmin) {
+  if (!ownsTenant) {
     return (
       <Alert severity="error" sx={{ mt: 2 }}>
-        You do not have permission to manage projects. The Admin/Manager role is required.
+        You do not have permission to manage projects. The Tenant Owner role is required.
       </Alert>
     );
   }
@@ -163,7 +163,7 @@ export default function ProjectDetailPage() {
       <Alert
         severity="info"
         action={
-          <Button component={RouterLink} to="/app/admin/projects" size="small" color="inherit">
+          <Button component={RouterLink} to="/app/tenant-owner/projects" size="small" color="inherit">
             All projects
           </Button>
         }
@@ -177,7 +177,7 @@ export default function ProjectDetailPage() {
     <Box>
       <FadeIn>
         <PageHeader
-          parent={{ label: 'Projects', to: '/app/admin/projects' }}
+          parent={{ label: 'Projects', to: '/app/tenant-owner/projects' }}
           title={
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
               <Typography variant="h5" sx={{ ...monoSx, fontWeight: 700 }}>

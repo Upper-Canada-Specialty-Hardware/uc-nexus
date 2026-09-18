@@ -21,7 +21,7 @@ interface GpJobSyncResult {
 }
 
 export default function ProjectsPage() {
-  const { isAdmin } = useIdentity();
+  const { ownsTenant } = useIdentity();
   const { showToast } = useToast();
   const navigate = useNavigate();
   // #637: archived jobs stay in adminProjects (this is the only screen that can un-archive one), so
@@ -29,7 +29,7 @@ export default function ProjectsPage() {
   const [showArchived, setShowArchived] = useState(false);
 
   const { data, loading } = useQuery<{ adminProjects: ProjectFormValue[] }>(GET_ADMIN_PROJECTS, {
-    skip: !isAdmin,
+    skip: !ownsTenant,
   });
   const allProjects = useMemo(() => data?.adminProjects ?? [], [data]);
   const projects = useMemo(
@@ -63,7 +63,7 @@ export default function ProjectsPage() {
   // things an admin does to a project now - archiving and the at-a-glance counts need somewhere to live.
   const handleRowClick = useCallback(
     (params: GridRowParams<ProjectFormValue>) => {
-      navigate(`/app/admin/projects/${params.row.id}`);
+      navigate(`/app/tenant-owner/projects/${params.row.id}`);
     },
     [navigate],
   );
@@ -158,10 +158,10 @@ export default function ProjectsPage() {
     [],
   );
 
-  if (!isAdmin) {
+  if (!ownsTenant) {
     return (
       <Alert severity="error" sx={{ mt: 2 }}>
-        You do not have permission to manage projects. The Admin/Manager role is required.
+        You do not have permission to manage projects. The Tenant Owner role is required.
       </Alert>
     );
   }
@@ -171,7 +171,7 @@ export default function ProjectsPage() {
       <FadeIn>
         <PageHeader
           title="Projects"
-          parent={{ label: 'Admin', to: '/app/admin' }}
+          parent={{ label: 'Tenant Owner', to: '/app/tenant-owner' }}
           description="Every job in GP becomes a project automatically, in the company that holds it. Click a row to open the project - details, archiving, and what it currently holds."
           actions={
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>

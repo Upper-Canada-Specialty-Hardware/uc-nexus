@@ -18,9 +18,11 @@ vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
     displayName: 'Admin',
     userId: 'user_admin',
-    roles: ['Admin/Manager'],
+    roles: ['UC Nexus Admin'],
     hasRole: () => true,
-    isAdmin: true,
+    isNexusAdmin: true,
+    isTenantOwner: false,
+    ownsTenant: true,
     isDbAdmin: false,
     gpBuyerId: null,
     company: null,
@@ -95,9 +97,9 @@ function renderPage(mocks: MockedResponse[]) {
   return render(
     <MockedProvider mocks={mocks}>
       <ToastProvider>
-        <MemoryRouter initialEntries={[`/app/admin/projects/${PROJECT_ID}`]}>
+        <MemoryRouter initialEntries={[`/app/tenant-owner/projects/${PROJECT_ID}`]}>
           <Routes>
-            <Route path="/app/admin/projects/:id" element={<ProjectDetailPage />} />
+            <Route path="/app/tenant-owner/projects/:id" element={<ProjectDetailPage />} />
           </Routes>
         </MemoryRouter>
       </ToastProvider>

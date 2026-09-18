@@ -163,7 +163,7 @@ const DELETE_WARNING =
   'will be refused on every reconnect until it is re-enrolled with a new token. This cannot be undone.';
 
 export default function RelayInstallsPage() {
-  const { isAdmin } = useIdentity();
+  const { isNexusAdmin } = useIdentity();
   const { showToast } = useToast();
   const relay = useRelayStatus();
 
@@ -172,13 +172,13 @@ export default function RelayInstallsPage() {
   const [provisioned, setProvisioned] = useState<Provisioned | null>(null);
 
   const { data, loading } = useQuery<{ relayInstalls: RelayInstall[] }>(RELAY_INSTALLS, {
-    skip: !isAdmin,
+    skip: !isNexusAdmin,
     fetchPolicy: 'cache-and-network',
   });
   const installs = useMemo(() => data?.relayInstalls ?? [], [data]);
 
   const { data: eventsData } = useQuery<{ relayEvents: RelayEvent[] }>(RELAY_EVENTS, {
-    skip: !isAdmin,
+    skip: !isNexusAdmin,
     variables: { limit: EVENT_LIMIT },
     fetchPolicy: 'cache-and-network',
     pollInterval: EVENTS_POLL_MS,
@@ -204,7 +204,7 @@ export default function RelayInstallsPage() {
   // while one is open - there is nothing to watch otherwise.
   const { data: windowData, refetch: refetchWindow } = useQuery<{ relayAdoptWindow: AdoptWindow | null }>(
     RELAY_ADOPT_WINDOW,
-    { skip: !isAdmin, fetchPolicy: 'cache-and-network' },
+    { skip: !isNexusAdmin, fetchPolicy: 'cache-and-network' },
   );
   const adoptWindow = windowData?.relayAdoptWindow ?? null;
   const [adoptTarget, setAdoptTarget] = useState<RelayInstall | null>(null);
@@ -436,8 +436,12 @@ export default function RelayInstallsPage() {
     [liveInstallId, copy],
   );
 
-  if (!isAdmin) {
-    return <Alert severity="warning">Relay installs are available to admins only.</Alert>;
+  if (!isNexusAdmin) {
+    return (
+      <Alert severity="warning">
+        You do not have permission to manage relay installs. The UC Nexus Admin role is required.
+      </Alert>
+    );
   }
 
   return (
@@ -445,7 +449,7 @@ export default function RelayInstallsPage() {
       <FadeIn>
         <PageHeader
           title="Relay Installs"
-          parent={{ label: 'Admin', to: '/app/admin' }}
+          parent={{ label: 'UC Nexus Admin', to: '/app/nexus-admin' }}
           description="Provision a one-time enrollment token, then enroll the relay from its Setup tab."
           actions={
             <Stack direction="row" spacing={2} alignItems="center">

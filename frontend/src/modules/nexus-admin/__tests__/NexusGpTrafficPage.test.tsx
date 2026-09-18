@@ -7,24 +7,27 @@ import { GET_RELAY_STATUS } from '../../../graphql/shared';
 
 // One mutable flag rather than two mocked modules: the admin gate is the only thing that changes
 // between the cases below, and vi.mock is per-file. Hoisted so the factory can read it.
-const identity = vi.hoisted(() => ({ isAdmin: true }));
+const identity = vi.hoisted(() => ({ isNexusAdmin: true }));
 
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
-    displayName: identity.isAdmin ? 'Admin' : 'Buyer',
+    displayName: identity.isNexusAdmin ? 'Admin' : 'Buyer',
     userId: 'user_1',
-    roles: identity.isAdmin ? ['Admin/Manager'] : ['Purchaser'],
-    hasRole: (role: string) => (identity.isAdmin ? role === 'Admin/Manager' : role === 'Purchaser'),
-    isAdmin: identity.isAdmin,
+    roles: identity.isNexusAdmin ? ['UC Nexus Admin'] : ['Purchaser'],
+    hasRole: (role: string) =>
+      identity.isNexusAdmin ? role === 'UC Nexus Admin' : role === 'Purchaser',
+    isNexusAdmin: identity.isNexusAdmin,
+    isTenantOwner: false,
+    ownsTenant: identity.isNexusAdmin,
     isDbAdmin: false,
     gpBuyerId: null,
-    company: identity.isAdmin ? null : 'TUBC',
+    company: identity.isNexusAdmin ? null : 'TUBC',
     user: null,
   }),
 }));
 
 afterEach(() => {
-  identity.isAdmin = true;
+  identity.isNexusAdmin = true;
 });
 
 const INFINITE = Number.POSITIVE_INFINITY;
@@ -191,7 +194,7 @@ it('reports the link, the GP read limit, the write queue and one company row', a
   // The queue detail, and the page that can act on it.
   expect(screen.getByText('0 pending, 0 in flight, 0 failed')).toBeTruthy();
   expect(screen.getByRole('link', { name: /open the write queue/i }).getAttribute('href')).toBe(
-    '/app/admin/relay-installs',
+    '/app/nexus-admin/relay-installs',
   );
 });
 
@@ -261,13 +264,13 @@ it('says nothing is mirrored rather than rendering an empty table', async () => 
   expect(screen.queryByRole('table')).toBeNull();
 });
 
-it('is closed to anyone but an admin', async () => {
-  // The snapshot names every GP company and how far each has got, which is admin-only on the
-  // backend too - the page must not fire the query at all for anyone else.
-  identity.isAdmin = false;
+it('is closed to anyone but a UC Nexus Admin', async () => {
+  // The snapshot names every GP company and how far each has got, which the backend gates on the
+  // same role - the page must not fire the query at all for anyone else.
+  identity.isNexusAdmin = false;
   renderPage([]);
 
-  expect(await screen.findByText(/available to admins only/i)).toBeTruthy();
+  expect(await screen.findByText(/The UC Nexus Admin role is required/i)).toBeTruthy();
   expect(screen.queryByText('Reads available')).toBeNull();
   expect(screen.queryByRole('table')).toBeNull();
 });
