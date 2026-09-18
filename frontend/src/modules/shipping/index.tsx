@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { Box, Button, Typography } from '@mui/material';
+import { Box, Button } from '@mui/material';
 import { Settings2 } from 'lucide-react';
 import ShipmentsList from './ShipmentsList';
 import ShippingRequestsPage from './ShippingRequestsPage';
@@ -9,6 +9,7 @@ import StagingWorkspace from './StagingWorkspace';
 import ShippingLanding from './ShippingLanding';
 import RequestWorkspace from './request-workspace/RequestWorkspace';
 import ProjectPicker from '../../components/ProjectPicker';
+import PageHeader from '../../components/PageHeader';
 import type { Project } from '../../types/project';
 
 /**
@@ -24,7 +25,7 @@ export default function ShippingModule() {
   return (
     <Routes>
       <Route index element={<ShippingLanding />} />
-      <Route path="requests" element={<RequestsRoute />} />
+      <Route path="requests" element={<ShippingRequestsPage />} />
       {/* The one composer (#493 successor): schedule-driven and loose lines in one cart, full-page.
           `new` carries its own project picker; `:id/edit` seeds from the request it names. */}
       <Route path="requests/new" element={<RequestWorkspace mode="create" />} />
@@ -54,6 +55,7 @@ function StagingRoute() {
   const [methodsOpen, setMethodsOpen] = useState(false);
   return (
     <Box>
+      <PageHeader title="Staging" parent={{ label: 'Shipping', to: '/app/shipping' }} />
       <Box
         sx={{
           display: 'flex',
@@ -80,27 +82,6 @@ function StagingRoute() {
       </Box>
       <StagingWorkspace projectId={project?.id} project={project} />
       <ShipmentMethodsDialog open={methodsOpen} onClose={() => setMethodsOpen(false)} />
-    </Box>
-  );
-}
-
-/**
- * Requests default to every project's board - reviewing and accepting them needs no one job. Picking
- * a project scopes the list to it; raising a new request and editing a pending one now happen on the
- * request workspace, which carries its own picker, so a picked project here only rides along to
- * preselect that job when starting a new one.
- */
-function RequestsRoute() {
-  const [project, setProject] = useState<Project | null>(null);
-  return (
-    <Box>
-      <Box sx={{ mb: 2 }}>
-        <ProjectPicker value={project} onChange={setProject} sx={{ maxWidth: 420 }} />
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-          Leave blank to review every project&rsquo;s requests, or pick one to scope the list.
-        </Typography>
-      </Box>
-      <ShippingRequestsPage projectId={project?.id} />
     </Box>
   );
 }

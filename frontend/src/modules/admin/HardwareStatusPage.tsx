@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react';
 import {
   Box,
-  Typography,
   Alert,
   Skeleton,
   Autocomplete,
@@ -14,6 +13,7 @@ import { useQuery } from '@apollo/client/react';
 import { GET_HARDWARE_STATUS_BY_PRODUCT } from '../../graphql/admin';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { infoHeader } from '../../components/InfoColumnHeader';
+import PageHeader from '../../components/PageHeader';
 import { monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import type { Project } from '../../types/project';
@@ -168,13 +168,11 @@ export default function HardwareStatusPage() {
   return (
     <Box>
       <FadeIn>
-        <Typography variant="h5" sx={{ mb: 0.25 }}>
-          Hardware Status by Project
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Where every product stands, from schedule to shipped - pick one project or several and the
-          counts sum.
-        </Typography>
+        <PageHeader
+          title="Hardware Status by Project"
+          parent={{ label: 'Admin', to: '/app/admin' }}
+          description="Where every product stands, from schedule to shipped - pick one project or several and the counts sum."
+        />
       </FadeIn>
 
       <Box sx={{ display: 'flex', gap: 1.5, mb: 3, flexWrap: 'wrap' }}>

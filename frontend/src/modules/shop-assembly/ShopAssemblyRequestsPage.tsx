@@ -33,6 +33,7 @@ import { RESERVATION_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
+import PageHeader from '../../components/PageHeader';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { plural } from '../../utils/plural';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
@@ -232,6 +233,19 @@ export default function ShopAssemblyRequestsPage() {
 
   return (
     <Box>
+      <PageHeader
+        parent={{ label: 'Shop Assembly', to: '/app/shop-assembly' }}
+        title={
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Typography variant="h5">Shop Assembly Requests</Typography>
+            {data !== undefined && requests.length > 0 && (
+              <Chip size="small" label={`${requests.length} in queue`} />
+            )}
+          </Box>
+        }
+        description={VIEW_COPY[view].description}
+      />
+
       <FadeIn>
         <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
           <ToggleButtonGroup size="small" exclusive value={view} onChange={(_e, next) => next && setView(next)}>
@@ -261,14 +275,6 @@ export default function ShopAssemblyRequestsPage() {
           )}
         </Stack>
       </FadeIn>
-
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 0.5 }}>
-        <Typography variant="h5">Shop Assembly Requests</Typography>
-        {data !== undefined && requests.length > 0 && <Chip size="small" label={`${requests.length} in queue`} />}
-      </Box>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        {VIEW_COPY[view].description}
-      </Typography>
 
       {loading && data === undefined && (
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>

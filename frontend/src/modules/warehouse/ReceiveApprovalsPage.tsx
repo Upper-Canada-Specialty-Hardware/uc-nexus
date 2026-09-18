@@ -23,10 +23,13 @@ import { GET_RECEIVE_DRAFTS } from '../../graphql/warehouse';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
+import PageHeader from '../../components/PageHeader';
 import ReceiveDraftReviewModal from './ReceiveDraftReviewModal';
 import type { ReceiveDraft } from './receiveDraftTypes';
 
 const DASH = '—';
+
+const WAREHOUSE_PARENT = { label: 'Warehouse', to: '/app/warehouse' };
 
 type View = 'PENDING_APPROVAL' | 'REJECTED';
 
@@ -75,9 +78,7 @@ export default function ReceiveApprovalsPage() {
   if (!canReview) {
     return (
       <Box>
-        <Typography variant="h5" sx={{ mb: 2 }}>
-          Receive Approvals
-        </Typography>
+        <PageHeader title="Receive Approvals" parent={WAREHOUSE_PARENT} />
         <Alert severity="error">
           The Warehouse Manager role is required to review and post drafted receives. Your counts are on
           Receiving under My Drafts.
@@ -88,12 +89,11 @@ export default function ReceiveApprovalsPage() {
 
   return (
     <Box>
-      <Typography variant="h5">Receive Approvals</Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 2 }}>
-        Counted deliveries waiting to be posted. Approving one posts the GP receipt and adds the hardware
-        to inventory. Deliveries the buyer has sent straight back out are not here - they are booked
-        from the shipping request instead.
-      </Typography>
+      <PageHeader
+        title="Receive Approvals"
+        parent={WAREHOUSE_PARENT}
+        description="Counted deliveries waiting to be posted. Approving one posts the GP receipt and adds the hardware to inventory. Deliveries the buyer has sent straight back out are not here - they are booked from the shipping request instead."
+      />
 
       <ToggleButtonGroup
         size="small"

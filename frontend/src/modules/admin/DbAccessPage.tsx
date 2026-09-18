@@ -30,6 +30,7 @@ import {
   GET_USERS,
 } from '../../graphql/admin';
 import ConfirmDialog from '../../components/ConfirmDialog';
+import PageHeader from '../../components/PageHeader';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
@@ -331,19 +332,16 @@ export default function DbAccessPage() {
   return (
     <Box>
       <FadeIn>
-        <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 2 }}>
-          <Box>
-            <Typography variant="h5" sx={{ mb: 0.25 }}>
-              Database Access
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Mint, rotate and revoke direct Postgres logins for MS Access over the public proxy.
-            </Typography>
-          </Box>
-          <Button variant="contained" onClick={() => setMintOpen(true)}>
-            Mint login
-          </Button>
-        </Stack>
+        <PageHeader
+          title="Database Access"
+          parent={{ label: 'Admin', to: '/app/admin' }}
+          description="Mint, rotate and revoke direct Postgres logins for MS Access over the public proxy."
+          actions={
+            <Button variant="contained" onClick={() => setMintOpen(true)}>
+              Mint login
+            </Button>
+          }
+        />
       </FadeIn>
 
       {credential && (

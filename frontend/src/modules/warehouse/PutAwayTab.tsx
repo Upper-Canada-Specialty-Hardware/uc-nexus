@@ -39,6 +39,7 @@ import {
   GET_STOCK_ITEMS,
   ASSIGN_STOCK_ITEM_LOCATION,
 } from '../../graphql/warehouse';
+import PageHeader from '../../components/PageHeader';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
@@ -375,13 +376,11 @@ export default function PutAwayTab() {
 
   return (
     <Box>
-      <Typography variant="h5" sx={{ mb: 0.5 }}>
-        Put Away
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Received hardware with no rack location yet. Pick a defined aisle, row and bay for each row —
-        locations are defined on the Locations tab.
-      </Typography>
+      <PageHeader
+        title="Put Away"
+        parent={{ label: 'Warehouse', to: '/app/warehouse' }}
+        description="Received hardware with no rack location yet. Pick a defined aisle, row and bay for each row — locations are defined on the Locations tab."
+      />
 
       {/* Filters */}
       <Box sx={{ display: 'flex', gap: 2, mb: 3, flexWrap: 'wrap' }}>

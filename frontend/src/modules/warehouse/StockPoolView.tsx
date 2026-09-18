@@ -30,6 +30,7 @@ import { GET_STOCK_ITEMS } from '../../graphql/warehouse';
 import ReclassifyStockModal from './stock/ReclassifyStockModal';
 import AllocateStockModal from './stock/AllocateStockModal';
 import ReportStockDeficiencyModal from './stock/ReportStockDeficiencyModal';
+import PageHeader from '../../components/PageHeader';
 import { microLabelSx, monoSx } from '../../theme';
 import { useInventoryItemTypes } from '../../hooks/useCustomItems';
 
@@ -271,31 +272,21 @@ export default function StockPoolView() {
 
   return (
     <Box>
-      <Stack
-        direction="row"
-        alignItems="flex-end"
-        justifyContent="space-between"
-        gap={2}
-        flexWrap="wrap"
-        sx={{ mb: 2 }}
-      >
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="h5" sx={{ mb: 0.5 }}>
-            Stock Pool
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Fungible hardware with no project claim on it.
-          </Typography>
-        </Box>
-        {/* The screen's one amber: the filter that is currently switched on. */}
-        <Button
-          variant={onlyDeficient ? 'contained' : 'outlined'}
-          startIcon={<TriangleAlert size={18} strokeWidth={1.75} />}
-          onClick={() => setOnlyDeficient((v) => !v)}
-        >
-          {onlyDeficient ? 'Showing deficient only' : 'Show deficient only'}
-        </Button>
-      </Stack>
+      <PageHeader
+        title="Stock Pool"
+        parent={{ label: 'Warehouse', to: '/app/warehouse' }}
+        description="Fungible hardware with no project claim on it."
+        actions={
+          /* The screen's one amber: the filter that is currently switched on. */
+          <Button
+            variant={onlyDeficient ? 'contained' : 'outlined'}
+            startIcon={<TriangleAlert size={18} strokeWidth={1.75} />}
+            onClick={() => setOnlyDeficient((v) => !v)}
+          >
+            {onlyDeficient ? 'Showing deficient only' : 'Show deficient only'}
+          </Button>
+        }
+      />
 
       <Stack direction="row" spacing={2} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
         <TextField

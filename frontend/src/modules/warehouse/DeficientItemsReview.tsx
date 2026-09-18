@@ -3,7 +3,6 @@ import {
   Box,
   Typography,
   Chip,
-  Stack,
   Button,
   Alert,
   Card,
@@ -16,6 +15,7 @@ import { useQuery } from '@apollo/client/react';
 import { Gavel } from 'lucide-react';
 import { GET_DEFICIENT_ITEMS } from '../../graphql/warehouse';
 import ResolveDeficiencyModal, { type DeficientRow } from './stock/ResolveDeficiencyModal';
+import PageHeader from '../../components/PageHeader';
 import { microLabelSx, monoSx } from '../../theme';
 
 type SourceFilter = 'ALL' | 'PROJECT_INVENTORY' | 'STOCK_POOL';
@@ -104,33 +104,23 @@ export default function DeficientItemsReview() {
 
   return (
     <Box>
-      <Stack
-        direction="row"
-        alignItems="flex-end"
-        justifyContent="space-between"
-        gap={2}
-        flexWrap="wrap"
-        sx={{ mb: 2 }}
-      >
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="h5" sx={{ mb: 0.5 }}>
-            Deficient Items Review
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Damaged and short-shipped units held out of pulls until someone decides their fate.
-          </Typography>
-        </Box>
-        <ToggleButtonGroup
-          value={filter}
-          exclusive
-          onChange={(_, v) => v && setFilter(v)}
-          size="small"
-        >
-          <ToggleButton value="ALL">All</ToggleButton>
-          <ToggleButton value="PROJECT_INVENTORY">Project</ToggleButton>
-          <ToggleButton value="STOCK_POOL">Stock</ToggleButton>
-        </ToggleButtonGroup>
-      </Stack>
+      <PageHeader
+        title="Deficient Items Review"
+        parent={{ label: 'Warehouse', to: '/app/warehouse' }}
+        description="Damaged and short-shipped units held out of pulls until someone decides their fate."
+        actions={
+          <ToggleButtonGroup
+            value={filter}
+            exclusive
+            onChange={(_, v) => v && setFilter(v)}
+            size="small"
+          >
+            <ToggleButton value="ALL">All</ToggleButton>
+            <ToggleButton value="PROJECT_INVENTORY">Project</ToggleButton>
+            <ToggleButton value="STOCK_POOL">Stock</ToggleButton>
+          </ToggleButtonGroup>
+        }
+      />
 
       {error && <Alert severity="error">{error.message}</Alert>}
 

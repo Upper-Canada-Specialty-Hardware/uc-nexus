@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react';
 import {
   Box,
-  Typography,
   Alert,
   CircularProgress,
   Autocomplete,
@@ -12,6 +11,7 @@ import { useQuery } from '@apollo/client/react';
 import { GET_PROJECT_PROGRESS_BY_PRODUCT } from '../../graphql/admin';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { infoHeader } from '../../components/InfoColumnHeader';
+import PageHeader from '../../components/PageHeader';
 import { monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import type { Project } from '../../types/project';
@@ -154,12 +154,11 @@ export default function ProjectPurchasingProgressPage() {
   return (
     <Box>
       <FadeIn>
-        <Typography variant="h5" sx={{ mb: 0.25 }}>
-          Project Purchasing Progress
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Required against drafted, ordered, received, back-ordered, and shipped, per product.
-        </Typography>
+        <PageHeader
+          title="Project Purchasing Progress"
+          parent={{ label: 'Admin', to: '/app/admin' }}
+          description="Required against drafted, ordered, received, back-ordered, and shipped, per product."
+        />
       </FadeIn>
 
       <Autocomplete

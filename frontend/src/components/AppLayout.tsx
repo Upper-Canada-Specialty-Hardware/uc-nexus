@@ -7,19 +7,10 @@ import {
   Box,
   Button,
   IconButton,
-  Breadcrumbs,
-  Link,
   Tooltip,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
-import {
-  PanelLeftClose,
-  PanelLeftOpen,
-  Menu as MenuIcon,
-  Moon,
-  Sun,
-  ChevronRight,
-} from 'lucide-react';
+import { PanelLeftClose, PanelLeftOpen, Menu as MenuIcon, Moon, Sun } from 'lucide-react';
 import { useColorScheme } from '@mui/material/styles';
 import { UserButton } from '@clerk/clerk-react';
 import NotificationBell from './NotificationBell';
@@ -32,17 +23,6 @@ import { PageTransition } from '../motion';
 import { readAuthBridge } from '../authBridge';
 import { useIdentity } from '../hooks/useIdentity';
 import CompanyGate from './CompanyGate';
-
-/** Breadcrumb segments that the auto-capitalizer gets wrong. */
-const CRUMB_LABELS: Record<string, string> = {
-  po: 'Purchase Orders',
-  import: 'Start a Request',
-  // Title-casing the slug gives 'Nexus Gp Traffic'; GP is an initialism everywhere else in the app.
-  'nexus-gp-traffic': 'Nexus GP Traffic',
-};
-
-/** A record id in the path (#637's /app/admin/projects/:id). Title-casing a uuid reads as garbage. */
-const UUID_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const RAIL_COLLAPSED_KEY = 'uc-nexus-rail-collapsed';
 
@@ -92,7 +72,7 @@ export default function AppLayout() {
     }
   };
 
-  // Build breadcrumb segments from current path
+  // The module the current path sits in. Each page names its own way back through its PAGE HEADER.
   const pathSegments = location.pathname
     .replace(/^\/app\/?/, '')
     .split('/')
@@ -208,36 +188,6 @@ export default function AppLayout() {
         <NavRail collapsed={railCollapsed} />
 
         <Box component="main" sx={{ flexGrow: 1, minWidth: 0, p: 3, pt: 2 }}>
-          {pathSegments.length > 0 && (
-            <Breadcrumbs
-              separator={<ChevronRight size={14} strokeWidth={1.75} />}
-              sx={{ mb: 2 }}
-            >
-              <Link component={RouterLink} to="/app" underline="hover" color="inherit">
-                Home
-              </Link>
-              {pathSegments.map((segment, index) => {
-                const path = `/app/${pathSegments.slice(0, index + 1).join('/')}`;
-                const label =
-                  CRUMB_LABELS[segment] ??
-                  (UUID_SEGMENT.test(segment)
-                    ? 'Detail'
-                    : segment.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()));
-                const isLast = index === pathSegments.length - 1;
-
-                return isLast ? (
-                  <Typography key={path} color="text.primary" sx={{ fontWeight: 600 }}>
-                    {label}
-                  </Typography>
-                ) : (
-                  <Link key={path} component={RouterLink} to={path} underline="hover" color="inherit">
-                    {label}
-                  </Link>
-                );
-              })}
-            </Breadcrumbs>
-          )}
-
           {/* #637: a signed-in user with no company gets the notice here instead of the module
               routes - the shell stays so they can still sign out. */}
           <PageTransition transitionKey={moduleKey}>

@@ -39,6 +39,7 @@ import {
 } from '../../graphql/warehouse';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
+import PageHeader from '../../components/PageHeader';
 import LocationActionDialog, {
   type LocationActionMode,
   type LocationActionTarget,
@@ -843,30 +844,25 @@ export default function LocationsTab() {
 
   return (
     <Box>
-      <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 2 }}>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="h5" sx={{ mb: 0.5 }}>
-            Locations
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Every defined rack position and what is sitting in it. Put-away only accepts locations
-            defined here.
-          </Typography>
-        </Box>
-        {canManage && (
-          <Button
-            variant="outlined"
-            startIcon={<Plus size={16} strokeWidth={1.75} />}
-            onClick={() => {
-              setDefineWarehouseId(warehouseFilter || warehouses[0]?.id || '');
-              setDefineOpen(true);
-            }}
-            sx={{ flexShrink: 0 }}
-          >
-            Define location
-          </Button>
-        )}
-      </Box>
+      <PageHeader
+        title="Locations"
+        parent={{ label: 'Warehouse', to: '/app/warehouse' }}
+        description="Every defined rack position and what is sitting in it. Put-away only accepts locations defined here."
+        actions={
+          canManage && (
+            <Button
+              variant="outlined"
+              startIcon={<Plus size={16} strokeWidth={1.75} />}
+              onClick={() => {
+                setDefineWarehouseId(warehouseFilter || warehouses[0]?.id || '');
+                setDefineOpen(true);
+              }}
+            >
+              Define location
+            </Button>
+          )
+        }
+      />
 
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2, flexWrap: 'wrap' }}>
         <TextField

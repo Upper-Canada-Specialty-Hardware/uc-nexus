@@ -21,6 +21,7 @@ import { CircleDollarSign, Package, PackageCheck, Trash2, Warehouse } from 'luci
 import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
 import ProjectPicker from '../../components/ProjectPicker';
+import PageHeader from '../../components/PageHeader';
 import { useToast } from '../../components/Toast';
 import { useCompanyChoice } from '../../relay/useCompanyChoice';
 import { extractGpError } from '../../graphql/gpError';
@@ -113,51 +114,39 @@ export default function InventoryValuePage() {
   return (
     <Box>
       <FadeIn>
-        <Box
-          sx={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: 2,
-            flexWrap: 'wrap',
-            mb: 2,
-          }}
-        >
-          <Box sx={{ flex: '1 1 260px', minWidth: 0 }}>
-            <Typography variant="h5" sx={{ mb: 0.25 }}>
-              Inventory Value
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              What is sitting in the building right now, in dollars: hardware on the shelves, hardware
-              staged for shipping, and doors.
-            </Typography>
-          </Box>
-          {locked ? (
-            <Box sx={{ flexShrink: 0, textAlign: 'right' }}>
-              <Typography component="div" sx={{ ...microLabelSx, mb: 0.25 }}>
-                Company
-              </Typography>
-              <Typography component="div" sx={{ ...monoSx, fontWeight: 600 }}>
-                {company || '—'}
-              </Typography>
-            </Box>
-          ) : (
-            <TextField
-              select
-              size="small"
-              label="Company"
-              value={company}
-              onChange={(e) => setCompany(e.target.value)}
-              sx={{ flexShrink: 0, minWidth: 140 }}
-              slotProps={{ htmlInput: { 'aria-label': 'Company' } }}
-            >
-              {options.map((c) => (
-                <MenuItem key={c} value={c} sx={monoSx}>
-                  {c}
-                </MenuItem>
-              ))}
-            </TextField>
-          )}
-        </Box>
+        <PageHeader
+          title="Inventory Value"
+          parent={{ label: 'Admin', to: '/app/admin' }}
+          description="What is sitting in the building right now, in dollars: hardware on the shelves, hardware staged for shipping, and doors."
+          actions={
+            locked ? (
+              <Box sx={{ textAlign: 'right' }}>
+                <Typography component="div" sx={{ ...microLabelSx, mb: 0.25 }}>
+                  Company
+                </Typography>
+                <Typography component="div" sx={{ ...monoSx, fontWeight: 600 }}>
+                  {company || '—'}
+                </Typography>
+              </Box>
+            ) : (
+              <TextField
+                select
+                size="small"
+                label="Company"
+                value={company}
+                onChange={(e) => setCompany(e.target.value)}
+                sx={{ minWidth: 140 }}
+                slotProps={{ htmlInput: { 'aria-label': 'Company' } }}
+              >
+                {options.map((c) => (
+                  <MenuItem key={c} value={c} sx={monoSx}>
+                    {c}
+                  </MenuItem>
+                ))}
+              </TextField>
+            )
+          }
+        />
       </FadeIn>
 
       {forbidden ? (

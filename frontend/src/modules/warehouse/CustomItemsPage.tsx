@@ -20,6 +20,7 @@ import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { FadeIn } from '../../motion';
+import PageHeader from '../../components/PageHeader';
 import { microLabelSx, monoSx } from '../../theme';
 import {
   CREATE_CUSTOM_INVENTORY_ITEM,
@@ -92,30 +93,20 @@ export default function CustomItemsPage() {
   return (
     <Box>
       <FadeIn>
-        <Stack
-          direction="row"
-          justifyContent="space-between"
-          alignItems="flex-start"
-          sx={{ mb: 2 }}
-          gap={2}
-          flexWrap="wrap"
-        >
-          <Box>
-            <Typography variant="h5" sx={{ mb: 0.25 }}>
-              Custom Items
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Frames, specialties, consumables - inventory the hardware schedule does not describe.
-            </Typography>
-          </Box>
-          <Button
-            variant="outlined"
-            startIcon={<Plus size={16} strokeWidth={1.75} />}
-            onClick={() => setTypeDialogOpen(true)}
-          >
-            Add Type
-          </Button>
-        </Stack>
+        <PageHeader
+          title="Custom Items"
+          parent={{ label: 'Warehouse', to: '/app/warehouse' }}
+          description="Frames, specialties, consumables - inventory the hardware schedule does not describe."
+          actions={
+            <Button
+              variant="outlined"
+              startIcon={<Plus size={16} strokeWidth={1.75} />}
+              onClick={() => setTypeDialogOpen(true)}
+            >
+              Add Type
+            </Button>
+          }
+        />
       </FadeIn>
 
       {typesLoading && types.length === 0 ? (

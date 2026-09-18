@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
+import { MemoryRouter } from 'react-router-dom';
 import InventoryValuePage from '../InventoryValuePage';
 import {
   GET_INVENTORY_VALUE,
@@ -103,9 +104,11 @@ const projectsMock: MockedResponse = {
 function renderPage(extra: MockedResponse[] = []) {
   return render(
     <MockedProvider mocks={[companiesMock, pageMock, projectsMock, ...extra]}>
-      <ToastProvider>
-        <InventoryValuePage />
-      </ToastProvider>
+      <MemoryRouter>
+        <ToastProvider>
+          <InventoryValuePage />
+        </ToastProvider>
+      </MemoryRouter>
     </MockedProvider>,
   );
 }

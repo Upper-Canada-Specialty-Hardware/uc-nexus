@@ -8,7 +8,6 @@ import {
   AccordionDetails,
   Stack,
   Button,
-  Chip,
   CircularProgress,
 } from '@mui/material';
 import { ChevronDown, Check, X, Undo2 } from 'lucide-react';
@@ -38,10 +37,6 @@ interface ReviewableRequest {
 }
 
 interface RequestsReviewPageProps<TRequest extends ReviewableRequest> {
-  /** Page heading. */
-  title: string;
-  /** One-line description under the heading. */
-  description: string;
   /** Alert text shown once loaded with no requests. */
   emptyMessage: string;
   loading: boolean;
@@ -63,15 +58,13 @@ interface RequestsReviewPageProps<TRequest extends ReviewableRequest> {
   renderSummary: (req: TRequest) => ReactNode;
   /** The expanded body: the request's items or openings. */
   renderDetails: (req: TRequest) => ReactNode;
-  /** Optional standing note under the description (e.g. where accepted requests get processed). */
+  /** Optional standing note above the list (e.g. where accepted requests get processed). */
   note?: ReactNode;
   /**
    * Extra actions beside Accept/Reject on a pending request - shipping's Edit lives here (#451).
    * Only rendered in pending mode: an accepted request's lines are already on a warehouse pull.
    */
   renderExtraActions?: (req: TRequest) => ReactNode;
-  /** Rendered above the list, right of the heading (e.g. shipping's "New request"). */
-  headerAction?: ReactNode;
   /**
    * Why Reopen is unavailable on this row, or null when it is. Approved mode only.
    *
@@ -91,8 +84,6 @@ interface RequestsReviewPageProps<TRequest extends ReviewableRequest> {
  * while the warehouse has not started the pull (enforced server-side).
  */
 export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
-  title,
-  description,
   emptyMessage,
   loading,
   loaded,
@@ -106,7 +97,6 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   renderDetails,
   note,
   renderExtraActions,
-  headerAction,
   reopenDisabledReason,
 }: RequestsReviewPageProps<TRequest>) {
   const { showToast } = useToast();
@@ -165,17 +155,6 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
 
   return (
     <Box>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 0.5 }}>
-        <Typography variant="h5">{title}</Typography>
-        {loaded && requests.length > 0 && (
-          <Chip size="small" label={`${requests.length} in queue`} />
-        )}
-        {headerAction && <Box sx={{ ml: 'auto' }}>{headerAction}</Box>}
-      </Box>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        {description}
-      </Typography>
-
       {note && <Box sx={{ mb: 2 }}>{note}</Box>}
 
       {loading && !loaded && (

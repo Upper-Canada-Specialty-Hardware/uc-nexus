@@ -13,8 +13,7 @@ import DbAccessPage from './DbAccessPage';
 import InventoryValuePage from './InventoryValuePage';
 import AdminLanding from './AdminLanding';
 
-// Navigation back out of a sub-page is carried by the persistent rail and the app-bar breadcrumbs,
-// so the pages render bare - no per-page back button competing with them.
+// The PAGE HEADER on every page names the way back, so the pages render no back button of their own.
 export default function AdminModule() {
   return (
     <Routes>

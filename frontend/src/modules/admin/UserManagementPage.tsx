@@ -27,6 +27,7 @@ import {
   UPDATE_USER_ROLES,
 } from '../../graphql/admin';
 import { useToast } from '../../components/Toast';
+import PageHeader from '../../components/PageHeader';
 import { useIdentity } from '../../hooks/useIdentity';
 import { microLabelSx, monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
@@ -364,13 +365,11 @@ export default function UserManagementPage() {
   return (
     <Box>
       <FadeIn>
-        <Typography variant="h5" sx={{ mb: 0.25 }}>
-          User Management
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Click a user to manage their company, roles and GP buyer identity. A user with no company
-          sees no data at all until one is assigned.
-        </Typography>
+        <PageHeader
+          title="User Management"
+          parent={{ label: 'Admin', to: '/app/admin' }}
+          description="Click a user to manage their company, roles and GP buyer identity. A user with no company sees no data at all until one is assigned."
+        />
       </FadeIn>
 
       <DataGrid

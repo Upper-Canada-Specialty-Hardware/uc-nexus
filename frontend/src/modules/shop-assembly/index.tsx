@@ -2,8 +2,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import ShopAssemblyLanding from './ShopAssemblyLanding';
 import ShopAssemblyRequestsPage from './ShopAssemblyRequestsPage';
 
-// No back-to-module bar: the persistent nav rail and the app-bar breadcrumbs both carry the way back
-// now, and a third one only spent a row of the page saying it again.
+// No back-to-module bar: the PAGE HEADER on every page names the way back.
 //
 // Two routes, because v1 has two things to do here: compose a request (which happens in the import
 // wizard, off the schedule) and work the requests list. The bench itself is untracked - a completed

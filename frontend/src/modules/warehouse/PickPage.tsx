@@ -19,8 +19,9 @@ import {
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import ConfirmDialog from '../../components/ConfirmDialog';
+import PageHeader from '../../components/PageHeader';
 import { StatCard } from '../../components/StatCard';
-import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { monoSx, tabularSx } from '../../theme';
 import { PageTransition } from '../../motion';
 import PickSection from './PickSection';
 import PickSheetDocument from './PickSheetDocument';
@@ -234,61 +235,57 @@ export default function PickPage() {
 
   return (
     <PageTransition transitionKey={pr.id}>
-      <Stack
-        direction={{ xs: 'column', md: 'row' }}
-        spacing={2}
-        alignItems={{ md: 'flex-end' }}
-        sx={{ mb: 2 }}
-      >
-        <Box sx={{ flexGrow: 1, minWidth: 0 }}>
-          <Typography component="div" sx={microLabelSx}>
-            Pick sheet
-          </Typography>
+      <PageHeader
+        parent={{ label: 'Pull Request Queue', to: '/app/warehouse/pull-requests' }}
+        title={
           <Typography variant="h5" sx={{ ...monoSx, fontSize: '1.5rem', fontWeight: 700 }}>
             {pr.requestNumber}
           </Typography>
-          <Stack direction="row" spacing={1} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
-            <Chip label={formatSource(pr.source)} size="small" color="primary" />
-            {isPicked ? (
-              <Chip label="Picked" size="small" color="success" />
-            ) : (
-              <Chip label="Picking" size="small" color="info" />
-            )}
-            {projectName && <Chip label={projectName} size="small" variant="outlined" />}
-            <Chip label={`Requested by ${pr.requestedBy}`} size="small" variant="outlined" />
-          </Stack>
-        </Box>
-        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-          <Button
-            variant="outlined"
-            startIcon={<Printer size={16} strokeWidth={1.75} />}
-            onClick={handlePrint}
-            disabled={printing}
-          >
-            {printing ? 'Building...' : 'Print pick sheet'}
-          </Button>
-          {isOpen && (
+        }
+        actions={
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
             <Button
               variant="outlined"
-              startIcon={<Save size={16} strokeWidth={1.75} />}
-              onClick={handleSaveDraft}
-              disabled={saving || confirming}
+              startIcon={<Printer size={16} strokeWidth={1.75} />}
+              onClick={handlePrint}
+              disabled={printing}
             >
-              {saving ? 'Saving...' : 'Save draft'}
+              {printing ? 'Building...' : 'Print pick sheet'}
             </Button>
+            {isOpen && (
+              <Button
+                variant="outlined"
+                startIcon={<Save size={16} strokeWidth={1.75} />}
+                onClick={handleSaveDraft}
+                disabled={saving || confirming}
+              >
+                {saving ? 'Saving...' : 'Save draft'}
+              </Button>
+            )}
+            {isOpen && (
+              <Button
+                variant="contained"
+                color="secondary"
+                onClick={() => setConfirmOpen(true)}
+                disabled={!canConfirm || confirming}
+              >
+                {confirming ? 'Confirming...' : confirmIsShort ? 'Confirm short pick' : 'Confirm pick'}
+              </Button>
+            )}
+          </Stack>
+        }
+      >
+        <Stack direction="row" spacing={1} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+          <Chip label={formatSource(pr.source)} size="small" color="primary" />
+          {isPicked ? (
+            <Chip label="Picked" size="small" color="success" />
+          ) : (
+            <Chip label="Picking" size="small" color="info" />
           )}
-          {isOpen && (
-            <Button
-              variant="contained"
-              color="secondary"
-              onClick={() => setConfirmOpen(true)}
-              disabled={!canConfirm || confirming}
-            >
-              {confirming ? 'Confirming...' : confirmIsShort ? 'Confirm short pick' : 'Confirm pick'}
-            </Button>
-          )}
+          {projectName && <Chip label={projectName} size="small" variant="outlined" />}
+          <Chip label={`Requested by ${pr.requestedBy}`} size="small" variant="outlined" />
         </Stack>
-      </Stack>
+      </PageHeader>
 
       <Stack direction="row" spacing={1.5} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
         <StatCard

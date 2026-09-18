@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { GraphQLError } from 'graphql';
 import { ToastProvider } from '../../../components/Toast';
+import { MemoryRouter } from 'react-router-dom';
 import UserManagementPage from '../UserManagementPage';
 import {
   CREATE_GP_BUYER,
@@ -124,9 +125,11 @@ const buyersUnsupportedMock: MockedResponse = {
 function renderPage(mocks: MockedResponse[]) {
   return render(
     <MockedProvider mocks={mocks}>
-      <ToastProvider>
-        <UserManagementPage />
-      </ToastProvider>
+      <MemoryRouter>
+        <ToastProvider>
+          <UserManagementPage />
+        </ToastProvider>
+      </MemoryRouter>
     </MockedProvider>,
   );
 }

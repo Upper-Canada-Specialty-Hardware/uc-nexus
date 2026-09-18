@@ -6,6 +6,7 @@ import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_PO_DOCUMENT_SETTINGS, UPDATE_PO_DOCUMENT_SETTINGS } from '../../graphql/po';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
+import PageHeader from '../../components/PageHeader';
 import { microLabelSx } from '../../theme';
 import { FadeIn } from '../../motion';
 
@@ -49,7 +50,14 @@ export default function PODocumentSettingsPage() {
 
   return (
     <Box>
-      {/* No back link: the nav rail's breadcrumb already says where this page sits. */}
+      {/* Outside the branches below: the PAGE HEADER names the way back in every state, including
+          while the settings are still loading and when the role gate turns the page down. */}
+      <PageHeader
+        title="PO Document Settings"
+        parent={{ label: 'Purchase Orders', to: '/app/po' }}
+        description="Company-wide boilerplate printed on every generated supplier PO document. Per-PO fields (vendor address, ship-to, totals) are captured when generating."
+        sx={{ maxWidth: 820, mb: 3 }}
+      />
       {!isAdmin ? (
         <Alert severity="warning">You need the Admin/Manager role to edit PO document settings.</Alert>
       ) : loading && !data ? (
@@ -108,12 +116,6 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
   return (
     <FadeIn>
     <Box sx={{ maxWidth: 820 }}>
-      <Typography variant="h5" gutterBottom>PO Document Settings</Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        Company-wide boilerplate printed on every generated supplier PO document. Per-PO fields
-        (vendor address, ship-to, totals) are captured when generating.
-      </Typography>
-
       <Stack spacing={2.5}>
         <SectionHeading>Company &amp; terms</SectionHeading>
         <TextField

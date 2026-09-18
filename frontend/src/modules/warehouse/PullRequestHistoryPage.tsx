@@ -5,7 +5,7 @@ import { useQuery } from '@apollo/client/react';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import { GET_PULL_REQUESTS } from '../../graphql/warehouse';
 import DataTable from '../../components/DataTable';
-import BackToModule from '../../components/BackToModule';
+import PageHeader from '../../components/PageHeader';
 import PullRequestDetailModal from './PullRequestDetailModal';
 import type { PullRequest } from './PullRequestQueue';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
@@ -187,14 +187,11 @@ export default function PullRequestHistoryPage() {
 
   return (
     <Box sx={{ p: 3 }}>
-      <BackToModule to="/app/warehouse/pull-requests" label="Pull Request Queue" />
-      <Typography variant="h5" sx={{ mb: 0.5 }}>
-        Pull Request History
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Every pull that has finished - completed or cancelled - from both the shop-assembly and
-        shipping-out queues. Open a row to see its items and stamps.
-      </Typography>
+      <PageHeader
+        title="Pull Request History"
+        parent={{ label: 'Pull Request Queue', to: '/app/warehouse/pull-requests' }}
+        description="Every pull that has finished - completed or cancelled - from both the shop-assembly and shipping-out queues. Open a row to see its items and stamps."
+      />
 
       <Stack direction="row" spacing={3} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
         <Box sx={{ minWidth: 0 }}>

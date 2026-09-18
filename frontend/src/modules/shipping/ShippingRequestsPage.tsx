@@ -25,6 +25,9 @@ import {
   REOPEN_SHIPPING_OUT_REQUEST,
 } from '../../graphql/shipping';
 import RequestsReviewPage from '../../components/RequestsReviewPage';
+import PageHeader from '../../components/PageHeader';
+import ProjectPicker from '../../components/ProjectPicker';
+import type { Project } from '../../types/project';
 import { monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
 // The stage ladder is identical to shop assembly's, so its labels, colours and reopen rule are the
@@ -61,11 +64,6 @@ interface ShippingOutRequest {
   items: ShippingRequestItem[];
 }
 
-interface Props {
-  /** Scope to a single project (its UUID). Omit for the global, all-projects view. */
-  projectId?: string;
-}
-
 type View = 'PENDING' | 'APPROVED' | 'REJECTED';
 
 const VIEW_COPY: Record<View, { description: string; empty: string }> = {
@@ -85,9 +83,17 @@ const VIEW_COPY: Record<View, { description: string; empty: string }> = {
   },
 };
 
-export default function ShippingRequestsPage({ projectId }: Props) {
+/**
+ * Requests default to every project's board - reviewing and accepting them needs no one job. Picking
+ * a project scopes the list to it; raising a new request and editing a pending one happen on the
+ * request workspace, which carries its own picker, so a picked project only rides along to preselect
+ * that job when starting a new one.
+ */
+export default function ShippingRequestsPage() {
   const navigate = useNavigate();
   const [view, setView] = useState<View>('PENDING');
+  const [project, setProject] = useState<Project | null>(null);
+  const projectId = project?.id;
   const { data, loading, refetch } = useQuery<{ shippingOutRequests: ShippingOutRequest[] }>(
     GET_SHIPPING_OUT_REQUESTS,
     {
@@ -108,6 +114,40 @@ export default function ShippingRequestsPage({ projectId }: Props) {
 
   return (
     <Box>
+      <PageHeader
+        parent={{ label: 'Shipping', to: '/app/shipping' }}
+        title={
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Typography variant="h5">Shipping Requests</Typography>
+            {data !== undefined && requests.length > 0 && (
+              <Chip size="small" label={`${requests.length} in queue`} />
+            )}
+          </Box>
+        }
+        description={VIEW_COPY[view].description}
+        actions={
+          // Always available: the workspace carries its own project picker, so this no longer needs a
+          // project chosen here. A picked project rides along to preselect it.
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<Plus size={16} strokeWidth={1.75} />}
+            onClick={() =>
+              navigate(`/app/shipping/requests/new${projectId ? `?projectId=${projectId}` : ''}`)
+            }
+          >
+            New request
+          </Button>
+        }
+      />
+
+      <Box sx={{ mb: 2 }}>
+        <ProjectPicker value={project} onChange={setProject} sx={{ maxWidth: 420 }} />
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+          Leave blank to review every project&rsquo;s requests, or pick one to scope the list.
+        </Typography>
+      </Box>
+
       <FadeIn>
         <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" sx={{ mb: 2 }}>
           <ToggleButtonGroup
@@ -144,8 +184,6 @@ export default function ShippingRequestsPage({ projectId }: Props) {
       </FadeIn>
 
       <RequestsReviewPage<ShippingOutRequest>
-        title="Shipping Requests"
-        description={VIEW_COPY[view].description}
         emptyMessage={VIEW_COPY[view].empty}
         loading={loading}
         loaded={data !== undefined}
@@ -158,20 +196,6 @@ export default function ShippingRequestsPage({ projectId }: Props) {
           view === 'REJECTED' ? 'This request was rejected.' : reopenBlockedReason(req.stage)
         }
         onChanged={refetch}
-        headerAction={
-          // Always available: the workspace carries its own project picker, so this no longer needs a
-          // project chosen here. A picked project rides along to preselect it.
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<Plus size={16} strokeWidth={1.75} />}
-            onClick={() =>
-              navigate(`/app/shipping/requests/new${projectId ? `?projectId=${projectId}` : ''}`)
-            }
-          >
-            New request
-          </Button>
-        }
         renderExtraActions={(req) =>
           // Editing is only meaningful while the request is still pending; the workspace itself refuses
           // an accepted one. It reads the request's own project, so no picked project is needed here.

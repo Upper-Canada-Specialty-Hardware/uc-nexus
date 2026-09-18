@@ -18,6 +18,7 @@ import { Cpu, Gauge, Router, Send } from 'lucide-react';
 import { Link as RouterLink } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import { StatCard, StatCardSkeleton, type StatCardAccent } from '../../components/StatCard';
+import PageHeader from '../../components/PageHeader';
 import { GET_GP_SYNC_STATE } from '../../graphql/admin';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useRelayStatus, type GpCompany } from '../../relay/useRelayStatus';
@@ -275,37 +276,25 @@ export default function NexusGpTrafficPage() {
   return (
     <Box>
       <FadeIn>
-        <Stack
-          direction="row"
-          spacing={2}
-          rowGap={1}
-          flexWrap="wrap"
-          useFlexGap
-          alignItems="flex-start"
-          justifyContent="space-between"
-          sx={{ mb: 2 }}
-        >
-          <Box sx={{ flex: '1 1 280px', minWidth: 0 }}>
-            <Typography variant="h5" sx={{ mb: 0.25 }}>
-              Nexus GP Traffic
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              What is crossing between Nexus and GP right now, and what has already crossed.
-            </Typography>
-          </Box>
-          <Stack direction="row" spacing={1.5} alignItems="center" sx={{ flexShrink: 0, minWidth: 0 }}>
-            <RelayStatusChip
-              connected={relay.connected}
-              companies={relay.companies}
-              gpCompanies={relay.gpCompanies}
-            />
-            {state && (
-              <Typography variant="body2" color="text.secondary" sx={tabularSx}>
-                {`as of ${fmtRelative(state.generatedAt)}`}
-              </Typography>
-            )}
-          </Stack>
-        </Stack>
+        <PageHeader
+          title="Nexus GP Traffic"
+          parent={{ label: 'Admin', to: '/app/admin' }}
+          description="What is crossing between Nexus and GP right now, and what has already crossed."
+          actions={
+            <Stack direction="row" spacing={1.5} alignItems="center" sx={{ minWidth: 0 }}>
+              <RelayStatusChip
+                connected={relay.connected}
+                companies={relay.companies}
+                gpCompanies={relay.gpCompanies}
+              />
+              {state && (
+                <Typography variant="body2" color="text.secondary" sx={tabularSx}>
+                  {`as of ${fmtRelative(state.generatedAt)}`}
+                </Typography>
+              )}
+            </Stack>
+          }
+        />
       </FadeIn>
 
       {error && (

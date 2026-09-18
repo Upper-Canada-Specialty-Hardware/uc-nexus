@@ -13,6 +13,7 @@ import { ShoppingCart } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery } from '@apollo/client/react';
 import ProjectPicker from '../../../components/ProjectPicker';
+import PageHeader from '../../../components/PageHeader';
 import GpSetupQuarantineBanner from '../../../components/GpSetupQuarantineBanner';
 import { useToast } from '../../../components/Toast';
 import { GET_PROJECTS } from '../../../graphql/shared';
@@ -53,6 +54,8 @@ interface SeededRequest {
   items: SeededItem[];
 }
 
+const REQUESTS_PARENT = { label: 'Requests', to: '/app/shipping/requests' };
+
 const CART_WIDTH = 340;
 /** The app bar is sticky, so the cart drawer starts under it rather than sliding across it. */
 const BAR_HEIGHT = { xs: 56, sm: 64 };
@@ -89,13 +92,11 @@ function CreateRoute() {
 
   return (
     <Box>
-      <Typography variant="h5" sx={{ mb: 0.5 }}>
-        New shipping request
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Compose from what the schedule still owes and from what the project holds loose. The request is
-        raised pending; someone accepts it, and the warehouse pulls it.
-      </Typography>
+      <PageHeader
+        title="New shipping request"
+        parent={REQUESTS_PARENT}
+        description="Compose from what the schedule still owes and from what the project holds loose. The request is raised pending; someone accepts it, and the warehouse pulls it."
+      />
       <Box sx={{ mb: 2 }}>
         <ProjectPicker
           value={project}
@@ -161,13 +162,11 @@ function EditRoute() {
 
   return (
     <Box>
-      <Typography variant="h5" sx={{ mb: 0.5 }}>
-        Edit request {request.requestNumber}
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        {project.description || project.projectId}. Saving replaces the request with exactly what is in
-        the cart.
-      </Typography>
+      <PageHeader
+        title={`Edit request ${request.requestNumber}`}
+        parent={REQUESTS_PARENT}
+        description={`${project.description || project.projectId}. Saving replaces the request with exactly what is in the cart.`}
+      />
       <Composer key={request.id} project={project} mode="edit" request={request} />
     </Box>
   );
