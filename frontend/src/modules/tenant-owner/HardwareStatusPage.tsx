@@ -170,7 +170,7 @@ export default function HardwareStatusPage() {
       <FadeIn>
         <PageHeader
           title="Hardware Status by Project"
-          parent={{ label: 'Admin', to: '/app/admin' }}
+          parent={{ label: 'Tenant Owner', to: '/app/tenant-owner' }}
           description="Where every product stands, from schedule to shipped - pick one project or several and the counts sum."
         />
       </FadeIn>

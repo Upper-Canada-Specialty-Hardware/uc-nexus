@@ -114,7 +114,7 @@ def resolve_gp_company(info: strawberry.Info, company: str) -> str:
     every read anyway, so refusing here turns a 30s round trip into a message naming what IS available.
     The tenant one is new: `gpJobs(company: "UCSH")` is a read of another company's job master, and
     nothing about the relay stops a UCSH-less user asking for it - only the caller's own scope does.
-    Admin/Manager is unscoped and may ask for any company the relay serves."""
+    A UC NEXUS ADMIN is unscoped and may ask for any company the relay serves."""
     requested = relay_gateway_module.normalize_company(company)
     if not requested:
         raise ValidationError("A GP company is required.", field="company")

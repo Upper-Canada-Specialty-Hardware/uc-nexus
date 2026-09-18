@@ -154,10 +154,29 @@ def mark_failed(session: Session, row: GpWriteOutbox, *, kind: str, error: str, 
     session.flush()
 
 
-def list_entries(session: Session, status: str | None = None, limit: int = 100) -> list[GpWriteOutbox]:
+def list_entries(
+    session: Session,
+    status: str | None = None,
+    limit: int = 100,
+    ops: list[str] | None = None,
+    company: str | None = None,
+) -> list[GpWriteOutbox]:
+    """The queue, newest first.
+
+    `ops` filters on `relay_op` - the GP-side name of the write (create_po, create_receipt,
+    update_job_site) - because that is what says which module a held write belongs to, and it is
+    the name the glossary uses for a NEXUS TO GP WRITE.
+
+    `company` is the tenant filter (#729): the row carries the GP company its write is for, so a
+    scoped caller sees their own held writes and nobody else's. None means every company, which is
+    the UC NEXUS ADMIN answer."""
     stmt = select(GpWriteOutbox).order_by(GpWriteOutbox.created_at.desc()).limit(limit)
     if status:
         stmt = stmt.where(GpWriteOutbox.status == status)
+    if ops:
+        stmt = stmt.where(GpWriteOutbox.relay_op.in_(ops))
+    if company is not None:
+        stmt = stmt.where(GpWriteOutbox.company == company)
     return list(session.scalars(stmt).all())
 
 
@@ -165,20 +184,24 @@ def get_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     return session.get(GpWriteOutbox, entry_id)
 
 
-def summary(session: Session) -> dict:
+def summary(session: Session, company: str | None = None) -> dict:
     """Scalar aggregates only - this is polled by every browser with the app open, so it must never
-    load rows (see the GraphQL/SQLAlchemy performance rules in CLAUDE.md)."""
+    load rows (see the GraphQL/SQLAlchemy performance rules in CLAUDE.md).
+
+    `company` scopes all three counts and both timestamps to one tenant (#729), so the chip a
+    scoped user watches counts their own company's held writes. None means every company."""
+    scope = [GpWriteOutbox.company == company] if company is not None else []
     counts = dict(
         session.execute(
             select(GpWriteOutbox.status, func.count())
-            .where(GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT", "FAILED")))
+            .where(GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT", "FAILED")), *scope)
             .group_by(GpWriteOutbox.status)
         ).all()
     )
     oldest_pending_at = session.scalar(
-        select(func.min(GpWriteOutbox.created_at)).where(GpWriteOutbox.status == "PENDING")
+        select(func.min(GpWriteOutbox.created_at)).where(GpWriteOutbox.status == "PENDING", *scope)
     )
-    last_drained_at = session.scalar(select(func.max(GpWriteOutbox.succeeded_at)))
+    last_drained_at = session.scalar(select(func.max(GpWriteOutbox.succeeded_at)).where(*scope))
     return {
         "pending": counts.get("PENDING", 0),
         "in_flight": counts.get("IN_FLIGHT", 0),

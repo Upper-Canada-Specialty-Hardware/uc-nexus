@@ -154,7 +154,7 @@ export default function LocationCleanupPage() {
       <FadeIn>
         <PageHeader
           title="Location Cleanup"
-          parent={{ label: 'Admin', to: '/app/admin' }}
+          parent={{ label: 'Tenant Owner', to: '/app/tenant-owner' }}
           description="Groups of location strings that collide after normalization (case-insensitive, whitespace collapsed). Merge each variant into a canonical form so the warehouse data stays consistent."
           sx={{ mb: 3 }}
         />

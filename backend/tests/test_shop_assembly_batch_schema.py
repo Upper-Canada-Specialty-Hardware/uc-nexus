@@ -20,7 +20,7 @@ from datetime import datetime
 import pytest
 
 from app import auth
-from app.auth import ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE
+from app.auth import SHOP_ASSEMBLY_MANAGER_ROLE, SHOP_ASSEMBLY_MANAGERS
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
 from app.models.stock_item import StockItem
@@ -344,8 +344,8 @@ def test_rejecting_a_batched_request_is_refused_with_its_code(as_manager, db_ses
     ],
 )
 def test_the_manager_board_refuses_a_plain_signed_in_caller(field, query, monkeypatch, db_session):
-    """The four writes are the Shop Assembly Manager's, with Admin/Manager beside them as an any-of.
-    A signed-in user with neither role is refused before the resolver runs."""
+    """The four writes are the Shop Assembly Manager's, with the tenant owners beside them as an
+    any-of. A signed-in user holding none of the three is refused before the resolver runs."""
     monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_test"})
     monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: ["Shop Assembly User"])
 
@@ -353,7 +353,7 @@ def test_the_manager_board_refuses_a_plain_signed_in_caller(field, query, monkey
 
     assert result.errors
     assert result.errors[0].extensions["code"] == "FORBIDDEN"
-    assert result.errors[0].message == f"{ADMIN_ROLE} or {SHOP_ASSEMBLY_MANAGER_ROLE} role required"
+    assert result.errors[0].message == f"{' or '.join(sorted(SHOP_ASSEMBLY_MANAGERS))} role required"
 
 
 def test_reading_a_request_stays_open_to_any_signed_in_user(monkeypatch, db_session):

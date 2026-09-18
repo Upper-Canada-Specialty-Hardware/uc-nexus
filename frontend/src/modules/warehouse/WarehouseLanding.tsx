@@ -181,8 +181,8 @@ function DestinationCard({ dest, onClick }: { dest: Destination; onClick: () => 
 
 export default function WarehouseLanding() {
   const navigate = useNavigate();
-  const { hasRole, isAdmin } = useIdentity();
-  const canReview = isAdmin || hasRole('Warehouse Manager');
+  const { hasRole, ownsTenant } = useIdentity();
+  const canReview = ownsTenant || hasRole('Warehouse Manager');
   // One dashboard query for the whole page: the two gauges below and every card count come from it.
   const { data, loading: queryLoading, error } = useQuery<{ warehouseDashboard: WarehouseDashboard }>(
     GET_WAREHOUSE_DASHBOARD,

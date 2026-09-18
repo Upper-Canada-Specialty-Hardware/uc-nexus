@@ -176,17 +176,28 @@ def get_shipping_stats(session: Session, *, company: str | None = None) -> dict:
     }
 
 
-def get_admin_stats(session: Session, user_count: int) -> dict:
-    """KPIs for the Admin landing. `user_count` is injected since users live in Clerk."""
+def get_admin_stats(session: Session, user_count: int, *, company: str | None = None) -> dict:
+    """KPIs for the Tenant Owner landing. `user_count` is injected since users live in Clerk.
+
+    Both counts are computed WITHIN one company when the caller is scoped (#729). A TENANT OWNER's
+    landing page counting another company's hardware and openings would be the same defect the Home
+    dashboard fixed in #637 - a number nobody can drill into and discover is wrong.
+    """
+    from app.repositories import tenancy
+
+    hardware_scope = [HardwareItem.project_id.in_(tenancy.project_ids_for(company))] if company is not None else []
+    opening_scope = [Opening.project_id.in_(tenancy.project_ids_for(company))] if company is not None else []
+
     # Distinct (category, code) pairs via subquery — portable across dialects.
     distinct_pairs_subq = (
         select(HardwareItem.hardware_category, HardwareItem.product_code)
+        .where(*hardware_scope)
         .group_by(HardwareItem.hardware_category, HardwareItem.product_code)
         .subquery()
     )
     hardware_item_count = session.scalar(select(func.count()).select_from(distinct_pairs_subq)) or 0
 
-    opening_count = session.scalar(select(func.count()).select_from(Opening)) or 0
+    opening_count = session.scalar(select(func.count()).select_from(Opening).where(*opening_scope)) or 0
 
     return {
         "user_count": int(user_count),

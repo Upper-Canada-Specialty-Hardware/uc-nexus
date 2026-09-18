@@ -17,6 +17,7 @@ import {
   Warehouse,
   Wrench,
   Truck,
+  Building2,
   ShieldCheck,
 } from 'lucide-react';
 import { useIdentity } from '../hooks/useIdentity';
@@ -33,37 +34,46 @@ const ICON_PROPS = { size: 19, strokeWidth: 1.75 } as const;
 // Raising a request is not a destination (#471) - it is something you do from the module you already
 // work in, so each of PO, Shop Assembly and Shipping carries its own "Start a Request" button and
 // /app/import is reached through those rather than from here.
+// #729: a module role is the only key to a module, and TENANT OWNER is listed on each of them by
+// name rather than riding an implicit bypass. UC NEXUS ADMIN is the single exception, handled in
+// `canAccess` below, because it is the only role that crosses the GP COMPANY NEXUS TENANT line.
 const SIDEBAR_ITEMS: SidebarItem[] = [
   { label: 'Home', path: '/app', icon: <House {...ICON_PROPS} />, requiredRoles: [] },
   {
     label: 'Purchase Orders',
     path: '/app/po',
     icon: <ReceiptText {...ICON_PROPS} />,
-    requiredRoles: ['PO User'],
+    requiredRoles: ['PO User', 'PO Manager', 'Tenant Owner'],
   },
   {
     label: 'Warehouse',
     path: '/app/warehouse',
     icon: <Warehouse {...ICON_PROPS} />,
-    requiredRoles: ['Warehouse Staff', 'Warehouse Manager'],
+    requiredRoles: ['Warehouse Staff', 'Warehouse Manager', 'Tenant Owner'],
   },
   {
     label: 'Shop Assembly',
     path: '/app/shop-assembly',
     icon: <Wrench {...ICON_PROPS} />,
-    requiredRoles: ['Shop Assembly User', 'Shop Assembly Manager'],
+    requiredRoles: ['Shop Assembly User', 'Shop Assembly Manager', 'Tenant Owner'],
   },
   {
     label: 'Shipping',
     path: '/app/shipping',
     icon: <Truck {...ICON_PROPS} />,
-    requiredRoles: ['Shipping Out'],
+    requiredRoles: ['Shipping Out', 'Shipping Manager', 'Tenant Owner'],
   },
   {
-    label: 'Admin',
-    path: '/app/admin',
+    label: 'Tenant Owner',
+    path: '/app/tenant-owner',
+    icon: <Building2 {...ICON_PROPS} />,
+    requiredRoles: ['Tenant Owner'],
+  },
+  {
+    label: 'UC Nexus Admin',
+    path: '/app/nexus-admin',
     icon: <ShieldCheck {...ICON_PROPS} />,
-    requiredRoles: ['Admin/Manager'],
+    requiredRoles: ['UC Nexus Admin'],
   },
 ];
 
@@ -73,7 +83,9 @@ function isActive(pathname: string, itemPath: string): boolean {
 }
 
 function requiredRolesLabel(roles: string[]): string {
-  return `Requires the ${roles.join(' or ')} role`;
+  // "A, B or C", so a three-role module does not read as a chain of "or"s.
+  const list = roles.length > 1 ? `${roles.slice(0, -1).join(', ')} or ${roles[roles.length - 1]}` : roles[0];
+  return `Requires the ${list} role`;
 }
 
 interface NavContentProps {
@@ -87,11 +99,11 @@ interface NavContentProps {
 export function NavContent({ collapsed = false, onNavigate }: NavContentProps) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { hasRole, isAdmin } = useIdentity();
+  const { hasRole, isNexusAdmin } = useIdentity();
 
   const canAccess = (item: SidebarItem) => {
     if (item.requiredRoles.length === 0) return true;
-    if (isAdmin) return true;
+    if (isNexusAdmin) return true;
     return item.requiredRoles.some((role) => hasRole(role));
   };
 

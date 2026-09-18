@@ -417,7 +417,7 @@ class ShippingMutations:
                 session,
                 name=name,
                 sort_order=sort_order,
-                # A scoped caller can only add one to their own list; an Admin/Manager is unscoped and
+                # A scoped caller can only add one to their own list; a UC NEXUS ADMIN is unscoped and
                 # names the company (#637).
                 company=tenant_scope(info) or (company or ""),
             )

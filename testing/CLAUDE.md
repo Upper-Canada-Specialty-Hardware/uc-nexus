@@ -54,7 +54,7 @@ Environments auto-delete when the PR closes, **so never merge the PR whose envir
     workflow and lives only in that comment. Everything below is the human `/testing/clerk-sign-in`
     fallback - reach for it only when the comment link is not working.
   - Backend endpoint `GET /testing/clerk-sign-in` generates the token (requires `TESTING_ENABLED=true`).
-  - Since #422 the endpoint also requires a credential: an Admin/Manager `Authorization` bearer, or
+  - Since #422 the endpoint also requires a credential: a UC Nexus Admin `Authorization` bearer, or
     the shared testing secret in an `X-Testing-Secret` header. The secret is the bootstrap path on a
     fresh PR environment, where by definition no session exists yet.
   - **A Preview Environment resolves that secret on its own, with nothing set on it.** Production
@@ -73,7 +73,7 @@ Environments auto-delete when the PR closes, **so never merge the PR whose envir
     staff accounts and a session minted there is a real session. The Postgres data in a PR environment
     is disposable; the identities are not. Sign in as the account you were given, and do not mint
     tokens for colleagues' accounts to test role behaviour - ask instead. The one exception is the
-    dedicated e2e account the `/testing/session` link mints: it is not a person, holds Admin/Manager,
+    dedicated e2e account the `/testing/session` link mints: it is not a person, holds UC Nexus Admin,
     and is refused on production (`app/auth._reject_e2e_account_in_production`), which is why its
     sign-in link is safe to sit in a public PR comment.
   - The unauthenticated version of this endpoint was itself a vulnerability (#422 / #424), fixed by
@@ -97,7 +97,7 @@ Consequences when driving the app by script:
   on *every* query, not just the handful that used to be gated.
 - Distinguish the three failure shapes: **no header** -> `Authentication required`; **unparseable
   token** -> `Malformed authentication token`; **valid token, wrong role** -> `FORBIDDEN`, e.g.
-  `Admin/Manager role required`. Getting `Authentication required` from inside a signed-in page means
+  `UC Nexus Admin role required`. Getting `Authentication required` from inside a signed-in page means
   your helper dropped the header, not that the session died.
 - Admin-gated reads worth knowing, because a non-admin session gets FORBIDDEN rather than an empty
   list: `users`, `adminStats`, `adminOpeningStatuses`, `adminOpeningDeepDive`, `locationDuplicates`. Their writes too -
@@ -400,7 +400,7 @@ caught two failures that all three stacked PRs were reporting as clean:
    ```
 1. **Sign in**: open the **"test environment ready"** comment the preview-env workflow posts on your
    PR and navigate its sign-in link. It is `<BACKEND>/testing/session?key=<K>` and needs nothing from
-   you - one navigation lands you on `/app`, signed in as the dedicated e2e account (Admin/Manager).
+   you - one navigation lands you on `/app`, signed in as the dedicated e2e account (UC Nexus Admin).
    The link mints a fresh Clerk ticket on every visit, so it never goes stale, survives a DevAction
    reset, and can be navigated again any time. The same comment carries the protocol and the
    environment's relay line - `relay: connected, companies TUBC` or `relay: DOWN` - so you know before
@@ -422,7 +422,7 @@ caught two failures that all three stacked PRs were reporting as clean:
    to a known state - not a way to empty the database.
    - Since #442 the button mints the Clerk session token off the auth bridge and sends it as an
      `Authorization: Bearer` header - `/admin/reset-data` sits behind `require_admin_request` (#422),
-     so the signed-in account must hold **Admin/Manager**. With no session it alerts and skips the
+     so the signed-in account must hold **UC Nexus Admin**. With no session it alerts and skips the
      request instead of firing a doomed unauthenticated POST.
    - A MUI confirm dialog appears first — confirm it.
    - Then a `window.alert()` fires when the re-clone finishes — use `handle_dialog` with `action: "accept"` to dismiss it.
@@ -432,7 +432,7 @@ caught two failures that all three stacked PRs were reporting as clean:
 ### Human sign-in, and when the comment path is broken
 
 `GET /testing/clerk-sign-in` is the human fallback and nothing else uses it any more. It mints a REAL
-staff session for an arbitrary email, gated on an Admin/Manager bearer OR the shared secret in
+staff session for an arbitrary email, gated on a UC Nexus Admin bearer OR the shared secret in
 `X-Testing-Secret`. Reach for it only when the comment's `/testing/session` link will not work - a red
 `preview-env` check, or `E2E_CLERK_USER_ID` unset on the environment - because it is the same
 impersonation-shaped endpoint #422 gated, not an agent convenience.
@@ -532,7 +532,8 @@ Verified on pr-575, 2026-08-10.
 /app/shop-assembly         -> Shop Assembly landing (stat cards + one Go-to card)
 /app/shop-assembly/requests  -> Requests: accept / reject / reopen, with the stage each has reached
 /app/shipping              -> Shipping Out (ship-ready items, packing slips)
-/app/admin                 -> Admin (reports, vendors, projects, users, cleanup)
+/app/tenant-owner          -> Tenant Owner (projects, warehouses, dashboards, users)
+/app/nexus-admin           -> UC Nexus Admin (users, relay, GP traffic, system setup)
 ```
 
 ---
@@ -1057,13 +1058,16 @@ rather than being silently dropped.
 - **Re-run auto-assign** rebuilds the allocation from current availability. It is also what a
   race refusal triggers, with a banner saying availability moved.
 
-### Admin Module
+### Tenant Owner and UC Nexus Admin Modules
 
-**Entry**: `/app/admin` -> Admin landing: stat cards (Users, Hardware Items, Openings) + "Go to" cards for each sub-route.
+**Entry**: `/app/tenant-owner` -> Tenant Owner landing: stat cards (Users, Distinct Products,
+Openings) + "Go to" cards for each sub-route. `/app/nexus-admin` -> UC Nexus Admin landing, the
+cross-tenant half: User Management, Relay Installs, Nexus GP Traffic, SharePoint Migration and
+(DB Admins only) Database Access.
 
 **Sub-routes**:
-- Project Purchasing Progress (`/app/admin/project-purchasing-progress`)
-- Hardware Status by Project (`/app/admin/hardware-status`) - loads nothing until at least one
+- Project Purchasing Progress (`/app/tenant-owner/project-purchasing-progress`)
+- Hardware Status by Project (`/app/tenant-owner/hardware-status`) - loads nothing until at least one
   project is picked; the Projects Autocomplete is multi-select and quantities SUM across the
   selection (one row per (category, product code), not per project). Columns: Required /
   Not Purchased / PO Drafted / On Order / Received / On Hand / Sent to Shop / Staged / Shipped Out,
@@ -1071,15 +1075,16 @@ rather than being silently dropped.
   (completed shop pulls - shop assembly is outside the Nexus pipeline), and "Staged" is completed
   shipping pulls not yet on a packing slip. Zero counts render dimmed. A "Filter products…" box
   appears once a project is selected and matches product code or category.
-- Warehouses (`/app/admin/warehouses`) — warehouse CRUD (PR #158, issue #88); see below
-- Projects (`/app/admin/projects`) — edit project details + OSSA flag (see below)
-- User Management (`/app/admin/users`) — assign Clerk roles
-- Location Cleanup (`/app/admin/location-cleanup`)
-- (PO Document Settings moved to the PO module: `/app/po/document-settings`; see below. Unknown `/app/admin/*` sub-routes silently render the Admin landing, not a 404.)
+- Warehouses (`/app/tenant-owner/warehouses`) — warehouse CRUD (PR #158, issue #88); see below
+- Projects (`/app/tenant-owner/projects`) — edit project details + OSSA flag (see below)
+- User Management (`/app/nexus-admin/users`) — assign Clerk roles
+- Location Cleanup (`/app/tenant-owner/location-cleanup`)
+- (PO Document Settings moved to the PO module: `/app/po/document-settings`; see below. Unknown `/app/tenant-owner/*` sub-routes silently render the Tenant Owner landing, not a 404,
+  and every `/app/admin/*` path redirects to it.)
 
 Inventory quantity corrections are NOT here — they live in the Warehouse module (Locations tab).
 
-**Warehouses page** (`/app/admin/warehouses`, PR #158, issue #88):
+**Warehouses page** (`/app/tenant-owner/warehouses`, PR #158, issue #88):
 - DataGrid columns: Name, Code, Location (city + province concatenated), Primary (chip "Primary" / blank), Status (chip "Active" / "Inactive"), trash icon.
 - Primary warehouse (Warden/WRD) has NO trash icon — delete is blocked on primary.
 - Non-primary warehouses have a trash icon that opens a confirm dialog: "Delete [name]? This is blocked if any inventory still references it."
@@ -1088,14 +1093,14 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - Delete confirm toast = "Warehouse deleted".
 - Seeds: Warden (WRD, Primary, Active) and VP (VP, Active) are seeded by default.
 
-**Projects page** (`/app/admin/projects`, issue #67):
-- Admin/Manager only. Non-admins get a permission Alert; the backend also enforces it (see Lessons Learned).
+**Projects page** (`/app/tenant-owner/projects`, issue #67):
+- Tenant Owner only (a UC Nexus Admin holds it too). Anyone else gets a permission Alert; the backend also enforces it (see Lessons Learned).
 - DataGrid columns: Project #, Description, Client, Job Site, OSSA (chip "Yes" / "—"), Openings. Click a row to open the edit dialog.
 - **Edit dialog**: OSSA toggle + editable text fields (description, client, job site name, address/city/state/zip, general contractor, GC contact name/phone/email, project manager, application). A read-only "From TITAN" section shows project number, submittal job no, submittal assignment count, estimator code, TITAN user ID — these are immutable.
 - Save calls `updateProject`, refetches the grid, and shows a "Project updated" toast.
 
 **PO Document Settings page** (`/app/po/document-settings`, issue #230 - lives in the PO module, reached via the "Document Settings" button on the PO list header):
-- Admin/Manager only (non-admins get a permission Alert; the mutation is `require_admin`-gated). Single-record form, not a grid.
+- PO Manager or Tenant Owner only (anyone else gets a permission Alert; the mutation is role-gated server-side). Single-record form, not a grid.
 - Fields: company from-address, payment terms, confirm-with, tax numbers, mandatory bullets (one per line), wood-door FSC note, USA tariff note + effective-until date, customs broker block, shipping accounts (one per line), signature note, footer notes.
 - Backed by `poDocumentSettings` (get-or-creates a single row seeded from the guideline doc on first read, so it never returns null) and `updatePoDocumentSettings`. Save toast = "PO document settings saved". These values print on every generated PO document.
 
@@ -1126,15 +1131,15 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - After a deploy on Railway, the previously-loaded SPA tab keeps the OLD `index.html` reference until full page reload (`navigate_page type=reload` is NOT enough). Bust by either closing the tab and `new_page` to the URL, or adding a query-param cache-buster like `?cb=1`. The HTML headers (`Cache-Control: no-cache, must-revalidate`) cover the *next* page load but not the currently-cached document.
 - MUI `Autocomplete` with `freeSolo` (used by `LocationAutocomplete` and `OrderAsAutocomplete`) is flaky to drive via `fill` — the tool tries to find a matching dropdown option and errors with "Could not find option with text X" when the value is a brand-new free-form string. Worse, when fill fails on a follow-up Autocomplete it sometimes mutates the previous field. For tests that need to set a specific value, use `evaluate_script` to set the underlying input's `value` and dispatch a synthetic `input` event, or drive the mutation directly via `curl` to the `/graphql` endpoint (the location-string normalization can be verified that way without UI flake).
 - Mutation success in the new LocationsTab triggers `refetchContents()` + parent `refetch()`, but Apollo Client's normalized cache can leave the just-mutated `InventoryLocation` entity visible in the panel until the cache settles. The DB is correct (verified by full page reload). If you need to assert post-mutation UI state, reload the page rather than trusting the immediate snapshot after `wait_for` on the success toast.
-- The Location Cleanup admin screen lives at `/app/admin/location-cleanup`. It queries `locationDuplicates` which groups location triples by case-insensitive canonical form (uppercase + trim + collapse whitespace) and surfaces variants. Empty state ("No location duplicates found") is the happy path. The merge dialog calls `mergeLocations` which rewrites every matching row across inventory_locations + opening_items + stock_items and writes one MOVE audit per row.
-- The admin Projects page (issue #67) is the first screen backed by real server-side auth. The frontend now sends the Clerk session token on every GraphQL request (Apollo auth link via `window.Clerk.session.getToken()`), and two resolvers are gated on the Admin/Manager role: `adminProjects` (query) and `updateProject` (mutation). Unauthenticated calls to them return a GraphQL error with `extensions.code = "UNAUTHENTICATED"`; signed-in non-admins get `FORBIDDEN`. Every other resolver is still ungated, so existing tests are unaffected.
+- The Location Cleanup screen lives at `/app/tenant-owner/location-cleanup`. It queries `locationDuplicates` which groups location triples by case-insensitive canonical form (uppercase + trim + collapse whitespace) and surfaces variants. Empty state ("No location duplicates found") is the happy path. The merge dialog calls `mergeLocations` which rewrites every matching row across inventory_locations + opening_items + stock_items and writes one MOVE audit per row.
+- The Tenant Owner Projects page (issue #67) is the first screen backed by real server-side auth. The frontend now sends the Clerk session token on every GraphQL request (Apollo auth link via `window.Clerk.session.getToken()`), and two resolvers are gated on the Tenant Owner role: `adminProjects` (query) and `updateProject` (mutation). Unauthenticated calls to them return a GraphQL error with `extensions.code = "UNAUTHENTICATED"`; signed-in non-admins get `FORBIDDEN`. Every other resolver is still ungated, so existing tests are unaffected.
 - Issues #198 and #380: free-form project creation is gone, and so is manual adoption. `createProject`/`CreateProjectInput` and `adoptGpJob`/`AdoptGpJobInput` no longer exist. Projects now appear on their own: the `gp_job_sync` background service creates one for every job in GP's job master (JC00102), on a ~5 minute timer and immediately on every relay reconnect, setting `projectId` = the GP job number and `description` = the GP job name. That means **there is no longer any way to seed a project through GraphQL without a relay** - the old ungated `adoptGpJob` fetch trick is dead. To get projects in a test environment, connect and enrol the relay and let the sync run, or hit the admin `syncGpJobs` mutation (Admin -> Projects -> "Sync from GP", which returns `{total, adopted}`) once a relay is up.
-- Issue #380: the Import landing page's button is now "Create GP Job" (`CreateGpJobDialog`), rendered for the Admin/Manager role only - a non-admin sees the landing page with no create button. It originates a job in GP via `createGpJob(input: CreateGpJobInput!)`, which is admin-gated and requires a connected relay. Every field except the job number and name is a live GP read (`gpCustomers`, `gpCustomerAddresses`, `gpTaxSchedules`, `gpDivisions`, `gpEmployees`), so the whole form stays disabled while the relay is down. The two address selects stay disabled until a customer is picked and re-fetch when it changes. Eight optional fields sit behind a "Show optional fields" toggle. GP validates the submit and its own message is shown in the dialog - in TUBC the fiscal calendar ends 2025-09-30, so today's date reliably produces "Job cannot be created within a closed period"; use a FY2025 `createdDate` for a success path. Issue #392: Estimator and WS Manager are selects over `gpEmployees` (the GP payroll master UPR00100), not free text - the proc rejects an id that is not in that master with "The estimator does not exist in the payroll master table" (error state 51117). TUBC has exactly two employees, IANB and JONATHANR. `createGpJob` returns `{created, project}`: `created` is false when GP already held the job number and the mutation adopted it instead of creating one, so resubmitting an existing number succeeds with "already existed in GP and is now a project" rather than erroring. New projects default `offSiteStorageAgreement` to false and the GC/address fields to null, handy for testing the Projects edit flow.
+- Issue #380: the Import landing page's button is now "Create GP Job" (`CreateGpJobDialog`), rendered for the Tenant Owner role only - anyone else sees the landing page with no create button. It originates a job in GP via `createGpJob(input: CreateGpJobInput!)`, which is admin-gated and requires a connected relay. Every field except the job number and name is a live GP read (`gpCustomers`, `gpCustomerAddresses`, `gpTaxSchedules`, `gpDivisions`, `gpEmployees`), so the whole form stays disabled while the relay is down. The two address selects stay disabled until a customer is picked and re-fetch when it changes. Eight optional fields sit behind a "Show optional fields" toggle. GP validates the submit and its own message is shown in the dialog - in TUBC the fiscal calendar ends 2025-09-30, so today's date reliably produces "Job cannot be created within a closed period"; use a FY2025 `createdDate` for a success path. Issue #392: Estimator and WS Manager are selects over `gpEmployees` (the GP payroll master UPR00100), not free text - the proc rejects an id that is not in that master with "The estimator does not exist in the payroll master table" (error state 51117). TUBC has exactly two employees, IANB and JONATHANR. `createGpJob` returns `{created, project}`: `created` is false when GP already held the job number and the mutation adopted it instead of creating one, so resubmitting an existing number succeeds with "already existed in GP and is now a project" rather than erroring. New projects default `offSiteStorageAgreement` to false and the GC/address fields to null, handy for testing the Projects edit flow.
 - Issue #444: both address selects in `CreateGpJobDialog` carry a "+ Add new address" row pinned last (only when that picker's customer is set). It opens a nested `AddCustomerAddressDialog` scoped to that customer and creates the code in GP via `createGpCustomerAddress` (admin-gated, relay write `create_customer_address`, RM00102 create-only - the relay pins the proc's UpdateIfExists to 0). The address code uppercases as typed; on success the picker refetches and auto-selects the new code. A duplicate code answers relay code `address_code_already_exists` rendered inside the nested dialog, which stays open with the typed input intact. Verified live on pr-445 (2026-07-30): NEXTEST1 under ELL100 in TUBC, then a full `createGpJob` using it (NEXUS-444-T1). The op is new, so a release relay build answers RELAY_OP_UNSUPPORTED on the create (the reads still work) until the relay is rebuilt.
 - A DataGrid driven by a `cache-and-network` query (e.g. the admin Projects grid) can render "0–0 of 0" for a beat on first mount before data arrives, so `take_snapshot` immediately after navigation may catch the empty state. Re-snapshot or `wait_for` a known row value before asserting the grid is empty.
 - MUI `spinbutton` (number input) fields with a pre-filled value will APPEND when driven by `fill` or `fill_form` - "3" becomes "31" if you try to fill "1". Always click the field first, then `Control+A` to select all, then `fill` with the desired value. Alternatively use `evaluate_script` to set the value directly.
 - The Transfer dialog success toast is very brief - by the time `take_snapshot` runs after the click, it may already be gone. Confirm success by observing the grid data (dialog closed + new/updated row present) rather than waiting for the toast text.
-- There is no vendor field in PO create/edit at all since #509, and no Admin > Vendors page behind it - the local vendors table is gone. The only vendor a PO carries is the GP one (PM00200), chosen in the Register in GP dialog from the live `gpVendors` list, so a draft shows a blank vendor until it is registered. `/app/admin/vendors` now falls through to the Admin landing like any other unknown sub-route.
+- There is no vendor field in PO create/edit at all since #509, and no Admin > Vendors page behind it - the local vendors table is gone. The only vendor a PO carries is the GP one (PM00200), chosen in the Register in GP dialog from the live `gpVendors` list, so a draft shows a blank vendor until it is registered. `/app/tenant-owner/vendors` now falls through to the Tenant Owner landing like any other unknown sub-route.
 - Receiving wizard: after selecting POs and clicking "Receive N Selected", the Receive modal opens. The "Receive Now" spinbutton defaults to 0. Using `fill` fails (value doesn't stick on React controlled spinbutton). Use `evaluate_script` to focus the input, then `press_key` ArrowUp to increment. ArrowUp from 0 goes directly to the max (pending qty) in one press.
 - Receiving wizard: "Assign locations & flag deficient units now" toggle appears only AFTER entering a Receive Now quantity > 0. Turn it on to get the Aisle/Bay/Bin text fields (regular textbox, not autocomplete). `fill_form` works fine on these.
 - Transfer dialog Aisle/Bay/Bin: these are comboboxes with autocomplete="list". Use `evaluate_script` to set the underlying input value (native value setter + `input` event). This reliably sets the values without triggering dropdown selection. The Transfer button enables once all three fields are filled.
@@ -1147,9 +1152,9 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - Import-created PO drafts have EMPTY Order As values unless set in the wizard's PO step - the register dialog then blocks submit with per-line 'Required' errors until each line's Order As is filled.
 - The generate dialog + admin PO-settings text fields APPEND when driven by `fill`/`fill_form` if they already hold a value (same MUI controlled-input quirk as spinbuttons). For a pre-filled field, set the value via `evaluate_script` using the native value setter + an `input` event (match the label's `for` attr to the input id), or drive the mutation directly. Empty fields fill fine.
 - Date-only fields: a `<TextField type="date">` renders as Month/Day/Year spinbuttons in the a11y tree. Set it via `evaluate_script` native setter with a `YYYY-MM-DD` string on the underlying input (dispatch `input` + `change`). Note: formatting a `YYYY-MM-DD` string with `new Date(str)` is UTC and prints the previous calendar day in a behind-UTC tz - the PO-document code parses date-only strings as local (fixed in #238), so the printed required-by should match what was entered.
-- To seed a project's job-site address for the PO document's "Use project site" ship-to option (most test projects have null address fields), call `updateProject(id, {jobSiteName, address, city, state, zip})` via `evaluate_script` (Admin/Manager gated). Then the dialog's "Use project site" button builds a real "UC Hardware Inc. - Deliver to site / ..." block.
+- To seed a project's job-site address for the PO document's "Use project site" ship-to option (most test projects have null address fields), call `updateProject(id, {jobSiteName, address, city, state, zip})` via `evaluate_script` (Tenant Owner gated). Then the dialog's "Use project site" button builds a real "UC Hardware Inc. - Deliver to site / ..." block.
 - PO list rows: clicking the row's StaticText via a snapshot uid may NOT open the detail modal (the a11y click can miss the row handler). Reliable alternative: `evaluate_script` finding the leaf element by text and clicking its `closest('td')`.
-- Locations page bin panel "Item actions" menu (stock rows): Move / Transfer / Adjust Qty / Unlocate. "Adjust Qty" opens the shared LocationActionDialog - Confirm stays disabled until a non-zero adjustment AND a reason are entered; the helper text under the adjustment shows the computed "New qty: N" and flags negatives. Verified live: adjustment writes an ADJUSTMENT audit row (`auditLog(limit: N)`) with performedBy "Admin/Manager".
+- Locations page bin panel "Item actions" menu (stock rows): Move / Transfer / Adjust Qty / Unlocate. "Adjust Qty" opens the shared LocationActionDialog - Confirm stays disabled until a non-zero adjustment AND a reason are entered; the helper text under the adjustment shows the computed "New qty: N" and flags negatives. Verified live: adjustment writes an ADJUSTMENT audit row (`auditLog(limit: N)`) with performedBy "UC Nexus Admin".
 - Draft PO create (issue #256 dialog) works with the relay down end to end: the created draft's `preferredDeliveryDate` round-trips exactly (entered 2026-08-15 -> stored 2026-08-15 -> detail modal renders 8/15/2026, no UTC day shift). Cancelling a draft removes it from the `purchaseOrders` list entirely.
 - Availability semantics (issue #229): available = quantity - deficient, so a 10-qty row with 7 deficient shows available 3. Read it per row via `inventoryRows` (`inventoryLocation.available`) or per combo via `projectInventoryAvailability`; cross-check against `deficientItems`. (The old `inventoryHierarchy` roll-up query that documented this is deleted.)
 - `Notification` has no `kind` field - it is `type` (`{ notifications { id type message isRead createdAt recipientRole projectId } }`). Querying `kind` fails the whole document, so a mistyped notification field takes the relay/pull/request fields in the same query down with it.

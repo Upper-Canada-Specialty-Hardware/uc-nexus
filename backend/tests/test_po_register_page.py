@@ -11,7 +11,7 @@ from decimal import Decimal
 import pytest
 
 from app import auth
-from app.auth import ADMIN_ROLE
+from app.auth import NEXUS_ADMIN_ROLE
 from app.models.enums import POStatus
 from app.models.project import Project
 from app.models.purchase_order import PurchaseOrder
@@ -132,7 +132,7 @@ class _AdminInfo:
     """An ADMIN caller, seeded into the per-request role memo so `tenant_scope` (#637) answers None
     (unscoped) instead of trying to verify a JWT off a request that is not there."""
 
-    context = {"request": None, "_auth_roles": [ADMIN_ROLE]}
+    context = {"request": None, "_auth_roles": [NEXUS_ADMIN_ROLE]}
 
 
 class _NullSession:

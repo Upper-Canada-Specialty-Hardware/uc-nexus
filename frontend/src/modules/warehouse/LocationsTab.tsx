@@ -652,9 +652,9 @@ export default function LocationsTab() {
   const [selected, setSelected] = useState<LocationEntry | null>(null);
   const [warehouseFilter, setWarehouseFilter] = useState('');
   const { showToast } = useToast();
-  const { isAdmin, hasRole } = useIdentity();
+  const { ownsTenant, hasRole } = useIdentity();
   // #632: defining and retiring locations is warehouse management (the mutations enforce it too).
-  const canManage = isAdmin || hasRole('Warehouse Manager');
+  const canManage = ownsTenant || hasRole('Warehouse Manager');
 
   const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
     variables: { includeInactive: true },

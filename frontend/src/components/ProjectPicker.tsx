@@ -60,9 +60,10 @@ export default function ProjectPicker({
     const all = data?.projects ?? [];
     return filter ? all.filter(filter) : all;
   }, [data?.projects, filter]);
-  // #637: only Admin/Manager sees more than one company's projects here, so only they need the row
-  // told apart by company. A scoped user's list is all one tenant - a chip on every row would be noise.
-  const { isAdmin } = useIdentity();
+  // #637: only a UC NEXUS ADMIN sees more than one company's projects here, so only they need the
+  // row told apart by company. A scoped user's list is all one tenant - a chip on every row would be
+  // noise.
+  const { isNexusAdmin } = useIdentity();
 
   return (
     <Autocomplete<Project>
@@ -97,7 +98,7 @@ export default function ProjectPicker({
                 </Typography>
               )}
             </Box>
-            {isAdmin && p.company && (
+            {isNexusAdmin && p.company && (
               <Chip
                 label={p.company}
                 size="small"

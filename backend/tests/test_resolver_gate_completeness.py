@@ -27,13 +27,31 @@ from pathlib import Path
 
 import pytest
 
-from app.auth import ADMIN_ROLE, DB_ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE, WAREHOUSE_MANAGER_ROLE
+from app.auth import (
+    DB_ADMIN_ROLE,
+    NEXUS_ADMIN_ROLE,
+    PO_MANAGER_ROLE,
+    SHIPPING_MANAGER_ROLE,
+    SHOP_ASSEMBLY_MANAGER_ROLE,
+    TENANT_OWNER_ROLE,
+    WAREHOUSE_MANAGER_ROLE,
+)
 from app.auth_policy import OPEN_OPERATIONS, ROOT_FIELD_POLICY, ROSTER_BACKED, SIGNED_IN
 from main import schema
 
-# The requirements a policy entry may name. A typo'd role - "Admin/Manger" - would otherwise be a
-# field nobody can call, since the check is a membership test against what Clerk returns.
-_VALID_REQUIREMENTS = {SIGNED_IN, ADMIN_ROLE, DB_ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE, WAREHOUSE_MANAGER_ROLE}
+# The requirements a policy entry may name. A typo'd role - "UC Nexus Adman" - would otherwise be a
+# field nobody can call, since the check is a membership test against what Clerk returns. The tier
+# sets in app/auth.py are built out of these same names, so a set-valued entry is covered too.
+_VALID_REQUIREMENTS = {
+    SIGNED_IN,
+    NEXUS_ADMIN_ROLE,
+    TENANT_OWNER_ROLE,
+    PO_MANAGER_ROLE,
+    SHIPPING_MANAGER_ROLE,
+    SHOP_ASSEMBLY_MANAGER_ROLE,
+    WAREHOUSE_MANAGER_ROLE,
+    DB_ADMIN_ROLE,
+}
 _VALID_ROLES = _VALID_REQUIREMENTS - {SIGNED_IN}
 
 _graphql_schema = schema._schema

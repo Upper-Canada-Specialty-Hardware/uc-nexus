@@ -11,7 +11,7 @@ from datetime import date
 
 import pytest
 
-from app.auth import ADMIN_ROLE
+from app.auth import NEXUS_ADMIN_ROLE, TENANT_OWNERS
 from app.auth_policy import ROOT_FIELD_POLICY
 from app.database import SessionLocal
 from app.errors import ConflictError, RelayCallError, RelayUnavailableError, ValidationError
@@ -25,7 +25,7 @@ class _FakeInfo:
     # An ADMIN caller, seeded straight into the per-request role memo. `tenant_scope` reads it (#637)
     # and answers None for an admin, so these tests exercise the relay gating rather than tenancy -
     # without the seed the lookup would try to verify a JWT off a request that is not there.
-    context = {"request": None, "_auth_roles": [ADMIN_ROLE]}
+    context = {"request": None, "_auth_roles": [NEXUS_ADMIN_ROLE]}
 
 
 @pytest.fixture
@@ -102,14 +102,14 @@ def _create(**overrides):
     return asyncio.run(ProjectMutations().create_gp_job(_FakeInfo(), _input(**overrides)))
 
 
-def test_requires_an_admin():
+def test_requires_a_tenant_owner():
     """Creating a job writes to the accounting system of record, so this is not an any-user mutation.
 
     Since #423 the gate is the policy table, applied by the schema extension before the resolver runs,
     so the requirement is asserted where it is decided. `test_resolver_auth_gates.py` covers that the
     extension enforces the table. The tests below call the resolver directly with no auth setup -
     what they pin is the guard order INSIDE the body, which is unchanged."""
-    assert ROOT_FIELD_POLICY["createGpJob"] == ADMIN_ROLE
+    assert ROOT_FIELD_POLICY["createGpJob"] == TENANT_OWNERS
 
 
 def test_refuses_when_no_relay_is_connected(monkeypatch):

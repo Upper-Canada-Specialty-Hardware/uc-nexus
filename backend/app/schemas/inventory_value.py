@@ -6,7 +6,7 @@ leave the client holding a table that no longer adds up to the totals printed ab
 client would have to guess how to re-derive them. Returning the recomputed page makes that
 impossible.
 
-Both gates are named on every field. `ROOT_FIELD_POLICY` decides WHO may call (Admin/Manager or the
+Both gates are named on every field. `ROOT_FIELD_POLICY` decides WHO may call (a tenant owner or the
 Shop Assembly Manager); `tenancy.require_company_in_scope` decides WHICH company they may name, which
 the policy table cannot - the argument is a tenant, not a row.
 """

@@ -35,20 +35,28 @@ import GpIdentityChooser from './GpIdentityChooser';
 import { useGpBuyers, type GpBuyersState } from './useGpBuyers';
 import GpCompanyLabel from '../../relay/GpCompanyLabel';
 
-const ALL_ROLES = [
+// #729: every role a person can hold, module by module, with each module's user tier above its
+// manager tier. TENANT OWNER closes the list because it holds all of them inside one GP company.
+// The strings have to match backend/app/auth.py exactly.
+const MODULE_ROLES = [
   'Hardware Schedule Import',
-  'Warehouse Staff',
-  // Approves and posts the receives Warehouse Staff count in. Backed by WAREHOUSE_MANAGER_ROLE in
-  // backend/app/auth.py - the two strings have to match exactly.
-  'Warehouse Manager',
   'PO User',
-  'Shipping Out',
-  'Shop Assembly Manager',
+  'PO Manager',
+  'Warehouse Staff',
+  // Approves and posts the receives Warehouse Staff count in.
+  'Warehouse Manager',
   'Shop Assembly User',
-  'Admin/Manager',
+  'Shop Assembly Manager',
+  'Shipping Out',
+  'Shipping Manager',
+  'Tenant Owner',
 ] as const;
 
-// The elevated Database Access tier. Held only alongside Admin/Manager (the backend refuses a
+// #729: the only role that crosses the GP COMPANY NEXUS TENANT line, so only a UC NEXUS ADMIN may
+// grant it and it is absent from the tenant-scoped page altogether.
+const NEXUS_ADMIN_ROLE = 'UC Nexus Admin';
+
+// The elevated Database Access tier. Held only alongside UC Nexus Admin (the backend refuses a
 // standalone one), and only a DB Admin may grant or remove it - so the toggle is shown only to a DB
 // Admin and lives apart from the flat role list. Backed by DB_ADMIN_ROLE in backend/app/auth.py.
 const DB_ADMIN_ROLE = 'DB Admin';
@@ -92,7 +100,26 @@ interface ClerkUser {
 /** The clear option's value. '' rather than null so MUI's Select has something to match on. */
 const NO_COMPANY = '';
 
-const columns: GridColDef[] = [
+const COMPANY_COLUMN: GridColDef = {
+  // #637: which tenant the account belongs to. Unset is the state that matters most here - it is
+  // why that person sees an empty app - so it reads as a warning rather than a dash. #729: only the
+  // UC Nexus Admin page carries it; a Tenant Owner's roster is all one company by definition.
+  field: 'company',
+  headerName: 'Company',
+  width: 130,
+  valueGetter: (_value: unknown, row: ClerkUser) => row.company || '',
+  renderCell: (params) =>
+    params.row.company ? (
+      <Box component="span" sx={monoSx}>
+        {params.row.company}
+      </Box>
+    ) : (
+      <Chip label="Unassigned" size="small" color="warning" />
+    ),
+};
+
+// The GP buyer id closes the list, and the company slots in ahead of it on the UC Nexus Admin page.
+const BASE_COLUMNS: GridColDef[] = [
   {
     field: 'avatar',
     headerName: '',
@@ -151,22 +178,6 @@ const columns: GridColDef[] = [
     },
   },
   {
-    // #637: which tenant the account belongs to. Unset is the state that matters most here - it is
-    // why that person sees an empty app - so it reads as a warning rather than a dash.
-    field: 'company',
-    headerName: 'Company',
-    width: 130,
-    valueGetter: (_value: unknown, row: ClerkUser) => row.company || '',
-    renderCell: (params) =>
-      params.row.company ? (
-        <Box component="span" sx={monoSx}>
-          {params.row.company}
-        </Box>
-      ) : (
-        <Chip label="Unassigned" size="small" color="warning" />
-      ),
-  },
-  {
     field: 'gpBuyerId',
     headerName: 'GP Buyer',
     width: 120,
@@ -179,8 +190,34 @@ const columns: GridColDef[] = [
   },
 ];
 
-export default function UserManagementPage() {
-  const { isAdmin, isDbAdmin } = useIdentity();
+/**
+ * #729: the same page, mounted by both modules.
+ *
+ * `nexus` is the cross-tenant version: every account in the install, with the company assignment and
+ * the two elevated roles (UC Nexus Admin, DB Admin) that only a UC NEXUS ADMIN may grant. `tenant`
+ * is a TENANT OWNER looking after their own company's people: the server has already filtered the
+ * roster to their company, so the company is neither shown nor editable, and the elevated roles are
+ * absent rather than disabled - they are not theirs to give.
+ */
+interface UserManagementPageProps {
+  scope: 'tenant' | 'nexus';
+}
+
+export default function UserManagementPage({ scope }: UserManagementPageProps) {
+  const { isNexusAdmin, ownsTenant, isDbAdmin } = useIdentity();
+  const nexusScope = scope === 'nexus';
+  const allowed = nexusScope ? isNexusAdmin : ownsTenant;
+  const roleOptions = useMemo<readonly string[]>(
+    () => (nexusScope ? [...MODULE_ROLES, NEXUS_ADMIN_ROLE] : MODULE_ROLES),
+    [nexusScope],
+  );
+  const columns = useMemo(
+    () =>
+      nexusScope
+        ? [...BASE_COLUMNS.slice(0, -1), COMPANY_COLUMN, BASE_COLUMNS[BASE_COLUMNS.length - 1]]
+        : BASE_COLUMNS,
+    [nexusScope],
+  );
   const { showToast } = useToast();
   const [selectedUser, setSelectedUser] = useState<ClerkUser | null>(null);
   const [editRoles, setEditRoles] = useState<string[]>([]);
@@ -279,12 +316,12 @@ export default function UserManagementPage() {
     setEditRoles((prev) => {
       const next = prev.includes(role) ? prev.filter((r) => r !== role) : [...prev, role];
       // Keep the DB Admin stacking invariant the backend enforces, so the dialog can never build the
-      // always-rejected combo (DB Admin without Admin/Manager): checking DB Admin pulls Admin/Manager
-      // in, and unchecking Admin/Manager drops DB Admin with it.
-      if (role === DB_ADMIN_ROLE && next.includes(DB_ADMIN_ROLE) && !next.includes('Admin/Manager')) {
-        next.push('Admin/Manager');
+      // always-rejected combo (DB Admin without UC Nexus Admin): checking DB Admin pulls UC Nexus
+      // Admin in, and unchecking UC Nexus Admin drops DB Admin with it.
+      if (role === DB_ADMIN_ROLE && next.includes(DB_ADMIN_ROLE) && !next.includes(NEXUS_ADMIN_ROLE)) {
+        next.push(NEXUS_ADMIN_ROLE);
       }
-      if (role === 'Admin/Manager' && !next.includes('Admin/Manager')) {
+      if (role === NEXUS_ADMIN_ROLE && !next.includes(NEXUS_ADMIN_ROLE)) {
         return next.filter((r) => r !== DB_ADMIN_ROLE);
       }
       return next;
@@ -341,10 +378,11 @@ export default function UserManagementPage() {
     closeDialog,
   ]);
 
-  if (!isAdmin) {
+  if (!allowed) {
     return (
       <Alert severity="error" sx={{ mt: 2 }}>
-        You do not have permission to manage users. The Admin/Manager role is required.
+        You do not have permission to manage users.{' '}
+        {nexusScope ? 'The UC Nexus Admin role is required.' : 'The Tenant Owner role is required.'}
       </Alert>
     );
   }
@@ -367,8 +405,16 @@ export default function UserManagementPage() {
       <FadeIn>
         <PageHeader
           title="User Management"
-          parent={{ label: 'Admin', to: '/app/admin' }}
-          description="Click a user to manage their company, roles and GP buyer identity. A user with no company sees no data at all until one is assigned."
+          parent={
+            nexusScope
+              ? { label: 'UC Nexus Admin', to: '/app/nexus-admin' }
+              : { label: 'Tenant Owner', to: '/app/tenant-owner' }
+          }
+          description={
+            nexusScope
+              ? 'Click a user to manage their company, roles and GP buyer identity. A user with no company sees no data at all until one is assigned.'
+              : 'Click a user to manage their roles and GP buyer identity. Only accounts in your own GP company are listed.'
+          }
         />
       </FadeIn>
 
@@ -461,56 +507,63 @@ export default function UserManagementPage() {
                       sx={{ flex: 1, minWidth: 0 }}
                     />
                   </Stack>
-                  <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
-                    Company
-                  </Typography>
-                  {/* #637: the tenant this account is scoped to. Every read the app makes on their
-                      behalf is filtered to it, so an unset one is not a blank field - it is an account
-                      that can see nothing. The options are the companies the live relay serves; with
-                      the relay down the stored value still shows, read-only, rather than looking
-                      unset. */}
-                  {companyLocked ? (
-                    <TextField
-                      label="Company"
-                      value={editCompany || '—'}
-                      size="small"
-                      fullWidth
-                      sx={{ mb: 2 }}
-                      disabled
-                      helperText={companyLockedReason}
-                      slotProps={{ input: { sx: monoSx } }}
-                    />
-                  ) : (
-                    <TextField
-                      select
-                      label="Company"
-                      value={editCompany}
-                      onChange={(e) => {
-                        // A GP buyer id belongs to one company's buyer master, so a buyer picked under
-                        // the old company is not a buyer in the new one. Clear it so the admin picks
-                        // again from the right list rather than saving an id GP will refuse at
-                        // registration.
-                        if (e.target.value !== editCompany) setEditGpBuyerId(null);
-                        setEditCompany(e.target.value);
-                      }}
-                      size="small"
-                      fullWidth
-                      sx={{ mb: 2 }}
-                      helperText={
-                        editCompany
-                          ? 'Every project, PO and inventory row this account sees is scoped to it.'
-                          : 'No company - this account sees no data until one is assigned.'
-                      }
-                    >
-                      <MenuItem value={NO_COMPANY}>
-                        <em>None</em>
-                      </MenuItem>
-                      {companyOptions.map((c) => (
-                        <MenuItem key={c} value={c}>
-                          <GpCompanyLabel code={c} gpCompanies={gpBuyers.gpCompanies} />
+                  {/* #729: which company an account belongs to is a UC NEXUS ADMIN's call alone, so
+                      a Tenant Owner never sees the field. Their roster is one company already, and
+                      the backend refuses the write regardless. */}
+                  {nexusScope && (
+                    <>
+                    <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
+                      Company
+                    </Typography>
+                    {/* #637: the tenant this account is scoped to. Every read the app makes on their
+                        behalf is filtered to it, so an unset one is not a blank field - it is an account
+                        that can see nothing. The options are the companies the live relay serves; with
+                        the relay down the stored value still shows, read-only, rather than looking
+                        unset. */}
+                    {companyLocked ? (
+                      <TextField
+                        label="Company"
+                        value={editCompany || '—'}
+                        size="small"
+                        fullWidth
+                        sx={{ mb: 2 }}
+                        disabled
+                        helperText={companyLockedReason}
+                        slotProps={{ input: { sx: monoSx } }}
+                      />
+                    ) : (
+                      <TextField
+                        select
+                        label="Company"
+                        value={editCompany}
+                        onChange={(e) => {
+                          // A GP buyer id belongs to one company's buyer master, so a buyer picked under
+                          // the old company is not a buyer in the new one. Clear it so the admin picks
+                          // again from the right list rather than saving an id GP will refuse at
+                          // registration.
+                          if (e.target.value !== editCompany) setEditGpBuyerId(null);
+                          setEditCompany(e.target.value);
+                        }}
+                        size="small"
+                        fullWidth
+                        sx={{ mb: 2 }}
+                        helperText={
+                          editCompany
+                            ? 'Every project, PO and inventory row this account sees is scoped to it.'
+                            : 'No company - this account sees no data until one is assigned.'
+                        }
+                      >
+                        <MenuItem value={NO_COMPANY}>
+                          <em>None</em>
                         </MenuItem>
-                      ))}
-                    </TextField>
+                        {companyOptions.map((c) => (
+                          <MenuItem key={c} value={c}>
+                            <GpCompanyLabel code={c} gpCompanies={gpBuyers.gpCompanies} />
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                    )}
+                    </>
                   )}
                   {/* Issue #409: chosen from GP's live buyer master rather than typed, with an inline
                       way to register a missing one - a typo here only surfaces later as a rejected PO.
@@ -591,7 +644,7 @@ export default function UserManagementPage() {
                     Roles
                   </Typography>
                   <FormGroup>
-                    {ALL_ROLES.map((role) => (
+                    {roleOptions.map((role) => (
                       <FormControlLabel
                         key={role}
                         control={
@@ -604,11 +657,11 @@ export default function UserManagementPage() {
                       />
                     ))}
                   </FormGroup>
-                  {/* The elevated Database Access tier, shown only to a DB Admin (the backend enforces
-                      the same grant rule regardless). Set apart from the flat list so it reads as what
-                      it is - access above Admin/Manager - and captioned with the stacking rule it
-                      depends on. */}
-                  {isDbAdmin && (
+                  {/* The elevated Database Access tier, shown only to a DB Admin on the UC Nexus Admin
+                      page (the backend enforces the same grant rule regardless). Set apart from the
+                      flat list so it reads as what it is - access above UC Nexus Admin - and
+                      captioned with the stacking rule it depends on. */}
+                  {nexusScope && isDbAdmin && (
                     <Box sx={{ mt: 1.5, pt: 1.5, borderTop: 1, borderColor: 'divider' }}>
                       <Typography component="div" sx={{ ...microLabelSx, mb: 0.5 }}>
                         Database access
@@ -624,7 +677,7 @@ export default function UserManagementPage() {
                           <Box>
                             <Typography variant="body2">DB Admin</Typography>
                             <Typography variant="caption" color="text.secondary">
-                              Mints direct Postgres logins. Requires Admin/Manager; only a DB Admin can grant it.
+                              Mints direct Postgres logins. Requires UC Nexus Admin; only a DB Admin can grant it.
                             </Typography>
                           </Box>
                         }

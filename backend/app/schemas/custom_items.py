@@ -200,7 +200,7 @@ class CustomItemMutations:
                 code=code,
                 sort_order=sort_order,
                 # The catalog is one tenant's own (#637). A scoped caller can only add to theirs; an
-                # Admin/Manager is unscoped and names the company.
+                # A UC NEXUS ADMIN is unscoped and names the company.
                 company=tenant_scope(info) or (company or ""),
             )
             session.commit()

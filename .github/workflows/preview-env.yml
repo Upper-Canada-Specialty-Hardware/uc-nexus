@@ -63,7 +63,7 @@ name: preview-env
 #
 # One-time ops outside any PR (not created by this workflow):
 #   - repo secret RAILWAY_WORKSPACE_TOKEN and repo variable RAILWAY_PROJECT_ID.
-#   - a dedicated e2e Clerk user, Admin/Manager in its publicMetadata, with E2E_CLERK_USER_ID on the
+#   - a dedicated e2e Clerk user, UC Nexus Admin in its publicMetadata, with E2E_CLERK_USER_ID on the
 #     PRODUCTION backend so every fork inherits it. The sign-in link mints that account, which
 #     production refuses (app/auth._reject_e2e_account_in_production), so it is safe to sit in a
 #     public PR comment.

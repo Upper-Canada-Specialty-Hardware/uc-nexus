@@ -54,6 +54,7 @@ from .inputs import (
     SavePODocumentDataInput,
     UpdatePODocumentSettingsInput,
 )
+from .relay import resolve_gp_company
 from .types import (
     EmailPoResult,
     GpPoSyncResult,
@@ -527,9 +528,13 @@ class POQueries:
 class POMutations:
     @strawberry.mutation
     async def sync_gp_pos(self, info: strawberry.Info) -> GpPoSyncResult:
-        """Admin: kick the GP PO mirror now, instead of waiting out its own schedule (gp-owned-po
-        mirror). This is for seeing the result soon after a PO is created directly in GP, or for
-        kicking the first backfill.
+        """Kick the GP PO mirror now, instead of waiting out its own schedule (gp-owned-po mirror).
+        This is for seeing the result soon after a PO is created directly in GP, or for kicking the
+        first backfill.
+
+        Open to everyone who works the PO table since #744, and scoped accordingly (#729): a caller
+        pinned to one GP company syncs that company and nothing else, while an unscoped UC NEXUS
+        ADMIN still covers them all.
 
         What it does depends on where each company is. A company still BACKFILLING gets a bounded
         batch of history pages inline and reports backfill_done false. A company whose history is
@@ -541,7 +546,16 @@ class POMutations:
         # one company per turn and a reconnect does not change that - but "sync now" is expected to
         # look at all of them, and every request inside still draws on the same read budget, so this
         # is slower than a single company rather than heavier on GP.
-        result = await gp_po_sync.run_once(backfill_max_pages=gp_po_sync.ADMIN_SYNC_BACKFILL_PAGES, all_companies=True)
+        #
+        # A scoped caller narrows that to their own. `resolve_gp_company` is what checks the relay
+        # actually serves it, so an account pinned to a company GP is not reporting gets the message
+        # naming what IS available instead of a silent zero-count pass.
+        scope = tenant_scope(info)
+        result = await gp_po_sync.run_once(
+            backfill_max_pages=gp_po_sync.ADMIN_SYNC_BACKFILL_PAGES,
+            all_companies=scope is None,
+            only_company=resolve_gp_company(info, scope) if scope is not None else None,
+        )
         # A queued refresh already woke the loop (request_refresh does it); this covers the backfill
         # half, where the inline batch stopped at its cap and the rest is the loop's to drain.
         if result.get("mode") == "backfill" and not result.get("backfill_done"):

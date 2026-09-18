@@ -41,7 +41,7 @@ interface Warehouse {
 const GET_WAREHOUSES_VARS = { includeInactive: true };
 
 export default function WarehousesPage() {
-  const { isAdmin } = useIdentity();
+  const { ownsTenant } = useIdentity();
   const { showToast } = useToast();
   const [editing, setEditing] = useState<WarehouseFormValue | null>(null);
   const [editOpen, setEditOpen] = useState(false);
@@ -116,7 +116,7 @@ export default function WarehousesPage() {
         ),
       },
       {
-        // #637: which GP company the building belongs to. Admin/Manager sees every company's rows
+        // #637: which GP company the building belongs to. A UC Nexus Admin sees every company's rows
         // here, so without this the list reads as one estate when it is several.
         field: 'company',
         headerName: 'Company',
@@ -156,7 +156,7 @@ export default function WarehousesPage() {
           ),
       },
     ];
-    if (isAdmin) {
+    if (ownsTenant) {
       cols.push({
         field: 'actions',
         headerName: '',
@@ -179,14 +179,14 @@ export default function WarehousesPage() {
       });
     }
     return cols;
-  }, [isAdmin]);
+  }, [ownsTenant]);
 
   return (
     <Box>
       <FadeIn>
         <PageHeader
           title="Warehouses"
-          parent={{ label: 'Admin', to: '/app/admin' }}
+          parent={{ label: 'Tenant Owner', to: '/app/tenant-owner' }}
           description="Physical buildings inventory lives in. Click a row to edit."
           actions={
             <Button variant="contained" onClick={handleCreate}>

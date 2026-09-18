@@ -1,16 +1,19 @@
 """The "DB Admin" tier stays exclusive and stacked (db-admin-postgres-access).
 
-`updateUserRoles` is Admin/Manager-gated by ROOT_FIELD_POLICY, which is not enough on its own: DB
-Admin sits ABOVE Admin/Manager, so without a body guard any admin could hand themselves the tier that
+`updateUserRoles` is role-gated by ROOT_FIELD_POLICY, which is not enough on its own: DB Admin sits
+ABOVE UC Nexus Admin (#729), so without a body guard any admin could hand themselves the tier that
 mints internet-reachable Postgres logins - exclusive in name only. `_enforce_db_admin_grant_rules`
 closes that, and it refuses a standalone DB Admin so the stacking invariant holds for EVERY caller,
 not just the UI. These run the real mutation through the real schema and assert both directions.
+
+Every caller below is a UC NEXUS ADMIN, which is the tier DB Admin now stacks on. A TENANT OWNER is
+refused both roles outright, one step earlier - `test_role_split.py` covers that.
 """
 
 import asyncio
 
 from app import auth
-from app.auth import ADMIN_ROLE, DB_ADMIN_ROLE
+from app.auth import DB_ADMIN_ROLE, NEXUS_ADMIN_ROLE
 from app.repositories import user_repository
 from main import schema
 
@@ -65,9 +68,9 @@ def test_a_plain_admin_cannot_grant_db_admin(monkeypatch):
     """The role-grant hole: updateUserRoles is admin-gated, so an admin who is NOT a DB Admin must not
     be able to add the tier - to themselves or anyone."""
     result, captured = _run(
-        [ADMIN_ROLE, DB_ADMIN_ROLE],
-        caller_roles=[ADMIN_ROLE],
-        target_roles=[ADMIN_ROLE],
+        [NEXUS_ADMIN_ROLE, DB_ADMIN_ROLE],
+        caller_roles=[NEXUS_ADMIN_ROLE],
+        target_roles=[NEXUS_ADMIN_ROLE],
         monkeypatch=monkeypatch,
     )
 
@@ -77,30 +80,30 @@ def test_a_plain_admin_cannot_grant_db_admin(monkeypatch):
 
 
 def test_a_db_admin_can_grant_db_admin_when_stacked_on_admin(monkeypatch):
-    """The other direction: a DB Admin may hand the tier out, as long as Admin/Manager comes with it."""
+    """The other direction: a DB Admin may hand the tier out, as long as UC Nexus Admin comes with it."""
     result, captured = _run(
-        [ADMIN_ROLE, DB_ADMIN_ROLE],
-        caller_roles=[ADMIN_ROLE, DB_ADMIN_ROLE],
-        target_roles=[ADMIN_ROLE],
+        [NEXUS_ADMIN_ROLE, DB_ADMIN_ROLE],
+        caller_roles=[NEXUS_ADMIN_ROLE, DB_ADMIN_ROLE],
+        target_roles=[NEXUS_ADMIN_ROLE],
         monkeypatch=monkeypatch,
     )
 
     assert result.errors is None, f"a DB Admin was refused the grant: {_messages(result)}"
-    assert captured["roles"] == [ADMIN_ROLE, DB_ADMIN_ROLE]
+    assert captured["roles"] == [NEXUS_ADMIN_ROLE, DB_ADMIN_ROLE]
 
 
-def test_db_admin_without_admin_manager_is_refused_for_everyone(monkeypatch):
+def test_db_admin_without_uc_nexus_admin_is_refused_for_everyone(monkeypatch):
     """Stacking invariant. Even a DB Admin cannot create a standalone one - it would be stranded
-    outside the Admin/Manager-gated admin shell the page lives in."""
+    outside the UC Nexus Admin module the page lives in."""
     result, captured = _run(
         [DB_ADMIN_ROLE],
-        caller_roles=[ADMIN_ROLE, DB_ADMIN_ROLE],
-        target_roles=[ADMIN_ROLE],
+        caller_roles=[NEXUS_ADMIN_ROLE, DB_ADMIN_ROLE],
+        target_roles=[NEXUS_ADMIN_ROLE],
         monkeypatch=monkeypatch,
     )
 
     assert _codes(result) == {"FORBIDDEN"}
-    assert _messages(result) == {f"{DB_ADMIN_ROLE} requires {ADMIN_ROLE}; it cannot be held on its own"}
+    assert _messages(result) == {f"{DB_ADMIN_ROLE} requires {NEXUS_ADMIN_ROLE}; it cannot be held on its own"}
     assert "roles" not in captured
 
 
@@ -108,9 +111,9 @@ def test_a_plain_admin_cannot_strip_db_admin_from_a_db_admin(monkeypatch):
     """The mirror of the grant hole: removing the tier is a DB-Admin-only act too, so an admin cannot
     demote a DB Admin out from under them."""
     result, captured = _run(
-        [ADMIN_ROLE],
-        caller_roles=[ADMIN_ROLE],
-        target_roles=[ADMIN_ROLE, DB_ADMIN_ROLE],
+        [NEXUS_ADMIN_ROLE],
+        caller_roles=[NEXUS_ADMIN_ROLE],
+        target_roles=[NEXUS_ADMIN_ROLE, DB_ADMIN_ROLE],
         monkeypatch=monkeypatch,
     )
 
@@ -123,37 +126,37 @@ def test_a_plain_admin_may_edit_a_db_admin_user_without_touching_the_tier(monkey
     """A non-DB-Admin editing a DB Admin's OTHER roles must still work, as long as the DB Admin bit is
     unchanged - the guard gates the tier, not every edit to a user who holds it."""
     result, captured = _run(
-        [ADMIN_ROLE, DB_ADMIN_ROLE, "PO User"],
-        caller_roles=[ADMIN_ROLE],
-        target_roles=[ADMIN_ROLE, DB_ADMIN_ROLE],
+        [NEXUS_ADMIN_ROLE, DB_ADMIN_ROLE, "PO User"],
+        caller_roles=[NEXUS_ADMIN_ROLE],
+        target_roles=[NEXUS_ADMIN_ROLE, DB_ADMIN_ROLE],
         monkeypatch=monkeypatch,
     )
 
     assert result.errors is None, f"an unrelated edit to a DB Admin user was refused: {_messages(result)}"
-    assert captured["roles"] == [ADMIN_ROLE, DB_ADMIN_ROLE, "PO User"]
+    assert captured["roles"] == [NEXUS_ADMIN_ROLE, DB_ADMIN_ROLE, "PO User"]
 
 
 def test_a_db_admin_can_remove_the_tier(monkeypatch):
     result, captured = _run(
-        [ADMIN_ROLE],
-        caller_roles=[ADMIN_ROLE, DB_ADMIN_ROLE],
-        target_roles=[ADMIN_ROLE, DB_ADMIN_ROLE],
+        [NEXUS_ADMIN_ROLE],
+        caller_roles=[NEXUS_ADMIN_ROLE, DB_ADMIN_ROLE],
+        target_roles=[NEXUS_ADMIN_ROLE, DB_ADMIN_ROLE],
         monkeypatch=monkeypatch,
     )
 
     assert result.errors is None, f"a DB Admin was refused a removal: {_messages(result)}"
-    assert captured["roles"] == [ADMIN_ROLE]
+    assert captured["roles"] == [NEXUS_ADMIN_ROLE]
 
 
 def test_an_ordinary_role_edit_by_a_plain_admin_still_works(monkeypatch):
     """The guard adds no friction to the common path: an admin editing a normal user's roles, none of
     them the tier, is untouched and pays no target-roles read gate it cannot pass."""
     result, captured = _run(
-        [ADMIN_ROLE, "Warehouse Staff"],
-        caller_roles=[ADMIN_ROLE],
+        [NEXUS_ADMIN_ROLE, "Warehouse Staff"],
+        caller_roles=[NEXUS_ADMIN_ROLE],
         target_roles=["Warehouse Staff"],
         monkeypatch=monkeypatch,
     )
 
     assert result.errors is None, f"an ordinary role edit was refused: {_messages(result)}"
-    assert captured["roles"] == [ADMIN_ROLE, "Warehouse Staff"]
+    assert captured["roles"] == [NEXUS_ADMIN_ROLE, "Warehouse Staff"]

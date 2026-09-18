@@ -1111,6 +1111,7 @@ def gp_outbox_entry_to_type(row) -> GpOutboxEntry:
         id=strawberry.ID(str(row.id)),
         label=row.label,
         op=row.op,
+        relay_op=row.relay_op,
         company=row.company,
         status=GpOutboxStatus(row.status),
         attempts=row.attempts,

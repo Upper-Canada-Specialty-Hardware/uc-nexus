@@ -15,13 +15,13 @@ const BAR_TEXT = '#f6f3ec';
  * here: GP's own name for the company is a poll away and only the PO table, which already polls the
  * relay, is worth spending that on.
  *
- * Admin/Manager is unscoped and sees every company combined, so a single code would be a lie for
+ * UC NEXUS ADMIN is unscoped and sees every company combined, so a single code would be a lie for
  * them. A user with no company at all is CompanyGate's story, not this one.
  */
 export default function TopBarCompany() {
-  const { isAdmin, company, user } = useIdentity();
+  const { isNexusAdmin, company, user } = useIdentity();
 
-  if (!user || isAdmin || !company) return null;
+  if (!user || isNexusAdmin || !company) return null;
 
   return (
     <Tooltip title="Your GP company. Everything you see in Nexus belongs to it.">

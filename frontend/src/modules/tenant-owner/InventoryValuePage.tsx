@@ -93,8 +93,8 @@ export default function InventoryValuePage() {
     () => companyData?.inventoryValueCompanies ?? [],
     [companyData?.inventoryValueCompanies],
   );
-  // The same rule the GP screens follow (#637): a scoped user is pinned to their own company, an
-  // Admin/Manager gets the whole list defaulted to theirs. The options come from Nexus's own
+  // The same rule the GP screens follow (#637): a scoped user is pinned to their own company, a UC
+  // NEXUS ADMIN gets the whole list defaulted to theirs. The options come from Nexus's own
   // projects rather than the relay, so the page opens whether or not the relay is up.
   const { options, company, setCompany, locked } = useCompanyChoice(companies);
 
@@ -116,7 +116,7 @@ export default function InventoryValuePage() {
       <FadeIn>
         <PageHeader
           title="Inventory Value"
-          parent={{ label: 'Admin', to: '/app/admin' }}
+          parent={{ label: 'Tenant Owner', to: '/app/tenant-owner' }}
           description="What is sitting in the building right now, in dollars: hardware on the shelves, hardware staged for shipping, and doors."
           actions={
             locked ? (
@@ -151,7 +151,7 @@ export default function InventoryValuePage() {
 
       {forbidden ? (
         <Alert severity="warning">
-          You need the Admin/Manager or Shop Assembly Manager role to see inventory value.
+          You need the Tenant Owner or Shop Assembly Manager role to see inventory value.
         </Alert>
       ) : failure ? (
         <Alert severity="error">{failure.message}</Alert>

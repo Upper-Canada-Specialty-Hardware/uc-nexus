@@ -201,8 +201,8 @@ export default function ReceivingPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalPOIds, setModalPOIds] = useState<string[]>([]);
   const [selectedPOIds, setSelectedPOIds] = useState<string[]>([]);
-  const { hasRole, isAdmin } = useIdentity();
-  const canReview = isAdmin || hasRole('Warehouse Manager');
+  const { hasRole, ownsTenant } = useIdentity();
+  const canReview = ownsTenant || hasRole('Warehouse Manager');
 
   // The view lives in the URL so it can be linked to: the receive modal's success action sends the
   // user to their drafts, and the bell's rejection notification lands on the same view.

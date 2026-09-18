@@ -33,10 +33,9 @@ Known limits, stated so nobody mistakes this for more than it is:
     has to come from `input.x` or a parameter to get there, and both are refused.
   - It says nothing about resolvers that should stamp an actor and do not.
 
-`assignedTo` / `assignedToUserId` on `assignOpenings` are deliberately absent from ACTOR_NAMES. They
-name the person work is being given TO, not the person doing the giving, and a manager assigning to
-someone else is the whole feature - that value MUST come from the client. The gate for it is
-`require_role`, not this test.
+A name for the person work is being given TO, rather than the person doing the giving, does not
+belong in ACTOR_NAMES. That value legitimately comes from the client, and its gate is whatever role
+check the resolver makes, not this test.
 """
 
 import ast

@@ -33,17 +33,19 @@ vi.mock('../PODetailModal', () => ({
     open ? <div>PO detail for {po.id}</div> : null,
 }));
 
-// The register reads differently for the two kinds of caller - an Admin/Manager sees every company's
+// The table reads differently for the two kinds of caller - a UC Nexus Admin sees every company's
 // POs at once, a scoped user only their own - so the identity is switchable per test.
-const identity = vi.hoisted(() => ({ isAdmin: true, company: null as string | null }));
+const identity = vi.hoisted(() => ({ isNexusAdmin: true, company: null as string | null }));
 
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
-    displayName: identity.isAdmin ? 'Admin' : 'Bev Buyer',
-    userId: identity.isAdmin ? 'user_admin' : 'user_buyer',
-    roles: identity.isAdmin ? ['Admin/Manager'] : [],
-    hasRole: (role: string) => identity.isAdmin && role === 'Admin/Manager',
-    isAdmin: identity.isAdmin,
+    displayName: identity.isNexusAdmin ? 'Admin' : 'Bev Buyer',
+    userId: identity.isNexusAdmin ? 'user_admin' : 'user_buyer',
+    roles: identity.isNexusAdmin ? ['UC Nexus Admin'] : [],
+    hasRole: (role: string) => identity.isNexusAdmin && role === 'UC Nexus Admin',
+    isNexusAdmin: identity.isNexusAdmin,
+    isTenantOwner: false,
+    ownsTenant: identity.isNexusAdmin,
     isDbAdmin: false,
     gpBuyerId: null,
     company: identity.company,
@@ -52,7 +54,7 @@ vi.mock('../../../hooks/useIdentity', () => ({
 }));
 
 beforeEach(() => {
-  identity.isAdmin = true;
+  identity.isNexusAdmin = true;
   identity.company = null;
 });
 
@@ -280,7 +282,7 @@ it('shows the tenant on a registered row too', async () => {
 });
 
 // The heading answers "whose purchase orders am I looking at?", which nothing on the page said.
-it('tells an Admin/Manager the table is every company at once', async () => {
+it('tells a UC Nexus Admin the table is every company at once', async () => {
   renderRegister();
 
   expect(await screen.findByText('All companies')).toBeInTheDocument();
@@ -311,7 +313,7 @@ it('splits the status strip into a Nexus box and a GP box', async () => {
 });
 
 it('names the scoped user’s own GP company in the heading, and still gives them the column', async () => {
-  identity.isAdmin = false;
+  identity.isNexusAdmin = false;
   identity.company = 'TUBC';
   renderRegister();
 

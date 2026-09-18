@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 
 from app import auth
-from app.auth import ADMIN_ROLE
+from app.auth import NEXUS_ADMIN_ROLE
 from app.models.enums import (
     ShipmentContainerType,
     ShipmentStatus,
@@ -122,7 +122,7 @@ def _camel(name: str) -> str:
 
 def test_the_resolver_carries_every_field_the_repository_returns(db_session, monkeypatch):
     monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_shipping"})
-    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [ADMIN_ROLE])
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [NEXUS_ADMIN_ROLE])
 
     class _BorrowedSession:
         def __enter__(self):
@@ -142,7 +142,7 @@ def test_the_resolver_carries_every_field_the_repository_returns(db_session, mon
     context = {
         "request": _FakeRequest("tok"),
         "_auth_user_id": "u_shipping",
-        "_auth_roles": [ADMIN_ROLE],
+        "_auth_roles": [NEXUS_ADMIN_ROLE],
         "_auth_company": None,
     }
     result = asyncio.run(schema.execute(query, context_value=context))

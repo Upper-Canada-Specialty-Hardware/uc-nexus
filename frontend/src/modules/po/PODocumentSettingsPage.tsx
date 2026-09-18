@@ -45,7 +45,8 @@ function fromLines(text: string): string[] {
 }
 
 export default function PODocumentSettingsPage() {
-  const { isAdmin } = useIdentity();
+  const { ownsTenant, hasRole } = useIdentity();
+  const canEdit = ownsTenant || hasRole('PO Manager');
   const { data, loading } = useQuery<{ poDocumentSettings: PODocumentSettings }>(GET_PO_DOCUMENT_SETTINGS);
 
   return (
@@ -58,8 +59,8 @@ export default function PODocumentSettingsPage() {
         description="Company-wide boilerplate printed on every generated supplier PO document. Per-PO fields (vendor address, ship-to, totals) are captured when generating."
         sx={{ maxWidth: 820, mb: 3 }}
       />
-      {!isAdmin ? (
-        <Alert severity="warning">You need the Admin/Manager role to edit PO document settings.</Alert>
+      {!canEdit ? (
+        <Alert severity="warning">You need the PO Manager or Tenant Owner role to edit PO document settings.</Alert>
       ) : loading && !data ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>
           <CircularProgress />

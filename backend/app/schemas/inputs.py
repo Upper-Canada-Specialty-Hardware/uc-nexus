@@ -412,7 +412,7 @@ class CreateDraftPOInput:
     vendor_quote_number: str | None = None
     # #637: which GP company a STOCK draft (no project) belongs to. Ignored when project_id is set -
     # a PO on a job always takes the job's company - and ignored for a scoped caller, who can only
-    # raise one for their own. It exists for an Admin/Manager, who is unscoped and therefore has no
+    # raise one for their own. It exists for a UC NEXUS ADMIN, who is unscoped and therefore has no
     # company of their own for a jobless PO to inherit.
     company: str | None = None
 
@@ -512,7 +512,7 @@ class CreateWarehouseInput:
     name: str
     code: str
     # #637: the GP company that owns the building. Ignored for a scoped caller, who can only create
-    # one for their own; an Admin/Manager is unscoped and has to name it.
+    # one for their own; a UC NEXUS ADMIN is unscoped and has to name it.
     company: str | None = None
     address: str | None = None
     city: str | None = None

@@ -461,7 +461,7 @@ export default function SharePointMigrationPage() {
       <FadeIn>
         <PageHeader
           title="SharePoint Inventory Migration"
-          parent={{ label: 'Admin', to: '/app/admin' }}
+          parent={{ label: 'UC Nexus Admin', to: '/app/nexus-admin' }}
           description="One-time import of the legacy inventory list into Nexus stock and project inventory."
         />
       </FadeIn>

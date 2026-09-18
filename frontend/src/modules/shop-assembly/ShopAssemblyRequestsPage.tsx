@@ -104,11 +104,11 @@ export default function ShopAssemblyRequestsPage() {
     | null
   >(null);
   const { showToast } = useToast();
-  const { isAdmin, hasRole } = useIdentity();
-  // The four writes are the Shop Assembly Manager's, with Admin/Manager beside them - the same
+  const { ownsTenant, hasRole } = useIdentity();
+  // The four writes are the Shop Assembly Manager's, with the TENANT OWNER beside them - the same
   // any-of the server enforces. Shown-and-explained rather than hidden: a PM looking at their own
   // request should see what happens to it next, not a screen with the actions silently missing.
-  const canManage = isAdmin || hasRole('Shop Assembly Manager');
+  const canManage = ownsTenant || hasRole('Shop Assembly Manager');
   const managerGateReason = canManage
     ? null
     : 'Allocating, dismissing and rejecting are the Shop Assembly Manager’s.';
