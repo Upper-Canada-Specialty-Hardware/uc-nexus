@@ -9,20 +9,9 @@ import { GET_PROJECTS } from '../../../graphql/shared';
 // the link and the wizard's props - the wizard's own handling of the purpose is pinned in
 // ImportWizard.test.tsx and deliberately not re-tested here. #642: the purpose is a lock now, and a
 // link that names none means the user started in the import module, whose job is the schedule.
-
-vi.mock('../../../hooks/useIdentity', () => ({
-  useIdentity: () => ({
-    displayName: 'Me',
-    userId: 'me',
-    roles: [],
-    hasRole: () => false,
-    isNexusAdmin: false,
-    isTenantOwner: false,
-    ownsTenant: false,
-    gpBuyerId: null,
-    user: null,
-  }),
-}));
+//
+// #743: the landing reads no role at all now - creating a GP job moved to the Tenant Owner Projects
+// page, and the identity stub this file used to need went with it.
 
 // The real wizard spawns a parser worker and fires half a dozen queries. Only the props it is handed
 // matter here, so it is replaced by a probe that prints them.
@@ -237,4 +226,13 @@ describe('ImportModule deep links', () => {
     );
     await expectParamsCleared();
   });
+});
+
+// #743: this screen picks a job to raise a request against. Creating one in GP is a different job
+// entirely, and it is the Tenant Owner Projects page's now - so nothing here is role-gated.
+it('offers no way to create a GP job', async () => {
+  renderModule('/app/import');
+
+  await screen.findByText('Riverside Tower', undefined, SLOW);
+  expect(screen.queryByRole('button', { name: /Create GP Job/i })).not.toBeInTheDocument();
 });

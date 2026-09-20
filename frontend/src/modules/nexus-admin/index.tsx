@@ -4,6 +4,7 @@ import RelayInstallsPage from './RelayInstallsPage';
 import NexusGpTrafficPage from './NexusGpTrafficPage';
 import SharePointMigrationPage from './SharePointMigrationPage';
 import DbAccessPage from './DbAccessPage';
+import ResetDataPage from './ResetDataPage';
 import NexusAdminLanding from './NexusAdminLanding';
 
 // #729: the pages whose judgement spans GP companies - who belongs to which one, the relay, the
@@ -19,6 +20,7 @@ export default function NexusAdminModule() {
       <Route path="nexus-gp-traffic" element={<NexusGpTrafficPage />} />
       <Route path="sharepoint-migration" element={<SharePointMigrationPage />} />
       <Route path="db-access" element={<DbAccessPage />} />
+      <Route path="reset-data" element={<ResetDataPage />} />
       <Route path="*" element={<Navigate to="/app/nexus-admin" replace />} />
     </Routes>
   );

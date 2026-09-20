@@ -144,6 +144,12 @@ function EmployeeField({ label, value, onChange, employees, loading, unavailable
 interface CreateGpJobDialogProps {
   open: boolean;
   onClose: () => void;
+  /**
+   * GP answered and the job is now a project. Fired for an adoption as well as a creation, because
+   * both put a row in front of the caller that was not there before. The shared project list is
+   * refetched by the mutation itself; this is for a caller reading a different list of its own.
+   */
+  onCreated?: () => void;
 }
 
 /** GP column widths, so an over-length value is caught in the field rather than by the proc. */
@@ -214,7 +220,7 @@ interface AddAddressTarget {
  * Replaces AdoptGpJobDialog: adoption is now automatic (gp_job_sync creates a project for every job GP
  * reports), so picking an existing job by hand no longer does anything.
  */
-export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogProps) {
+export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGpJobDialogProps) {
   const { showToast } = useToast();
   // #444: the address pickers render out of the cache, so a created row is written there rather than
   // waited on over the network. Same handle RegisterGpBuyerDialog takes to re-read the buyer master.
@@ -676,6 +682,7 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
       } else {
         showToast(`Job ${job} created in GP.`, 'success');
       }
+      onCreated?.();
       handleClose();
     } catch (err) {
       // GP's own words - a closed fiscal period, an address code not on the customer, a division with
@@ -704,6 +711,7 @@ export default function CreateGpJobDialog({ open, onClose }: CreateGpJobDialogPr
     scheduledCompletionDate,
     bidDueDate,
     showToast,
+    onCreated,
     handleClose,
   ]);
 

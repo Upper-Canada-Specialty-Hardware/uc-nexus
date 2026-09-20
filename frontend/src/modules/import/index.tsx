@@ -1,12 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button } from '@mui/material';
-import { Plus } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
-import CreateGpJobDialog from './CreateGpJobDialog';
 import ImportWizard from './ImportWizard';
-import { useIdentity } from '../../hooks/useIdentity';
 import { GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
 import type { ImportPurpose, SelectionMode } from './types';
@@ -32,8 +28,6 @@ const PURPOSES: ImportPurpose[] = ['po', 'assembly', 'schedule'];
 const DEFAULT_PURPOSE: ImportPurpose = 'schedule';
 
 export default function ImportModule() {
-  const { ownsTenant } = useIdentity();
-  const [createOpen, setCreateOpen] = useState(false);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [intent, setIntent] = useState<DeepLinkIntent | null>(null);
@@ -131,23 +125,8 @@ export default function ImportModule() {
         // Projects arrive on their own now (issue #380): the GP job sync creates one for every job in
         // GP, so an empty list means GP has no jobs yet - or the relay has never connected.
         emptyStateText="No projects yet. Projects appear automatically for every job in GP."
-        createButton={
-          // Creating a job writes to the accounting system of record, so it is the TENANT OWNER's.
-          // Everyone else still gets the landing page, just without the button.
-          ownsTenant ? (
-            <Button
-              variant="contained"
-              size="large"
-              startIcon={<Plus size={18} strokeWidth={1.75} />}
-              onClick={() => setCreateOpen(true)}
-            >
-              Create GP Job
-            </Button>
-          ) : undefined
-        }
         onSelect={handleSelect}
       />
-      {ownsTenant && <CreateGpJobDialog open={createOpen} onClose={() => setCreateOpen(false)} />}
       {selectedProject && (
         <ImportWizard
           open={wizardOpen}

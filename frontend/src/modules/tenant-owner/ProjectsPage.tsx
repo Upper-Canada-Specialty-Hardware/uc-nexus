@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from 'react';
 import { Alert, Box, Button, Chip, FormControlLabel, Switch, Typography } from '@mui/material';
-import { RefreshCw } from 'lucide-react';
+import { Plus, RefreshCw } from 'lucide-react';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { useNavigate } from 'react-router-dom';
@@ -13,6 +13,7 @@ import { GpSetupBadge } from '../../components/GpSetupQuarantineBanner';
 import { isGpSetupBroken } from '../../types/project';
 import { monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import CreateGpJobDialog from './CreateGpJobDialog';
 import { type ProjectFormValue } from './ProjectEditDialog';
 
 interface GpJobSyncResult {
@@ -27,8 +28,11 @@ export default function ProjectsPage() {
   // #637: archived jobs stay in adminProjects (this is the only screen that can un-archive one), so
   // the grid hides them by default rather than the server doing it.
   const [showArchived, setShowArchived] = useState(false);
+  // #743: creating a job in GP belongs with the projects it creates, not on the import landing where
+  // people go to upload a hardware schedule.
+  const [createOpen, setCreateOpen] = useState(false);
 
-  const { data, loading } = useQuery<{ adminProjects: ProjectFormValue[] }>(GET_ADMIN_PROJECTS, {
+  const { data, loading, refetch } = useQuery<{ adminProjects: ProjectFormValue[] }>(GET_ADMIN_PROJECTS, {
     skip: !ownsTenant,
   });
   const allProjects = useMemo(() => data?.adminProjects ?? [], [data]);
@@ -195,6 +199,16 @@ export default function ProjectsPage() {
               >
                 {syncing ? 'Syncing…' : 'Sync from GP'}
               </Button>
+              {/* Creating a job writes to the accounting system of record, so it is the TENANT
+                  OWNER's - which the page's own guard above already enforces. */}
+              <Button
+                variant="contained"
+                size="small"
+                startIcon={<Plus size={16} strokeWidth={1.75} />}
+                onClick={() => setCreateOpen(true)}
+              >
+                Create GP Job
+              </Button>
             </Box>
           }
         />
@@ -215,6 +229,16 @@ export default function ProjectsPage() {
           '& .archived-row': { opacity: 0.62 },
         }}
         getRowClassName={(params) => (params.row.archived ? 'archived-row' : '')}
+      />
+
+      {/* The dialog refetches the shared project list itself; this grid reads the admin one, so it
+          is re-read here once GP has answered and the new job is a project. */}
+      <CreateGpJobDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={() => {
+          void refetch();
+        }}
       />
     </Box>
   );
