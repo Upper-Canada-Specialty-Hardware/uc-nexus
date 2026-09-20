@@ -26,7 +26,7 @@ agent protocol
 2. red check: re-run it once (gh run rerun <run id>). still red: report the gate this comment names to the user and stop
 3. relay DOWN: tell the user the workstation relay must be up, then poll <backend>/health every two minutes. do not test GP-dependent flows meanwhile. do not install, configure, or look for a relay anywhere, on any machine
 4. never merge the PR under test. the environment is deleted on close
-5. reset is the DevAction: reset data button. it re-clones production into this PR's copy and touches nothing else
+5. reset is the Reset data page, uc nexus admin -> reset data. it re-clones production into this PR's copy and touches nothing else
 ```
 
 > **The `*-production-*` Railway services are off-limits to automated testing sessions.** Never
@@ -42,7 +42,7 @@ agent protocol
 > evolution.
 
 - **Railway PR environments, a.k.a. "Preview Environments" (the testing target)**: every non-draft PR gets a full ephemeral replica named `uc-nexus-pr-<N>` - frontend, backend, and a Postgres the backend clones from production on first boot. `.github/workflows/preview-env.yml` builds all three and posts one "test environment ready" comment; Railway's own PR-deploy toggle is off, so nothing else creates or deploys anything in there. Do not wait for a Railway bot comment - none was ever observed; the URLs are derivable anyway: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **That inheritance is a copy taken when the environment is forked, not a live link** (#431): a variable added to production afterwards never reaches an environment that already exists, so set it on that environment's own backend service too and let it redeploy. **The old build failure modes are gone and should not be re-derived from an old session note**: root-directory change filtering leaving a service `SKIPPED` and 404ing, a relay-only or docs-only PR leaving the whole environment unbuilt with the backend dying on `could not translate host name "postgres.railway.internal"`, and the `railway redeploy --from-source` dance that recovered them. The workflow deploys every service for the PR head commit and waits on the deployment id it created, so a red `preview-env` check means a build or a boot failed - re-run it once, and if it stays red report the gate the comment names and stop.
-- **The database is a clone of production, and `DevAction: reset data` re-clones it.** An environment opens on production's projects, POs, inventory and settings rather than an empty schema. GP is never cloned - GP is the live SQL server the relay talks to, and **TUBC is the shared test company there, the only one to test against**. The copy carries production's UBC and UCSH rows, which are relay-dark in a preview. **A branch behind master's migrations does not boot**: the backend prints `production's schema is at <rev> and this branch does not have it: merge master into the branch` and exits, and `preview-env` names that line as the failing gate - merge master into the branch and push.
+- **The database is a clone of production, and the Reset data page re-clones it.** An environment opens on production's projects, POs, inventory and settings rather than an empty schema. GP is never cloned - GP is the live SQL server the relay talks to, and **TUBC is the shared test company there, the only one to test against**. The copy carries production's UBC and UCSH rows, which are relay-dark in a preview. **A branch behind master's migrations does not boot**: the backend prints `production's schema is at <rev> and this branch does not have it: merge master into the branch` and exits, and `preview-env` names that line as the failing gate - merge master into the branch and push.
 - **The relay is the workstation relay, reported and never gated.** It finds a preview on its own and dials in a couple of minutes after the environment comes up; the comment's relay line says `relay: connected, companies TUBC` or `relay: DOWN`. A green check under a DOWN line is correct - the office machine being off is not a broken environment. DOWN is protocol item 3: tell the user, poll `<backend>/health`, test the relay-down half of the app meanwhile if that is useful, and never go looking for a relay on this box.
 
 Environments auto-delete when the PR closes, **so never merge the PR whose environment you are testing in** - it disappears mid-session and every fetch starts failing for a reason that looks like a network fault.
@@ -401,8 +401,8 @@ caught two failures that all three stacked PRs were reporting as clean:
 1. **Sign in**: open the **"test environment ready"** comment the preview-env workflow posts on your
    PR and navigate its sign-in link. It is `<BACKEND>/testing/session?key=<K>` and needs nothing from
    you - one navigation lands you on `/app`, signed in as the dedicated e2e account (UC Nexus Admin).
-   The link mints a fresh Clerk ticket on every visit, so it never goes stale, survives a DevAction
-   reset, and can be navigated again any time. The same comment carries the protocol and the
+   The link mints a fresh Clerk ticket on every visit, so it never goes stale, survives a Reset data
+   run, and can be navigated again any time. The same comment carries the protocol and the
    environment's relay line - `relay: connected, companies TUBC` or `relay: DOWN` - so you know before
    you click whether the GP-gated half of the app is reachable.
    ```js
@@ -417,16 +417,16 @@ caught two failures that all three stacked PRs were reporting as clean:
    - The link is safe to reuse and safe to sit in a public comment: the e2e account it mints is
      **refused on production** (`app/auth._reject_e2e_account_in_production`), so it only ever opens
      this disposable preview.
-2. **Reset data** (if needed): Click the **"DevAction: reset data"** button in the app bar. On a
+2. **Reset data** (if needed): Open **UC Nexus Admin -> Reset data** (`/app/nexus-admin/reset-data`). On a
    preview it re-clones production into that PR's copy and touches nothing else, so it is the way back
    to a known state - not a way to empty the database.
-   - Since #442 the button mints the Clerk session token off the auth bridge and sends it as an
+   - Since #442 the page mints the Clerk session token off the auth bridge and sends it as an
      `Authorization: Bearer` header - `/admin/reset-data` sits behind `require_admin_request` (#422),
-     so the signed-in account must hold **UC Nexus Admin**. With no session it alerts and skips the
+     so the signed-in account must hold **UC Nexus Admin**. With no session it says so and skips the
      request instead of firing a doomed unauthenticated POST.
-   - A MUI confirm dialog appears first — confirm it.
-   - Then a `window.alert()` fires when the re-clone finishes — use `handle_dialog` with `action: "accept"` to dismiss it.
-   - Only then can you `take_snapshot` again (alerts block all MCP interaction).
+   - Type `reset all nexus data` into the Confirmation phrase field — the Reset data button stays disabled until it matches exactly.
+   - A MUI confirm dialog appears next — confirm it, and only then does the request fire.
+   - The outcome prints under the button and in a toast; there is no `window.alert()` to dismiss any more.
 3. **Post-login**: You land on `/app` — the Module Selector with 6 module cards.
 
 ### Human sign-in, and when the comment path is broken
@@ -501,7 +501,7 @@ Verified on pr-575, 2026-08-10.
 - Click a row's `gridcell` to trigger row click handlers (e.g., open detail modal).
 
 ### window.alert()
-- Reset data and some actions trigger `window.alert()`.
+- Some actions trigger `window.alert()`; Reset data no longer does (it reports under the button and as a toast).
 - **These block all MCP interaction** — `take_snapshot` will hang until the alert is dismissed.
 - Use `handle_dialog` with `action: "accept"` to dismiss.
 
@@ -1109,7 +1109,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 ## Lessons Learned
 
 - `fill_form` is much more reliable than sequential `fill` calls for forms with many fields.
-- After "DevAction: reset data", there are TWO dialogs: a MUI confirm dialog, then a `window.alert()`. Must handle both.
+- Reset data (UC Nexus Admin -> Reset data) is two gates: type `reset all nexus data`, then confirm the MUI dialog. No `window.alert()` any more.
 - Clerk sign-in tokens: Fetch from `GET /testing/clerk-sign-in` on the backend, then navigate to the frontend with `?__clerk_ticket=TOKEN`. The runtime is the PR environment for the PR under test (issue #182 moved e2e onto Railway; production is not a testing target). Clerk auto-authenticates - no form fill, no verification code. Tokens are one-time use; fetch a fresh one each session.
 - When viewing "All Projects", `projectId` is undefined/null in queries — this returns all POs across projects.
 - To test the Warehouse Receiving wizard's "Enter Quantities" step, you need at least one PO in ORDERED (or higher) status. DRAFT POs do not appear in the receiving wizard's PO selection list.
@@ -1134,7 +1134,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - The Location Cleanup screen lives at `/app/tenant-owner/location-cleanup`. It queries `locationDuplicates` which groups location triples by case-insensitive canonical form (uppercase + trim + collapse whitespace) and surfaces variants. Empty state ("No location duplicates found") is the happy path. The merge dialog calls `mergeLocations` which rewrites every matching row across inventory_locations + opening_items + stock_items and writes one MOVE audit per row.
 - The Tenant Owner Projects page (issue #67) is the first screen backed by real server-side auth. The frontend now sends the Clerk session token on every GraphQL request (Apollo auth link via `window.Clerk.session.getToken()`), and two resolvers are gated on the Tenant Owner role: `adminProjects` (query) and `updateProject` (mutation). Unauthenticated calls to them return a GraphQL error with `extensions.code = "UNAUTHENTICATED"`; signed-in non-admins get `FORBIDDEN`. Every other resolver is still ungated, so existing tests are unaffected.
 - Issues #198 and #380: free-form project creation is gone, and so is manual adoption. `createProject`/`CreateProjectInput` and `adoptGpJob`/`AdoptGpJobInput` no longer exist. Projects now appear on their own: the `gp_job_sync` background service creates one for every job in GP's job master (JC00102), on a ~5 minute timer and immediately on every relay reconnect, setting `projectId` = the GP job number and `description` = the GP job name. That means **there is no longer any way to seed a project through GraphQL without a relay** - the old ungated `adoptGpJob` fetch trick is dead. To get projects in a test environment, connect and enrol the relay and let the sync run, or hit the admin `syncGpJobs` mutation (Admin -> Projects -> "Sync from GP", which returns `{total, adopted}`) once a relay is up.
-- Issue #380: the Import landing page's button is now "Create GP Job" (`CreateGpJobDialog`), rendered for the Tenant Owner role only - anyone else sees the landing page with no create button. It originates a job in GP via `createGpJob(input: CreateGpJobInput!)`, which is admin-gated and requires a connected relay. Every field except the job number and name is a live GP read (`gpCustomers`, `gpCustomerAddresses`, `gpTaxSchedules`, `gpDivisions`, `gpEmployees`), so the whole form stays disabled while the relay is down. The two address selects stay disabled until a customer is picked and re-fetch when it changes. Eight optional fields sit behind a "Show optional fields" toggle. GP validates the submit and its own message is shown in the dialog - in TUBC the fiscal calendar ends 2025-09-30, so today's date reliably produces "Job cannot be created within a closed period"; use a FY2025 `createdDate` for a success path. Issue #392: Estimator and WS Manager are selects over `gpEmployees` (the GP payroll master UPR00100), not free text - the proc rejects an id that is not in that master with "The estimator does not exist in the payroll master table" (error state 51117). TUBC has exactly two employees, IANB and JONATHANR. `createGpJob` returns `{created, project}`: `created` is false when GP already held the job number and the mutation adopted it instead of creating one, so resubmitting an existing number succeeds with "already existed in GP and is now a project" rather than erroring. New projects default `offSiteStorageAgreement` to false and the GC/address fields to null, handy for testing the Projects edit flow.
+- Issue #380: the "Create GP Job" button (`CreateGpJobDialog`) sits on the Tenant Owner Projects page since #743 - it was on the Import landing until then, which is now only a project picker. It originates a job in GP via `createGpJob(input: CreateGpJobInput!)`, which is admin-gated and requires a connected relay. Every field except the job number and name is a live GP read (`gpCustomers`, `gpCustomerAddresses`, `gpTaxSchedules`, `gpDivisions`, `gpEmployees`), so the whole form stays disabled while the relay is down. The two address selects stay disabled until a customer is picked and re-fetch when it changes. Eight optional fields sit behind a "Show optional fields" toggle. GP validates the submit and its own message is shown in the dialog - in TUBC the fiscal calendar ends 2025-09-30, so today's date reliably produces "Job cannot be created within a closed period"; use a FY2025 `createdDate` for a success path. Issue #392: Estimator and WS Manager are selects over `gpEmployees` (the GP payroll master UPR00100), not free text - the proc rejects an id that is not in that master with "The estimator does not exist in the payroll master table" (error state 51117). TUBC has exactly two employees, IANB and JONATHANR. `createGpJob` returns `{created, project}`: `created` is false when GP already held the job number and the mutation adopted it instead of creating one, so resubmitting an existing number succeeds with "already existed in GP and is now a project" rather than erroring. New projects default `offSiteStorageAgreement` to false and the GC/address fields to null, handy for testing the Projects edit flow.
 - Issue #444: both address selects in `CreateGpJobDialog` carry a "+ Add new address" row pinned last (only when that picker's customer is set). It opens a nested `AddCustomerAddressDialog` scoped to that customer and creates the code in GP via `createGpCustomerAddress` (admin-gated, relay write `create_customer_address`, RM00102 create-only - the relay pins the proc's UpdateIfExists to 0). The address code uppercases as typed; on success the picker refetches and auto-selects the new code. A duplicate code answers relay code `address_code_already_exists` rendered inside the nested dialog, which stays open with the typed input intact. Verified live on pr-445 (2026-07-30): NEXTEST1 under ELL100 in TUBC, then a full `createGpJob` using it (NEXUS-444-T1). The op is new, so a release relay build answers RELAY_OP_UNSUPPORTED on the create (the reads still work) until the relay is rebuilt.
 - A DataGrid driven by a `cache-and-network` query (e.g. the admin Projects grid) can render "0–0 of 0" for a beat on first mount before data arrives, so `take_snapshot` immediately after navigation may catch the empty state. Re-snapshot or `wait_for` a known row value before asserting the grid is empty.
 - MUI `spinbutton` (number input) fields with a pre-filled value will APPEND when driven by `fill` or `fill_form` - "3" becomes "31" if you try to fill "1". Always click the field first, then `Control+A` to select all, then `fill` with the desired value. Alternatively use `evaluate_script` to set the value directly.
@@ -1230,8 +1230,8 @@ queries/mutations and every action are unchanged, but a lot of chrome moved:
   are unchanged.
 - **Warehouse/Admin/Shop-Assembly landings**: the "Go to" cards now carry live counts (pending
   pulls, unlocated, deficient, etc.), driven by the same queries as before.
-- **The DevAction button** is finally visible in light mode (it was ink-on-ink); it sits to the
-  right of the bar spacer and its confirm button is red.
+- **The reset button** became visible in light mode here (it was ink-on-ink); it has since left the
+  bar for the Reset data page in the UC Nexus Admin module, whose confirm button is still red.
 - Home's Recent Activity renders human sentences ("Staged door leaf ..."), never raw enums like
   `INSTALL_PROGRESS SHOP_ASSEMBLY_OPENING`. Since PR #396 the rows also carry a real identity mined
   from the audit `detail` payload - `Staged door leaf 62 · L1`, `Pulled inventory item 2× BB1068 ...

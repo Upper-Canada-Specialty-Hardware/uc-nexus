@@ -5,11 +5,9 @@ import {
   Toolbar,
   Typography,
   Box,
-  Button,
   IconButton,
   Tooltip,
 } from '@mui/material';
-import { alpha } from '@mui/material/styles';
 import { PanelLeftClose, PanelLeftOpen, Menu as MenuIcon, Moon, Sun } from 'lucide-react';
 import { useColorScheme } from '@mui/material/styles';
 import { UserButton } from '@clerk/clerk-react';
@@ -17,21 +15,15 @@ import NotificationBell from './NotificationBell';
 import TopBarCompany from './TopBarCompany';
 import GpQueueChip from '../relay/GpQueueChip';
 import GpOutboxWatcher from '../relay/GpOutboxWatcher';
-import ConfirmDialog from './ConfirmDialog';
 import Sidebar, { NavRail } from './Sidebar';
 import { PageTransition } from '../motion';
-import { readAuthBridge } from '../authBridge';
-import { useIdentity } from '../hooks/useIdentity';
 import CompanyGate from './CompanyGate';
 
 const RAIL_COLLAPSED_KEY = 'uc-nexus-rail-collapsed';
 
 export default function AppLayout() {
   const { mode, setMode } = useColorScheme();
-  const { isNexusAdmin } = useIdentity();
   const location = useLocation();
-  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
-  const [resetting, setResetting] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(
     () => localStorage.getItem(RAIL_COLLAPSED_KEY) === '1',
@@ -42,34 +34,6 @@ export default function AppLayout() {
       localStorage.setItem(RAIL_COLLAPSED_KEY, prev ? '0' : '1');
       return !prev;
     });
-  };
-
-  const handleResetSchema = async () => {
-    setResetConfirmOpen(false);
-    setResetting(true);
-    try {
-      const base = import.meta.env.VITE_GRAPHQL_URL
-        ? import.meta.env.VITE_GRAPHQL_URL.replace(/\/graphql$/, '')
-        : '';
-      // The endpoint sits behind require_admin_request (#422), and this is a raw fetch the Apollo
-      // auth link never sees (it only covers /graphql) - so the Clerk token is attached by hand
-      // here, off the same bridge the link reads.
-      const token = (await readAuthBridge().getToken?.()) ?? null;
-      if (!token) {
-        window.alert('Reset failed: Clerk produced no session token. Sign in as an Admin and retry.');
-        return;
-      }
-      const res = await fetch(`${base}/admin/reset-data`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const json = await res.json();
-      window.alert(res.ok ? json.message : `Error: ${JSON.stringify(json)}`);
-    } catch (err) {
-      window.alert(`Reset failed: ${err}`);
-    } finally {
-      setResetting(false);
-    }
   };
 
   // The module the current path sits in. Each page names its own way back through its PAGE HEADER.
@@ -132,29 +96,6 @@ export default function AppLayout() {
 
           <Box sx={{ flexGrow: 1 }} />
 
-          {/* A dev-only teardown gated behind require_admin_request server-side. Only a UC NEXUS
-              ADMIN could ever fire it, so showing it to anyone else was a scary, dead control in the
-              toolbar - it now renders only for the accounts that can actually use it. */}
-          {isNexusAdmin && (
-            <Button
-              variant="outlined"
-              color="inherit"
-              size="small"
-              disabled={resetting}
-              onClick={() => setResetConfirmOpen(true)}
-              sx={{
-                mr: 1.5,
-                textTransform: 'none',
-                fontSize: '0.75rem',
-                borderColor: alpha('#f6f3ec', 0.35),
-                color: alpha('#f6f3ec', 0.85),
-                '&:hover': { borderColor: '#f6f3ec', backgroundColor: alpha('#f6f3ec', 0.08) },
-              }}
-            >
-              {resetting ? 'Resetting…' : 'DevAction: reset data'}
-            </Button>
-          )}
-
           {/* #353 PR E: only renders when the GP write queue is non-empty, so the bar is unchanged
               in the normal case. */}
           <Box sx={{ mr: 0.5 }}>
@@ -199,19 +140,6 @@ export default function AppLayout() {
       </Box>
 
       <Sidebar open={drawerOpen} onClose={() => setDrawerOpen(false)} />
-
-      {/* The endpoint does two different things and the copy has to say which one you are about to
-          get: a PR environment re-clones production, everywhere else it empties the schema. */}
-      <ConfirmDialog
-        open={resetConfirmOpen}
-        title="Reset data?"
-        message="On a PR environment this re-clones production's database into this PR's own database and touches nothing else - GP and production are not written to. Anywhere else it DROPS the entire public schema and rebuilds it from migrations, and all data is lost."
-        confirmLabel="Reset data"
-        confirmColor="error"
-        cancelLabel="Cancel"
-        onConfirm={handleResetSchema}
-        onCancel={() => setResetConfirmOpen(false)}
-      />
     </Box>
   );
 }

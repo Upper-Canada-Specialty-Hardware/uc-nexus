@@ -557,7 +557,7 @@ jobs:
             echo "2. red check: re-run it once (gh run rerun ${RUN_ID}). still red: report the gate this comment names to the user and stop"
             echo "3. relay DOWN: tell the user the workstation relay must be up, then poll ${BACKEND_URL}/health every two minutes. do not test GP-dependent flows meanwhile. do not install, configure, or look for a relay anywhere, on any machine"
             echo "4. never merge the PR under test. the environment is deleted on close"
-            echo "5. reset is the DevAction: reset data button. it re-clones production into this PR's copy and touches nothing else"
+            echo "5. reset is the Reset data page, uc nexus admin -> reset data. it re-clones production into this PR's copy and touches nothing else"
           }
 
           body_file="${RUNNER_TEMP}/preview-comment.md"

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { Box, Typography, Card, CardActionArea, Grid } from '@mui/material';
 import { useMemo } from 'react';
-import { Users, Router, Activity, DatabaseZap, Database } from 'lucide-react';
+import { Users, Router, Activity, DatabaseZap, Database, RotateCcw } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import { GET_ADMIN_STATS } from '../../graphql/admin';
@@ -74,6 +74,9 @@ const SUB_ROUTES: SubRoute[] = [
   { label: 'Relay Installs', path: '/app/nexus-admin/relay-installs', icon: <Router {...CARD_ICON} /> },
   { label: 'Nexus GP Traffic', path: '/app/nexus-admin/nexus-gp-traffic', icon: <Activity {...CARD_ICON} /> },
   { label: 'SharePoint Migration', path: '/app/nexus-admin/sharepoint-migration', icon: <DatabaseZap {...CARD_ICON} /> },
+  // #745: last, because it is the one card here that throws data away. It used to be a button in the
+  // app bar on every screen; it is a page you go to on purpose now.
+  { label: 'Reset data', path: '/app/nexus-admin/reset-data', icon: <RotateCcw {...CARD_ICON} /> },
 ];
 
 export default function NexusAdminLanding() {

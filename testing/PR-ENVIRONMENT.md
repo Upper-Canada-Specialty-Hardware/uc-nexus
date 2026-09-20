@@ -19,7 +19,7 @@ The comment carries four things:
 
 - the sign-in link, `<backend>/testing/session?key=<K>`. Navigate it once and you land on `/app` as the
   dedicated e2e account (UC Nexus Admin). It mints a fresh Clerk ticket every visit, so it never goes
-  stale and survives a DevAction reset.
+  stale and survives a Reset data run.
 - the agent protocol, verbatim (below). It is the procedure, not a summary of one.
 - one relay line: `relay: connected, companies TUBC`, or `relay: DOWN` and what to do about it.
 - the two URLs: `https://frontend-uc-nexus-pr-<N>.up.railway.app` and
@@ -46,7 +46,7 @@ agent protocol
 2. red check: re-run it once (gh run rerun <run id>). still red: report the gate this comment names to the user and stop
 3. relay DOWN: tell the user the workstation relay must be up, then poll <backend>/health every two minutes. do not test GP-dependent flows meanwhile. do not install, configure, or look for a relay anywhere, on any machine
 4. never merge the PR under test. the environment is deleted on close
-5. reset is the DevAction: reset data button. it re-clones production into this PR's copy and touches nothing else
+5. reset is the Reset data page, uc nexus admin -> reset data. it re-clones production into this PR's copy and touches nothing else
 ```
 
 ## There is one relay, and the comment's relay line is the truth
@@ -91,8 +91,8 @@ with production's projects, POs, inventory and settings rather than nothing to c
 - **The copy carries production's UBC and UCSH rows, and in a preview those are relay-dark.** They
   display, and anything on them that needs GP fails the way a relay error fails, not the way missing
   data does. Test on TUBC.
-- **`DevAction: reset data` re-clones production into this PR's copy** and touches nothing else. It is
-  the reset; there is no schema-drop button any more.
+- **The Reset data page re-clones production into this PR's copy** and touches nothing else. It is
+  the reset, and it lives at `/app/nexus-admin/reset-data`; there is no schema-drop button any more.
 - **A branch behind master's migrations does not boot.** The clone carries production's alembic
   revision, so a branch that does not have that revision cannot run against it: the backend prints
   `production's schema is at <rev> and this branch does not have it: merge master into the branch` and
