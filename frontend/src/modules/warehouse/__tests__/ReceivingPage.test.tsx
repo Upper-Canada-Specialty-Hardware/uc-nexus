@@ -1,4 +1,4 @@
-import { render, screen, configure } from '@testing-library/react';
+import { render, screen, configure, waitFor } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
@@ -9,7 +9,7 @@ import {
   GET_BACK_ORDERED_ITEMS,
   GET_PENDING_DRAFT_SUMMARIES,
 } from '../../../graphql/warehouse';
-import { GET_PROJECTS, GET_WAREHOUSES } from '../../../graphql/shared';
+import { GET_GP_OUTBOX, GET_PROJECTS, GET_WAREHOUSES } from '../../../graphql/shared';
 
 // The page mounts five queries and a DataGrid; jsdom is slow enough at that to trip the 1s
 // async-util default once vitest is running files in parallel.
@@ -59,8 +59,28 @@ const OPEN_POS = [
   openPo({ id: 'po-3', poNumber: 'PO-3003', origin: 'NEXUS', vendorNameSnapshot: null }),
 ];
 
-function mocks(): MockedResponse[] {
+/** Every variable set the GP write queue was read with, so a test can say what the dock narrowed
+ *  the queue to (#754). */
+const outboxAsked: Record<string, unknown>[] = [];
+
+beforeEach(() => {
+  outboxAsked.length = 0;
+});
+
+function mocks(heldReceiveEntries: Record<string, unknown>[] = []): MockedResponse[] {
   return [
+    // #754: the receives that have not reached GP yet, which the page now shows on the dock.
+    {
+      request: {
+        query: GET_GP_OUTBOX,
+        variables: (v: Record<string, unknown>) => {
+          outboxAsked.push(v);
+          return true;
+        },
+      },
+      result: { data: { gpOutbox: heldReceiveEntries } },
+      maxUsageCount: INFINITE,
+    },
     {
       request: { query: GET_OPEN_POS_SUMMARY, variables: () => true },
       result: { data: { openPosSummary: OPEN_POS } },
@@ -96,10 +116,10 @@ function mocks(): MockedResponse[] {
   ];
 }
 
-function renderPage() {
+function renderPage(heldReceiveEntries: Record<string, unknown>[] = []) {
   render(
     <MemoryRouter initialEntries={['/app/warehouse/receiving']}>
-      <MockedProvider mocks={mocks()}>
+      <MockedProvider mocks={mocks(heldReceiveEntries)}>
         <ToastProvider>
           <ReceivingPage />
         </ToastProvider>
@@ -129,4 +149,39 @@ it('names only the GP row, leaving a Nexus PO with no vendor on the em dash', as
 
   await screen.findByText('No vendor in GP');
   expect(screen.getAllByText('No vendor in GP')).toHaveLength(1);
+});
+
+
+// --- #754: the receives GP has not taken yet -----------------------------------------------------
+
+// A held receipt used to be visible only on the admin queue, which the receiver who counted it in
+// cannot reach. It sits on the dock now, narrowed to that one kind of GP write.
+it('shows the held GP receive entries on the dock', async () => {
+  renderPage([
+    {
+      __typename: 'GpOutboxEntry',
+      id: 'queued-1',
+      label: 'Receive against PO-3001',
+      op: 'create_receipt',
+      company: 'TUBC',
+      status: 'PENDING',
+      attempts: 1,
+      nextAttemptAt: '2026-07-01T12:05:00Z',
+      lastError: null,
+      failureKind: null,
+      entityKey: 'receive:rr-1',
+      createdAt: '2026-07-01T12:00:00Z',
+    },
+  ]);
+
+  expect(await screen.findByText('Held GP receive entries')).toBeInTheDocument();
+  await waitFor(() => expect(outboxAsked).toContainEqual({ ops: ['create_receipt'] }));
+});
+
+// The normal state: nothing is held, and the dock looks exactly as it did.
+it('says nothing about held GP receive entries while there are none', async () => {
+  renderPage();
+
+  await screen.findByText('Ace Hardware Co');
+  expect(screen.queryByText('Held GP receive entries')).toBeNull();
 });

@@ -53,9 +53,14 @@ vi.mock('../../../hooks/useIdentity', () => ({
   }),
 }));
 
+/** Every variable set the GP write queue was read with, so a test can say what the table narrowed
+ *  the queue to (#754). */
+const outboxAsked: Record<string, unknown>[] = [];
+
 beforeEach(() => {
   identity.isNexusAdmin = true;
   identity.company = null;
+  outboxAsked.length = 0;
 });
 
 const INFINITE = Number.POSITIVE_INFINITY;
@@ -134,8 +139,21 @@ const ROWS = [
 
 // The variable matchers are permissive on purpose: the register's default status filter excludes
 // DRAFT, and what is under test is what the row renders, not which rows the server picks.
-function mocks(): MockedResponse[] {
+function mocks(heldRegistrations: Record<string, unknown>[] = []): MockedResponse[] {
   return [
+    // #754: the held PO registrations the table shows. It sits before the catch-all below because
+    // MockLink takes the first mock whose variables match, and this one is the narrowed read.
+    {
+      request: {
+        query: GET_GP_OUTBOX,
+        variables: (v: Record<string, unknown>) => {
+          outboxAsked.push(v);
+          return Array.isArray(v.ops) && (v.ops as string[]).includes('create_po');
+        },
+      },
+      result: { data: { gpOutbox: heldRegistrations } },
+      maxUsageCount: INFINITE,
+    },
     {
       request: { query: PURCHASE_ORDERS_PAGE, variables: () => true },
       result: {
@@ -243,10 +261,10 @@ function purchaseOrderMock(): MockedResponse {
   };
 }
 
-function renderRegister() {
+function renderRegister(heldRegistrations: Record<string, unknown>[] = []) {
   render(
     <MemoryRouter initialEntries={['/']}>
-      <MockedProvider mocks={mocks()}>
+      <MockedProvider mocks={mocks(heldRegistrations)}>
         <ToastProvider>
           <POModule />
         </ToastProvider>
@@ -358,6 +376,41 @@ it('leaves a Nexus draft with no vendor on the dash it has always printed', asyn
 
   expect(await cellOf('PO-REQ-002', 4)).toHaveTextContent('-');
   expect(await cellOf('PO-REQ-002', 4)).not.toHaveTextContent('No vendor in GP');
+});
+
+
+// --- #754: the PO registrations GP has not taken yet ---------------------------------------------
+
+// A queued registration used to be visible only on the admin queue, which the buyer who raised it
+// cannot reach. It sits on the table it belongs to now, narrowed to that one kind of GP write.
+it('shows the held PO registrations on the PO table', async () => {
+  renderRegister([
+    {
+      __typename: 'GpOutboxEntry',
+      id: 'queued-1',
+      label: 'PO registration PO-REQ-001',
+      op: 'create_po',
+      company: 'TUBC',
+      status: 'PENDING',
+      attempts: 1,
+      nextAttemptAt: '2026-07-01T12:05:00Z',
+      lastError: null,
+      failureKind: null,
+      entityKey: 'po:po-draft',
+      createdAt: '2026-07-01T12:00:00Z',
+    },
+  ]);
+
+  expect(await screen.findByText('Held PO registrations')).toBeInTheDocument();
+  await waitFor(() => expect(outboxAsked).toContainEqual({ ops: ['create_po'] }));
+});
+
+// The normal state: nothing is held, and the table looks exactly as it did.
+it('says nothing about held PO registrations while there are none', async () => {
+  renderRegister();
+
+  await screen.findByText('PO-2001');
+  expect(screen.queryByText('Held PO registrations')).toBeNull();
 });
 
 
