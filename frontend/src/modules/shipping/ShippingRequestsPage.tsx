@@ -27,6 +27,7 @@ import {
 import RequestsReviewPage from '../../components/RequestsReviewPage';
 import PageHeader from '../../components/PageHeader';
 import ProjectPicker from '../../components/ProjectPicker';
+import { useIdentity } from '../../hooks/useIdentity';
 import type { Project } from '../../types/project';
 import { monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
@@ -94,6 +95,12 @@ export default function ShippingRequestsPage() {
   const [view, setView] = useState<View>('PENDING');
   const [project, setProject] = useState<Project | null>(null);
   const projectId = project?.id;
+  const { ownsTenant, hasRole } = useIdentity();
+  // #753: accepting, rejecting and reopening are the SHIPPING MANAGER's, with the TENANT OWNER
+  // beside them - the same any-of the server enforces. Shown-and-explained rather than hidden: the
+  // person who raised a request should still see what happens to it next. Editing a pending request
+  // stays open to everyone, because correcting your own request is not a review.
+  const canManage = ownsTenant || hasRole('Shipping Manager');
   const { data, loading, refetch } = useQuery<{ shippingOutRequests: ShippingOutRequest[] }>(
     GET_SHIPPING_OUT_REQUESTS,
     {
@@ -192,6 +199,8 @@ export default function ShippingRequestsPage() {
         rejectMutation={REJECT_SHIPPING_OUT_REQUEST}
         reopenMutation={REOPEN_SHIPPING_OUT_REQUEST}
         mode={view === 'PENDING' ? 'pending' : 'approved'}
+        canReview={canManage}
+        reviewDisabledReason="Requires the Shipping Manager role"
         reopenDisabledReason={(req) =>
           view === 'REJECTED' ? 'This request was rejected.' : reopenBlockedReason(req.stage)
         }

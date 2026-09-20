@@ -9,8 +9,35 @@ import { CREATE_SHIPMENT_METHOD, GET_SHIPMENT_METHODS } from '../../../graphql/s
  *
  * What is pinned here is where a new method lands in the order and how many times Add can fire,
  * because both are silent when wrong: a reused sortOrder just makes the dropdown order arbitrary,
- * and a double submit surfaces as a name conflict the user did nothing to cause.
+ * and a double submit surfaces as a name conflict the user did nothing to cause. Since #753 the
+ * role gate is pinned here too - the dialog reads identity, so who holds what decides whether its
+ * controls are live.
  */
+
+// Stubbed rather than mounting a Clerk provider this file has no other use for.
+const identity = vi.hoisted(() => ({ roles: [] as string[] }));
+
+vi.mock('../../../hooks/useIdentity', () => ({
+  useIdentity: () => ({
+    displayName: 'Test User',
+    userId: 'user_1',
+    roles: identity.roles,
+    hasRole: (role: string) => identity.roles.includes(role),
+    isNexusAdmin: identity.roles.includes('UC Nexus Admin'),
+    isTenantOwner: identity.roles.includes('Tenant Owner'),
+    ownsTenant: identity.roles.some((r) => r === 'UC Nexus Admin' || r === 'Tenant Owner'),
+    isDbAdmin: false,
+    gpBuyerId: null,
+    company: 'TUBC',
+    user: null,
+  }),
+}));
+
+// The existing cases are all about what a person who may change the list can do, so they run as the
+// role that may.
+beforeEach(() => {
+  identity.roles = ['Shipping Manager'];
+});
 
 const INFINITE = Number.POSITIVE_INFINITY;
 
@@ -118,4 +145,41 @@ it('ignores Enter on an empty box', async () => {
 
   await flush();
   expect(screen.queryByText(/No more mocked responses/i)).not.toBeInTheDocument();
+});
+
+// #753: the entry points onto this dialog are gated, so reaching it without the role should be
+// impossible - but if it happens, the list reads and nothing on it can be changed.
+it('leaves a Shipping Out user the list to read and no control to press', async () => {
+  identity.roles = ['Shipping Out'];
+  renderDialog([listMock([method({ id: 'sm-1', name: 'Our truck', sortOrder: 0 })])]);
+  await flush();
+
+  expect(await screen.findByText('Our truck')).toBeInTheDocument();
+  expect(screen.getByRole('textbox', { name: /New method/i })).toBeDisabled();
+  expect(screen.getByRole('button', { name: /^Add$/i })).toBeDisabled();
+  expect(screen.getByRole('button', { name: /Retire/i })).toBeDisabled();
+  expect(screen.getByRole('button', { name: /Delete Our truck/i })).toBeDisabled();
+});
+
+it('says why the controls are dead when the role is missing', async () => {
+  identity.roles = ['Shipping Out'];
+  renderDialog([listMock([method({ id: 'sm-1', name: 'Our truck', sortOrder: 0 })])]);
+  await flush();
+
+  // A disabled button emits no pointer events of its own, so the hover lands on the wrapper the
+  // tooltip is hung off.
+  const addWrapper = (await screen.findByRole('button', { name: /^Add$/i })).parentElement;
+  fireEvent.mouseOver(addWrapper as HTMLElement);
+
+  expect(await screen.findByRole('tooltip')).toHaveTextContent('Requires the Shipping Manager role');
+});
+
+it('gives a Tenant Owner the same live controls as the Shipping Manager', async () => {
+  identity.roles = ['Tenant Owner'];
+  renderDialog([listMock([method({ id: 'sm-1', name: 'Our truck', sortOrder: 0 })])]);
+  await flush();
+
+  expect(await screen.findByRole('button', { name: /Retire/i })).toBeEnabled();
+  expect(screen.getByRole('button', { name: /Delete Our truck/i })).toBeEnabled();
+  expect(screen.getByRole('textbox', { name: /New method/i })).toBeEnabled();
 });
