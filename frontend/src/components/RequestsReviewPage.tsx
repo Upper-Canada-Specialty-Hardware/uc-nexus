@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useState, type ReactElement, type ReactNode } from 'react';
 import {
   Box,
   Typography,
@@ -9,6 +9,7 @@ import {
   Stack,
   Button,
   CircularProgress,
+  Tooltip,
 } from '@mui/material';
 import { ChevronDown, Check, X, Undo2 } from 'lucide-react';
 import { useMutation } from '@apollo/client/react';
@@ -74,6 +75,14 @@ interface RequestsReviewPageProps<TRequest extends ReviewableRequest> {
    * the server would give anyway.
    */
   reopenDisabledReason?: (req: TRequest) => string | null;
+  /**
+   * False when this caller may not accept, reject or reopen at all - a role gate rather than a
+   * per-row one (#753). Defaults to true, so every existing caller is unaffected. Raising and
+   * correcting a request is never covered by it: only the three review actions are.
+   */
+  canReview?: boolean;
+  /** Why review is unavailable, carried as the tooltip on the disabled actions. */
+  reviewDisabledReason?: string;
 }
 
 /**
@@ -98,6 +107,8 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   note,
   renderExtraActions,
   reopenDisabledReason,
+  canReview = true,
+  reviewDisabledReason,
 }: RequestsReviewPageProps<TRequest>) {
   const { showToast } = useToast();
   // Which request is mid-flight, and which action - drives per-button spinners while every button on
@@ -152,6 +163,21 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
     setPending({ id, action: 'reopen' });
     reopenRequest({ variables: { id } });
   };
+
+  /**
+   * Wraps a review action so the role gate says why it is dead (#753). A disabled button swallows
+   * its own pointer events, so the tooltip has to hang off a wrapper rather than the button itself.
+   */
+  const gateReview = (action: ReactElement) =>
+    canReview ? (
+      action
+    ) : (
+      <Tooltip title={reviewDisabledReason ?? ''}>
+        <Box component="span" sx={{ display: 'inline-flex' }}>
+          {action}
+        </Box>
+      </Tooltip>
+    );
 
   return (
     <Box>
@@ -216,21 +242,27 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
 
                       {mode === 'approved' ? (
                         <Stack direction="row" spacing={1.5} alignItems="center">
-                          <Button
-                            variant="outlined"
-                            color="warning"
-                            startIcon={
-                              pending?.id === req.id && pending.action === 'reopen' ? (
-                                <CircularProgress size={16} color="inherit" />
-                              ) : (
-                                <Undo2 size={18} strokeWidth={1.75} />
-                              )
-                            }
-                            disabled={pending?.id === req.id || Boolean(reopenDisabledReason?.(req))}
-                            onClick={() => setConfirmReopenId(req.id)}
-                          >
-                            Reopen
-                          </Button>
+                          {gateReview(
+                            <Button
+                              variant="outlined"
+                              color="warning"
+                              startIcon={
+                                pending?.id === req.id && pending.action === 'reopen' ? (
+                                  <CircularProgress size={16} color="inherit" />
+                                ) : (
+                                  <Undo2 size={18} strokeWidth={1.75} />
+                                )
+                              }
+                              disabled={
+                                pending?.id === req.id ||
+                                Boolean(reopenDisabledReason?.(req)) ||
+                                !canReview
+                              }
+                              onClick={() => setConfirmReopenId(req.id)}
+                            >
+                              Reopen
+                            </Button>,
+                          )}
                           {reopenDisabledReason?.(req) && (
                             <Typography variant="body2" color="text.secondary">
                               {reopenDisabledReason(req)}
@@ -239,36 +271,42 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
                         </Stack>
                       ) : (
                         <Stack direction="row" spacing={1}>
-                          <Button
-                            variant="contained"
-                            color="primary"
-                            startIcon={
-                              pending?.id === req.id && pending.action === 'accept' ? (
-                                <CircularProgress size={16} color="inherit" />
-                              ) : (
-                                <Check size={18} strokeWidth={1.75} />
-                              )
-                            }
-                            disabled={pending?.id === req.id}
-                            onClick={() => handleAccept(req.id)}
-                          >
-                            Accept
-                          </Button>
-                          <Button
-                            variant="outlined"
-                            color="primary"
-                            startIcon={
-                              pending?.id === req.id && pending.action === 'reject' ? (
-                                <CircularProgress size={16} color="inherit" />
-                              ) : (
-                                <X size={18} strokeWidth={1.75} />
-                              )
-                            }
-                            disabled={pending?.id === req.id}
-                            onClick={() => handleReject(req.id)}
-                          >
-                            Reject
-                          </Button>
+                          {gateReview(
+                            <Button
+                              variant="contained"
+                              color="primary"
+                              startIcon={
+                                pending?.id === req.id && pending.action === 'accept' ? (
+                                  <CircularProgress size={16} color="inherit" />
+                                ) : (
+                                  <Check size={18} strokeWidth={1.75} />
+                                )
+                              }
+                              disabled={pending?.id === req.id || !canReview}
+                              onClick={() => handleAccept(req.id)}
+                            >
+                              Accept
+                            </Button>,
+                          )}
+                          {gateReview(
+                            <Button
+                              variant="outlined"
+                              color="primary"
+                              startIcon={
+                                pending?.id === req.id && pending.action === 'reject' ? (
+                                  <CircularProgress size={16} color="inherit" />
+                                ) : (
+                                  <X size={18} strokeWidth={1.75} />
+                                )
+                              }
+                              disabled={pending?.id === req.id || !canReview}
+                              onClick={() => handleReject(req.id)}
+                            >
+                              Reject
+                            </Button>,
+                          )}
+                          {/* Not gated: raising and correcting a request is not a reviewer's
+                              action, so whoever raised it can still fix it (#753). */}
                           {renderExtraActions?.(req)}
                         </Stack>
                       )}
