@@ -54,7 +54,7 @@ RETIRED_ROLE = "Admin/Manager"
 NEW_ADMIN_EMAILS = (
     "jonathanr@ucsh.com",
     "stevef@ucsh.com",
-    "josep@ucsh.com",
+    "josepuzon@gmail.com",
     "jayp@ucsh.com",
 )
 

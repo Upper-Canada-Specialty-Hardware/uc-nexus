@@ -37,7 +37,7 @@ def _roster():
         _user("u_1", "jonathanr@ucsh.com", [RETIRED_ROLE]),
         # Deliberately not lower case: Clerk stores what was typed when the account was made.
         _user("u_2", "SteveF@ucsh.com", [RETIRED_ROLE, DB_ADMIN_ROLE]),
-        _user("u_3", "josep@ucsh.com", [RETIRED_ROLE]),
+        _user("u_3", "josepuzon@gmail.com", [RETIRED_ROLE]),
         _user("u_4", "jayp@ucsh.com", [RETIRED_ROLE, "PO User"]),
         _user(E2E_ID, "e2e-tester@ucsh.com", [RETIRED_ROLE]),
         _user("u_5", "warehouse@ucsh.com", [RETIRED_ROLE, "Warehouse Manager"]),
@@ -110,7 +110,7 @@ def test_grant_refuses_to_write_when_a_named_account_is_missing(clerk, monkeypat
 
     assert main(["--grant"]) == 1
     assert clerk == {}
-    assert "josep@ucsh.com" in capsys.readouterr().out
+    assert "josepuzon@gmail.com" in capsys.readouterr().out
 
 
 def test_grant_refuses_when_the_e2e_account_is_not_configured(clerk, monkeypatch):
