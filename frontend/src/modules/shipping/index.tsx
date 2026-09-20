@@ -10,6 +10,7 @@ import ShippingLanding from './ShippingLanding';
 import RequestWorkspace from './request-workspace/RequestWorkspace';
 import ProjectPicker from '../../components/ProjectPicker';
 import PageHeader from '../../components/PageHeader';
+import { useIdentity } from '../../hooks/useIdentity';
 import type { Project } from '../../types/project';
 
 /**
@@ -53,6 +54,10 @@ export default function ShippingModule() {
 function StagingRoute() {
   const [project, setProject] = useState<Project | null>(null);
   const [methodsOpen, setMethodsOpen] = useState(false);
+  // #753: the same gate the landing puts on the list - keeping the shipment methods is the SHIPPING
+  // MANAGER's, with the TENANT OWNER beside them.
+  const { ownsTenant, hasRole } = useIdentity();
+  const canManage = ownsTenant || hasRole('Shipping Manager');
   return (
     <Box>
       <PageHeader title="Staging" parent={{ label: 'Shipping', to: '/app/shipping' }} />
@@ -71,17 +76,21 @@ function StagingRoute() {
           onChange={setProject}
           sx={{ flex: 1, minWidth: 240, maxWidth: 420 }}
         />
-        <Button
-          variant="outlined"
-          size="small"
-          startIcon={<Settings2 size={18} strokeWidth={1.75} />}
-          onClick={() => setMethodsOpen(true)}
-        >
-          Shipment methods
-        </Button>
+        {canManage && (
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<Settings2 size={18} strokeWidth={1.75} />}
+            onClick={() => setMethodsOpen(true)}
+          >
+            Shipment methods
+          </Button>
+        )}
       </Box>
       <StagingWorkspace projectId={project?.id} project={project} />
-      <ShipmentMethodsDialog open={methodsOpen} onClose={() => setMethodsOpen(false)} />
+      {canManage && (
+        <ShipmentMethodsDialog open={methodsOpen} onClose={() => setMethodsOpen(false)} />
+      )}
     </Box>
   );
 }

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactElement } from 'react';
 import {
   Alert,
   Box,
@@ -11,6 +11,7 @@ import {
   IconButton,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import { Plus, Trash2 } from 'lucide-react';
@@ -23,12 +24,31 @@ import {
 } from '../../graphql/shipping';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
+import { useIdentity } from '../../hooks/useIdentity';
 import { microLabelSx, monoSx } from '../../theme';
 import type { ShipmentMethod } from './useShipmentMethods';
 
 interface Props {
   open: boolean;
   onClose: () => void;
+}
+
+/** #753: why every control is dead for someone who reached the dialog without the role. */
+const MANAGER_GATE_REASON = 'Requires the Shipping Manager role';
+
+/**
+ * Wraps a gated control so the disabled state says why. A disabled button swallows its own pointer
+ * events, so the tooltip has to hang off a wrapper rather than the button itself.
+ */
+function GatedControl({ gated, children }: { gated: boolean; children: ReactElement }) {
+  if (!gated) return children;
+  return (
+    <Tooltip title={MANAGER_GATE_REASON}>
+      <Box component="span" sx={{ display: 'inline-flex' }}>
+        {children}
+      </Box>
+    </Tooltip>
+  );
 }
 
 /**
@@ -42,12 +62,18 @@ interface Props {
  * keep its spelling and its history, so the dropdown filters on active while this screen shows
  * everything. Deleting is still safe - each shipment snapshotted the name it went out under - so it
  * is offered for rows that were simply a mistake.
+ *
+ * Changing the list is the SHIPPING MANAGER's, with the TENANT OWNER beside them (#753). The entry
+ * points onto this dialog are already gated, so anyone who reaches it another way reads the list
+ * with every control disabled and explained rather than finding it missing.
  */
 export default function ShipmentMethodsDialog({ open, onClose }: Props) {
   const { showToast } = useToast();
   const [newName, setNewName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ShipmentMethod | null>(null);
+  const { ownsTenant, hasRole } = useIdentity();
+  const canManage = ownsTenant || hasRole('Shipping Manager');
 
   const { data, refetch } = useQuery<{ shipmentMethods: ShipmentMethod[] }>(GET_SHIPMENT_METHODS, {
     variables: { activeOnly: false },
@@ -93,7 +119,7 @@ export default function ShipmentMethodsDialog({ open, onClose }: Props) {
    */
   const submitNew = () => {
     const name = newName.trim();
-    if (!name || creating) return;
+    if (!name || creating || !canManage) return;
     const sortOrder = methods.reduce((highest, m) => Math.max(highest, m.sortOrder + 1), 0);
     createMethod({ variables: { name, sortOrder } });
   };
@@ -120,16 +146,19 @@ export default function ShipmentMethodsDialog({ open, onClose }: Props) {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') submitNew();
                 }}
+                disabled={!canManage}
                 fullWidth
               />
-              <Button
-                variant="outlined"
-                startIcon={<Plus size={16} strokeWidth={1.75} />}
-                disabled={!newName.trim() || creating}
-                onClick={submitNew}
-              >
-                Add
-              </Button>
+              <GatedControl gated={!canManage}>
+                <Button
+                  variant="outlined"
+                  startIcon={<Plus size={16} strokeWidth={1.75} />}
+                  disabled={!newName.trim() || creating || !canManage}
+                  onClick={submitNew}
+                >
+                  Add
+                </Button>
+              </GatedControl>
             </Stack>
 
             <Box>
@@ -162,22 +191,28 @@ export default function ShipmentMethodsDialog({ open, onClose }: Props) {
                         {!m.isActive && <Chip size="small" variant="outlined" label="Retired" />}
                       </Box>
                       <Stack direction="row" spacing={1} alignItems="center">
-                        <Button
-                          size="small"
-                          onClick={() =>
-                            updateMethod({ variables: { id: m.id, isActive: !m.isActive } })
-                          }
-                        >
-                          {m.isActive ? 'Retire' : 'Reactivate'}
-                        </Button>
-                        <IconButton
-                          size="small"
-                          color="error"
-                          aria-label={`Delete ${m.name}`}
-                          onClick={() => setConfirmDelete(m)}
-                        >
-                          <Trash2 size={16} strokeWidth={1.75} />
-                        </IconButton>
+                        <GatedControl gated={!canManage}>
+                          <Button
+                            size="small"
+                            disabled={!canManage}
+                            onClick={() =>
+                              updateMethod({ variables: { id: m.id, isActive: !m.isActive } })
+                            }
+                          >
+                            {m.isActive ? 'Retire' : 'Reactivate'}
+                          </Button>
+                        </GatedControl>
+                        <GatedControl gated={!canManage}>
+                          <IconButton
+                            size="small"
+                            color="error"
+                            aria-label={`Delete ${m.name}`}
+                            disabled={!canManage}
+                            onClick={() => setConfirmDelete(m)}
+                          >
+                            <Trash2 size={16} strokeWidth={1.75} />
+                          </IconButton>
+                        </GatedControl>
                       </Stack>
                     </Box>
                   ))}

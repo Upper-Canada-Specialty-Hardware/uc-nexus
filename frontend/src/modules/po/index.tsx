@@ -37,6 +37,7 @@ import {
 import { GET_GP_OUTBOX, GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
 import Modal from '../../components/Modal';
+import GpWriteQueuePanel from '../../components/GpWriteQueuePanel';
 import PODetailModal from './PODetailModal';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import CreatePOChooser from './CreatePOChooser';
@@ -251,6 +252,10 @@ const STAT_CARD_COUNT = STAT_CARD_GROUPS.reduce((n, g) => n + g.cards.length, 0)
 // The register defaults to the open work rather than the full company history the backfill loads:
 // what is live and being acted on. Total (and the Cancelled/Closed segments) reach the rest.
 const OPEN_STATUSES = ['GP_REGISTERED', 'VENDOR_CONFIRMED', 'PARTIALLY_RECEIVED'];
+
+// The one write this module is answerable for: a PO REGISTRATION that has not reached GP yet. A
+// constant rather than an inline array so the panel's query keeps one identity across renders.
+const HELD_PO_REGISTRATION_OPS = ['create_po'];
 
 // --- Server-driven sort ---
 
@@ -747,6 +752,10 @@ function POListPage() {
           </Box>
         </StaggerList>
       </FadeIn>
+
+      {/* #754: the PO registrations GP has not taken yet, on the table they belong to rather than
+          only on the admin queue. It renders nothing while there are none. */}
+      <GpWriteQueuePanel ops={HELD_PO_REGISTRATION_OPS} compact heading="Held PO registrations" />
 
       {/* Filter bar: search reaches full history; project + origin narrow it. Server-driven. */}
       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, mb: 1.5, alignItems: 'center' }}>

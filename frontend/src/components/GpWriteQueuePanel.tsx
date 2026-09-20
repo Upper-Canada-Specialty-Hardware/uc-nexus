@@ -2,12 +2,12 @@ import { useState, useMemo, useCallback } from 'react';
 import { Box, Button, Chip, Stack, Typography } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useMutation } from '@apollo/client/react';
-import { GET_GP_OUTBOX, GET_GP_OUTBOX_SUMMARY } from '../../graphql/shared';
-import { RETRY_GP_OUTBOX_ENTRY, CANCEL_GP_OUTBOX_ENTRY } from '../../graphql/admin';
-import ConfirmDialog from '../../components/ConfirmDialog';
-import { useToast } from '../../components/Toast';
-import { microLabelSx, monoSx, tabularSx } from '../../theme';
-import { parseServerDate } from '../../utils/serverDate';
+import { GET_GP_OUTBOX, GET_GP_OUTBOX_SUMMARY } from '../graphql/shared';
+import { RETRY_GP_OUTBOX_ENTRY, CANCEL_GP_OUTBOX_ENTRY } from '../graphql/admin';
+import ConfirmDialog from './ConfirmDialog';
+import { useToast } from './Toast';
+import { microLabelSx, monoSx, tabularSx } from '../theme';
+import { parseServerDate } from '../utils/serverDate';
 
 interface OutboxEntry {
   id: string;
@@ -21,6 +21,22 @@ interface OutboxEntry {
   failureKind: string | null;
   entityKey: string;
   createdAt: string;
+}
+
+interface GpWriteQueuePanelProps {
+  /**
+   * The relay operations to list, e.g. `['create_po']`. Left out, the panel lists every write, which
+   * is what the admin queue wants. Pass a module-level constant: a fresh array on every render is
+   * compared by value by Apollo, but a stable one keeps the query identity obvious.
+   */
+  ops?: string[];
+  heading?: string;
+  /**
+   * The mounting inside a module (#754): the columns that only an admin reads are dropped, and the
+   * panel renders nothing at all while there is no held write, so the page it sits on is unchanged
+   * in the normal case.
+   */
+  compact?: boolean;
 }
 
 function fmtDate(v: string | null | undefined): string {
@@ -43,19 +59,31 @@ const AMBIGUOUS_RETRY_WARNING =
 const NORMAL_RETRY_WARNING =
   'This puts the write back on the queue with a fresh attempt budget. It will be sent as soon as the GP relay is connected.';
 
-export default function GpWriteQueuePanel() {
+// The columns the compact mounting keeps. The company is the caller's own one, and the queued-at
+// time is an admin's forensic detail, so neither earns its width inside a module.
+const COMPACT_FIELDS = ['label', 'status', 'attempts', 'nextAttemptAt', 'lastError', 'actions'];
+
+export default function GpWriteQueuePanel({ ops, heading, compact }: GpWriteQueuePanelProps) {
   const { showToast } = useToast();
   const [retryTarget, setRetryTarget] = useState<OutboxEntry | null>(null);
   const [cancelTarget, setCancelTarget] = useState<OutboxEntry | null>(null);
 
+  const variables = useMemo(() => (ops ? { ops } : {}), [ops]);
+
   const { data, loading } = useQuery<{ gpOutbox: OutboxEntry[] }>(GET_GP_OUTBOX, {
+    variables,
     fetchPolicy: 'cache-and-network',
     // Long enough not to be chatty, short enough that a drain shows up while an admin is watching.
     pollInterval: 15_000,
   });
   const entries = useMemo(() => data?.gpOutbox ?? [], [data]);
 
-  const refetchAfterAction = [{ query: GET_GP_OUTBOX }, { query: GET_GP_OUTBOX_SUMMARY }];
+  // The list is refetched with this panel's own variables: a filtered mounting and the admin queue
+  // are separate cache entries, and only the one on screen needs re-reading after an action.
+  const refetchAfterAction = useMemo(
+    () => [{ query: GET_GP_OUTBOX, variables }, { query: GET_GP_OUTBOX_SUMMARY }],
+    [variables],
+  );
 
   const [retryEntry, { loading: retrying }] = useMutation(RETRY_GP_OUTBOX_ENTRY, {
     refetchQueries: refetchAfterAction,
@@ -81,8 +109,8 @@ export default function GpWriteQueuePanel() {
     },
   });
 
-  const columns: GridColDef[] = useMemo(
-    () => [
+  const columns: GridColDef[] = useMemo(() => {
+    const all: GridColDef[] = [
       { field: 'label', headerName: 'Write', flex: 1, minWidth: 220 },
       {
         field: 'company',
@@ -148,9 +176,9 @@ export default function GpWriteQueuePanel() {
           );
         },
       },
-    ],
-    [],
-  );
+    ];
+    return compact ? all.filter((c) => COMPACT_FIELDS.includes(c.field)) : all;
+  }, [compact]);
 
   const handleRetry = useCallback(() => {
     if (retryTarget) retryEntry({ variables: { id: retryTarget.id } });
@@ -160,14 +188,19 @@ export default function GpWriteQueuePanel() {
     if (cancelTarget) cancelEntry({ variables: { id: cancelTarget.id } });
   }, [cancelTarget, cancelEntry]);
 
+  // A module page is not the place to announce an empty queue: with nothing held, the panel takes no
+  // space at all. The admin queue keeps its table either way, because an admin came looking for it.
+  if (compact && entries.length === 0) return null;
+
   return (
-    <Box sx={{ mt: 4 }}>
+    <Box sx={{ mt: compact ? 0 : 4, mb: compact ? 2.5 : 0, minWidth: 0 }}>
       <Typography component="div" sx={{ ...microLabelSx, mb: 0.5 }}>
-        GP write queue
+        {heading ?? 'GP write queue'}
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Receives and PO registrations that were accepted while the GP relay was unreachable. These post
-        themselves when it reconnects; only a failed entry needs a person.
+      <Typography variant="body2" color="text.secondary" sx={{ mb: compact ? 1 : 2 }}>
+        {compact
+          ? 'These post themselves when the GP relay reconnects; only a failed entry needs a person.'
+          : 'Receives and PO registrations that were accepted while the GP relay was unreachable. These post themselves when it reconnects; only a failed entry needs a person.'}
       </Typography>
 
       <DataGrid
@@ -179,6 +212,9 @@ export default function GpWriteQueuePanel() {
         // the same note on the installs grid.
         disableVirtualization
         disableRowSelectionOnClick
+        // Inside a module every row is already on the one page, so the paginator would be a band of
+        // chrome under a two-row grid.
+        hideFooter={compact && entries.length <= 10}
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
         sx={{ '& .ts-cell': { ...monoSx, ...tabularSx, color: 'text.secondary' } }}

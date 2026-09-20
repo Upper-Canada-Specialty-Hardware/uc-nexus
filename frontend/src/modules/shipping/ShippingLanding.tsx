@@ -17,6 +17,7 @@ import { useQuery } from '@apollo/client/react';
 import { GET_SHIPPING_STATS } from '../../graphql/shipping';
 import ShipmentMethodsDialog from './ShipmentMethodsDialog';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
+import { useIdentity } from '../../hooks/useIdentity';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
 
 interface ShippingStats {
@@ -95,6 +96,12 @@ function DestinationCard({ dest, onClick }: { dest: Destination; onClick: () => 
 export default function ShippingLanding() {
   const navigate = useNavigate();
   const [methodsOpen, setMethodsOpen] = useState(false);
+  const { ownsTenant, hasRole } = useIdentity();
+  // #753: keeping the shipment methods list is the SHIPPING MANAGER's, with the TENANT OWNER beside
+  // them - the same any-of the server enforces on the three shipment method mutations. The entry
+  // point is hidden rather than disabled: the list is a settings screen, and a Shipping Out user has
+  // no reason to open a screen where every control is dead.
+  const canManage = ownsTenant || hasRole('Shipping Manager');
   const { data, loading: queryLoading } = useQuery<{ shippingStats: ShippingStats }>(
     GET_SHIPPING_STATS,
     { fetchPolicy: 'cache-and-network' },
@@ -127,14 +134,16 @@ export default function ShippingLanding() {
             {/* The carrier/method list is maintained by the same people who pick from it on the
                 Delivery Request (#451), so it lives here rather than behind Admin. Labelled, because a
                 bare truck icon told nobody what it did (#589). */}
-            <Button
-              variant="outlined"
-              size="small"
-              startIcon={<Settings2 size={18} strokeWidth={1.75} />}
-              onClick={() => setMethodsOpen(true)}
-            >
-              Shipment methods
-            </Button>
+            {canManage && (
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<Settings2 size={18} strokeWidth={1.75} />}
+                onClick={() => setMethodsOpen(true)}
+              >
+                Shipment methods
+              </Button>
+            )}
             {/* The request workspace (#493 successor): schedule-driven and loose lines composed in
                 one cart. It carries its own project picker. */}
             <Button
@@ -218,7 +227,9 @@ export default function ShippingLanding() {
         </StaggerList>
       </Box>
 
-      <ShipmentMethodsDialog open={methodsOpen} onClose={() => setMethodsOpen(false)} />
+      {canManage && (
+        <ShipmentMethodsDialog open={methodsOpen} onClose={() => setMethodsOpen(false)} />
+      )}
     </Box>
   );
 }

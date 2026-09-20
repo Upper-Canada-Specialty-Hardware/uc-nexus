@@ -36,7 +36,7 @@ import {
 } from '../../graphql/admin';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import PageHeader from '../../components/PageHeader';
-import GpWriteQueuePanel from './GpWriteQueuePanel';
+import GpWriteQueuePanel from '../../components/GpWriteQueuePanel';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useRelayStatus } from '../../relay/useRelayStatus';

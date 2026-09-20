@@ -93,9 +93,12 @@ export const GET_GP_OUTBOX_SUMMARY = gql`
   }
 `;
 
+// `ops` narrows the list to particular relay operations (#754), so a module can show only the writes
+// it is responsible for - `create_po` on the PO table, `create_receipt` on Receiving - while the
+// admin queue asks for all of them.
 export const GET_GP_OUTBOX = gql`
-  query GetGpOutbox($status: GpOutboxStatus, $limit: Int) {
-    gpOutbox(status: $status, limit: $limit) {
+  query GetGpOutbox($status: GpOutboxStatus, $limit: Int, $ops: [String!]) {
+    gpOutbox(status: $status, limit: $limit, ops: $ops) {
       id
       label
       op
