@@ -156,7 +156,7 @@ export default function ProjectPurchasingProgressPage() {
       <FadeIn>
         <PageHeader
           title="Project Purchasing Progress"
-          parent={{ label: 'Admin', to: '/app/admin' }}
+          parent={{ label: 'Tenant Owner', to: '/app/tenant-owner' }}
           description="Required against drafted, ordered, received, back-ordered, and shipped, per product."
         />
       </FadeIn>

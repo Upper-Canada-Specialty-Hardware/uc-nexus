@@ -26,11 +26,11 @@ const COLUMN = 460;
 
 export default function ShopAssemblyLanding() {
   const navigate = useNavigate();
-  // INVENTORY VALUE (#662) is gated on the same two roles the backend gates it on. The Shop Assembly
+  // INVENTORY VALUE (#662) is gated on the same roles the backend gates it on. The Shop Assembly
   // Manager is the person who knows how many doors are standing in the building, so the shortcut sits
-  // here as well as on the admin landing - but a plain bench user must not see it.
-  const { isAdmin, hasRole } = useIdentity();
-  const showInventoryValue = isAdmin || hasRole('Shop Assembly Manager');
+  // here as well as on the Tenant Owner landing - but a plain bench user must not see it.
+  const { ownsTenant, hasRole } = useIdentity();
+  const showInventoryValue = ownsTenant || hasRole('Shop Assembly Manager');
   const { data, loading } = useQuery<ShopAssemblyStatsData>(GET_SHOP_ASSEMBLY_STATS, {
     fetchPolicy: 'cache-and-network',
   });
@@ -133,7 +133,7 @@ export default function ShopAssemblyLanding() {
           <FadeIn>
             <Card variant="outlined" sx={{ mt: 1.5 }}>
               <CardActionArea
-                onClick={() => navigate('/app/admin/inventory-value')}
+                onClick={() => navigate('/app/tenant-owner/inventory-value')}
                 sx={{ p: 1.75, display: 'flex', alignItems: 'center', gap: 1.5 }}
               >
                 <Box sx={{ color: 'text.secondary', display: 'flex', flexShrink: 0 }}>

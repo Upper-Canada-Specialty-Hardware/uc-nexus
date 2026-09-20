@@ -1,7 +1,7 @@
 """Direct-Postgres access queries + mutations (db-admin-postgres-access).
 
 Every field here is gated on the "DB Admin" role in ROOT_FIELD_POLICY (app/auth_policy.py) - the tier
-ABOVE Admin/Manager, so unlike the rest of the admin module these do NOT admit a plain admin. The
+ABOVE UC Nexus Admin, so unlike the rest of that module these do NOT admit a plain admin. The
 repository (db_access_repository) carries the real guardrails and refuses every operation when the
 feature is disabled (no proxy configured, or a preview environment), so a resolver that slipped past
 the gate still cannot mint anything.
@@ -15,7 +15,7 @@ from datetime import datetime
 import strawberry
 
 from app import config
-from app.auth import ADMIN_ROLE, current_user, user_roster
+from app.auth import NEXUS_ADMIN_ROLE, current_user, user_roster
 from app.errors import AppError, ValidationError
 from app.repositories import db_access_repository, user_repository
 
@@ -114,13 +114,14 @@ class DbAccessMutations:
     def mint_postgres_admin(self, info: strawberry.Info, clerk_user_id: str) -> PostgresAccessCredential:
         """Mint a login for a Clerk user and return its connection strings once.
 
-        Refuses a target who does not hold Admin/Manager: direct read-write db access only goes to
-        people already trusted with the whole app. The env check comes first so a disabled environment
-        pays no Clerk round trip."""
+        Refuses a target who does not hold UC Nexus Admin (#729): direct read-write db access
+        reaches every company's data at once, so it only goes to someone already trusted across all
+        of them - a TENANT OWNER is not. The env check comes first so a disabled environment pays no
+        Clerk round trip."""
         if not config.db_direct_access_enabled():
             raise AppError("Direct database access is not enabled in this environment.", "FEATURE_DISABLED")
-        if ADMIN_ROLE not in user_repository.get_user_roles(clerk_user_id):
-            raise ValidationError("Direct database access can only be granted to an Admin/Manager holder.")
+        if NEXUS_ADMIN_ROLE not in user_repository.get_user_roles(clerk_user_id):
+            raise ValidationError(f"Direct database access can only be granted to a {NEXUS_ADMIN_ROLE} holder.")
         actor = current_user(info)["user_id"]
         return _credential(db_access_repository.mint(clerk_user_id, actor_clerk_id=actor))
 

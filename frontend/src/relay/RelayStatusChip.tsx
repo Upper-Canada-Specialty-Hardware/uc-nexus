@@ -22,7 +22,7 @@ interface RelayStatusChipProps {
 // The company half reads differently for the two kinds of caller, which is why the identity is read
 // here rather than passed in: fixing it once fixes every place the indicator is used.
 export default function RelayStatusChip({ connected, companies, gpCompanies }: RelayStatusChipProps) {
-  const { isAdmin, company: ownCompany } = useIdentity();
+  const { isNexusAdmin, company: ownCompany } = useIdentity();
 
   const status =
     connected === null ? (
@@ -37,9 +37,9 @@ export default function RelayStatusChip({ connected, companies, gpCompanies }: R
 
   // A scoped user belongs to exactly one GP company, so the relay's reach is not their story. Reading
   // "TUBC +2" here says "I am on three companies" when every row they will ever see belongs to one.
-  // Show that one company, and let the tooltip say what it means. Admin/Manager is unscoped and keeps
+  // Show that one company, and let the tooltip say what it means. UC NEXUS ADMIN is unscoped and keeps
   // the full list below, because for them the indicator really is about the relay's reach.
-  if (!isAdmin && ownCompany) {
+  if (!isNexusAdmin && ownCompany) {
     const served = companies.includes(ownCompany);
     return (
       <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>

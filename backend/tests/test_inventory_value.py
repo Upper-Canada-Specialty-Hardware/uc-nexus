@@ -28,7 +28,7 @@ from decimal import Decimal
 import pytest
 
 from app import auth
-from app.auth import ADMIN_ROLE, SHOP_ASSEMBLY_MANAGER_ROLE
+from app.auth import SHOP_ASSEMBLY_MANAGER_ROLE, SHOP_ASSEMBLY_MANAGERS
 from app.errors import NotFoundError, ValidationError
 from app.models.enums import POStatus, PullRequestSource, PullRequestStatus
 from app.models.inventory import InventoryLocation
@@ -620,4 +620,4 @@ def test_a_roleless_signed_in_caller_is_refused(query, monkeypatch):
 
     assert result.errors
     assert result.errors[0].extensions["code"] == "FORBIDDEN"
-    assert result.errors[0].message == f"{ADMIN_ROLE} or {SHOP_ASSEMBLY_MANAGER_ROLE} role required"
+    assert result.errors[0].message == f"{' or '.join(sorted(SHOP_ASSEMBLY_MANAGERS))} role required"

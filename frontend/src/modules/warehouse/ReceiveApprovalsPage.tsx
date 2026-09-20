@@ -51,8 +51,8 @@ function formatDateTime(value: string | null): string {
  * their own drafts to look at on the Receiving page.
  */
 export default function ReceiveApprovalsPage() {
-  const { hasRole, isAdmin } = useIdentity();
-  const canReview = isAdmin || hasRole('Warehouse Manager');
+  const { hasRole, ownsTenant } = useIdentity();
+  const canReview = ownsTenant || hasRole('Warehouse Manager');
 
   const [view, setView] = useState<View>('PENDING_APPROVAL');
   const [openDraft, setOpenDraft] = useState<ReceiveDraft | null>(null);

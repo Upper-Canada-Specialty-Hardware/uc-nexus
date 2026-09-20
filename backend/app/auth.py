@@ -17,9 +17,10 @@ legitimately does for itself:
   - ``current_user(info)`` - read the identity the extension already verified. A body needs it to
     stamp the acting user on an audit row (#427) or to scope a read to the caller (#428). It is a
     dict lookup, not a second verification.
-  - ``require_role(info, role)`` - a CONDITIONAL role check inside a body, for the one requirement
-    that is not a property of the field: ``assignOpenings`` lets anyone self-assign but only a Shop
-    Assembly Manager assign to somebody else (#330).
+  - ``require_any_role(info, roles)`` - a CONDITIONAL role check inside a body, for a requirement
+    that is not a property of the field: ``retryGpOutboxEntry`` takes a different set of roles
+    depending on which GP write the held entry is (#729), which is only decidable once the body has
+    read it.
 
 ``require_admin_request`` is separate again: the plain FastAPI routes in main.py have no Strawberry
 info to unwrap and no extension running for them, so they carry their own gate.
@@ -41,19 +42,44 @@ from app.config import CLERK_SECRET_KEY
 from app.errors import AppError
 from app.repositories import user_repository
 
-ADMIN_ROLE = "Admin/Manager"
+# The two halves of the retired "Admin/Manager" role (#729). That one string bundled an all-modules
+# bypass with an exemption from the GP COMPANY NEXUS TENANT line, so there was no way to give someone
+# authority over their own company without also giving them every other company's data.
+#
+# UC NEXUS ADMIN is the cross-tenant role: every module, every company, and every action whose
+# judgement spans tenants - which account belongs to which company, the relay installs, NEXUS GP
+# TRAFFIC, the SharePoint migration, the reset procedure, GP SYNC STATE.
+NEXUS_ADMIN_ROLE = "UC Nexus Admin"
+# TENANT OWNER is the same authority held INSIDE one GP company. It is pinned by `tenant_scope` like
+# every other scoped role, so an unassigned TENANT OWNER is refused exactly as an unassigned
+# warehouse user is.
+TENANT_OWNER_ROLE = "Tenant Owner"
+# The two module manager roles added with the split. PO MANAGER owns the PO module's settings;
+# SHIPPING MANAGER owns the shipment methods list and the accept, reject and reopen decisions on
+# shipping requests.
+PO_MANAGER_ROLE = "PO Manager"
+SHIPPING_MANAGER_ROLE = "Shipping Manager"
 SHOP_ASSEMBLY_MANAGER_ROLE = "Shop Assembly Manager"
 # The role that may approve or reject a drafted receive - the second pair of eyes between a counted
-# truck and a posted GP receipt. Admin/Manager satisfies the same fields, which is why those entries
-# in ROOT_FIELD_POLICY are a frozenset of both rather than this name alone.
+# truck and a posted GP receipt. A TENANT OWNER and a UC NEXUS ADMIN satisfy the same fields, which
+# is why those entries in ROOT_FIELD_POLICY name WAREHOUSE_MANAGERS rather than this role alone.
 WAREHOUSE_MANAGER_ROLE = "Warehouse Manager"
-# The tier that may mint direct Postgres logins (the Database Access page). It sits ABOVE Admin/Manager
-# and is exclusive: unlike every other field, an admin does not get in on the "isAdmin => all-access"
-# shorthand the frontend uses - the five db-access root fields name this role and nothing else. It is
-# also STACKED, never standalone: a DB Admin always also holds Admin/Manager, because the page lives
-# inside the Admin/Manager-gated admin shell. `updateUserRoles` enforces both halves - only a DB Admin
-# may grant or remove it, and a roles list carrying it without Admin/Manager is refused.
+# The tier that may mint direct Postgres logins (the Database Access page). It sits ABOVE UC Nexus
+# Admin and is exclusive: unlike every other field, a tenant owner does not get in on any all-access
+# shorthand - the five db-access root fields name this role and nothing else. It is also STACKED,
+# never standalone: a DB Admin always also holds UC Nexus Admin, because the page lives inside the
+# UC Nexus Admin module. `updateUserRoles` enforces both halves - only a DB Admin may grant or remove
+# it, and a roles list carrying it without UC Nexus Admin is refused.
 DB_ADMIN_ROLE = "DB Admin"
+
+# The tiers, named once so ROOT_FIELD_POLICY reads as the rulings rather than as repeated set
+# literals. Each is an ANY-OF: holding one of the names satisfies the requirement. There is still no
+# implicit bypass anywhere - UC NEXUS ADMIN opens a field only because it is named in the set.
+TENANT_OWNERS = frozenset({NEXUS_ADMIN_ROLE, TENANT_OWNER_ROLE})
+WAREHOUSE_MANAGERS = TENANT_OWNERS | {WAREHOUSE_MANAGER_ROLE}
+SHOP_ASSEMBLY_MANAGERS = TENANT_OWNERS | {SHOP_ASSEMBLY_MANAGER_ROLE}
+PO_MANAGERS = TENANT_OWNERS | {PO_MANAGER_ROLE}
+SHIPPING_MANAGERS = TENANT_OWNERS | {SHIPPING_MANAGER_ROLE}
 
 _CLERK_JWKS_URL = "https://api.clerk.com/v1/jwks"
 _JWKS_TTL_SECONDS = 3600.0
@@ -246,21 +272,41 @@ def caller_company(context) -> str | None:
 def tenant_scope(info) -> str | None:
     """The company every row this request may touch must belong to, or None for "no restriction".
 
-    None is the ADMIN answer and only the admin answer: Admin/Manager is deliberately unscoped, because
-    the admin surface (the Projects page, the relay installs, the outbox, user management) exists to
-    look across companies. Everybody else is pinned to their own, and a caller with no company at all
-    is refused rather than silently scoped to nothing - "sees an empty app" is indistinguishable from
-    "the data is gone" from the user's side, and this way the message names the fix.
+    None is the UC NEXUS ADMIN answer and only theirs (#729): that role exists to act across
+    companies - who is in which company, the relay installs, the write queue, the SharePoint
+    migration. Everybody else is pinned to their own, a TENANT OWNER included: their authority is the
+    whole of one GP company and stops at its edge. A caller with no company at all is refused rather
+    than silently scoped to nothing - "sees an empty app" is indistinguishable from "the data is
+    gone" from the user's side, and this way the message names the fix.
 
     The frontend gates an unassigned user at the app shell, so the raise here is the backstop for a
     direct GraphQL call or a stale tab, not the primary UX.
     """
-    if ADMIN_ROLE in caller_roles(info.context):
+    if NEXUS_ADMIN_ROLE in caller_roles(info.context):
         return None
     company = caller_company(info.context)
     if not company:
         raise ForbiddenError("No company assigned to your account. Ask an admin to assign one.")
     return company
+
+
+def remember_roster_entry(context, entry: dict) -> list[str]:
+    """Fill this request's role and company memos from the caller's own row in the Clerk roster.
+
+    The roster carries both keys per user, so a ROSTER_BACKED field that has already enumerated
+    Clerk to authorize its caller knows their roles and their company without asking again. Without
+    this the saving stopped at the gate: `adminStats` and `users` both call `tenant_scope` in the
+    body, which would go back to Clerk for the very metadata the roster just returned.
+
+    The company is normalized the way `caller_company` normalizes it, so the two paths cannot answer
+    the same question differently. An already-resolved memo is left alone - a value looked up
+    directly is no less current, and overwriting it would make the order of two calls matter.
+    """
+    roles = entry.get("roles") or []
+    context[_ROLES_KEY] = roles
+    if context.get(_COMPANY_KEY, _UNRESOLVED) is _UNRESOLVED:
+        context[_COMPANY_KEY] = user_repository.normalize_company(entry.get("company"))
+    return roles
 
 
 def user_roster(context) -> list[dict]:
@@ -321,10 +367,14 @@ def invalidate_display_name(user_id: str) -> None:
 
 
 def require_admin_request(request) -> dict:
-    """Enforce Admin/Manager on a bare FastAPI Request, for the plain HTTP routes in main.py that have
-    no Strawberry `info` to unwrap and no schema extension running for them. Same two lookups the
-    GraphQL path makes - identity from the Clerk JWT, roles from the Clerk Backend API - so a route
-    and a root field cannot drift apart on what "admin" means. Returns {user_id, roles}.
+    """Enforce UC Nexus Admin on a bare FastAPI Request, for the plain HTTP routes in main.py that
+    have no Strawberry `info` to unwrap and no schema extension running for them. Same two lookups
+    the GraphQL path makes - identity from the Clerk JWT, roles from the Clerk Backend API - so a
+    route and a root field cannot drift apart on what "admin" means. Returns {user_id, roles}.
+
+    The cross-tenant role and not the tenant-level one (#729): both routes behind this gate act on
+    the whole deployment. `/admin/reset-data` empties every company's data at once, and
+    `/testing/clerk-sign-in` mints a real Clerk session for any staff account.
 
     Deliberately un-memoised: a plain route handles one request and makes one check, so there is no
     second call to save, and taking the per-request store would mean inventing one for a Request that
@@ -341,36 +391,22 @@ def require_admin_request(request) -> dict:
     _reject_e2e_account_in_production(user_id)
 
     roles = user_repository.get_user_roles(user_id)
-    if ADMIN_ROLE not in roles:
-        raise ForbiddenError("Admin/Manager role required")
+    if NEXUS_ADMIN_ROLE not in roles:
+        raise ForbiddenError(f"{NEXUS_ADMIN_ROLE} role required")
     return {"user_id": user_id, "roles": roles}
 
 
-def require_role(info, role: str) -> dict:
-    """Enforce a role from INSIDE a resolver body. Returns {user_id, roles}.
+def require_any_role(info, roles: frozenset[str]) -> dict:
+    """Enforce an any-of role requirement from INSIDE a resolver body. Returns {user_id, roles}.
 
-    Field-level role requirements belong in ROOT_FIELD_POLICY, not here - the extension applies them
-    before the body runs. This is for the requirement that is not a property of the field:
-    `assignOpenings` lets any signed-in user claim work for themselves and only a Shop Assembly
-    Manager hand it to somebody else (#330), so the check depends on the arguments and can only be
-    made once the body has them.
+    Field-level requirements belong in ROOT_FIELD_POLICY, not here: if the field ALWAYS needs one
+    of these, put the tier set in the table and let the extension apply it before the body runs.
+    This is for the requirement that is not a property of the field and can only be decided once
+    the body has loaded something - `retryGpOutboxEntry` takes a different set of roles depending
+    on which GP write the held entry is (#729), and the entry has to be read to find out.
 
     Reads the per-request role memo, so a body-level check on a field whose policy already resolved
     roles adds no Clerk call.
-    """
-    roles = caller_roles(info.context)
-    if role not in roles:
-        raise ForbiddenError(f"{role} role required")
-    return {"user_id": authenticated_user_id(info.context), "roles": roles}
-
-
-def require_any_role(info, roles: frozenset[str]) -> dict:
-    """`require_role` for a requirement satisfied by any one of several roles. Returns {user_id, roles}.
-
-    Same rule about where requirements belong: if the field ALWAYS needs one of these, put the
-    frozenset in ROOT_FIELD_POLICY and let the extension apply it. This is for the conditional case -
-    `updateReceiveDraft` lets the draft's own author edit it and otherwise needs a Warehouse Manager
-    or an admin, which is only decidable once the body knows whose draft it is.
     """
     caller = caller_roles(info.context)
     if not roles & set(caller):

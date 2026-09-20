@@ -16,19 +16,19 @@ export interface CompanyChoice {
  *
  * Two rules, and the first is the tenancy boundary rather than a convenience: a scoped user acts as
  * their OWN company and nothing else, so the picker never offers another tenant's GP data even when
- * the relay serves it. Admin/Manager is unscoped and gets the whole list, defaulted to their own
+ * the relay serves it. UC NEXUS ADMIN is unscoped and gets the whole list, defaulted to their own
  * company when they have one so the common case still takes zero clicks.
  *
  * Pass the relay's `companies`. The chosen value is derived rather than synced into state, so a
  * relay that reconnects with a different list can never leave a stale company selected.
  */
 export function useCompanyChoice(companies: string[]): CompanyChoice {
-  const { isAdmin, company: ownCompany } = useIdentity();
+  const { isNexusAdmin, company: ownCompany } = useIdentity();
   const [picked, setPicked] = useState<string | null>(null);
 
   const options = useMemo(
-    () => (!isAdmin && ownCompany ? [ownCompany] : companies),
-    [isAdmin, ownCompany, companies],
+    () => (!isNexusAdmin && ownCompany ? [ownCompany] : companies),
+    [isNexusAdmin, ownCompany, companies],
   );
 
   const company =

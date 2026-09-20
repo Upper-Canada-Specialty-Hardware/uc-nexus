@@ -1882,7 +1882,7 @@ class ClerkUser:
     # Issue #216: the GP BUYERID this account acts as (Clerk publicMetadata.gpBuyerId), or null.
     gp_buyer_id: str | None
     # The GP company this account belongs to - its tenant (#637), from Clerk publicMetadata.company.
-    # Null means unassigned: an Admin/Manager is unscoped and sees every company, anyone else with no
+    # Null means unassigned: a UC NEXUS ADMIN is unscoped and sees every company, anyone else with no
     # company assigned can read nothing until an admin gives them one.
     company: str | None
     image_url: str
@@ -1937,7 +1937,13 @@ class GpOutboxEntry:
 
     id: strawberry.ID
     label: str
+    # Two names for the same write, and both are published on purpose. `op` is the resolver-level
+    # one (register_po_in_gp, create_receive); `relay_op` is the GP-side one the glossary uses for a
+    # NEXUS TO GP WRITE (create_po, create_receipt, update_job_site), and it is what the `ops`
+    # argument on `gpOutbox` filters against - so a panel asking for one kind reads the same name
+    # back off the rows it gets.
     op: str
+    relay_op: str
     company: str
     status: GpOutboxStatus
     attempts: int

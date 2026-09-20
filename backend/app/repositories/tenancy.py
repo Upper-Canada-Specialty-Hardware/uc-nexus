@@ -19,8 +19,10 @@ which turns any id-taking field into an oracle: ask for a UUID, and "forbidden" 
 tells you whether another company holds it. There is nothing a caller can do with that answer except
 enumerate, so out-of-scope reads the same as absent.
 
-`scope` is None for an Admin/Manager (see app/auth.tenant_scope), and None means "no restriction" -
-every function here is a no-op for it rather than a filter that happens to match everything.
+`scope` is None for a UC NEXUS ADMIN and for nobody else (see app/auth.tenant_scope), and None
+means "no restriction" - every function here is a no-op for it rather than a filter that happens to
+match everything. A TENANT OWNER is scoped like any other user: their authority is the whole of one
+GP company, which is exactly what a scope expresses.
 """
 
 import uuid

@@ -444,7 +444,7 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued }: P
 
 function POListPage() {
   const navigate = useNavigate();
-  const { isAdmin, company } = useIdentity();
+  const { isNexusAdmin, ownsTenant, hasRole, company } = useIdentity();
   const { showToast } = useToast();
   const [selectedPOId, setSelectedPOId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -613,7 +613,7 @@ function POListPage() {
       <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1, mb: 2 }}>
         {/* Whose purchase orders these are, beside the title rather than under it so the answer
             costs no vertical space. A scoped user is told the one GP company every row belongs to;
-            Admin/Manager, who sees them all at once, is told that instead. */}
+            a UC NEXUS ADMIN, who sees them all at once, is told that instead. */}
         <Box
           sx={{
             flex: 1,
@@ -626,7 +626,7 @@ function POListPage() {
         >
           <Typography variant="h5">Purchase Orders</Typography>
           <Typography component="div" variant="body2" color="text.secondary" sx={{ minWidth: 0 }}>
-            {isAdmin ? (
+            {isNexusAdmin ? (
               'All companies'
             ) : company ? (
               <GpCompanyLabel code={company} gpCompanies={relay.gpCompanies} />
@@ -634,18 +634,20 @@ function POListPage() {
           </Typography>
         </Box>
         <RelayStatusChip connected={relayConnected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
-        {isAdmin && (
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<RefreshCw {...ICON} />}
-            onClick={handleSyncGpPos}
-            disabled={syncing || !relayConnected}
-          >
-            {syncing ? 'Syncing…' : 'Sync from GP'}
-          </Button>
-        )}
-        {isAdmin && (
+        {/* #744: everyone who works the PO table may bring the mirror up to date. The server scopes
+            the pass to the caller's own company, so this is never a cross-company action. */}
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<RefreshCw {...ICON} />}
+          onClick={handleSyncGpPos}
+          disabled={syncing || !relayConnected}
+        >
+          {syncing ? 'Syncing…' : 'Sync from GP'}
+        </Button>
+        {/* #729: Document Settings is the PO MANAGER's, with the TENANT OWNER beside them - the
+            same any-of the server enforces on updatePoDocumentSettings. */}
+        {(ownsTenant || hasRole('PO Manager')) && (
           <Button
             variant="outlined"
             size="small"

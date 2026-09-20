@@ -7,7 +7,7 @@ issues a query here."""
 
 import asyncio
 
-from app.auth import ADMIN_ROLE
+from app.auth import NEXUS_ADMIN_ROLE
 from app.repositories import manufacturer_vendor_map_repository as map_repo
 from app.schemas import relay as relay_module
 from app.schemas.queries import Query
@@ -15,7 +15,7 @@ from app.schemas.queries import Query
 
 class FakeInfo:
     # An ADMIN caller, seeded into the per-request role memo so `tenant_scope` (#637) answers None.
-    context = {"request": None, "_auth_roles": [ADMIN_ROLE]}
+    context = {"request": None, "_auth_roles": [NEXUS_ADMIN_ROLE]}
 
 
 class FakeGateway:

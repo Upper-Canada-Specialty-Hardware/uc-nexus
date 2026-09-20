@@ -12,7 +12,8 @@ const POModule = React.lazy(() => import('./modules/po'));
 const WarehouseModule = React.lazy(() => import('./modules/warehouse'));
 const ShopAssemblyModule = React.lazy(() => import('./modules/shop-assembly'));
 const ShippingModule = React.lazy(() => import('./modules/shipping'));
-const AdminModule = React.lazy(() => import('./modules/admin'));
+const TenantOwnerModule = React.lazy(() => import('./modules/tenant-owner'));
+const NexusAdminModule = React.lazy(() => import('./modules/nexus-admin'));
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return (
@@ -68,7 +69,12 @@ function App() {
         <Route path="warehouse/*" element={<LazyRoute fallback={<SuspenseFallback />}><WarehouseModule /></LazyRoute>} />
         <Route path="shop-assembly/*" element={<LazyRoute fallback={<SuspenseFallback />}><ShopAssemblyModule /></LazyRoute>} />
         <Route path="shipping/*" element={<LazyRoute fallback={<SuspenseFallback />}><ShippingModule /></LazyRoute>} />
-        <Route path="admin/*" element={<LazyRoute fallback={<SuspenseFallback />}><AdminModule /></LazyRoute>} />
+        <Route path="tenant-owner/*" element={<LazyRoute fallback={<SuspenseFallback />}><TenantOwnerModule /></LazyRoute>} />
+        <Route path="nexus-admin/*" element={<LazyRoute fallback={<SuspenseFallback />}><NexusAdminModule /></LazyRoute>} />
+        {/* #729: the Admin module split in two. Every link to the old one ever bookmarked, mailed
+            or pasted into an issue lands on the Tenant Owner module, which holds the company-facing
+            pages that made up most of it. */}
+        <Route path="admin/*" element={<Navigate to="/app/tenant-owner" replace />} />
       </Route>
       <Route path="*" element={<Navigate to="/app" replace />} />
     </Routes>

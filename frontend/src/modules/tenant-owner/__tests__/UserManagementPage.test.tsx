@@ -33,18 +33,28 @@ beforeAll(() => {
   }
 });
 
+// #729: the page is mounted by both modules, so who is looking is switchable per test.
+const identity = vi.hoisted(() => ({ roles: ['UC Nexus Admin'] as string[] }));
+
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
     displayName: 'Admin',
     userId: 'user_admin',
-    roles: ['Admin/Manager'],
-    hasRole: () => true,
-    isAdmin: true,
+    roles: identity.roles,
+    hasRole: (role: string) => identity.roles.includes(role),
+    isNexusAdmin: identity.roles.includes('UC Nexus Admin'),
+    isTenantOwner: identity.roles.includes('Tenant Owner'),
+    ownsTenant: identity.roles.some((r) => r === 'UC Nexus Admin' || r === 'Tenant Owner'),
+    isDbAdmin: identity.roles.includes('DB Admin'),
     gpBuyerId: null,
-    company: null,
+    company: COMPANY,
     user: null,
   }),
 }));
+
+beforeEach(() => {
+  identity.roles = ['UC Nexus Admin'];
+});
 
 const USER = {
   id: 'user_1',
@@ -122,12 +132,12 @@ const buyersUnsupportedMock: MockedResponse = {
   },
 };
 
-function renderPage(mocks: MockedResponse[]) {
+function renderPage(mocks: MockedResponse[], scope: 'tenant' | 'nexus' = 'nexus') {
   return render(
     <MockedProvider mocks={mocks}>
       <MemoryRouter>
         <ToastProvider>
-          <UserManagementPage />
+          <UserManagementPage scope={scope} />
         </ToastProvider>
       </MemoryRouter>
     </MockedProvider>,
@@ -579,4 +589,76 @@ test('a connected relay that reported no companies locks the field with its own 
   await openEditDialog();
   expect((await screen.findByLabelText(/^Company$/i)) as HTMLInputElement).toBeDisabled();
   expect(screen.getByText(/login failed for user sa/i)).toBeInTheDocument();
+});
+
+// --- the two scopes (#729) -----------------------------------------------------------------------
+
+test('the UC Nexus Admin page carries the company and both elevated roles', async () => {
+  // The cross-tenant page is the only place a company assignment is made, and the only place the
+  // two roles that reach past one GP company can be granted.
+  identity.roles = ['UC Nexus Admin', 'DB Admin'];
+  renderPage([relayStatusMock(true), usersMock(), buyersMock]);
+
+  await openEditDialog();
+
+  expect(await screen.findByLabelText(/^Company$/i)).toBeInTheDocument();
+  expect(screen.getByRole('checkbox', { name: 'UC Nexus Admin' })).toBeInTheDocument();
+  expect(screen.getByRole('checkbox', { name: /DB Admin/ })).toBeInTheDocument();
+  expect(screen.getByRole('checkbox', { name: 'Tenant Owner' })).toBeInTheDocument();
+});
+
+test('a Tenant Owner gets no company field and neither elevated toggle', async () => {
+  // The roster arrives already filtered to their company, so the assignment is not theirs to make -
+  // and UC Nexus Admin and DB Admin are not theirs to give. Absent, not disabled.
+  identity.roles = ['Tenant Owner', 'DB Admin'];
+  renderPage([relayStatusMock(true), usersMock(), buyersMock], 'tenant');
+
+  await openEditDialog();
+
+  expect(screen.queryByLabelText(/^Company$/i)).not.toBeInTheDocument();
+  expect(screen.queryByRole('checkbox', { name: 'UC Nexus Admin' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('checkbox', { name: /DB Admin/ })).not.toBeInTheDocument();
+  // Granting the role to a peer in their own company is theirs, so that toggle stays.
+  expect(screen.getByRole('checkbox', { name: 'Tenant Owner' })).toBeInTheDocument();
+  // The GP identity still works: the company comes from the account being edited.
+  expect(screen.getByText('GP identity')).toBeInTheDocument();
+});
+
+test('the Tenant Owner page drops the Company column from the roster', async () => {
+  identity.roles = ['Tenant Owner'];
+  renderPage([relayStatusMock(true), usersMock()], 'tenant');
+
+  await screen.findByText('jay@example.com', {}, GRID_TIMEOUT);
+  expect(screen.queryByRole('columnheader', { name: 'Company' })).not.toBeInTheDocument();
+  expect(screen.getByRole('columnheader', { name: 'GP Buyer' })).toBeInTheDocument();
+});
+
+test('each scope names the role its own page needs when the caller lacks it', async () => {
+  identity.roles = ['PO User'];
+  const { unmount } = renderPage([relayStatusMock(true), usersMock()], 'tenant');
+  expect(await screen.findByText(/The Tenant Owner role is required/)).toBeInTheDocument();
+  unmount();
+
+  identity.roles = ['Tenant Owner'];
+  renderPage([relayStatusMock(true), usersMock()], 'nexus');
+  expect(await screen.findByText(/The UC Nexus Admin role is required/)).toBeInTheDocument();
+});
+
+test('checking DB Admin pulls UC Nexus Admin in, and unchecking it drops DB Admin', async () => {
+  // The backend refuses a standalone DB Admin, so the dialog must never be able to build one.
+  identity.roles = ['UC Nexus Admin', 'DB Admin'];
+  renderPage([relayStatusMock(true), usersMock(), buyersMock]);
+
+  await openEditDialog();
+
+  const nexusAdmin = screen.getByRole('checkbox', { name: 'UC Nexus Admin' }) as HTMLInputElement;
+  const dbAdmin = screen.getByRole('checkbox', { name: /DB Admin/ }) as HTMLInputElement;
+
+  fireEvent.click(dbAdmin);
+  await waitFor(() => expect(dbAdmin.checked).toBe(true));
+  expect(nexusAdmin.checked).toBe(true);
+
+  fireEvent.click(nexusAdmin);
+  await waitFor(() => expect(nexusAdmin.checked).toBe(false));
+  expect(dbAdmin.checked).toBe(false);
 });

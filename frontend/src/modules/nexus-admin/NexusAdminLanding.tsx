@@ -1,24 +1,9 @@
 import type { ReactNode } from 'react';
 import { Box, Typography, Card, CardActionArea, Grid } from '@mui/material';
 import { useMemo } from 'react';
-import {
-  ClipboardList,
-  PackageSearch,
-  Warehouse,
-  Folder,
-  Users,
-  SprayCan,
-  Router,
-  Activity,
-  DatabaseZap,
-  Database,
-  Boxes,
-  DoorOpen,
-  CircleDollarSign,
-} from 'lucide-react';
+import { Users, Router, Activity, DatabaseZap, Database } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
-import { StatCard, StatCardSkeleton } from '../../components/StatCard';
 import { GET_ADMIN_STATS } from '../../graphql/admin';
 import { useIdentity } from '../../hooks/useIdentity';
 import { microLabelSx, tabularSx } from '../../theme';
@@ -34,10 +19,7 @@ interface AdminStatsData {
   };
 }
 
-type CountKey = 'userCount' | 'hardwareItemCount' | 'openingCount';
-
 const CARD_ICON = { size: 26, strokeWidth: 1.5 } as const;
-const TILE_ICON = { size: 18, strokeWidth: 1.75 } as const;
 
 interface ShortcutCardProps {
   label: string;
@@ -74,33 +56,27 @@ interface SubRoute {
   label: string;
   path: string;
   icon: ReactNode;
-  /** Which adminStats count, if any, belongs on this card. */
-  countKey?: CountKey;
+  /** Whether the userCount from adminStats belongs on this card. */
+  showUserCount?: boolean;
 }
 
 // db-admin-postgres-access: prepended only for a DB Admin, and only where the feature is enabled. The
-// explicit isDbAdmin check deliberately bypasses the app's "admin sees everything" shorthand - this
-// card mints internet-reachable read-write credentials, so a plain Admin/Manager must not see it.
+// explicit isDbAdmin check deliberately bypasses the module's own role gate - this card mints
+// internet-reachable read-write credentials, so a plain UC NEXUS ADMIN must not see it.
 const DB_ACCESS_ROUTE: SubRoute = {
   label: 'Database Access',
-  path: '/app/admin/db-access',
+  path: '/app/nexus-admin/db-access',
   icon: <Database {...CARD_ICON} />,
 };
 
 const SUB_ROUTES: SubRoute[] = [
-  { label: 'Project Purchasing Progress', path: '/app/admin/project-purchasing-progress', icon: <ClipboardList {...CARD_ICON} /> },
-  { label: 'Hardware Status by Project', path: '/app/admin/hardware-status', icon: <PackageSearch {...CARD_ICON} />, countKey: 'hardwareItemCount' },
-  { label: 'Warehouses', path: '/app/admin/warehouses', icon: <Warehouse {...CARD_ICON} /> },
-  { label: 'Projects', path: '/app/admin/projects', icon: <Folder {...CARD_ICON} /> },
-  { label: 'User Management', path: '/app/admin/users', icon: <Users {...CARD_ICON} />, countKey: 'userCount' },
-  { label: 'Relay Installs', path: '/app/admin/relay-installs', icon: <Router {...CARD_ICON} /> },
-  { label: 'Nexus GP Traffic', path: '/app/admin/nexus-gp-traffic', icon: <Activity {...CARD_ICON} /> },
-  { label: 'Location Cleanup', path: '/app/admin/location-cleanup', icon: <SprayCan {...CARD_ICON} /> },
-  { label: 'SharePoint Migration', path: '/app/admin/sharepoint-migration', icon: <DatabaseZap {...CARD_ICON} /> },
-  { label: 'Inventory Value', path: '/app/admin/inventory-value', icon: <CircleDollarSign {...CARD_ICON} /> },
+  { label: 'User Management', path: '/app/nexus-admin/users', icon: <Users {...CARD_ICON} />, showUserCount: true },
+  { label: 'Relay Installs', path: '/app/nexus-admin/relay-installs', icon: <Router {...CARD_ICON} /> },
+  { label: 'Nexus GP Traffic', path: '/app/nexus-admin/nexus-gp-traffic', icon: <Activity {...CARD_ICON} /> },
+  { label: 'SharePoint Migration', path: '/app/nexus-admin/sharepoint-migration', icon: <DatabaseZap {...CARD_ICON} /> },
 ];
 
-export default function AdminLanding() {
+export default function NexusAdminLanding() {
   const navigate = useNavigate();
   const { isDbAdmin } = useIdentity();
   const { data, loading } = useQuery<AdminStatsData>(GET_ADMIN_STATS, {
@@ -117,33 +93,12 @@ export default function AdminLanding() {
     <Box>
       <FadeIn>
         <Typography variant="h5" sx={{ mb: 0.25 }}>
-          Admin
+          UC Nexus Admin
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Reference data, access, and the machinery behind the shop floor.
+          Access, the GP relay, and the machinery behind every company at once.
         </Typography>
       </FadeIn>
-
-      <Box sx={{ display: 'flex', gap: 1.5, mb: 3, flexWrap: 'wrap' }}>
-        {loading && !s ? (
-          Array.from({ length: 3 }).map((_, i) => <StatCardSkeleton key={i} />)
-        ) : s ? (
-          <StaggerList count={3}>
-            <StaggerItem style={{ flex: '1 1 0', minWidth: 130, display: 'flex' }}>
-              <StatCard icon={<Users {...TILE_ICON} />} label="Users" value={s.userCount} />
-            </StaggerItem>
-            <StaggerItem style={{ flex: '1 1 0', minWidth: 130, display: 'flex' }}>
-              {/* Distinct (category, product code) pairs, not a row count - `get_admin_stats` groups
-                  before counting. Labelled "Hardware Items" it sat next to a raw Openings count and
-                  read as though the schedule had imported short (1,122 against 29,126 actual rows). */}
-              <StatCard icon={<Boxes {...TILE_ICON} />} label="Distinct Products" value={s.hardwareItemCount} />
-            </StaggerItem>
-            <StaggerItem style={{ flex: '1 1 0', minWidth: 130, display: 'flex' }}>
-              <StatCard icon={<DoorOpen {...TILE_ICON} />} label="Openings" value={s.openingCount} />
-            </StaggerItem>
-          </StaggerList>
-        ) : null}
-      </Box>
 
       <Typography component="div" sx={{ ...microLabelSx, mb: 1.25 }}>
         Go to
@@ -156,7 +111,7 @@ export default function AdminLanding() {
                 <ShortcutCard
                   label={card.label}
                   icon={card.icon}
-                  count={card.countKey && s ? s[card.countKey] : undefined}
+                  count={card.showUserCount && !loading && s ? s.userCount : undefined}
                   onClick={() => navigate(card.path)}
                 />
               </StaggerItem>

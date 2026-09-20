@@ -14,7 +14,7 @@ export const GET_PROJECTS = gql`
       # #632: the XML the schedule on file came from, shown on the project landing card. Null on
       # projects last imported before the name was captured (#627) - the card omits the line.
       scheduleFilename
-      # #637: the GP company (tenant) that owns the job. Admin/Manager sees every company's projects
+      # #637: the GP company (tenant) that owns the job. A UC Nexus Admin sees every company's projects
       # combined, so the picker badges the row with it; a scoped caller only ever gets their own.
       company
       openingCount

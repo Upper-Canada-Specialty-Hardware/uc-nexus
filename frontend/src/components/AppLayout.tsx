@@ -28,7 +28,7 @@ const RAIL_COLLAPSED_KEY = 'uc-nexus-rail-collapsed';
 
 export default function AppLayout() {
   const { mode, setMode } = useColorScheme();
-  const { isAdmin } = useIdentity();
+  const { isNexusAdmin } = useIdentity();
   const location = useLocation();
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -132,10 +132,10 @@ export default function AppLayout() {
 
           <Box sx={{ flexGrow: 1 }} />
 
-          {/* A dev-only teardown gated behind require_admin_request server-side. Non-admins could
-              never fire it, so showing it to them was a scary, dead control in the toolbar - it now
-              renders only for the accounts that can actually use it. */}
-          {isAdmin && (
+          {/* A dev-only teardown gated behind require_admin_request server-side. Only a UC NEXUS
+              ADMIN could ever fire it, so showing it to anyone else was a scary, dead control in the
+              toolbar - it now renders only for the accounts that can actually use it. */}
+          {isNexusAdmin && (
             <Button
               variant="outlined"
               color="inherit"
@@ -161,8 +161,8 @@ export default function AppLayout() {
             <GpQueueChip />
           </Box>
 
-          {/* The GP company a scoped user is assigned to. Renders nothing for Admin/Manager, who is
-              unscoped, so the bar is unchanged for them. */}
+          {/* The GP company a scoped user is assigned to. Renders nothing for a UC NEXUS ADMIN, who
+              is unscoped, so the bar is unchanged for them. */}
           <TopBarCompany />
 
           <NotificationBell />

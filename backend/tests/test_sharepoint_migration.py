@@ -10,7 +10,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.auth import ADMIN_ROLE
+from app.auth import NEXUS_ADMIN_ROLE
 from app.errors import ValidationError
 from app.models.enums import Classification, DestockSource, HardwareItemState, POOrigin, POStatus
 from app.models.hardware import HardwareItem
@@ -290,11 +290,11 @@ def test_stock_items_counts_rows_not_entries(db_session):
 
 def test_both_migration_fields_are_admin_only():
     """Bulk inventory writes and a read of another system on company credentials. Not SIGNED_IN."""
-    from app.auth import ADMIN_ROLE
+    from app.auth import NEXUS_ADMIN_ROLE
     from app.auth_policy import ROOT_FIELD_POLICY
 
-    assert ROOT_FIELD_POLICY["sharepointInventorySnapshot"] == ADMIN_ROLE
-    assert ROOT_FIELD_POLICY["migrateSharepointInventory"] == ADMIN_ROLE
+    assert ROOT_FIELD_POLICY["sharepointInventorySnapshot"] == NEXUS_ADMIN_ROLE
+    assert ROOT_FIELD_POLICY["migrateSharepointInventory"] == NEXUS_ADMIN_ROLE
 
 
 # --- non-schedule entity types (#454) ----------------------------------------------------------
@@ -1074,7 +1074,7 @@ def _admin_context():
     return {
         "request": _FakeRequest(),
         "_auth_user_id": "u_admin",
-        "_auth_roles": [ADMIN_ROLE],
+        "_auth_roles": [NEXUS_ADMIN_ROLE],
         "_auth_company": "TUBC",
     }
 
@@ -1087,7 +1087,7 @@ def signed_in_admin(monkeypatch, db_session):
     from app.schemas import sharepoint_migration as migration_module
 
     monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_admin"})
-    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [ADMIN_ROLE])
+    monkeypatch.setattr(user_repository, "get_user_roles", lambda user_id: [NEXUS_ADMIN_ROLE])
     monkeypatch.setattr(user_repository, "get_user_company", lambda user_id: "TUBC")
 
     class _Borrowed:
@@ -1182,4 +1182,4 @@ def test_mirrored_pos_by_number_is_scoped_to_the_callers_company(db_session, mon
 def test_the_po_lookup_is_admin_only():
     from app.auth_policy import ROOT_FIELD_POLICY
 
-    assert ROOT_FIELD_POLICY["mirroredPosByNumber"] == ADMIN_ROLE
+    assert ROOT_FIELD_POLICY["mirroredPosByNumber"] == NEXUS_ADMIN_ROLE
