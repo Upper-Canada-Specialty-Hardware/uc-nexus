@@ -23,6 +23,7 @@ import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import DataTable from '../../components/DataTable';
 import SelectionActionBar, { BarButton } from '../../components/SelectionActionBar';
 import PageHeader from '../../components/PageHeader';
+import GpWriteQueuePanel from '../../components/GpWriteQueuePanel';
 import ReceiveModal from './ReceiveModal';
 import ReceivingHistory from './ReceivingHistory';
 import MyReceiveDraftsView from './MyReceiveDraftsView';
@@ -83,6 +84,10 @@ interface RecentReceiveRecord {
 type ReceivingView = 'receive' | 'drafts' | 'history';
 
 const RECEIVING_VIEWS: ReceivingView[] = ['receive', 'drafts', 'history'];
+
+// The one write this page is answerable for: a GP RECEIVE ENTRY that has not reached GP yet. A
+// constant rather than an inline array so the panel's query keeps one identity across renders.
+const HELD_GP_RECEIVE_ENTRY_OPS = ['create_receipt'];
 
 interface BackOrderedItem {
   poLineItemId: string;
@@ -487,6 +492,10 @@ export default function ReceivingPage() {
         }
         sx={{ mb: 2.5 }}
       />
+
+      {/* #754: the receives GP has not taken yet, on the dock they were counted on rather than only
+          on the admin queue. It renders nothing while there are none. */}
+      <GpWriteQueuePanel ops={HELD_GP_RECEIVE_ENTRY_OPS} compact heading="Held GP receive entries" />
 
       {view === 'drafts' && <MyReceiveDraftsView />}
       {view === 'history' && <ReceivingHistory projects={projects} projectMap={projectMap} />}
