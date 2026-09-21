@@ -53,9 +53,16 @@ class POHeader(BaseModel):
     currency_id: str = "CAD"
     vendor_address_code: str = "PRIMARY"
     shipping_method: str = "LOCAL DELIVERY"
-    # Issue #257: order-time GP charges. tax_detail_id is a GP purchase tax detail (TX00201,
-    # TXDTLTYP=2) the user picked; the relay looks up its rate and computes the tax. The three
-    # dollar amounts are entered on the register form. All optional; a PO with none is valid.
+    # Issue #762: the GP purchase tax details (TX00201, TXDTLTYP=2) the PO user picked - one or more,
+    # since UBC's 12 percent POs are GST plus PST, two details no purchase schedule there holds. The
+    # relay reads each one's percent off GP at write time (never a percent the client sends) and
+    # writes the tax the way GP's own PO entry does: a row per line per detail, a freight and a misc
+    # row per detail, and the header totals - see po_tax.py. The three dollar amounts are entered
+    # on the register form. All optional; a PO with none is valid (no detail = no tax at all).
+    tax_detail_ids: list[str] = Field(default_factory=list)
+    # The single detail a PO REGISTRATION carried before #762. Still read, because a registration
+    # queued on PENDING GP WRITES before the backend changed shape replays with this key: it folds
+    # into tax_detail_ids below and is never consulted again. New callers send the list.
     tax_detail_id: str | None = Field(default=None, max_length=15)
     trade_discount: Decimal = Decimal(0)
     freight_amount: Decimal = Decimal(0)
@@ -70,6 +77,25 @@ class POHeader(BaseModel):
     site: str = Field(..., max_length=11)
     contact: str | None = Field(default=None, max_length=61)
     comment: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def fold_tax_details(self):
+        """One list of distinct, trimmed detail ids in the order picked, whichever field carried
+        them. A blank id is refused rather than dropped: the caller meant to name a detail and the
+        PO would otherwise register with less tax than it asked for. GP's TAXDTLID is char(15)."""
+        picked = [*self.tax_detail_ids, *([self.tax_detail_id] if self.tax_detail_id is not None else [])]
+        folded: list[str] = []
+        for raw in picked:
+            detail = (raw or "").strip()
+            if not detail:
+                raise ValueError("a tax detail id must not be blank")
+            if len(detail) > 15:
+                raise ValueError(f"tax detail id '{detail}' is longer than GP's 15-character TAXDTLID")
+            if detail not in folded:
+                folded.append(detail)
+        self.tax_detail_ids = folded
+        self.tax_detail_id = None
+        return self
 
 
 class CreatePoRequest(BaseModel):
