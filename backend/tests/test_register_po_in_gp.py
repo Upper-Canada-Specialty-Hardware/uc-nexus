@@ -21,7 +21,7 @@ from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.repositories import import_repository, po_repository
 from app.schemas import po as po_schema
 from app.services.gp_po import build_create_po_payload
-from app.services.relay_gateway import CREATE_PO_IDEMPOTENCY_FEATURE
+from app.services.relay_gateway import CREATE_PO_IDEMPOTENCY_FEATURE, CREATE_PO_TAX_ROWS_FEATURE
 
 
 def _make_project(session) -> Project:
@@ -797,6 +797,37 @@ def test_the_register_resolver_lands_a_stock_draft_on_the_project_the_dialog_cho
 # advertised the capability is refused before anything is sent.
 
 
+def test_fold_tax_detail_ids_trims_dedupes_and_keeps_the_order_picked():
+    from app.schemas.inputs import RegisterPOInput
+
+    def _input(**tax):
+        return RegisterPOInput(
+            po_id="po",
+            gp_vendor_id="V",
+            gp_vendor_name="Vendor",
+            gp_company="TUBC",
+            buyer_id="mira",
+            line_items=[],
+            **tax,
+        )
+
+    assert po_schema._fold_tax_detail_ids(_input()) == []
+    assert po_schema._fold_tax_detail_ids(_input(tax_detail_ids=None, tax_detail_id=None)) == []
+    assert po_schema._fold_tax_detail_ids(_input(tax_detail_ids=[" PST 7% ", "ON HST - P", "PST 7%"])) == [
+        "PST 7%",
+        "ON HST - P",
+    ]
+    # the older scalar folds in after the list, once
+    assert po_schema._fold_tax_detail_ids(_input(tax_detail_ids=["ON HST - P"], tax_detail_id="ON HST - P")) == [
+        "ON HST - P"
+    ]
+    assert po_schema._fold_tax_detail_ids(_input(tax_detail_id="ON HST - P")) == ["ON HST - P"]
+    with pytest.raises(ValidationError):
+        po_schema._fold_tax_detail_ids(_input(tax_detail_ids=[""]))
+    with pytest.raises(ValidationError):
+        po_schema._fold_tax_detail_ids(_input(tax_detail_id="A" * 16))
+
+
 def _stub_the_register_resolvers_world(
     monkeypatch, db_session, *, relay_call, features=(CREATE_PO_IDEMPOTENCY_FEATURE,), connected=True
 ):
@@ -958,6 +989,137 @@ def test_a_relay_that_cannot_recognise_the_key_is_refused_before_the_push(monkey
         assert po_repository.reload_po(db_session, draft.id).status == POStatus.DRAFT
     finally:
         _delete_queued_write(key)
+
+
+# --- #762: the tax details ride as a list, and only to a relay that writes the tax rows -------------
+
+_WITH_TAX_ROWS = (CREATE_PO_IDEMPOTENCY_FEATURE, CREATE_PO_TAX_ROWS_FEATURE)
+
+
+def _run_register_with_tax(draft, key, **tax):
+    import asyncio
+
+    from app.schemas.inputs import RegisterPOInput, RegisterPOLineItemInput
+
+    line = draft.line_items[0]
+    return asyncio.run(
+        po_schema.POMutations().register_po_in_gp(
+            None,
+            RegisterPOInput(
+                po_id=str(draft.id),
+                gp_vendor_id="GPV1",
+                gp_vendor_name="GP Vendor",
+                gp_company="TUBC",
+                buyer_id="mira",
+                line_items=[
+                    RegisterPOLineItemInput(
+                        id=str(line.id),
+                        hardware_category=line.hardware_category,
+                        product_code=line.product_code,
+                        ordered_quantity=line.ordered_quantity,
+                        unit_cost=float(line.unit_cost),
+                    )
+                ],
+                idempotency_key=key,
+                site="VANCOUVER",
+                **tax,
+            ),
+        )
+    )
+
+
+def test_the_push_carries_every_picked_tax_detail_in_order(monkeypatch, db_session):
+    draft = _stock_draft_po(db_session)
+    pushed: list = []
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        pushed.append(payload)
+        return {"po_number": "PO0000802", "company": "TUBC"}
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call, features=_WITH_TAX_ROWS)
+
+    result = _run_register_with_tax(
+        draft, str(uuid.uuid4()), tax_detail_ids=[" BC GST 5% - P ", "BC PST 7% PURCH", "BC GST 5% - P"]
+    )
+
+    assert result.queued is False
+    assert pushed[0]["header"]["tax_detail_ids"] == ["BC GST 5% - P", "BC PST 7% PURCH"]
+    assert "tax_detail_id" not in pushed[0]["header"]
+
+
+def test_an_older_clients_single_tax_detail_still_registers(monkeypatch, db_session):
+    draft = _stock_draft_po(db_session)
+    pushed: list = []
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        pushed.append(payload)
+        return {"po_number": "PO0000803", "company": "TUBC"}
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call, features=_WITH_TAX_ROWS)
+
+    _run_register_with_tax(draft, str(uuid.uuid4()), tax_detail_id="ON HST - P")
+
+    assert pushed[0]["header"]["tax_detail_ids"] == ["ON HST - P"]
+
+
+def test_a_blank_tax_detail_is_refused_rather_than_dropped(monkeypatch, db_session):
+    draft = _stock_draft_po(db_session)
+    calls: list = []
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        calls.append(op)
+        return {"po_number": "PO0000804", "company": "TUBC"}
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call, features=_WITH_TAX_ROWS)
+
+    with pytest.raises(ValidationError):
+        _run_register_with_tax(draft, str(uuid.uuid4()), tax_detail_ids=["ON HST - P", "  "])
+    assert calls == []
+
+
+def test_a_taxed_registration_is_refused_by_a_relay_that_does_not_write_the_tax_rows(monkeypatch, db_session):
+    """An older relay ignores the detail list and would register a CAD PO carrying no tax, so the
+    registration is turned away with the update-the-relay message rather than pushed."""
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    calls: list = []
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        calls.append(op)
+        return {"po_number": "PO0000805", "company": "TUBC"}
+
+    _stub_the_register_resolvers_world(
+        monkeypatch, db_session, relay_call=_relay_call, features=(CREATE_PO_IDEMPOTENCY_FEATURE,)
+    )
+
+    try:
+        with pytest.raises(RelayOpUnsupportedError):
+            _run_register_with_tax(draft, key, tax_detail_ids=["ON HST - P"])
+
+        assert calls == []
+        assert _queued_write(key) is None
+        assert po_repository.reload_po(db_session, draft.id).status == POStatus.DRAFT
+    finally:
+        _delete_queued_write(key)
+
+
+def test_an_untaxed_registration_still_goes_to_a_relay_without_the_tax_rows_feature(monkeypatch, db_session):
+    # No detail picked (a company with none, or a USD vendor): nothing for the older build to ignore.
+    draft = _stock_draft_po(db_session)
+    pushed: list = []
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        pushed.append(payload)
+        return {"po_number": "PO0000806", "company": "TUBC"}
+
+    _stub_the_register_resolvers_world(
+        monkeypatch, db_session, relay_call=_relay_call, features=(CREATE_PO_IDEMPOTENCY_FEATURE,)
+    )
+
+    result = _run_register(draft, str(uuid.uuid4()))
+
+    assert result.queued is False
+    assert pushed[0]["header"]["tax_detail_ids"] == []
 
 
 def test_the_push_carries_the_attempt_key_at_the_top_of_the_payload(monkeypatch, db_session):

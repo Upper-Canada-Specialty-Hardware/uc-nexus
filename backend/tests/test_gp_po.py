@@ -44,8 +44,8 @@ def test_build_create_po_payload_non_job_line():
 
 
 def test_build_create_po_payload_defaults_gp_charges_to_zero_without_tax_detail():
-    # issue #257: with no charges/tax passed, the header carries the zeroed GP charge fields (the
-    # relay POHeader Decimals are non-null) and a null tax detail (relay writes no tax).
+    # issue #257 / #762: with no charges/tax passed, the header carries the zeroed GP charge fields
+    # (the relay POHeader Decimals are non-null) and an empty detail list (relay writes no tax).
     payload = gp_po.build_create_po_payload(
         vendor_gp_id="ING100",
         vendor_contact_name=None,
@@ -57,15 +57,17 @@ def test_build_create_po_payload_defaults_gp_charges_to_zero_without_tax_detail(
         site="VANCOUVER",
     )
     h = payload["header"]
-    assert h["tax_detail_id"] is None
+    assert h["tax_detail_ids"] == []
+    assert "tax_detail_id" not in h
     assert h["freight_amount"] == 0
     assert h["misc_amount"] == 0
     assert h["trade_discount"] == 0
 
 
 def test_build_create_po_payload_maps_gp_charges_with_freight_from_shipping_cost():
-    # issue #257: freight_amount is passed from the PO's shipping_cost at the call site; misc + trade
-    # discount are the new register-form inputs; tax_detail_id drives the relay's tax computation.
+    # issue #257 / #762: freight_amount is passed from the PO's shipping_cost at the call site; misc +
+    # trade discount are the register-form inputs; tax_detail_ids drive the relay's tax computation,
+    # one GP tax detail each, in the order picked.
     payload = gp_po.build_create_po_payload(
         vendor_gp_id="ING100",
         vendor_contact_name=None,
@@ -74,14 +76,14 @@ def test_build_create_po_payload_maps_gp_charges_with_freight_from_shipping_cost
         cost_code=None,
         po_number=None,
         line_items=[_line_item()],
-        tax_detail_id="ON HST - P",
+        tax_detail_ids=["BC GST 5% - P", "BC PST 7% PURCH"],
         freight_amount=25.0,
         misc_amount=5.0,
         trade_discount=2.0,
         site="VANCOUVER",
     )
     h = payload["header"]
-    assert h["tax_detail_id"] == "ON HST - P"
+    assert h["tax_detail_ids"] == ["BC GST 5% - P", "BC PST 7% PURCH"]
     assert h["freight_amount"] == 25.0
     assert h["misc_amount"] == 5.0
     assert h["trade_discount"] == 2.0

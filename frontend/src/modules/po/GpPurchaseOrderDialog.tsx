@@ -7,6 +7,7 @@ import {
   CircularProgress,
   FormControlLabel,
   IconButton,
+  ListItemText,
   MenuItem,
   Stack,
   TextField,
@@ -357,9 +358,12 @@ export default function GpPurchaseOrderDialog({
   // Issue #156: optional order-time dollar costs. Kept as strings ('' = not entered, distinct from 0).
   const [shippingCost, setShippingCost] = useState('');
   const [tariffAmount, setTariffAmount] = useState('');
-  // Issue #257: GP header charges captured at register time. taxDetailId is a GP purchase tax detail
-  // (CAD only); miscellaneous + tradeDiscount are dollar inputs. Freight maps from shippingCost above.
-  const [taxDetailId, setTaxDetailId] = useState('');
+  // Issue #257 / #762: GP header charges captured at register time. taxDetailIds are the GP purchase
+  // tax details picked from the live list (CAD only; one or more - UBC's GST plus PST is two picks),
+  // and taxDetailManual is the #315 fallback: ids typed by hand, comma-separated, when the list could
+  // not load. miscellaneous + tradeDiscount are dollar inputs. Freight maps from shippingCost above.
+  const [taxDetailIds, setTaxDetailIds] = useState<string[]>([]);
+  const [taxDetailManual, setTaxDetailManual] = useState('');
   const [miscellaneous, setMiscellaneous] = useState('');
   const [tradeDiscount, setTradeDiscount] = useState('');
   // Issue #256: create mode drafts carry the PM's preferred date. No vendor - GP owns those, and the
@@ -533,6 +537,14 @@ export default function GpPurchaseOrderDialog({
   const taxDetailsFailed = !!gpTaxDetailsError;
   const useManualTaxEntry =
     isRegister && !isForeignCurrency && relayConnected && !gpTaxDetailsLoading && gpTaxDetails.length === 0;
+  // The details this registration actually sends: the dropdown picks, or the manual field split on
+  // commas (#762 - a GST plus PST PO is two ids). Only the ends of each id are trimmed: GP ids carry
+  // interior spaces ('ON HST - P'). Empty for a foreign-currency PO, which carries no tax schedule.
+  const pickedTaxDetailIds = useMemo(() => {
+    if (isForeignCurrency) return [];
+    const raw = useManualTaxEntry ? taxDetailManual.split(',') : taxDetailIds;
+    return raw.map((id) => id.trim()).filter((id, i, all) => id !== '' && all.indexOf(id) === i);
+  }, [isForeignCurrency, useManualTaxEntry, taxDetailManual, taxDetailIds]);
 
   // Issue #232: suggest the ordering vendor from each line's TITAN manufacturer. The manufacturer is
   // the derived POLineItem.manufacturer (resolved server-side from the line's linked HardwareItem),
@@ -647,7 +659,8 @@ export default function GpPurchaseOrderDialog({
       setShippingCost(registerPo.shippingCost != null ? String(registerPo.shippingCost) : '');
       setTariffAmount(registerPo.tariffAmount != null ? String(registerPo.tariffAmount) : '');
       // Issue #257: no draft-side source for these; the user enters them at register time.
-      setTaxDetailId('');
+      setTaxDetailIds([]);
+      setTaxDetailManual('');
       setMiscellaneous('');
       setTradeDiscount('');
       // GP's header fields start on their defaults; the PO date starts on today.
@@ -684,7 +697,8 @@ export default function GpPurchaseOrderDialog({
       setNotes('');
       setShippingCost('');
       setTariffAmount('');
-      setTaxDetailId('');
+      setTaxDetailIds([]);
+      setTaxDetailManual('');
       setMiscellaneous('');
       setTradeDiscount('');
       setPreferredDeliveryDate('');
@@ -894,15 +908,15 @@ export default function GpPurchaseOrderDialog({
         !costCodes.some((c) => `${c.costCode}-${c.costElement}` === costCode)
       )
         errs.costCode = 'The selected cost code is no longer on this job in GP - pick another';
-      // Issue #257: a CAD PO must carry a tax detail (the relay computes tax from it); a foreign-currency
-      // PO carries none (the relay blanks the schedule), so require it for CAD only. Only enforce it when
-      // the company actually defines purchase tax details - a company with none would otherwise be
-      // hard-blocked, since the dropdown is disabled/empty when gpTaxDetails is empty.
-      // Issue #315: when the live list couldn't load (any error), require the manually-entered id instead
-      // so the CAD PO still carries tax. Trim so a whitespace-only entry doesn't pass here yet submit as
-      // null (handleSubmit trims too). A genuinely empty list (no error) stays optional - that company
-      // may simply have no purchase tax details.
-      if (!isForeignCurrency && gpVendorId && !taxDetailId.trim()) {
+      // Issue #257 / #762: a CAD PO must carry at least one tax detail (the relay computes tax from
+      // them); a foreign-currency PO carries none (the relay blanks the schedule), so require it for CAD
+      // only. Only enforce it when the company actually defines purchase tax details - a company with
+      // none would otherwise be hard-blocked, since the dropdown is disabled/empty when gpTaxDetails is
+      // empty. Issue #315: when the live list couldn't load (any error), require the manually-entered
+      // ids instead so the CAD PO still carries tax. pickedTaxDetailIds is already trimmed, so a
+      // whitespace-only entry does not pass here. A genuinely empty list (no error) stays optional -
+      // that company may simply have no purchase tax details.
+      if (!isForeignCurrency && gpVendorId && pickedTaxDetailIds.length === 0) {
         if (gpTaxDetails.length > 0) errs.taxDetail = 'Select a tax detail';
         else if (taxDetailsFailed)
           errs.taxDetail = taxDetailsOpUnsupported
@@ -922,7 +936,7 @@ export default function GpPurchaseOrderDialog({
       errs.tradeDiscount = 'Must be >= 0';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, effectiveSite, sites.length, effectiveContact, comment, isJob, costCode, costCodes, shippingCost, tariffAmount, isForeignCurrency, taxDetailId, gpTaxDetails.length, taxDetailsOpUnsupported, taxDetailsFailed, miscellaneous, tradeDiscount]);
+  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, effectiveSite, sites.length, effectiveContact, comment, isJob, costCode, costCodes, shippingCost, tariffAmount, isForeignCurrency, pickedTaxDetailIds, gpTaxDetails.length, taxDetailsOpUnsupported, taxDetailsFailed, miscellaneous, tradeDiscount]);
 
   /**
    * Stage two: read the PO back out of GP and hand the finished PO to the caller. Also what "Try
@@ -982,12 +996,10 @@ export default function GpPurchaseOrderDialog({
     // Issue #156: '' = not entered (null); 0 is a valid entered value.
     const shippingCostValue = shippingCost.trim() === '' ? null : parseFloat(shippingCost);
     const tariffAmountValue = tariffAmount.trim() === '' ? null : parseFloat(tariffAmount);
-    // Issue #257: same '' -> null convention. tax detail is not sent for a foreign-currency PO (none).
+    // Issue #257: same '' -> null convention. The tax details (#762: a list, empty for a
+    // foreign-currency PO) are pickedTaxDetailIds, trimmed and de-duplicated above.
     const miscellaneousValue = miscellaneous.trim() === '' ? null : parseFloat(miscellaneous);
     const tradeDiscountValue = tradeDiscount.trim() === '' ? null : parseFloat(tradeDiscount);
-    // Issue #315: a manually-typed id may carry stray ends; trim them. GP ids can contain internal
-    // spaces (e.g. 'ON HST - P'), so only the ends are trimmed, never the interior.
-    const taxDetailIdValue = isForeignCurrency || !taxDetailId.trim() ? null : taxDetailId.trim();
 
     setGpError(null);
     setGpBusy(true);
@@ -1020,7 +1032,7 @@ export default function GpPurchaseOrderDialog({
               comment: comment.trim() || null,
               shippingCost: shippingCostValue,
               tariffAmount: tariffAmountValue,
-              taxDetailId: taxDetailIdValue,
+              taxDetailIds: pickedTaxDetailIds,
               miscellaneous: miscellaneousValue,
               tradeDiscount: tradeDiscountValue,
               idempotencyKey,
@@ -1122,7 +1134,7 @@ export default function GpPurchaseOrderDialog({
     notes,
     shippingCost,
     tariffAmount,
-    taxDetailId,
+    pickedTaxDetailIds,
     miscellaneous,
     tradeDiscount,
     isForeignCurrency,
@@ -1654,49 +1666,67 @@ export default function GpPurchaseOrderDialog({
             }
           />
           {/* Issue #315: auto-switch to manual entry when the live dropdown can't serve (relay out of
-              date, or GP returned no purchase tax details). The typed id is validated GP-side by the
-              relay's create_po (get_tax_detail_percent -> tax_detail_not_found on a bad id). */}
+              date, or GP returned no purchase tax details). Each typed id is validated GP-side by the
+              relay's create_po (get_tax_detail_percent -> tax_detail_not_found on a bad id). #762: more
+              than one id, comma-separated, for a GST plus PST PO. */}
           {useManualTaxEntry ? (
             <TextField
               label={taxDetailsFailed ? 'Tax detail id (required)' : 'Tax detail id (manual)'}
-              value={taxDetailId}
-              onChange={(e) => setTaxDetailId(e.target.value)}
+              value={taxDetailManual}
+              onChange={(e) => setTaxDetailManual(e.target.value)}
               size="small"
               sx={{ minWidth: 260, ...MONO_FIELD_SX }}
               error={!!errors.taxDetail}
               helperText={
                 errors.taxDetail ||
                 (taxDetailsOpUnsupported
-                  ? 'Relay out of date - enter the GP tax detail id (e.g. ON HST - P)'
+                  ? 'Relay out of date - enter the GP tax detail id(s), comma-separated (e.g. ON HST - P)'
                   : taxDetailsFailed
-                    ? 'Live tax details could not load - enter the GP tax detail id (e.g. ON HST - P)'
-                    : 'No live GP tax details returned - enter the id manually if this company uses purchase tax')
+                    ? 'Live tax details could not load - enter the GP tax detail id(s), comma-separated (e.g. ON HST - P)'
+                    : 'No live GP tax details returned - enter the id(s) manually, comma-separated, if this company uses purchase tax')
               }
             />
           ) : (
+            /* #762: a multi-select. Every pick is written to GP as its own tax detail on the PO, on
+               the goods, the freight and the misc, so GST plus PST is two picks rather than a combined
+               schedule (none exists on the purchasing side). The relay reads each rate off GP. */
             <TextField
               select
-              label={isForeignCurrency ? 'Tax detail' : 'Tax detail (required)'}
-              value={isForeignCurrency ? '' : taxDetailId}
-              onChange={(e) => setTaxDetailId(e.target.value)}
+              label={isForeignCurrency ? 'Tax details' : 'Tax details (required)'}
+              value={isForeignCurrency ? [] : taxDetailIds}
+              onChange={(e) => {
+                const v = e.target.value as unknown;
+                setTaxDetailIds(typeof v === 'string' ? v.split(',') : (v as string[]));
+              }}
               size="small"
               sx={{ minWidth: 260 }}
               disabled={!relayConnected || isForeignCurrency || gpTaxDetails.length === 0}
               error={!!errors.taxDetail}
+              slotProps={{
+                select: {
+                  multiple: true,
+                  renderValue: (selected) => (selected as string[]).join(', '),
+                },
+              }}
               helperText={
                 errors.taxDetail ||
                 (isForeignCurrency
                   ? 'Not applicable for a foreign-currency PO'
                   : !relayConnected
                     ? RELAY_DOWN_HELPER
-                    : '')
+                    : 'Pick every detail the vendor charges - GST plus PST is two picks')
               }
             >
               {gpTaxDetails.map((t) => (
                 <MenuItem key={t.taxDetailId} value={t.taxDetailId}>
-                  {t.description
-                    ? `${t.taxDetailId} · ${t.description} (${t.percent}%)`
-                    : `${t.taxDetailId} (${t.percent}%)`}
+                  <Checkbox size="small" checked={taxDetailIds.includes(t.taxDetailId)} sx={{ p: 0, mr: 1 }} />
+                  <ListItemText
+                    primary={
+                      t.description
+                        ? `${t.taxDetailId} · ${t.description} (${t.percent}%)`
+                        : `${t.taxDetailId} (${t.percent}%)`
+                    }
+                  />
                 </MenuItem>
               ))}
             </TextField>

@@ -105,6 +105,14 @@ GP_SYNC_STATE_FEATURE = "gp_sync_state"
 # the relay, not this backend, can tell a retry from a new order.
 CREATE_PO_IDEMPOTENCY_FEATURE = "create_po_idempotency"
 
+# The hello feature flag a relay sets to say it reads the LIST of purchase tax details on a create_po
+# header and writes the PO's tax the way GP's own PO entry does (#762): a row per line per detail,
+# freight and misc taxed, the trade discount netted, no summary row. A relay without it ignores
+# `tax_detail_ids` altogether and would register a CAD PO carrying no tax at all, so PO REGISTRATION
+# refuses to push a taxed registration to such a build - an untaxed one (no detail picked, or a USD
+# vendor) is unaffected.
+CREATE_PO_TAX_ROWS_FEATURE = "create_po_tax_rows"
+
 # What a relay too old to discover its own GP companies leaves behind. The hello frame is the
 # only place that list comes from now, so a build that omits it serves nothing - and saying why beats
 # an empty picker with no explanation.

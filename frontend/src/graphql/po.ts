@@ -322,7 +322,9 @@ export const GET_GP_VENDOR_ADDRESSES = gql`
   }
 `;
 
-// Issue #257: GP purchase tax details (TX00201, TXDTLTYP=2) for the register-PO tax-detail dropdown.
+// Issue #257: GP purchase tax details (TX00201, TXDTLTYP=2) for the register-PO tax-detail picker.
+// #762: the picker is a multi-select and RegisterPOInput carries them as `taxDetailIds`; every pick
+// becomes its own tax detail on the GP PO, taxed on goods, freight and misc at its rate.
 export const GET_GP_TAX_DETAILS = gql`
   query GetGpTaxDetails($company: String!) {
     gpTaxDetails(company: $company) {

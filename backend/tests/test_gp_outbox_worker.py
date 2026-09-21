@@ -17,7 +17,9 @@ from app.repositories import gp_outbox_repository
 from app.services import gp_outbox_worker
 
 
-def _enqueue_committed(op: str = "create_receive", company: str = "TUBC") -> tuple[uuid.UUID, str]:
+def _enqueue_committed(
+    op: str = "create_receive", company: str = "TUBC", payload: dict | None = None
+) -> tuple[uuid.UUID, str]:
     """The worker opens its own sessions, so the row has to be committed, not just flushed."""
     from app.database import SessionLocal
 
@@ -29,7 +31,7 @@ def _enqueue_committed(op: str = "create_receive", company: str = "TUBC") -> tup
             op=op,
             relay_op="create_receipt" if op == "create_receive" else "create_po",
             company=company,
-            payload={"po_number": "0000123"},
+            payload=payload if payload is not None else {"po_number": "0000123"},
             persist_context={"po_id": str(uuid.uuid4())},
             entity_key=f"po:{uuid.uuid4()}",
             label="Receive against PO 0000123" if op == "create_receive" else "Register PO 0000123 in GP",
@@ -160,6 +162,35 @@ def test_a_create_po_whose_socket_died_mid_flight_is_asked_again(_migrate_databa
         state = _read(row_id)
         assert state["status"] == "PENDING"
         assert state["failure_kind"] is None
+        assert state["attempts"] == 1
+    finally:
+        _delete(row_id)
+
+
+def test_registration_carries_tax_reads_both_the_list_and_the_older_scalar():
+    carries = gp_outbox_worker.registration_carries_tax
+    assert carries({"header": {"tax_detail_ids": ["ON HST - P"]}}) is True
+    assert carries({"header": {"tax_detail_id": "ON HST - P"}}) is True  # a row queued before #762
+    assert carries({"header": {"tax_detail_ids": []}}) is False
+    assert carries({"header": {"tax_detail_ids": [], "tax_detail_id": None}}) is False
+    assert carries({"header": {}}) is False
+    assert carries({"po_number": "0000123"}) is False
+    assert carries("not a dict") is False
+
+
+def test_a_taxed_create_po_waits_for_a_relay_that_writes_the_tax_rows(_migrate_database, monkeypatch):
+    """A relay that recognises the key but ignores the detail list would register the PO with no tax
+    (or, for a row queued before #762, with the summary-only shape GP doubles on save), so the row
+    waits for the workstation to update - the same treatment as an unrecognised key."""
+    row_id, _key = _enqueue_committed(op="register_po_in_gp", payload={"header": {"tax_detail_id": "ON HST - P"}})
+    try:
+        _stub_relay_features(monkeypatch, "create_po_idempotency")
+        calls: list = []
+        _stub_relay(monkeypatch, result={"po_number": "PO0000901"}, calls=calls)
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert calls == []
+        assert state["status"] == "PENDING"
         assert state["attempts"] == 1
     finally:
         _delete(row_id)

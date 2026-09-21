@@ -35,7 +35,7 @@ from app.services import (
     gp_processing,
     storage,
 )
-from app.services.relay_gateway import CREATE_PO_IDEMPOTENCY_FEATURE
+from app.services.relay_gateway import CREATE_PO_IDEMPOTENCY_FEATURE, CREATE_PO_TAX_ROWS_FEATURE
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import (
@@ -195,6 +195,35 @@ def _assert_buyer_identity(caller_gp_buyer_id: str | None, input_buyer_id: str) 
         raise ValidationError("POs can only be created as your own GP buyer", field="buyer_id")
 
 
+def _fold_tax_detail_ids(input: RegisterPOInput) -> list[str]:
+    """The purchase tax details a PO REGISTRATION carries, as one trimmed, de-duplicated list in the
+    order picked - from #762's `tax_detail_ids`, with the older scalar `tax_detail_id` folded in for a
+    client on the previous build. A blank entry is refused rather than dropped: the user meant to
+    name a detail, and the PO would otherwise register with less tax than they asked for. Whether each
+    id is a purchase detail GP holds is the relay's check (tax_detail_not_found), against TX00201 at
+    write time, the same check the single id always had."""
+    picked = list(input.tax_detail_ids or [])
+    if input.tax_detail_id is not None:
+        picked.append(input.tax_detail_id)
+    folded: list[str] = []
+    for raw in picked:
+        detail = (raw or "").strip()
+        if not detail:
+            raise ValidationError("A tax detail id must not be blank", field="tax_detail_ids")
+        if len(detail) > _MAX_TAX_DETAIL_ID:
+            raise ValidationError(
+                f"Tax detail id '{detail}' is longer than GP's {_MAX_TAX_DETAIL_ID}-character TAXDTLID",
+                field="tax_detail_ids",
+            )
+        if detail not in folded:
+            folded.append(detail)
+    return folded
+
+
+# GP's TAXDTLID (TX00201) is char(15).
+_MAX_TAX_DETAIL_ID = 15
+
+
 def _prepare_register_po(
     *,
     po_id,
@@ -202,7 +231,7 @@ def _prepare_register_po(
     buyer_id,
     cost_code,
     line_items_data,
-    tax_detail_id=None,
+    tax_detail_ids=None,
     shipping_cost=None,
     miscellaneous=None,
     trade_discount=None,
@@ -295,8 +324,9 @@ def _prepare_register_po(
         cost_code=cost_code,
         po_number=None,
         line_items=line_items_data,
-        # Issue #257: freight maps from the PO's shipping_cost; misc + trade discount are new inputs.
-        tax_detail_id=tax_detail_id,
+        # Issue #257 / #762: freight maps from the PO's shipping_cost; misc + trade discount are the
+        # register-form inputs; the tax details are the picks, already folded and checked.
+        tax_detail_ids=tax_detail_ids,
         freight_amount=shipping_cost,
         misc_amount=miscellaneous,
         trade_discount=trade_discount,
@@ -772,6 +802,7 @@ class POMutations:
             po = await asyncio.to_thread(_load_po_type, uuid.UUID(state.result_id))
             return RegisterPOResult(queued=False, outbox_entry_id=None, purchase_order=po)
 
+        tax_detail_ids = _fold_tax_detail_ids(input)
         payload = await asyncio.to_thread(
             _prepare_register_po,
             po_id=pid,
@@ -779,7 +810,7 @@ class POMutations:
             buyer_id=input.buyer_id,
             cost_code=input.cost_code,
             line_items_data=line_items_data,
-            tax_detail_id=input.tax_detail_id,
+            tax_detail_ids=tax_detail_ids,
             shipping_cost=input.shipping_cost,
             miscellaneous=input.miscellaneous,
             trade_discount=input.trade_discount,
@@ -845,6 +876,12 @@ class POMutations:
             # so an out-of-date relay still never gets the push.
             if relay_gateway.connected:
                 relay_gateway.require_feature(CREATE_PO_IDEMPOTENCY_FEATURE, "create_po")
+                # #762: the detail list only means anything to a relay that writes the tax rows. An
+                # older build ignores it and would register a CAD PO with no tax, so a taxed
+                # registration is turned away with the same update-the-relay message. An untaxed one
+                # (no pick, or a USD vendor) has nothing for that build to ignore and goes through.
+                if tax_detail_ids:
+                    relay_gateway.require_feature(CREATE_PO_TAX_ROWS_FEATURE, "create_po")
             try:
                 gp_result = await relay_gateway.relay_call(input.gp_company, "create_po", payload)
             except (RelayUnavailableError, RelayTimeoutError):

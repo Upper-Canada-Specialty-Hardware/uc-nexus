@@ -24,7 +24,7 @@ from app.errors import (
 )
 from app.repositories import gp_outbox_repository
 from app.services import gp_idempotency, gp_processing
-from app.services.relay_gateway import CREATE_PO_IDEMPOTENCY_FEATURE
+from app.services.relay_gateway import CREATE_PO_IDEMPOTENCY_FEATURE, CREATE_PO_TAX_ROWS_FEATURE
 from app.services.relay_gateway import gateway as relay_gateway
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,14 @@ def wake() -> None:
             _wake_event.set()
         except Exception:  # noqa: BLE001 - never let a wake-up break the caller's request path
             logger.exception("gp outbox: failed to signal the worker")
+
+
+def registration_carries_tax(payload: dict) -> bool:
+    """Does a queued create_po payload ask for tax - under #762's list or the earlier scalar key?"""
+    header = payload.get("header") if isinstance(payload, dict) else None
+    if not isinstance(header, dict):
+        return False
+    return bool(header.get("tax_detail_ids")) or bool(header.get("tax_detail_id"))
 
 
 def _persist_register_po_from_context(context: dict, relay_result: dict, key: str) -> None:
@@ -182,6 +190,13 @@ async def _drain_one(row_id: uuid.UUID) -> None:
                 # and the RelayOpUnsupportedError branch below leaves the row waiting for the
                 # workstation to update rather than pushing a PO that could be ordered twice.
                 relay_gateway.require_feature(CREATE_PO_IDEMPOTENCY_FEATURE, relay_op)
+                # #762: a taxed registration is only right against a relay that writes the tax rows;
+                # an older build ignores the detail list and would register the PO with no tax. A row
+                # queued before #762 carries the single `tax_detail_id`, which the new relay folds in
+                # - so it waits for the same build, rather than being pushed to one that would still
+                # write the summary-only shape GP doubles on save.
+                if registration_carries_tax(payload):
+                    relay_gateway.require_feature(CREATE_PO_TAX_ROWS_FEATURE, relay_op)
             relay_result = await relay_gateway.relay_call(company, relay_op, payload)
             if isinstance(relay_result, dict) and relay_result.get("existing"):
                 # The earlier attempt did reach GP after all; this one got that PO back rather than a

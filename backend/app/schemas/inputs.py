@@ -467,9 +467,17 @@ class RegisterPOInput:
     # nexus-only (its own PO-document line, not a GP charge).
     shipping_cost: float | None = None
     tariff_amount: float | None = None
-    # Issue #257: GP purchase tax detail (TX00201 TXDTLTYP=2, picked from gpTaxDetails; CAD only) plus
-    # the Miscellaneous (MSCCHAMT) and Trade Discount (TRDISAMT) charges written to the GP PO header.
+    # Issue #762: the GP purchase tax details (TX00201 TXDTLTYP=2, multi-picked from gpTaxDetails; CAD
+    # only). One or more - UBC's GST plus PST is two picks - passed through to the relay, which reads
+    # each one's rate off GP and writes the tax the way GP's own PO entry does (goods, freight and misc
+    # taxed per detail, the trade discount netted first). Not stored on the PO. Null or empty means no
+    # tax at all, which is only right for a company that defines no purchase tax detail.
+    tax_detail_ids: list[str] | None = None
+    # The single pick this input carried before #762. Still accepted so a client on the previous
+    # build registers as it did; the resolver folds it into tax_detail_ids and never reads it again.
     tax_detail_id: str | None = None
+    # Issue #257: the Miscellaneous (MSCCHAMT) and Trade Discount (TRDISAMT) charges written to the
+    # GP PO header.
     miscellaneous: float | None = None
     trade_discount: float | None = None
     # The rest of what GP's Purchase Order Entry header takes. Null means the default: LOCAL DELIVERY,

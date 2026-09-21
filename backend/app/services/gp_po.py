@@ -102,7 +102,7 @@ def build_create_po_payload(
     line_items: list[dict],
     po_number_suffix: str | None = None,
     idempotency_key: str | None = None,
-    tax_detail_id: str | None = None,
+    tax_detail_ids: list[str] | None = None,
     freight_amount: float | None = None,
     misc_amount: float | None = None,
     trade_discount: float | None = None,
@@ -125,10 +125,13 @@ def build_create_po_payload(
     an over-long category is truncated (and logged) rather than refused - a PO must never fail to
     register over the width of a label.
 
-    Issue #257 GP header charges: tax_detail_id is the GP purchase tax detail the relay computes tax
-    from (CAD only; the relay resolves currency from the vendor). freight_amount maps from the PO's
-    shipping_cost, misc_amount + trade_discount are the new register-form inputs. None -> 0 (the relay
-    POHeader charge fields are non-null Decimals).
+    Issue #257 / #762 GP header charges: tax_detail_ids are the GP purchase tax details the relay
+    computes tax from - per line per detail, on freight and misc too, net of the trade discount - the
+    way GP's own PO entry does (CAD only; the relay resolves currency from the vendor). Sent as a
+    list under the key a #762 relay reads; an older relay ignores that key, which is why the resolver
+    only pushes a taxed registration to a relay advertising CREATE_PO_TAX_ROWS_FEATURE. freight_amount
+    maps from the PO's shipping_cost, misc_amount + trade_discount are the register-form inputs.
+    None -> 0 (the relay POHeader charge fields are non-null Decimals).
 
     The rest of the header is what GP's Purchase Order Entry takes: the shipping method, the vendor's
     purchase address code, the site every line is stocked at, the document date, the contact, and the
@@ -180,9 +183,9 @@ def build_create_po_payload(
             "buyer_id": buyer_id,
             "confirm_with": confirm_with,
             "doc_date": (doc_date or date.today()).isoformat(),
-            # Issue #257: GP header charges. None -> 0 for the non-null relay Decimals; tax_detail_id
-            # stays None when no detail was picked (relay then writes no tax).
-            "tax_detail_id": tax_detail_id,
+            # Issue #257 / #762: GP header charges. None -> 0 for the non-null relay Decimals; an empty
+            # detail list is a PO with no tax (the relay then writes no tax row at all).
+            "tax_detail_ids": list(tax_detail_ids or []),
             "freight_amount": freight_amount or 0,
             "misc_amount": misc_amount or 0,
             "trade_discount": trade_discount or 0,
