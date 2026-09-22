@@ -10,7 +10,7 @@ import socket
 from datetime import date
 from decimal import Decimal
 
-from . import buyers, companies, econnect, models
+from . import buyers, companies, econnect, models, po_tax
 from .config import get_settings
 
 
@@ -126,10 +126,10 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
                 f"no default purchasing rate type (MC40000.DEFPURTP) configured for {company}; "
                 f"cannot price a {currency} PO",
             )
-        if h.tax_detail_id:
+        if h.tax_detail_ids:
             raise RelayOpError(
                 "tax_detail_on_foreign_po",
-                f"a {currency} PO carries no tax schedule (issue #257); tax_detail_id must be omitted",
+                f"a {currency} PO carries no tax schedule (issue #257); tax_detail_ids must be empty",
             )
         # #632: eConnect resolves XCHGRATE from GP's maintained table mid-taPoHdr, so a company with
         # no rate maintained for this currency dies there with a raw error. Preflight it.
@@ -182,22 +182,56 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
             )
 
     # 0d. what the PO comes to: the line subtotal, and the tax the relay computes from the picked
-    #     detail's rate (GP does not compute PO tax under header-level taxes - see step 5, which is
-    #     where the detail is actually written). Both are worked out here, ahead of anything that
-    #     writes, so the retry branch below can answer with the same figures a create would return
-    #     without registering anything. A tax detail GP does not hold is refused here rather than at
-    #     step 5, which only means an unregisterable PO is now refused before a number is reserved.
+    #     details' rates (issue #762 - eConnect never computes PO tax, so the relay does, the way GP
+    #     works it out on an office PO: per line per detail on the line's discounted base, plus the
+    #     freight and the misc at each detail's rate; see po_tax.plan_po_tax). Worked out here, ahead
+    #     of anything that writes, so the retry branch below can answer with the same figures a
+    #     create would return without registering anything. A tax detail GP does not hold is refused
+    #     here rather than at step 5, which only means an unregisterable PO is now refused before a
+    #     number is reserved. The percent is read off TX00201 here, never taken from the client.
     subtotal = sum(line.quantity * line.unit_cost for line in request.lines)
-    tax_amount = Decimal(0)
-    if h.tax_detail_id:
-        pct = econnect.get_tax_detail_percent(conn, h.tax_detail_id)
+    if h.trade_discount > subtotal:
+        raise RelayOpError(
+            "trade_discount_exceeds_subtotal",
+            f"trade discount {h.trade_discount} is more than the PO's {subtotal} subtotal",
+        )
+    details: list[po_tax.TaxDetail] = []
+    for tax_detail_id in h.tax_detail_ids:
+        pct = econnect.get_tax_detail_percent(conn, tax_detail_id)
         if pct is None:
             raise RelayOpError(
                 "tax_detail_not_found",
-                f"tax detail '{h.tax_detail_id}' is not a GP purchase tax detail "
-                f"(TX00201 TXDTLTYP=2) for {company}",
+                f"tax detail '{tax_detail_id}' is not a GP purchase tax detail (TX00201 TXDTLTYP=2) for {company}",
             )
-        tax_amount = (subtotal * pct / Decimal(100)).quantize(Decimal("0.01"))
+        details.append(po_tax.TaxDetail(tax_detail_id=tax_detail_id, percent=pct))
+    plan = po_tax.plan_po_tax(
+        lines=[(idx * GP_LINE_ORD_STEP, line.quantity * line.unit_cost) for idx, line in enumerate(request.lines, 1)],
+        details=details,
+        trade_discount=h.trade_discount,
+        freight_amount=h.freight_amount,
+        misc_amount=h.misc_amount,
+    )
+    tax_amount = plan.tax_amount
+    # The header schedule: GP's default for a single detail (what the relay always sent), blank for
+    # more than one - no purchase schedule holds GST plus PST, and the office's own 12 percent POs
+    # carry a blank there (UBC's "BC HST 12%" holds sales-type details GP's purchasing ignores).
+    blank_tax_schedule = is_foreign or len(details) > 1
+    # eConnect's check 889 refuses a non-zero freight (or misc) tax with no schedule named on the
+    # header for it, so the id is resolved before anything is written: a company whose whole chain
+    # is blank cannot register a PO with a taxed charge, and is told so rather than failing mid-write.
+    charge_schedules = {"freight": None, "misc": None}
+    if plan.freight_tax_amount or plan.misc_tax_amount:
+        charge_schedules = econnect.get_charge_tax_schedules(conn, h.vendor_id)
+        for charge, taxed in (("freight", plan.freight_tax_amount), ("misc", plan.misc_tax_amount)):
+            if taxed and not charge_schedules[charge]:
+                raise RelayOpError(
+                    "charge_tax_schedule_unresolved",
+                    f"GP needs a tax schedule id on the header to carry the {charge} tax, and {company} "
+                    f"names none: POP40100 has no {charge} schedule and vendor '{h.vendor_id}' carries no "
+                    f"schedule (PM00200.TAXSCHID). Set one of them in GP.",
+                    charge=charge,
+                    vendor_id=h.vendor_id,
+                )
 
     # 0e. a retry of an attempt GP may already have finished. The backend stops waiting for this op
     #     after 30 seconds, but the relay and GP do not stop with it: the PO lands, and a plain retry
@@ -268,15 +302,18 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         shipping_method=h.shipping_method,
         rate_type=rate_type,
         exchange_date=exchange_date,
-        null_tax_schedule=is_foreign,
+        null_tax_schedule=blank_tax_schedule,
         contact=h.contact,
         comment=h.comment,
         note=note,
     )
 
     # 3. lines. ORD is dictated here rather than left to eConnect (issue #538) - see create_po_line.
-    #    A line that names no site takes the header's, which is where the header's site is used.
+    #    A line that names no site takes the header's, which is where the header's site is used. Each
+    #    line carries its own tax total across the picked details (POP10110.TAXAMNT), as an office
+    #    PO's line does; the rows behind that figure are step 5.
     for idx, line in enumerate(request.lines, start=1):
+        line_ord = idx * GP_LINE_ORD_STEP
         econnect.create_po_line(
             conn,
             po_number=po_number,
@@ -286,10 +323,11 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
             item_description=line.item_description,
             quantity=line.quantity,
             unit_cost=line.unit_cost,
-            line_ord=idx * GP_LINE_ORD_STEP,
+            line_ord=line_ord,
             location_code=line.location_code or h.site,
             uofm=line.uofm,
             manufacturer=line.manufacturer,
+            tax_amount=plan.line_total(line_ord),
         )
 
     # 4. WennSoft integration for EVERY line - this is what sets Product_Indicator (1 non-inv / 2
@@ -304,19 +342,46 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
             cost_code=line.cost_code,
         )
 
-    # 5. subtotal + order-time charges. GP does NOT compute PO tax under header-level taxes, so when a
-    #    tax detail was picked the relay's own computed tax (step 0d) is what the PO carries: the
-    #    detail is inserted (taPopIvcTaxInsert) BEFORE the final header, which then sets
-    #    USINGHEADERLEVELTAXES=1 + that TAXAMNT.
-    if h.tax_detail_id:
-        econnect.insert_po_tax_detail(
-            conn,
-            po_number=po_number,
-            vendor_id=h.vendor_id,
-            tax_detail_id=h.tax_detail_id,
-            tax_amount=tax_amount,
-            taxable_purchase=subtotal,
-        )
+    # 5. the tax rows, then the subtotal + order-time charges. The rows are the shape GP's own PO
+    #    entry writes (issue #762, proven on TUCSH PO097492): per detail, a row at every line's ORD
+    #    with that line's tax and discounted base, then a freight row and a misc row carrying the
+    #    charge's tax - and NO summary row, because taPopIvcTaxInsert builds each detail's ORD 0
+    #    summary by accumulating the rows under it (a caller-written summary is doubled). The final
+    #    header then carries the totals those rows sum to, which eConnect cross-checks to the cent,
+    #    with USINGHEADERLEVELTAXES=1 so GP keeps them rather than computing its own (it never does).
+    for detail in plan.details:
+        for line_tax in plan.lines:
+            econnect.insert_po_tax_row(
+                conn,
+                po_number=po_number,
+                vendor_id=h.vendor_id,
+                tax_detail_id=detail.tax_detail_id,
+                line_ord=line_tax.line_ord,
+                tax_amount=line_tax.tax_by_detail[detail.tax_detail_id],
+                taxable_purchase=line_tax.taxable_base,
+            )
+        if plan.freight_amount:
+            econnect.insert_po_tax_row(
+                conn,
+                po_number=po_number,
+                vendor_id=h.vendor_id,
+                tax_detail_id=detail.tax_detail_id,
+                line_ord=po_tax.FREIGHT_TAX_ORD,
+                tax_amount=Decimal(0),
+                taxable_purchase=plan.freight_amount,
+                freight_tax=plan.freight_tax_by_detail[detail.tax_detail_id],
+            )
+        if plan.misc_amount:
+            econnect.insert_po_tax_row(
+                conn,
+                po_number=po_number,
+                vendor_id=h.vendor_id,
+                tax_detail_id=detail.tax_detail_id,
+                line_ord=po_tax.MISC_TAX_ORD,
+                tax_amount=Decimal(0),
+                taxable_purchase=plan.misc_amount,
+                misc_tax=plan.misc_tax_by_detail[detail.tax_detail_id],
+            )
     econnect.update_po_header_subtotal(
         conn,
         po_number=po_number,
@@ -332,10 +397,16 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         freight_amount=h.freight_amount,
         misc_amount=h.misc_amount,
         tax_amount=tax_amount,
-        using_header_taxes=bool(h.tax_detail_id),
+        freight_tax_amount=plan.freight_tax_amount,
+        misc_tax_amount=plan.misc_tax_amount,
+        freight_taxable=plan.freight_taxed,
+        misc_taxable=plan.misc_taxed,
+        freight_tax_schedule=charge_schedules["freight"],
+        misc_tax_schedule=charge_schedules["misc"],
+        using_header_taxes=plan.taxed,
         rate_type=rate_type,
         exchange_date=exchange_date,
-        null_tax_schedule=is_foreign,
+        null_tax_schedule=blank_tax_schedule,
         contact=h.contact,
         comment=h.comment,
     )
