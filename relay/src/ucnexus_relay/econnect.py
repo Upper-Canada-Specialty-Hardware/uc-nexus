@@ -147,7 +147,8 @@ def _foreign_currency_fields(rate_type: str | None, exchange_date: date | None, 
     """The taPoHdr fields that differ for a foreign-currency PO (issue #257). rate_type set -> pass
     RATETPID + EXCHDATE and let eConnect auto-resolve XCHGRATE from GP's maintained exchange rate table
     (DYNAMICS.MC00100). null_tax_schedule -> blank TAXSCHID: a USD PO must carry no tax schedule, and GP
-    would otherwise fill the company default (verified live - it does NOT auto-null for a foreign PO)."""
+    would otherwise fill the company default (verified live - it does NOT auto-null for a foreign PO).
+    A multi-detail CAD PO blanks it the same way (issue #762)."""
     fields: dict = {}
     if rate_type:
         fields["RATETPID"] = rate_type
@@ -237,7 +238,9 @@ def create_po_header(
 ) -> None:
     """Create the PO header. SUBTOTAL is NOT passed here (no lines exist yet); update_po_header_subtotal
     sets it after the lines land. For a foreign-currency PO (issue #257), rate_type/exchange_date let
-    eConnect resolve the exchange rate and null_tax_schedule blanks TAXSCHID. contact and comment are
+    eConnect resolve the exchange rate and null_tax_schedule blanks TAXSCHID - which a PO carrying
+    more than one tax detail also does (issue #762): no purchase schedule holds GST plus PST, and
+    the office's own 12 percent POs carry a blank header schedule. contact and comment are
     the two free-text header fields, and note is the PO's record note; each is left out of the EXEC
     entirely when None - see _contact_and_comment_fields and _note_fields."""
     fields = {
@@ -272,6 +275,7 @@ def create_po_line(
     location_code: str,
     uofm: str = "Each",
     manufacturer: str | None = None,
+    tax_amount: Decimal = Decimal(0),
     po_type: int = 1,
 ) -> None:
     """Create one non-inventoried PO line. For job-cost lines, follow with
@@ -290,7 +294,11 @@ def create_po_line(
     stored gp_line_ord both already assume.
 
     manufacturer (when captured) is written to USRDEFND1 on POP10110 - the free user-defined
-    line field this customer uses for it (issue #233)."""
+    line field this customer uses for it (issue #233).
+
+    tax_amount is the line's tax across every picked detail (issue #762), bound to TAXAMNT so
+    POP10110.TAXAMNT carries what an office PO's line carries; the per-detail rows behind it are
+    written by insert_po_tax_row. 0 for a PO with no tax detail, which is also the proc's default."""
     # USRDEFND1 is char(50) in GP: RTRIM (trailing pad is meaningless there) + cap at 50 so an
     # over-length value can't overflow the column. None/blank -> '' leaves the field blank.
     usrdefnd1 = (manufacturer or "").rstrip()[:50]
@@ -312,6 +320,7 @@ def create_po_line(
         @I_vQUANTITY       = ?,
         @I_vUOFM           = ?,
         @I_vUNITCOST       = ?,
+        @I_vTAXAMNT        = ?,
         @I_vUSRDEFND1      = ?,
         @O_iErrorState     = @err OUTPUT,
         @oErrString        = @err_str OUTPUT;
@@ -320,7 +329,7 @@ def create_po_line(
     row = conn.cursor().execute(
         sql,
         po_type, po_number, doc_date, vendor_id,
-        line_ord, location_code, item_number, item_description, quantity, uofm, unit_cost, usrdefnd1,
+        line_ord, location_code, item_number, item_description, quantity, uofm, unit_cost, tax_amount, usrdefnd1,
     ).fetchone()
     if row.error_state != 0:
         raise EConnectError(
@@ -473,6 +482,12 @@ def update_po_header_subtotal(
     freight_amount: Decimal = Decimal(0),
     misc_amount: Decimal = Decimal(0),
     tax_amount: Decimal = Decimal(0),
+    freight_tax_amount: Decimal = Decimal(0),
+    misc_tax_amount: Decimal = Decimal(0),
+    freight_taxable: bool = False,
+    misc_taxable: bool = False,
+    freight_tax_schedule: str | None = None,
+    misc_tax_schedule: str | None = None,
     using_header_taxes: bool = False,
     rate_type: str | None = None,
     exchange_date: date | None = None,
@@ -482,13 +497,21 @@ def update_po_header_subtotal(
 ) -> None:
     """Re-call taPoHdr with UpdateIfExists=1 + the computed SUBTOTAL (validated now against the line
     totals from steps 3-4) and the order-time GP charges (issue #257): trade discount, freight, misc,
-    and the header-level tax amount.
+    and the tax totals (issue #762): TAXAMNT across goods, freight and misc, and FRTTXAMT / MSCTXAMT
+    for the two charges on their own.
 
-    Freight/misc go on non-taxable (Purchase_Freight_Taxable/Purchase_Misc_Taxable=0), so no
-    FRTSCHID/MSCSCHID is needed. When a tax detail was inserted (via insert_po_tax_detail),
-    using_header_taxes=1 tells GP to use the passed TAXAMNT rather than compute one - GP does NOT
-    calculate PO tax under header-level taxes (verified live). rate_type/exchange_date/null_tax_schedule
-    carry the foreign-currency handling (re-sent here so the UpdateIfExists upsert can't revert the
+    The tax rows are already in place when this runs (insert_po_tax_row, and the summary per detail
+    that taPopIvcTaxInsert built from them), and eConnect cross-checks the header against them: 887
+    and 888 refuse a TAXAMNT that is not what the rows sum to, 892 an FRTTXAMT that is not the freight
+    tax the rows carry, and 889 a non-zero freight tax with a blank FRTSCHID. So the totals here are
+    the plan's own sums of the rows it wrote, and a schedule id is sent for a charge whenever its tax
+    is non-zero - any existing schedule satisfies 889, its rate is not checked (TUCSH PO097492 passed
+    with a 13 percent schedule over a 12 percent freight tax). Purchase_Freight_Taxable and
+    Purchase_Misc_Taxable are GP's own three-way flag: 1 taxable, 2 not taxable (3 is "base on
+    vendor"); 0 is not a value GP has, so it is never sent. using_header_taxes=1 tells GP to keep the
+    passed TAXAMNT rather than compute one - GP does NOT calculate PO tax on its own (verified live).
+    rate_type/exchange_date/null_tax_schedule carry the foreign-currency handling and the blank
+    header schedule of a multi-detail PO (re-sent here so the UpdateIfExists upsert can't revert the
     rate or re-default a blanked TAXSCHID), and contact/comment are re-sent for exactly the same
     reason - this call upserts the same header, so it has to send the set create_po_header sent. The
     record note is the one exception: it is NOT re-sent here - see _note_fields."""
@@ -508,51 +531,103 @@ def update_po_header_subtotal(
         "FRTAMNT": freight_amount,
         "MSCCHAMT": misc_amount,
         "TAXAMNT": tax_amount,
-        "Purchase_Freight_Taxable": 0,
-        "Purchase_Misc_Taxable": 0,
+        "FRTTXAMT": freight_tax_amount,
+        "MSCTXAMT": misc_tax_amount,
+        "Purchase_Freight_Taxable": _TAXABLE if freight_taxable else _NOT_TAXABLE,
+        "Purchase_Misc_Taxable": _TAXABLE if misc_taxable else _NOT_TAXABLE,
         "USINGHEADERLEVELTAXES": 1 if using_header_taxes else 0,
     }
+    if freight_tax_amount:
+        fields["FRTSCHID"] = freight_tax_schedule or ""
+    if misc_tax_amount:
+        fields["MSCSCHID"] = misc_tax_schedule or ""
     fields.update(_foreign_currency_fields(rate_type, exchange_date, null_tax_schedule))
     fields.update(_contact_and_comment_fields(contact, comment))
     _exec_tapohdr(conn, fields)
 
 
-def insert_po_tax_detail(
+# GP's Purchase_Freight_Taxable / Purchase_Misc_Taxable values (POP10100, and the company default on
+# POP40100): 1 = taxable, 2 = not taxable, 3 = base on the vendor. There is no 0.
+_TAXABLE = 1
+_NOT_TAXABLE = 2
+
+
+def get_charge_tax_schedules(conn, vendor_id: str) -> dict:
+    """Read-only: the schedule ids to name on FRTSCHID / MSCSCHID when the freight or misc tax is
+    non-zero (issue #762). eConnect's check 889 wants a non-blank id there and never checks its rate
+    against the tax written, so the id only has to exist; GP's own client is looser still (3201 of
+    UCSH's office POs carry a freight tax with a blank FRTSCHID). The chain is per company, because
+    each GP company is its own database: the company's own charge schedule from Purchase Order
+    Processing Setup (POP40100.FRTSCHID / MSCSCHID - UBC names "BC HST 5%" for freight, which is
+    what 258 of its 264 office POs with a freight tax carry), else the vendor's purchase schedule
+    (PM00200.TAXSCHID - UCSH names no charge schedule, and its vendors carry "ONHST 13%"). Either
+    value is None when both are blank."""
+    cur = conn.cursor()
+    setup = cur.execute("SELECT RTRIM(FRTSCHID) AS freight, RTRIM(MSCSCHID) AS misc FROM dbo.POP40100").fetchone()
+    vendor = cur.execute(
+        "SELECT RTRIM(TAXSCHID) AS schedule FROM dbo.PM00200 WHERE VENDORID = ?", vendor_id
+    ).fetchone()
+    vendor_schedule = ((vendor.schedule if vendor is not None else "") or "") or None
+    return {
+        "freight": ((setup.freight if setup is not None else "") or None) or vendor_schedule,
+        "misc": ((setup.misc if setup is not None else "") or None) or vendor_schedule,
+    }
+
+
+def insert_po_tax_row(
     conn,
     *,
     po_number: str,
     vendor_id: str,
     tax_detail_id: str,
+    line_ord: int,
     tax_amount: Decimal,
     taxable_purchase: Decimal,
+    freight_tax: Decimal = Decimal(0),
+    misc_tax: Decimal = Decimal(0),
 ) -> None:
-    """taPopIvcTaxInsert: attach ONE purchase tax detail to a PO (issue #257). TAXTYPE=0 = the PO item
-    tax. GP does not compute PO tax under header-level taxes, so the caller passes the computed TAXAMNT
-    (= detail rate x taxable purchase) plus the taxable/total purchase base. Called BEFORE the final
-    update_po_header_subtotal, which sets USINGHEADERLEVELTAXES=1 + the matching TAXAMNT."""
+    """taPopIvcTaxInsert: one PO tax row (POP10160) for one detail at one ordinal (issue #762).
+    TAXTYPE=0 = the PO item tax.
+
+    Three shapes go through here, all the ones GP's own PO entry writes:
+    - a LINE row at the line's ORD: TAXAMNT the detail's tax on that line, TAXPURCH/TOTPURCH the
+      line's taxable base (its extended cost net of its share of the trade discount);
+    - the FREIGHT row at po_tax.FREIGHT_TAX_ORD: TAXAMNT 0, TAXPURCH/TOTPURCH the freight, and the
+      freight tax in FRTTXAMT;
+    - the MISC row at po_tax.MISC_TAX_ORD, the same with MSCTXAMT.
+
+    Never an ORD 0 row. The proc accumulates every row inserted under a detail onto that detail's
+    ORD 0 summary itself - tax and base off the line rows, FRTTXAMT / MSCTXAMT and TXDTOTTX off the
+    charge rows - so a summary written by the caller lands doubled (TUCSH PO097491) and then fails
+    the header's cross-check. Proven live on TUCSH PO097492, read back column for column equal to
+    UBC office PO502338."""
     sql = """
     DECLARE @err int = 0;
     DECLARE @err_str varchar(255) = '';
     EXEC dbo.taPopIvcTaxInsert
         @I_vPONUMBER   = ?,
         @I_vTAXTYPE    = 0,
-        @I_vORD        = 0,
+        @I_vORD        = ?,
         @I_vTAXDTLID   = ?,
         @I_vBKOUTTAX   = 0,
         @I_vTAXAMNT    = ?,
         @I_vTAXPURCH   = ?,
         @I_vTOTPURCH   = ?,
+        @I_vFRTTXAMT   = ?,
+        @I_vMSCTXAMT   = ?,
         @I_vVENDORID   = ?,
         @O_iErrorState = @err OUTPUT,
         @oErrString    = @err_str OUTPUT;
     SELECT @err AS error_state, @err_str AS err_string;
     """
     row = conn.cursor().execute(
-        sql, po_number, tax_detail_id, tax_amount, taxable_purchase, taxable_purchase, vendor_id
+        sql,
+        po_number, line_ord, tax_detail_id, tax_amount, taxable_purchase, taxable_purchase,
+        freight_tax, misc_tax, vendor_id,
     ).fetchone()
     if row.error_state != 0:
         raise EConnectError(
-            f"taPopIvcTaxInsert failed for detail {tax_detail_id}: {row.err_string.strip()}",
+            f"taPopIvcTaxInsert failed for detail {tax_detail_id} at ORD {line_ord}: {row.err_string.strip()}",
             proc="taPopIvcTaxInsert", error_state=row.error_state,
         )
 

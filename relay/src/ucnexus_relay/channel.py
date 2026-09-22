@@ -991,6 +991,13 @@ def _served_companies(channel_allowed: list[str] | None) -> tuple[list[str], dic
 # one. A backend that does not see this string is talking to a relay where a retry is not safe.
 CREATE_PO_IDEMPOTENCY_FEATURE = "create_po_idempotency"
 
+# The feature string saying this build writes a PO's tax the way GP's own PO entry does (issue
+# #762): reads a LIST of purchase tax details off the create_po header, taxes freight and misc, nets
+# the trade discount, and writes a tax row per line per detail with no summary row. A backend that
+# does not see this string is talking to a relay that ignores `tax_detail_ids` altogether - and would
+# register a CAD PO with no tax at all - so it refuses to push a taxed registration to such a build.
+CREATE_PO_TAX_ROWS_FEATURE = "create_po_tax_rows"
+
 
 def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
     """The relay's identity frame, sent right after the channel connects (issue #315) and again on the
@@ -1006,8 +1013,10 @@ def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
     carries the reason when that master could not be read - a relay that cannot tell which companies
     exist serves none of them. `features` says what this build understands beyond jobs - "channels" means
     it accepts a pushed preview-channel list, "gp_sync_state" that it accepts the backend's account of
-    its own sync work, and "create_po_idempotency" that a create_po carrying an idempotency key can be
-    retried safely, so a backend talking to an older relay knows not to bother sending any of them."""
+    its own sync work, "create_po_idempotency" that a create_po carrying an idempotency key can be
+    retried safely, and "create_po_tax_rows" that a create_po's `tax_detail_ids` list is read and
+    written as GP writes tax, so a backend talking to an older relay knows not to bother sending any
+    of them."""
     from . import updater  # lazy: keep channel import-light and avoid any package load-order coupling
 
     served, names, error = _served_companies(channel_allowed)
@@ -1019,7 +1028,7 @@ def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
         "companies": served,
         "company_names": names,
         "companies_error": error,
-        "features": ["channels", "gp_sync_state", CREATE_PO_IDEMPOTENCY_FEATURE],
+        "features": ["channels", "gp_sync_state", CREATE_PO_IDEMPOTENCY_FEATURE, CREATE_PO_TAX_ROWS_FEATURE],
     }
 
 
