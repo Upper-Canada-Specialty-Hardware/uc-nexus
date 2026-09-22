@@ -227,8 +227,8 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
                 raise RelayOpError(
                     "charge_tax_schedule_unresolved",
                     f"GP needs a tax schedule id on the header to carry the {charge} tax, and {company} "
-                    f"names none: POP40100 has no {charge} schedule or default purchase schedule and vendor "
-                    f"'{h.vendor_id}' carries no schedule (PM00200.TAXSCHID). Set one of them in GP.",
+                    f"names none: POP40100 has no {charge} schedule and vendor '{h.vendor_id}' carries no "
+                    f"schedule (PM00200.TAXSCHID). Set one of them in GP.",
                     charge=charge,
                     vendor_id=h.vendor_id,
                 )

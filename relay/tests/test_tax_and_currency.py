@@ -680,7 +680,7 @@ def test_a_retry_that_finds_the_po_answers_the_full_tax_and_writes_no_row(gp, mo
 
 # --- econnect.get_charge_tax_schedules: the fallback chain for FRTSCHID / MSCSCHID ---
 
-_SetupRow = namedtuple("_SetupRow", "freight misc purchase")
+_SetupRow = namedtuple("_SetupRow", "freight misc")
 _VendorRow = namedtuple("_VendorRow", "schedule")
 
 
@@ -703,21 +703,25 @@ class _ChainConn:
 
 
 def test_charge_schedules_prefer_the_companys_own_charge_schedules():
-    conn = _ChainConn(_SetupRow("BC HST 5%", "BC MISC", "ALL DETAILS"), _VendorRow("ONHST 13%"))
-    assert get_charge_tax_schedules(conn, "V1") == {"freight": "BC HST 5%", "misc": "BC MISC"}
+    # UBC: POP40100 names "BC HST 5%" for freight and nothing for misc, so freight takes the company's
+    # and misc falls to the vendor's
+    conn = _ChainConn(_SetupRow("BC HST 5%", ""), _VendorRow("BC HST 5%"))
+    assert get_charge_tax_schedules(conn, "V1") == {"freight": "BC HST 5%", "misc": "BC HST 5%"}
     assert "POP40100" in conn.sql[0] and "PM00200" in conn.sql[1]
+    conn = _ChainConn(_SetupRow("BC HST 5%", "BC MISC"), _VendorRow("OTHER"))
+    assert get_charge_tax_schedules(conn, "V1") == {"freight": "BC HST 5%", "misc": "BC MISC"}
 
 
-def test_charge_schedules_fall_back_to_the_vendor_then_the_company_default():
-    # both sandboxes: blank POP40100 schedules, a vendor schedule
-    conn = _ChainConn(_SetupRow("", "", ""), _VendorRow("ONHST 13%"))
+def test_charge_schedules_fall_back_to_the_vendor():
+    # UCSH and both sandboxes: blank POP40100 schedules, a vendor schedule
+    conn = _ChainConn(_SetupRow("", ""), _VendorRow("ONHST 13%"))
     assert get_charge_tax_schedules(conn, "107-CANINC.") == {"freight": "ONHST 13%", "misc": "ONHST 13%"}
-    conn = _ChainConn(_SetupRow("", "", "ALL DETAILS"), _VendorRow(""))
-    assert get_charge_tax_schedules(conn, "V1") == {"freight": "ALL DETAILS", "misc": "ALL DETAILS"}
 
 
-def test_charge_schedules_are_none_when_the_whole_chain_is_blank():
-    conn = _ChainConn(_SetupRow("", "", ""), None)
+def test_charge_schedules_are_none_when_both_are_blank():
+    conn = _ChainConn(_SetupRow("", ""), _VendorRow(""))
+    assert get_charge_tax_schedules(conn, "V1") == {"freight": None, "misc": None}
+    conn = _ChainConn(_SetupRow("", ""), None)
     assert get_charge_tax_schedules(conn, "GHOST") == {"freight": None, "misc": None}
 
 

@@ -555,26 +555,22 @@ _NOT_TAXABLE = 2
 def get_charge_tax_schedules(conn, vendor_id: str) -> dict:
     """Read-only: the schedule ids to name on FRTSCHID / MSCSCHID when the freight or misc tax is
     non-zero (issue #762). eConnect's check 889 wants a non-blank id there and never checks its rate
-    against the tax written, so the id only has to exist. The relay sets no header schedule of its
-    own (GP fills the company default on a single-detail PO and the header is blanked on a
-    multi-detail one), so the chain is the company's own charge schedule from Purchase Order
-    Processing Setup (POP40100.FRTSCHID / MSCSCHID), else the vendor's purchase schedule
-    (PM00200.TAXSCHID), else the company's default purchase schedule (POP40100.TAXSCHID). Both
-    sandboxes carry blank POP40100 schedules and a vendor schedule, which is what UBC's office 12
-    percent POs carry on FRTSCHID too. Either value is None when the whole chain is blank."""
+    against the tax written, so the id only has to exist; GP's own client is looser still (3201 of
+    UCSH's office POs carry a freight tax with a blank FRTSCHID). The chain is per company, because
+    each GP company is its own database: the company's own charge schedule from Purchase Order
+    Processing Setup (POP40100.FRTSCHID / MSCSCHID - UBC names "BC HST 5%" for freight, which is
+    what 258 of its 264 office POs with a freight tax carry), else the vendor's purchase schedule
+    (PM00200.TAXSCHID - UCSH names no charge schedule, and its vendors carry "ONHST 13%"). Either
+    value is None when both are blank."""
     cur = conn.cursor()
-    setup = cur.execute(
-        "SELECT RTRIM(FRTSCHID) AS freight, RTRIM(MSCSCHID) AS misc, RTRIM(TAXSCHID) AS purchase FROM dbo.POP40100"
-    ).fetchone()
+    setup = cur.execute("SELECT RTRIM(FRTSCHID) AS freight, RTRIM(MSCSCHID) AS misc FROM dbo.POP40100").fetchone()
     vendor = cur.execute(
         "SELECT RTRIM(TAXSCHID) AS schedule FROM dbo.PM00200 WHERE VENDORID = ?", vendor_id
     ).fetchone()
-    vendor_schedule = (vendor.schedule if vendor is not None else "") or ""
-    company_default = (setup.purchase if setup is not None else "") or ""
-    fallback = vendor_schedule or company_default or None
+    vendor_schedule = ((vendor.schedule if vendor is not None else "") or "") or None
     return {
-        "freight": ((setup.freight if setup is not None else "") or None) or fallback,
-        "misc": ((setup.misc if setup is not None else "") or None) or fallback,
+        "freight": ((setup.freight if setup is not None else "") or None) or vendor_schedule,
+        "misc": ((setup.misc if setup is not None else "") or None) or vendor_schedule,
     }
 
 
