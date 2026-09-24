@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 
@@ -70,24 +72,57 @@ def _job_row(**overrides) -> _JobRow:
     return _JobRow(**fields)
 
 
+# JC30001 as production has it (#775): every job-row column the read names except WS_Inactive, plus
+# the close stamp.
+_PRODUCTION_HISTORY_COLUMNS = (
+    "WS_Job_Number",
+    "WS_Job_Name",
+    "CUSTNMBR",
+    "Job_Address_Code",
+    "Job_Billto_Address_Code",
+    "Divisions",
+    "TAXSCHID",
+    "USETAXSCHID",
+    "Estimator_ID",
+    "WS_Manager_ID",
+    "CREATDDT",
+    "Schedule_Start_Date",
+    "Sched_Completion_Date",
+    "Bid_Due_Date",
+    "Orig_Contract_Amount",
+    "Contract_to_Date",
+    "Total_Actual_Cost",
+    "Billed_Amount_TTD",
+    "Retention_Amount_TTD",
+    "Net_Billed_TTD",
+    "Close_Date",
+    "Close_Time",
+    "Close_User_ID",
+)
+
+
 class _ReadCursor:
     def __init__(self, conn):
         self._conn = conn
+        self._rows = conn.rows
 
     def execute(self, sql, *params):
         self._conn.calls.append((sql, params))
+        # The catalogue read of JC30001's columns answers with names, everything else with job rows.
+        self._rows = [SimpleNamespace(name=c) for c in self._conn.history] if "sys.columns" in sql else self._conn.rows
         return self
 
     def fetchall(self):
-        return self._conn.rows
+        return self._rows
 
     def fetchone(self):
-        return self._conn.rows[0] if self._conn.rows else None
+        return self._rows[0] if self._rows else None
 
 
 class _ReadConn:
-    def __init__(self, rows):
+    def __init__(self, rows, history=_PRODUCTION_HISTORY_COLUMNS):
         self.rows = rows
+        self.history = history
         self.calls: list[tuple[str, tuple]] = []
 
     def cursor(self):
@@ -152,11 +187,13 @@ def test_list_jobs_maps_a_job_master_row_to_the_full_record():
 
 
 def test_list_jobs_reads_both_tables_in_one_statement():
-    # GP READ LIMIT: one statement per company per pass, whichever table a job is in.
+    # GP READ LIMIT: one statement per company per pass, whichever table a job is in, after one read of
+    # JC30001's column list from the catalogue.
     conn = _ReadConn([])
     econnect.list_jobs(conn)
-    assert len(conn.calls) == 1
-    sql, params = conn.calls[0]
+    assert len(conn.calls) == 2
+    assert "sys.columns" in conn.calls[0][0]
+    sql, params = conn.calls[1]
     assert "dbo.JC00102" in sql
     assert "dbo.JC30001" in sql
     assert "UNION ALL" in sql
@@ -201,7 +238,7 @@ def test_get_job_filters_both_halves_and_prefers_the_job_master():
     assert record["job_number"] == "22004"
     # The older callers' four keys are still there.
     assert {"job_number", "job_name", "customer_number", "job_address_code"} <= set(record)
-    sql, params = conn.calls[0]
+    sql, params = conn.calls[-1]
     assert params == ("22004", "22004")
     assert sql.count("WHERE RTRIM(j.WS_Job_Number) = ?") == 2
     assert sql.rstrip().endswith("ORDER BY closed")
@@ -214,6 +251,38 @@ def test_get_job_answers_none_for_a_job_in_neither_table():
 def test_get_job_reads_a_closed_job():
     conn = _ReadConn([_job_row(closed=1, close_date=datetime(2026, 9, 1), close_user="sa")])
     assert econnect.get_job(conn, "22004")["gp_job_state"] == "closed"
+
+
+def test_the_history_half_reads_null_for_a_column_jc30001_lacks():
+    # #775: production's JC30001 has no WS_Inactive, and naming it failed every job read in every company.
+    conn = _ReadConn([])
+    econnect.list_jobs(conn)
+    live, history = conn.calls[-1][0].split("UNION ALL")
+    assert "j.WS_Inactive AS inactive" in live
+    assert "j.WS_Inactive" not in history
+    assert "NULL AS inactive" in history
+    # Columns it does have are read as they are, the close stamp included.
+    assert "RTRIM(j.WS_Job_Name) AS job_name" in history
+    assert "j.Close_Date AS close_date" in history
+
+
+def test_a_column_missing_from_jc30001_that_a_join_uses_matches_nothing_rather_than_failing():
+    history = tuple(c for c in _PRODUCTION_HISTORY_COLUMNS if c != "Estimator_ID")
+    conn = _ReadConn([], history=history)
+    econnect.list_jobs(conn)
+    history_sql = conn.calls[-1][0].split("UNION ALL")[1]
+    assert "j.Estimator_ID" not in history_sql
+    assert "e.EMPLOYID = NULL" in history_sql
+
+
+def test_with_no_jc30001_only_the_job_master_is_read():
+    conn = _ReadConn([_job_row()], history=())
+    record = econnect.get_job(conn, "22004")
+    sql, params = conn.calls[-1]
+    assert "UNION ALL" not in sql
+    assert "JC30001" not in sql
+    assert params == ("22004",)
+    assert record["gp_job_state"] == "active"
 
 
 # --- job_state ---------------------------------------------------------------------------------------
