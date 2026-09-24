@@ -61,6 +61,31 @@ function project(overrides: Record<string, unknown> = {}) {
     gpSetupOk: true,
     gpSetupCheckedAt: null,
     gpSetupIssues: null,
+    // #730: the GP job as GP holds it.
+    gpJobState: 'ACTIVE',
+    gpClosedDate: null,
+    customerNumber: 'ACM100',
+    jobAddressCode: 'MAIN',
+    billtoAddressCode: 'BILL',
+    address2: 'Suite 4',
+    country: 'CA',
+    division: 'DIV1',
+    taxScheduleId: 'BC-GST',
+    useTaxScheduleId: 'BC-USE',
+    estimatorId: 'E1',
+    estimatorName: 'Erin Estimator',
+    wsManagerId: 'W2',
+    wsManagerName: 'Wes Manager',
+    gpCreatedDate: '2026-01-05',
+    scheduleStartDate: '2026-02-01',
+    scheduledCompletionDate: null,
+    bidDueDate: null,
+    origContractAmount: 100000,
+    contractToDate: 125000.5,
+    totalActualCost: 40000,
+    billedAmountTtd: 60000,
+    retentionAmountTtd: 6000,
+    netBilledTtd: 54000,
     ...overrides,
   };
 }
@@ -176,6 +201,67 @@ test('an archived project is badged and offers the way back', async () => {
 
   expect(await screen.findByText('Archived')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: /^Restore$/i })).toBeInTheDocument();
+});
+
+/** The value printed beside a label in the GP job panel. */
+function gpRow(label: string) {
+  const panel = screen.getByTestId('gp-job-panel');
+  return within(panel).getByText(label).parentElement as HTMLElement;
+}
+
+const money = (n: number) =>
+  new Intl.NumberFormat('en-CA', { style: 'currency', currency: 'CAD', minimumFractionDigits: 2 }).format(n);
+
+test('the GP job panel shows the setup GP holds', async () => {
+  renderPage([detailMock()]);
+  await screen.findByTestId('gp-job-panel');
+
+  expect(gpRow('Customer')).toHaveTextContent('ACM100 - ACME');
+  expect(gpRow('Site address')).toHaveTextContent('1 Main St, Suite 4, Vancouver, BC, V5K, CA');
+  expect(gpRow('Estimator')).toHaveTextContent('E1 - Erin Estimator');
+  expect(gpRow('WS Manager')).toHaveTextContent('W2 - Wes Manager');
+  expect(gpRow('Division')).toHaveTextContent('DIV1');
+  expect(gpRow('Tax schedule')).toHaveTextContent('BC-GST');
+  expect(gpRow('Use tax schedule')).toHaveTextContent('BC-USE');
+});
+
+test('the GP job panel shows the dates, with a dash where GP holds none', async () => {
+  renderPage([detailMock()]);
+  await screen.findByTestId('gp-job-panel');
+
+  expect(gpRow('Created')).toHaveTextContent(new Date(2026, 0, 5).toLocaleDateString());
+  expect(gpRow('Scheduled start')).toHaveTextContent(new Date(2026, 1, 1).toLocaleDateString());
+  expect(gpRow('Scheduled completion')).toHaveTextContent('—');
+  expect(gpRow('Bid due')).toHaveTextContent('—');
+  // An open job has no closed date to show.
+  expect(within(screen.getByTestId('gp-job-panel')).queryByText('Closed')).toBeNull();
+});
+
+test('the GP job panel shows the contract and the three billed figures', async () => {
+  renderPage([detailMock()]);
+  await screen.findByTestId('gp-job-panel');
+
+  expect(gpRow('Original contract')).toHaveTextContent(money(100000));
+  expect(gpRow('Contract to date')).toHaveTextContent(money(125000.5));
+  expect(gpRow('Total actual cost')).toHaveTextContent(money(40000));
+  expect(gpRow('Billed gross')).toHaveTextContent(money(60000));
+  expect(gpRow('Retention held')).toHaveTextContent(money(6000));
+  expect(gpRow('Net billed')).toHaveTextContent(money(54000));
+});
+
+test('a closed job is tagged and shows the day it closed', async () => {
+  renderPage([detailMock({ project: project({ gpJobState: 'CLOSED', gpClosedDate: '2026-06-30' }) })]);
+
+  await screen.findByTestId('gp-job-panel');
+  expect(screen.getAllByText('Closed in GP').length).toBeGreaterThan(0);
+  expect(gpRow('Closed')).toHaveTextContent(new Date(2026, 5, 30).toLocaleDateString());
+});
+
+test('an open job carries no GP tag', async () => {
+  renderPage([detailMock()]);
+
+  await screen.findByTestId('gp-job-panel');
+  expect(screen.queryByTestId('gp-job-state-tag')).toBeNull();
 });
 
 test('a project that is not there says so rather than rendering an empty page', async () => {

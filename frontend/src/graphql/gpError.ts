@@ -52,6 +52,10 @@ export function isRelayOpUnsupported(err: unknown): boolean {
   return extractGpError(err)?.code === RELAY_OP_UNSUPPORTED;
 }
 
+// Backend code (#730) for a NEXUS TO GP WRITE refused because the project's GP job is inactive, closed
+// or missing in GP. Its message already names the job and the state, so screens show it as it comes.
+export const GP_JOB_NOT_OPEN = 'GP_JOB_NOT_OPEN';
+
 /** Plain-text rendering of a GpError, for the "Copy details" button (a paste-able alternative to a screenshot). */
 export function formatGpErrorText(e: GpError): string {
   const ctx = e.relay?.context ?? {};

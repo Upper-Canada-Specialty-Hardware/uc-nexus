@@ -23,7 +23,9 @@ import { UPLOAD_PO_DOCUMENT } from '../../graphql/po';
 import { RECEIVE_DRAFT_REFETCH_QUERIES } from '../../graphql/refetch';
 import { GET_PROJECTS } from '../../graphql/shared';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
-import { isGpSetupBroken, type Project } from '../../types/project';
+import GpJobNotOpenBanner from '../../components/GpJobStateTag';
+import { extractGpError, GP_JOB_NOT_OPEN } from '../../graphql/gpError';
+import { gpJobStateLabel, isGpJobNotOpen, isGpSetupBroken, type Project } from '../../types/project';
 import ReceiveLinesEditor from './ReceiveLinesEditor';
 import PackingSlipPicker from './PackingSlipPicker';
 import {
@@ -295,6 +297,23 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     return [...seen.values()];
   }, [receivablePoDetailsList, projects]);
 
+  // #730: POs whose project's GP job is inactive, closed or missing in GP. A hard block, unlike the
+  // #425 warning above: GP refuses every GP RECEIVE ENTRY against such a job, so a count drafted now
+  // could never be approved - the same reasoning as a PO that is not in GP at all.
+  const notOpenJobs = useMemo(() => {
+    const byId = new Map(projects.map((p) => [p.id, p]));
+    const seen = new Map<string, { project: Project; poNumbers: string[] }>();
+    for (const details of receivablePoDetailsList) {
+      if (!details.projectId) continue;
+      const project = byId.get(details.projectId);
+      if (!project || !isGpJobNotOpen(project)) continue;
+      const entry = seen.get(project.id) ?? { project, poNumbers: [] };
+      entry.poNumbers.push(details.poNumber ?? 'PO');
+      seen.set(project.id, entry);
+    }
+    return [...seen.values()];
+  }, [receivablePoDetailsList, projects]);
+
   // Why Submit is grey, named beside it - the FIRST unmet requirement in the disable chain, so the
   // user is never left reverse-engineering a dead button. blockedPos gets a caption too even though
   // it has its own alert: a tall modal can scroll that alert out of view while the button stays.
@@ -320,6 +339,10 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
         ? `${blockedPos[0].poNumber ?? 'A PO in this batch'} isn't registered in GP yet`
         : `${blockedPos.length} POs aren't registered in GP yet`;
     }
+    if (notOpenJobs.length > 0) {
+      const { project } = notOpenJobs[0];
+      return `Job ${project.projectId}: ${gpJobStateLabel(project)}`;
+    }
     return null;
   }, [
     poDetailsList,
@@ -333,6 +356,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     packingSlips,
     poDetailsMap,
     blockedPos,
+    notOpenJobs,
   ]);
 
   // ---- Handlers ----
@@ -397,6 +421,13 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
         try {
           await createReceiveDraft({ variables: { input } });
         } catch (err: unknown) {
+          // #730: the server's own refusal for a job GP will not take writes on. Its message names the
+          // job and the state, and retrying cannot help, so it is shown as it comes.
+          const refusal = extractGpError(err);
+          if (refusal?.code === GP_JOB_NOT_OPEN) {
+            failureMessage = `Cannot receive ${poLabel}: ${refusal.message}`;
+            break;
+          }
           // Keep this PO's key so the retry reuses it.
           failureMessage = `Submitting ${poLabel} failed: ${err instanceof Error ? err.message : 'An unknown error occurred'}. Retrying is safe - it won't submit the same count twice.`;
           break;
@@ -511,6 +542,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
           hasQuantityErrors ||
           !allPackingSlipsAttached ||
           blockedPos.length > 0 ||
+          notOpenJobs.length > 0 ||
           submitting
         }
         onClick={() => setConfirmOpen(true)}
@@ -560,6 +592,15 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
               key={project.id}
               project={project}
               action="approving a receive against it"
+              dense
+            />
+          ))}
+        {showForm &&
+          notOpenJobs.map(({ project, poNumbers }) => (
+            <GpJobNotOpenBanner
+              key={project.id}
+              project={project}
+              action={`receiving ${poNumbers.join(', ')}`}
               dense
             />
           ))}

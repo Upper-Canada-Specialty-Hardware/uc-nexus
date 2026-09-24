@@ -13,6 +13,7 @@ from app.errors import (
     GpSetupInvalidError,
     InvalidStateTransitionError,
     NotFoundError,
+    RelayCallError,
     RelayTimeoutError,
     RelayUnavailableError,
     ValidationError,
@@ -303,6 +304,9 @@ def _prepare_register_po(
         # same job live against GP before the push (see register_po_in_gp); this is the floor that
         # still applies when the live check cannot run.
         project_repository.require_gp_setup_ok(session, effective_project_id)
+        # #730: an inactive, closed or not-in-GP job takes no PO. The relay refuses it live as well;
+        # this is the same refusal from the mirrored state, before anything is built or sent.
+        project_repository.require_gp_job_open(session, effective_project_id)
 
         manufacturers = _resolve_line_manufacturers(session, effective_project_id, line_items_data)
 
@@ -908,6 +912,13 @@ class POMutations:
                 # The PO is still DRAFT; the list shows it as queued until the worker drains it.
                 po = await asyncio.to_thread(_load_po_type, pid)
                 return RegisterPOResult(queued=True, outbox_entry_id=strawberry.ID(entry_id), purchase_order=po)
+            except RelayCallError as e:
+                # #730: GP's live answer on the job is the same refusal the mirrored check gives, and
+                # it reads the same. Every other refusal passes through untouched.
+                refusal = project_repository.gp_job_refusal(e, job_number)
+                if refusal is not None:
+                    raise refusal from e
+                raise
             await asyncio.to_thread(gp_idempotency.record_relay_result, key, "register_po_in_gp", gp_result)
 
         po = await asyncio.to_thread(

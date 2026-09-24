@@ -524,6 +524,10 @@ def po_list_row_to_type(po, line_item_count: int, created_by: str | None = None)
     )
 
 
+def _money(value) -> float | None:
+    return float(value) if value is not None else None
+
+
 def project_to_type(
     p: ProjectModel,
     *,
@@ -602,6 +606,32 @@ def project_to_type(
             for issue in project_repository.parse_gp_setup_issues(p.gp_setup_detail)
         ],
         archived=p.archived,
+        # #730: the mirrored GP job - scalar columns off the loaded row, free in list and detail alike.
+        gp_job_state=p.gp_job_state,
+        gp_closed_date=p.gp_closed_date,
+        gp_missing_since=p.gp_missing_since,
+        customer_number=p.customer_number,
+        job_address_code=p.job_address_code,
+        billto_address_code=p.billto_address_code,
+        address2=p.address2,
+        country=p.country,
+        division=p.division,
+        tax_schedule_id=p.tax_schedule_id,
+        use_tax_schedule_id=p.use_tax_schedule_id,
+        estimator_id=p.estimator_id,
+        estimator_name=p.estimator_name,
+        ws_manager_id=p.ws_manager_id,
+        ws_manager_name=p.ws_manager_name,
+        gp_created_date=p.gp_created_date,
+        schedule_start_date=p.schedule_start_date,
+        scheduled_completion_date=p.scheduled_completion_date,
+        bid_due_date=p.bid_due_date,
+        orig_contract_amount=_money(p.orig_contract_amount),
+        contract_to_date=_money(p.contract_to_date),
+        total_actual_cost=_money(p.total_actual_cost),
+        billed_amount_ttd=_money(p.billed_amount_ttd),
+        retention_amount_ttd=_money(p.retention_amount_ttd),
+        net_billed_ttd=_money(p.net_billed_ttd),
         openings=openings_list,
         purchase_orders=[],  # Loaded on demand in later tickets
     )

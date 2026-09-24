@@ -20,7 +20,10 @@ import { StatCard, StatCardSkeleton } from '../../components/StatCard';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import PageHeader from '../../components/PageHeader';
 import { GpSetupBadge } from '../../components/GpSetupQuarantineBanner';
+import { GpJobStateTag } from '../../components/GpJobStateTag';
 import { isGpSetupBroken } from '../../types/project';
+import { isGpEmptyDate } from '../po/poOrderDate';
+import { parseServerDay } from '../../utils/serverDate';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import { formatPoStatus, poStatusChipColor, PO_STATUS_VALUES } from '../po/poStatus';
@@ -47,6 +50,56 @@ const ARCHIVE_WARNING =
   'shipping. Nothing it already holds is deleted, and archiving can be undone from this page.';
 
 const UNARCHIVE_WARNING = 'This puts the project back in every project picker in the app.';
+
+const ABSENT = '—';
+
+const CURRENCY = new Intl.NumberFormat('en-CA', {
+  style: 'currency',
+  currency: 'CAD',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+function formatMoney(value: number | null | undefined): string {
+  return value == null ? ABSENT : CURRENCY.format(value);
+}
+
+/**
+ * #730: a GP job date. A dash when there is none - null, or GP's own 1900-01-01 stand-in for a date
+ * nobody filled in, which on a job's optional dates is the ordinary case rather than a gap worth words.
+ */
+function formatGpDay(value: string | null | undefined): string {
+  if (!value || isGpEmptyDate(value)) return ABSENT;
+  return parseServerDay(value.slice(0, 10)).toLocaleDateString();
+}
+
+function employeeText(id: string | null | undefined, name: string | null | undefined): string | null {
+  if (!id) return null;
+  return name ? `${id} - ${name}` : id;
+}
+
+/** Label-left, value-right rows: the one shape every panel on this page uses. */
+function InfoRows({ rows, tabular = false }: { rows: Array<[string, string | null]>; tabular?: boolean }) {
+  return (
+    <Stack spacing={1}>
+      {rows.map(([label, value]) => (
+        <Box key={label} sx={{ display: 'flex', gap: 1, justifyContent: 'space-between', minWidth: 0 }}>
+          <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>
+            {label}
+          </Typography>
+          <Typography
+            variant="body2"
+            noWrap
+            title={value || undefined}
+            sx={{ minWidth: 0, textAlign: 'right', ...(tabular ? tabularSx : {}) }}
+          >
+            {value || ABSENT}
+          </Typography>
+        </Box>
+      ))}
+    </Stack>
+  );
+}
 
 /** One stat tile, optionally a link into the module the number is about. */
 function StatTile({
@@ -187,6 +240,7 @@ export default function ProjectDetailPage() {
               {project.offSiteStorageAgreement && <Chip label="OSSA" size="small" variant="outlined" />}
               {project.archived && <Chip label="Archived" size="small" color="warning" />}
               {isGpSetupBroken(project) && <GpSetupBadge project={project} />}
+              <GpJobStateTag project={project} />
             </Stack>
           }
           description={
@@ -297,25 +351,14 @@ export default function ProjectDetailPage() {
           <Typography component="h2" sx={{ ...microLabelSx, mb: 1.5 }}>
             Job
           </Typography>
-          <Stack spacing={1}>
-            {(
-              [
-                ['Job site', project.jobSiteName],
-                ['General contractor', project.contractor],
-                ['Project manager', project.projectManager],
-                ['Site', [project.city, project.state].filter(Boolean).join(', ')],
-              ] as Array<[string, string | null]>
-            ).map(([label, value]) => (
-              <Box key={label} sx={{ display: 'flex', gap: 1, justifyContent: 'space-between', minWidth: 0 }}>
-                <Typography variant="body2" color="text.secondary" sx={{ flexShrink: 0 }}>
-                  {label}
-                </Typography>
-                <Typography variant="body2" noWrap title={value || undefined} sx={{ minWidth: 0, textAlign: 'right' }}>
-                  {value || '—'}
-                </Typography>
-              </Box>
-            ))}
-          </Stack>
+          <InfoRows
+            rows={[
+              ['Job site', project.jobSiteName],
+              ['General contractor', project.contractor],
+              ['Project manager', project.projectManager],
+              ['Site', [project.city, project.state].filter(Boolean).join(', ')],
+            ]}
+          />
           <Divider sx={{ my: 1.5 }} />
           <Typography variant="caption" color="text.secondary">
             {project.archived
@@ -324,6 +367,72 @@ export default function ProjectDetailPage() {
           </Typography>
         </Paper>
       </Box>
+
+      {/* #730: the GP job as GP holds it. Three columns side by side on a wide screen - setup, dates,
+          dollars - so the whole job reads in one band rather than a long list. */}
+      <Paper variant="outlined" sx={{ p: 2, mt: 1.5 }} data-testid="gp-job-panel">
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+          <Typography component="h2" sx={microLabelSx}>
+            GP job
+          </Typography>
+          <GpJobStateTag project={project} />
+        </Stack>
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0, 1fr))' },
+            columnGap: 3,
+            rowGap: 2,
+          }}
+        >
+          <InfoRows
+            rows={[
+              [
+                'Customer',
+                project.customerNumber
+                  ? project.client
+                    ? `${project.customerNumber} - ${project.client}`
+                    : project.customerNumber
+                  : project.client,
+              ],
+              [
+                'Site address',
+                [project.address, project.address2, project.city, project.state, project.zip, project.country]
+                  .filter(Boolean)
+                  .join(', '),
+              ],
+              ['Estimator', employeeText(project.estimatorId, project.estimatorName)],
+              ['WS Manager', employeeText(project.wsManagerId, project.wsManagerName)],
+              ['Division', project.division ?? null],
+              ['Tax schedule', project.taxScheduleId ?? null],
+              ['Use tax schedule', project.useTaxScheduleId ?? null],
+            ]}
+          />
+          <InfoRows
+            tabular
+            rows={[
+              ['Created', formatGpDay(project.gpCreatedDate)],
+              ['Scheduled start', formatGpDay(project.scheduleStartDate)],
+              ['Scheduled completion', formatGpDay(project.scheduledCompletionDate)],
+              ['Bid due', formatGpDay(project.bidDueDate)],
+              ...(project.gpJobState === 'CLOSED' || project.gpClosedDate
+                ? ([['Closed', formatGpDay(project.gpClosedDate)]] as Array<[string, string]>)
+                : []),
+            ]}
+          />
+          <InfoRows
+            tabular
+            rows={[
+              ['Original contract', formatMoney(project.origContractAmount)],
+              ['Contract to date', formatMoney(project.contractToDate)],
+              ['Total actual cost', formatMoney(project.totalActualCost)],
+              ['Billed gross', formatMoney(project.billedAmountTtd)],
+              ['Retention held', formatMoney(project.retentionAmountTtd)],
+              ['Net billed', formatMoney(project.netBilledTtd)],
+            ]}
+          />
+        </Box>
+      </Paper>
 
       <ProjectEditDialog open={editOpen} project={project} onClose={() => setEditOpen(false)} />
 

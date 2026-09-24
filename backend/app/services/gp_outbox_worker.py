@@ -23,6 +23,7 @@ from app.errors import (
     RelayUnavailableError,
 )
 from app.repositories import gp_outbox_repository
+from app.repositories.project_repository import gp_job_refusal
 from app.services import gp_idempotency, gp_processing
 from app.services.relay_gateway import CREATE_PO_IDEMPOTENCY_FEATURE, CREATE_PO_TAX_ROWS_FEATURE
 from app.services.relay_gateway import gateway as relay_gateway
@@ -55,6 +56,20 @@ def registration_carries_tax(payload: dict) -> bool:
     if not isinstance(header, dict):
         return False
     return bool(header.get("tax_detail_ids")) or bool(header.get("tax_detail_id"))
+
+
+def _job_number_of(payload: dict) -> str | None:
+    """The job a queued write names, when its payload carries one: a create_po line or an
+    update_job_site header. A receipt carries only the PO number, and the relay's own error context
+    names the job for those."""
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("job_number"):
+        return str(payload["job_number"]).strip() or None
+    for line in payload.get("lines") or []:
+        if isinstance(line, dict) and line.get("job_number"):
+            return str(line["job_number"]).strip() or None
+    return None
 
 
 def _persist_register_po_from_context(context: dict, relay_result: dict, key: str) -> None:
@@ -270,10 +285,12 @@ async def _drain_one(row_id: uuid.UUID) -> None:
         await _fail_if_exhausted(row_id)
         return
     except RelayCallError as e:
-        # GP itself said no. Deterministic - retrying never helps.
-        await asyncio.to_thread(
-            _finish, row_id, "mark_failed", kind="gp_rejected", error=str(e.message), error_code=e.code
-        )
+        # GP itself said no. Deterministic - retrying never helps. A refusal because the job is
+        # inactive, closed or not in GP (#730) is recorded in the words and code the online paths use,
+        # so the held write reads the same as the error the person would have seen at the time.
+        refusal = gp_job_refusal(e, _job_number_of(payload))
+        error, error_code = (refusal.message, refusal.code) if refusal is not None else (str(e.message), e.code)
+        await asyncio.to_thread(_finish, row_id, "mark_failed", kind="gp_rejected", error=error, error_code=error_code)
         await asyncio.to_thread(_notify_failure, row_id)
         return
 

@@ -113,6 +113,12 @@ CREATE_PO_IDEMPOTENCY_FEATURE = "create_po_idempotency"
 # vendor) is unaffected.
 CREATE_PO_TAX_ROWS_FEATURE = "create_po_tax_rows"
 
+# The hello feature flag a relay sets to say its list_jobs returns GP's full job record, closed jobs
+# included, and that it runs update_job (#730). Without it the GP JOBS SYNC keeps its old
+# create-only behaviour - an older relay's list carries only number and name, and overwriting from it
+# would blank every other GP-held field - and a job edit that touches a GP field is refused.
+JOB_MIRROR_FEATURE = "job_mirror"
+
 # What a relay too old to discover its own GP companies leaves behind. The hello frame is the
 # only place that list comes from now, so a build that omits it serves nothing - and saying why beats
 # an empty picker with no explanation.

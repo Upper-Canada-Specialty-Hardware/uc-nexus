@@ -704,6 +704,19 @@ def _run_update_job_site(company: str, payload: dict) -> dict:
             raise
 
 
+def _run_update_job(company: str, payload: dict) -> dict:
+    ops.check_company_served(company)
+    request = models.UpdateJobRequest(company=company, **payload)
+    with db.get_connection(company) as conn:
+        try:
+            response = ops.update_job_op(conn, company=company, request=request)
+            conn.commit()
+            return response.model_dump(mode="json")
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def _run_create_receipt(company: str, payload: dict) -> dict:
     ops.check_company_served(company)
     request = models.ReceiptRequest(company=company, **payload)
@@ -766,6 +779,9 @@ _OPS = {
     # issue #497 - a project's site address and name are edited in Nexus, and GP has to hear about it.
     # Mints a job-specific address code rather than editing a shared one; see update_job_site_op.
     "update_job_site": _run_update_job_site,
+    # issue #730 - a job's header is edited in Nexus and written into GP, which owns it. Refused, like
+    # every write naming a job, when the job is inactive or closed in GP.
+    "update_job": _run_update_job,
     # issue #425 - jobs replicated from UCSH carry GL account indexes that do not exist in UBC, so a
     # PO against them registers and can never be received. This is how Nexus finds out which ones.
     "job_setup_health": _run_job_setup_health,
@@ -998,6 +1014,13 @@ CREATE_PO_IDEMPOTENCY_FEATURE = "create_po_idempotency"
 # register a CAD PO with no tax at all - so it refuses to push a taxed registration to such a build.
 CREATE_PO_TAX_ROWS_FEATURE = "create_po_tax_rows"
 
+# The feature string saying this build serves the full job record (issue #730): list_jobs and get_job
+# carry the job's GP state (active, inactive, closed - closed jobs read from WennSoft's history table),
+# customer, site address, division, tax schedules, estimator and manager, dates and money; update_job
+# writes a job's header; and every write naming a job refuses an inactive or closed one. A backend that
+# does not see this string is talking to a relay whose list_jobs carries only number and name.
+JOB_MIRROR_FEATURE = "job_mirror"
+
 
 def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
     """The relay's identity frame, sent right after the channel connects (issue #315) and again on the
@@ -1015,8 +1038,9 @@ def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
     it accepts a pushed preview-channel list, "gp_sync_state" that it accepts the backend's account of
     its own sync work, "create_po_idempotency" that a create_po carrying an idempotency key can be
     retried safely, and "create_po_tax_rows" that a create_po's `tax_detail_ids` list is read and
-    written as GP writes tax, so a backend talking to an older relay knows not to bother sending any
-    of them."""
+    written as GP writes tax, and "job_mirror" that jobs come as full records with their GP state and
+    job writes refuse an inactive or closed job, so a backend talking to an older relay knows not to
+    bother sending any of them."""
     from . import updater  # lazy: keep channel import-light and avoid any package load-order coupling
 
     served, names, error = _served_companies(channel_allowed)
@@ -1028,7 +1052,13 @@ def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
         "companies": served,
         "company_names": names,
         "companies_error": error,
-        "features": ["channels", "gp_sync_state", CREATE_PO_IDEMPOTENCY_FEATURE, CREATE_PO_TAX_ROWS_FEATURE],
+        "features": [
+            "channels",
+            "gp_sync_state",
+            CREATE_PO_IDEMPOTENCY_FEATURE,
+            CREATE_PO_TAX_ROWS_FEATURE,
+            JOB_MIRROR_FEATURE,
+        ],
     }
 
 

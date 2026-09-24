@@ -42,6 +42,19 @@ class GpSetupInvalidError(ConflictError):
         self.issues = issues or []
 
 
+class GpJobNotOpenError(ConflictError):
+    """GP will not accept a write against this project's job: it is inactive, closed, or not in GP at
+    all (#730).
+
+    Raised up front from the mirrored gp_job_state for a clean message, and in place of the relay's own
+    job_inactive / job_closed / job_not_registered refusals, so the user sees one error whichever side
+    caught it. A conflict for the same reason GpSetupInvalidError is one: the request is fine, the job
+    is not, and the fix is in GP."""
+
+    def __init__(self, message: str):
+        super().__init__(message, code="GP_JOB_NOT_OPEN")
+
+
 class InsufficientInventoryError(AppError):
     def __init__(self, message: str):
         super().__init__(message, "INSUFFICIENT_INVENTORY")

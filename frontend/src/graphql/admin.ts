@@ -35,6 +35,35 @@ const ADMIN_PROJECT_FIELDS = `
     costCode
     accountIndex
   }
+  gpJobState
+`;
+
+// #730: the GP job as GP holds it - setup, dates and dollars. Only the detail page and the edit
+// mutation read these; the grid needs nothing past gpJobState, so it does not ask for them.
+const GP_JOB_DETAIL_FIELDS = `
+  gpClosedDate
+  customerNumber
+  jobAddressCode
+  billtoAddressCode
+  address2
+  country
+  division
+  taxScheduleId
+  useTaxScheduleId
+  estimatorId
+  estimatorName
+  wsManagerId
+  wsManagerName
+  gpCreatedDate
+  scheduleStartDate
+  scheduledCompletionDate
+  bidDueDate
+  origContractAmount
+  contractToDate
+  totalActualCost
+  billedAmountTtd
+  retentionAmountTtd
+  netBilledTtd
 `;
 
 // #637: company is the tenant this account is scoped to. Every user mutation returns it so a save
@@ -65,6 +94,7 @@ export const GET_ADMIN_PROJECT_DETAIL = gql`
     adminProjectDetail(id: $id) {
       project {
         ${ADMIN_PROJECT_FIELDS}
+        ${GP_JOB_DETAIL_FIELDS}
       }
       poCountsByStatus {
         status
@@ -248,6 +278,7 @@ export const UPDATE_PROJECT = gql`
   mutation UpdateProject($id: ID!, $input: UpdateProjectInput!) {
     updateProject(id: $id, input: $input) {
       ${ADMIN_PROJECT_FIELDS}
+      ${GP_JOB_DETAIL_FIELDS}
     }
   }
 `;

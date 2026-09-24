@@ -9,7 +9,8 @@ import {
   UPDATE_RECEIVE_DRAFT,
   REJECT_RECEIVE_DRAFT,
 } from '../../../graphql/warehouse';
-import { GET_WAREHOUSES, GET_RELAY_STATUS } from '../../../graphql/shared';
+import { GET_PROJECTS, GET_WAREHOUSES, GET_RELAY_STATUS } from '../../../graphql/shared';
+import { GraphQLError } from 'graphql';
 import type { ReceiveDraft } from '../receiveDraftTypes';
 
 // Approving a drafted receive is where the GP-first pipeline lives now, so this file inherits the
@@ -435,6 +436,62 @@ describe('ReceiveDraftReviewModal', () => {
     fireEvent.change(within(screen.getByRole('table')).getByRole('spinbutton'), { target: { value: '4' } });
     expect(screen.getByText('Max: 3')).toBeInTheDocument();
     expect(approveButton()).toBeDisabled();
+  });
+
+  // #730: GP refuses a GP RECEIVE ENTRY on a job it holds as inactive, closed or missing.
+  function projectsMock(gpJobState: string | null): MockedResponse {
+    return {
+      request: { query: GET_PROJECTS },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: {
+        data: {
+          projects: [
+            {
+              __typename: 'Project',
+              id: 'proj-1',
+              projectId: 'JOB-1',
+              description: 'Riverside Tower',
+              client: null,
+              jobSiteName: null,
+              scheduleFilename: null,
+              company: 'TUBC',
+              openingCount: 4,
+              gpSetupOk: true,
+              gpSetupCheckedAt: null,
+              gpSetupIssues: null,
+              gpJobState,
+            },
+          ],
+        },
+      },
+    };
+  }
+
+  it('blocks approval against a job that is inactive in GP, and says why', async () => {
+    await openModal([projectsMock('INACTIVE')]);
+
+    const banner = await screen.findByTestId('gp-job-not-open-banner', undefined, SLOW);
+    expect(banner).toHaveTextContent('GP job JOB-1: Inactive in GP');
+    expect(banner).toHaveTextContent('So approving a receive against it is not possible.');
+    expect(approveButton()).toBeDisabled();
+  });
+
+  it("shows the server's refusal plainly when the job closed after the modal opened", async () => {
+    const approveMock: MockedResponse = {
+      request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+      result: {
+        errors: [
+          new GraphQLError('GP job JOB-1 is closed in GP.', { extensions: { code: 'GP_JOB_NOT_OPEN' } }),
+        ],
+      },
+    };
+    await openModal([projectsMock('ACTIVE'), approveMock]);
+    expect(approveButton()).toBeEnabled();
+
+    await approveViaConfirm();
+
+    expect(await screen.findByText('GP job JOB-1 is closed in GP.', undefined, SLOW)).toBeInTheDocument();
+    expect(screen.queryByText(/A retry won't post a duplicate receipt/)).toBeNull();
   });
 
   describe('the counted-at timestamp (#474)', () => {

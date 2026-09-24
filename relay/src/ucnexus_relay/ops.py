@@ -52,6 +52,24 @@ def check_company_served(company: str) -> None:
     raise RelayOpError("company_not_allowed", f"{company} is not a GP company this relay serves {served.companies}")
 
 
+def check_job_writable(conn, *, company: str, job_number: str) -> None:
+    """Refuse a NEXUS TO GP WRITE that names a job GP would not want written to (#730): an INACTIVE GP
+    JOB, a CLOSED GP JOB, or a job GP has no record of. Read live on the caller's own connection and
+    before anything is written, so a job somebody inactivated in GP a minute ago is refused now rather
+    than after the next GP JOBS SYNC tells Nexus about it."""
+    state = econnect.job_state(conn, job_number)
+    if state is None:
+        raise RelayOpError(
+            "job_not_registered",
+            f"job '{job_number}' is not a registered GP job (JC00102) for {company}",
+            job_number=job_number,
+        )
+    if state == "inactive":
+        raise RelayOpError("job_inactive", f"job {job_number} is inactive in GP", job_number=job_number)
+    if state == "closed":
+        raise RelayOpError("job_closed", f"job {job_number} is closed in GP", job_number=job_number)
+
+
 def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> models.CreatePoResponse:
     h = request.header
 
@@ -145,17 +163,15 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
     #     on the job with a raw eConnect error mid-transaction, so pre-check job-cost lines here for
     #     clean job_not_registered / cost_code_not_on_job errors, mirroring the buyer check. Only PI=2
     #     lines carry a job/cost code (the model validator guarantees PI=2 has both, PI=1 has neither).
-    job_ok: dict[str, bool] = {}  # cache: a PO can repeat a job across lines
+    #     An inactive or closed job is refused here too (#730), not just a missing one.
+    jobs_checked: set[str] = set()  # a PO can repeat a job across lines
     for line in request.lines:
         if line.product_indicator != 2:
             continue
         job = line.job_number
-        if job not in job_ok:
-            job_ok[job] = econnect.job_exists(conn, job)
-        if not job_ok[job]:
-            raise RelayOpError(
-                "job_not_registered", f"job '{job}' is not a registered GP job (JC00102) for {company}"
-            )
+        if job not in jobs_checked:
+            check_job_writable(conn, company=company, job_number=job)
+            jobs_checked.add(job)
         if not econnect.cost_code_on_job(conn, job, line.cost_code):
             raise RelayOpError(
                 "cost_code_not_on_job",
@@ -613,6 +629,122 @@ def _address_code_already_exists(company: str, request: models.CreateCustomerAdd
     )
 
 
+def _mint_site_address(
+    conn,
+    *,
+    request: models.UpdateJobSiteRequest | models.UpdateJobRequest,
+    customer_number: str | None,
+    address_code: str | None = None,
+) -> tuple[str, bool]:
+    """Make sure the customer has an address record saying the request's site address, and return its
+    code plus whether it was created just now. The one mint behind update_job_site and update_job, so the
+    two cannot disagree about which code a job's site lives under (see update_job_site_op for why the
+    code is job-specific rather than an edit of the shared one).
+
+    When the code already exists, what happens depends on whose it is (#730). The job's OWN code - the
+    one derived from its number, whether derived here or sent by a caller spelling the same thing - is a
+    record Nexus minted for that job alone, so a changed address is written into it in place; otherwise
+    a job's second site edit would re-point it at the first address and GP would never hear of the new
+    one. Any other existing code is an address accounting maintains, possibly shared between jobs, and
+    is never rewritten (#444): the job is only pointed at it. An identical re-push writes nothing."""
+    if not customer_number:
+        raise RelayOpError(
+            "job_has_no_customer",
+            f"Job '{request.job_number}' has no customer, so a site address cannot be created for it",
+        )
+    # char(15), and it has to be stable so a re-push finds its own code rather than making another.
+    own_code = f"SITE-{request.job_number}"[:15].strip().upper()
+    code = (address_code or f"SITE-{request.job_number}")[:15].strip().upper()
+    fields = {
+        "customer_number": customer_number,
+        "address_code": code,
+        "address1": request.address1,
+        "address2": request.address2 or "",
+        "city": request.city,
+        "state": request.state or "",
+        "zip_code": request.zip_code or "",
+        "country": request.country or "",
+    }
+
+    if not econnect.customer_address_exists(conn, customer_number, code):
+        econnect.create_customer_address(conn, fields)
+        return code, True
+    if code != own_code:
+        return code, False
+    stored = econnect.get_customer_address_lines(conn, customer_number, code)
+    wanted = {name: fields[name] for name in ("address1", "address2", "city", "state", "zip_code", "country")}
+    if stored != wanted:
+        econnect.update_job_site_customer_address(conn, fields)
+    return code, False
+
+
+# UpdateJobRequest field -> the econnect.update_job field it is sent as. Identical except the use-tax
+# schedule, which the job record reads back as use_tax_schedule_id (JC00102.USETAXSCHID) and the proc
+# builder has always called use_tax_schedule (@I_vUseTaxSchedule).
+_UPDATE_JOB_FIELDS = (
+    ("job_name", "job_name"),
+    ("customer_number", "customer_number"),
+    ("job_address_code", "job_address_code"),
+    ("billto_address_code", "billto_address_code"),
+    ("division", "division"),
+    ("tax_schedule_id", "tax_schedule_id"),
+    ("use_tax_schedule_id", "use_tax_schedule"),
+    ("estimator_id", "estimator_id"),
+    ("ws_manager_id", "ws_manager_id"),
+    ("schedule_start_date", "schedule_start_date"),
+    ("scheduled_completion_date", "scheduled_completion_date"),
+    ("bid_due_date", "bid_due_date"),
+)
+
+
+def update_job_op(conn, *, company: str, request: models.UpdateJobRequest) -> models.UpdateJobResponse:
+    """Change a GP job's header from Nexus (#730). The caller commits.
+
+    1. Refuse an inactive or closed job, or one GP does not have, before anything is written.
+    2. If the request carries a site address, mint the job-specific address code for it - under the NEW
+       customer when the customer is changing, since a code only means something under its customer -
+       and point the job at it. Same mint as update_job_site (_mint_site_address).
+    3. wsiJCJobMaster with UpdateIfExists=1, sending only what the request set: validate, then write,
+       the create_job_op order, so a rejected change fails having written nothing to the job.
+    4. Answer with the job's full record read back from GP, which also proves the row is still there.
+
+    A request that names nothing to change writes nothing and just answers with the record."""
+    check_job_writable(conn, company=company, job_number=request.job_number)
+    job = econnect.get_job(conn, request.job_number)
+    if job is None:
+        # job_state just found it; only a concurrent close/delete lands here.
+        raise RelayOpError(
+            "job_not_registered",
+            f"job '{request.job_number}' is not a registered GP job (JC00102) for {company}",
+            job_number=request.job_number,
+        )
+
+    fields: dict = {"job_number": request.job_number}
+    for request_field, proc_field in _UPDATE_JOB_FIELDS:
+        value = getattr(request, request_field)
+        if value is not None:
+            fields[proc_field] = value
+
+    if request.address1:
+        address_code, _ = _mint_site_address(
+            conn, request=request, customer_number=request.customer_number or job.get("customer_number")
+        )
+        fields["job_address_code"] = address_code
+
+    if len(fields) > 1:
+        econnect.update_job(conn, only_validate=True, **fields)
+        econnect.update_job(conn, only_validate=False, **fields)
+
+    updated = econnect.get_job(conn, request.job_number)
+    if updated is None:
+        # The err=0-but-nothing-landed case create_po_line has a known mode for.
+        raise econnect.EConnectError(
+            f"wsiJCJobMaster reported success but job {request.job_number} is not in JC00102",
+            proc="wsiJCJobMaster",
+        )
+    return models.UpdateJobResponse(job=updated)
+
+
 def update_job_site_op(
     conn, *, company: str, request: models.UpdateJobSiteRequest
 ) -> models.UpdateJobSiteResponse:
@@ -634,7 +766,10 @@ def update_job_site_op(
 
     Re-running with the same address is idempotent: the code already exists, so the mint is skipped and
     the job is re-pointed at what it already points at.
+
+    An inactive or closed job, or one GP does not have, is refused before either write (#730).
     """
+    check_job_writable(conn, company=company, job_number=request.job_number)
     job = econnect.get_job(conn, request.job_number)
     if job is None:
         raise RelayOpError("job_not_found", f"Job '{request.job_number}' is not in {company}")
@@ -643,30 +778,9 @@ def update_job_site_op(
     address_created = False
 
     if request.address1:
-        customer_number = job.get("customer_number")
-        if not customer_number:
-            raise RelayOpError(
-                "job_has_no_customer",
-                f"Job '{request.job_number}' has no customer, so a site address cannot be created for it",
-            )
-        # char(15), and it has to be stable so a re-push finds its own code rather than making another.
-        address_code = (request.address_code or f"SITE-{request.job_number}")[:15].strip().upper()
-
-        if not econnect.customer_address_exists(conn, customer_number, address_code):
-            econnect.create_customer_address(
-                conn,
-                {
-                    "customer_number": customer_number,
-                    "address_code": address_code,
-                    "address1": request.address1,
-                    "address2": request.address2 or "",
-                    "city": request.city,
-                    "state": request.state or "",
-                    "zip_code": request.zip_code or "",
-                    "country": request.country or "",
-                },
-            )
-            address_created = True
+        address_code, address_created = _mint_site_address(
+            conn, request=request, customer_number=job.get("customer_number"), address_code=request.address_code
+        )
 
     fields: dict = {"job_number": request.job_number}
     if request.job_name:
@@ -822,6 +936,12 @@ def create_receipt_op(conn, *, company: str, request: models.ReceiptRequest) -> 
                 f"line ORD {rl.po_line_ord}: qty {rl.quantity} exceeds remaining {remaining} "
                 f"(ordered {pl['qtyorder']}, already received {pl['prev_received']})",
             )
+
+    # #730: a receipt books cost to every job its lines carry, so each one must still be open for it in
+    # GP. Only the lines being received count, and a non-job line (blank JOBNUMBR) names no job.
+    for job in dict.fromkeys(po_lines[rl.po_line_ord]["job"] for rl in request.lines):
+        if job:
+            check_job_writable(conn, company=company, job_number=job)
 
     # Issue #425: pre-flight the account index each line was stamped with at registration.
     # taPopRcptLineInsert reads POP10110.INVINDX and rejects an index that is not in GL00105 with

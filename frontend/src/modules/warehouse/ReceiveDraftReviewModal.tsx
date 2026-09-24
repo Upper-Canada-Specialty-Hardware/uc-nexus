@@ -31,9 +31,10 @@ import { FileText } from 'lucide-react';
 import { RECEIVE_APPROVE_REFETCH_QUERIES, RECEIVE_DRAFT_REFETCH_QUERIES } from '../../graphql/refetch';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import GpErrorAlert from '../../components/GpErrorAlert';
-import { extractGpError, type GpError } from '../../graphql/gpError';
+import { extractGpError, GP_JOB_NOT_OPEN, type GpError } from '../../graphql/gpError';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
-import { isGpSetupBroken, type Project } from '../../types/project';
+import GpJobNotOpenBanner from '../../components/GpJobStateTag';
+import { isGpJobNotOpen, isGpSetupBroken, type Project } from '../../types/project';
 import ReceiveLinesEditor from './ReceiveLinesEditor';
 import { PostedReceiptLines, type PostedReceipt } from './ReceiveOutcomePanels';
 import {
@@ -165,6 +166,9 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
     return (projectsData?.projects ?? []).find((p) => p.id === projectId) ?? null;
   }, [projectId, projectsData]);
   const quarantined = project !== null && isGpSetupBroken(project);
+  // #730: GP refuses a GP RECEIVE ENTRY on a job it holds as inactive, closed or missing. A hard block
+  // for the same reason as #425: queuing would only drain into the same refusal.
+  const jobNotOpen = project !== null && isGpJobNotOpen(project);
 
   const lineItemsToReceive = useMemo(() => {
     if (!poDetails) return [] as PODetailLineItem[];
@@ -257,6 +261,12 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
       // Key kept: GP may have committed even if the mutation reported failure, so the retry must
       // carry the same key.
       const captured = extractGpError(err);
+      if (captured?.code === GP_JOB_NOT_OPEN) {
+        // #730: the server's refusal names the job and its state; there is no GP detail to show and
+        // nothing a retry would change.
+        setMutationError(captured.message);
+        return;
+      }
       setGpError(captured);
       setMutationError(
         captured
@@ -338,7 +348,7 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
           drain into the same eConnect rejection. */}
       <Button
         variant="contained"
-        disabled={totalUnits === 0 || hasQuantityErrors || quarantined || submitting}
+        disabled={totalUnits === 0 || hasQuantityErrors || quarantined || jobNotOpen || submitting}
         onClick={() => setConfirmOpen(true)}
       >
         {submitting ? <CircularProgress size={24} /> : 'Approve & Post to GP'}
@@ -456,6 +466,9 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
             </Box>
             {project && quarantined && (
               <GpSetupQuarantineBanner project={project} action="approving a receive against it" dense />
+            )}
+            {project && jobNotOpen && (
+              <GpJobNotOpenBanner project={project} action="approving a receive against it" dense />
             )}
             <FormControl size="small" sx={{ minWidth: 240, mb: 2 }}>
               <InputLabel id="review-warehouse-label">Receive into warehouse</InputLabel>

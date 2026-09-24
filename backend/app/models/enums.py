@@ -323,3 +323,17 @@ class RelayEventKind(str, enum.Enum):
     REFUSED_SLOT = "REFUSED_SLOT"
     REFUSED_SECRET = "REFUSED_SECRET"
     ADOPTED = "ADOPTED"
+
+
+class GpJobState(str, enum.Enum):
+    """Where a project's GP job stands in GP, as the GP JOBS SYNC last read it (#730).
+
+    ACTIVE and INACTIVE are GP's own flag on an open job (INACTIVE is reversible in GP). CLOSED is a
+    job GP has moved to its history tables, which is permanent. NOT_IN_GP is a job two consecutive
+    passes could not find in either table. Only ACTIVE, and a project never mirrored at all (NULL),
+    may have NEXUS TO GP WRITES made against it."""
+
+    ACTIVE = "ACTIVE"
+    INACTIVE = "INACTIVE"
+    CLOSED = "CLOSED"
+    NOT_IN_GP = "NOT_IN_GP"

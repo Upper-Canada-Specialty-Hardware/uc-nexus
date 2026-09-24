@@ -566,6 +566,98 @@ class UpdateJobSiteResponse(BaseModel):
     address_created: bool = False
 
 
+# field -> the wsiJCJobMaster parameter width it lands in (see econnect._CREATE_JOB_PARAMS). The site
+# address fields are checked against _ADDRESS_MAX_LENGTHS instead, because they land in RM00102.
+_UPDATE_JOB_MAX_LENGTHS = {
+    "job_name": 31,
+    "customer_number": 15,
+    "job_address_code": 15,
+    "billto_address_code": 15,
+    "division": 15,
+    "tax_schedule_id": 15,
+    "use_tax_schedule_id": 15,
+    "estimator_id": 15,
+    "ws_manager_id": 15,
+}
+_UPDATE_JOB_ADDRESS_FIELDS = ("address1", "address2", "city", "state", "zip_code", "country")
+
+
+class UpdateJobRequest(BaseModel):
+    """Change an existing GP job's header from Nexus (#730). A PATCH: every field left absent keeps
+    whatever GP holds, for the reason UpdateJobSiteRequest gives - a Nexus screen shows a fraction of a
+    JC00102 row, and sending the rest would blank what accounting maintains.
+
+    A blank string counts as absent, the same rule CreateJobRequest applies to its optionals, so a field
+    the user cleared in a form never reaches GP as an empty value the proc would store.
+
+    The site address block works exactly as update_job_site's does: a street and a city mint a new
+    job-specific address code under the job's customer and point the job at it (see
+    ops._mint_site_address). That minted code IS the job address code, so naming one as well is refused
+    rather than guessing which of the two was meant.
+
+    Changing the customer changes what every address code on the job means - codes belong to a
+    customer - so a new customer must come with the job and bill-to address codes that exist under it.
+    The job address code may be left out only when a new site address is being minted under the new
+    customer in the same request; the bill-to code is always needed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    company: str
+    job_number: str
+
+    job_name: str | None = None
+    customer_number: str | None = None
+    job_address_code: str | None = None
+    billto_address_code: str | None = None
+    division: str | None = None
+    tax_schedule_id: str | None = None
+    use_tax_schedule_id: str | None = None
+    estimator_id: str | None = None
+    ws_manager_id: str | None = None
+    schedule_start_date: date | None = None
+    scheduled_completion_date: date | None = None
+    bid_due_date: date | None = None
+
+    address1: str | None = None
+    address2: str | None = None
+    city: str | None = None
+    state: str | None = None
+    zip_code: str | None = None
+    country: str | None = None
+
+    @model_validator(mode="after")
+    def normalize(self):
+        self.job_number = (self.job_number or "").strip()
+        if not self.job_number:
+            raise ValueError("job_number is required")
+        for name in (*_UPDATE_JOB_MAX_LENGTHS, *_UPDATE_JOB_ADDRESS_FIELDS):
+            value = (getattr(self, name) or "").strip()
+            setattr(self, name, value or None)
+        # Over-length is refused, never truncated, as CreateCustomerAddressRequest explains.
+        for name, limit in _UPDATE_JOB_MAX_LENGTHS.items():
+            if len(getattr(self, name) or "") > limit:
+                raise ValueError(f"{name} is at most {limit} characters in GP")
+        for name in _UPDATE_JOB_ADDRESS_FIELDS:
+            limit = _ADDRESS_MAX_LENGTHS[name]
+            if len(getattr(self, name) or "") > limit:
+                raise ValueError(f"{name} is at most {limit} characters in GP")
+        if (self.address1 or self.city) and not (self.address1 and self.city):
+            raise ValueError("address1 and city must be given together")
+        if self.address1 and self.job_address_code:
+            raise ValueError("give either job_address_code or a new site address, not both")
+        if self.customer_number:
+            if not self.billto_address_code:
+                raise ValueError("a new customer_number needs billto_address_code under that customer")
+            if not (self.job_address_code or self.address1):
+                raise ValueError("a new customer_number needs job_address_code or a new site address")
+        return self
+
+
+class UpdateJobResponse(BaseModel):
+    # The job's full record as GP holds it after the write - the same shape list_jobs serves.
+    job: dict
+
+
 class CreateCustomerAddressRequest(BaseModel):
     """One new address code under an existing GP customer (RM00102).
 

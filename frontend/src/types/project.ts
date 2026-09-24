@@ -26,6 +26,8 @@ export interface Project {
   gpSetupOk?: boolean | null;
   gpSetupCheckedAt?: string | null;
   gpSetupIssues?: GpSetupIssue[] | null;
+  /** #730: the GP job's own state. Null means the job has never been mirrored - no tag, no restriction. */
+  gpJobState?: GpJobState | null;
 }
 
 /**
@@ -51,4 +53,52 @@ export interface GpSetupStatus {
  */
 export function isGpSetupBroken(project: GpSetupStatus | null | undefined): boolean {
   return project?.gpSetupOk === false;
+}
+
+/**
+ * #730: the state GP holds the job in. ACTIVE (and null, never mirrored) is an open job. INACTIVE is
+ * GP's reversible grace period, CLOSED is permanent, and NOT_IN_GP is a job GP has no record of, which
+ * is treated the same. GP refuses every NEXUS TO GP WRITE against the last three.
+ */
+export type GpJobState = 'ACTIVE' | 'INACTIVE' | 'CLOSED' | 'NOT_IN_GP';
+
+export interface GpJobStatus {
+  projectId?: string;
+  gpJobState?: GpJobState | null;
+}
+
+/**
+ * Is this project's GP job closed to writes (#730)? Strictly one of the three named states: undefined
+ * (not requested), null (never mirrored) and ACTIVE all pass, the same permissive-on-unknown rule as
+ * isGpSetupBroken. The server enforces it either way.
+ */
+export function isGpJobNotOpen(project: GpJobStatus | null | undefined): boolean {
+  const state = project?.gpJobState;
+  return state === 'INACTIVE' || state === 'CLOSED' || state === 'NOT_IN_GP';
+}
+
+type NotOpenGpJobState = Exclude<GpJobState, 'ACTIVE'>;
+
+const GP_JOB_STATE_LABEL: Record<NotOpenGpJobState, string> = {
+  INACTIVE: 'Inactive in GP',
+  CLOSED: 'Closed in GP',
+  NOT_IN_GP: 'Not in GP',
+};
+
+const GP_JOB_NOT_OPEN_REASON: Record<NotOpenGpJobState, string> = {
+  INACTIVE: 'GP holds this job as inactive, and GP refuses changes to it until the job is made active again in GP.',
+  CLOSED: 'GP holds this job as closed, which is permanent, and GP refuses every change to it.',
+  NOT_IN_GP: 'GP has no record of this job, so there is nothing in GP to change.',
+};
+
+/** #730: the tag text for a job that is not open, or null for an open (or never mirrored) one. */
+export function gpJobStateLabel(project: GpJobStatus | null | undefined): string | null {
+  if (!isGpJobNotOpen(project)) return null;
+  return GP_JOB_STATE_LABEL[project!.gpJobState as NotOpenGpJobState];
+}
+
+/** #730: why GP will not take a write against this job, in one sentence. Null for an open job. */
+export function gpJobNotOpenReason(project: GpJobStatus | null | undefined): string | null {
+  if (!isGpJobNotOpen(project)) return null;
+  return GP_JOB_NOT_OPEN_REASON[project!.gpJobState as NotOpenGpJobState];
 }

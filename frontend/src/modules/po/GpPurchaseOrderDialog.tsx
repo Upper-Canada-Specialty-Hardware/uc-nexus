@@ -4,7 +4,6 @@ import {
   Box,
   Button,
   Checkbox,
-  CircularProgress,
   FormControlLabel,
   IconButton,
   ListItemText,
@@ -13,7 +12,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { Trash2, Plus, RefreshCw, Tag, Check, TriangleAlert } from 'lucide-react';
+import { Trash2, Plus, RefreshCw, Tag } from 'lucide-react';
 import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
@@ -31,8 +30,9 @@ import {
 import { GET_PROJECTS } from '../../graphql/shared';
 import { useIdentity } from '../../hooks/useIdentity';
 import type { Project } from '../../types/project';
-import { isGpSetupBroken } from '../../types/project';
+import { isGpJobNotOpen, isGpSetupBroken } from '../../types/project';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
+import GpJobNotOpenBanner from '../../components/GpJobStateTag';
 import type { PurchaseOrder } from './index';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
@@ -44,6 +44,7 @@ import GpErrorAlert from '../../components/GpErrorAlert';
 import { extractGpError, isRelayOpUnsupported, type GpError } from '../../graphql/gpError';
 import CustomItemPicker from './CustomItemPicker';
 import ProjectPicker from '../../components/ProjectPicker';
+import ProcessingStep from '../../components/ProcessingStep';
 import { monoSx, microLabelSx } from '../../theme';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
@@ -259,39 +260,6 @@ function bestGuessGpVendor(
   });
   // a fuzzy substring hit can be wrong (a short name is a substring of an unrelated vendor) - not confident
   return { vendorId: partial?.vendorId ?? null, vendorName: partial?.vendorName ?? null, confident: false };
-}
-
-/** One line of the register progress panel: what is happening, and where it has got to. */
-function ProcessingStep({
-  state,
-  label,
-  detail,
-}: {
-  state: 'done' | 'running' | 'failed';
-  label: string;
-  detail: string;
-}) {
-  return (
-    <Stack direction="row" spacing={1.25} alignItems="flex-start">
-      {/* A fixed gutter so the two labels line up whatever mark is in front of them. */}
-      <Box sx={{ width: 20, flexShrink: 0, display: 'flex', justifyContent: 'center', pt: '3px' }}>
-        {state === 'running' ? (
-          <CircularProgress size={16} />
-        ) : state === 'done' ? (
-          <Check size={18} strokeWidth={2.25} color="var(--mui-palette-success-main)" />
-        ) : (
-          <TriangleAlert size={18} strokeWidth={2} color="var(--mui-palette-warning-main)" />
-        )}
-      </Box>
-      {/* minWidth 0 so a long GP message wraps instead of widening the dialog. */}
-      <Box sx={{ minWidth: 0 }}>
-        <Typography sx={{ fontWeight: 600, lineHeight: 1.4 }}>{label}</Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-word' }}>
-          {detail}
-        </Typography>
-      </Box>
-    </Stack>
-  );
 }
 
 // --- Props ---
@@ -1229,6 +1197,9 @@ export default function GpPurchaseOrderDialog({
   // it would stop purchasing preparing the order that becomes registerable the moment accounting
   // fixes the job. Registering is the act that stamps the bad account onto the PO line.
   const gpSetupBlocksRegister = isRegister && isGpSetupBroken(selectedProject);
+  // #730: GP refuses a PO REGISTRATION on a job it holds as inactive, closed or missing. The picker
+  // already greys such projects out, so this only catches a draft saved against one before it closed.
+  const gpJobBlocksRegister = isRegister && isGpJobNotOpen(selectedProject);
 
   const actions = (
     <Stack direction="row" spacing={1}>
@@ -1238,7 +1209,7 @@ export default function GpPurchaseOrderDialog({
       <Button
         variant="contained"
         onClick={handleSubmit}
-        disabled={busy || lineItems.length === 0 || gpSetupBlocksRegister}
+        disabled={busy || lineItems.length === 0 || gpSetupBlocksRegister || gpJobBlocksRegister}
       >
         {busy ? submitBusyLabel : submitIdleLabel}
       </Button>
@@ -1316,6 +1287,7 @@ export default function GpPurchaseOrderDialog({
         </Box>
       )}
       {isRegister && <GpSetupQuarantineBanner project={selectedProject} action="registering it in GP" dense />}
+      {isRegister && <GpJobNotOpenBanner project={selectedProject} action="registering it in GP" dense />}
       {/* Issue #216: GP registration happens as YOUR buyer identity. Drafting (issue #256) is open
           to everyone, so this gates register mode only. */}
       {isRegister && !gpBuyerId && (
@@ -1336,6 +1308,8 @@ export default function GpPurchaseOrderDialog({
           label={isRegister ? 'Project' : 'Project (Optional)'}
           placeholder="Search by project number or name, or leave empty for a stock PO"
           disabled={projectLocked}
+          // #730: the project on a PO becomes the GP job the registration writes to.
+          gpBound
           sx={{ maxWidth: 'none' }}
           helperText={
             projectLocked
