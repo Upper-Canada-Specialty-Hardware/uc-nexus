@@ -1168,16 +1168,41 @@ _JOB_JOINS = (
 )
 
 
-def _job_select(where: str = "") -> str:
+_JOB_ROW_COLUMN = re.compile(r"\bj\.(\w+)")
+
+
+def _history_columns(conn) -> frozenset[str]:
+    """The columns JC30001 really has in this company, or nothing when it has no such table (#775).
+
+    JC30001 is NOT the job master plus three close columns: production's has no WS_Inactive, and one
+    other JC00102 column is missing too (213 columns where 215 were expected). A column named in the
+    history half that the table lacks fails the WHOLE statement, which took every job read down with it
+    - so the history half is built from what the catalogue says is there, not from what it should be."""
+    rows = conn.cursor().execute(
+        "SELECT name FROM sys.columns WHERE object_id = OBJECT_ID('dbo.JC30001')"
+    ).fetchall()
+    return frozenset(r.name.lower() for r in rows)
+
+
+def _job_select(history_columns: frozenset[str], where: str = "") -> str:
     """Both halves of the job read as one UNION ALL: the job master with `closed = 0`, the closed-job
-    history with `closed = 1` and its close stamp. `where` filters both halves identically."""
-    return (
-        f"SELECT {_JOB_COLUMNS}, 0 AS closed, NULL AS close_date, NULL AS close_user "
-        f"FROM dbo.JC00102 j {_JOB_JOINS}{where}"
-        f"UNION ALL "
+    history with `closed = 1` and its close stamp. `where` filters both halves identically.
+
+    The history half reads only the columns `history_columns` says JC30001 has; any other job-row column
+    reads as NULL (a NULL in a join condition simply matches nothing). A history row is closed whatever
+    an inactive flag says, so the missing WS_Inactive costs nothing. With no JC30001 at all, the history
+    half is left out."""
+    live = f"SELECT {_JOB_COLUMNS}, 0 AS closed, NULL AS close_date, NULL AS close_user FROM dbo.JC00102 j {_JOB_JOINS}{where}"
+    if not history_columns:
+        return live
+    history = (
         f"SELECT {_JOB_COLUMNS}, 1 AS closed, j.Close_Date AS close_date, RTRIM(j.Close_User_ID) AS close_user "
         f"FROM dbo.JC30001 j {_JOB_JOINS}{where}"
     )
+    history = _JOB_ROW_COLUMN.sub(
+        lambda m: m.group(0) if m.group(1).lower() in history_columns else "NULL", history
+    )
+    return f"{live}UNION ALL {history}"
 
 
 # GP writes 1900-01-01 into a date column nobody filled in. Anything on or before it is "no date".
@@ -1247,7 +1272,7 @@ def list_jobs(conn) -> list[dict]:
 
     One statement per pass, which is what the GP READ LIMIT expects of it. job_number and job_name keep
     their names and meaning, so a backend that only ever read those two still works."""
-    rows = conn.cursor().execute(_job_select() + "ORDER BY job_name").fetchall()
+    rows = conn.cursor().execute(_job_select(_history_columns(conn)) + "ORDER BY job_name").fetchall()
     return [_job_record(r) for r in rows]
 
 
@@ -1590,10 +1615,12 @@ def get_job(conn, job_number: str) -> dict | None:
     to today."""
     job = job_number.strip()
     # closed sorts the job master first, so a number somehow in both tables answers with the live row.
+    history = _history_columns(conn)
+    # The job number is bound once per half; with no history table there is only the one half.
+    params = (job, job) if history else (job,)
     row = conn.cursor().execute(
-        _job_select("WHERE RTRIM(j.WS_Job_Number) = ? ") + "ORDER BY closed",
-        job,
-        job,
+        _job_select(history, "WHERE RTRIM(j.WS_Job_Number) = ? ") + "ORDER BY closed",
+        *params,
     ).fetchone()
     if row is None:
         return None
