@@ -92,6 +92,8 @@ READ_BATCH = env_number("GP_SYNC_READ_BATCH", 25, int, minimum=1, maximum=100)
 # What one list_jobs costs the bucket. A company's job list cannot be paged and its size is not known
 # until the reply lands, so it is charged a flat estimate BEFORE the read rather than not at all.
 JOBS_PER_READ = env_number("GP_SYNC_JOBS_PER_READ", 100, int, minimum=1)
+# How often a read queued behind another one checks whether it is its turn yet (#773).
+QUEUE_POLL_SECONDS = 1.0
 # Pause/resume lines for the live sample. The rule: background reads STOP at 40% or above and may
 # continue only below 40%, so both lines are the same number by decision - there is no hysteresis band.
 # A server sitting exactly at 40 therefore alternates pause and resume once per probe, which is accepted.
@@ -272,6 +274,8 @@ class GpLoadPolicy:
     def __init__(self) -> None:
         self._elapsed: dict[tuple[str, str], deque] = defaultdict(lambda: deque(maxlen=MEDIAN_WINDOW))
         self._bucket = TokenBucket(READS_PER_MINUTE)
+        # The reads waiting for budget, oldest first (#773). See acquire.
+        self._waiting: deque = deque()
         self._paused_reason: str | None = None
         self._probe_at: float = 0.0
         self._unavailable_warned = False
@@ -403,17 +407,32 @@ class GpLoadPolicy:
         Nothing is acquired while the brake is on: a paused policy refuses rather than queues, so an
         in-flight page loop stops where it is instead of resuming minutes later against a server that
         is still busy. The refusal is a RelayBusyError because that is exactly what it is - GP is too
-        busy - and every caller already handles it."""
+        busy - and every caller already handles it.
+
+        Reads are served in the order they asked (#773). Only the read at the head of the queue may
+        spend; the ones behind it wait even when the bucket could cover them. Without that, a job read
+        charged the whole bucket never ran while the PO mirror was busy: every 25 that refilled went to
+        the next PO page, so the bucket never reached 100 and GP JOBS SYNC waited forever."""
+        ticket = object()
+        self._waiting.append(ticket)
         waited = 0.0
-        while True:
-            if self.paused:
-                raise RelayBusyError(f"GP reads are paused: {self.paused_reason}")
-            wait = self._bucket.wait_for(n)
-            if wait <= 0:
-                self._bucket.take(n)
-                return waited
-            waited += wait
-            await asyncio.sleep(wait)
+        try:
+            while True:
+                if self.paused:
+                    raise RelayBusyError(f"GP reads are paused: {self.paused_reason}")
+                wait = self._bucket.wait_for(n)
+                if self._waiting[0] is ticket:
+                    if wait <= 0:
+                        self._bucket.take(n)
+                        return waited
+                else:
+                    # Behind another read, so this one's own shortfall is not what it is waiting on.
+                    # Check back shortly rather than sleeping it out, to take its turn once it has one.
+                    wait = QUEUE_POLL_SECONDS
+                waited += wait
+                await asyncio.sleep(wait)
+        finally:
+            self._waiting.remove(ticket)
 
     def budget_wait(self, n: int) -> float:
         """Seconds before `n` reads could be acquired. For a loop deciding what to do next."""

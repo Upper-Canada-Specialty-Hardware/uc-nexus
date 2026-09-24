@@ -7,6 +7,7 @@ database and no clock - which is the point of the split.
 
 import asyncio
 import logging
+from collections import deque
 from datetime import datetime, timedelta
 
 import pytest
@@ -160,6 +161,52 @@ def test_the_budget_is_charged_in_keys_not_requests(_fresh_policy, clock, monkey
     asyncio.run(_fresh_policy.acquire(3))
 
     assert _fresh_policy.bucket.tokens() == pytest.approx(gp_load.READS_PER_MINUTE - 28)
+
+
+def _advancing_sleep(clock):
+    """asyncio.sleep that moves the test clock by the seconds asked for, then yields for real so the
+    other waiting reads get to run."""
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(seconds):
+        clock["t"] += seconds
+        await real_sleep(0)
+
+    return fake_sleep
+
+
+def test_a_whole_bucket_read_is_not_overtaken_by_smaller_ones(_fresh_policy, clock, monkeypatch):
+    """#773, as production saw it: the PO mirror spends 25 whenever 25 exist, so a job read charged the
+    whole bucket never found it full. Served in the order they asked, the job read goes first and the
+    PO page after it."""
+    monkeypatch.setattr(gp_load.asyncio, "sleep", _advancing_sleep(clock))
+    _fresh_policy.bucket.take(gp_load.READS_PER_MINUTE - 50)  # 50 left: a page fits, the job read does not
+    order: list[str] = []
+
+    async def read(n, label):
+        await _fresh_policy.acquire(n)
+        order.append(label)
+
+    async def scenario():
+        jobs = asyncio.create_task(read(gp_load.READS_PER_MINUTE, "list_jobs"))
+        await asyncio.sleep(0)  # the job read asks first
+        page = asyncio.create_task(read(25, "sync_pos"))
+        await asyncio.gather(jobs, page)
+
+    asyncio.run(scenario())
+
+    assert order == ["list_jobs", "sync_pos"]
+    assert _fresh_policy._waiting == deque()
+
+
+def test_a_refused_read_leaves_the_queue(_fresh_policy, clock):
+    """A paused policy refuses; the refused read must not stay at the head and block every later one."""
+    _fresh_policy.note_sample(_sample(cpu=95.0))
+
+    with pytest.raises(RelayBusyError):
+        asyncio.run(_fresh_policy.acquire(1))
+
+    assert _fresh_policy._waiting == deque()
 
 
 def _recorder(into):
