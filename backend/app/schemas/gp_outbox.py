@@ -21,7 +21,7 @@ from .types import GpOutboxEntry, GpOutboxSummary
 # cancelling one abandons work somebody has already done - so the decision sits with the people who
 # would have to live with either outcome, not with everyone signed in.
 #
-# Keyed on `relay_op`, the GP-side name the glossary uses for a NEXUS TO GP WRITE. Anything not
+# Keyed on `relay_op`, the GP-side name that identifies a NEXUS TO GP WRITE. Anything not
 # listed - create_job, create_buyer, create_customer_address, update_job_site - is a tenant owner's,
 # because those are all sub-steps of Tenant Owner screens.
 _ROLES_BY_RELAY_OP: dict[str, frozenset[str]] = {
