@@ -24,6 +24,8 @@ export const GET_PROJECTS = gql`
         costCode
         accountIndex
       }
+      # #730: inactive, closed or missing in GP. Tagged in every picker, and the GP-bound ones grey it out.
+      gpJobState
     }
   }
 `;

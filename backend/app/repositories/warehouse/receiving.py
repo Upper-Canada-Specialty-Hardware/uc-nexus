@@ -60,6 +60,10 @@ def validate_receive_eligibility(
     # (taPopRcptLineInsert rejects the line's account index with eConnect 4612), so this turns an
     # unavoidable failure into one that names the cause.
     project_repository.require_gp_setup_ok(session, po.project_id)
+    # #730: an inactive, closed or not-in-GP job takes no GP RECEIVE ENTRY, so it takes no count
+    # either. This runs when a count is drafted, edited and resubmitted as well as at approval, so the
+    # warehouse is told before it counts hardware that could never be booked into GP.
+    project_repository.require_gp_job_open(session, po.project_id)
 
     poli_dict: dict[uuid.UUID, POLineItemModel] = {li.id: li for li in po.line_items}
     receipt_line_items: list[dict] = []

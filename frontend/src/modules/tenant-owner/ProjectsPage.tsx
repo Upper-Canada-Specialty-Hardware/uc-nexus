@@ -10,7 +10,8 @@ import { useToast } from '../../components/Toast';
 import PageHeader from '../../components/PageHeader';
 import { extractGpError } from '../../graphql/gpError';
 import { GpSetupBadge } from '../../components/GpSetupQuarantineBanner';
-import { isGpSetupBroken } from '../../types/project';
+import { GpJobStateTag } from '../../components/GpJobStateTag';
+import { isGpJobNotOpen, isGpSetupBroken } from '../../types/project';
 import { monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import CreateGpJobDialog from './CreateGpJobDialog';
@@ -140,13 +141,21 @@ export default function ProjectsPage() {
       },
       {
         // #637: archived is a real lifecycle state (the job is off every picker), so it is coloured;
-        // an active row says nothing rather than repeating "active" on every line.
+        // an active row says nothing rather than repeating "active" on every line. #730: the GP job's
+        // own state shares the column, since both say whether the project is still in play.
         field: 'archived',
         headerName: 'State',
-        width: 110,
+        width: 190,
         sortable: true,
         renderCell: (params) =>
-          params.row.archived ? <Chip label="Archived" size="small" color="warning" /> : <span>—</span>,
+          params.row.archived || isGpJobNotOpen(params.row) ? (
+            <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', height: '100%', minWidth: 0 }}>
+              {params.row.archived && <Chip label="Archived" size="small" color="warning" />}
+              <GpJobStateTag project={params.row} />
+            </Box>
+          ) : (
+            <span>—</span>
+          ),
       },
       {
         // #425: the one place an admin can see, across every project at once, which GP jobs are

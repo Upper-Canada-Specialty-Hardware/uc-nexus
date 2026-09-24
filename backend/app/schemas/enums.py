@@ -21,6 +21,9 @@ from app.models.enums import (
     DestockSource as DestockSourceDB,
 )
 from app.models.enums import (
+    GpJobState as GpJobStateDB,
+)
+from app.models.enums import (
     HardwareItemState as HardwareItemStateDB,
 )
 from app.models.enums import (
@@ -96,6 +99,7 @@ DeficientItemSource = strawberry.enum(DeficientItemSourceDB)
 ReturnDisposition = strawberry.enum(ReturnDispositionDB)
 ReceiveDraftStatus = strawberry.enum(ReceiveDraftStatusDB)
 RelayEventKind = strawberry.enum(RelayEventKindDB)
+GpJobState = strawberry.enum(GpJobStateDB)
 
 
 # GraphQL-only enums (not stored in database)

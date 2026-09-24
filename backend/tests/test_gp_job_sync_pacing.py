@@ -126,7 +126,7 @@ def test_the_timer_driven_pass_is_marked_background_and_the_admin_one_is_not(mon
         }
 
     monkeypatch.setattr(gp_job_sync.gp_load, "paced_call", fake_paced_call)
-    monkeypatch.setattr(gp_job_sync, "_persist_missing", lambda jobs, company: (0, 0))
+    monkeypatch.setattr(gp_job_sync, "_persist_missing", lambda jobs, company, **_: (0, 0))
     monkeypatch.setattr(gp_job_sync, "_persist_health", lambda jobs, company: 0)
 
     asyncio.run(gp_job_sync.run_once())
@@ -154,7 +154,7 @@ def test_each_company_read_is_charged_the_jobs_estimate(monkeypatch):
         }
 
     monkeypatch.setattr(gp_job_sync.gp_load, "paced_call", fake_paced_call)
-    monkeypatch.setattr(gp_job_sync, "_persist_missing", lambda jobs, company: (0, 0))
+    monkeypatch.setattr(gp_job_sync, "_persist_missing", lambda jobs, company, **_: (0, 0))
     monkeypatch.setattr(gp_job_sync, "_persist_health", lambda jobs, company: 0)
 
     asyncio.run(gp_job_sync.run_once())

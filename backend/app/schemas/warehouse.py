@@ -15,7 +15,7 @@ from app.auth import (
 )
 from app.database import SessionLocal
 from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
-from app.repositories import custom_items_repository, tenancy, warehouse_admin_repository
+from app.repositories import custom_items_repository, project_repository, tenancy, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
 from app.services import gp_idempotency, gp_outbox_enqueue, gp_po
 from app.services.relay_gateway import gateway as relay_gateway
@@ -145,7 +145,14 @@ def _prepare_create_receive(*, po_id, received_by, line_items_data, warehouse_id
         # `gp_company` is which GP database the PO lives in. Reading the wrong one lets this pre-flight
         # name a building to GP that `create_receive` will not book into, because that scopes its own
         # primary-warehouse fallback by `po.company`.
-        company = session.scalar(select(POModel.company).where(POModel.id == po_id))
+        company, project_id = session.execute(
+            select(POModel.company, POModel.project_id).where(POModel.id == po_id)
+        ).one()
+        # #730: an inactive, closed or not-in-GP job takes no GP RECEIVE ENTRY, including on a PO that
+        # was in GP before the job stopped being open. validate_receive_eligibility above already
+        # refuses it when the count is drafted; this repeats the check at approval on purpose, so the
+        # GP write itself stays guarded however the draft got here.
+        project_repository.require_gp_job_open(session, project_id)
         warehouse_code = _warehouse_code(session, warehouse_id, company)
     payload = gp_po.build_create_receipt_payload(
         po_number=po_number,
@@ -183,6 +190,22 @@ def _receive_outbox_identity(po_id: uuid.UUID) -> tuple[uuid.UUID | None, str]:
     project_id = row.project_id if row is not None else None
     number = row.po_number if row is not None else None
     return project_id, f"Receive against PO {number or po_id}"
+
+
+def _po_job_number(po_id: uuid.UUID) -> str | None:
+    """The GP job number of the project a PO is on, or None for a stock PO - what a refused receipt's
+    message names (#730). One row."""
+    from sqlalchemy import select
+
+    from app.models.project import Project as ProjectModel
+    from app.models.purchase_order import PurchaseOrder as POModel
+
+    with SessionLocal() as session:
+        return session.scalar(
+            select(ProjectModel.project_id)
+            .join(POModel, POModel.project_id == ProjectModel.id)
+            .where(POModel.id == po_id)
+        )
 
 
 def _persist_create_receive(
@@ -1100,11 +1123,18 @@ class WarehouseMutations:
 
             try:
                 relay_result = await relay_gateway.relay_call(gp_company, "create_receipt", payload)
-            except (RelayCallError, RelayOpUnsupportedError):
+            except (RelayCallError, RelayOpUnsupportedError) as e:
                 # The relay answered: eConnect refused it, or this build cannot run the op. Either
                 # way GP did not commit, so the draft goes back in the queue for whoever fixes the
                 # cause - the #425 quarantine being the usual one.
                 await asyncio.to_thread(_release_draft_claim, draft_id, key)
+                if isinstance(e, RelayCallError):
+                    # #730: GP found the job inactive, closed or gone at the moment of writing. Worded
+                    # the way the up-front check words it.
+                    job_number = await asyncio.to_thread(_po_job_number, ctx.po_id)
+                    refusal = project_repository.gp_job_refusal(e, job_number)
+                    if refusal is not None:
+                        raise refusal from e
                 raise
             except RelayTimeoutError:
                 # Ambiguous: the job was on the wire and GP may have posted it. Keep the claim so

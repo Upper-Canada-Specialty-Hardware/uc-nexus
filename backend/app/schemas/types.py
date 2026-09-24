@@ -8,6 +8,7 @@ from .enums import (
     Classification,
     DeficiencyResolution,
     DeficientItemSource,
+    GpJobState,
     GpOutboxStatus,
     HardwareItemState,
     NotificationType,
@@ -763,6 +764,33 @@ class Project:
     # Hidden from the `projects` picker every module reads, and from nothing else (#637). The admin
     # Projects page reads `adminProjects`, which includes archived rows so they stay manageable.
     archived: bool
+    # The GP job as GP holds it (#730), overwritten by every GP JOBS SYNC pass. Plain columns on the
+    # row, so as safe on the list query as the fields above. gp_job_state null means never mirrored.
+    gp_job_state: GpJobState | None
+    gp_closed_date: date | None
+    gp_missing_since: datetime | None
+    customer_number: str | None
+    job_address_code: str | None
+    billto_address_code: str | None
+    address2: str | None
+    country: str | None
+    division: str | None
+    tax_schedule_id: str | None
+    use_tax_schedule_id: str | None
+    estimator_id: str | None
+    estimator_name: str | None
+    ws_manager_id: str | None
+    ws_manager_name: str | None
+    gp_created_date: date | None
+    schedule_start_date: date | None
+    scheduled_completion_date: date | None
+    bid_due_date: date | None
+    orig_contract_amount: float | None
+    contract_to_date: float | None
+    total_actual_cost: float | None
+    billed_amount_ttd: float | None
+    retention_amount_ttd: float | None
+    net_billed_ttd: float | None
     openings: list[Opening]
     purchase_orders: list[PurchaseOrder]
 

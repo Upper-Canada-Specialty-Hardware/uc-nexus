@@ -12,11 +12,12 @@ from app.errors import (
     ConflictError,
     NotFoundError,
     RelayCallError,
-    RelayUnavailableError,
+    ValidationError,
     validation_error_from_relay,
 )
 from app.repositories import project_repository, tenancy
 from app.services import gp_job_sync
+from app.services.relay_gateway import JOB_MIRROR_FEATURE
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import project_to_type
@@ -272,50 +273,45 @@ class ProjectMutations:
 
     @strawberry.mutation
     async def update_project(self, info: strawberry.Info, id: strawberry.ID, input: UpdateProjectInput) -> Project:
-        """Edit a project, and tell GP about the parts GP holds too (#497).
+        """Edit a project with one Save: GP's half into GP first, then Nexus's half (#730).
 
-        The job name and the site address live in both systems. Correcting them in Nexus alone left
-        GP with the old ones, and GP is what purchasing, accounting and the printed PO read - so the
-        wrong address reached the vendor long after somebody had fixed it here.
+        If GP contains it, GP owns it. When any GP-held field changed, the changed ones are written
+        into GP through the relay's update_job, GP's record of the job as it now stands is read back
+        and applied (GP-PROCESSING for a job edit), and only then are the Nexus-only fields saved, all
+        in one commit. A relay that is unreachable, too slow, too old, or a GP refusal raises and saves
+        NOTHING - not even the Nexus-only half - and queues nothing: the dialog is still open, so the
+        person retries it, and a Nexus-side save of a GP field GP never took would be overwritten by
+        the next GP JOBS SYNC anyway.
 
-        Nexus commits first and pushes second, deliberately. The edit is the user's and must not be
-        lost to a GP outage; the push is a replication of it. When the relay is unreachable the push
-        goes on the outbox and drains later, which is the same shape every other GP write in this
-        codebase uses. A GP refusal is surfaced - the edit is already saved, so there is nothing to
-        roll back and nothing the user can do about the GP half except be told.
-        """
-        with SessionLocal() as session:
-            tenancy.require_project_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
-            project = project_repository.update_project(
-                session,
-                uuid.UUID(str(id)),
-                description=input.description,
-                client=input.client,
-                job_site_name=input.job_site_name,
-                address=input.address,
-                city=input.city,
-                state=input.state,
-                zip=input.zip,
-                contractor=input.contractor,
-                project_manager=input.project_manager,
-                application=input.application,
-                gc_contact_name=input.gc_contact_name,
-                gc_phone=input.gc_phone,
-                gc_email=input.gc_email,
-                off_site_storage_agreement=input.off_site_storage_agreement,
-            )
-            session.commit()
-            session.refresh(project)
-            pushed = _gp_site_payload(project)
-            project_type = project_to_type(project)
-            quarantined = project.gp_setup_ok is False
-            # Read inside the session, beside the payload: the push targets the PROJECT's own GP
-            # company (#637), not "the connected relay's company", which no longer identifies one.
-            company = project.company
+        When no GP-held field changed the relay is not involved at all, so editing a project manager
+        or a GC phone number works with the relay down.
 
-        if pushed is not None and not quarantined:
-            await _push_site_to_gp(uuid.UUID(str(id)), pushed, company)
-        return project_type
+        This replaces #497's save-then-push, which committed the edit in Nexus and replicated the name
+        and address to GP afterwards, queueing it when the relay was away. Any of those pushes still
+        queued drain as before; nothing new is queued."""
+        pid = uuid.UUID(str(id))
+        scope = await asyncio.to_thread(tenant_scope, info)
+        changes, job_number, company = await asyncio.to_thread(_plan_project_edit, pid, scope, input)
+
+        record = None
+        if changes:
+            relay_gateway.require_feature(JOB_MIRROR_FEATURE, "update_job")
+            try:
+                result = await relay_gateway.relay_call(company, "update_job", {"job_number": job_number, **changes})
+            except RelayCallError as e:
+                refusal = project_repository.gp_job_refusal(e, job_number)
+                if refusal is not None:
+                    raise refusal from e
+                # GP's own words for any other refusal, with its error body kept for the dialog.
+                raise validation_error_from_relay(e) from e
+            record = (result or {}).get("job")
+            if not isinstance(record, dict):
+                # GP took the edit but the reply carried no job to read back. The next GP JOBS SYNC
+                # brings the project level; refusing now would tell the person GP did not take it.
+                logger.warning("update_project: GP updated job %s but returned no job record", job_number)
+                record = None
+
+        return await asyncio.to_thread(_save_project_edit, pid, input, record)
 
     @strawberry.mutation
     def set_project_archived(self, info: strawberry.Info, id: strawberry.ID, archived: bool) -> Project:
@@ -335,77 +331,123 @@ class ProjectMutations:
             return project_to_type(project, include_openings=False)
 
 
-def _gp_site_payload(project) -> dict | None:
-    """What of this project GP holds, or None when there is nothing to push.
+# The GP-held text fields a job edit may change (#730): the input attribute, which is also the project
+# column, and the key update_job takes it under.
+_GP_TEXT_EDITS = (
+    ("description", "job_name"),
+    ("customer_number", "customer_number"),
+    ("job_address_code", "job_address_code"),
+    ("billto_address_code", "billto_address_code"),
+    ("address", "address1"),
+    ("address2", "address2"),
+    ("city", "city"),
+    ("state", "state"),
+    ("zip", "zip_code"),
+    ("country", "country"),
+    ("division", "division"),
+    ("tax_schedule_id", "tax_schedule_id"),
+    ("use_tax_schedule_id", "use_tax_schedule_id"),
+    ("estimator_id", "estimator_id"),
+    ("ws_manager_id", "ws_manager_id"),
+)
 
-    Only the job name and the site address: they are the fields that exist on both sides. Everything
-    else on the project - the GC contact, the estimator, the storage agreement - is Nexus's alone, and
-    sending it would mean inventing a place to put it in GP.
+# The GP-held dates a job edit may change, named the same on the input, the column and the wire.
+_GP_DATE_EDITS = ("schedule_start_date", "scheduled_completion_date", "bid_due_date")
 
-    An address is a street and a city or it is nothing GP can ship to, so a half-filled one is not
-    pushed rather than written as a partial record.
-    """
-    name = (project.description or "").strip()
-    address1 = (project.address or "").strip()
-    city = (project.city or "").strip()
-    has_address = bool(address1 and city)
-    if not name and not has_address:
-        return None
-
-    payload: dict = {"job_number": project.project_id}
-    if name:
-        payload["job_name"] = name
-    if has_address:
-        payload["address1"] = address1
-        payload["city"] = city
-        payload["state"] = (project.state or "").strip()
-        payload["zip_code"] = (project.zip or "").strip()
-    return payload
+# Everything else the edit carries is Nexus's alone and never goes near GP.
+_NEXUS_ONLY_EDITS = (
+    "job_site_name",
+    "contractor",
+    "project_manager",
+    "application",
+    "gc_contact_name",
+    "gc_phone",
+    "gc_email",
+    "off_site_storage_agreement",
+)
 
 
-async def _push_site_to_gp(project_id: uuid.UUID, payload: dict, company: str) -> None:
-    """Replicate the edit onto the GP job, queueing it if the relay never took it.
+def _gp_job_changes(project, input: UpdateProjectInput) -> dict:
+    """The GP-held fields this edit actually changes, as update_job's payload keys (job number not
+    included). Empty when the edit touches nothing GP holds.
 
-    `company` is the PROJECT's own (#637). It used to be whatever single company the relay was
-    connected for, which was the same thing only while there was exactly one - now it would push one
-    company's job edit against another company's GP database.
+    Only what changed is sent, so an unchanged field can never overwrite something GP holds that Nexus
+    has not caught up with yet. A blank or a cleared date counts as no change: update_job reads a blank
+    as "not sent", so GP cannot be told to clear a field this way, and sending one would only look like
+    it had been. The relay's other rules are applied here so they refuse before GP is asked: the street
+    and the city travel together; a new site address mints its own job address code, so it never goes
+    with a picked one; and a new customer takes its bill-to address code and a site with it."""
+    changes: dict = {}
+    for attr, key in _GP_TEXT_EDITS:
+        value = (getattr(input, attr) or "").strip()
+        if value and value != (getattr(project, attr) or "").strip():
+            changes[key] = value
+    for name in _GP_DATE_EDITS:
+        value = getattr(input, name)
+        if value is not None and value != getattr(project, name):
+            changes[name] = value.isoformat()
 
-    Only an UNDISPATCHED relay failure queues (`should_enqueue`): the write never left the backend, so
-    GP cannot be holding it. Anything ambiguous - a dispatched disconnect, a timeout - is NOT queued,
-    because a second push of the same values would mint nothing new but would still be a write against
-    accounting data on a guess.
-    """
-    from app.services import gp_outbox_enqueue
+    if "address1" in changes or "city" in changes:
+        changes.setdefault("address1", (project.address or "").strip())
+        changes.setdefault("city", (project.city or "").strip())
+        if not changes["address1"] or not changes["city"]:
+            raise ValidationError("A site address needs both a street and a city", field="address")
+        if "job_address_code" in changes:
+            raise ValidationError(
+                "Pick a job address code or enter a new site address, not both - a new site address "
+                "becomes the job's address code in GP",
+                field="job_address_code",
+            )
 
-    if not company:
-        logger.info("update_project: project has no GP company, skipping the site push")
-        return
+    if "customer_number" in changes:
+        billto = (input.billto_address_code or "").strip()
+        if not billto:
+            raise ValidationError(
+                "A new customer needs one of its own bill-to address codes", field="billto_address_code"
+            )
+        changes["billto_address_code"] = billto
+        if "address1" not in changes:
+            job_address = (input.job_address_code or "").strip()
+            if not job_address:
+                raise ValidationError(
+                    "A new customer needs one of its own job address codes, or a new site address",
+                    field="job_address_code",
+                )
+            changes["job_address_code"] = job_address
+    return changes
 
-    try:
-        await relay_gateway.relay_call(company, "update_job_site", payload)
-    except RelayUnavailableError as e:
-        if not gp_outbox_enqueue.should_enqueue(e):
-            logger.warning("update_project: site push for %s failed ambiguously: %s", payload["job_number"], e)
-            return
-        gp_outbox_enqueue.enqueue(
-            # Keyed on the values, so re-saving the same edit while it is queued is one entry, and a
-            # genuinely different correction queues as its own. Company-qualified since #637: a job
-            # number is only unique within a company, so without it two companies editing their own
-            # job 1001 to the same address would collapse into one queued write.
-            idempotency_key=(
-                f"update_job_site:{company}:{payload['job_number']}:{hash(tuple(sorted(payload.items())))}"
-            ),
-            op="update_job_site",
-            relay_op="update_job_site",
-            company=company,
-            payload=payload,
-            persist_context={},
-            entity_key=f"project:{project_id}",
-            label=f"Site details for job {payload['job_number']}",
-            project_id=project_id,
+
+def _plan_project_edit(pid: uuid.UUID, scope: str | None, input: UpdateProjectInput) -> tuple[dict, str, str]:
+    """Read-only first half of a project edit: (GP changes, job number, company). Everything that can
+    refuse the edit before GP is asked refuses here - out of scope, a changed client, or a GP change
+    against a job GP will not take one on."""
+    with SessionLocal() as session:
+        tenancy.require_project_in_scope(session, pid, scope)
+        project = project_repository.get_project(session, pid)
+        if project is None:
+            raise NotFoundError(f"Project {pid} not found")
+        if input.client is not None and input.client.strip() != (project.client or "").strip():
+            raise ValidationError(
+                "The client is the GP customer's name, which GP holds. Change the customer instead.",
+                field="client",
+            )
+        changes = _gp_job_changes(project, input)
+        if changes:
+            project_repository.require_gp_job_open(session, pid)
+        return changes, project.project_id, project.company
+
+
+def _save_project_edit(pid: uuid.UUID, input: UpdateProjectInput, record: dict | None) -> Project:
+    """Second half: GP's read-back onto the GP-held fields, then the Nexus-only fields, in one commit."""
+    with SessionLocal() as session:
+        project = project_repository.get_project(session, pid)
+        if project is None:
+            raise NotFoundError(f"Project {pid} not found")
+        if record is not None:
+            project_repository.apply_gp_job_record(project, record)
+        project = project_repository.update_project(
+            session, pid, **{name: getattr(input, name) for name in _NEXUS_ONLY_EDITS}
         )
-    except RelayCallError as e:
-        # GP refused - an address code collision, a job it does not have. The edit is already saved
-        # in Nexus, so this is reported rather than raised: failing the mutation would tell the user
-        # their correction did not happen when it did.
-        logger.warning("update_project: GP refused the site push for %s: %s", payload["job_number"], e)
+        session.commit()
+        session.refresh(project)
+        return project_to_type(project)

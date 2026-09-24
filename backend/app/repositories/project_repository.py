@@ -3,12 +3,21 @@
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.errors import ConflictError, GpSetupInvalidError, NotFoundError, ValidationError
+from app.errors import (
+    ConflictError,
+    GpJobNotOpenError,
+    GpSetupInvalidError,
+    NotFoundError,
+    RelayCallError,
+    ValidationError,
+)
+from app.models.enums import GpJobState
 from app.models.project import Opening as OpeningModel
 from app.models.project import Project as ProjectModel
 
@@ -65,10 +74,15 @@ def get_project_with_openings(session: Session, project_uuid: uuid.UUID) -> Proj
     return session.scalars(stmt).unique().first()
 
 
-def adopt_gp_job(session: Session, job_number: str, job_name: str | None, company: str) -> ProjectModel:
+def adopt_gp_job(
+    session: Session, job_number: str, job_name: str | None, company: str, *, record: dict | None = None
+) -> ProjectModel:
     """Adopt a live GP job (JC00102) as a project. job_number becomes the project's identity
-    (project_id, immutable); job_name is a snapshot of GP's job description at adopt time, not
-    synced afterward. Raises ConflictError if this job has already been adopted.
+    (project_id, immutable). Raises ConflictError if this job has already been adopted.
+
+    `record` is the relay's full job record (#730), passed only when the relay reports one: the new
+    project then starts with every GP-held field filled in. Without it the project gets GP's job name
+    and nothing else, which is all an older relay's list carries.
 
     `company` is the GP company the job was read from (#637) and is half of the project's identity:
     the already-adopted check is against (company, job_number), so TUBC 1001 and UCSH 1001 adopt as
@@ -97,9 +111,206 @@ def adopt_gp_job(session: Session, job_number: str, job_name: str | None, compan
         project_id=job_number,
         description=job_name,
     )
+    if record is not None:
+        apply_gp_job_record(project, record)
     session.add(project)
     session.flush()
     return project
+
+
+# --- the GP job record (#730) ------------------------------------------------------------------------
+# relay key -> project column, for the text fields GP owns. description, client and the site address
+# are the columns that predate the mirror; the rest were added with it.
+_GP_TEXT_FIELDS = {
+    "job_name": "description",
+    "customer_name": "client",
+    "address1": "address",
+    "address2": "address2",
+    "city": "city",
+    "state": "state",
+    "zip_code": "zip",
+    "country": "country",
+    "customer_number": "customer_number",
+    "job_address_code": "job_address_code",
+    "billto_address_code": "billto_address_code",
+    "division": "division",
+    "tax_schedule_id": "tax_schedule_id",
+    "use_tax_schedule_id": "use_tax_schedule_id",
+    "estimator_id": "estimator_id",
+    "estimator_name": "estimator_name",
+    "ws_manager_id": "ws_manager_id",
+    "ws_manager_name": "ws_manager_name",
+}
+
+_GP_DATE_FIELDS = {
+    "closed_date": "gp_closed_date",
+    "created_date": "gp_created_date",
+    "schedule_start_date": "schedule_start_date",
+    "scheduled_completion_date": "scheduled_completion_date",
+    "bid_due_date": "bid_due_date",
+}
+
+_GP_MONEY_FIELDS = (
+    "orig_contract_amount",
+    "contract_to_date",
+    "total_actual_cost",
+    "billed_amount_ttd",
+    "retention_amount_ttd",
+    "net_billed_ttd",
+)
+
+_GP_JOB_STATES = {
+    "active": GpJobState.ACTIVE,
+    "inactive": GpJobState.INACTIVE,
+    "closed": GpJobState.CLOSED,
+}
+
+# GP has no empty date: a date field nobody filled in holds 1900-01-01.
+_GP_EMPTY_DATE = date(1900, 1, 1)
+
+
+def _gp_text(value) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+def _gp_date(value) -> date | None:
+    """An ISO date (or datetime) off the wire, as a calendar date. GP's 1900-01-01 placeholder reads
+    as no date: a job start date of 1900 on the project page would look like data."""
+    if not value:
+        return None
+    try:
+        parsed = date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+    return None if parsed <= _GP_EMPTY_DATE else parsed
+
+
+def _gp_money(value) -> Decimal | None:
+    """A number or a numeric string - the relay may send either."""
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def apply_gp_job_record(project: ProjectModel, record: dict) -> None:
+    """Overwrite a project's GP-held fields with GP's job record (#730). GP owns them, so the copy is
+    overwritten, never compared - a value GP holds as empty empties it here too.
+
+    Only keys PRESENT in the record are written. A record missing a key says nothing about that field,
+    and blanking it would erase what the last complete read put there. The Nexus-only fields (project
+    manager, job site name, contractor, application, the GC contact, OSSA, archived, the TITAN fields)
+    are not in the maps above and are never touched.
+
+    Seeing the job at all clears gp_missing_since. SQLAlchemy writes only the columns whose value
+    actually moved, so an unchanged job costs no UPDATE and does not bump updated_at."""
+    for key, column in _GP_TEXT_FIELDS.items():
+        if key in record:
+            setattr(project, column, _gp_text(record.get(key)))
+    for key, column in _GP_DATE_FIELDS.items():
+        if key in record:
+            setattr(project, column, _gp_date(record.get(key)))
+    for key in _GP_MONEY_FIELDS:
+        if key in record:
+            setattr(project, key, _gp_money(record.get(key)))
+    state = _GP_JOB_STATES.get(str(record.get("gp_job_state") or "").strip().lower())
+    if state is not None:
+        project.gp_job_state = state
+    project.gp_missing_since = None
+
+
+def note_jobs_missing_from_gp(
+    session: Session, company: str, seen: set[str], pass_started_at: datetime
+) -> dict[str, list[str]]:
+    """Record - and on the second consecutive pass, act on - this company's projects whose job was in
+    neither of GP's job tables on a complete read (#730). Returns {"marked": [...], "not_in_gp": [...]}.
+
+    The two-pass rule is the GP-DELETED PO RULE's, for the same reason: one read cannot tell a deleted
+    job from one caught mid-edit, so the first miss only stamps gp_missing_since with the pass's start,
+    and a later pass that misses it again marks it NOT_IN_GP. Its GP-held fields keep their last values,
+    which are the last thing GP said about the job. A job that reappears clears the stamp through
+    apply_gp_job_record and takes GP's state again.
+
+    `seen` must come from a SUCCESSFUL, complete list_jobs read; the caller guarantees that. Caller
+    commits."""
+    stmt = select(ProjectModel).where(ProjectModel.company == company)
+    if seen:
+        stmt = stmt.where(ProjectModel.project_id.notin_(list(seen)))
+    marked: list[str] = []
+    not_in_gp: list[str] = []
+    for project in session.scalars(stmt).all():
+        if project.gp_job_state == GpJobState.NOT_IN_GP:
+            continue
+        if project.gp_missing_since is None:
+            project.gp_missing_since = pass_started_at
+            marked.append(project.project_id)
+        elif project.gp_missing_since < pass_started_at:
+            project.gp_job_state = GpJobState.NOT_IN_GP
+            not_in_gp.append(project.project_id)
+    session.flush()
+    return {"marked": sorted(marked), "not_in_gp": sorted(not_in_gp)}
+
+
+_REFUSAL_STATES = {
+    "job_inactive": GpJobState.INACTIVE,
+    "job_closed": GpJobState.CLOSED,
+    "job_not_registered": GpJobState.NOT_IN_GP,
+}
+
+
+def gp_job_not_open_error(job_number: str | None, state: GpJobState) -> GpJobNotOpenError:
+    """The one wording for a write refused because of where the job stands in GP, whichever side
+    caught it."""
+    job = f"GP job {job_number}" if job_number else "This purchase order's GP job"
+    if state == GpJobState.INACTIVE:
+        return GpJobNotOpenError(
+            f"{job} is inactive in GP, so nothing can be written into GP against it. "
+            f"The job has to be made active again in GP first."
+        )
+    if state == GpJobState.CLOSED:
+        return GpJobNotOpenError(f"{job} is closed in GP, so nothing can be written into GP against it.")
+    return GpJobNotOpenError(f"{job} is not in GP, so nothing can be written into GP against it.")
+
+
+def gp_job_refusal(e: RelayCallError, job_number: str | None = None) -> GpJobNotOpenError | None:
+    """The relay's live refusal of a write because of the job (job_inactive, job_closed,
+    job_not_registered) as the same error the up-front check raises, or None for any other refusal.
+
+    Read from the relay's error body the way job_already_exists is. The relay's own context names the
+    job when the caller does not know it - a receipt carries only the PO number."""
+    detail = e.detail or {}
+    state = _REFUSAL_STATES.get(str(detail.get("error") or ""))
+    if state is None:
+        return None
+    if not job_number:
+        context = detail.get("context")
+        if isinstance(context, dict):
+            job_number = _gp_text(context.get("job_number"))
+    return gp_job_not_open_error(job_number, state)
+
+
+def require_gp_job_open(session: Session, project_id: uuid.UUID | None) -> None:
+    """Refuse a NEXUS TO GP WRITE naming a job GP will not take one against (#730): inactive, closed,
+    or not in GP.
+
+    Modelled on require_gp_setup_ok and called where a GP write starts - PO REGISTRATION, GP RECEIVE
+    ENTRY and a job edit that changes a GP field - and nowhere that stays inside Nexus. It is the clean
+    up-front message; the relay checks the job live as well, and its refusal maps to the same error.
+
+    NULL (never mirrored) and ACTIVE pass. NULL is what every project looks like against an older
+    relay, and refusing on it would stop every write until the workstation updates. project_id None
+    (a stock PO) is a no-op."""
+    if project_id is None:
+        return
+    row = session.execute(
+        select(ProjectModel.project_id, ProjectModel.gp_job_state).where(ProjectModel.id == project_id)
+    ).first()
+    if row is None or row.gp_job_state in (None, GpJobState.ACTIVE):
+        return
+    raise gp_job_not_open_error(row.project_id, row.gp_job_state)
 
 
 def parse_gp_setup_issues(detail: str | None) -> list[dict]:

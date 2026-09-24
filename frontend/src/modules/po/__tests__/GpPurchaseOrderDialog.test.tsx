@@ -1619,3 +1619,65 @@ it('never reads back a registration that only went onto the queue', async () => 
   expect(processingCalls).toEqual([]);
   expect(screen.queryByText('GP-Processing')).toBeNull();
 });
+
+// #730: GP refuses a PO REGISTRATION on a job it holds as inactive, closed or missing. The register
+// dialog's project picker is GP-bound, so such projects are listed with their tag but cannot be picked.
+function withJobStates(states: Record<string, string | null>): MockedResponse[] {
+  return baseMocks().map((m) => {
+    if (m.request.query !== GET_PROJECTS) return m;
+    const data = (m.result as { data: { projects: Array<Record<string, unknown>> } }).data;
+    return {
+      ...m,
+      result: {
+        data: {
+          projects: [
+            ...data.projects.map((p) => ({ ...p, gpJobState: states[p.id as string] ?? null })),
+            {
+              id: 'p3',
+              projectId: 'JOB-300',
+              description: 'Oak St Job',
+              client: 'ACME',
+              jobSiteName: 'Oak St',
+              company: 'UCS',
+              openingCount: 1,
+              gpJobState: states.p3 ?? null,
+              __typename: 'Project',
+            },
+          ],
+        },
+      },
+    };
+  });
+}
+
+it('greys out projects whose GP job is closed or inactive, and will not pick one', async () => {
+  renderDialog({ registerPo: stockDraft }, withJobStates({ p1: 'ACTIVE', p2: 'CLOSED', p3: 'INACTIVE' }));
+
+  const project = await screen.findByLabelText(/^Project/i);
+  typeInto(project, 'St Job');
+
+  const listbox = await screen.findByRole('listbox');
+  const option = (name: string) => within(listbox).getByText(name).closest('li')!;
+  await waitFor(() => expect(option('Elm St Job')).toHaveAttribute('aria-disabled', 'true'));
+  expect(option('Oak St Job')).toHaveAttribute('aria-disabled', 'true');
+  expect(option('Main St Job')).not.toHaveAttribute('aria-disabled', 'true');
+  // Shown with the tag, not hidden.
+  expect(within(option('Elm St Job')).getByText('Closed in GP')).toBeInTheDocument();
+  expect(within(option('Oak St Job')).getByText('Inactive in GP')).toBeInTheDocument();
+  // MUI takes a disabled option out of pointer reach (pointer-events: none), which a synthetic click
+  // does not honour - so the guard asserted is the disabled state itself, plus keyboard selection.
+  fireEvent.keyDown(project, { key: 'ArrowDown' });
+  fireEvent.keyDown(project, { key: 'ArrowDown' });
+  fireEvent.keyDown(project, { key: 'ArrowDown' });
+  fireEvent.keyDown(project, { key: 'Enter' });
+  await waitFor(() => expect(screen.getByLabelText(/^Project/i)).toHaveValue('Main St Job'));
+});
+
+it('refuses to register a draft whose project has since closed in GP, and says why', async () => {
+  renderDialog({ registerPo: projectDraft }, [...withJobStates({ p1: 'CLOSED' }), costCodesMock()]);
+
+  const banner = await screen.findByTestId('gp-job-not-open-banner');
+  expect(banner).toHaveTextContent('GP job JOB-100: Closed in GP');
+  expect(banner).toHaveTextContent(/registering it in GP is not possible/);
+  expect(screen.getByRole('button', { name: 'Register in GP' })).toBeDisabled();
+});

@@ -297,7 +297,7 @@ def _stub_create_po_prechecks(monkeypatch, *, account_index, index_exists):
     monkeypatch.setattr(econnect, "vendor_address_exists", lambda conn, vendor, code: True)
     monkeypatch.setattr(econnect, "get_vendor_currency", lambda conn, vendor_id: "CAD")
     monkeypatch.setattr(econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "BUY"})
-    monkeypatch.setattr(econnect, "job_exists", lambda conn, job: True)
+    monkeypatch.setattr(econnect, "job_state", lambda conn, job: "active")
     monkeypatch.setattr(econnect, "cost_code_on_job", lambda conn, job, code: True)
     monkeypatch.setattr(econnect, "cost_code_account_index", lambda conn, job, code: account_index)
     monkeypatch.setattr(econnect, "account_index_exists", lambda conn, idx: index_exists)
@@ -386,6 +386,7 @@ def _po_line_context(*ords):
 
 
 def test_create_receipt_refuses_a_line_stamped_with_a_dangling_account(monkeypatch):
+    monkeypatch.setattr(econnect, "job_state", lambda conn, job: "active")
     monkeypatch.setattr(econnect, "read_po_receipt_context", lambda conn, po: _po_line_context(16384))
     monkeypatch.setattr(
         econnect,
@@ -408,6 +409,7 @@ def test_create_receipt_refuses_a_line_stamped_with_a_dangling_account(monkeypat
 def test_create_receipt_ignores_a_broken_line_nobody_is_receiving(monkeypatch):
     """A PO can hold a broken line that this receipt does not touch. Refusing the whole receipt for it
     would strand hardware that is physically on the dock over an account nobody is about to post to."""
+    monkeypatch.setattr(econnect, "job_state", lambda conn, job: "active")
     monkeypatch.setattr(econnect, "read_po_receipt_context", lambda conn, po: _po_line_context(16384, 32768))
     monkeypatch.setattr(
         econnect,
@@ -427,6 +429,7 @@ def test_create_receipt_ignores_a_broken_line_nobody_is_receiving(monkeypatch):
 def test_create_receipt_runs_the_preflight_before_reserving_a_receipt_number(monkeypatch):
     """Order matters: taGetPurchReceiptNextNumber burns a GP number. Refusing after it would leave a
     gap in the receipt sequence every time somebody tried a job with broken setup."""
+    monkeypatch.setattr(econnect, "job_state", lambda conn, job: "active")
     monkeypatch.setattr(econnect, "read_po_receipt_context", lambda conn, po: _po_line_context(16384))
     monkeypatch.setattr(
         econnect,

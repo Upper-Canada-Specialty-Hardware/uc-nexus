@@ -5,7 +5,8 @@ import { ToastProvider } from '../../../components/Toast';
 import ReceiveModal from '../ReceiveModal';
 import { GET_PO_RECEIVING_DETAILS, CREATE_RECEIVE_DRAFT } from '../../../graphql/warehouse';
 import { UPLOAD_PO_DOCUMENT } from '../../../graphql/po';
-import { GET_WAREHOUSES } from '../../../graphql/shared';
+import { GET_PROJECTS, GET_WAREHOUSES } from '../../../graphql/shared';
+import { GraphQLError } from 'graphql';
 
 // This dialog counts a delivery in. It used to post the GP receipt too, and everything about that
 // round trip - the relay chip, the queued-outbox panel, the GP receipt number, the eConnect error -
@@ -527,5 +528,81 @@ describe('ReceiveModal', () => {
 
     await screen.findByText(/Submitted for approval\. 7 items across 2 POs/, undefined, SLOW);
     expect(seen).toEqual(['po-1', 'po-2']);
+  });
+
+  // #730: GP refuses every GP RECEIVE ENTRY on a job it holds as inactive, closed or missing, so a count
+  // drafted against one could never be approved.
+  function projectsMock(gpJobState: string | null): MockedResponse {
+    return {
+      request: { query: GET_PROJECTS },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: {
+        data: {
+          projects: [
+            {
+              __typename: 'Project',
+              id: 'proj-1',
+              projectId: 'JOB-1',
+              description: 'Riverside Tower',
+              client: null,
+              jobSiteName: null,
+              scheduleFilename: null,
+              company: 'TUBC',
+              openingCount: 4,
+              gpSetupOk: true,
+              gpSetupCheckedAt: null,
+              gpSetupIssues: null,
+              gpJobState,
+            },
+          ],
+        },
+      },
+    };
+  }
+
+  it.each([
+    ['CLOSED', 'Closed in GP'],
+    ['INACTIVE', 'Inactive in GP'],
+    ['NOT_IN_GP', 'Not in GP'],
+  ])('blocks receiving a PO whose job is %s, with the reason', async (state, tag) => {
+    await openModal([projectsMock(state), poDetailsMock({ projectId: 'proj-1' })]);
+
+    const banner = await screen.findByTestId('gp-job-not-open-banner', undefined, SLOW);
+    expect(banner).toHaveTextContent(`GP job JOB-1: ${tag}`);
+    expect(banner).toHaveTextContent('So receiving PO-123 is not possible.');
+
+    setReceiveQty('3');
+    attachPackingSlips();
+    expect(submitButton()).toBeDisabled();
+    expect(screen.getByText(`Job JOB-1: ${tag}`)).toBeInTheDocument();
+  });
+
+  it('receives as usual when the job is open in GP', async () => {
+    await openModal([projectsMock('ACTIVE'), poDetailsMock({ projectId: 'proj-1' })]);
+
+    setReceiveQty('3');
+    attachPackingSlips();
+    expect(submitButton()).toBeEnabled();
+    expect(screen.queryByTestId('gp-job-not-open-banner')).toBeNull();
+  });
+
+  it("shows the server's refusal as it comes when the job closed after the modal opened", async () => {
+    const draftMock: MockedResponse = {
+      request: { query: CREATE_RECEIVE_DRAFT, variables: () => true },
+      result: {
+        errors: [
+          new GraphQLError('GP job JOB-1 is closed in GP.', { extensions: { code: 'GP_JOB_NOT_OPEN' } }),
+        ],
+      },
+    };
+    await openModal([projectsMock('ACTIVE'), poDetailsMock({ projectId: 'proj-1' }), draftMock]);
+
+    setReceiveQty('3');
+    await submitViaConfirm();
+
+    expect(
+      await screen.findByText('Cannot receive PO-123: GP job JOB-1 is closed in GP.', undefined, SLOW),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Retrying is safe/)).toBeNull();
   });
 });

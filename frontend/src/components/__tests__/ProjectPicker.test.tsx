@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import ProjectPicker from '../ProjectPicker';
 import { GET_PROJECTS } from '../../graphql/shared';
@@ -97,5 +97,77 @@ describe('ProjectPicker', () => {
     // The notched outline carries the same words in its legend, so the label itself is asked for.
     expect(screen.getByText('Project', { selector: 'label' })).toHaveAttribute('data-shrink', 'true');
     expect(screen.getByPlaceholderText('Type to search projects…')).toBeInTheDocument();
+  });
+});
+
+// #730: one open, one closed, one inactive and one missing job, plus one never mirrored.
+const jobStatesMock: MockedResponse = {
+  request: { query: GET_PROJECTS },
+  maxUsageCount: INFINITE,
+  result: {
+    data: {
+      projects: [
+        ['p1', 'JOB-100', 'Open Job', 'ACTIVE'],
+        ['p2', 'JOB-200', 'Closed Job', 'CLOSED'],
+        ['p3', 'JOB-300', 'Inactive Job', 'INACTIVE'],
+        ['p4', 'JOB-400', 'Missing Job', 'NOT_IN_GP'],
+        ['p5', 'JOB-500', 'Unmirrored Job', null],
+      ].map(([id, projectId, description, gpJobState]) => ({
+        id,
+        projectId,
+        description,
+        client: null,
+        jobSiteName: null,
+        company: 'TUBC',
+        openingCount: 0,
+        gpJobState,
+        __typename: 'Project',
+      })),
+    },
+  },
+};
+
+function openOptions(gpBound: boolean) {
+  const onChange = vi.fn();
+  render(
+    <MockedProvider mocks={[jobStatesMock]}>
+      <ProjectPicker value={null} onChange={onChange} gpBound={gpBound} />
+    </MockedProvider>,
+  );
+  typeInto(screen.getByLabelText('Project'), 'Job');
+  return { onChange };
+}
+
+const optionFor = async (name: string) => (await screen.findByText(name)).closest('li')!;
+
+describe('ProjectPicker GP job state (#730)', () => {
+  it('tags every job that is not open in GP, and nothing else', async () => {
+    openOptions(false);
+
+    expect(within(await optionFor('Closed Job')).getByText('Closed in GP')).toBeInTheDocument();
+    expect(within(await optionFor('Inactive Job')).getByText('Inactive in GP')).toBeInTheDocument();
+    expect(within(await optionFor('Missing Job')).getByText('Not in GP')).toBeInTheDocument();
+    expect(within(await optionFor('Open Job')).queryByTestId('gp-job-state-tag')).toBeNull();
+    expect(within(await optionFor('Unmirrored Job')).queryByTestId('gp-job-state-tag')).toBeNull();
+  });
+
+  it('keeps them pickable where the pick does not write to GP', async () => {
+    const { onChange } = openOptions(false);
+
+    const closed = await optionFor('Closed Job');
+    expect(closed).not.toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(closed);
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ id: 'p2' }));
+  });
+
+  it('greys them out in a GP-bound picker, leaving open and unmirrored jobs pickable', async () => {
+    openOptions(true);
+
+    for (const name of ['Closed Job', 'Inactive Job', 'Missing Job']) {
+      expect(await optionFor(name)).toHaveAttribute('aria-disabled', 'true');
+    }
+    for (const name of ['Open Job', 'Unmirrored Job']) {
+      expect(await optionFor(name)).not.toHaveAttribute('aria-disabled', 'true');
+    }
   });
 });

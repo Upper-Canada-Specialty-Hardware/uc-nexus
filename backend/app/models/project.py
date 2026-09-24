@@ -1,10 +1,25 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, ForeignKey, Index, Integer, SmallInteger, String, Text, UniqueConstraint, false
+from sqlalchemy import (
+    Boolean,
+    Date,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    SmallInteger,
+    String,
+    Text,
+    UniqueConstraint,
+    false,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
+from .enums import GpJobState
 
 
 class Project(Base):
@@ -59,6 +74,41 @@ class Project(Base):
     gp_setup_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     gp_setup_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     gp_setup_checked_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # --- the GP job, as GP holds it (#730) ------------------------------------------------------------
+    # GP owns every field below, plus description (job name), client (customer name) and the site
+    # address above: the GP JOBS SYNC overwrites them on every pass and a job edit writes them into GP
+    # first. NULL gp_job_state means the project has never been mirrored, and like gp_setup_ok None it
+    # refuses nothing - an old relay or a relay outage must not freeze every project.
+    gp_job_state: Mapped[GpJobState | None] = mapped_column(
+        Enum(GpJobState, name="gp_job_state", create_constraint=True), nullable=True
+    )
+    gp_closed_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # First pass that could not find the job in GP at all. A second consecutive miss marks it NOT_IN_GP;
+    # seeing it again clears this. Same two-pass rule as purchase_orders.gp_missing_since.
+    gp_missing_since: Mapped[datetime | None] = mapped_column(nullable=True)
+    customer_number: Mapped[str | None] = mapped_column(String, nullable=True)
+    job_address_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    billto_address_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    address2: Mapped[str | None] = mapped_column(String, nullable=True)
+    country: Mapped[str | None] = mapped_column(String, nullable=True)
+    division: Mapped[str | None] = mapped_column(String, nullable=True)
+    tax_schedule_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    use_tax_schedule_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # GP's estimator, not estimator_code above - that one is the TITAN schedule's and Nexus-only.
+    estimator_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    estimator_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    ws_manager_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    ws_manager_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    gp_created_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    schedule_start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    scheduled_completion_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    bid_due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    orig_contract_amount: Mapped[Decimal | None] = mapped_column(Numeric(19, 5), nullable=True)
+    contract_to_date: Mapped[Decimal | None] = mapped_column(Numeric(19, 5), nullable=True)
+    total_actual_cost: Mapped[Decimal | None] = mapped_column(Numeric(19, 5), nullable=True)
+    billed_amount_ttd: Mapped[Decimal | None] = mapped_column(Numeric(19, 5), nullable=True)
+    retention_amount_ttd: Mapped[Decimal | None] = mapped_column(Numeric(19, 5), nullable=True)
+    net_billed_ttd: Mapped[Decimal | None] = mapped_column(Numeric(19, 5), nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -5,7 +5,6 @@ import {
   DialogContent,
   DialogActions,
   TextField,
-  Autocomplete,
   Box,
   Button,
   Checkbox,
@@ -19,7 +18,7 @@ import {
   Typography,
 } from '@mui/material';
 import { RefreshCw } from 'lucide-react';
-import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
+import { useMutation, useQuery } from '@apollo/client/react';
 import {
   CREATE_GP_JOB,
   GET_GP_COST_CODE_MASTER,
@@ -39,30 +38,23 @@ import { useCompanyChoice } from '../../relay/useCompanyChoice';
 import GpCompanyLabel from '../../relay/GpCompanyLabel';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
-import AddCustomerAddressDialog, { type CreatedGpCustomerAddress } from './AddCustomerAddressDialog';
-
-interface GpCustomerOption {
-  customerNumber: string;
-  customerName: string | null;
-}
-
-interface GpCustomerAddressOption {
-  addressCode: string;
-  address1: string | null;
-  city: string | null;
-  state: string | null;
-}
-
-interface GpTaxScheduleOption {
-  taxScheduleId: string;
-  description: string | null;
-}
-
-interface GpEmployeeOption {
-  employeeId: string;
-  firstName: string | null;
-  lastName: string | null;
-}
+import {
+  EmployeeField,
+  GpAddressField,
+  GpCustomerField,
+  GpDateField,
+  GpDivisionField,
+  GpTaxScheduleField,
+} from './GpJobFields';
+import {
+  MAX,
+  addressCodeOrBlank,
+  type GpCustomerAddressOption,
+  type GpCustomerOption,
+  type GpEmployeeOption,
+  type GpTaxScheduleOption,
+} from './gpJobFieldOptions';
+import { useAddCustomerAddress } from './useAddCustomerAddress';
 
 /**
  * #448: one row of the company's cost-code master, as it applies to the chosen division.
@@ -83,64 +75,6 @@ function costCodeKey(c: GpCostCodeMasterEntry): string {
   return `${c.costCode}-${c.costElement}`;
 }
 
-function employeeLabel(e: GpEmployeeOption): string {
-  const name = [e.firstName, e.lastName].filter(Boolean).join(' ');
-  return name ? `${e.employeeId} - ${name}` : e.employeeId;
-}
-
-interface EmployeeFieldProps {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  employees: GpEmployeeOption[];
-  loading: boolean;
-  unavailable: boolean;
-  disabled: boolean;
-}
-
-/**
- * Estimator / WS Manager. One component because the two fields are identical apart from their label
- * and binding, and a fix applied to a copy-pasted twin is a fix that silently misses one of them.
- *
- * An Autocomplete rather than a Select: this is an unbounded master (TUBC has two employees, a real
- * payroll has hundreds), so it needs to be searchable for the same reason the Customer picker is.
- *
- * `unavailable` falls back to free text. The read can fail on its own - an older relay has no
- * list_employees op - and GP still accepts a known EMPLOYID, so leaving the field unsettable would
- * take away something #380 allowed. That is the same banner-plus-fallback shape the register-PO
- * dialog uses for tax details rather than showing an empty dropdown.
- */
-function EmployeeField({ label, value, onChange, employees, loading, unavailable, disabled }: EmployeeFieldProps) {
-  if (unavailable) {
-    return (
-      <TextField
-        label={label}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        disabled={disabled}
-        size="small"
-        sx={{ flex: 1 }}
-        slotProps={{ input: { sx: monoSx }, htmlInput: { maxLength: MAX.id } }}
-        helperText="Employee list unavailable - type a GP payroll ID"
-      />
-    );
-  }
-  return (
-    <Autocomplete
-      options={employees}
-      loading={loading}
-      value={employees.find((e) => e.employeeId === value) ?? null}
-      getOptionLabel={employeeLabel}
-      isOptionEqualToValue={(o, v) => o.employeeId === v.employeeId}
-      onChange={(_, selected) => onChange(selected?.employeeId ?? '')}
-      disabled={disabled}
-      sx={{ flex: 1 }}
-      slotProps={{ listbox: { sx: monoSx } }}
-      renderInput={(params) => <TextField {...params} label={label} size="small" />}
-    />
-  );
-}
-
 interface CreateGpJobDialogProps {
   open: boolean;
   onClose: () => void;
@@ -152,9 +86,6 @@ interface CreateGpJobDialogProps {
   onCreated?: () => void;
 }
 
-/** GP column widths, so an over-length value is caught in the field rather than by the proc. */
-const MAX = { jobNumber: 17, jobName: 31, projectNumber: 17, id: 15 };
-
 /**
  * Today in LOCAL time. Deliberately not toISOString().slice(0, 10), which is UTC: west of Greenwich
  * that reads as tomorrow from late afternoon onward. Created date is the field GP validates against
@@ -165,48 +96,6 @@ function todayIso(): string {
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-}
-
-function addressLabel(a: GpCustomerAddressOption): string {
-  // An address code on its own ('MAIN', 'PRIMARY', 'RIH') doesn't say which site it is.
-  const where = [a.address1, a.city].filter(Boolean).join(', ');
-  return where ? `${a.addressCode} - ${where}` : a.addressCode;
-}
-
-/**
- * #444: the value the "+ Add new address" row carries. A MUI select has no way to hold an action
- * alongside its options, so the choice arrives through onChange like any other - and this is the one
- * value that must never be stored, since it is not an address code GP would accept.
- */
-const ADD_ADDRESS = '__add__';
-
-/**
- * #444: the sentinel is never a code GP would accept, so anything holding it is holding no selection.
- * The onChange interceptors are the first line - this is the second, so a future writer that manages
- * to store the sentinel still cannot enable the submit or get it as far as the proc.
- */
-function addressCodeOrBlank(value: string): string {
-  return value === ADD_ADDRESS ? '' : value;
-}
-
-/**
- * #444: everything the add-address round trip needs, captured once when the "+ Add new address" row is
- * chosen. Deriving it again on the way back would re-read state the user could have changed in the
- * meantime, and would spell the picker -> customer/query/setter mapping out a second time - the three
- * copies of it are what let the bill-to case drift apart. Null keeps the nested dialog unmounted, so
- * its fields start clean every time.
- */
-interface AddAddressTarget {
-  /**
-   * The customer the address is created under: the one the asking picker is bound to. It is also the
-   * whole address of that picker's query - both pickers read gpCustomerAddresses and differ only in
-   * this variable - so it doubles as the cache key to write into and the list to re-read.
-   */
-  customer: GpCustomerOption;
-  /** Background re-read of that query, to reconcile the cache write with what GP actually holds. */
-  reconcile: () => Promise<unknown>;
-  /** The picker's own value setter. */
-  select: (addressCode: string) => void;
 }
 
 /**
@@ -222,9 +111,6 @@ interface AddAddressTarget {
  */
 export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGpJobDialogProps) {
   const { showToast } = useToast();
-  // #444: the address pickers render out of the cache, so a created row is written there rather than
-  // waited on over the network. Same handle RegisterGpBuyerDialog takes to re-read the buyer master.
-  const client = useApolloClient();
 
   const [jobNumber, setJobNumber] = useState('');
   const [jobName, setJobName] = useState('');
@@ -250,9 +136,6 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
   const [scheduledCompletionDate, setScheduledCompletionDate] = useState('');
   const [bidDueDate, setBidDueDate] = useState('');
 
-  // #444: the picker that asked for a new address, resolved to what the round trip needs.
-  const [addAddress, setAddAddress] = useState<AddAddressTarget | null>(null);
-
   const [gpError, setGpError] = useState<GpError | null>(null);
   const [fieldError, setFieldError] = useState<string | null>(null);
 
@@ -263,6 +146,9 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
   const companyChoice = useCompanyChoice(relay.companies);
   const company = companyChoice.company;
   const relayConnected = relay.connected === true;
+  // #444: the "+ Add new address" round trip, shared with the project edit dialog.
+  const addAddress = useAddCustomerAddress(company, relayConnected);
+  const { open: startAddAddress, close: closeAddAddress } = addAddress;
 
   const readsSkipped = !open || !relayConnected || !company;
 
@@ -501,10 +387,10 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
     setBidDueDate('');
     // Otherwise a reopened form still carries the last picker's customer and setter, and the nested
     // dialog comes back up on its own over a blank job form.
-    setAddAddress(null);
+    closeAddAddress();
     setGpError(null);
     setFieldError(null);
-  }, []);
+  }, [closeAddAddress]);
 
   const handleClose = useCallback(() => {
     reset();
@@ -519,73 +405,20 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
   }, []);
 
   /**
-   * #444: resolve the asking picker to its customer, its query and its setter, once, at the moment the
-   * add row is chosen. Everything downstream reads this rather than re-deriving the same mapping.
-   *
-   * The bill rule: a bill-to picker scoped to its own customer files the address under THAT customer
-   * and re-reads its own query. Unscoped it is rendering the job customer's addresses off the job
-   * query, so that is what a code added from it belongs to - which `billPickerCustomer` already says.
+   * #444: resolve the asking picker to its customer and its setter, once, at the moment the add row is
+   * chosen. The bill rule: a bill-to picker scoped to its own customer files the address under THAT
+   * customer. Unscoped it is rendering the job customer's addresses off the job query, so that is what a
+   * code added from it belongs to - which `billPickerCustomer` already says.
    */
   const openAddAddress = useCallback(
     (picker: 'job' | 'bill') => {
       const forBill = picker === 'bill';
       const target = forBill ? billPickerCustomer : customer;
       if (!target) return;
-      setAddAddress({
-        customer: target,
-        // A one-off read rather than the picker's own useQuery refetch: a refetch that fails puts that
-        // hook into an error state, and Apollo drops its `data` there - which would take the row just
-        // written to the cache (and the selection made from it) straight back out of the list. This
-        // leaves the watching query alone: on success the cache write broadcasts GP's list to it, on
-        // failure nothing changes and the user keeps the address GP really did store.
-        reconcile: () =>
-          client.query({
-            query: GET_GP_CUSTOMER_ADDRESSES,
-            variables: { company, customer: target.customerNumber },
-            fetchPolicy: 'network-only',
-          }),
-        select: forBill ? setBilltoAddressCode : setJobAddressCode,
-      });
+      startAddAddress(target, forBill ? setBilltoAddressCode : setJobAddressCode);
     },
-    [billPickerCustomer, customer, client, company],
+    [billPickerCustomer, customer, startAddAddress],
   );
-
-  /**
-   * #444: the row GP just stored becomes the picker's selection.
-   *
-   * The cache write is what makes the code offerable: a picker renders its options from its own query,
-   * so putting the returned row into that query's cache entry puts the option there without waiting on
-   * the network. The re-read still runs, in the background and with its failure ignored, purely to
-   * reconcile with GP - it can no longer strand the selection, which is what it used to do when it was
-   * the only thing standing between the create and a selectable option. That mattered: the relay can
-   * drop in the window right after taCreateCustomerAddress commits.
-   */
-  const handleAddressCreated = useCallback(
-    (created: CreatedGpCustomerAddress) => {
-      if (!addAddress) return;
-      client.cache.updateQuery<{ gpCustomerAddresses: CreatedGpCustomerAddress[] }>(
-        {
-          query: GET_GP_CUSTOMER_ADDRESSES,
-          variables: { company, customer: addAddress.customer.customerNumber },
-        },
-        (data) => {
-          const existing = data?.gpCustomerAddresses ?? [];
-          // A re-read that already landed makes this a no-op rather than a duplicate row.
-          if (existing.some((a) => a.addressCode === created.addressCode)) return undefined;
-          return { gpCustomerAddresses: [...existing, created] };
-        },
-      );
-      addAddress.select(created.addressCode);
-      void addAddress.reconcile().catch(() => undefined);
-    },
-    [addAddress, client, company],
-  );
-
-  /** #444: see AddCustomerAddressDialog's onDuplicate - the re-read is what clears the dead end. */
-  const handleAddressDuplicate = useCallback(() => {
-    if (!addAddress) return;
-    void addAddress.reconcile().catch(() => undefined);
-  }, [addAddress]);
 
   const handleBillCustomerChange = useCallback((value: GpCustomerOption | null) => {
     setBillCustomer(value);
@@ -814,75 +647,44 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
             />
           </Stack>
 
-          <TextField
-            select
-            label="Division"
+          <GpDivisionField
             value={division}
-            onChange={(e) => handleDivisionChange(e.target.value)}
+            onChange={handleDivisionChange}
+            divisions={divisions}
             required
             disabled={disabled || divisionsLoading}
-            size="small"
             helperText="Only divisions with division accounts set up in GP can take a job."
-          >
-            {divisions.map((d) => (
-              <MenuItem key={d} value={d} sx={monoSx}>
-                {d}
-              </MenuItem>
-            ))}
-          </TextField>
+          />
 
-          <Autocomplete
-            options={customers}
-            loading={customersLoading}
+          <GpCustomerField
+            label="Customer"
             value={customer}
-            getOptionLabel={(o) => (o.customerName ? `${o.customerNumber} - ${o.customerName}` : o.customerNumber)}
-            isOptionEqualToValue={(o, v) => o.customerNumber === v.customerNumber}
-            onChange={(_, value) => handleCustomerChange(value)}
+            onChange={handleCustomerChange}
+            customers={customers}
+            loading={customersLoading}
             disabled={disabled}
-            slotProps={{ listbox: { sx: monoSx } }}
-            renderInput={(params) => <TextField {...params} label="Customer" required size="small" />}
+            required
           />
 
           <Stack direction="row" spacing={2}>
-            <TextField
-              select
+            <GpAddressField
               label="Job address"
               value={jobAddressCode}
-              // #444: the add row arrives as a value like any option, so it is intercepted here and
-              // never stored - it opens the nested dialog and leaves the current selection alone.
-              onChange={(e) => {
-                if (e.target.value === ADD_ADDRESS) openAddAddress('job');
-                else setJobAddressCode(e.target.value);
-              }}
+              onChange={setJobAddressCode}
+              addresses={addresses}
+              onAddNew={customer ? () => openAddAddress('job') : undefined}
               required
               disabled={disabled || !customer || addressesLoading}
-              size="small"
-              sx={{ flex: 1 }}
               helperText={!customer ? 'Pick a customer first' : ' '}
-            >
-              {addresses.map((a) => (
-                <MenuItem key={a.addressCode} value={a.addressCode}>
-                  {addressLabel(a)}
-                </MenuItem>
-              ))}
-              {customer && (
-                <MenuItem value={ADD_ADDRESS} sx={{ fontStyle: 'italic' }}>
-                  + Add new address
-                </MenuItem>
-              )}
-            </TextField>
-            <TextField
-              select
+            />
+            <GpAddressField
               label="Bill-to address"
               value={billtoAddressCode}
-              onChange={(e) => {
-                if (e.target.value === ADD_ADDRESS) openAddAddress('bill');
-                else setBilltoAddressCode(e.target.value);
-              }}
+              onChange={setBilltoAddressCode}
+              addresses={billAddresses}
+              onAddNew={billPickerCustomer ? () => openAddAddress('bill') : undefined}
               required
               disabled={disabled || !customer || addressesLoading || billAddressesLoading}
-              size="small"
-              sx={{ flex: 1 }}
               helperText={
                 !customer
                   ? 'Pick a customer first'
@@ -890,47 +692,26 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
                     ? `Addresses of ${billCustomerNumber} (the bill-to customer)`
                     : ' '
               }
-            >
-              {billAddresses.map((a) => (
-                <MenuItem key={a.addressCode} value={a.addressCode}>
-                  {addressLabel(a)}
-                </MenuItem>
-              ))}
-              {billPickerCustomer && (
-                <MenuItem value={ADD_ADDRESS} sx={{ fontStyle: 'italic' }}>
-                  + Add new address
-                </MenuItem>
-              )}
-            </TextField>
+            />
           </Stack>
 
           <Stack direction="row" spacing={2}>
-            <TextField
-              select
+            <GpTaxScheduleField
               label="Tax schedule"
               value={taxScheduleId}
-              onChange={(e) => setTaxScheduleId(e.target.value)}
+              onChange={setTaxScheduleId}
+              taxSchedules={taxSchedules}
               required
               disabled={disabled || taxSchedulesLoading}
-              size="small"
               sx={{ flex: 1 }}
-            >
-              {taxSchedules.map((t) => (
-                <MenuItem key={t.taxScheduleId} value={t.taxScheduleId}>
-                  {t.description ? `${t.taxScheduleId} - ${t.description}` : t.taxScheduleId}
-                </MenuItem>
-              ))}
-            </TextField>
-            <TextField
+            />
+            <GpDateField
               label="Created date"
-              type="date"
               value={createdDate}
-              onChange={(e) => setCreatedDate(e.target.value)}
+              onChange={setCreatedDate}
               required
               disabled={disabled}
-              size="small"
               sx={{ flex: 1 }}
-              slotProps={{ inputLabel: { shrink: true } }}
               helperText="Must fall inside an open GP fiscal period."
             />
           </Stack>
@@ -1065,75 +846,43 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
                 slotProps={{ input: { sx: monoSx }, htmlInput: { maxLength: MAX.projectNumber } }}
               />
 
-              <Autocomplete
-                options={customers}
-                loading={customersLoading}
+              <GpCustomerField
+                label="Bill-to customer"
                 value={billCustomer}
-                getOptionLabel={(o) => (o.customerName ? `${o.customerNumber} - ${o.customerName}` : o.customerNumber)}
-                isOptionEqualToValue={(o, v) => o.customerNumber === v.customerNumber}
-                onChange={(_, value) => handleBillCustomerChange(value)}
+                onChange={handleBillCustomerChange}
+                customers={customers}
+                loading={customersLoading}
                 disabled={disabled}
-                slotProps={{ listbox: { sx: monoSx } }}
-                renderInput={(params) => (
-                  <TextField
-                    {...params}
-                    label="Bill-to customer"
-                    size="small"
-                    helperText="Leave empty to bill the job's own customer."
-                  />
-                )}
+                helperText="Leave empty to bill the job's own customer."
               />
 
-              <TextField
-                select
+              <GpTaxScheduleField
                 label="Use tax schedule"
                 value={useTaxSchedule}
-                onChange={(e) => setUseTaxSchedule(e.target.value)}
+                onChange={setUseTaxSchedule}
+                taxSchedules={taxSchedules}
+                allowNone
                 disabled={disabled || taxSchedulesLoading}
-                size="small"
-              >
-                <MenuItem value="">
-                  <em>None</em>
-                </MenuItem>
-                {taxSchedules.map((t) => (
-                  <MenuItem key={t.taxScheduleId} value={t.taxScheduleId}>
-                    {t.description ? `${t.taxScheduleId} - ${t.description}` : t.taxScheduleId}
-                  </MenuItem>
-                ))}
-              </TextField>
+              />
 
               <Stack direction="row" spacing={2}>
-                <TextField
+                <GpDateField
                   label="Scheduled start"
-                  type="date"
                   value={scheduleStartDate}
-                  onChange={(e) => setScheduleStartDate(e.target.value)}
+                  onChange={setScheduleStartDate}
                   disabled={disabled}
-                  size="small"
                   sx={{ flex: 1 }}
-                  slotProps={{ inputLabel: { shrink: true } }}
                 />
-                <TextField
+                <GpDateField
                   label="Scheduled completion"
-                  type="date"
                   value={scheduledCompletionDate}
-                  onChange={(e) => setScheduledCompletionDate(e.target.value)}
+                  onChange={setScheduledCompletionDate}
                   disabled={disabled}
-                  size="small"
                   sx={{ flex: 1 }}
-                  slotProps={{ inputLabel: { shrink: true } }}
                 />
               </Stack>
 
-              <TextField
-                label="Bid due"
-                type="date"
-                value={bidDueDate}
-                onChange={(e) => setBidDueDate(e.target.value)}
-                disabled={disabled}
-                size="small"
-                slotProps={{ inputLabel: { shrink: true } }}
-              />
+              <GpDateField label="Bid due" value={bidDueDate} onChange={setBidDueDate} disabled={disabled} />
             </Stack>
           </Collapse>
         </Stack>
@@ -1148,16 +897,7 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
       </DialogActions>
 
       {/* #444: mounted only while a picker is asking, so the half-filled job form stays behind it. */}
-      {addAddress && (
-        <AddCustomerAddressDialog
-          open
-          onClose={() => setAddAddress(null)}
-          customer={addAddress.customer}
-          relayConnected={relayConnected}
-          onCreated={handleAddressCreated}
-          onDuplicate={handleAddressDuplicate}
-        />
-      )}
+      {addAddress.dialog}
     </Dialog>
   );
 }

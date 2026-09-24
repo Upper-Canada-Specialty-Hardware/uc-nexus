@@ -10,6 +10,10 @@ writers of a project's identity are now this sync and create_gp_job, and both ta
 GP itself, so the invariant the #314 guard defended - no project without a real GP job behind it - is
 now structural instead of enforced by a check.
 
+Since #730, against a relay advertising job_mirror, the pass is also the mirror of GP's jobs: every
+existing project has its GP-held fields overwritten from GP's record, and a job GP no longer holds at
+all is marked not in GP on the second pass that misses it.
+
 Modelled on gp_outbox_worker: one lifespan task, every iteration wrapped so nothing can kill the loop,
 an env kill switch, and a wake() the relay registration path calls so a reconnect syncs at once.
 """
@@ -26,6 +30,7 @@ from app.errors import ConflictError, RelayBusyError, RelayTimeoutError, RelayUn
 from app.models.project import Project as ProjectModel
 from app.repositories import project_repository
 from app.services import gp_load
+from app.services.relay_gateway import JOB_MIRROR_FEATURE
 from app.services.relay_gateway import gateway as relay_gateway
 
 logger = logging.getLogger(__name__)
@@ -108,7 +113,9 @@ def wake() -> None:
             logger.exception("gp job sync: failed to signal the worker")
 
 
-def _persist_missing(jobs: list[dict], company: str) -> tuple[int, int]:
+def _persist_missing(
+    jobs: list[dict], company: str, *, mirror: bool = False, pass_started_at: datetime | None = None
+) -> tuple[int, int]:
     """Create a project for every reported job that doesn't have one IN THIS COMPANY. Returns
     (total, adopted).
 
@@ -119,7 +126,13 @@ def _persist_missing(jobs: list[dict], company: str) -> tuple[int, int]:
     Committed per row rather than in one batch: one bad job (a number too long for the column, a
     duplicate racing a create) must not discard the other fourteen. A ConflictError means someone
     else - create_gp_job, or an earlier pass - got there first, which is the expected outcome on every
-    pass after the first and not worth logging."""
+    pass after the first and not worth logging.
+
+    `mirror` is the relay advertising job_mirror (#730): its list is GP's full job record, closed jobs
+    included. Then a new project is created with the whole record, every existing project has its
+    GP-held fields overwritten, and a project whose job this complete read did not contain goes
+    through the two-pass not-in-GP rule. Without it the pass is exactly what it always was - an older
+    relay's list carries only number and name, and overwriting from it would blank every other field."""
     with SessionLocal() as session:
         existing = {
             pid for pid in session.scalars(select(ProjectModel.project_id).where(ProjectModel.company == company)).all()
@@ -127,19 +140,24 @@ def _persist_missing(jobs: list[dict], company: str) -> tuple[int, int]:
 
         total = 0
         adopted = 0
-        seen: set[str] = set()
+        seen: dict[str, dict] = {}
         for job in jobs:
             job_number = str(job.get("job_number") or "").strip()
             if not job_number or job_number in seen:
                 continue
-            seen.add(job_number)
+            seen[job_number] = job
             total += 1
             if job_number in existing:
                 continue
 
             job_name = str(job.get("job_name") or "").strip() or None
+            # The record is passed only on a mirroring relay, so the call an older relay makes is the
+            # exact call it always made.
+            extra = {"record": job} if mirror else {}
             try:
-                project_repository.adopt_gp_job(session, job_number=job_number, job_name=job_name, company=company)
+                project_repository.adopt_gp_job(
+                    session, job_number=job_number, job_name=job_name, company=company, **extra
+                )
                 session.commit()
                 adopted += 1
             except ConflictError:
@@ -148,7 +166,57 @@ def _persist_missing(jobs: list[dict], company: str) -> tuple[int, int]:
                 session.rollback()
                 logger.exception("gp job sync: could not adopt job %s in %s", job_number, company)
 
+        if mirror:
+            _overwrite_existing(session, company, seen, existing, pass_started_at or datetime.utcnow())
+
     return total, adopted
+
+
+def _overwrite_existing(
+    session, company: str, seen: dict[str, dict], existing: set[str], pass_started_at: datetime
+) -> None:
+    """The mirroring half of a pass (#730): GP's record onto every project that already existed, then
+    the not-in-GP rule for the ones GP no longer lists.
+
+    One commit for the whole company, after the adoptions have committed on their own, so a failure
+    here costs this pass's overwrite and nothing else - the next pass writes the same values again.
+
+    An empty list skips the not-in-GP rule. A company with no jobs at all in GP, open or closed, is far
+    likelier to be a read that came back empty than the truth, and two such reads in a row would mark
+    every project in the company NOT_IN_GP and stop all of its GP writes."""
+    try:
+        projects = session.scalars(
+            select(ProjectModel).where(
+                ProjectModel.company == company, ProjectModel.project_id.in_(list(existing & set(seen)))
+            )
+        ).all()
+        for project in projects:
+            project_repository.apply_gp_job_record(project, seen[project.project_id])
+        noted = {"marked": [], "not_in_gp": []}
+        if seen:
+            noted = project_repository.note_jobs_missing_from_gp(session, company, set(seen), pass_started_at)
+        session.commit()
+    except Exception:  # noqa: BLE001 - adoption already committed; the overwrite retries next pass
+        session.rollback()
+        logger.exception("gp job sync: could not apply GP's job records for %s this pass", company)
+        return
+    # One line each per pass, names capped at twenty, the way the PO mirror reports its deletions.
+    if noted["marked"]:
+        logger.warning(
+            "gp job sync: %s: %s job(s) are in neither GP table, marked not in GP if still missing next pass: %s%s",
+            company,
+            len(noted["marked"]),
+            ", ".join(noted["marked"][:20]),
+            "..." if len(noted["marked"]) > 20 else "",
+        )
+    if noted["not_in_gp"]:
+        logger.warning(
+            "gp job sync: %s: %s job(s) are not in GP: %s%s",
+            company,
+            len(noted["not_in_gp"]),
+            ", ".join(noted["not_in_gp"][:20]),
+            "..." if len(noted["not_in_gp"]) > 20 else "",
+        )
 
 
 def _persist_health(jobs: list[dict], company: str) -> int:
@@ -282,10 +350,17 @@ async def run_once(*, background: bool = False) -> tuple[int, int]:
             # Charged the flat estimate before it goes out: one list_jobs is roughly a hundred rows,
             # and it draws on the same budget as every PO read, so the two syncs cannot between them
             # exceed what GP has been allowed to give.
+            pass_started_at = datetime.utcnow()
             call = await gp_load.paced_call(company, "list_jobs", reads=gp_load.JOBS_PER_READ, background=background)
             jobs = (call["result"] or {}).get("jobs") or []
             # Off the event loop: the /relay-link read loop runs on it and must not block on Postgres.
-            company_total, company_adopted = await asyncio.to_thread(_persist_missing, jobs, company)
+            company_total, company_adopted = await asyncio.to_thread(
+                _persist_missing,
+                jobs,
+                company,
+                mirror=relay_gateway.has_feature(JOB_MIRROR_FEATURE),
+                pass_started_at=pass_started_at,
+            )
             total += company_total
             adopted += company_adopted
             await _stamp_setup_health(company, [j.get("job_number") for j in jobs], background=background)

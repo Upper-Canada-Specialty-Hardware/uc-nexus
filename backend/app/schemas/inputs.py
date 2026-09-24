@@ -106,13 +106,35 @@ class CreateGpCustomerAddressInput:
 
 @strawberry.input
 class UpdateProjectInput:
+    """One Save on the project (#730). A field left null is unchanged.
+
+    The GP-held fields - the job name (`description`), the customer, the address codes, the site
+    address, division, tax schedules, estimator, manager and the three dates - are written into GP
+    first and only a changed one is sent. GP cannot be told to clear one, so a blank or null there is
+    no change. The rest are Nexus's alone, and for those an empty string clears the field."""
+
     description: str | None = None
+    # The GP customer's name, which GP owns (#730): change `customer_number` instead. Still accepted so
+    # an older form that sends it back unchanged keeps working; a different value is refused.
     client: str | None = None
     job_site_name: str | None = None
     address: str | None = None
     city: str | None = None
     state: str | None = None
     zip: str | None = None
+    address2: str | None = None
+    country: str | None = None
+    customer_number: str | None = None
+    job_address_code: str | None = None
+    billto_address_code: str | None = None
+    division: str | None = None
+    tax_schedule_id: str | None = None
+    use_tax_schedule_id: str | None = None
+    estimator_id: str | None = None
+    ws_manager_id: str | None = None
+    schedule_start_date: date | None = None
+    scheduled_completion_date: date | None = None
+    bid_due_date: date | None = None
     contractor: str | None = None
     project_manager: str | None = None
     application: str | None = None

@@ -380,6 +380,33 @@ def job_exists(conn, job_number: str) -> bool:
     return row.n > 0
 
 
+def job_state(conn, job_number: str) -> str | None:
+    """Read-only: where a job stands in GP right now - "active", "inactive", "closed", or None when GP
+    has no record of it at all (#730).
+
+    INACTIVE is JC00102.WS_Inactive = 1, a flag somebody can clear again. CLOSED is WennSoft's Close
+    Jobs utility having moved the row into the history table JC30001 and deleted it from JC00102, which
+    is permanent. Every write that names a job asks this first, on the same connection and before it
+    writes anything, because GP holds no job-level lock the relay could rely on: the proc would take a
+    PO line or a receipt against an inactive job, and against a closed one it fails from inside.
+
+    One statement for both tables, normalized the way job_exists is so the two can never disagree about
+    whether a job exists. A job in the work table wins over a history row with the same number - that
+    is not supposed to happen, but the job accounting can still see and edit is the one that counts."""
+    job = job_number.strip()
+    row = conn.cursor().execute(
+        "SELECT (SELECT TOP 1 WS_Inactive FROM dbo.JC00102 WHERE RTRIM(WS_Job_Number) = ?) AS inactive, "
+        "(SELECT COUNT(*) FROM dbo.JC30001 WHERE RTRIM(WS_Job_Number) = ?) AS closed",
+        job,
+        job,
+    ).fetchone()
+    if row.inactive is not None:
+        return "inactive" if int(row.inactive) == 1 else "active"
+    if row.closed:
+        return "closed"
+    return None
+
+
 def cost_code_on_job(conn, job_number: str, cost_code: str) -> bool:
     """Read-only: is cost_code an ACTIVE cost code on job_number in the cost-code detail master
     JC00701? Matches the same six-column key the WennSoft proc uses (WS_Job_Number +
@@ -1100,14 +1127,128 @@ def create_buyer(conn, *, buyer_id: str, description: str = "") -> None:
         )
 
 
+# --- the job record (#730) ---------------------------------------------------
+# One SELECT shape serves list_jobs (the whole company, every GP JOBS SYNC pass) and get_job (one job,
+# live), so the list and the single read cannot disagree about what a job looks like. It is run against
+# the job master JC00102 and against WennSoft's closed-job history JC30001, which carries the same
+# columns plus who closed the job and when.
+#
+# Everything the record names that is not on the job row itself is a LEFT JOIN: the customer's name
+# (RM00101), the site address the job's address code points at (RM00102, keyed by the job's own
+# customer - an address code is only unique within a customer), and the estimator and WS manager names
+# (UPR00100). A job whose estimator is blank, or whose address code points at nothing, is still a job,
+# and an inner join would silently drop it from the list.
+
+_JOB_COLUMNS = (
+    "RTRIM(j.WS_Job_Number) AS job_number, RTRIM(j.WS_Job_Name) AS job_name, j.WS_Inactive AS inactive, "
+    "RTRIM(j.CUSTNMBR) AS customer_number, RTRIM(c.CUSTNAME) AS customer_name, "
+    "RTRIM(j.Job_Address_Code) AS job_address_code, RTRIM(j.Job_Billto_Address_Code) AS billto_address_code, "
+    "RTRIM(a.ADDRESS1) AS address1, RTRIM(a.ADDRESS2) AS address2, RTRIM(a.CITY) AS city, "
+    "RTRIM(a.STATE) AS state, RTRIM(a.ZIP) AS zip_code, RTRIM(a.COUNTRY) AS country, "
+    "RTRIM(j.Divisions) AS division, RTRIM(j.TAXSCHID) AS tax_schedule_id, "
+    "RTRIM(j.USETAXSCHID) AS use_tax_schedule_id, "
+    "RTRIM(j.Estimator_ID) AS estimator_id, RTRIM(e.FRSTNAME) AS estimator_first, "
+    "RTRIM(e.LASTNAME) AS estimator_last, "
+    "RTRIM(j.WS_Manager_ID) AS ws_manager_id, RTRIM(m.FRSTNAME) AS manager_first, "
+    "RTRIM(m.LASTNAME) AS manager_last, "
+    "j.CREATDDT AS created_date, j.Schedule_Start_Date AS schedule_start_date, "
+    "j.Sched_Completion_Date AS scheduled_completion_date, j.Bid_Due_Date AS bid_due_date, "
+    "j.Orig_Contract_Amount AS orig_contract_amount, j.Contract_to_Date AS contract_to_date, "
+    "j.Total_Actual_Cost AS total_actual_cost, j.Billed_Amount_TTD AS billed_amount_ttd, "
+    "j.Retention_Amount_TTD AS retention_amount_ttd, j.Net_Billed_TTD AS net_billed_ttd"
+)
+
+_JOB_JOINS = (
+    "LEFT JOIN dbo.RM00101 c ON c.CUSTNMBR = j.CUSTNMBR "
+    "LEFT JOIN dbo.RM00102 a ON a.CUSTNMBR = j.CUSTNMBR AND a.ADRSCODE = j.Job_Address_Code "
+    # The <> '' guards keep a blank id from matching an employee row nobody meant: estimator is often
+    # left empty, and "no estimator" must read as null rather than as whoever sorts first.
+    "LEFT JOIN dbo.UPR00100 e ON e.EMPLOYID = j.Estimator_ID AND j.Estimator_ID <> '' "
+    "LEFT JOIN dbo.UPR00100 m ON m.EMPLOYID = j.WS_Manager_ID AND j.WS_Manager_ID <> '' "
+)
+
+
+def _job_select(where: str = "") -> str:
+    """Both halves of the job read as one UNION ALL: the job master with `closed = 0`, the closed-job
+    history with `closed = 1` and its close stamp. `where` filters both halves identically."""
+    return (
+        f"SELECT {_JOB_COLUMNS}, 0 AS closed, NULL AS close_date, NULL AS close_user "
+        f"FROM dbo.JC00102 j {_JOB_JOINS}{where}"
+        f"UNION ALL "
+        f"SELECT {_JOB_COLUMNS}, 1 AS closed, j.Close_Date AS close_date, RTRIM(j.Close_User_ID) AS close_user "
+        f"FROM dbo.JC30001 j {_JOB_JOINS}{where}"
+    )
+
+
+# GP writes 1900-01-01 into a date column nobody filled in. Anything on or before it is "no date".
+_GP_EMPTY_DATE = date(1900, 1, 1)
+
+
+def _gp_date(value) -> str | None:
+    if value is None:
+        return None
+    day = value.date() if isinstance(value, datetime) else value
+    return None if day <= _GP_EMPTY_DATE else day.isoformat()
+
+
+def _person_name(first: str | None, last: str | None) -> str | None:
+    """"First Last" for an employee the join found, None when it found nobody (both halves null) or a
+    row with no name on it."""
+    return " ".join(part for part in (first, last) if part) or None
+
+
+def _job_record(r) -> dict:
+    """One row of _job_select as the job record the channel serves. Money is sent as a float, the way
+    read_po_totals and the PO mirror send theirs."""
+    if r.closed:
+        gp_job_state = "closed"
+    else:
+        gp_job_state = "inactive" if int(r.inactive or 0) == 1 else "active"
+    return {
+        "job_number": r.job_number,
+        "job_name": r.job_name or None,
+        "gp_job_state": gp_job_state,
+        "closed_date": _gp_date(r.close_date),
+        "closed_by": r.close_user or None,
+        "customer_number": r.customer_number or None,
+        "customer_name": r.customer_name or None,
+        "job_address_code": r.job_address_code or None,
+        "billto_address_code": r.billto_address_code or None,
+        "address1": r.address1 or None,
+        "address2": r.address2 or None,
+        "city": r.city or None,
+        "state": r.state or None,
+        "zip_code": r.zip_code or None,
+        "country": r.country or None,
+        "division": r.division or None,
+        "tax_schedule_id": r.tax_schedule_id or None,
+        "use_tax_schedule_id": r.use_tax_schedule_id or None,
+        "estimator_id": r.estimator_id or None,
+        "estimator_name": _person_name(r.estimator_first, r.estimator_last),
+        "ws_manager_id": r.ws_manager_id or None,
+        "ws_manager_name": _person_name(r.manager_first, r.manager_last),
+        "created_date": _gp_date(r.created_date),
+        "schedule_start_date": _gp_date(r.schedule_start_date),
+        "scheduled_completion_date": _gp_date(r.scheduled_completion_date),
+        "bid_due_date": _gp_date(r.bid_due_date),
+        "orig_contract_amount": float(r.orig_contract_amount or 0),
+        "contract_to_date": float(r.contract_to_date or 0),
+        "total_actual_cost": float(r.total_actual_cost or 0),
+        "billed_amount_ttd": float(r.billed_amount_ttd or 0),
+        "retention_amount_ttd": float(r.retention_amount_ttd or 0),
+        "net_billed_ttd": float(r.net_billed_ttd or 0),
+    }
+
+
 def list_jobs(conn) -> list[dict]:
-    """Read-only: the job master JC00102 (WennSoft Job Cost). Feeds the outbound-channel list_jobs
-    op - there's no existing HTTP route for this (nothing reads it via the browser hop today)."""
-    rows = conn.cursor().execute(
-        "SELECT RTRIM(WS_Job_Number) AS job_number, RTRIM(WS_Job_Name) AS job_name "
-        "FROM dbo.JC00102 ORDER BY WS_Job_Name"
-    ).fetchall()
-    return [{"job_number": r.job_number, "job_name": r.job_name or None} for r in rows]
+    """Read-only: every job GP holds for the company - the job master JC00102 (active and inactive) and
+    the closed-job history JC30001 - as full job records (#730). Feeds the outbound-channel list_jobs op
+    that GP JOBS SYNC calls; there's no HTTP route for it.
+
+    One statement per pass, which is what the GP READ LIMIT expects of it. job_number and job_name keep
+    their names and meaning, so a backend that only ever read those two still works."""
+    rows = conn.cursor().execute(_job_select() + "ORDER BY job_name").fetchall()
+    return [_job_record(r) for r in rows]
 
 
 def read_po_totals(conn, po_number: str) -> dict | None:
@@ -1440,26 +1581,23 @@ def list_employees(conn, *, active_only: bool = True) -> list[dict]:
 
 
 def get_job(conn, job_number: str) -> dict | None:
-    """Read-only: one job's stored record from JC00102, or None. Used as the read-back after a create
-    (issue #380) so the response carries GP's OWN job number and name rather than the request echoed
-    back - WS_Job_Name is char(31), and what GP stored is the honest thing to snapshot onto the Nexus
-    project. Doubles as proof the row actually landed."""
+    """Read-only: one job's full record (the same shape list_jobs serves), from JC00102, else from the
+    closed-job history JC30001, else None (#730). Used as the read-back after a create (issue #380) or
+    an update so the response carries GP's OWN values rather than the request echoed back -
+    WS_Job_Name is char(31), and what GP stored is the honest thing to snapshot onto the Nexus project.
+    Doubles as proof the row actually landed. #497 reads customer_number and job_address_code off it:
+    the customer is who a new address code is minted under, and the current code is what the job ships
+    to today."""
+    job = job_number.strip()
+    # closed sorts the job master first, so a number somehow in both tables answers with the live row.
     row = conn.cursor().execute(
-        "SELECT RTRIM(WS_Job_Number) AS job_number, RTRIM(WS_Job_Name) AS job_name, "
-        # #497 needs both: the customer is who a new address code is minted under, and the current
-        # code is what the job ships to today.
-        "RTRIM(CUSTNMBR) AS customer_number, RTRIM(ISNULL(Job_Address_Code, '')) AS job_address_code "
-        "FROM dbo.JC00102 WHERE RTRIM(WS_Job_Number) = ?",
-        job_number.strip(),
+        _job_select("WHERE RTRIM(j.WS_Job_Number) = ? ") + "ORDER BY closed",
+        job,
+        job,
     ).fetchone()
     if row is None:
         return None
-    return {
-        "job_number": row.job_number,
-        "job_name": row.job_name or None,
-        "customer_number": row.customer_number or None,
-        "job_address_code": row.job_address_code or None,
-    }
+    return _job_record(row)
 
 
 def list_customer_addresses(conn, customer_number: str) -> list[dict]:
@@ -1902,6 +2040,30 @@ def get_customer_address(conn, customer_number: str, address_code: str) -> dict 
     }
 
 
+def get_customer_address_lines(conn, customer_number: str, address_code: str) -> dict | None:
+    """Read-only: the six address fields of one RM00102 row, blanks as '', or None - everything the
+    own-site rewrite sends, so ops._mint_site_address can tell a re-push of the same address (no write)
+    from a changed one. Separate from get_customer_address because that one's shape is the picker row
+    the create op answers with. Matched the way customer_address_exists matches."""
+    row = conn.cursor().execute(
+        "SELECT RTRIM(ADDRESS1) AS address1, RTRIM(ADDRESS2) AS address2, RTRIM(CITY) AS city, "
+        "RTRIM(STATE) AS state, RTRIM(ZIP) AS zip_code, RTRIM(COUNTRY) AS country "
+        "FROM dbo.RM00102 WHERE RTRIM(CUSTNMBR) = ? AND RTRIM(ADRSCODE) = ?",
+        customer_number.strip(),
+        address_code.strip(),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "address1": row.address1 or "",
+        "address2": row.address2 or "",
+        "city": row.city or "",
+        "state": row.state or "",
+        "zip_code": row.zip_code or "",
+        "country": row.country or "",
+    }
+
+
 # request field -> taCreateCustomerAddress parameter name (minus the @I_v prefix), in the proc's own
 # parameter order. The proc takes more than these (ADDRESS3, the phone/fax numbers, the shipping
 # method, the user-defined fields); those are left defaulted, the same treatment _exec_tapohdr gives
@@ -1942,6 +2104,30 @@ def create_customer_address(conn, fields: dict) -> None:
     No proc_message on the raised error, unlike wsiJCJobMaster: taCreateCustomerAddress is a taXxx proc,
     so its error states ARE taErrorCode entries and errors.econnect_error_body resolves a real GP
     description for them. GP's own errString still rides in the message."""
+    _exec_customer_address(conn, fields, update_if_exists=False)
+
+
+def update_job_site_customer_address(conn, fields: dict) -> None:
+    """Rewrite, in place, the address record Nexus minted for ONE job's site (#730): the same
+    taCreateCustomerAddress statement as create_customer_address, with @I_vUpdateIfExists = 1.
+
+    That flag is the one create_customer_address pins to 0, and the reasons it gives still hold for every
+    address accounting maintains. The only caller is ops._mint_site_address, and only for the code that
+    derives from the job number itself (SITE-<job>): a record Nexus created for that job alone, so
+    changing it changes that job's site and nothing else. Without this, the first site edit minted the
+    code and every later edit re-pointed the job at the unchanged record - GP kept the first address
+    forever. The parameter is the one the create statement already sends as a literal, and the create
+    docstring records what 1 does: the proc overwrites the existing row in place.
+
+    All eight fields are sent, unset optionals as blanks, exactly as the create sends them: the record is
+    Nexus's own, so a blank address2 in the new address means the old second line should go."""
+    _exec_customer_address(conn, fields, update_if_exists=True)
+
+
+def _exec_customer_address(conn, fields: dict, *, update_if_exists: bool) -> None:
+    """The one taCreateCustomerAddress statement behind the create and the own-site rewrite, so the two
+    cannot drift on how the address is bound. The flag stays a literal in the SQL rather than a bound
+    parameter; only the two named functions above choose it."""
     unknown = set(fields) - {field for field, _ in _CREATE_CUSTOMER_ADDRESS_PARAMS}
     if unknown:
         raise EConnectError(
@@ -1960,7 +2146,7 @@ def create_customer_address(conn, fields: dict) -> None:
     DECLARE @err_str varchar(255) = '';
     EXEC dbo.taCreateCustomerAddress
         {assignments},
-        @I_vUpdateIfExists = 0,
+        @I_vUpdateIfExists = {1 if update_if_exists else 0},
         @O_iErrorState     = @err OUTPUT,
         @oErrString        = @err_str OUTPUT;
     SELECT @err AS error_state, @err_str AS err_string;
@@ -1968,8 +2154,9 @@ def create_customer_address(conn, fields: dict) -> None:
     row = conn.cursor().execute(sql, *values).fetchone()
     if row.error_state != 0:
         message = (row.err_string or "").strip()
+        verb = "update" if update_if_exists else "create"
         raise EConnectError(
-            f"taCreateCustomerAddress failed for customer {fields.get('customer_number')} "
+            f"taCreateCustomerAddress {verb} failed for customer {fields.get('customer_number')} "
             f"address {fields.get('address_code')}: {message}",
             proc="taCreateCustomerAddress",
             error_state=row.error_state,

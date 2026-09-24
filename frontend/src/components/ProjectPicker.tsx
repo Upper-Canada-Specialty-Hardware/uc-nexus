@@ -4,8 +4,9 @@ import { Autocomplete, Box, Chip, TextField, Typography, createFilterOptions } f
 import type { SxProps, Theme } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import { GET_PROJECTS } from '../graphql/shared';
-import type { Project } from '../types/project';
+import { isGpJobNotOpen, type Project } from '../types/project';
 import { GpSetupBadge } from './GpSetupQuarantineBanner';
+import { GpJobStateTag } from './GpJobStateTag';
 import { useIdentity } from '../hooks/useIdentity';
 import { FONT_MONO, monoSx } from '../theme';
 
@@ -25,6 +26,12 @@ interface Props {
   filter?: (project: Project) => boolean;
   /** The line under the field. Used where the caller has something to say about the pick (#689). */
   helperText?: ReactNode;
+  /**
+   * #730: the pick feeds a NEXUS TO GP WRITE. A project whose GP job is inactive, closed or missing is
+   * still listed with its tag, but greyed out and unpickable, because GP would refuse the write.
+   * Everywhere else the same project stays pickable and just carries the tag.
+   */
+  gpBound?: boolean;
 }
 
 const projectLabel = (p: Project) => p.description || p.projectId;
@@ -54,6 +61,7 @@ export default function ProjectPicker({
   disabled,
   filter,
   helperText,
+  gpBound = false,
 }: Props) {
   const { data, loading } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const options = useMemo(() => {
@@ -76,6 +84,7 @@ export default function ProjectPicker({
       isOptionEqualToValue={(opt, val) => opt.id === val.id}
       getOptionLabel={projectLabel}
       filterOptions={projectFilterOptions}
+      getOptionDisabled={gpBound ? isGpJobNotOpen : undefined}
       renderOption={(props, p) => {
         const { key, ...optionProps } = props;
         return (
@@ -107,6 +116,7 @@ export default function ProjectPicker({
               />
             )}
             <GpSetupBadge project={p} />
+            <GpJobStateTag project={p} />
           </Box>
         );
       }}

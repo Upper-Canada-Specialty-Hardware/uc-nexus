@@ -15,8 +15,9 @@ import { Folder, LayoutGrid, Search, History } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import { GET_PROJECTS } from '../graphql/shared';
 import type { Project } from '../types/project';
-import { isGpSetupBroken } from '../types/project';
+import { isGpJobNotOpen, isGpSetupBroken } from '../types/project';
 import { GpSetupBadge } from './GpSetupQuarantineBanner';
+import { GpJobStateTag } from './GpJobStateTag';
 import { monoSx, microLabelSx } from '../theme';
 import { StaggerList, StaggerItem } from '../motion';
 import { getRecentProjectIds, pushRecentProject } from '../utils/recentProjects';
@@ -276,9 +277,10 @@ export default function ProjectLandingPage({
                         >
                           {p.description || p.projectId}
                         </Typography>
-                        {isGpSetupBroken(p) && (
-                          <Box sx={{ mt: 0.5 }}>
+                        {(isGpSetupBroken(p) || isGpJobNotOpen(p)) && (
+                          <Box sx={{ mt: 0.5, display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
                             <GpSetupBadge project={p} />
+                            <GpJobStateTag project={p} />
                           </Box>
                         )}
                         {p.projectId && (
