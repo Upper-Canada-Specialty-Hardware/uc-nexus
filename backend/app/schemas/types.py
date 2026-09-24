@@ -1966,7 +1966,7 @@ class GpOutboxEntry:
     id: strawberry.ID
     label: str
     # Two names for the same write, and both are published on purpose. `op` is the resolver-level
-    # one (register_po_in_gp, create_receive); `relay_op` is the GP-side one the glossary uses for a
+    # one (register_po_in_gp, create_receive); `relay_op` is the GP-side one that identifies a
     # NEXUS TO GP WRITE (create_po, create_receipt, update_job_site), and it is what the `ops`
     # argument on `gpOutbox` filters against - so a panel asking for one kind reads the same name
     # back off the rows it gets.

@@ -165,7 +165,7 @@ def list_entries(
 
     `ops` filters on `relay_op` - the GP-side name of the write (create_po, create_receipt,
     update_job_site) - because that is what says which module a held write belongs to, and it is
-    the name the glossary uses for a NEXUS TO GP WRITE.
+    the name that identifies a NEXUS TO GP WRITE.
 
     `company` is the tenant filter (#729): the row carries the GP company its write is for, so a
     scoped caller sees their own held writes and nobody else's. None means every company, which is
