@@ -24,6 +24,7 @@ import ConfirmDialog from '../../components/ConfirmDialog';
 import ProgressBar from '../../components/ProgressBar';
 import ValidationSummaryDisplay from '../../components/ValidationSummaryDisplay';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
+import GpCompanyTag from '../../components/GpCompanyTag';
 import { isGpSetupBroken } from '../../types/project';
 import { useHardwareScheduleParser } from '../../hooks/useHardwareScheduleParser';
 import { useNavigate } from 'react-router-dom';
@@ -1654,6 +1655,8 @@ export default function ImportWizard({
                         <Typography variant="body2" sx={monoSx}>
                           {existingProjectName}
                         </Typography>
+                        {/* #831: which GP company the job - and everything this wizard raises - lives in. */}
+                        <GpCompanyTag code={project.company} />
                         <Chip
                           label={isReimport ? 'Existing schedule data' : 'First import'}
                           color={isReimport ? 'info' : 'success'}
@@ -1787,9 +1790,13 @@ export default function ImportWizard({
                 {/* `title` step off the DESIGN.md ramp, not MUI's body1 default of 1rem - the ramp
                     has no 1rem step. component="p" because this is the card's headline value, not a
                     heading in the document outline. */}
-                <Typography variant="h6" component="p" sx={{ mb: 1, ...monoSx }}>
-                  {existingProjectName}
-                </Typography>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 1 }}>
+                  <Typography variant="h6" component="p" sx={monoSx}>
+                    {existingProjectName}
+                  </Typography>
+                  {/* #831: the GP company the finalized work is raised in. */}
+                  <GpCompanyTag code={project.company} />
+                </Box>
                 <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, mb: 2 }}>
                   {purpose === 'schedule'
                     ? // The whole file is persisted on a replace, not a selection of it.

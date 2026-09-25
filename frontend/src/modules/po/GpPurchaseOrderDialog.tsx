@@ -39,6 +39,8 @@ import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { useCompanyChoice } from '../../relay/useCompanyChoice';
 import GpCompanyLabel from '../../relay/GpCompanyLabel';
+import GpCompanyTag from '../../components/GpCompanyTag';
+import { companyLabel } from '../../relay/companyLabel';
 import { poVendorName } from './poVendorName';
 import { computeManufacturerVendorHint, type ManufacturerSuggestion } from './manufacturerVendorHint';
 import GpErrorAlert from '../../components/GpErrorAlert';
@@ -412,7 +414,13 @@ export default function GpPurchaseOrderDialog({
   // #637: the relay can be enrolled for several companies now, so the single read-only value became
   // a pick - defaulted to the caller's own, and no pick at all for a scoped user (they have one).
   const relay = useRelayStatus({ skip: !open });
-  const companyChoice = useCompanyChoice(relay.companies);
+  // #831: the company this PO is written into is not a free pick once there is anything to take it
+  // from. A PO on a job belongs to the job's company, and a draft being registered belongs to the
+  // company it was raised in - the backend refuses any other. Only a stock PO raised by an unscoped
+  // UC NEXUS ADMIN is left to the pick.
+  const pinnedCompany =
+    projects.find((p) => p.id === projectId)?.company || registerPo?.company || null;
+  const companyChoice = useCompanyChoice(relay.companies, pinnedCompany);
   const company = companyChoice.company;
   const relayStatus: boolean | null = relayConnectedProp !== undefined ? relayConnectedProp : relay.connected;
   const relayConnected = relayStatus === true;
@@ -1152,6 +1160,10 @@ export default function GpPurchaseOrderDialog({
               tariffAmount: tariffAmountValue,
               costCode: costCode || null,
               vendorQuoteNumber: vendorQuoteNumber.trim() || null,
+              // #831: the company a stock draft belongs to. The backend ignores it on a job (the job's
+              // company wins) and for a scoped caller (their own wins); it only decides anything for
+              // an unscoped UC NEXUS ADMIN, who until now had no way to name one.
+              company: projectId ? null : company || null,
               lineItems: lineItemsInput,
             },
           },
@@ -1430,6 +1442,35 @@ export default function GpPurchaseOrderDialog({
       )}
       {/* Header Fields */}
       <Stack spacing={2} sx={{ mb: 3 }}>
+        {/* #831: which GP company this PO is written into, said before anything else is asked. It is
+            the project's company once one is picked, the draft's own company when registering one,
+            and the caller's own otherwise. Only an unscoped UC NEXUS ADMIN raising a stock PO has
+            something to choose (#637), so only they get a pick here. */}
+        {!companyChoice.locked ? (
+          <TextField
+            select
+            label="GP company"
+            value={company}
+            onChange={(e) => companyChoice.setCompany(e.target.value)}
+            size="small"
+            sx={{ maxWidth: 360, '& .MuiSelect-select': monoSx }}
+            helperText="A stock PO has no project to take its company from, so choose which one it is for"
+            slotProps={{ select: { renderValue: (v) => companyLabel(String(v), relay.gpCompanies) } }}
+          >
+            {companyChoice.options.map((c) => (
+              <MenuItem key={c} value={c}>
+                <GpCompanyLabel code={c} gpCompanies={relay.gpCompanies} />
+              </MenuItem>
+            ))}
+          </TextField>
+        ) : company ? (
+          <GpCompanyTag code={company} gpCompanies={relay.gpCompanies} caption="GP company" sx={{ alignSelf: 'flex-start' }} />
+        ) : (
+          <Typography variant="caption" color="text.secondary">
+            GP company: pick a project to raise this PO in its company. The GP relay is not connected, so a
+            stock PO has no company to choose from yet.
+          </Typography>
+        )}
         {/* #689: a searchable picker rather than a list of every project, because a PO user knows the
             job by its number as often as by its name and types either one. Clearing the field leaves
             the PO with no project, which is a stock PO. #425 still holds: a quarantined project is
@@ -1442,6 +1483,8 @@ export default function GpPurchaseOrderDialog({
           disabled={projectLocked}
           // #730: the project on a PO becomes the GP job the registration writes to.
           gpBound
+          // #831: the GP company line right above already names the project's company.
+          showSelectedCompany={false}
           sx={{ maxWidth: 'none' }}
           helperText={
             projectLocked
@@ -1595,24 +1638,6 @@ export default function GpPurchaseOrderDialog({
           <RelayStatusChip connected={relayStatus} companies={relay.companies} gpCompanies={relay.gpCompanies} />
         </Stack>
         <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-start">
-          {/* #637: a pick only when there is something to pick - one company (or a scoped caller,
-              who acts as their own and nothing else) keeps the field read-only. */}
-          <TextField
-            select={!companyChoice.locked}
-            label="GP company"
-            value={companyChoice.locked ? company || '—' : company}
-            onChange={(e) => companyChoice.setCompany(e.target.value)}
-            size="small"
-            sx={{ minWidth: 140, ...MONO_FIELD_SX }}
-            disabled={companyChoice.locked}
-            slotProps={{ select: { renderValue: (v) => String(v) } }}
-          >
-            {companyChoice.options.map((c) => (
-              <MenuItem key={c} value={c}>
-                <GpCompanyLabel code={c} gpCompanies={relay.gpCompanies} />
-              </MenuItem>
-            ))}
-          </TextField>
           {/* Issue #216: the buyer IS the caller's GP identity - display only, never a pick. */}
           <TextField
             label="Buyer (you)"

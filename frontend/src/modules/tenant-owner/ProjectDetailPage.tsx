@@ -12,6 +12,7 @@ import {
   Stack,
   Typography,
 } from '@mui/material';
+import GpCompanyTag from '../../components/GpCompanyTag';
 import { Link as RouterLink, useParams } from 'react-router-dom';
 import { Archive, ArchiveRestore, Boxes, DoorOpen, FileText, Pencil, Tags, Truck } from 'lucide-react';
 import { useMutation, useQuery } from '@apollo/client/react';
@@ -236,7 +237,8 @@ export default function ProjectDetailPage() {
               <Typography variant="h5" sx={{ ...monoSx, fontWeight: 700 }}>
                 {project.projectId}
               </Typography>
-              <Chip label={project.company} size="small" variant="outlined" sx={monoSx} />
+              {/* #831: the shared GP company tag - code and GP's name - as on every other project header. */}
+              <GpCompanyTag code={project.company} />
               {project.offSiteStorageAgreement && <Chip label="OSSA" size="small" variant="outlined" />}
               {project.archived && <Chip label="Archived" size="small" color="warning" />}
               {isGpSetupBroken(project) && <GpSetupBadge project={project} />}

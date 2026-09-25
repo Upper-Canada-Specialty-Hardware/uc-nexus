@@ -1,14 +1,15 @@
 import { useMemo } from 'react';
 import type { ReactNode } from 'react';
-import { Autocomplete, Box, Chip, TextField, Typography, createFilterOptions } from '@mui/material';
+import { Autocomplete, Box, TextField, Typography, createFilterOptions } from '@mui/material';
 import type { SxProps, Theme } from '@mui/material';
 import { useQuery } from '@apollo/client/react';
 import { GET_PROJECTS } from '../graphql/shared';
 import { isGpJobNotOpen, type Project } from '../types/project';
 import { GpSetupBadge } from './GpSetupQuarantineBanner';
 import { GpJobStateTag } from './GpJobStateTag';
-import { useIdentity } from '../hooks/useIdentity';
-import { FONT_MONO, monoSx } from '../theme';
+import GpCompanyTag from './GpCompanyTag';
+import { useGpCompanyNames } from '../relay/useGpCompanyNames';
+import { monoSx } from '../theme';
 
 interface Props {
   value: Project | null;
@@ -32,6 +33,11 @@ interface Props {
    * Everywhere else the same project stays pickable and just carries the tag.
    */
   gpBound?: boolean;
+  /**
+   * #831: the chosen project's GP company is named under the field. Off only where the screen already
+   * names the company right beside the picker, so it is not said twice.
+   */
+  showSelectedCompany?: boolean;
 }
 
 const projectLabel = (p: Project) => p.description || p.projectId;
@@ -62,16 +68,18 @@ export default function ProjectPicker({
   filter,
   helperText,
   gpBound = false,
+  showSelectedCompany = true,
 }: Props) {
   const { data, loading } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const options = useMemo(() => {
     const all = data?.projects ?? [];
     return filter ? all.filter(filter) : all;
   }, [data?.projects, filter]);
-  // #637: only a UC NEXUS ADMIN sees more than one company's projects here, so only they need the
-  // row told apart by company. A scoped user's list is all one tenant - a chip on every row would be
-  // noise.
-  const { isNexusAdmin } = useIdentity();
+  // #831: every user sees which GP company each project lives in, not only a UC NEXUS ADMIN - a
+  // scoped user raising a PO was left guessing which company it would land in. The names are read
+  // once here and handed to every row, rather than each row's tag asking on its own.
+  const gpCompanies = useGpCompanyNames();
+  const selectedCompany = showSelectedCompany ? value?.company : null;
 
   return (
     <Autocomplete<Project>
@@ -107,14 +115,7 @@ export default function ProjectPicker({
                 </Typography>
               )}
             </Box>
-            {isNexusAdmin && p.company && (
-              <Chip
-                label={p.company}
-                size="small"
-                variant="outlined"
-                sx={{ height: 20, fontSize: '0.7rem', fontFamily: FONT_MONO, flexShrink: 0 }}
-              />
-            )}
+            <GpCompanyTag code={p.company} gpCompanies={gpCompanies} sx={{ flexShrink: 0 }} />
             <GpSetupBadge project={p} />
             <GpJobStateTag project={p} />
           </Box>
@@ -125,7 +126,20 @@ export default function ProjectPicker({
           {...params}
           label={label}
           placeholder={placeholder}
-          helperText={helperText}
+          helperText={
+            selectedCompany ? (
+              <>
+                <GpCompanyTag code={selectedCompany} gpCompanies={gpCompanies} caption="GP company" />
+                {helperText && (
+                  <Box component="span" sx={{ display: 'block' }}>
+                    {helperText}
+                  </Box>
+                )}
+              </>
+            ) : (
+              helperText
+            )
+          }
           size={size}
           // The label is held in the outline notch rather than left to shrink on its own (#689). An
           // unshrunk label sits inside the field, exactly where the placeholder prints, and the only
