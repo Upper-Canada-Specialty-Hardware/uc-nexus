@@ -32,4 +32,15 @@ describe('PageHeader', () => {
     );
     expect(screen.getByRole('button', { name: 'Export' })).toBeInTheDocument();
   });
+
+  // #845: an admin page that spans every GP company says so, since the app bar's switcher names one.
+  it('says the page spans every GP company when asked', () => {
+    renderHeader(<PageHeader title="Relay Installs" allCompanies />);
+    expect(screen.getByText(/^All GP companies/)).toBeInTheDocument();
+  });
+
+  it('says nothing about companies otherwise', () => {
+    renderHeader(<PageHeader title="Receives" />);
+    expect(screen.queryByText(/All GP companies/)).not.toBeInTheDocument();
+  });
 });

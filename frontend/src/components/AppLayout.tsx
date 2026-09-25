@@ -102,8 +102,8 @@ export default function AppLayout() {
             <GpQueueChip />
           </Box>
 
-          {/* The GP company a scoped user is assigned to. Renders nothing for a UC NEXUS ADMIN, who
-              is unscoped, so the bar is unchanged for them. */}
+          {/* The GP company the user is working in: a scoped user's own, or the company switcher for
+              a UC NEXUS ADMIN (#845). */}
           <TopBarCompany />
 
           <NotificationBell />

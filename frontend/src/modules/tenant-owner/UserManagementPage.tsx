@@ -410,6 +410,8 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
               ? { label: 'UC Nexus Admin', to: '/app/nexus-admin' }
               : { label: 'Tenant Owner', to: '/app/tenant-owner' }
           }
+          // #845: the Nexus-wide list is every company's users, whatever the switcher says.
+          allCompanies={nexusScope}
           description={
             nexusScope
               ? 'Click a user to manage their company, roles and GP buyer identity. A user with no company sees no data at all until one is assigned.'

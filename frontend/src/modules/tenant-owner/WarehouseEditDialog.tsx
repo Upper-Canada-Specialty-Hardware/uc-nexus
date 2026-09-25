@@ -1,13 +1,11 @@
-import { useState, useCallback, useMemo } from 'react';
-import { Button, MenuItem, Stack, TextField, FormControlLabel, Checkbox, Typography } from '@mui/material';
+import { useState, useCallback } from 'react';
+import { Button, Stack, TextField, FormControlLabel, Checkbox, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { CREATE_WAREHOUSE, UPDATE_WAREHOUSE } from '../../graphql/admin';
 import { GET_WAREHOUSES } from '../../graphql/shared';
-import { useRelayStatus } from '../../relay/useRelayStatus';
-import { useCompanyChoice } from '../../relay/useCompanyChoice';
-import GpCompanyLabel from '../../relay/GpCompanyLabel';
+import { useActingCompany } from '../../company/ActingCompanyContext';
 import { FONT_MONO, microLabelSx } from '../../theme';
 
 export interface WarehouseFormValue {
@@ -69,17 +67,10 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
   );
   const [fieldError, setFieldError] = useState('');
 
-  // #637: a warehouse belongs to a GP company. New buildings default to the caller's own; an
-  // existing row keeps whatever it holds even if the relay serving that company is between runs.
-  const relay = useRelayStatus();
-  const choice = useCompanyChoice(relay.companies);
-  const company = form.company || choice.company;
-  const companyOptions = useMemo(() => {
-    const list = [...choice.options];
-    if (company && !list.includes(company)) list.push(company);
-    return list;
-  }, [choice.options, company]);
-  const companyLocked = companyOptions.length <= 1;
+  // #637: a warehouse belongs to a GP company. #845: a new building goes into the company the user is
+  // working in (a UC NEXUS ADMIN picks it with the app bar switcher); an existing row keeps its own.
+  const actingCompany = useActingCompany().company;
+  const company = form.company || actingCompany || '';
 
   const onError = (err: { message: string }) => {
     if (err.message.toLowerCase().includes('already exists')) {
@@ -129,7 +120,7 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
       return;
     }
     if (!company) {
-      setFieldError('A GP company is required. Connect the relay to pick one.');
+      setFieldError('A GP company is required. Choose the company to work in first.');
       return;
     }
     const payload = {
@@ -191,25 +182,16 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
             sx={{ width: 140, '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
             inputProps={{ maxLength: 20 }}
           />
-          {/* #637: which GP company owns the building. Read-only when there is nothing to pick -
-              one company on the relay, or the relay is down and the row keeps what it has. */}
+          {/* #637: which GP company owns the building. Never picked here (#845): it is the company
+              the user is working in, or the one an existing row already belongs to. */}
           <TextField
-            select={!companyLocked}
             label="Company"
-            value={companyLocked ? company || '—' : company}
-            onChange={(e) => setForm((f) => ({ ...f, company: e.target.value }))}
+            value={company || '—'}
             required
             size="small"
-            disabled={companyLocked}
+            disabled
             sx={{ width: 140, '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
-            slotProps={{ select: { renderValue: (v) => String(v) } }}
-          >
-            {companyOptions.map((c) => (
-              <MenuItem key={c} value={c}>
-                <GpCompanyLabel code={c} gpCompanies={relay.gpCompanies} />
-              </MenuItem>
-            ))}
-          </TextField>
+          />
         </Stack>
         <Typography component="div" sx={{ ...microLabelSx, pt: 0.5 }}>
           Address

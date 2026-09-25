@@ -5,7 +5,6 @@ import { MemoryRouter } from 'react-router-dom';
 import InventoryValuePage from '../InventoryValuePage';
 import {
   GET_INVENTORY_VALUE,
-  GET_INVENTORY_VALUE_COMPANIES,
   SAVE_DOORS_ON_HAND,
   SET_AVERAGE_DOOR_COST,
 } from '../../../graphql/inventoryValue';
@@ -85,12 +84,6 @@ const PAGE = {
   __typename: 'InventoryValue',
 };
 
-const companiesMock: MockedResponse = {
-  request: { query: GET_INVENTORY_VALUE_COMPANIES },
-  maxUsageCount: INFINITE,
-  result: { data: { inventoryValueCompanies: [COMPANY] } },
-};
-
 const pageMock: MockedResponse = {
   request: { query: GET_INVENTORY_VALUE, variables: { company: COMPANY } },
   maxUsageCount: INFINITE,
@@ -105,7 +98,7 @@ const projectsMock: MockedResponse = {
 
 function renderPage(extra: MockedResponse[] = []) {
   return render(
-    <MockedProvider mocks={[companiesMock, pageMock, projectsMock, ...extra]}>
+    <MockedProvider mocks={[pageMock, projectsMock, ...extra]}>
       <MemoryRouter>
         <ToastProvider>
           <InventoryValuePage />

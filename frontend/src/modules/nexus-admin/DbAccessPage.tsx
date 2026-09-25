@@ -335,6 +335,7 @@ export default function DbAccessPage() {
         <PageHeader
           title="Database Access"
           parent={{ label: 'UC Nexus Admin', to: '/app/nexus-admin' }}
+          allCompanies
           description="Mint, rotate and revoke direct Postgres logins for MS Access over the public proxy."
           actions={
             <Button variant="contained" onClick={() => setMintOpen(true)}>

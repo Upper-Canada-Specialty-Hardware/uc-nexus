@@ -8,6 +8,7 @@ import theme from './theme';
 import client from './apollo';
 import { WizardProvider } from './contexts/WizardContext';
 import { AuthRecoveryProvider } from './contexts/AuthRecoveryContext';
+import { ActingCompanyProvider } from './company/ActingCompanyContext';
 import { ToastProvider } from './components/Toast';
 import { MotionProvider } from './motion';
 import App from './App';
@@ -37,7 +38,11 @@ createRoot(document.getElementById('root')!).render(
                   {/* Inside ClerkProvider (it reads useAuth) and the theme (it renders a dialog),
                       and above App so the re-auth prompt outlives whatever route blanked. */}
                   <AuthRecoveryProvider>
-                    <App />
+                    {/* #845: inside Apollo and Clerk, and above App so the header is set before any
+                        page's first query. */}
+                    <ActingCompanyProvider>
+                      <App />
+                    </ActingCompanyProvider>
                   </AuthRecoveryProvider>
                 </ToastProvider>
               </WizardProvider>

@@ -37,8 +37,9 @@ export default function RelayStatusChip({ connected, companies, gpCompanies }: R
 
   // A scoped user belongs to exactly one GP company, so the relay's reach is not their story. Reading
   // "TUBC +2" here says "I am on three companies" when every row they will ever see belongs to one.
-  // Show that one company, and let the tooltip say what it means. UC NEXUS ADMIN is unscoped and keeps
-  // the full list below, because for them the indicator really is about the relay's reach.
+  // Show that one company, and let the tooltip say what it means. UC NEXUS ADMIN keeps the full list
+  // below: they switch between companies (#845), so for them the indicator really is about the
+  // relay's reach.
   if (!isNexusAdmin && ownCompany) {
     const served = companies.includes(ownCompany);
     return (

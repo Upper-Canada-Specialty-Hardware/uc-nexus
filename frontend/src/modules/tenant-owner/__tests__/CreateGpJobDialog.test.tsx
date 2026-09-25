@@ -18,8 +18,8 @@ import { GET_PROJECTS, GET_RELAY_STATUS } from '../../../graphql/shared';
 vi.setConfig({ testTimeout: 30_000 });
 configure({ asyncUtilTimeout: 10_000 });
 
-// #637: the dialog resolves which GP company to create the job in from the caller's identity, so
-// the hook is stubbed rather than reaching for a Clerk provider this file does not mount.
+// #637: the dialog creates the job in the caller's GP company - since #845 the acting company, which
+// outside the provider is the identity's own - so the hook is stubbed rather than mounting Clerk.
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
     displayName: 'Admin',
@@ -30,7 +30,7 @@ vi.mock('../../../hooks/useIdentity', () => ({
     isTenantOwner: false,
     ownsTenant: true,
     gpBuyerId: null,
-    company: null,
+    company: 'TUBC',
     user: null,
   }),
 }));

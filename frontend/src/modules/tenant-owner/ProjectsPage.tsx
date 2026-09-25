@@ -93,18 +93,8 @@ export default function ProjectsPage() {
         minWidth: 180,
         valueFormatter: (v: string | null) => v || '—',
       },
-      {
-        // #637: this grid is the combined view - every company's jobs at once - so the company is
-        // what tells two similarly named jobs apart.
-        field: 'company',
-        headerName: 'Company',
-        width: 100,
-        renderCell: (params) => (
-          <Box component="span" sx={monoSx}>
-            {params.row.company}
-          </Box>
-        ),
-      },
+      // #845: no Company column. The grid used to be every company's jobs at once; it is the acting
+      // company's alone now, so the column would print the same code on every row.
       {
         field: 'client',
         headerName: 'Client',

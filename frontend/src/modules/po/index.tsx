@@ -44,6 +44,7 @@ import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import CreatePOChooser from './CreatePOChooser';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import GpCompanyLabel from '../../relay/GpCompanyLabel';
+import { useActingCompany } from '../../company/ActingCompanyContext';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
 import { isStatusCardActive, toggleStatusCard } from './statusCardFilter';
@@ -186,8 +187,7 @@ interface POListRow {
   projectId: string | null;
   status: string;
   origin: string;
-  // #637: the tenant that owns the PO - the register's Company column. Present on a draft, which
-  // gpCompany is not.
+  // #637: the tenant that owns the PO. Present on a draft, which gpCompany is not.
   company: string;
   gpCompany: string | null;
   vendorNameSnapshot: string | null;
@@ -320,7 +320,7 @@ function SortHeader({ field, label, align = 'left', hug = true, sortState, onSor
   );
 }
 
-const PO_TABLE_COLUMN_COUNT = 10;
+const PO_TABLE_COLUMN_COUNT = 9;
 
 // --- Single register row ---
 
@@ -365,7 +365,6 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued }: P
           </Typography>
         )}
       </TableCell>
-      <TableCell sx={{ ...hugSx, ...monoSx, color: 'text.secondary' }}>{po.company}</TableCell>
       <TableCell sx={hugSx}>
         {po.poNumber ? (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
@@ -454,7 +453,8 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued }: P
 
 function POListPage() {
   const navigate = useNavigate();
-  const { isNexusAdmin, ownsTenant, hasRole, company } = useIdentity();
+  const { ownsTenant, hasRole } = useIdentity();
+  const { company } = useActingCompany();
   const { showToast } = useToast();
   // #732: `?po=<id>` opens that PO's detail on arrival (the import wizard's view POs links land here in
   // a new tab). The detail loads by id, so it opens whatever the table's filters and page are.
@@ -635,8 +635,9 @@ function POListPage() {
     <Box>
       <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1, mb: 2 }}>
         {/* Whose purchase orders these are, beside the title rather than under it so the answer
-            costs no vertical space. A scoped user is told the one GP company every row belongs to;
-            a UC NEXUS ADMIN, who sees them all at once, is told that instead. */}
+            costs no vertical space: the one GP company every row belongs to. #845: a UC NEXUS ADMIN
+            works in one company at a time too, so they are told theirs rather than "All companies",
+            and the table's Company column, which only ever repeated it, is gone. */}
         <Box
           sx={{
             flex: 1,
@@ -649,11 +650,7 @@ function POListPage() {
         >
           <Typography variant="h5">Purchase Orders</Typography>
           <Typography component="div" variant="body2" color="text.secondary" sx={{ minWidth: 0 }}>
-            {isNexusAdmin ? (
-              'All companies'
-            ) : company ? (
-              <GpCompanyLabel code={company} gpCompanies={relay.gpCompanies} />
-            ) : null}
+            {company && <GpCompanyLabel code={company} gpCompanies={relay.gpCompanies} />}
           </Typography>
         </Box>
         <RelayStatusChip connected={relayConnected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
@@ -835,7 +832,6 @@ function POListPage() {
           <TableHead>
             <TableRow>
               <TableCell sx={{ width: '1%', whiteSpace: 'nowrap' }}>Project</TableCell>
-              <TableCell sx={{ width: '1%', whiteSpace: 'nowrap' }}>Company</TableCell>
               <SortHeader field="poNumber" label="PO / Request #" sortState={sort} onSort={handleSortClick} />
               <SortHeader field="status" label="Status" sortState={sort} onSort={handleSortClick} />
               <SortHeader field="vendor" label="Vendor" hug={false} sortState={sort} onSort={handleSortClick} />

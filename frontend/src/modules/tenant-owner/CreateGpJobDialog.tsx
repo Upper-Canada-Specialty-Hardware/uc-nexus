@@ -11,7 +11,6 @@ import {
   FormControlLabel,
   Stack,
   Alert,
-  MenuItem,
   Collapse,
   IconButton,
   Link,
@@ -34,9 +33,7 @@ import GpErrorAlert from '../../components/GpErrorAlert';
 import { extractGpError, isRelayOpUnsupported, type GpError } from '../../graphql/gpError';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
-import { useCompanyChoice } from '../../relay/useCompanyChoice';
-import GpCompanyLabel from '../../relay/GpCompanyLabel';
-import { companyLabel } from '../../relay/companyLabel';
+import { useActingCompany } from '../../company/ActingCompanyContext';
 import GpCompanyTag from '../../components/GpCompanyTag';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
@@ -141,12 +138,10 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
   const [gpError, setGpError] = useState<GpError | null>(null);
   const [fieldError, setFieldError] = useState<string | null>(null);
 
-  // #637: the relay can be enrolled for several companies, so which one the job is created in is a
-  // pick - defaulted to the caller's own, and read-only when there is only one to have.
-  // skip: !open so a hidden dialog doesn't poll.
+  // #845: the job is created in the company the user is working in. skip: !open so a hidden dialog
+  // doesn't poll.
   const relay = useRelayStatus({ skip: !open });
-  const companyChoice = useCompanyChoice(relay.companies);
-  const company = companyChoice.company;
+  const company = useActingCompany().company ?? '';
   const relayConnected = relay.connected === true;
   // #444: the "+ Add new address" round trip, shared with the project edit dialog.
   const addAddress = useAddCustomerAddress(company, relayConnected);
@@ -574,37 +569,9 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
           {fieldError && <Alert severity="warning">{fieldError}</Alert>}
 
           <Stack direction="row" spacing={2} alignItems="center">
-            {/* #637: which company the job is created in. #831: a scoped user has nothing to pick, so
-                they get the shared GP company tag - code and GP's name - rather than a greyed-out
-                field holding a bare code. */}
-            {companyChoice.locked ? (
-              company ? (
-                <GpCompanyTag code={company} gpCompanies={relay.gpCompanies} caption="GP company" />
-              ) : (
-                <Typography variant="caption" color="text.secondary">
-                  GP company: none to create the job in until the relay is connected
-                </Typography>
-              )
-            ) : (
-              <TextField
-                select
-                label="GP company"
-                value={company}
-                onChange={(e) => companyChoice.setCompany(e.target.value)}
-                size="small"
-                sx={{ minWidth: 140, maxWidth: 280 }}
-                slotProps={{
-                  input: { sx: monoSx },
-                  select: { renderValue: (v) => companyLabel(String(v), relay.gpCompanies) },
-                }}
-              >
-                {companyChoice.options.map((c) => (
-                  <MenuItem key={c} value={c}>
-                    <GpCompanyLabel code={c} gpCompanies={relay.gpCompanies} />
-                  </MenuItem>
-                ))}
-              </TextField>
-            )}
+            {/* #637: which company the job is created in. #845: always the company the user is
+                working in - a UC NEXUS ADMIN changes it with the app bar switcher, not a pick here. */}
+            <GpCompanyTag code={company} gpCompanies={relay.gpCompanies} caption="GP company" />
             <RelayStatusChip connected={relayConnected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
             <IconButton
               size="small"

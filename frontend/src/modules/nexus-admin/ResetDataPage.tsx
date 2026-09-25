@@ -92,6 +92,7 @@ export default function ResetDataPage() {
         <PageHeader
           title="Reset data"
           parent={{ label: 'UC Nexus Admin', to: '/app/nexus-admin' }}
+          allCompanies
           description="Empty this deployment's Nexus data and start it again from its setup and from GP."
         />
       </FadeIn>

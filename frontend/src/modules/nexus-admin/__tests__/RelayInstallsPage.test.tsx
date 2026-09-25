@@ -325,7 +325,7 @@ it('lists the GP companies the relay reported, named as GP names them', async ()
 
   expect(await screen.findByText('Test UBC', {}, GRID_TIMEOUT)).toBeTruthy();
   expect(screen.getByText('UC Shop')).toBeTruthy();
-  expect(screen.getByText(/gp companies/i)).toBeTruthy();
+  expect(screen.getByText(/^gp companies$/i)).toBeTruthy();
 });
 
 it('shows why a connected relay reported no companies', async () => {
@@ -348,7 +348,7 @@ it('shows why a connected relay reported no companies', async () => {
 it('shows no company block or error when nothing is connected', async () => {
   renderPage([statusMock, installsMock, windowMock(null)]);
   await screen.findByRole('button', { name: /adopt next connection/i }, GRID_TIMEOUT);
-  expect(screen.queryByText(/gp companies/i)).toBeNull();
+  expect(screen.queryByText(/^gp companies$/i)).toBeNull();
   expect(screen.queryByText(/reported no GP companies/i)).toBeNull();
 });
 
