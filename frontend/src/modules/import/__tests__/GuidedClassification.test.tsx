@@ -230,7 +230,7 @@ describe('GuidedClassification one-press row (#734)', () => {
 });
 
 describe('GuidedClassification split', () => {
-  it('splits a multi-row group into one card per row', () => {
+  it('splits a mixed group into one card per product', () => {
     render(<Harness baseRows={ONE_VENDOR_TWO_CODES} />);
     start();
 
@@ -242,12 +242,70 @@ describe('GuidedClassification split', () => {
     expect(screen.getByText('Group 1 of 2')).toBeInTheDocument();
   });
 
-  it('only offers Split on a group that has more than one row to split', () => {
+  it('only offers Split on a group that has more than one answer to split', () => {
     render(<Harness baseRows={TWO_VENDORS} />);
     start();
     // Group 1 is VEND-A's single row - there is nothing to give its own card.
     expect(screen.queryByRole('button', { name: /Split \(X\)/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Unsplit \(X\)/ })).not.toBeInTheDocument();
+  });
+});
+
+// #798: an answer is stored per product (category + code + cost), so a split card is one product with
+// every opening that carries it - never one opening row, which made three cards share one answer.
+const ONE_PRODUCT_THREE_OPENINGS: ClassificationRow[] = ['O-1', 'O-2', 'O-3'].map((openingNumber, i) =>
+  makeRow({ id: `h${i}`, openingNumber, productCode: 'HNG-100', hardwareCategory: 'Hinges', unitCost: 10, vendorNo: 'VEND-A' }),
+);
+
+describe('GuidedClassification split by answer (#798)', () => {
+  it('offers no Split on one product spread over many openings', () => {
+    render(<Harness baseRows={ONE_PRODUCT_THREE_OPENINGS} />);
+    start();
+
+    expect(screen.queryByRole('button', { name: /Split \(X\)/ })).not.toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: 'x' });
+    expect(screen.getByText('Group 1 of 1')).toBeInTheDocument();
+  });
+
+  it('gives each product one card holding all its openings, and answers them independently', () => {
+    const classifySpy = vi.fn();
+    render(
+      <Harness
+        baseRows={[
+          ...ONE_PRODUCT_THREE_OPENINGS,
+          makeRow({ id: 'l', openingNumber: 'O-1', productCode: 'LCK-200', hardwareCategory: 'Locks', unitCost: 25, vendorNo: 'VEND-A' }),
+        ]}
+        classifySpy={classifySpy}
+      />,
+    );
+    start();
+
+    fireEvent.keyDown(document.body, { key: 'x' });
+    expect(screen.getByText('Group 1 of 2')).toBeInTheDocument();
+    expect(screen.getByText('Split 1 of 2')).toBeInTheDocument();
+    expect(screen.getByText('3 lines')).toBeInTheDocument();
+
+    fireEvent.keyDown(document.body, { key: '3' }); // By Others on the hinge, advances
+    expect(classifySpy).toHaveBeenLastCalledWith(['Hinges|HNG-100|10'], 'BY_OTHERS');
+    expect(screen.getByText('Group 2 of 2')).toBeInTheDocument();
+    expect(screen.getByText('Split 2 of 2')).toBeInTheDocument();
+    // All three hinge rows moved with the one answer; the lock is still open.
+    expect(screen.getByText('3 of 4 classified')).toBeInTheDocument();
+  });
+
+  it('names the cost when two split cards share a product code', () => {
+    render(
+      <Harness
+        baseRows={[
+          makeRow({ id: 'a', openingNumber: 'O-1', productCode: 'HNG-100', hardwareCategory: 'Hinges', unitCost: 10, vendorNo: 'VEND-A' }),
+          makeRow({ id: 'b', openingNumber: 'O-2', productCode: 'HNG-100', hardwareCategory: 'Hinges', unitCost: 12.5, vendorNo: 'VEND-A' }),
+        ]}
+      />,
+    );
+    start();
+
+    fireEvent.keyDown(document.body, { key: 'x' });
+    expect(screen.getByText(/HNG-100 · \$10\.00/)).toBeInTheDocument();
   });
 });
 
