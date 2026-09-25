@@ -178,3 +178,32 @@ export function removeAttachment(groups: DraftGroup[], id: string, attachmentId:
     g.id === id ? { ...g, attachments: (g.attachments ?? []).filter((a) => a.id !== attachmentId) } : g,
   );
 }
+
+/**
+ * #814: fold a new seed into drafts the buyer has already shaped, when all that changed is that
+ * products were ADDED to the selection (step 5's "add products already covered").
+ *
+ * Every product the drafts already hold must keep exactly the total the new seed gives it; only then
+ * is the change purely additive and the buyer's slicing safe to keep. Each new product lands in its
+ * manufacturer's seed draft (`seed:<vendor>`) when that still exists, else in a new seed draft for
+ * the vendor. Returns null when the change is not purely additive - the caller re-seeds as before.
+ */
+export function mergeAddedProducts(existing: DraftGroup[], seeded: DraftGroup[]): DraftGroup[] | null {
+  const held = new Map<string, number>();
+  for (const g of existing) for (const [pk, qty] of g.lines) held.set(pk, (held.get(pk) ?? 0) + qty);
+  const seededTotal = new Map<string, number>();
+  for (const g of seeded) for (const [pk, qty] of g.lines) seededTotal.set(pk, (seededTotal.get(pk) ?? 0) + qty);
+
+  for (const [pk, qty] of held) if (seededTotal.get(pk) !== qty) return null;
+  if (seededTotal.size === held.size) return null; // nothing new: not this function's case
+
+  const next = existing.map((g) => ({ ...g, lines: new Map(g.lines) }));
+  for (const seed of seeded) {
+    const added = Array.from(seed.lines).filter(([pk]) => !held.has(pk));
+    if (added.length === 0) continue;
+    const target = next.find((g) => g.id === seed.id);
+    if (target) for (const [pk, qty] of added) target.lines.set(pk, qty);
+    else next.push({ ...seed, lines: new Map(added) });
+  }
+  return next;
+}
