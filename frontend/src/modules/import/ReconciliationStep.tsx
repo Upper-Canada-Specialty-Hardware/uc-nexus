@@ -12,10 +12,13 @@ import { buildProductReconRows, STATUS_PRIORITY } from './reconciliation';
 import type { ProductReconRow } from './reconciliation';
 import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 import { monoSx, tabularSx } from '../../theme';
+import ViewPOsButton from './ViewPOsButton';
 
 // ---- Props ----
 
 interface ReconciliationStepProps {
+  /** The wizard's project; the view POs popover (#732) reads its POs. */
+  projectId: string;
   isReimport: boolean;
   purpose: ImportPurpose;
   /** #565/#604: the Select Hardware pathway picks by product, so quantityNeeded always equals
@@ -102,6 +105,7 @@ const STEP_PURPOSE: Record<'po' | 'assembly', string> = {
 // ---- Component ----
 
 export default function ReconciliationStep({
+  projectId,
   isReimport,
   purpose,
   isHardwareMode,
@@ -278,6 +282,22 @@ export default function ReconciliationStep({
         minWidth: 90,
         type: 'number',
         cellClassName: 'figure-cell',
+        // #732: the POs behind the figure sit one click away, each linked into the PO table.
+        renderCell: (params) => {
+          const row = params.row as ProductReconRow;
+          return (
+            <Box sx={{ display: 'inline-flex', alignItems: 'center' }}>
+              {row.projectTotalOrdered}
+              <ViewPOsButton
+                projectId={projectId}
+                hardwareCategory={row.hardwareCategory}
+                productCode={row.productCode}
+                figure="ordered"
+                count={row.projectTotalOrdered}
+              />
+            </Box>
+          );
+        },
       });
       cols.push({
         field: 'projectTotalReceived',
@@ -366,7 +386,7 @@ export default function ReconciliationStep({
     });
 
     return cols;
-  }, [showQtyAvailable, purpose, isHardwareMode]);
+  }, [showQtyAvailable, purpose, isHardwareMode, projectId]);
 
   const rowSelectionModel = useMemo<GridRowSelectionModel>(
     () => ({ type: 'include' as const, ids: new Set<string>(productLevelSelection) }),

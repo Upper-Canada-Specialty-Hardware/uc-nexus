@@ -261,9 +261,9 @@ function purchaseOrderMock(): MockedResponse {
   };
 }
 
-function renderRegister(heldRegistrations: Record<string, unknown>[] = []) {
+function renderRegister(heldRegistrations: Record<string, unknown>[] = [], entry = '/') {
   render(
-    <MemoryRouter initialEntries={['/']}>
+    <MemoryRouter initialEntries={[entry]}>
       <MockedProvider mocks={mocks(heldRegistrations)}>
         <ToastProvider>
           <POModule />
@@ -423,6 +423,14 @@ it('opens the detail of a purchase order the register dialog has just finished',
   expect(screen.queryByText(/^PO detail for/)).toBeNull();
 
   act(() => dialog.props?.onRegistered('po-registered'));
+
+  expect(await screen.findByText('PO detail for po-registered')).toBeInTheDocument();
+});
+
+// #732: the import wizard's view POs links open the PO table in a new tab at `?po=<id>`, and the page
+// arrives with that PO's detail open, whatever the table's filters would show.
+it('opens the detail of the purchase order named in the link', async () => {
+  renderRegister([], '/?po=po-registered');
 
   expect(await screen.findByText('PO detail for po-registered')).toBeInTheDocument();
 });

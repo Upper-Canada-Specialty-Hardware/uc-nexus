@@ -437,3 +437,93 @@ def test_returned_to_project_units_are_reported_and_shipped_out_stays_gross(db_s
     assert row["shipped_out"] == 40
     assert row["returned_to_project"] == 10
     assert row["on_hand"] == 10
+
+
+# --- #732: the POs behind the Ordered and On Order figures ---
+
+
+def _ordered_share(line: dict) -> int:
+    """What one PO adds to the import wizard's Ordered figure (on_order + received_quantity)."""
+    return line["received_quantity"] if line["status"] == POStatus.CLOSED else line["ordered_quantity"]
+
+
+def _on_order_share(line: dict) -> int:
+    return 0 if line["status"] == POStatus.CLOSED else line["ordered_quantity"] - line["received_quantity"]
+
+
+def test_po_lines_are_the_placed_pos_and_sum_to_the_rollup(db_session):
+    project = _make_project(db_session)
+    code = "H-732"
+    registered = _make_po_with_line(
+        db_session, project_id=project.id, status=POStatus.GP_REGISTERED, product_code=code, ordered_quantity=4
+    )
+    partial = _make_po_with_line(
+        db_session,
+        project_id=project.id,
+        status=POStatus.PARTIALLY_RECEIVED,
+        product_code=code,
+        ordered_quantity=6,
+        received_quantity=2,
+    )
+    closed = _make_po_with_line(
+        db_session,
+        project_id=project.id,
+        status=POStatus.CLOSED,
+        product_code=code,
+        ordered_quantity=10,
+        received_quantity=7,
+    )
+    # Never in the count: a draft, a deleted PO, another product, another project.
+    _make_po_with_line(db_session, project_id=project.id, status=POStatus.DRAFT, product_code=code, ordered_quantity=9)
+    _make_po_with_line(
+        db_session,
+        project_id=project.id,
+        status=POStatus.GP_REGISTERED,
+        product_code=code,
+        ordered_quantity=9,
+        deleted_at=datetime.now(),
+    )
+    _make_po_with_line(
+        db_session, project_id=project.id, status=POStatus.GP_REGISTERED, product_code="OTHER", ordered_quantity=9
+    )
+    other = _make_project(db_session)
+    _make_po_with_line(
+        db_session, project_id=other.id, status=POStatus.GP_REGISTERED, product_code=code, ordered_quantity=9
+    )
+
+    lines = warehouse_repository.get_project_product_po_lines(db_session, project.id, CAT, code)
+
+    assert {line["po_id"] for line in lines} == {registered.id, partial.id, closed.id}
+    status = next(
+        r
+        for r in warehouse_repository.get_hardware_status_by_product(db_session, [project.id])
+        if r["product_code"] == code
+    )
+    assert sum(_ordered_share(line) for line in lines) == status["on_order"] + status["received_quantity"] == 17
+    assert sum(_on_order_share(line) for line in lines) == status["on_order"] == 8
+
+
+def test_po_lines_sum_several_lines_of_the_product_on_one_po(db_session):
+    project = _make_project(db_session)
+    po = _make_po_with_line(
+        db_session, project_id=project.id, status=POStatus.VENDOR_CONFIRMED, product_code="H-2", ordered_quantity=3
+    )
+    db_session.add(
+        POLineItem(
+            id=uuid.uuid4(),
+            po_id=po.id,
+            hardware_category=CAT,
+            product_code="H-2",
+            ordered_quantity=5,
+            received_quantity=1,
+            unit_cost=Decimal("1.00"),
+        )
+    )
+    db_session.flush()
+
+    lines = warehouse_repository.get_project_product_po_lines(db_session, project.id, CAT, "H-2")
+
+    assert len(lines) == 1
+    assert lines[0]["ordered_quantity"] == 8
+    assert lines[0]["received_quantity"] == 1
+    assert lines[0]["request_number"] == po.request_number

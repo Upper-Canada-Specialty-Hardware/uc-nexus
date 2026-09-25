@@ -28,6 +28,7 @@ import {
 import { FileText, MoreVertical, Paperclip, X } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
+import ViewPOsButton from './ViewPOsButton';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import type { DraftAttachmentType, DraftGroup } from './types';
@@ -611,6 +612,14 @@ export function DraftCard({
                     <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
                       {ctx?.onOrder ?? 0}
                     </Typography>
+                    {/* #732: the POs behind the figure, each linked into the PO table. */}
+                    <ViewPOsButton
+                      projectId={projectId}
+                      hardwareCategory={line.hardwareCategory}
+                      productCode={line.productCode}
+                      figure="onOrder"
+                      count={ctx?.onOrder ?? 0}
+                    />
                   </Box>
                   <Box className="po-cell po-cell-right po-num">
                     <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>

@@ -1660,6 +1660,7 @@ export default function ImportWizard({
           {/* ============ Step: Reconciliation ============ */}
           {effectiveStepId === 'reconciliation' && (
             <ReconciliationStep
+              projectId={project.id}
               isReimport={isReimport}
               purpose={purpose}
               isHardwareMode={isHardwareMode}

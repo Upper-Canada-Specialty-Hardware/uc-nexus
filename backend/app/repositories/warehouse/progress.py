@@ -214,6 +214,14 @@ PLACED_PO_STATUSES = (
     POStatus.CLOSED,
 )
 
+# Placed POs whose unreceived remainder is still expected to arrive. A CLOSED PO keeps what it
+# received and gives up the rest, so it is placed but not open.
+OPEN_PO_STATUSES = (
+    POStatus.GP_REGISTERED,
+    POStatus.VENDOR_CONFIRMED,
+    POStatus.PARTIALLY_RECEIVED,
+)
+
 
 def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> list[dict]:
     """Per-product-code rollup of purchasing progress for a single project.
@@ -263,9 +271,7 @@ def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> 
             func.sum(
                 case(
                     (
-                        POModel.status.in_(
-                            [POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]
-                        ),
+                        POModel.status.in_(OPEN_PO_STATUSES),
                         POLineItemModel.ordered_quantity - POLineItemModel.received_quantity,
                     ),
                     else_=0,
@@ -427,9 +433,7 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
             func.sum(
                 case(
                     (
-                        POModel.status.in_(
-                            [POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]
-                        ),
+                        POModel.status.in_(OPEN_PO_STATUSES),
                         POLineItemModel.ordered_quantity - POLineItemModel.received_quantity,
                     ),
                     else_=0,
@@ -553,4 +557,48 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
     return [
         {"hardware_category": category, "product_code": code, **values}
         for (category, code), values in sorted(rows.items())
+    ]
+
+
+def get_project_product_po_lines(
+    session: Session, project_id: uuid.UUID, hardware_category: str, product_code: str
+) -> list[dict]:
+    """The placed POs behind one product's Ordered and On Order figures on one project (#732).
+
+    One row per PO, its lines of the product summed, so the import wizard can list what makes up
+    each figure. The scope is exactly the rollup's: placed, not deleted, drafts never. Each row
+    carries both raw quantities; the reader derives what the PO adds to each figure the same way
+    get_hardware_status_by_product does (Ordered = ordered on an open PO, received on a CLOSED
+    one; On Order = ordered - received on an open PO only), so the list always sums to the figure.
+    """
+    stmt = (
+        select(
+            POModel.id,
+            POModel.po_number,
+            POModel.request_number,
+            POModel.status,
+            func.sum(POLineItemModel.ordered_quantity).label("ordered_quantity"),
+            func.sum(POLineItemModel.received_quantity).label("received_quantity"),
+        )
+        .join(POModel, POLineItemModel.po_id == POModel.id)
+        .where(
+            POModel.deleted_at.is_(None),
+            POModel.project_id == project_id,
+            POModel.status.in_(PLACED_PO_STATUSES),
+            POLineItemModel.hardware_category == hardware_category,
+            POLineItemModel.product_code == product_code,
+        )
+        .group_by(POModel.id, POModel.po_number, POModel.request_number, POModel.status)
+        .order_by(POModel.po_number, POModel.request_number)
+    )
+    return [
+        {
+            "po_id": row.id,
+            "po_number": row.po_number,
+            "request_number": row.request_number,
+            "status": row.status,
+            "ordered_quantity": int(row.ordered_quantity),
+            "received_quantity": int(row.received_quantity),
+        }
+        for row in session.execute(stmt)
     ]

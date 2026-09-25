@@ -46,7 +46,7 @@ import GpCompanyLabel from '../../relay/GpCompanyLabel';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
 import { isStatusCardActive, toggleStatusCard } from './statusCardFilter';
-import { Routes, Route, useNavigate } from 'react-router-dom';
+import { Routes, Route, useNavigate, useSearchParams } from 'react-router-dom';
 import { useIdentity } from '../../hooks/useIdentity';
 import PODocumentSettingsPage from './PODocumentSettingsPage';
 import { useToast } from '../../components/Toast';
@@ -451,8 +451,11 @@ function POListPage() {
   const navigate = useNavigate();
   const { isNexusAdmin, ownsTenant, hasRole, company } = useIdentity();
   const { showToast } = useToast();
-  const [selectedPOId, setSelectedPOId] = useState<string | null>(null);
-  const [modalOpen, setModalOpen] = useState(false);
+  // #732: `?po=<id>` opens that PO's detail on arrival (the import wizard's view POs links land here in
+  // a new tab). The detail loads by id, so it opens whatever the table's filters and page are.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [selectedPOId, setSelectedPOId] = useState<string | null>(() => searchParams.get('po'));
+  const [modalOpen, setModalOpen] = useState(() => searchParams.has('po'));
   const [createOpen, setCreateOpen] = useState(false);
   const [chooserOpen, setChooserOpen] = useState(false);
 
@@ -582,6 +585,16 @@ function POListPage() {
   const handleCloseModal = () => {
     setModalOpen(false);
     setSelectedPOId(null);
+    // Drop the deep link so a reload lands on the table, not back on the PO just closed.
+    if (searchParams.has('po')) {
+      setSearchParams(
+        (prev) => {
+          prev.delete('po');
+          return prev;
+        },
+        { replace: true },
+      );
+    }
   };
 
   const handleRefetch = () => {
