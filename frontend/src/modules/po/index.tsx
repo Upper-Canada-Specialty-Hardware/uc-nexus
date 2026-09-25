@@ -25,6 +25,7 @@ import {
   ToggleButtonGroup,
   createFilterOptions,
 } from '@mui/material';
+import { alpha, type Theme } from '@mui/material/styles';
 import { Plus, ChevronRight, Settings, Search, RefreshCw } from 'lucide-react';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
@@ -246,6 +247,10 @@ const STAT_CARD_GROUPS: { caption: string; cards: StatCard[] }[] = [
     ],
   },
 ];
+
+// The active segment's fill: the secondary accent at a tint strong enough to spot across the room.
+const activeSegmentTint = (t: Theme) =>
+  t.vars ? `rgba(${t.vars.palette.secondary.mainChannel} / 0.16)` : alpha(t.palette.secondary.main, 0.16);
 
 const STAT_CARD_COUNT = STAT_CARD_GROUPS.reduce((n, g) => n + g.cards.length, 0);
 
@@ -726,9 +731,12 @@ function POListPage() {
                             py: 1.25,
                             borderLeft: i === 0 ? 'none' : '1px solid',
                             borderLeftColor: 'divider',
-                            borderBottom: '2px solid',
+                            // #739: the whole segment fills when it is the filter, not just a thin
+                            // underline - a filtered table must read as filtered at a glance.
+                            borderBottom: '3px solid',
                             borderBottomColor: active ? 'secondary.main' : 'transparent',
-                            '&:hover': { backgroundColor: 'action.hover' },
+                            backgroundColor: active ? activeSegmentTint : 'transparent',
+                            '&:hover': { backgroundColor: active ? activeSegmentTint : 'action.hover' },
                           }}
                         >
                           <Typography
@@ -750,6 +758,7 @@ function POListPage() {
                               ...microLabelSx,
                               whiteSpace: 'nowrap',
                               color: active ? 'text.primary' : 'text.secondary',
+                              fontWeight: active ? 800 : undefined,
                               opacity: zero ? 0.6 : 1,
                             }}
                           >
