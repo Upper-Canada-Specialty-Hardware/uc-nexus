@@ -312,7 +312,7 @@ class ImportMutations:
                 refreshed_sar = shop_assembly_repository.get_shop_assembly_request(
                     session, result["shop_assembly_request"].id
                 )
-                sar_type = shop_assembly_request_to_type(refreshed_sar)
+                sar_type = shop_assembly_request_to_type(refreshed_sar, project=project)
 
             return FinalizeImportResult(
                 project=project_to_type(project),

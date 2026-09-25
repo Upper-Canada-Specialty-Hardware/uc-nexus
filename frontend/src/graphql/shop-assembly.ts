@@ -16,6 +16,8 @@ const REQUEST_FIELDS = `
   id
   requestNumber
   projectId
+  projectNumber
+  projectName
   status
   stage
   createdBy

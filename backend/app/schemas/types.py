@@ -1033,6 +1033,10 @@ class ShopAssemblyRequest:
     # the hardware went back and its openings came back to the board. Human-readable explanation of
     # that reappearance, else null. Derived, never stored.
     return_note: str | None
+    # The GP job the request was raised for (#740): the job number and its name, so the Shop Assembly
+    # Manager can tell requests for different jobs apart. Resolved for the whole list in one query.
+    project_number: str | None = None
+    project_name: str | None = None
 
 
 @strawberry.type

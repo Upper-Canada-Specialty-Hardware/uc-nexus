@@ -3,9 +3,11 @@
 import uuid
 
 import strawberry
+from sqlalchemy import select
 
 from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
+from app.models.project import Project
 from app.repositories import shop_assembly_repository, tenancy
 
 from .converters import shop_assembly_allocation_review_to_type, shop_assembly_request_to_type
@@ -15,8 +17,8 @@ from .types import ShopAssemblyAllocationReview, ShopAssemblyRequest
 
 
 def _requests_to_types(session, reqs) -> list[ShopAssemblyRequest]:
-    """Requests with their derived stage, return note and per-batch pull status, in THREE extra
-    queries for the whole list however long it is.
+    """Requests with their derived stage, return note, per-batch pull status and GP job, in FOUR
+    extra queries for the whole list however long it is.
 
     All three are resolved here rather than as field resolvers: a per-row lookup over Railway's
     network hop is the N+1 this codebase keeps paying for (CLAUDE.md perf rules).
@@ -24,12 +26,14 @@ def _requests_to_types(session, reqs) -> list[ShopAssemblyRequest]:
     pull_statuses = shop_assembly_repository.get_pull_statuses(session, reqs)
     stages = shop_assembly_repository.get_request_stages(session, reqs)
     notes = shop_assembly_repository.get_return_notes(session, reqs)
+    projects = {p.id: p for p in session.scalars(select(Project).where(Project.id.in_({r.project_id for r in reqs})))}
     return [
         shop_assembly_request_to_type(
             r,
             stage=stages.get(r.id),
             return_note=notes.get(r.id),
             pull_status_by_id=pull_statuses,
+            project=projects.get(r.project_id),
         )
         for r in reqs
     ]
