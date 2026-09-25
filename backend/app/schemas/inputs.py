@@ -222,6 +222,8 @@ class PODraftInput:
     cost_code: str | None = None
     # Issue #216: the PM's requested date, captured at PO-request creation.
     preferred_delivery_date: date | None = None
+    # #737: the vendor's quotation the draft card is raised against, as #481 gave createDraftPo.
+    vendor_quote_number: str | None = None
     hardware_item_refs: list[HardwareItemRef] = strawberry.field(default_factory=list)
     line_item_aliases: list[POLineItemOrderAsInput] = strawberry.field(default_factory=list)
 

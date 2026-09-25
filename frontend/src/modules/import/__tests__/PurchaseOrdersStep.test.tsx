@@ -25,7 +25,7 @@ const priorMocks: MockedResponse[] = [['HG-100'], ['HG-100', 'LK-9'], ['LK-9']].
 }));
 
 function makeDraft(id: string, label: string, lines: Record<string, number>, included = true): DraftGroup {
-  return { id, label, included, info: { notes: '', preferredDeliveryDate: '', costCode: '' }, lines: new Map(Object.entries(lines)) };
+  return { id, label, included, info: { notes: '', preferredDeliveryDate: '', costCode: '', vendorQuoteNumber: '' }, lines: new Map(Object.entries(lines)) };
 }
 
 /** #632: the per-product pool the drafts partition. Defaults to what the initial drafts hold, which

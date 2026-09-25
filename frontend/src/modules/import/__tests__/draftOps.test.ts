@@ -7,7 +7,7 @@ function draft(id: string, lines: Record<string, number>, included = false): Dra
     id,
     label: id,
     included,
-    info: { notes: '', preferredDeliveryDate: '', costCode: '' },
+    info: { notes: '', preferredDeliveryDate: '', costCode: '', vendorQuoteNumber: '' },
     lines: new Map(Object.entries(lines)),
   };
 }

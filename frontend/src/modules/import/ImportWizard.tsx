@@ -56,6 +56,7 @@ import {
   toClassificationInputs,
   type DraftAttachmentType,
   type DraftGroup,
+  type DraftInfoField,
 } from './types';
 import { buildPoDrafts, toPoDraftInput } from './poDrafts';
 import * as draftOps from './draftOps';
@@ -939,7 +940,7 @@ export default function ImportWizard({
   }, []);
 
   const updateDraftInfo = useCallback(
-    (draftId: string, field: 'notes' | 'preferredDeliveryDate' | 'costCode', value: string) => {
+    (draftId: string, field: DraftInfoField, value: string) => {
       setDraftGroups((prev) => draftOps.updateInfo(prev, draftId, field, value));
     },
     [],

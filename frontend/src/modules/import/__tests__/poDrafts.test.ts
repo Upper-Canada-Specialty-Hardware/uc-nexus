@@ -33,7 +33,7 @@ function draft(id: string, lines: Record<string, number>, included = true): Draf
     id,
     label: id,
     included,
-    info: { notes: '', preferredDeliveryDate: '', costCode: '' },
+    info: { notes: '', preferredDeliveryDate: '', costCode: '', vendorQuoteNumber: '' },
     lines: new Map(Object.entries(lines)),
   };
 }
@@ -104,11 +104,13 @@ describe('buildPoDrafts', () => {
     const vendorGroups = new Map([['VEND-A', [hw('O-1', 'HG-100', 2)]]]);
     const orderAs = new Map([['HG-100|HINGE', 'ACME-9000']]);
     const d = draft('a', { 'HG-100|HINGE': 2 });
-    d.info = { notes: 'rush', preferredDeliveryDate: '2026-09-01', costCode: 'CC-1' };
+    d.info = { notes: 'rush', preferredDeliveryDate: '2026-09-01', costCode: 'CC-1', vendorQuoteNumber: ' Q-2231 ' };
     const drafts = buildPoDrafts([d], vendorGroups, orderAs);
     expect(drafts[0].notes).toBe('rush');
     expect(drafts[0].preferredDeliveryDate).toBe('2026-09-01');
     expect(drafts[0].costCode).toBe('CC-1');
+    // #737: trimmed on the way out, onto the created PO's vendor quote number.
+    expect(drafts[0].vendorQuoteNumber).toBe('Q-2231');
     // #632: the card's label IS the vendor - it seeds vendor_name_snapshot on the created PO.
     expect(drafts[0].vendorName).toBe('a');
     expect(drafts[0].lineItemAliases).toEqual([
@@ -171,7 +173,7 @@ describe('vendorName off the draft label (#632)', () => {
   it('survives the input conversion, which drops only the client-only sourceDraftId', () => {
     const d = draft('a', { 'HG-100|HINGE': 2 });
     d.label = 'ACME Hardware';
-    d.info = { notes: 'rush', preferredDeliveryDate: '2026-09-01', costCode: 'CC-1' };
+    d.info = { notes: 'rush', preferredDeliveryDate: '2026-09-01', costCode: 'CC-1', vendorQuoteNumber: ' Q-2231 ' };
     const input = toPoDraftInput(buildPoDrafts([d], vendorGroups(), new Map())[0]);
 
     expect(input).toEqual({
@@ -180,6 +182,7 @@ describe('vendorName off the draft label (#632)', () => {
       vendorName: 'ACME Hardware',
       preferredDeliveryDate: '2026-09-01',
       costCode: 'CC-1',
+      vendorQuoteNumber: 'Q-2231',
       hardwareItemRefs: [
         { openingNumber: 'O-1', productCode: 'HG-100', hardwareCategory: 'HINGE', quantity: null },
       ],

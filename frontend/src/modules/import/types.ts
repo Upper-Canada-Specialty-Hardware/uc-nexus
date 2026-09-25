@@ -92,7 +92,13 @@ export interface DraftGroupInfo {
   notes: string;
   preferredDeliveryDate: string;
   costCode: string;
+  // #737: the vendor's quotation the draft is raised against. Optional: a wizard session restored
+  // from before the field existed has no value for it.
+  vendorQuoteNumber?: string;
 }
+
+// The card's editable header fields, one name per DraftGroupInfo key.
+export type DraftInfoField = keyof DraftGroupInfo;
 
 // #588: the document types the buyer can attach while still composing the draft. Only the two that
 // can exist before the PO does - vendor acknowledgement / generated PO / packing slip are produced
@@ -213,7 +219,7 @@ export function seedDraftGroups(
     id: `seed:${vendor}`,
     label: vendor,
     included: false,
-    info: { notes: '', preferredDeliveryDate: '', costCode: '' },
+    info: { notes: '', preferredDeliveryDate: '', costCode: '', vendorQuoteNumber: '' },
     lines,
   }));
 }

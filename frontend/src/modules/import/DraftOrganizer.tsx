@@ -31,7 +31,7 @@ import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import ViewPOsButton from './ViewPOsButton';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
-import type { DraftAttachmentType, DraftGroup } from './types';
+import type { DraftAttachmentType, DraftGroup, DraftInfoField } from './types';
 
 export interface GpCostCode {
   costCode: string;
@@ -216,7 +216,7 @@ export interface DraftCardProps {
   lineContextByPk: Map<string, LineContext>;
   onToggleIncluded: (id: string) => void;
   onRenameDraft: (id: string, label: string) => void;
-  onUpdateDraftInfo: (id: string, field: 'notes' | 'preferredDeliveryDate' | 'costCode', value: string) => void;
+  onUpdateDraftInfo: (id: string, field: DraftInfoField, value: string) => void;
   onUpdateUnitCost: (pk: string, value: number) => void;
   onUpdateOrderAs: (pk: string, value: string) => void;
   onMoveLine: (fromId: string, pk: string, qty: number, toId: string) => void;
@@ -383,6 +383,14 @@ export function DraftCard({
             ))}
           </TextField>
         )}
+        {/* #737: the vendor's quotation this draft is raised against, carried onto the created PO. */}
+        <TextField
+          label="Vendor quote number"
+          size="small"
+          value={draft.info.vendorQuoteNumber ?? ''}
+          onChange={(e) => onUpdateDraftInfo(draft.id, 'vendorQuoteNumber', e.target.value)}
+          sx={{ width: 180 }}
+        />
         <TextField
           label="Notes"
           size="small"

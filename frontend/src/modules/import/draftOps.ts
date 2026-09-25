@@ -8,7 +8,7 @@
  * pass, so the only empty card on screen is one the buyer created on purpose to move lines into.
  * Every reducer returns a new array; the untouched groups keep their identity.
  */
-import type { DraftAttachment, DraftAttachmentType, DraftGroup } from './types';
+import type { DraftAttachment, DraftAttachmentType, DraftGroup, DraftInfoField } from './types';
 
 /** Move `qty` units of a product line from one draft to another. The whole-line move passes the
  *  line's full quantity; a split passes a partial. A source line emptied to zero is dropped, so the
@@ -117,7 +117,7 @@ export function mergeDraft(groups: DraftGroup[], fromId: string, intoId: string)
 export function createDraft(groups: DraftGroup[], id: string, label = 'New PO'): DraftGroup[] {
   return [
     ...groups,
-    { id, label, included: true, info: { notes: '', preferredDeliveryDate: '', costCode: '' }, lines: new Map() },
+    { id, label, included: true, info: { notes: '', preferredDeliveryDate: '', costCode: '', vendorQuoteNumber: '' }, lines: new Map() },
   ];
 }
 
@@ -138,7 +138,7 @@ export function toggleIncluded(groups: DraftGroup[], id: string): DraftGroup[] {
 export function updateInfo(
   groups: DraftGroup[],
   id: string,
-  field: 'notes' | 'preferredDeliveryDate' | 'costCode',
+  field: DraftInfoField,
   value: string,
 ): DraftGroup[] {
   return groups.map((g) => (g.id === id ? { ...g, info: { ...g.info, [field]: value } } : g));
