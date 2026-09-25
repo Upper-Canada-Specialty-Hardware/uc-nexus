@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import GuidedClassification from '../GuidedClassification';
 import type { GroupByField } from '../classificationGrouping';
-import type { ClassificationRow } from '../types';
-import { SCOPE_OPTIONS, ASSEMBLY_OPTIONS } from '../types';
+import type { ClassificationOption, ClassificationRow } from '../types';
+import { ASSEMBLY_OPTIONS, PO_OPTIONS } from '../types';
 
 // ---- Fixtures ----
 
@@ -41,51 +41,40 @@ const TWO_VENDORS: ClassificationRow[] = [
   makeRow({ id: 'b', openingNumber: 'O-2', productCode: 'LCK-200', hardwareCategory: 'Locks', unitCost: 25, vendorNo: 'VEND-B' }),
 ];
 
+const ONE_VENDOR_THIRD: ClassificationRow[] = [
+  makeRow({ id: 'c', openingNumber: 'O-3', productCode: 'CLS-300', hardwareCategory: 'Closers', unitCost: 40, vendorNo: 'VEND-C' }),
+];
+
 const ONE_VENDOR_TWO_CODES: ClassificationRow[] = [
   makeRow({ id: 'a', openingNumber: 'O-1', productCode: 'HNG-100', hardwareCategory: 'Hinges', unitCost: 10, vendorNo: 'VEND-A' }),
   makeRow({ id: 'b', openingNumber: 'O-2', productCode: 'LCK-200', hardwareCategory: 'Locks', unitCost: 25, vendorNo: 'VEND-A' }),
 ];
 
-// A stateful harness mirroring the wizard's two classification maps (scope + site/shop) and the
-// Site/Shop -> scope back-fill, so auto-advance can be observed off real prop updates.
+// A stateful harness mirroring the wizard's classification map, so auto-advance can be observed off
+// real prop updates. Since #734 the card sees one axis; ClassificationStep folds PO's two into it.
 function Harness({
   baseRows,
+  options = PO_OPTIONS,
   onComplete = vi.fn(),
   onSkipToReview = vi.fn(),
-  siteShopSpy,
+  classifySpy,
 }: {
   baseRows: ClassificationRow[];
+  options?: ClassificationOption[];
   onComplete?: () => void;
   onSkipToReview?: () => void;
-  siteShopSpy?: (keys: string[], value: string) => void;
+  classifySpy?: (keys: string[], value: string) => void;
 }) {
   const [cls, setCls] = useState<Map<string, string>>(new Map());
-  const [ss, setSs] = useState<Map<string, string>>(new Map());
   const [groupByFields, setGroupByFields] = useState<GroupByField[]>(['vendorNo']);
 
-  const rows = baseRows.map((r) => ({
-    ...r,
-    classification: cls.get(r.classificationKey) ?? '',
-    siteShop: ss.get(r.classificationKey) ?? '',
-  }));
+  const rows = baseRows.map((r) => ({ ...r, classification: cls.get(r.classificationKey) ?? '' }));
 
-  const onClassify = (keys: string[], value: string) =>
+  const onClassify = (keys: string[], value: string) => {
+    classifySpy?.(keys, value);
     setCls((prev) => {
       const n = new Map(prev);
       for (const k of keys) n.set(k, value);
-      return n;
-    });
-
-  const onClassifySiteShop = (keys: string[], value: string) => {
-    siteShopSpy?.(keys, value);
-    setSs((prev) => {
-      const n = new Map(prev);
-      for (const k of keys) n.set(k, value);
-      return n;
-    });
-    setCls((prev) => {
-      const n = new Map(prev);
-      for (const k of keys) if (!n.get(k)) n.set(k, 'BY_UCSH');
       return n;
     });
   };
@@ -93,11 +82,8 @@ function Harness({
   return (
     <GuidedClassification
       rows={rows}
-      options={SCOPE_OPTIONS}
+      options={options}
       onClassify={onClassify}
-      siteShopOptions={ASSEMBLY_OPTIONS}
-      onClassifySiteShop={onClassifySiteShop}
-      siteShopExemptValue="BY_OTHERS"
       groupByFields={groupByFields}
       onChangeGroupByFields={setGroupByFields}
       onComplete={onComplete}
@@ -135,26 +121,27 @@ describe('GuidedClassification grouping prompt', () => {
 });
 
 describe('GuidedClassification keybinds', () => {
-  it('classifies the current group with the number key', () => {
+  it('classifies and advances the current group with the number key', () => {
     render(<Harness baseRows={TWO_VENDORS} />);
     start();
 
-    // No scope chip yet (only the em-dash placeholder).
-    expect(screen.queryByText('By UCH')).not.toBeInTheDocument();
+    // No answer chip yet (only the em-dash placeholder).
+    expect(screen.queryByText('UCH Shop')).not.toBeInTheDocument();
 
     fireEvent.keyDown(document.body, { key: '1' });
 
-    // The row now carries By UCH (and the rail's step-1 chip echoes it); PO still needs Site/Shop,
-    // so it stays on group 1.
-    expect(screen.getAllByText('By UCH').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('Group 1 of 2')).toBeInTheDocument();
+    // One press answers the group outright and moves on (#734).
+    expect(screen.getByText('Group 2 of 2')).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
+    expect(screen.getByText('UCH Shop')).toBeInTheDocument();
   });
 
   it('does not fire keybinds while a text input is focused', () => {
+    const classifySpy = vi.fn();
     render(
       <div>
         <input aria-label="typing" />
-        <Harness baseRows={TWO_VENDORS} />
+        <Harness baseRows={TWO_VENDORS} classifySpy={classifySpy} />
       </div>,
     );
     start();
@@ -163,108 +150,70 @@ describe('GuidedClassification keybinds', () => {
 
     fireEvent.keyDown(input, { key: '1' });
 
-    expect(screen.queryByText('By UCH')).not.toBeInTheDocument();
+    expect(classifySpy).not.toHaveBeenCalled();
+    expect(screen.getByText('Group 1 of 2')).toBeInTheDocument();
   });
 });
 
-describe('GuidedClassification focused layers (#585)', () => {
-  it('shows only the scope layer on a fresh group', () => {
+describe('GuidedClassification one-press row (#734)', () => {
+  it('offers UCH Shop (1), UCH Site (2) and By Others (3) on one row, with no second layer', () => {
     render(<Harness baseRows={TWO_VENDORS} />);
     start();
 
-    expect(screen.getByRole('button', { name: /By UCH/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /By Others/ })).toBeInTheDocument();
-    // Site/Shop stays hidden until scope is decided.
-    expect(screen.queryByRole('button', { name: /Site/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Shop/ })).not.toBeInTheDocument();
+    const labels = screen
+      .getAllByRole('button')
+      .map((b) => b.textContent)
+      .filter((t) => /^(UCH|By Others)/.test(t ?? ''));
+    expect(labels).toEqual(['UCH Shop (1)', 'UCH Site (2)', 'By Others (3)']);
+    expect(screen.queryByText('1 Scope')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Change scope' })).not.toBeInTheDocument();
   });
 
-  it('reveals the Site/Shop layer only after By UCH, with a Change scope link', () => {
-    render(<Harness baseRows={TWO_VENDORS} />);
+  it('maps keys 1, 2 and 3 to the buttons in order', () => {
+    const classifySpy = vi.fn();
+    render(<Harness baseRows={[...TWO_VENDORS, ...ONE_VENDOR_THIRD]} classifySpy={classifySpy} />);
     start();
 
-    fireEvent.click(screen.getByRole('button', { name: /By UCH/ }));
+    fireEvent.keyDown(document.body, { key: '1' });
+    fireEvent.keyDown(document.body, { key: '2' });
+    fireEvent.keyDown(document.body, { key: '3' });
 
-    // Scope buttons give way to Site/Shop; the card stays put (PO still needs the second axis).
-    expect(screen.queryByRole('button', { name: /By UCH/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Site/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Shop/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Change scope' })).toBeInTheDocument();
-    expect(screen.getByText('Group 1 of 2')).toBeInTheDocument();
+    expect(classifySpy.mock.calls.map((c) => c[1])).toEqual(['UCH_SHOP', 'UCH_SITE', 'BY_OTHERS']);
   });
 
-  it('ignores the Site/Shop keys until By UCH is chosen', () => {
-    const siteShopSpy = vi.fn();
-    render(<Harness baseRows={TWO_VENDORS} siteShopSpy={siteShopSpy} />);
+  it('ignores the old S/H letters', () => {
+    const classifySpy = vi.fn();
+    render(<Harness baseRows={TWO_VENDORS} classifySpy={classifySpy} />);
     start();
 
     fireEvent.keyDown(document.body, { key: 's' });
+    fireEvent.keyDown(document.body, { key: 'h' });
 
-    expect(siteShopSpy).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: /By UCH/ })).toBeInTheDocument();
+    expect(classifySpy).not.toHaveBeenCalled();
     expect(screen.getByText('Group 1 of 2')).toBeInTheDocument();
   });
 
-  it('Change scope returns a By UCH card to the scope layer', () => {
-    render(<Harness baseRows={TWO_VENDORS} />);
+  it('reads Shop (1), Site (2) on a one-axis Site/Shop card', () => {
+    const classifySpy = vi.fn();
+    render(<Harness baseRows={TWO_VENDORS} options={ASSEMBLY_OPTIONS} classifySpy={classifySpy} />);
     start();
 
-    fireEvent.click(screen.getByRole('button', { name: /By UCH/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Change scope' }));
+    expect(screen.getByRole('button', { name: 'Shop (1)' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Site (2)' })).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: '1' });
+    fireEvent.keyDown(document.body, { key: '2' });
 
-    expect(screen.getByRole('button', { name: /By UCH/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /By Others/ })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Site/ })).not.toBeInTheDocument();
-  });
-});
-
-describe('GuidedClassification stage rail', () => {
-  it('shows the two-step rail with Scope active on a fresh card', () => {
-    render(<Harness baseRows={TWO_VENDORS} />);
-    start();
-
-    expect(screen.getByText('1 Scope')).toBeInTheDocument();
-    expect(screen.getByText('2 Site or Shop')).toBeInTheDocument();
+    expect(classifySpy.mock.calls.map((c) => c[1])).toEqual(['SHOP_HARDWARE', 'SITE_HARDWARE']);
   });
 
-  it('folds the picked scope into a step-1 chip that is the Change-scope affordance', () => {
+  it('counts classified rows in the header', () => {
     render(<Harness baseRows={TWO_VENDORS} />);
     start();
+    expect(screen.getByText('0 of 2 classified')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /By UCH/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'UCH Site (2)' }));
 
-    expect(screen.queryByText('1 Scope')).not.toBeInTheDocument();
-    const chip = screen.getByRole('button', { name: 'Change scope' });
-    expect(chip).toHaveTextContent('By UCH');
-
-    fireEvent.click(chip);
-    expect(screen.getByText('1 Scope')).toBeInTheDocument();
-  });
-
-  it('counts a scoped-but-awaiting row in the header counter', () => {
-    render(<Harness baseRows={TWO_VENDORS} />);
-    start();
-    expect(screen.getByText('0 of 2 fully classified')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: /By UCH/ }));
-
-    // The By UCH click now visibly lands: the counter names the row waiting on its second axis.
-    expect(screen.getByText('0 of 2 fully classified · 1 scoped, awaiting Site/Shop')).toBeInTheDocument();
-  });
-});
-
-describe('GuidedClassification auto-advance', () => {
-  it('advances to the next group once both axes are answered', () => {
-    render(<Harness baseRows={TWO_VENDORS} />);
-    start();
-    expect(screen.getByText('Group 1 of 2')).toBeInTheDocument();
-
-    fireEvent.keyDown(document.body, { key: '1' }); // By UCH
-    fireEvent.keyDown(document.body, { key: 's' }); // Site -> group complete, advance
-
-    expect(screen.getByText('Group 2 of 2')).toBeInTheDocument();
-    expect(screen.getByText('VEND-B')).toBeInTheDocument();
+    expect(screen.getByText('1 of 2 classified')).toBeInTheDocument();
   });
 
   it('calls onComplete after the last group is answered', () => {
@@ -272,30 +221,11 @@ describe('GuidedClassification auto-advance', () => {
     render(<Harness baseRows={TWO_VENDORS} onComplete={onComplete} />);
     start();
 
-    // Group 1 (By Others completes it alone), then group 2.
-    fireEvent.keyDown(document.body, { key: '2' });
+    fireEvent.keyDown(document.body, { key: '3' });
     expect(screen.getByText('Group 2 of 2')).toBeInTheDocument();
-    fireEvent.keyDown(document.body, { key: '2' });
+    fireEvent.keyDown(document.body, { key: '1' });
 
     expect(onComplete).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('GuidedClassification By Others', () => {
-  it('completes a group with By Others alone, never touching Site/Shop', () => {
-    const siteShopSpy = vi.fn();
-    render(<Harness baseRows={TWO_VENDORS} siteShopSpy={siteShopSpy} />);
-    start();
-
-    fireEvent.keyDown(document.body, { key: '2' }); // By Others -> completes, advances
-
-    expect(screen.getByText('Group 2 of 2')).toBeInTheDocument();
-    expect(siteShopSpy).not.toHaveBeenCalled();
-
-    // Back to group 1: scope is By Others, Site/Shop stays exempt (em-dash).
-    fireEvent.keyDown(document.body, { key: 'ArrowLeft' });
-    expect(screen.getByText('Group 1 of 2')).toBeInTheDocument();
-    expect(screen.getByText('By Others')).toBeInTheDocument();
   });
 });
 
@@ -376,12 +306,12 @@ describe('GuidedClassification unsplit', () => {
     start();
 
     fireEvent.keyDown(document.body, { key: 'x' });
-    fireEvent.keyDown(document.body, { key: '2' }); // By Others on the first line, advances
+    fireEvent.keyDown(document.body, { key: '3' }); // By Others on the first line, advances
     expect(screen.getByText('Group 2 of 2')).toBeInTheDocument();
 
     fireEvent.keyDown(document.body, { key: 'x' }); // unsplit from the second card
     expect(screen.getByText('Group 1 of 1')).toBeInTheDocument();
     // The one answered row still counts, on the card that now holds both.
-    expect(screen.getByText('1 of 2 fully classified')).toBeInTheDocument();
+    expect(screen.getByText('1 of 2 classified')).toBeInTheDocument();
   });
 });

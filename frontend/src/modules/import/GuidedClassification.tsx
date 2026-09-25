@@ -11,7 +11,7 @@ import {
   Typography,
 } from '@mui/material';
 import type { GridColDef } from '@mui/x-data-grid';
-import { ArrowLeft, ArrowRight, Merge, Pencil, Plus, Split, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Merge, Plus, Split, X } from 'lucide-react';
 import {
   GROUP_BY_OPTIONS,
   distinctProductCodes,
@@ -22,24 +22,15 @@ import { type ClassificationOption, type ClassificationRow, isRowClassified } fr
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import ClassificationRowsGrid from './ClassificationRowsGrid';
 
-// #568: which key answers each axis value. Numbers for the scope axis, letters for Site/Shop, so a
-// two-axis (PO) card reads 1/2 then S/H and a one-axis (assembly) card reads S/H alone.
-const KEY_FOR_VALUE: Record<string, string> = {
-  BY_UCSH: '1',
-  BY_OTHERS: '2',
-  SITE_HARDWARE: 's',
-  SHOP_HARDWARE: 'h',
-};
+// #734: each option answers to its position on the row - 1, 2, 3 - so a PO card reads UCH Shop (1),
+// UCH Site (2), By Others (3) and a Site/Shop card reads Shop (1), Site (2). Split stays on X.
+const keyForIndex = (i: number) => String(i + 1);
 
 interface GuidedClassificationProps {
   rows: ClassificationRow[];
-  /** Primary axis: scope (By UCH / By Others) for PO, Site/Shop for a one-axis classification. */
+  /** The row of answers: UCH Shop / UCH Site / By Others for PO, Shop / Site otherwise (#734). */
   options: ClassificationOption[];
   onClassify: (keys: string[], value: string) => void;
-  /** Present only for the two-axis (PO) case. */
-  siteShopOptions?: ClassificationOption[];
-  onClassifySiteShop?: (keys: string[], value: string) => void;
-  siteShopExemptValue?: string;
   /** Group-by levels, owned by the step so the review grid can inherit the same grouping. */
   groupByFields: GroupByField[];
   onChangeGroupByFields: (fields: GroupByField[]) => void;
@@ -60,21 +51,6 @@ function uniqueKeys(rows: ClassificationRow[]): string[] {
   return Array.from(new Set(rows.map((r) => r.classificationKey)));
 }
 
-// One step on the two-axis stage rail. The active axis carries the amber underline; the inactive one
-// keeps the same box so the rail never shifts as the layer flips.
-const railStepSx = (active: boolean) =>
-  ({
-    fontSize: '0.6875rem',
-    fontWeight: 700,
-    letterSpacing: '0.08em',
-    textTransform: 'uppercase',
-    lineHeight: 1.4,
-    pb: 0.25,
-    borderBottom: '2px solid',
-    borderColor: active ? 'secondary.main' : 'transparent',
-    color: active ? 'text.primary' : 'text.disabled',
-  }) as const;
-
 function isTextTarget(el: Element | null): boolean {
   if (!el) return false;
   const tag = el.tagName;
@@ -86,32 +62,20 @@ export default function GuidedClassification({
   rows,
   options,
   onClassify,
-  siteShopOptions,
-  onClassifySiteShop,
-  siteShopExemptValue,
   groupByFields,
   onChangeGroupByFields,
   onComplete,
   onSkipToReview,
 }: GuidedClassificationProps) {
-  const hasSiteShop = !!siteShopOptions && !!onClassifySiteShop;
-  const classifyOpts = useMemo(
-    () => ({ hasSiteShop, siteShopExemptValue }),
-    [hasSiteShop, siteShopExemptValue],
-  );
-
   const [started, setStarted] = useState(false);
   const [index, setIndex] = useState(0);
   const [splitGroupKeys, setSplitGroupKeys] = useState<Set<string>>(new Set());
-  // #585: which card the user has manually reverted to the scope layer (via "Change scope"),
-  // overriding the derived layer so an already-scoped card shows By UCH / By Others again.
-  const [scopeOverrideId, setScopeOverrideId] = useState<string | null>(null);
 
   const labelMap = useMemo(() => {
     const m: Record<string, { label: string; color: ClassificationOption['color'] }> = {};
-    for (const o of [...options, ...(siteShopOptions ?? [])]) m[o.value] = { label: o.label, color: o.color };
+    for (const o of options) m[o.value] = { label: o.label, color: o.color };
     return m;
-  }, [options, siteShopOptions]);
+  }, [options]);
 
   // #733: the card's rows are read-only here - the answer comes from the buttons in the sticky header -
   // so each row shows its resolved classification as a chip.
@@ -120,20 +84,15 @@ export default function GuidedClassification({
       const picked = value ? labelMap[value] : undefined;
       return picked ? <Chip size="small" label={picked.label} color={picked.color} /> : <Chip size="small" label="—" />;
     };
-    const cols: GridColDef<ClassificationRow>[] = [
-      { field: 'classification', headerName: 'Scope', width: 120, renderCell: ({ row }) => chip(row.classification) },
+    return [
+      {
+        field: 'classification',
+        headerName: 'Classification',
+        width: 130,
+        renderCell: ({ row }) => chip(row.classification),
+      },
     ];
-    if (hasSiteShop) {
-      cols.push({
-        field: 'siteShop',
-        headerName: 'Site/Shop',
-        width: 150,
-        renderCell: ({ row }) =>
-          siteShopExemptValue && row.classification === siteShopExemptValue ? chip(undefined) : chip(row.siteShop),
-      });
-    }
-    return cols;
-  }, [labelMap, hasSiteShop, siteShopExemptValue]);
+  }, [labelMap]);
 
   const groups = useMemo(() => groupRowsByFields(rows, groupByFields), [rows, groupByFields]);
 
@@ -154,32 +113,19 @@ export default function GuidedClassification({
   const safeIndex = cards.length === 0 ? 0 : Math.min(index, cards.length - 1);
   const currentCard = cards[safeIndex];
 
-  const completeCount = useMemo(
-    () => rows.filter((r) => isRowClassified(r, classifyOpts)).length,
-    [rows, classifyOpts],
-  );
-
-  // Two-axis only: rows the user has scoped but not yet answered Site/Shop for. Without this clause
-  // the header counter sits still after a By UCH click and the click reads as if it did nothing.
-  const scopedAwaiting = useMemo(
-    () => rows.filter((r) => r.classification !== '' && !isRowClassified(r, classifyOpts)).length,
-    [rows, classifyOpts],
-  );
+  const completeCount = useMemo(() => rows.filter((r) => isRowClassified(r)).length, [rows]);
 
   const goPrev = useCallback(() => {
-    setScopeOverrideId(null);
     setIndex((i) => Math.max(0, i - 1));
   }, []);
 
   const goNext = useCallback(() => {
-    setScopeOverrideId(null);
     if (safeIndex + 1 >= cards.length) onComplete();
     else setIndex(safeIndex + 1);
   }, [safeIndex, cards.length, onComplete]);
 
   const splitCurrent = useCallback(() => {
     if (!currentCard || currentCard.isSplit || currentCard.rows.length <= 1) return;
-    setScopeOverrideId(null);
     setSplitGroupKeys((prev) => new Set(prev).add(currentCard.groupKey));
   }, [currentCard]);
 
@@ -190,7 +136,6 @@ export default function GuidedClassification({
     const gk = currentCard.groupKey;
     const next = new Set(splitGroupKeys);
     next.delete(gk);
-    setScopeOverrideId(null);
     setSplitGroupKeys(next);
     let idx = 0;
     for (const g of groups) {
@@ -200,57 +145,15 @@ export default function GuidedClassification({
     setIndex(idx);
   }, [currentCard, splitGroupKeys, groups]);
 
-  // #585: the guided card focuses one classification layer at a time. The scope layer (By UCH /
-  // By Others) shows until the card is scoped; a By UCH pick reveals the Site/Shop layer, while
-  // By Others completes the card outright. "Change scope" reverts an already-scoped card here.
-  const layer: 'scope' | 'siteShop' = useMemo(() => {
-    if (!currentCard) return 'scope';
-    if (scopeOverrideId === currentCard.id) return 'scope';
-    if (!currentCard.rows.every((r) => r.classification !== '')) return 'scope';
-    if (!hasSiteShop) return 'scope';
-    const anyEligible = currentCard.rows.some(
-      (r) => !siteShopExemptValue || r.classification !== siteShopExemptValue,
-    );
-    return anyEligible ? 'siteShop' : 'scope';
-  }, [currentCard, scopeOverrideId, hasSiteShop, siteShopExemptValue]);
-
-  const changeScope = useCallback(() => {
-    if (currentCard) setScopeOverrideId(currentCard.id);
-  }, [currentCard]);
-
-  // Whether every row on the card would be fully classified once `value` is applied to the given
-  // axis - predicted synchronously so the advance rides the same event as the answer, without an
-  // effect that would also fire on plain navigation.
-  const classifyPrimary = useCallback(
+  // #734: one pick answers the card outright (PO's two stored axes ride together), so every answer
+  // advances on the same event.
+  const classify = useCallback(
     (value: string) => {
       if (!currentCard) return;
-      setScopeOverrideId(null);
       onClassify(uniqueKeys(currentCard.rows), value);
-      const completes = currentCard.rows.every((r) =>
-        isRowClassified({ classification: value, siteShop: r.siteShop }, classifyOpts),
-      );
-      if (completes) goNext();
+      goNext();
     },
-    [currentCard, onClassify, classifyOpts, goNext],
-  );
-
-  const classifySiteShop = useCallback(
-    (value: string) => {
-      if (!currentCard || !onClassifySiteShop) return;
-      // By-Others rows are out of scope and carry no Site/Shop; classify only the eligible ones.
-      const eligible = currentCard.rows.filter(
-        (r) => !siteShopExemptValue || r.classification !== siteShopExemptValue,
-      );
-      onClassifySiteShop(uniqueKeys(eligible), value);
-      // Picking Site/Shop back-fills scope on the eligible rows, so the card is complete: eligible
-      // rows carry both axes, exempt rows need none.
-      const completes = currentCard.rows.every((r) => {
-        if (siteShopExemptValue && r.classification === siteShopExemptValue) return true;
-        return isRowClassified({ classification: r.classification || 'BY_UCSH', siteShop: value }, classifyOpts);
-      });
-      if (completes) goNext();
-    },
-    [currentCard, onClassifySiteShop, siteShopExemptValue, classifyOpts, goNext],
+    [currentCard, onClassify, goNext],
   );
 
   // Keybinds live only while the cards are on screen, and never fire while a text control is focused.
@@ -271,16 +174,12 @@ export default function GuidedClassification({
         else splitCurrent();
         return;
       }
-      // Only the visible layer's keys answer, so 1/2 and S/H never both fire at once (#585).
-      const active = layer === 'scope' ? options : (siteShopOptions ?? []);
-      const classify = layer === 'scope' ? classifyPrimary : classifySiteShop;
-      for (const opt of active) {
-        if (KEY_FOR_VALUE[opt.value] === k) { e.preventDefault(); classify(opt.value); return; }
-      }
+      const picked = options.find((_, i) => keyForIndex(i) === k);
+      if (picked) { e.preventDefault(); classify(picked.value); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [started, layer, options, siteShopOptions, goPrev, goNext, splitCurrent, unsplitCurrent, currentCard, classifyPrimary, classifySiteShop]);
+  }, [started, options, goPrev, goNext, splitCurrent, unsplitCurrent, currentCard, classify]);
 
   // ---- Grouping prompt ----
 
@@ -383,10 +282,6 @@ export default function GuidedClassification({
 
   const canSplit = !currentCard.isSplit && currentCard.rows.length > 1;
   const productCodes = distinctProductCodes(currentCard.rows);
-  // The scope already answered on this card, for the rail's step-1 chip. Rows scoped in different
-  // sessions can disagree, so a mixed card falls back to a neutral label rather than guessing.
-  const scopeValues = Array.from(new Set(currentCard.rows.map((r) => r.classification).filter(Boolean)));
-  const scopePick = scopeValues.length === 1 ? labelMap[scopeValues[0]] : undefined;
 
   return (
     <Box sx={{ minWidth: 0 }}>
@@ -395,11 +290,7 @@ export default function GuidedClassification({
           Group {safeIndex + 1} of {cards.length}
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx }}>
-          {hasSiteShop
-            ? `${completeCount} of ${rows.length} fully classified${
-                scopedAwaiting > 0 ? ` · ${scopedAwaiting} scoped, awaiting Site/Shop` : ''
-              }`
-            : `${completeCount} of ${rows.length} classified`}
+          {completeCount} of {rows.length} classified
         </Typography>
         <Box sx={{ ml: 'auto', display: 'flex', alignItems: 'center', gap: 0.5 }}>
           <Button variant="text" size="small" onClick={() => setStarted(false)}>
@@ -447,56 +338,18 @@ export default function GuidedClassification({
             </Box>
           </Box>
 
-          {/* #585's two layers, narrated: the rail names the axis currently being asked, and once the
-              card is scoped, step 1 becomes the picked answer as a chip. Clicking the chip is the old
-              Change-scope affordance - the scopeOverrideId mechanism underneath is untouched. */}
-          {hasSiteShop && (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mt: 1.25 }}>
-              {layer === 'scope' ? (
-                <Typography component="span" sx={railStepSx(true)}>
-                  1 Scope
-                </Typography>
-              ) : (
-                <Chip
-                  size="small"
-                  label={scopePick?.label ?? 'Mixed'}
-                  color={scopePick?.color}
-                  onClick={changeScope}
-                  onDelete={changeScope}
-                  deleteIcon={<Pencil size={13} strokeWidth={1.75} />}
-                  aria-label="Change scope"
-                />
-              )}
-              <Typography component="span" sx={railStepSx(layer === 'siteShop')}>
-                2 Site or Shop
-              </Typography>
-            </Box>
-          )}
-
           <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 1.5 }}>
-            {layer === 'scope'
-              ? options.map((opt) => (
-                  <Button
-                    key={opt.value}
-                    size="small"
-                    variant="contained"
-                    color={opt.color}
-                    onClick={() => classifyPrimary(opt.value)}
-                  >
-                    {opt.label} ({KEY_FOR_VALUE[opt.value] ?? '·'})
-                  </Button>
-                ))
-              : siteShopOptions?.map((opt) => (
-                  <Button
-                    key={opt.value}
-                    size="small"
-                    variant="contained"
-                    color={opt.color}
-                    onClick={() => classifySiteShop(opt.value)}
-                  >
-                    {opt.label} ({(KEY_FOR_VALUE[opt.value] ?? '·').toUpperCase()})
-                  </Button>
-                ))}
+            {options.map((opt, i) => (
+              <Button
+                key={opt.value}
+                size="small"
+                variant="contained"
+                color={opt.color}
+                onClick={() => classify(opt.value)}
+              >
+                {opt.label} ({keyForIndex(i)})
+              </Button>
+            ))}
             {canSplit && (
               <Tooltip
                 // Without describeChild MUI hands the tooltip prose to aria-label, and the button's
@@ -553,7 +406,7 @@ export default function GuidedClassification({
           Next
         </Button>
         <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-          Keys: classify with the letter/number shown, ← → move between groups, X splits a mixed group
+          Keys: classify with the number shown, ← → move between groups, X splits a mixed group
           (or recombines a split one).
         </Typography>
       </Box>
