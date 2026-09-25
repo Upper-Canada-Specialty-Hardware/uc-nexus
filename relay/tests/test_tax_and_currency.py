@@ -832,3 +832,11 @@ def test_the_hello_advertises_the_tax_schedule_feature():
 
     assert CREATE_PO_TAX_SCHEDULE_FEATURE == "create_po_tax_schedule"
     assert CREATE_PO_TAX_SCHEDULE_FEATURE in _hello_frame()["features"]
+
+
+def test_a_usd_po_refuses_a_tax_schedule_too(gp, monkeypatch):
+    # #763: a foreign-currency PO carries no tax, whichever way it is named.
+    monkeypatch.setattr(ops.econnect, "get_vendor_currency", lambda conn, vid: "USD")
+    with pytest.raises(ops.RelayOpError) as exc:
+        ops.create_po_op(_RecordingConn(), company="TUCSH", request=_po_request(header={"tax_schedule_id": "ONHST 13%"}))
+    assert exc.value.code == "tax_detail_on_foreign_po"

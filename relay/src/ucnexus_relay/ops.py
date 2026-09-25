@@ -144,10 +144,10 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
                 f"no default purchasing rate type (MC40000.DEFPURTP) configured for {company}; "
                 f"cannot price a {currency} PO",
             )
-        if h.tax_detail_ids:
+        if h.tax_detail_ids or h.tax_schedule_id:
             raise RelayOpError(
                 "tax_detail_on_foreign_po",
-                f"a {currency} PO carries no tax schedule (issue #257); tax_detail_ids must be empty",
+                f"a {currency} PO carries no tax schedule (issue #257); send no tax schedule or tax details",
             )
         # #632: eConnect resolves XCHGRATE from GP's maintained table mid-taPoHdr, so a company with
         # no rate maintained for this currency dies there with a raw error. Preflight it.
