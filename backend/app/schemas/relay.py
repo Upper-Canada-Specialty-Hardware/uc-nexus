@@ -17,6 +17,7 @@ from app.errors import (
 )
 from app.models.relay_install import RelayInstall
 from app.repositories import relay_event_repository, relay_repository
+from app.services import nexus_companies as nexus_companies_service
 from app.services import preview_registry, relay_adopt
 from app.services import relay_gateway as relay_gateway_module
 from app.services.relay_gateway import gateway as relay_gateway
@@ -186,6 +187,16 @@ class RelayQueries:
             last_disconnect_reason=relay_gateway.last_disconnect_reason,
             preview_channels=preview_registry.channels(),
         )
+
+    @strawberry.field
+    def nexus_companies(self, info: strawberry.Info) -> list[GpCompany]:
+        """The GP companies a UC NEXUS ADMIN may work in, for the app bar's company switcher (#845).
+
+        The companies the connected relay serves, with GP's names, plus every company that owns a
+        project in Nexus, so the list still works while the relay is down (a code with no relay name
+        is shown as the bare code). Sorted by code. The same set the `X-Nexus-Company` header is
+        checked against in `tenant_scope`, so the switcher never offers a company the header refuses."""
+        return [GpCompany(id=code, name=name) for code, name in nexus_companies_service.list_companies()]
 
     @strawberry.field
     def relay_events(self, info: strawberry.Info, limit: int = 50) -> list[RelayEvent]:

@@ -241,6 +241,9 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "gpTaxSchedules": SIGNED_IN,
     "gpVendorAddresses": SIGNED_IN,
     "gpVendors": SIGNED_IN,
+    # The company switcher's list (#845). Only a UC NEXUS ADMIN has a switcher: everyone else is
+    # pinned to their own company, and the list names every company Nexus holds data for.
+    "nexusCompanies": NEXUS_ADMIN_ROLE,
     "relayAdoptWindow": NEXUS_ADMIN_ROLE,
     "relayEvents": NEXUS_ADMIN_ROLE,
     "relayInstalls": NEXUS_ADMIN_ROLE,
