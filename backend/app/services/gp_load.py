@@ -271,9 +271,13 @@ class GpLoadPolicy:
     pause state machine. One instance per process (`policy` below) because one SQL server is what is
     being protected."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, reads_per_minute: float = READS_PER_MINUTE) -> None:
+        """`reads_per_minute` is production's READS_PER_MINUTE unless a test asks for a budget that
+        never runs dry (#785): a sync test is about what the sync does, and waiting out a real refill
+        only makes CI slower."""
         self._elapsed: dict[tuple[str, str], deque] = defaultdict(lambda: deque(maxlen=MEDIAN_WINDOW))
-        self._bucket = TokenBucket(READS_PER_MINUTE)
+        self._reads_per_minute = reads_per_minute
+        self._bucket = TokenBucket(reads_per_minute)
         # The reads waiting for budget, oldest first (#773). See acquire.
         self._waiting: deque = deque()
         self._paused_reason: str | None = None
@@ -444,7 +448,7 @@ class GpLoadPolicy:
         brake spends tokens with no read to show for them - and that is a fact worth showing rather than
         clamping, because it is the difference between "waiting its turn" and "paying off a penalty"."""
         return {
-            "reads_per_minute": READS_PER_MINUTE,
+            "reads_per_minute": self._reads_per_minute,
             "read_batch": READ_BATCH,
             "reads_available": self._bucket.tokens(),
         }
@@ -464,7 +468,7 @@ class GpLoadPolicy:
         """Drop every observation, refill the bucket and clear the pause. For tests, and for a relay
         reconnect where the medians describe a server we can no longer assume is the same one."""
         self._elapsed.clear()
-        self._bucket = TokenBucket(READS_PER_MINUTE)
+        self._bucket = TokenBucket(self._reads_per_minute)
         self._paused_reason = None
         self._probe_at = 0.0
 

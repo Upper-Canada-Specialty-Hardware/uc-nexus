@@ -23,6 +23,7 @@ tzdata = "^2026.3"
 [tool.poetry.group.dev.dependencies]
 ruff = ">=0.9.0"
 pytest = ">=8.0.0"
+pytest-timeout = ">=2.3.0"
 
 [build-system]
 requires = ["poetry-core"]
@@ -48,3 +49,8 @@ known-first-party = ["app"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# #785: no test waits on the real clock. The suite runs in about a minute; a test that sleeps through
+# a real budget refill or a relay timeout fails here instead of quietly doubling CI, and the
+# durations report names the slowest tests in every CI log.
+timeout = 10
+addopts = "--durations=10"
