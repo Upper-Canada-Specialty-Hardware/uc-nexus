@@ -322,15 +322,20 @@ export const GET_GP_VENDOR_ADDRESSES = gql`
   }
 `;
 
-// Issue #257: GP purchase tax details (TX00201, TXDTLTYP=2) for the register-PO tax-detail picker.
-// #762: the picker is a multi-select and RegisterPOInput carries them as `taxDetailIds`; every pick
-// becomes its own tax detail on the GP PO, taxed on goods, freight and misc at its rate.
-export const GET_GP_TAX_DETAILS = gql`
-  query GetGpTaxDetails($company: String!) {
-    gpTaxDetails(company: $company) {
-      taxDetailId
+// #763: the GP tax schedules a PO can be registered under - each holds at least one purchase tax
+// detail, listed with its rate. The register dialog picks ONE; the relay expands it to its details.
+// Schedules are GP's: created and maintained in GP, only read here.
+export const GET_GP_PURCHASE_TAX_SCHEDULES = gql`
+  query GetGpPurchaseTaxSchedules($company: String!) {
+    gpPurchaseTaxSchedules(company: $company) {
+      taxScheduleId
       description
       percent
+      details {
+        taxDetailId
+        description
+        percent
+      }
     }
   }
 `;

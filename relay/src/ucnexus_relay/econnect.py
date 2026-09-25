@@ -936,6 +936,49 @@ def list_tax_details(conn) -> list[dict]:
     ]
 
 
+def list_purchase_tax_schedules(conn) -> list[dict]:
+    """Read-only (#763): the tax schedules a PO can be registered under - every schedule (TX00101)
+    holding at least one PURCHASE detail (TX00102 -> TX00201 WHERE TXDTLTYP = 2) - each with those
+    details and their rates, for the register-PO schedule picker. Sales-type details a schedule also
+    holds are left out: GP's purchasing ignores them. The percent is aliased pct, as in list_tax_details
+    (PERCENT is reserved in SQL Server)."""
+    rows = conn.cursor().execute(
+        "SELECT RTRIM(s.TAXSCHID) AS tax_schedule_id, RTRIM(s.TXSCHDSC) AS schedule_description, "
+        "RTRIM(d.TAXDTLID) AS tax_detail_id, RTRIM(d.TXDTLDSC) AS detail_description, d.TXDTLPCT AS pct "
+        "FROM dbo.TX00101 s "
+        "JOIN dbo.TX00102 sd ON sd.TAXSCHID = s.TAXSCHID "
+        "JOIN dbo.TX00201 d ON d.TAXDTLID = sd.TAXDTLID AND d.TXDTLTYP = 2 "
+        "ORDER BY s.TAXSCHID, d.TAXDTLID"
+    ).fetchall()
+    schedules: dict[str, dict] = {}
+    for r in rows:
+        entry = schedules.setdefault(
+            r.tax_schedule_id,
+            {"tax_schedule_id": r.tax_schedule_id, "description": r.schedule_description or None, "details": []},
+        )
+        entry["details"].append(
+            {"tax_detail_id": r.tax_detail_id, "description": r.detail_description or None, "percent": float(r.pct)}
+        )
+    return list(schedules.values())
+
+
+def get_purchase_schedule_detail_ids(conn, tax_schedule_id: str) -> list[str] | None:
+    """Read-only (#763): the PURCHASE detail ids a tax schedule holds (TX00102 -> TX00201 WHERE
+    TXDTLTYP = 2), in id order. None when GP holds no such schedule (TX00101); an empty list when it
+    exists but holds only sales-type details, which cannot tax a PO."""
+    cursor = conn.cursor()
+    exists = cursor.execute("SELECT 1 AS one FROM dbo.TX00101 WHERE TAXSCHID = ?", tax_schedule_id).fetchone()
+    if exists is None:
+        return None
+    rows = cursor.execute(
+        "SELECT RTRIM(d.TAXDTLID) AS tax_detail_id FROM dbo.TX00102 sd "
+        "JOIN dbo.TX00201 d ON d.TAXDTLID = sd.TAXDTLID AND d.TXDTLTYP = 2 "
+        "WHERE sd.TAXSCHID = ? ORDER BY d.TAXDTLID",
+        tax_schedule_id,
+    ).fetchall()
+    return [r.tax_detail_id for r in rows]
+
+
 def get_tax_detail_percent(conn, tax_detail_id: str) -> Decimal | None:
     """Read-only: the percent rate of a PURCHASE tax detail (TX00201.TXDTLPCT WHERE TXDTLTYP = 2), for
     computing the PO tax amount. Returns None if the id isn't a purchase tax detail (caller raises a

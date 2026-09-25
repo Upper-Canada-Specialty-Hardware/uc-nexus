@@ -236,6 +236,8 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "gpPoEntryOptions": SIGNED_IN,
     "gpPoTotals": SIGNED_IN,
     "gpTaxDetails": SIGNED_IN,
+    # The register-PO tax picker since #763, beside the details it replaced: the same reach.
+    "gpPurchaseTaxSchedules": SIGNED_IN,
     "gpTaxSchedules": SIGNED_IN,
     "gpVendorAddresses": SIGNED_IN,
     "gpVendors": SIGNED_IN,

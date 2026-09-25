@@ -745,3 +745,90 @@ def test_insert_po_tax_row_binds_the_charge_taxes_and_never_ord_zero_by_itself()
     assert bound["ORD"] == 2147483645
     assert bound["MSCTXAMT"] == Decimal("1.30") and bound["FRTTXAMT"] == Decimal(0)
     assert "@I_vTAXTYPE    = 0" in conn.calls[0][0] and "@I_vBKOUTTAX   = 0" in conn.calls[0][0]
+
+
+# --- #763: one purchase tax schedule, expanded to its purchase details ---
+
+
+_SchedRow = namedtuple("_SchedRow", "tax_schedule_id schedule_description tax_detail_id detail_description pct")
+
+
+def test_list_purchase_tax_schedules_groups_purchase_details_under_each_schedule():
+    conn = _FakeConn(many=[
+        _SchedRow("BC PURCH 12%", "BC GST + PST purchases", "BC GST 5% - P", "GST on purchases", 5.0),
+        _SchedRow("BC PURCH 12%", "BC GST + PST purchases", "BC PST 7% PURCH", "", 7.0),
+        _SchedRow("ONHST 13%", "", "ON HST - P", "ON HST on Purchases", 13.0),
+    ])
+
+    out = econnect.list_purchase_tax_schedules(conn)
+
+    sql = conn.cursor_obj.sql
+    # only purchase-type details make a schedule usable on a PO, and PERCENT stays aliased as pct
+    assert "TX00102" in sql and "TXDTLTYP = 2" in sql and "as pct" in sql.lower()
+    assert out == [
+        {
+            "tax_schedule_id": "BC PURCH 12%",
+            "description": "BC GST + PST purchases",
+            "details": [
+                {"tax_detail_id": "BC GST 5% - P", "description": "GST on purchases", "percent": 5.0},
+                {"tax_detail_id": "BC PST 7% PURCH", "description": None, "percent": 7.0},
+            ],
+        },
+        {
+            "tax_schedule_id": "ONHST 13%",
+            "description": None,
+            "details": [{"tax_detail_id": "ON HST - P", "description": "ON HST on Purchases", "percent": 13.0}],
+        },
+    ]
+
+
+def _schedules(monkeypatch, mapping):
+    monkeypatch.setattr(ops.econnect, "get_purchase_schedule_detail_ids", lambda conn, sid: mapping.get(sid))
+
+
+def test_a_schedule_po_writes_exactly_what_its_two_details_would(gp, monkeypatch):
+    _schedules(monkeypatch, {"BC PURCH 12%": ["BC GST 5% - P", "BC PST 7% PURCH"]})
+    by_schedule, by_details = _RecordingConn(), _RecordingConn()
+
+    a = ops.create_po_op(
+        by_schedule,
+        company="TUCSH",
+        request=_po_request(header={"tax_schedule_id": "BC PURCH 12%", "freight_amount": Decimal("20.00")}),
+    )
+    b = ops.create_po_op(by_details, company="TUCSH", request=_po_request(header=_two_detail_freight_header()))
+
+    # the schedule is only a way of naming the details: every write is identical, down to the rows
+    assert a.tax_amount == b.tax_amount == Decimal("44.40")
+    assert by_schedule.calls == by_details.calls
+
+
+def test_an_unknown_schedule_is_refused_before_a_number_is_reserved(gp, monkeypatch):
+    _schedules(monkeypatch, {})
+    conn = _RecordingConn()
+
+    with pytest.raises(ops.RelayOpError) as err:
+        ops.create_po_op(conn, company="TUCSH", request=_po_request(header={"tax_schedule_id": "NOPE"}))
+
+    assert err.value.code == "tax_schedule_not_found"
+    assert conn.calls == []
+
+
+def test_a_sales_only_schedule_is_refused(gp, monkeypatch):
+    _schedules(monkeypatch, {"BC HST 12%": []})
+
+    with pytest.raises(ops.RelayOpError) as err:
+        ops.create_po_op(_RecordingConn(), company="TUCSH", request=_po_request(header={"tax_schedule_id": "BC HST 12%"}))
+
+    assert err.value.code == "tax_schedule_not_purchase"
+
+
+def test_a_header_cannot_carry_both_a_schedule_and_details():
+    with pytest.raises(ValueError):
+        _po_request(header={"tax_schedule_id": "BC PURCH 12%", "tax_detail_ids": ["ON HST - P"]})
+
+
+def test_the_hello_advertises_the_tax_schedule_feature():
+    from ucnexus_relay.channel import CREATE_PO_TAX_SCHEDULE_FEATURE
+
+    assert CREATE_PO_TAX_SCHEDULE_FEATURE == "create_po_tax_schedule"
+    assert CREATE_PO_TAX_SCHEDULE_FEATURE in _hello_frame()["features"]

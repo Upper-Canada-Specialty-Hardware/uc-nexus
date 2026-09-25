@@ -211,8 +211,28 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
             "trade_discount_exceeds_subtotal",
             f"trade discount {h.trade_discount} is more than the PO's {subtotal} subtotal",
         )
+    # #763: a picked schedule becomes its purchase details here, and everything after this point
+    # treats them exactly as picked details - the #762 write shape, unchanged. A schedule GP does not
+    # hold, or one holding only sales-type details, is refused before a number is reserved.
+    tax_detail_ids = list(h.tax_detail_ids)
+    if h.tax_schedule_id:
+        expanded = econnect.get_purchase_schedule_detail_ids(conn, h.tax_schedule_id)
+        if expanded is None:
+            raise RelayOpError(
+                "tax_schedule_not_found",
+                f"tax schedule '{h.tax_schedule_id}' does not exist in {company} (TX00101)",
+                tax_schedule_id=h.tax_schedule_id,
+            )
+        if not expanded:
+            raise RelayOpError(
+                "tax_schedule_not_purchase",
+                f"tax schedule '{h.tax_schedule_id}' holds no purchase tax detail in {company}, so it "
+                f"cannot tax a PO. Add its purchase details in GP's tax schedule maintenance.",
+                tax_schedule_id=h.tax_schedule_id,
+            )
+        tax_detail_ids = expanded
     details: list[po_tax.TaxDetail] = []
-    for tax_detail_id in h.tax_detail_ids:
+    for tax_detail_id in tax_detail_ids:
         pct = econnect.get_tax_detail_percent(conn, tax_detail_id)
         if pct is None:
             raise RelayOpError(

@@ -500,6 +500,11 @@ class RegisterPOInput:
     # The single pick this input carried before #762. Still accepted so a client on the previous
     # build registers as it did; the resolver folds it into tax_detail_ids and never reads it again.
     tax_detail_id: str | None = None
+    # #763: the GP purchase tax schedule the PO user picked, which the relay expands to its purchase
+    # details and taxes exactly as it taxes picked details. What the register dialog sends now; the
+    # detail list above stays accepted from an older client. Never both. Nexus only reads schedules -
+    # they are created and maintained in GP.
+    tax_schedule_id: str | None = None
     # Issue #257: the Miscellaneous (MSCCHAMT) and Trade Discount (TRDISAMT) charges written to the
     # GP PO header.
     miscellaneous: float | None = None

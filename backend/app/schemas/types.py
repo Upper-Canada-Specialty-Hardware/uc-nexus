@@ -412,6 +412,21 @@ class GpTaxDetail:
 
 
 @strawberry.type
+class GpPurchaseTaxSchedule:
+    """A GP tax schedule a PO can be registered under (#763): one holding at least one purchase tax
+    detail, with those details. Read live via the relay; Nexus never creates or edits a schedule."""
+
+    tax_schedule_id: str
+    description: str | None
+    details: list[GpTaxDetail]
+
+    @strawberry.field
+    def percent(self) -> float:
+        """The schedule's combined purchase rate - what a PO under it is taxed at on its goods."""
+        return round(sum(d.percent for d in self.details), 5)
+
+
+@strawberry.type
 class VendorCandidate:
     # A GP vendor proposed for a manufacturer. score is 0..100: 100 for a saved mapping hit, else the
     # fuzzy match of the vendor name to the manufacturer (issue #232).

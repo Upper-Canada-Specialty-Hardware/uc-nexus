@@ -64,6 +64,11 @@ class POHeader(BaseModel):
     # queued on PENDING GP WRITES before the backend changed shape replays with this key: it folds
     # into tax_detail_ids below and is never consulted again. New callers send the list.
     tax_detail_id: str | None = Field(default=None, max_length=15)
+    # Issue #763: the GP purchase tax schedule the PO user picked, instead of the details. The relay
+    # expands it to the schedule's purchases-type details (TX00102 + TX00201 TXDTLTYP=2) at write time
+    # and writes those exactly as it writes picked details. Nexus never creates or edits a schedule;
+    # they are GP's, maintained in GP. Mutually exclusive with tax_detail_ids.
+    tax_schedule_id: str | None = Field(default=None, max_length=15)
     trade_discount: Decimal = Decimal(0)
     freight_amount: Decimal = Decimal(0)
     misc_amount: Decimal = Decimal(0)
@@ -95,6 +100,10 @@ class POHeader(BaseModel):
                 folded.append(detail)
         self.tax_detail_ids = folded
         self.tax_detail_id = None
+        schedule = (self.tax_schedule_id or "").strip() or None
+        if schedule and folded:
+            raise ValueError("send a tax schedule or tax details, not both")
+        self.tax_schedule_id = schedule
         return self
 
 
@@ -337,6 +346,21 @@ class TaxScheduleOut(BaseModel):
 class TaxSchedulesResponse(BaseModel):
     company: str
     tax_schedules: list[TaxScheduleOut]
+
+
+class PurchaseTaxScheduleOut(BaseModel):
+    """A tax schedule a PO can be registered under (#763): one that holds at least one purchases-type
+    detail, with those details. Sales-type details in the same schedule are left out - GP's
+    purchasing ignores them, and so does the relay's tax."""
+
+    tax_schedule_id: str
+    description: str | None = None
+    details: list[TaxDetailOut]
+
+
+class PurchaseTaxSchedulesResponse(BaseModel):
+    company: str
+    tax_schedules: list[PurchaseTaxScheduleOut]
 
 
 class EmployeeOut(BaseModel):

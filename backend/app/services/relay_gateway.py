@@ -113,6 +113,12 @@ CREATE_PO_IDEMPOTENCY_FEATURE = "create_po_idempotency"
 # vendor) is unaffected.
 CREATE_PO_TAX_ROWS_FEATURE = "create_po_tax_rows"
 
+# The hello feature flag a relay sets to say it reads a `tax_schedule_id` on a create_po header and
+# expands it to the schedule's purchase details before writing the tax (#763). A relay without it
+# would ignore the schedule and register a CAD PO with no tax, so a schedule-taxed registration is
+# never pushed to such a build.
+CREATE_PO_TAX_SCHEDULE_FEATURE = "create_po_tax_schedule"
+
 # The hello feature flag a relay sets to say its list_jobs returns GP's full job record, closed jobs
 # included, and that it runs update_job (#730). Without it the GP JOBS SYNC keeps its old
 # create-only behaviour - an older relay's list carries only number and name, and overwriting from it
