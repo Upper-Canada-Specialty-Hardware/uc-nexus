@@ -50,9 +50,11 @@ def _require_target_in_scope(info: strawberry.Info, target_user_id: str) -> str 
     company reads as absent.
 
     None means the caller is a UC NEXUS ADMIN and there is nothing to check - they are the role that
-    moves accounts between companies in the first place.
+    moves accounts between companies in the first place. Cross-tenant even while the admin's switcher
+    names one company (#845): user management is a company-less tool, and editing an account in
+    another company must not need a switch first.
     """
-    scope = tenant_scope(info)
+    scope = tenant_scope(info, cross_tenant=True)
     if scope is None:
         return None
     if user_repository.get_user_company(target_user_id) != scope:
@@ -131,8 +133,12 @@ class UserQueries:
         The stored value is normalized before comparing, the same way `caller_company` and
         `remember_roster_entry` normalize it. A company written into publicMetadata by hand, or by
         an older path, can carry different casing or whitespace, and a raw comparison would let it
-        through the filter or drop the caller's own accounts out of it."""
-        company = tenant_scope(info)
+        through the filter or drop the caller's own accounts out of it.
+
+        A UC NEXUS ADMIN sees every company's accounts whichever company their switcher names
+        (#845): the roster is where accounts are moved between companies, so narrowing it to one
+        would hide the very accounts the admin came to assign."""
+        company = tenant_scope(info, cross_tenant=True)
         roster = user_roster(info.context)
         if company is not None:
             roster = [u for u in roster if user_repository.normalize_company(u.get("company")) == company]

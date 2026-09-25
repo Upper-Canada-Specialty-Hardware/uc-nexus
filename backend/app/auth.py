@@ -39,7 +39,7 @@ from fastapi import Request
 from jwt import PyJWKSet
 
 from app.config import CLERK_SECRET_KEY
-from app.errors import AppError
+from app.errors import AppError, ValidationError
 from app.repositories import user_repository
 
 # The two halves of the retired "Admin/Manager" role (#729). That one string bundled an all-modules
@@ -206,6 +206,9 @@ _IDENTITY_KEY = "_auth_user_id"
 _ROLES_KEY = "_auth_roles"
 _ROSTER_KEY = "_auth_user_roster"
 _COMPANY_KEY = "_auth_company"
+_ACTING_COMPANY_KEY = "_auth_acting_company"
+# The request header a UC NEXUS ADMIN names the one GP company they are working in with (#845).
+ACTING_COMPANY_HEADER = "X-Nexus-Company"
 # Distinguishes "not looked up yet" from "looked up and there is none", which None cannot: an
 # unassigned account is the common case for a brand-new user and must not cost a Clerk call per root
 # field of every query it makes.
@@ -269,21 +272,66 @@ def caller_company(context) -> str | None:
     return cached
 
 
-def tenant_scope(info) -> str | None:
+def admin_acting_company(context) -> str | None:
+    """The GP company a UC NEXUS ADMIN has chosen to work in, from the `X-Nexus-Company` header (#845),
+    or None when the request carries none.
+
+    Only ever consulted for an admin - `tenant_scope` never reads it for anybody else, so the header
+    cannot widen a scoped caller's reach. It is normalized exactly as a company on a Clerk account is,
+    and refused unless it is a company an admin can actually pick (`app/services/nexus_companies.py`):
+    a typo must fail loudly rather than scope the admin to a company with no data, which would read
+    as "everything is gone".
+
+    Memoised like `caller_roles` and `caller_company`, the refusal included, so a query naming eight
+    root fields validates the header once.
+    """
+    cached = context.get(_ACTING_COMPANY_KEY, _UNRESOLVED)
+    if isinstance(cached, AppError):
+        raise cached
+    if cached is not _UNRESOLVED:
+        return cached
+
+    # Imported here, not at module level: the service reaches the relay gateway and the database,
+    # neither of which this module otherwise needs to load.
+    from app.services import nexus_companies
+
+    try:
+        request = context.get("request")
+        headers = getattr(request, "headers", None) or {}
+        raw = headers.get(ACTING_COMPANY_HEADER) or headers.get(ACTING_COMPANY_HEADER.lower())
+        company = user_repository.normalize_company(raw)
+        if company is not None and not nexus_companies.is_known_company(company):
+            raise ValidationError(f"Unknown GP company '{company}'.")
+    except AppError as e:
+        context[_ACTING_COMPANY_KEY] = e
+        raise
+
+    context[_ACTING_COMPANY_KEY] = company
+    return company
+
+
+def tenant_scope(info, *, cross_tenant: bool = False) -> str | None:
     """The company every row this request may touch must belong to, or None for "no restriction".
 
-    None is the UC NEXUS ADMIN answer and only theirs (#729): that role exists to act across
-    companies - who is in which company, the relay installs, the write queue, the SharePoint
-    migration. Everybody else is pinned to their own, a TENANT OWNER included: their authority is the
-    whole of one GP company and stops at its edge. A caller with no company at all is refused rather
-    than silently scoped to nothing - "sees an empty app" is indistinguishable from "the data is
-    gone" from the user's side, and this way the message names the fix.
+    A UC NEXUS ADMIN works in one GP company at a time since #845: the company named by the
+    `X-Nexus-Company` header, when the request sends one. Without the header the answer is None
+    exactly as before, so a frontend that predates the switcher keeps working. Everybody else is
+    pinned to their own company and the header is ignored for them, a TENANT OWNER included: their
+    authority is the whole of one GP company and stops at its edge. A caller with no company at all
+    is refused rather than silently scoped to nothing - "sees an empty app" is indistinguishable from
+    "the data is gone" from the user's side, and this way the message names the fix.
+
+    `cross_tenant=True` is for the company-less tools only - user management, whose whole job is
+    deciding which company an account belongs to. There an admin stays unscoped whatever company the
+    switcher shows; for everyone else it changes nothing.
 
     The frontend gates an unassigned user at the app shell, so the raise here is the backstop for a
     direct GraphQL call or a stale tab, not the primary UX.
     """
     if NEXUS_ADMIN_ROLE in caller_roles(info.context):
-        return None
+        if cross_tenant:
+            return None
+        return admin_acting_company(info.context)
     company = caller_company(info.context)
     if not company:
         raise ForbiddenError("No company assigned to your account. Ask an admin to assign one.")
