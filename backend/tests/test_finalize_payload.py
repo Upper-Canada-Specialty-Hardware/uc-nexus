@@ -177,6 +177,19 @@ def test_a_po_drafts_vendor_label_is_forwarded_to_the_repository():
     assert payload["po_drafts"][0]["vendor_name"] == "Allegion"
 
 
+def test_a_po_drafts_vendor_quote_number_is_forwarded_to_the_repository():
+    # #737: the step 5 draft card's quote number, written onto the created PO.
+    payload = finalize_payload(
+        FinalizeImportSessionInput(
+            project_id="p1",
+            openings=[_opening()],
+            po_drafts=[PODraftInput(po_number="PO-1", vendor_quote_number="Q-2231")],
+        ),
+        created_by_user_id="u",
+    )
+    assert payload["po_drafts"][0]["vendor_quote_number"] == "Q-2231"
+
+
 def test_a_po_draft_with_no_vendor_label_still_flattens():
     # Optional: the wizard can raise a request before anybody has decided who it is going to.
     payload = finalize_payload(

@@ -3,7 +3,7 @@ import { Alert, Box, Button, Typography } from '@mui/material';
 import { Plus } from 'lucide-react';
 import { tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
-import type { DraftAttachmentType, DraftGroup } from './types';
+import type { DraftAttachmentType, DraftGroup, DraftInfoField } from './types';
 import {
   DraftCard,
   SplitLineDialog,
@@ -37,7 +37,7 @@ interface PurchaseOrdersStepProps {
   lineContextByPk: Map<string, LineContext>;
   onToggleIncluded: (id: string) => void;
   onRenameDraft: (id: string, label: string) => void;
-  onUpdateDraftInfo: (id: string, field: 'notes' | 'preferredDeliveryDate' | 'costCode', value: string) => void;
+  onUpdateDraftInfo: (id: string, field: DraftInfoField, value: string) => void;
   onUpdateUnitCost: (pk: string, value: number) => void;
   onUpdateOrderAs: (pk: string, value: string) => void;
   onMoveLine: (fromId: string, pk: string, qty: number, toId: string) => void;

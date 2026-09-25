@@ -919,6 +919,8 @@ def finalize_import_session(
                 # #490: the buyer's cost-code pick, if the relay was up to offer the job's list.
                 # Register still validates against GP - this is a default, not a decision.
                 cost_code=(po_draft.get("cost_code") or None),
+                # #737: the vendor quote the buyer typed on the draft card; Nexus-only, like #481's.
+                vendor_quote_number=(po_draft.get("vendor_quote_number") or "").strip() or None,
                 # Whoever finalized this wizard session, from the resolver's Clerk token. It is who a
                 # receive against this PO later asks "inventory or ship out?".
                 created_by_user_id=input_data.get("created_by_user_id"),

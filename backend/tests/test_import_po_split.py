@@ -377,6 +377,26 @@ def test_a_drafts_vendor_label_lands_on_the_created_po_stripped(db_session):
     assert po.vendor_name_snapshot == "Allegion"
 
 
+def test_a_drafts_vendor_quote_number_lands_on_the_created_po_stripped(db_session):
+    # #737: typed on the step 5 draft card, carried onto the PO's Nexus-only quote number.
+    project = _make_project(db_session)
+    db_session.commit()
+
+    draft = {**_po_draft(_one_ref()), "vendor_quote_number": "  Q-2231  "}
+    po = _finalize_with(db_session, project, draft)
+
+    assert po.vendor_quote_number == "Q-2231"
+
+
+def test_a_draft_with_no_vendor_quote_number_leaves_it_null(db_session):
+    project = _make_project(db_session)
+    db_session.commit()
+
+    po = _finalize_with(db_session, project, _po_draft(_one_ref()))
+
+    assert po.vendor_quote_number is None
+
+
 @pytest.mark.parametrize("blank", [None, "", "   "])
 def test_a_blank_vendor_label_leaves_the_snapshot_null(db_session, blank):
     project = _make_project(db_session)

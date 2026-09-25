@@ -37,6 +37,8 @@ export interface PODraftPayload {
   vendorName: string | null;
   preferredDeliveryDate: string | null;
   costCode: string | null;
+  // #737: carried onto the created PO's vendor quote number.
+  vendorQuoteNumber: string | null;
   hardwareItemRefs: HardwareItemRefPayload[];
   lineItemAliases: POLineItemAliasPayload[];
   // #588: the DraftGroup this payload came from. Not part of the graphql input - toPoDraftInput
@@ -58,6 +60,7 @@ export function toPoDraftInput(d: PODraftPayload): PODraftInputPayload {
     vendorName: d.vendorName,
     preferredDeliveryDate: d.preferredDeliveryDate,
     costCode: d.costCode,
+    vendorQuoteNumber: d.vendorQuoteNumber,
     hardwareItemRefs: d.hardwareItemRefs,
     lineItemAliases: d.lineItemAliases,
   };
@@ -139,6 +142,7 @@ export function buildPoDrafts(
       vendorName: group.label.trim() || null,
       preferredDeliveryDate: group.info.preferredDeliveryDate || null,
       costCode: group.info.costCode || null,
+      vendorQuoteNumber: group.info.vendorQuoteNumber?.trim() || null,
       hardwareItemRefs: refs,
       lineItemAliases: aliases,
       sourceDraftId: group.id,
