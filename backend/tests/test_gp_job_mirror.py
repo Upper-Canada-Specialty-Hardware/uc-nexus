@@ -454,7 +454,9 @@ def _relay(monkeypatch, *, jobs, company=SYNC_COMPANY, mirror=True, raises=None)
     monkeypatch.setattr(type(gp_job_sync.relay_gateway), "connected", property(lambda self: True))
     monkeypatch.setattr(gp_job_sync.relay_gateway, "relay_call_with_meta", _call_with_meta)
     monkeypatch.setattr(gp_job_sync.relay_gateway, "_features", frozenset({JOB_MIRROR_FEATURE} if mirror else set()))
-    monkeypatch.setattr(gp_job_sync.gp_load, "policy", gp_job_sync.gp_load.GpLoadPolicy())
+    # A budget that never runs dry: a production-sized one is emptied by the one list_jobs, and every
+    # mirror read after it waited out a real refill (#785). Pacing is tests/test_gp_load.py's job.
+    monkeypatch.setattr(gp_job_sync.gp_load, "policy", gp_job_sync.gp_load.GpLoadPolicy(reads_per_minute=1e9))
 
 
 @pytest.fixture

@@ -46,12 +46,14 @@ NO_META = {"cost": None, "server": None}
 
 @pytest.fixture(autouse=True)
 def _no_pacing(monkeypatch):
-    """A fresh read budget per test.
+    """A fresh read budget per test, and one that never runs dry.
 
     The bucket is process-wide in production on purpose (one SQL server, one budget), so without this
-    a test would inherit the previous one's balance and the reads a two-company pass makes would wait
-    out real seconds. What the budget itself does is tests/test_gp_load.py's job."""
-    monkeypatch.setattr(gp_job_sync.gp_load, "policy", gp_job_sync.gp_load.GpLoadPolicy())
+    a test would inherit the previous one's balance. A fresh production-sized bucket is not enough
+    either: one list_jobs is charged a whole minute's budget, so a two-company pass waited out a real
+    refill, about a minute per test (#785). What the budget itself does is tests/test_gp_load.py's and
+    tests/test_gp_job_sync_pacing.py's job."""
+    monkeypatch.setattr(gp_job_sync.gp_load, "policy", gp_job_sync.gp_load.GpLoadPolicy(reads_per_minute=1e9))
 
 
 def _relay(monkeypatch, *, company="TUBC", jobs=None, raises=None, health=None, health_raises=None):
