@@ -42,7 +42,23 @@ function renderCount(value: number) {
   );
 }
 
-function countColumn(field: keyof StatusRow, label: string, tooltip: string, width = 104): GridColDef {
+// A schedule-only column on a pick where no project has an imported schedule has nothing to count
+// (#741): a dimmed 0 there read as "failed to load", so it says "not applicable" instead.
+function renderNotApplicable() {
+  return (
+    <Box component="span" sx={{ color: 'text.disabled' }}>
+      —
+    </Box>
+  );
+}
+
+function countColumn(
+  field: keyof StatusRow,
+  label: string,
+  tooltip: string,
+  width = 104,
+  notApplicable = false,
+): GridColDef {
   return {
     field,
     headerName: label,
@@ -51,11 +67,13 @@ function countColumn(field: keyof StatusRow, label: string, tooltip: string, wid
     headerAlign: 'right',
     align: 'right',
     renderHeader: infoHeader(label, tooltip),
-    renderCell: (params) => renderCount(params.row[field] as number),
+    renderCell: (params) => (notApplicable ? renderNotApplicable() : renderCount(params.row[field] as number)),
   };
 }
 
-const columns: GridColDef[] = [
+// Required and Not Purchased count the hardware schedule imported into Nexus; every other column
+// counts POs and warehouse movements, which exist for GP-mirrored jobs that never had a schedule.
+const buildColumns = (anySchedule: boolean): GridColDef[] => [
   {
     field: 'productCode',
     headerName: 'Product Code',
@@ -72,12 +90,15 @@ const columns: GridColDef[] = [
     'requiredQuantity',
     'Required',
     'Total required quantity from the selected projects’ hardware schedules.',
+    104,
+    !anySchedule,
   ),
   countColumn(
     'notPurchased',
     'Not Purchased',
     'Schedule quantity not yet drafted into any purchase order.',
     124,
+    !anySchedule,
   ),
   countColumn('poDrafted', 'PO Drafted', 'Ordered quantity on DRAFT purchase orders.', 112),
   countColumn(
@@ -114,6 +135,8 @@ interface ProjectOption {
   id: string;
   label: string;
   projectId: string;
+  // Openings only exist once a hardware schedule has been imported into Nexus.
+  hasSchedule: boolean;
 }
 
 function projectToOption(p: Project): ProjectOption {
@@ -121,6 +144,7 @@ function projectToOption(p: Project): ProjectOption {
     id: p.id,
     label: p.description || p.projectId,
     projectId: p.projectId,
+    hasSchedule: p.openingCount > 0,
   };
 }
 
@@ -164,6 +188,9 @@ export default function HardwareStatusPage() {
   }, [statusData, search]);
 
   const hasSelection = projectIds.length > 0;
+  const withoutSchedule = selected.filter((s) => !s.hasSchedule);
+  const anySchedule = withoutSchedule.length < selected.length;
+  const columns = useMemo(() => buildColumns(anySchedule), [anySchedule]);
 
   return (
     <Box>
@@ -224,6 +251,15 @@ export default function HardwareStatusPage() {
       {!hasSelection && (
         <Alert severity="info" variant="outlined">
           Pick one or more projects to see hardware status by product.
+        </Alert>
+      )}
+
+      {withoutSchedule.length > 0 && (
+        <Alert severity="info" variant="outlined" sx={{ mb: 2 }}>
+          No hardware schedule has been imported for{' '}
+          {withoutSchedule.map((p) => p.projectId).join(', ')}. Required and Not Purchased count
+          imported schedules only; the PO and warehouse columns still count what GP and Nexus hold
+          for {withoutSchedule.length === 1 ? 'it' : 'them'}.
         </Alert>
       )}
 
