@@ -2,6 +2,7 @@ import { ApolloClient, ApolloLink, InMemoryCache, HttpLink, Observable, from } f
 import { ErrorLink } from '@apollo/client/link/error';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import { isSessionExpected, notifyAuthFailure, readAuthBridge } from './authBridge';
+import { ACTING_COMPANY_HEADER, readActingCompanyHeader } from './company/actingCompany';
 
 const httpLink = new HttpLink({
   uri: import.meta.env.VITE_GRAPHQL_URL || '/graphql',
@@ -74,6 +75,12 @@ const authLink = new ApolloLink((operation, forward) => {
         // none.
         delete headers.Authorization;
         if (token) headers.Authorization = `Bearer ${token}`;
+        // #845: the GP company a UC NEXUS ADMIN is working in. Read on every attempt, so a replay
+        // after a switch goes out in the new company. Null for every
+        // scoped user, who never sends it: their company is their assignment, not a header.
+        delete headers[ACTING_COMPANY_HEADER];
+        const actingCompany = readActingCompanyHeader();
+        if (actingCompany) headers[ACTING_COMPANY_HEADER] = actingCompany;
         return { ...prev, headers };
       });
       inner = forward(operation).subscribe(observer);

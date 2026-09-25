@@ -25,7 +25,14 @@ vi.mock('../../hooks/useIdentity', () => ({
   }),
 }));
 
+const acting = vi.hoisted(() => ({ resolving: false }));
+
+vi.mock('../../company/ActingCompanyContext', () => ({
+  useActingCompany: () => ({ resolving: acting.resolving }),
+}));
+
 beforeEach(() => {
+  acting.resolving = false;
   identity.isNexusAdmin = false;
   identity.company = null;
   identity.user = { primaryEmailAddress: { emailAddress: 'jay@example.com' } };
@@ -76,4 +83,15 @@ test('the routes render while Clerk is still resolving the user', () => {
   renderGate();
 
   expect(screen.getByText('module routes')).toBeInTheDocument();
+});
+
+// #845: an admin with no remembered company waits for the company list rather than letting the
+// page's first queries go out with no company and show every one mixed together.
+test('holds the routes while a UC Nexus Admin company is still being resolved', () => {
+  identity.isNexusAdmin = true;
+  acting.resolving = true;
+  renderGate();
+
+  expect(screen.queryByText('module routes')).toBeNull();
+  expect(screen.queryByText('No company assigned')).toBeNull();
 });

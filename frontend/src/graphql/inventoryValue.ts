@@ -34,14 +34,6 @@ export const GET_INVENTORY_VALUE = gql`
   }
 `;
 
-// Read off Nexus's own projects rather than the relay's company list, so the page still opens when
-// the relay is down. A scoped user gets exactly one entry.
-export const GET_INVENTORY_VALUE_COMPANIES = gql`
-  query GetInventoryValueCompanies {
-    inventoryValueCompanies
-  }
-`;
-
 export const SAVE_DOORS_ON_HAND = gql`
   mutation SaveDoorsOnHand($input: SaveDoorsOnHandInput!) {
     saveDoorsOnHand(input: $input) {

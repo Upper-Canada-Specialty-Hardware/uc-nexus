@@ -14,8 +14,8 @@ export const GET_PROJECTS = gql`
       # #632: the XML the schedule on file came from, shown on the project landing card. Null on
       # projects last imported before the name was captured (#627) - the card omits the line.
       scheduleFilename
-      # #637: the GP company (tenant) that owns the job. A UC Nexus Admin sees every company's projects
-      # combined, so the picker badges the row with it; a scoped caller only ever gets their own.
+      # #637: the GP company (tenant) that owns the job. Every row is the caller's acting company since
+      # #845; read so a GP-writing screen can name the company a pick writes into.
       company
       openingCount
       gpSetupOk
@@ -77,6 +77,17 @@ export const GET_RELAY_STATUS = gql`
       lastDisconnectedAt
       lastDisconnectReason
       previewChannels
+    }
+  }
+`;
+
+// #845: the GP companies a UC NEXUS ADMIN can switch between - every company the relay serves plus
+// every company that holds a project, sorted by code. Admin only; a scoped user never asks.
+export const GET_NEXUS_COMPANIES = gql`
+  query GetNexusCompanies {
+    nexusCompanies {
+      id
+      name
     }
   }
 `;

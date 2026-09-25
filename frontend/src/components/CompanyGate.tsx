@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Box, Card, Stack, Typography } from '@mui/material';
 import { Building2 } from 'lucide-react';
 import { useIdentity } from '../hooks/useIdentity';
+import { useActingCompany } from '../company/ActingCompanyContext';
 import { monoSx } from '../theme';
 
 /**
@@ -10,15 +11,20 @@ import { monoSx } from '../theme';
  * ungated that reads as a broken app rather than an unfinished account, and the person who can fix
  * it (a UC NEXUS ADMIN, in User Management) is exactly who the notice has to name.
  *
- * UC NEXUS ADMIN is deliberately unscoped: it sees every company combined and needs no assignment.
+ * UC NEXUS ADMIN needs no assignment: since #845 they work in whichever company the app bar switcher
+ * is set to.
  */
 export default function CompanyGate({ children }: { children: ReactNode }) {
   const { isNexusAdmin, company, displayName, user } = useIdentity();
+  const { resolving } = useActingCompany();
 
   // Clerk has not resolved the user yet. The routes below already sit inside <SignedIn>, so this is
   // a frame, not a state - showing the notice here would flash it at every assigned user on load.
   if (!user) return <>{children}</>;
-  if (isNexusAdmin || company) return <>{children}</>;
+  // #845: an admin with no remembered company waits the moment it takes to read the list, rather than
+  // have the page's first queries go out with no company and show every one mixed together.
+  if (isNexusAdmin) return resolving ? null : <>{children}</>;
+  if (company) return <>{children}</>;
 
   return (
     <Box sx={{ display: 'flex', justifyContent: 'center', pt: { xs: 4, md: 8 } }}>

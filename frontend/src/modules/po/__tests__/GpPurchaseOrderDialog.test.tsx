@@ -54,7 +54,7 @@ vi.mock('../../../hooks/useIdentity', () => ({
     isTenantOwner: false,
     ownsTenant: false,
     gpBuyerId: identity.gpBuyerId,
-    company: null,
+    company: 'UCS',
     user: null,
   }),
 }));

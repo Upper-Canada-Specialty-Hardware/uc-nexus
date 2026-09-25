@@ -8,7 +8,6 @@ import { isGpJobNotOpen, type Project } from '../types/project';
 import { GpSetupBadge } from './GpSetupQuarantineBanner';
 import { GpJobStateTag } from './GpJobStateTag';
 import GpCompanyTag from './GpCompanyTag';
-import { useGpCompanyNames } from '../relay/useGpCompanyNames';
 import { monoSx } from '../theme';
 
 interface Props {
@@ -75,10 +74,9 @@ export default function ProjectPicker({
     const all = data?.projects ?? [];
     return filter ? all.filter(filter) : all;
   }, [data?.projects, filter]);
-  // #831: every user sees which GP company each project lives in, not only a UC NEXUS ADMIN - a
-  // scoped user raising a PO was left guessing which company it would land in. The names are read
-  // once here and handed to every row, rather than each row's tag asking on its own.
-  const gpCompanies = useGpCompanyNames();
+  // #831: the chosen project's GP company is named under the field, so whoever raises a PO off it
+  // knows which company it lands in. #845 dropped the tag from every option: every project offered
+  // is in the one acting company the app bar names, so a tag per row only repeated it.
   const selectedCompany = showSelectedCompany ? value?.company : null;
 
   return (
@@ -115,7 +113,6 @@ export default function ProjectPicker({
                 </Typography>
               )}
             </Box>
-            <GpCompanyTag code={p.company} gpCompanies={gpCompanies} sx={{ flexShrink: 0 }} />
             <GpSetupBadge project={p} />
             <GpJobStateTag project={p} />
           </Box>
@@ -129,7 +126,7 @@ export default function ProjectPicker({
           helperText={
             selectedCompany ? (
               <>
-                <GpCompanyTag code={selectedCompany} gpCompanies={gpCompanies} caption="GP company" />
+                <GpCompanyTag code={selectedCompany} caption="GP company" />
                 {helperText && (
                   <Box component="span" sx={{ display: 'block' }}>
                     {helperText}

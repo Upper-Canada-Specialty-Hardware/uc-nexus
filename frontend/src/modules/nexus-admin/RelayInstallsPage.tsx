@@ -450,6 +450,7 @@ export default function RelayInstallsPage() {
         <PageHeader
           title="Relay Installs"
           parent={{ label: 'UC Nexus Admin', to: '/app/nexus-admin' }}
+          allCompanies
           description="Provision a one-time enrollment token, then enroll the relay from its Setup tab."
           actions={
             <Stack direction="row" spacing={2} alignItems="center">

@@ -273,37 +273,23 @@ function renderRegister(heldRegistrations: Record<string, unknown>[] = [], entry
   );
 }
 
-/** The Company cell of the row carrying `label` - column 1, after Project. */
-async function companyCellOf(label: string) {
-  return cellOf(label, 1);
-}
-
-/** One cell of the row carrying `label`, by column index. The columns are Project, Company, PO
- *  number, Status, Vendor, Raised by, Created, Order Date, Items, and the chevron. */
+/** One cell of the row carrying `label`, by column index. The columns are Project, PO number,
+ *  Status, Vendor, Raised by, Created, Order Date, Items, and the chevron. */
 async function cellOf(label: string, index: number) {
   const tr = (await screen.findByText(label)).closest('tr');
   return within(tr as HTMLElement).getAllByRole('cell')[index];
 }
 
-// #637: the column used to read gpCompany, which a draft never has, so every draft printed "-" and
-// nothing on the register could say whose it was. It reads the tenant now.
-it('shows the tenant on a draft that has no GP company yet', async () => {
+// #845: every row is in the one company the user is working in, so the Company column only repeated
+// the heading, and a UC Nexus Admin is told their acting company instead of "All companies".
+it('has no Company column, and tells a UC Nexus Admin the company they are working in', async () => {
+  identity.company = 'TUBC';
   renderRegister();
 
-  expect(await companyCellOf('PO-REQ-001')).toHaveTextContent('TUBC');
-});
-
-it('shows the tenant on a registered row too', async () => {
-  renderRegister();
-
-  expect(await companyCellOf('PO-2001')).toHaveTextContent('UCSH');
-});
-
-// The heading answers "whose purchase orders am I looking at?", which nothing on the page said.
-it('tells a UC Nexus Admin the table is every company at once', async () => {
-  renderRegister();
-
-  expect(await screen.findByText('All companies')).toBeInTheDocument();
+  const heading = (await screen.findByText('Purchase Orders')).parentElement as HTMLElement;
+  await waitFor(() => expect(heading).toHaveTextContent('Test UBC'));
+  expect(screen.queryByText('All companies')).toBeNull();
+  expect(screen.queryByRole('columnheader', { name: 'Company' })).toBeNull();
 });
 
 // #682: the strip used to be one flat row, which said nothing about who decides a PO's status. The
@@ -330,20 +316,18 @@ it('splits the status strip into a Nexus box and a GP box', async () => {
   expect(within(gpBox).queryByRole('button', { name: 'Filter by Nexus Draft' })).toBeNull();
 });
 
-it('names the scoped user’s own GP company in the heading, and still gives them the column', async () => {
+it('names the scoped user’s own GP company in the heading', async () => {
   identity.isNexusAdmin = false;
   identity.company = 'TUBC';
   renderRegister();
 
-  // The heading carries the code and GP's name for it; the row carries the code. The name arrives
+  // The heading carries the code and GP's name for it. The name arrives
   // with the relay poll, a beat after the heading itself, so it is waited for rather than asserted
   // on the first frame.
   const heading = (await screen.findByText('Purchase Orders')).parentElement as HTMLElement;
   await waitFor(() => expect(heading).toHaveTextContent('Test UBC'));
   expect(heading).toHaveTextContent('TUBC');
   expect(screen.queryByText('All companies')).toBeNull();
-
-  expect(await companyCellOf('PO-REQ-001')).toHaveTextContent('TUBC');
 });
 
 
@@ -354,28 +338,28 @@ it('names the scoped user’s own GP company in the heading, and still gives the
 it('prints the calendar day GP holds as the order date', async () => {
   renderRegister();
 
-  expect(await cellOf('PO-2002', 7)).toHaveTextContent(new Date(2026, 0, 5).toLocaleDateString());
+  expect(await cellOf('PO-2002', 6)).toHaveTextContent(new Date(2026, 0, 5).toLocaleDateString());
 });
 
 // 1900-01-01 is what GP holds on a header nobody dated, and it is mirrored exactly as GP holds it.
 it('says so in plain words where GP holds an empty document date', async () => {
   renderRegister();
 
-  expect(await cellOf('PO-2003', 7)).toHaveTextContent('No date in GP');
+  expect(await cellOf('PO-2003', 6)).toHaveTextContent('No date in GP');
 });
 
 it('says so in plain words where a PO from GP has no vendor on it yet', async () => {
   renderRegister();
 
-  expect(await cellOf('PO-2004', 4)).toHaveTextContent('No vendor in GP');
+  expect(await cellOf('PO-2004', 3)).toHaveTextContent('No vendor in GP');
 });
 
 // A Nexus draft has no vendor until it is registered into GP, which is not a gap worth naming.
 it('leaves a Nexus draft with no vendor on the dash it has always printed', async () => {
   renderRegister();
 
-  expect(await cellOf('PO-REQ-002', 4)).toHaveTextContent('-');
-  expect(await cellOf('PO-REQ-002', 4)).not.toHaveTextContent('No vendor in GP');
+  expect(await cellOf('PO-REQ-002', 3)).toHaveTextContent('-');
+  expect(await cellOf('PO-REQ-002', 3)).not.toHaveTextContent('No vendor in GP');
 });
 
 

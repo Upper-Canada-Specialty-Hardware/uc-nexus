@@ -22,8 +22,6 @@ import { monoSx, microLabelSx } from '../theme';
 import { StaggerList, StaggerItem } from '../motion';
 import { getRecentProjectIds, pushRecentProject } from '../utils/recentProjects';
 import PageHeader from './PageHeader';
-import GpCompanyTag from './GpCompanyTag';
-import { useGpCompanyNames } from '../relay/useGpCompanyNames';
 
 interface ProjectLandingPageProps {
   title: string;
@@ -59,8 +57,6 @@ export default function ProjectLandingPage({
   parent,
 }: ProjectLandingPageProps) {
   const { data, loading, error } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
-  // #831: read once for every card, not once per card.
-  const gpCompanies = useGpCompanyNames();
   const projects = useMemo(() => data?.projects ?? [], [data?.projects]);
   const [query, setQuery] = useState('');
 
@@ -287,19 +283,15 @@ export default function ProjectLandingPage({
                             <GpJobStateTag project={p} />
                           </Box>
                         )}
-                        {/* #831: the project's GP company rides on the number line - every user
-                            sees which company a job lives in before opening it. */}
-                        {(p.projectId || p.company) && (
-                          <Box
-                            sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mt: 0.25, minWidth: 0 }}
+                        {/* #845: no GP company tag here any more. Every card on the page is in the
+                            one company the app bar names, so a tag per card only repeated it. */}
+                        {p.projectId && (
+                          <Typography
+                            component="span"
+                            sx={{ ...monoSx, color: 'text.secondary', display: 'block', mt: 0.25 }}
                           >
-                            {p.projectId && (
-                              <Typography component="span" sx={{ ...monoSx, color: 'text.secondary' }}>
-                                #{p.projectId}
-                              </Typography>
-                            )}
-                            <GpCompanyTag code={p.company} gpCompanies={gpCompanies} />
-                          </Box>
+                            #{p.projectId}
+                          </Typography>
                         )}
                         {(p.client || p.jobSiteName) && (
                           <Typography

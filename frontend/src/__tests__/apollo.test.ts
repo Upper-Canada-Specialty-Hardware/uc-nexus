@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApolloClient, ApolloLink, InMemoryCache, Observable, gql } from '@apollo/client/core';
 import { authLinks } from '../apollo';
 import { publishAuthBridge, onAuthFailure, resetAuthBridge } from '../authBridge';
+import { ACTING_COMPANY_HEADER, publishActingCompanyHeader } from '../company/actingCompany';
 
 /**
  * The auth link used to drop the Authorization header whenever Clerk could not produce a token, and
@@ -169,6 +170,59 @@ describe('auth retry link', () => {
     expect(result.errors?.[0].message).toBe('Opening not found');
     expect(attempts).toHaveLength(1);
     expect(authFailures).toBe(0);
+  });
+});
+
+describe('acting company header (#845)', () => {
+  /** A backend that records the X-Nexus-Company header of every attempt. */
+  function companyBackend() {
+    const seen: (string | undefined)[] = [];
+    const link = new ApolloLink(
+      (operation) =>
+        new Observable<ApolloLink.Result>((observer) => {
+          const headers = (operation.getContext().headers ?? {}) as Record<string, string>;
+          seen.push(headers[ACTING_COMPANY_HEADER]);
+          observer.next(OK_RESULT);
+          observer.complete();
+        }),
+    );
+    return { link, seen };
+  }
+
+  afterEach(() => {
+    publishActingCompanyHeader(null);
+  });
+
+  it("sends a UC Nexus Admin's acting company on every request", async () => {
+    publishAuthBridge({ isLoaded: true, isSignedIn: true, getToken: vi.fn(async () => 'good') });
+    publishActingCompanyHeader('TUBC');
+    const { link, seen } = companyBackend();
+
+    await run(link);
+
+    expect(seen).toEqual(['TUBC']);
+  });
+
+  it('never sends it when there is no acting company to send - every scoped user', async () => {
+    publishAuthBridge({ isLoaded: true, isSignedIn: true, getToken: vi.fn(async () => 'good') });
+    publishActingCompanyHeader(null);
+    const { link, seen } = companyBackend();
+
+    await run(link);
+
+    expect(seen).toEqual([undefined]);
+  });
+
+  it('follows a switch: the next request carries the new company', async () => {
+    publishAuthBridge({ isLoaded: true, isSignedIn: true, getToken: vi.fn(async () => 'good') });
+    const { link, seen } = companyBackend();
+
+    publishActingCompanyHeader('TUBC');
+    await run(link);
+    publishActingCompanyHeader('UCSH');
+    await run(link);
+
+    expect(seen).toEqual(['TUBC', 'UCSH']);
   });
 });
 

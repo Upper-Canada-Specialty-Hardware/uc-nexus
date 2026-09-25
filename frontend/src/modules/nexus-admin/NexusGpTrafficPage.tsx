@@ -283,6 +283,7 @@ export default function NexusGpTrafficPage() {
         <PageHeader
           title="Nexus GP Traffic"
           parent={{ label: 'UC Nexus Admin', to: '/app/nexus-admin' }}
+          allCompanies
           description="What is crossing between Nexus and GP right now, and what has already crossed."
           actions={
             <Stack direction="row" spacing={1.5} alignItems="center" sx={{ minWidth: 0 }}>

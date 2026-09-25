@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   Alert,
   Box,
@@ -6,7 +6,6 @@ import {
   Card,
   IconButton,
   InputAdornment,
-  MenuItem,
   Table,
   TableBody,
   TableCell,
@@ -23,11 +22,10 @@ import { StatCard, StatCardSkeleton } from '../../components/StatCard';
 import ProjectPicker from '../../components/ProjectPicker';
 import PageHeader from '../../components/PageHeader';
 import { useToast } from '../../components/Toast';
-import { useCompanyChoice } from '../../relay/useCompanyChoice';
+import { useActingCompany } from '../../company/ActingCompanyContext';
 import { extractGpError } from '../../graphql/gpError';
 import {
   GET_INVENTORY_VALUE,
-  GET_INVENTORY_VALUE_COMPANIES,
   REMOVE_DOORS_ON_HAND,
   SAVE_DOORS_ON_HAND,
   SET_AVERAGE_DOOR_COST,
@@ -86,17 +84,9 @@ const CURRENCY_EXACT = new Intl.NumberFormat('en-CA', {
 const TILE_ICON = { size: 18, strokeWidth: 1.75 } as const;
 
 export default function InventoryValuePage() {
-  const { data: companyData, loading: companiesLoading, error: companiesError } = useQuery<{
-    inventoryValueCompanies: string[];
-  }>(GET_INVENTORY_VALUE_COMPANIES);
-  const companies = useMemo(
-    () => companyData?.inventoryValueCompanies ?? [],
-    [companyData?.inventoryValueCompanies],
-  );
-  // The same rule the GP screens follow (#637): a scoped user is pinned to their own company, a UC
-  // NEXUS ADMIN gets the whole list defaulted to theirs. The options come from Nexus's own
-  // projects rather than the relay, so the page opens whether or not the relay is up.
-  const { options, company, setCompany, locked } = useCompanyChoice(companies);
+  // #845: the page values the company the user is working in. It used to carry its own company pick
+  // for a UC NEXUS ADMIN; the app bar switcher is that pick now, for every page at once.
+  const company = useActingCompany().company ?? '';
 
   const { data, loading, error } = useQuery<{ inventoryValue: InventoryValue }>(GET_INVENTORY_VALUE, {
     variables: { company },
@@ -105,11 +95,7 @@ export default function InventoryValuePage() {
   });
 
   const value = data?.inventoryValue;
-  const failure = error ?? companiesError;
-  const forbidden = extractGpError(failure)?.code === 'FORBIDDEN';
-  // The company list is what decides which company to read, so "still loading" has to cover it too -
-  // otherwise the page flashes "no company has any projects" on the way in every single time.
-  const settling = companiesLoading || loading;
+  const forbidden = extractGpError(error)?.code === 'FORBIDDEN';
 
   return (
     <Box>
@@ -119,32 +105,14 @@ export default function InventoryValuePage() {
           parent={{ label: 'Tenant Owner', to: '/app/tenant-owner' }}
           description="What is sitting in the building right now, in dollars: hardware on the shelves, hardware staged for shipping, and doors."
           actions={
-            locked ? (
-              <Box sx={{ textAlign: 'right' }}>
-                <Typography component="div" sx={{ ...microLabelSx, mb: 0.25 }}>
-                  Company
-                </Typography>
-                <Typography component="div" sx={{ ...monoSx, fontWeight: 600 }}>
-                  {company || '—'}
-                </Typography>
-              </Box>
-            ) : (
-              <TextField
-                select
-                size="small"
-                label="Company"
-                value={company}
-                onChange={(e) => setCompany(e.target.value)}
-                sx={{ minWidth: 140 }}
-                slotProps={{ htmlInput: { 'aria-label': 'Company' } }}
-              >
-                {options.map((c) => (
-                  <MenuItem key={c} value={c} sx={monoSx}>
-                    {c}
-                  </MenuItem>
-                ))}
-              </TextField>
-            )
+            <Box sx={{ textAlign: 'right' }}>
+              <Typography component="div" sx={{ ...microLabelSx, mb: 0.25 }}>
+                Company
+              </Typography>
+              <Typography component="div" sx={{ ...monoSx, fontWeight: 600 }}>
+                {company || '—'}
+              </Typography>
+            </Box>
           }
         />
       </FadeIn>
@@ -153,14 +121,14 @@ export default function InventoryValuePage() {
         <Alert severity="warning">
           You need the Tenant Owner or Shop Assembly Manager role to see inventory value.
         </Alert>
-      ) : failure ? (
-        <Alert severity="error">{failure.message}</Alert>
-      ) : !company && !settling ? (
-        <Alert severity="info">No GP company has any projects yet, so there is nothing to value.</Alert>
+      ) : error ? (
+        <Alert severity="error">{error.message}</Alert>
+      ) : !company && !loading ? (
+        <Alert severity="info">There is no GP company to value yet.</Alert>
       ) : (
         <>
           <Box sx={{ display: 'flex', gap: 1.5, mb: 3, flexWrap: 'wrap' }}>
-            {settling && !value ? (
+            {loading && !value ? (
               Array.from({ length: 3 }).map((_, i) => <StatCardSkeleton key={i} />)
             ) : value ? (
               <StaggerList count={3}>

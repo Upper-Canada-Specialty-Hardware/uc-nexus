@@ -207,9 +207,9 @@ const picked = {
 } as unknown as Project;
 
 describe('ProjectPicker GP company (#831)', () => {
-  // The identity mock above is a scoped user, not a UC NEXUS ADMIN: the company used to be shown to
-  // the admin only, which left everyone else guessing which company a PO would land in.
-  it('names the GP company on every option for a user who is not a UC Nexus Admin', async () => {
+  // #845: every project offered is in the one acting company the app bar names, so a tag per option
+  // only repeated it.
+  it('tags no option with a GP company', async () => {
     render(
       <MockedProvider mocks={[projectsMock, relayMock]}>
         <ProjectPicker value={null} onChange={vi.fn()} />
@@ -219,8 +219,7 @@ describe('ProjectPicker GP company (#831)', () => {
 
     for (const name of ['Main St Job', 'Elm St Job']) {
       const option = await optionFor(name);
-      expect(within(option).getByText('TUBC')).toBeInTheDocument();
-      expect(await within(option).findByText('Test UBC')).toBeInTheDocument();
+      expect(within(option).queryByTestId('gp-company-tag')).toBeNull();
     }
   });
 

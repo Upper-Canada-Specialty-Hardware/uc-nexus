@@ -14,6 +14,12 @@ interface PageHeaderProps {
   actions?: ReactNode;
   /** An extra row under the title, for chips and other page-owned detail. */
   children?: ReactNode;
+  /**
+   * #845: the page spans every GP company - users, relay installs, GP traffic, resetting data - so the
+   * app bar's company switcher does not narrow it. Said under the title, so a UC NEXUS ADMIN who has
+   * just switched company does not read these rows as that company's alone.
+   */
+  allCompanies?: boolean;
   sx?: SxProps<Theme>;
 }
 
@@ -27,6 +33,7 @@ export default function PageHeader({
   description,
   actions,
   children,
+  allCompanies = false,
   sx,
 }: PageHeaderProps) {
   return (
@@ -74,6 +81,11 @@ export default function PageHeader({
           </Typography>
         ) : (
           title
+        )}
+        {allCompanies && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            All GP companies - the company in the app bar does not apply here
+          </Typography>
         )}
         {description && (
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
