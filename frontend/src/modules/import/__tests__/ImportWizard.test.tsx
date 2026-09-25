@@ -523,8 +523,8 @@ describe('ImportWizard schedule purpose', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start classifying' }));
     // One card per manufacturer (the default grouping), and this purpose is single-axis, so one
     // Site pick finishes each card.
-    fireEvent.click(screen.getByRole('button', { name: 'Site (s)' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Site (s)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Site (2)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Site (2)' }));
     clickNext();
 
     expect(screen.getByRole('heading', { name: 'Review & Finalize' })).toBeInTheDocument();
@@ -597,7 +597,7 @@ describe('ImportWizard hardware mode', () => {
     // both selected products carry through - the guided walk-through counts two to classify.
     expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Start classifying' }));
-    expect(screen.getByText('0 of 2 fully classified')).toBeInTheDocument();
+    expect(screen.getByText('0 of 2 classified')).toBeInTheDocument();
   });
 });
 

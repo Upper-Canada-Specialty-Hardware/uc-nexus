@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react';
-import { Box, Typography } from '@mui/material';
+import { useCallback, useMemo, useState } from 'react';
+import { Alert, AlertTitle, Box, Typography } from '@mui/material';
 import { tabularSx } from '../../theme';
 import type { GroupByField } from './classificationGrouping';
 import ClassificationReview from './ClassificationReview';
 import GuidedClassification from './GuidedClassification';
-import { SCOPE_OPTIONS, ASSEMBLY_OPTIONS, isRowClassified } from './types';
+import { ASSEMBLY_OPTIONS, PO_OPTIONS, isRowClassified, poChoiceOf, splitPoChoice } from './types';
 import type { ClassificationRow, ImportPurpose } from './types';
 
 interface ClassificationStepProps {
@@ -30,17 +30,27 @@ export default function ClassificationStep({
   itemCount,
   isReimport,
 }: ClassificationStepProps) {
-  // po carries a two-axis scope + Site/Shop classification; assembly and schedule (#608) carry a
-  // single Site/Shop axis. Both are editable - there is no read-only purpose left now that the
-  // shipping composer has moved to the request workspace.
-  const options = purpose === 'po' ? SCOPE_OPTIONS : ASSEMBLY_OPTIONS;
-  // The two-axis (PO) case carries a Site/Shop second axis; a one-axis (assembly) case does not.
-  const hasSiteShop = purpose === 'po';
-  const siteShopOptions = hasSiteShop ? ASSEMBLY_OPTIONS : undefined;
-  const siteShopExemptValue = hasSiteShop ? 'BY_OTHERS' : undefined;
-  const classifyOpts = useMemo(
-    () => ({ hasSiteShop, siteShopExemptValue }),
-    [hasSiteShop, siteShopExemptValue],
+  // #734: the PO import stores two axes (scope, then Site/Shop) but asks them as one pick - UCH Shop,
+  // UCH Site or By Others. The guided card and the review see one axis: each row's two stored answers
+  // folded into one value, and a pick split back into the two before it reaches the wizard.
+  // Assembly and schedule (#608) carry the single Site/Shop axis as it is.
+  const isPo = purpose === 'po';
+  const options = isPo ? PO_OPTIONS : ASSEMBLY_OPTIONS;
+  const rows = useMemo(
+    () => (isPo ? classificationRows.map((r) => ({ ...r, classification: poChoiceOf(r) })) : classificationRows),
+    [isPo, classificationRows],
+  );
+  const classify = useCallback(
+    (keys: string[], value: string) => {
+      if (!isPo) {
+        onClassify(keys, value);
+        return;
+      }
+      const { scope, siteShop } = splitPoChoice(value);
+      onClassify(keys, scope);
+      if (siteShop) onClassifySiteShop(keys, siteShop);
+    },
+    [isPo, onClassify, onClassifySiteShop],
   );
 
   // Count the openings the lines actually belong to, not the selection set - hardware-mode imports
@@ -55,7 +65,7 @@ export default function ClassificationStep({
   const [groupByFields, setGroupByFields] = useState<GroupByField[]>(['vendorNo']);
 
   const [phase, setPhase] = useState<Phase>(() =>
-    classificationRows.some((r) => !isRowClassified(r, classifyOpts)) ? 'guided' : 'review',
+    rows.some((r) => !isRowClassified(r)) ? 'guided' : 'review',
   );
   // #586: whether review was reached by finishing the guided walk-through (vs. landing straight on it
   // when nothing needed guiding). Drives the one-time hand-off confirmation so the two phases read as
@@ -76,20 +86,28 @@ export default function ClassificationStep({
             `${itemCount} hardware lines across ${openingCount} ${openingCount === 1 ? 'opening' : 'openings'}.`}
       </Typography>
 
+      {/* #734: the directors' rule, on every purpose and in both phases. Shop is the safe default: shop
+          hardware can still ship out directly, site hardware can never be pulled into shop. */}
+      <Alert severity="warning" sx={{ mb: 2, '& .MuiAlert-message': { minWidth: 0 } }}>
+        <AlertTitle sx={{ fontWeight: 700, fontSize: '1rem', mb: 0.25 }}>
+          If unsure of UCH classification, assign Shop.
+        </AlertTitle>
+        <Typography variant="body2">
+          Shop hardware can still be shipped out directly, but site hardware can&apos;t be pulled into shop.
+        </Typography>
+      </Alert>
+
       {phase === 'guided' ? (
         <>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-            {purpose === 'po'
-              ? 'Classify each item as By UCH (in scope) or By Others (excluded from scope), and each in-scope item as Site or Shop hardware. Picking Site or Shop marks an unclassified item By UCH for you.'
-              : 'Classify each item group as Site Hardware or Shop Hardware.'}
+            {isPo
+              ? 'Classify each item group as UCH Shop, UCH Site or By Others (excluded from scope).'
+              : 'Classify each item group as Shop Hardware or Site Hardware.'}
           </Typography>
           <GuidedClassification
-            rows={classificationRows}
+            rows={rows}
             options={options}
-            onClassify={onClassify}
-            siteShopOptions={siteShopOptions}
-            onClassifySiteShop={hasSiteShop ? onClassifySiteShop : undefined}
-            siteShopExemptValue={siteShopExemptValue}
+            onClassify={classify}
             groupByFields={groupByFields}
             onChangeGroupByFields={setGroupByFields}
             onComplete={() => {
@@ -104,13 +122,10 @@ export default function ClassificationStep({
         </>
       ) : (
         <ClassificationReview
-          rows={classificationRows}
+          rows={rows}
           options={options}
-          onClassify={onClassify}
+          onClassify={classify}
           readOnly={false}
-          siteShopOptions={siteShopOptions}
-          onClassifySiteShop={hasSiteShop ? onClassifySiteShop : undefined}
-          siteShopExemptValue={siteShopExemptValue}
           groupByFields={groupByFields}
           justCompletedGuided={completedGuided}
           onBackToGuided={() => {

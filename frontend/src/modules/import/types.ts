@@ -264,16 +264,37 @@ export interface ClassificationOption {
   color: 'success' | 'info' | 'warning';
 }
 
-export const SCOPE_OPTIONS: ClassificationOption[] = [
-  // Internal value stays BY_UCSH; only the label follows the UC Hardware Inc. rename (#484).
-  { value: 'BY_UCSH', label: 'By UCH', color: 'success' },
+// #734: the PO import answers both axes (scope, then Site/Shop) with one pick. These are UI-only
+// values; ClassificationStep folds each row's two stored axes into one and splits a pick back into
+// them, so the stored BY_UCSH / BY_OTHERS and SITE_HARDWARE / SHOP_HARDWARE values are unchanged.
+// Shop comes first: if unsure, assign shop. The option order is also the key order (1, 2, 3).
+export const PO_OPTIONS: ClassificationOption[] = [
+  { value: 'UCH_SHOP', label: 'UCH Shop', color: 'info' },
+  { value: 'UCH_SITE', label: 'UCH Site', color: 'success' },
   { value: 'BY_OTHERS', label: 'By Others', color: 'warning' },
 ];
 
 export const ASSEMBLY_OPTIONS: ClassificationOption[] = [
-  { value: 'SITE_HARDWARE', label: 'Site', color: 'success' },
   { value: 'SHOP_HARDWARE', label: 'Shop', color: 'info' },
+  { value: 'SITE_HARDWARE', label: 'Site', color: 'success' },
 ];
+
+// #734: a PO row's two stored axes as one PO_OPTIONS value, or '' while either answer is missing.
+// Internal scope value stays BY_UCSH; only labels follow the UC Hardware Inc. rename (#484).
+export function poChoiceOf(row: { classification: string; siteShop?: string }): string {
+  if (row.classification === 'BY_OTHERS') return 'BY_OTHERS';
+  if (row.classification !== 'BY_UCSH') return '';
+  if (row.siteShop === 'SHOP_HARDWARE') return 'UCH_SHOP';
+  if (row.siteShop === 'SITE_HARDWARE') return 'UCH_SITE';
+  return '';
+}
+
+// #734: the stored axes a PO_OPTIONS pick writes. By Others is out of scope and carries no Site/Shop.
+export function splitPoChoice(value: string): { scope: string; siteShop: string | null } {
+  if (value === 'UCH_SHOP') return { scope: 'BY_UCSH', siteShop: 'SHOP_HARDWARE' };
+  if (value === 'UCH_SITE') return { scope: 'BY_UCSH', siteShop: 'SITE_HARDWARE' };
+  return { scope: 'BY_OTHERS', siteShop: null };
+}
 
 export interface ClassificationInputEntry {
   hardwareCategory: string;
@@ -282,18 +303,11 @@ export interface ClassificationInputEntry {
   classification: string;
 }
 
-// #568: a single definition of "this row is fully classified", shared by the guided flow, the review
-// grid's unclassified filter, and the step's phase choice so the three cannot drift. A row needs its
-// primary axis; a two-axis (PO) row also needs Site/Shop unless its primary is the exempt value
-// (By Others), which is out of scope and carries none.
-export function isRowClassified(
-  row: { classification: string; siteShop?: string },
-  opts: { hasSiteShop: boolean; siteShopExemptValue?: string },
-): boolean {
-  if (row.classification === '') return false;
-  if (!opts.hasSiteShop) return true;
-  if (opts.siteShopExemptValue && row.classification === opts.siteShopExemptValue) return true;
-  return (row.siteShop ?? '') !== '';
+// #568: a single definition of "this row is classified", shared by the guided flow, the review and
+// the step's phase choice so the three cannot drift. Since #734 both see one axis: a PO row arrives
+// with its two stored axes folded into one by poChoiceOf, which is '' until both are answered.
+export function isRowClassified(row: { classification: string }): boolean {
+  return row.classification !== '';
 }
 
 // #321: project the shared classifications Map into finalize ClassificationInput entries, keeping

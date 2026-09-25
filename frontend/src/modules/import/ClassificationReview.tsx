@@ -32,11 +32,6 @@ interface ClassificationReviewProps {
   options: ClassificationOption[];
   onClassify: (classificationKeys: string[], value: string) => void;
   readOnly?: boolean;
-  // Issue #216: optional second axis (Site/Shop). Rows whose primary classification equals
-  // siteShopExemptValue (By Others) are out of scope and carry none.
-  siteShopOptions?: ClassificationOption[];
-  onClassifySiteShop?: (classificationKeys: string[], value: string) => void;
-  siteShopExemptValue?: string;
   // The grouping the guided flow used, so review reads back the same sets the user answered.
   groupByFields: GroupByField[];
   // #586: shown once, on the hand-off from a finished guided walk-through, so guided -> review reads
@@ -77,8 +72,8 @@ function buildOptionLookups(options: ClassificationOption[]) {
   return { label, color };
 }
 
-// A proportional stacked bar + legend for one classification axis. The bar shows every share side by
-// side so "mostly By UCH, a little By Others" is a glance, not a count you have to add up.
+// A proportional stacked bar + legend for the classification. The bar shows every share side by side
+// so "mostly UCH Shop, a little By Others" is a glance, not a count you have to add up.
 function AxisRollup({ title, segments, total }: { title: string; segments: Segment[]; total: number }) {
   const shown = segments.filter((s) => s.count > 0);
   if (shown.length === 0) return null;
@@ -125,23 +120,17 @@ export default function ClassificationReview({
   options,
   onClassify,
   readOnly,
-  siteShopOptions,
-  onClassifySiteShop,
-  siteShopExemptValue,
   groupByFields,
   justCompletedGuided,
   onBackToGuided,
 }: ClassificationReviewProps) {
-  const hasSiteShop = !!siteShopOptions && !!onClassifySiteShop;
-  const classifyOpts = useMemo(() => ({ hasSiteShop, siteShopExemptValue }), [hasSiteShop, siteShopExemptValue]);
-  const scopeLookup = useMemo(() => buildOptionLookups(options), [options]);
-  const ssLookup = useMemo(() => buildOptionLookups(siteShopOptions ?? []), [siteShopOptions]);
+  const lookup = useMemo(() => buildOptionLookups(options), [options]);
 
-  const classifiedCount = useMemo(() => rows.filter((r) => isRowClassified(r, classifyOpts)).length, [rows, classifyOpts]);
+  const classifiedCount = useMemo(() => rows.filter((r) => isRowClassified(r)).length, [rows]);
   const allClassified = classifiedCount === rows.length;
   const missingCount = rows.length - classifiedCount;
 
-  // Primary axis rollup: one segment per option value, plus a muted "unclassified" tail.
+  // One segment per option value, plus a muted "unclassified" tail.
   const primarySegments = useMemo<Segment[]>(() => {
     const segs = options.map((o) => ({
       key: o.value,
@@ -154,31 +143,13 @@ export default function ClassificationReview({
     return segs;
   }, [rows, options]);
 
-  // Second axis rollup, over in-scope rows only (a By Others row carries no Site/Shop).
-  const inScopeRows = useMemo(
-    () => (hasSiteShop ? rows.filter((r) => r.classification !== '' && r.classification !== siteShopExemptValue) : []),
-    [rows, hasSiteShop, siteShopExemptValue],
-  );
-  const siteShopSegments = useMemo<Segment[]>(() => {
-    if (!hasSiteShop || !siteShopOptions) return [];
-    const segs = siteShopOptions.map((o) => ({
-      key: o.value,
-      label: o.label,
-      count: inScopeRows.filter((r) => r.siteShop === o.value).length,
-      color: o.color as ChipColor | 'muted',
-    }));
-    const missing = inScopeRows.filter((r) => (r.siteShop ?? '') === '').length;
-    if (missing > 0) segs.push({ key: '__none', label: 'Not set', count: missing, color: 'muted' });
-    return segs;
-  }, [hasSiteShop, siteShopOptions, inScopeRows]);
-
   const groups = useMemo(() => groupRowsByFields(rows, groupByFields), [rows, groupByFields]);
 
   // Groups that still need an answer open on arrival, so review lands on exactly what's unresolved;
   // fully-classified groups stay collapsed to their one-line summary. Correcting a settled group is a
   // deliberate expand, never the default.
   const [expanded, setExpanded] = useState<Set<string>>(
-    () => new Set(groups.filter((g) => g.rows.some((r) => !isRowClassified(r, classifyOpts))).map((g) => g.key)),
+    () => new Set(groups.filter((g) => g.rows.some((r) => !isRowClassified(r))).map((g) => g.key)),
   );
   const toggleExpanded = (key: string, open: boolean) =>
     setExpanded((prev) => {
@@ -225,17 +196,18 @@ export default function ClassificationReview({
   );
 
   // #733: the per-row classification cells of the shared row grid - resolved chips when read-only,
-  // toggles to correct a single line otherwise. Toggle columns are wider so both options fit unwrapped.
+  // toggles to correct a single line otherwise. The toggle column is wider so every option fits unwrapped.
   const classificationColumns: GridColDef<ClassificationRow>[] = [
     {
       field: 'classification',
-      headerName: hasSiteShop ? 'Scope' : 'Classification',
-      width: readOnly ? 120 : 190,
+      headerName: 'Classification',
+      // #734: the PO toggle carries three answers (UCH Shop / UCH Site / By Others), Site/Shop two.
+      width: readOnly ? 130 : options.length > 2 ? 290 : 150,
       sortable: false,
       renderCell: ({ row: r }) =>
         readOnly ? (
           r.classification ? (
-            <Chip size="small" color={scopeLookup.color[r.classification] ?? 'default'} label={scopeLookup.label[r.classification] ?? r.classification} />
+            <Chip size="small" color={lookup.color[r.classification] ?? 'default'} label={lookup.label[r.classification] ?? r.classification} />
           ) : (
             <Chip size="small" label="—" />
           )
@@ -244,26 +216,6 @@ export default function ClassificationReview({
         ),
     },
   ];
-  if (hasSiteShop) {
-    classificationColumns.push({
-      field: 'siteShop',
-      headerName: 'Site / Shop',
-      width: readOnly ? 150 : 250,
-      sortable: false,
-      renderCell: ({ row: r }) => {
-        if (siteShopExemptValue && r.classification === siteShopExemptValue) return <Chip size="small" label="—" />;
-        if (readOnly) {
-          return r.siteShop ? (
-            <Chip size="small" color={ssLookup.color[r.siteShop] ?? 'default'} label={ssLookup.label[r.siteShop] ?? r.siteShop} />
-          ) : (
-            <Chip size="small" label="—" />
-          );
-        }
-        return renderToggle(r.siteShop ?? '', siteShopOptions!, (value) => onClassifySiteShop!([r.classificationKey], value));
-      },
-    });
-  }
-
   return (
     <Box sx={{ minWidth: 0 }}>
       {justCompletedGuided && !handoffDismissed && (
@@ -290,20 +242,7 @@ export default function ClassificationReview({
             </Button>
           )}
         </Box>
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 3, minWidth: 0 }}>
-          <Box sx={{ flex: '1 1 240px', minWidth: 0 }}>
-            <AxisRollup
-              title={hasSiteShop ? 'Scope' : 'Classification'}
-              segments={primarySegments}
-              total={rows.length}
-            />
-          </Box>
-          {hasSiteShop && inScopeRows.length > 0 && (
-            <Box sx={{ flex: '1 1 240px', minWidth: 0 }}>
-              <AxisRollup title="Site / Shop" segments={siteShopSegments} total={inScopeRows.length} />
-            </Box>
-          )}
-        </Box>
+        <AxisRollup title="Classification" segments={primarySegments} total={rows.length} />
       </Paper>
 
       {!readOnly && !allClassified && (
@@ -315,14 +254,9 @@ export default function ClassificationReview({
       <Box sx={{ minWidth: 0 }}>
         {groups.map((g) => {
           const groupRows = g.rows;
-          const incompleteCount = groupRows.filter((r) => !isRowClassified(r, classifyOpts)).length;
-          const scopeValues = new Set(groupRows.map((r) => r.classification).filter(Boolean));
-          const uniformScope = scopeValues.size === 1 ? [...scopeValues][0] : null;
-          const groupAllExempt = uniformScope != null && uniformScope === siteShopExemptValue;
-
-          const ssEligible = groupRows.filter((r) => !siteShopExemptValue || r.classification !== siteShopExemptValue);
-          const ssValues = new Set(ssEligible.map((r) => r.siteShop).filter(Boolean));
-          const uniformSs = ssValues.size === 1 ? [...ssValues][0] : null;
+          const incompleteCount = groupRows.filter((r) => !isRowClassified(r)).length;
+          const values = new Set(groupRows.map((r) => r.classification).filter(Boolean));
+          const uniform = values.size === 1 ? [...values][0] : null;
 
           const productCodes = groupByFields.includes('productCode') ? [] : distinctProductCodes(groupRows);
           const isOpen = expanded.has(g.key);
@@ -364,21 +298,11 @@ export default function ClassificationReview({
                       {incompleteCount > 0 ? (
                         <Chip size="small" color="warning" label={`${incompleteCount} to classify`} />
                       ) : (
-                        <>
-                          <Chip
-                            size="small"
-                            color={uniformScope ? scopeLookup.color[uniformScope] : 'default'}
-                            label={uniformScope ? scopeLookup.label[uniformScope] : 'Mixed'}
-                          />
-                          {hasSiteShop && !groupAllExempt && ssEligible.length > 0 && (
-                            <Chip
-                              size="small"
-                              variant="outlined"
-                              color={uniformSs ? ssLookup.color[uniformSs] : 'default'}
-                              label={uniformSs ? ssLookup.label[uniformSs] : 'Mixed site/shop'}
-                            />
-                          )}
-                        </>
+                        <Chip
+                          size="small"
+                          color={uniform ? lookup.color[uniform] : 'default'}
+                          label={uniform ? lookup.label[uniform] : 'Mixed'}
+                        />
                       )}
                       {!readOnly && (
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.375 }}>
@@ -425,12 +349,7 @@ export default function ClassificationReview({
                     }}
                   >
                     <Typography sx={microLabelSx}>Set whole group</Typography>
-                    {renderToggle(uniformScope ?? '', options, (value) => onClassify(uniqueKeys(groupRows), value))}
-                    {hasSiteShop && siteShopOptions && !groupAllExempt && (
-                      renderToggle(uniformSs ?? '', siteShopOptions, (value) =>
-                        onClassifySiteShop!(uniqueKeys(ssEligible), value),
-                      )
-                    )}
+                    {renderToggle(uniform ?? '', options, (value) => onClassify(uniqueKeys(groupRows), value))}
                   </Box>
                 )}
 
