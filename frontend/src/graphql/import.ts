@@ -227,3 +227,18 @@ export const CREATE_GP_JOB = gql`
     }
   }
 `;
+
+// #732: the placed POs behind one product's Ordered / On Order figure, fetched when the wizard's
+// view POs popover opens. Each row carries the raw quantities; viewPOs.ts derives the PO's share.
+export const GET_PROJECT_PRODUCT_PO_LINES = gql`
+  query GetProjectProductPoLines($projectId: ID!, $hardwareCategory: String!, $productCode: String!) {
+    projectProductPoLines(projectId: $projectId, hardwareCategory: $hardwareCategory, productCode: $productCode) {
+      poId
+      poNumber
+      requestNumber
+      status
+      orderedQuantity
+      receivedQuantity
+    }
+  }
+`;

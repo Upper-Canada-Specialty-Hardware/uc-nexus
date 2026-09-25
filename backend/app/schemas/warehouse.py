@@ -69,6 +69,7 @@ from .types import (
     LocationUtilizationEntry,
     LocationVariant,
     PickSheet,
+    ProductPOLine,
     ProjectProgressByProduct,
     PullRequest,
     PurchaseOrder,
@@ -759,6 +760,32 @@ class WarehouseQueries:
                     staged_for_shipping=row["staged_for_shipping"],
                     shipped_out=row["shipped_out"],
                     returned_to_project=row["returned_to_project"],
+                )
+                for row in rows
+            ]
+
+    @strawberry.field
+    def project_product_po_lines(
+        self,
+        info: strawberry.Info,
+        project_id: strawberry.ID,
+        hardware_category: str,
+        product_code: str,
+    ) -> list[ProductPOLine]:
+        """The placed POs behind one product's Ordered and On Order figures (#732). Fetched when the
+        import wizard's view POs popover opens, one product at a time, so the grid pays nothing."""
+        with SessionLocal() as session:
+            pid = uuid.UUID(str(project_id))
+            tenancy.require_project_in_scope(session, pid, tenant_scope(info))
+            rows = warehouse_repository.get_project_product_po_lines(session, pid, hardware_category, product_code)
+            return [
+                ProductPOLine(
+                    po_id=strawberry.ID(str(row["po_id"])),
+                    po_number=row["po_number"],
+                    request_number=row["request_number"],
+                    status=row["status"],
+                    ordered_quantity=row["ordered_quantity"],
+                    received_quantity=row["received_quantity"],
                 )
                 for row in rows
             ]

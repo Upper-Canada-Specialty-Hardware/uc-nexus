@@ -1796,6 +1796,20 @@ class HardwareStatusByProduct:
 
 
 @strawberry.type
+class ProductPOLine:
+    """One placed PO's lines of a single product on a project, summed (#732). The import wizard
+    lists these behind its Ordered and On Order figures and derives each PO's share from the two
+    raw quantities with the same rule the Hardware Status rollup uses."""
+
+    po_id: strawberry.ID
+    po_number: str | None
+    request_number: str | None
+    status: POStatus
+    ordered_quantity: int
+    received_quantity: int
+
+
+@strawberry.type
 class AuditLogEntry:
     id: strawberry.ID
     project_id: strawberry.ID | None
