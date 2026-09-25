@@ -1181,7 +1181,7 @@ it('gives a custom item row no Order As and registers it with none', async () =>
   expect(screen.getAllByPlaceholderText('e.g. ML2010')).toHaveLength(1);
   expect(screen.queryByDisplayValue('Hollow metal frame 3070')).not.toBeInTheDocument();
 
-  fireEvent.change(screen.getAllByRole('spinbutton', { name: '' })[2], { target: { value: '2' } });
+  fireEvent.change(screen.getByLabelText('Quantity line 2'), { target: { value: '2' } });
   await selectTaxDetail();
   fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
 
@@ -1677,4 +1677,74 @@ it('refuses to register a draft whose project has since closed in GP, and says w
   expect(banner).toHaveTextContent('GP job JOB-100: Closed in GP');
   expect(banner).toHaveTextContent(/registering it in GP is not possible/);
   expect(screen.getByRole('button', { name: 'Register in GP' })).toBeDisabled();
+});
+
+// #833: rows copied from Excel arrive on the clipboard as tab-separated text.
+function pasteRows(text: string) {
+  fireEvent.paste(screen.getByLabelText('Paste rows from a spreadsheet'), {
+    clipboardData: { getData: () => text },
+  });
+}
+
+it('pastes spreadsheet rows into the blank row first, flags what needs fixing, and undoes the paste', async () => {
+  const { onSubmitted } = renderDialog();
+  // GP's units have loaded once the unit pick is live, which is what a pasted unit is matched against.
+  await waitFor(() => expect(screen.getByLabelText('Unit of measure line 1')).not.toBeDisabled());
+
+  fireEvent.click(screen.getByRole('button', { name: 'Paste from spreadsheet' }));
+  pasteRows(
+    'Item Number\tDescription\tQty\tU of M\tUnit Cost\tOrder As\r\n' +
+      'HINGE\tButt hinge\t12\tbox\t$4.50\tBB1279\r\n' +
+      'CLOSER\tDoor closer\t1.5\tPair\tTBD\t\r\n',
+  );
+
+  // The dialog's own blank row took the first line; the second went after it.
+  const itemNumbers = screen.getAllByPlaceholderText('e.g. Hinges');
+  expect(itemNumbers).toHaveLength(2);
+  expect(itemNumbers[0]).toHaveValue('HINGE');
+  expect(itemNumbers[1]).toHaveValue('CLOSER');
+  expect(screen.getByLabelText('Unit of measure line 1')).toHaveValue('Box');
+  expect(screen.getByLabelText('Unit cost line 1')).toHaveValue('4.50');
+  // A cost that is not a number stays in its cell as pasted, so the buyer can see what to fix.
+  expect(screen.getByLabelText('Unit cost line 2')).toHaveValue('TBD');
+  expect(screen.getByText('Not a number')).toBeInTheDocument();
+
+  // Flagged straight away, before any save: a part quantity and a unit GP does not hold.
+  expect(screen.getByText('Whole number')).toBeInTheDocument();
+  expect(screen.getByText('Not a GP unit')).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      /Added 2 lines from the paste \(1 into an empty row\)\. Header row skipped\. 3 cells need fixing before this draft can be saved\./,
+    ),
+  ).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Create Draft' }));
+  expect(onSubmitted).not.toHaveBeenCalled();
+
+  // Fixing a cell clears its flag as it is changed.
+  fireEvent.change(screen.getByLabelText('Unit of measure line 2'), { target: { value: 'Each' } });
+  expect(screen.queryByText('Not a GP unit')).toBeNull();
+  expect(screen.getByText(/2 cells need fixing/)).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Undo paste' }));
+  expect(screen.getAllByPlaceholderText('e.g. Hinges')).toHaveLength(1);
+  expect(screen.getByPlaceholderText('e.g. Hinges')).toHaveValue('');
+  expect(screen.queryByText(/from the paste/)).toBeNull();
+});
+
+it('gives pasted rows on a project PO the cost code picked for all lines', async () => {
+  renderDialog({ defaultProjectId: 'p1' }, [...baseMocks(), costCodesMock()]);
+  const listbox = await openSelect('Cost code for all lines (optional)');
+  fireEvent.click(within(listbox).getByText('310-000 · Hardware'));
+  await closeSelect();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Paste from spreadsheet' }));
+  pasteRows('A1\tFirst\t2\tEach\t5\t\nB2\tSecond\t3\tEach\t6\t');
+
+  expect(screen.getByLabelText('Cost code line 1')).toHaveValue('310-000-3');
+  expect(screen.getByLabelText('Cost code line 2')).toHaveValue('310-000-3');
+  expect(screen.getByLabelText('Job cost line 2')).toBeChecked();
+  expect(
+    screen.getByText(/Added 2 lines from the paste \(1 into an empty row\)\. Every line is ready\./),
+  ).toBeInTheDocument();
 });
