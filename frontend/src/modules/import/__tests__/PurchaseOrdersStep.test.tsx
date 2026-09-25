@@ -50,6 +50,7 @@ const LINE_CONTEXT: Map<string, LineContext> = new Map([
         ['ON_ORDER', 6],
         ['IN_INVENTORY', 1],
       ]),
+      existingCommitted: 7,
     },
   ],
 ]);
@@ -61,11 +62,13 @@ function Harness({
   costCodes = [],
   costCodeWaiverReason = null,
   selectionTotals = totalsOf(initial),
+  lineContext = LINE_CONTEXT,
 }: {
   initial: DraftGroup[];
   costCodes?: GpCostCode[];
   costCodeWaiverReason?: string | null;
   selectionTotals?: Map<string, number>;
+  lineContext?: Map<string, LineContext>;
 }) {
   const [groups, setGroups] = useState(initial);
   const seq = useRef(0);
@@ -80,7 +83,7 @@ function Harness({
         unitCostOverrides={new Map()}
         orderAsValues={new Map()}
         selectionTotals={selectionTotals}
-        lineContextByPk={LINE_CONTEXT}
+        lineContextByPk={lineContext}
         onToggleIncluded={(id) => setGroups((g) => draftOps.toggleIncluded(g, id))}
         onRenameDraft={(id, l) => setGroups((g) => draftOps.renameDraft(g, id, l))}
         onUpdateDraftInfo={(id, f, v) => setGroups((g) => draftOps.updateInfo(g, id, f, v))}
@@ -386,5 +389,42 @@ describe('PurchaseOrdersStep organizing', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: /^Remove draft$/i }));
     expect(screen.queryByDisplayValue('BOLT')).not.toBeInTheDocument();
     expect(screen.getByDisplayValue('ACME')).toBeInTheDocument();
+  });
+});
+
+// ---- Over-buying (#736) ----
+
+describe('PurchaseOrdersStep over-buying', () => {
+  // HG-100: the schedule needs 12 and 7 are already committed, so a draft of 6 would make it 13.
+  const context = (existingCommitted: number) =>
+    new Map<string, LineContext>([
+      ['HG-100|HINGE', { ...(LINE_CONTEXT.get('HG-100|HINGE') as LineContext), existingCommitted }],
+    ]);
+
+  it('outlines a card whose lines would take the project past its need, and marks the line', () => {
+    const { container } = render(
+      <Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 6 })]} lineContext={context(7)} />,
+    );
+
+    expect(container.querySelector('[data-over-buy="true"]')).not.toBeNull();
+    expect(screen.getByText(/1 line on this draft would take the project past/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Lifecycle breakdown for HG-100')).toHaveTextContent('Over-committed by 1');
+  });
+
+  it('leaves a card alone when the drafts stay within the need', () => {
+    const { container } = render(
+      <Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 5 })]} lineContext={context(7)} />,
+    );
+
+    expect(container.querySelector('[data-over-buy="true"]')).toBeNull();
+    expect(screen.queryByText(/Over-committed/)).not.toBeInTheDocument();
+  });
+
+  it('does not flag an excluded draft, which orders nothing', () => {
+    const { container } = render(
+      <Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 6 }, false)]} lineContext={context(7)} />,
+    );
+
+    expect(container.querySelector('[data-over-buy="true"]')).toBeNull();
   });
 });
