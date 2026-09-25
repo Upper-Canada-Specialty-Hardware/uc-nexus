@@ -37,7 +37,21 @@ function totalsOf(groups: DraftGroup[]): Map<string, number> {
 }
 
 const LINE_CONTEXT: Map<string, LineContext> = new Map([
-  ['HG-100|HINGE', { needed: 4, onOrder: 6, received: 2, available: 1 }],
+  [
+    'HG-100|HINGE',
+    {
+      needed: 4,
+      onOrder: 6,
+      received: 2,
+      available: 1,
+      projectNeeded: 12,
+      ordered: 8,
+      lifecycleBreakdown: new Map([
+        ['ON_ORDER', 6],
+        ['IN_INVENTORY', 1],
+      ]),
+    },
+  ],
 ]);
 
 /** Renders the step with real draftOps wiring, so a menu action's effect on the drafts is observable
@@ -285,16 +299,25 @@ describe('PurchaseOrdersStep organizing', () => {
 
     // The columns replace the old per-row info popover outright.
     expect(screen.queryByRole('button', { name: /Reconciliation context/i })).not.toBeInTheDocument();
-    for (const head of ['Need', 'On Order', 'Rcvd', 'Avail']) {
+    // #738: the reconciliation step's columns under its names - Selected Qty, Needed, Ordered.
+    for (const head of ['Selected Qty', 'Needed', 'Ordered', 'On Order', 'Rcvd', 'Avail']) {
       expect(screen.getByText(head)).toBeInTheDocument();
     }
 
-    // The four values sit between Total Cost and the row menu, in needed / onOrder / received /
-    // available order - LINE_CONTEXT's 4 / 6 / 2 / 1 for HG-100.
+    // The six values sit between Total Cost and the row menu, in selected / project needed /
+    // ordered / on order / received / available order - LINE_CONTEXT's 4 / 12 / 8 / 6 / 2 / 1.
     const row = (screen.getByText('HG-100').closest('.po-cell') as HTMLElement).parentElement as HTMLElement;
     const cells = Array.from(row.children) as HTMLElement[];
-    expect(cells).toHaveLength(11);
-    expect(cells.slice(6, 10).map((c) => c.textContent)).toEqual(['4', '6', '2', '1']);
+    expect(cells).toHaveLength(13);
+    expect(cells.slice(6, 12).map((c) => c.textContent)).toEqual(['4', '12', '8', '6', '2', '1']);
+  });
+
+  it('shows the Lifecycle Breakdown under the line, in the reconciliation step wording (#738)', () => {
+    render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
+
+    const chips = screen.getByLabelText('Lifecycle breakdown for HG-100');
+    expect(chips).toHaveTextContent('On Order: 6');
+    expect(chips).toHaveTextContent('In Inventory: 1');
   });
 
   // ---- Cost code required (#627) ----

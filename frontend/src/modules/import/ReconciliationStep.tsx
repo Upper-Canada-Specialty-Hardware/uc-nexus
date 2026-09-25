@@ -8,7 +8,8 @@ import {
   type GridRowSelectionModel,
 } from '@mui/x-data-grid';
 import type { HardwareStatusRow, ImportPurpose, ReconciliationRow } from './types';
-import { buildProductReconRows, STATUS_PRIORITY } from './reconciliation';
+import { buildProductReconRows } from './reconciliation';
+import LifecycleChips from './LifecycleChips';
 import type { ProductReconRow } from './reconciliation';
 import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 import { monoSx, tabularSx } from '../../theme';
@@ -55,44 +56,6 @@ interface ReconciliationStepProps {
 // ---- Aggregated row type (per-product across project) ----
 
 // ---- Helpers ----
-
-const STATUS_COLOR_MAP: Record<string, 'success' | 'warning' | 'error' | 'info' | 'default'> = {
-  // Dashboard-sourced states (what the chips normally show).
-  NOT_PURCHASED: 'default',
-  PO_DRAFTED: 'info',
-  ON_ORDER: 'info',
-  IN_INVENTORY: 'success',
-  SENT_TO_SHOP: 'success',
-  STAGED: 'info',
-  SHIPPED_OUT: 'success',
-  // Legacy recon fallback states.
-  ORDERED: 'info',
-  RECEIVED: 'success',
-  ASSEMBLING: 'warning',
-  ASSEMBLED: 'success',
-  SHIPPING_OUT: 'warning',
-  NOT_COVERED: 'error',
-  BY_OTHERS: 'default',
-};
-
-const STATUS_LABEL_MAP: Record<string, string> = {
-  // Dashboard-sourced states (mirror the admin Hardware Status column names).
-  NOT_PURCHASED: 'Not Purchased',
-  PO_DRAFTED: 'PO Drafted',
-  ON_ORDER: 'On Order',
-  IN_INVENTORY: 'In Inventory',
-  SENT_TO_SHOP: 'Sent to Shop',
-  STAGED: 'Staged',
-  SHIPPED_OUT: 'Shipped Out',
-  // Legacy recon fallback states.
-  ORDERED: 'Ordered',
-  RECEIVED: 'In Inventory',
-  ASSEMBLING: 'Pulled for Assembly',
-  ASSEMBLED: 'Built onto Opening',
-  SHIPPING_OUT: 'Pulled for Shipping',
-  NOT_COVERED: 'Gap Remaining',
-  BY_OTHERS: 'By Others',
-};
 
 // What this step is FOR, said under the heading rather than hidden behind an info icon. Only po and
 // assembly reach this step; the schedule replace path (#608) has no reconciliation.
@@ -352,16 +315,7 @@ export default function ReconciliationStep({
         const breakdown = row.lifecycleBreakdown;
         return (
           <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap', alignItems: 'center', py: 0.5 }}>
-            {Array.from(breakdown.entries())
-              .sort(([a], [b]) => (STATUS_PRIORITY[a] ?? 99) - (STATUS_PRIORITY[b] ?? 99))
-              .map(([status, qty]) => (
-                <Chip
-                  key={status}
-                  size="small"
-                  label={`${STATUS_LABEL_MAP[status] ?? status}: ${qty}`}
-                  color={STATUS_COLOR_MAP[status] ?? 'default'}
-                />
-              ))}
+            <LifecycleChips breakdown={breakdown} />
             {row.overCommitAmount > 0 && (
               <Tooltip
                 arrow
