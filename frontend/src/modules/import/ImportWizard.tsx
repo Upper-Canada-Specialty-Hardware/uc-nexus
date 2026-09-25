@@ -76,6 +76,7 @@ import type { GpCostCode } from './DraftOrganizer';
 import WizardNav from './WizardNav';
 import OverOrderWarningModal from './OverOrderWarningModal';
 import { buildProductReconRows, type ProductReconRow } from './reconciliation';
+import type { LineContext } from './DraftOrganizer';
 import { buildFlagLines, composableRows, type CoverageRow } from './composer';
 
 // ---- Local Types ----
@@ -696,25 +697,6 @@ export default function ImportWizard({
     [vendorGroups, orderQtyOverrides],
   );
 
-  // #632: step 6's per-line recon context - needed / already ordered / received / available per
-  // productKey, from state the wizard already holds (no new query). Zeros are truthful on a fresh
-  // import: the project is new, so nothing is ordered, received, or on a shelf yet.
-  const poLineContext = useMemo(() => {
-    const map = new Map<string, { needed: number; onOrder: number; received: number; available: number }>();
-    if (purpose !== 'po') return map;
-    for (const [pk, meta] of poProductCatalog) {
-      const igk = `${meta.hardwareCategory}|${meta.productCode}`;
-      const status = hardwareStatusByProduct.get(igk);
-      map.set(pk, {
-        needed: poSelectionTotals.get(pk) ?? 0,
-        onOrder: status?.onOrder ?? 0,
-        received: status?.receivedQuantity ?? 0,
-        available: availableByProduct.get(igk) ?? status?.onHand ?? 0,
-      });
-    }
-    return map;
-  }, [purpose, poProductCatalog, poSelectionTotals, hardwareStatusByProduct, availableByProduct]);
-
   // #570: re-seed the PO drafts when, and only when, the aggregated selection changes. Held against a
   // signature so Back-and-forward through the wizard preserves the buyer's slicing; a real change to
   // the selection (different openings, a reclassification) re-seeds from the new manufacturer groups.
@@ -870,7 +852,10 @@ export default function ImportWizard({
   // selection would push past the project total. Over-ordering is a warning, not a block, so this
   // no longer gates Next - it decides whether leaving the reconciliation step opens the confirm
   // modal. Defined above handleNext because that callback depends on it.
-  const reconOverOrderProducts = useMemo<ProductReconRow[]>(() => {
+  //
+  // #738: the full rollup, unfiltered, also feeds step 5's draft lines their Needed / Ordered /
+  // Lifecycle Breakdown, so the two steps show one set of numbers rather than two calculations.
+  const poReconRows = useMemo<ProductReconRow[]>(() => {
     if (purpose !== 'po' || !isReimport) return [];
     return buildProductReconRows({
       purpose,
@@ -882,8 +867,43 @@ export default function ImportWizard({
       // #627: cap a product's newly-ordered qty at its Order Qty, so the over-order warning measures
       // what will actually be ordered. Empty in openings mode, so it changes nothing there.
       orderQtyOverrides,
-    }).filter((r) => r.overOrdersProject);
+    });
   }, [purpose, isReimport, reconciliationRows, selectedHardwareItems, parsed, selectedReconItems, hardwareStatusByProduct, orderQtyOverrides]);
+
+  const reconOverOrderProducts = useMemo(() => poReconRows.filter((r) => r.overOrdersProject), [poReconRows]);
+
+  // #632: step 6's per-line recon context - needed / already ordered / received / available per
+  // productKey, from state the wizard already holds (no new query). Zeros are truthful on a fresh
+  // import: the project is new, so nothing is ordered, received, or on a shelf yet.
+  //
+  // #738: plus the reconciliation step's own columns - the project-wide Needed, Ordered and the
+  // Lifecycle Breakdown - taken from the same rollup that step renders. On a fresh import there is no
+  // rollup; Needed is then the whole parsed schedule's total, and nothing is ordered yet.
+  const poLineContext = useMemo(() => {
+    const map = new Map<string, LineContext>();
+    if (purpose !== 'po') return map;
+    const reconById = new Map(poReconRows.map((r) => [r.id, r]));
+    const scheduleTotal = new Map<string, number>();
+    for (const hi of parsed?.hardwareItems ?? []) {
+      const k = itemGroupKey(hi);
+      scheduleTotal.set(k, (scheduleTotal.get(k) ?? 0) + hi.item_quantity);
+    }
+    for (const [pk, meta] of poProductCatalog) {
+      const igk = `${meta.hardwareCategory}|${meta.productCode}`;
+      const status = hardwareStatusByProduct.get(igk);
+      const recon = reconById.get(igk);
+      map.set(pk, {
+        needed: poSelectionTotals.get(pk) ?? 0,
+        onOrder: status?.onOrder ?? 0,
+        received: status?.receivedQuantity ?? 0,
+        available: availableByProduct.get(igk) ?? status?.onHand ?? 0,
+        projectNeeded: recon?.quantityRequiredByProject ?? scheduleTotal.get(igk) ?? 0,
+        ordered: recon?.projectTotalOrdered ?? (status ? status.onOrder + status.receivedQuantity : 0),
+        lifecycleBreakdown: recon?.lifecycleBreakdown ?? new Map(),
+      });
+    }
+    return map;
+  }, [purpose, poReconRows, parsed, poProductCatalog, poSelectionTotals, hardwareStatusByProduct, availableByProduct]);
 
   const advanceToNextStep = useCallback(() => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);

@@ -29,6 +29,7 @@ import { FileText, MoreVertical, Paperclip, X } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import ViewPOsButton from './ViewPOsButton';
+import LifecycleChips from './LifecycleChips';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import type { DraftAttachmentType, DraftGroup, DraftInfoField } from './types';
@@ -73,6 +74,12 @@ export interface LineContext {
   received: number;
   /** On the shelf and unclaimed (reservation-aware where loaded). */
   available: number;
+  /** #738: the project's whole-schedule need - the reconciliation step's Needed. */
+  projectNeeded: number;
+  /** #738: everything placed on a PO, received included - the reconciliation step's Ordered. */
+  ordered: number;
+  /** #738: where the product's units stand, schedule to shipped - the reconciliation's chips. */
+  lifecycleBreakdown: Map<string, number>;
 }
 
 interface DraftLine {
@@ -481,13 +488,13 @@ export function DraftCard({
           <Box
             sx={{
               display: 'grid',
-              minWidth: 640,
+              minWidth: 760,
               // #639: a size container, so the cqw type ramp above resolves against the card's width.
               containerType: 'inline-size',
               // The three text columns absorb the slack; every numeric track is content-sized, so the
               // 1-4 digit recon columns spend only the width their header needs.
               gridTemplateColumns:
-                'minmax(0, 1.15fr) minmax(0, 1.25fr) minmax(0, 1.05fr) clamp(54px, 7cqw, 86px) clamp(76px, 9.5cqw, 116px) auto auto auto auto auto 36px',
+                'minmax(0, 1.15fr) minmax(0, 1.25fr) minmax(0, 1.05fr) clamp(54px, 7cqw, 86px) clamp(76px, 9.5cqw, 116px) auto auto auto auto auto auto auto 36px',
               '& .po-head': {
                 ...microLabelSx,
                 fontSize: FS_HEAD,
@@ -515,6 +522,19 @@ export function DraftCard({
               '& .po-mono .MuiInputBase-input': { fontSize: FS_MONO },
               // #639: a hairline sets the read-only project-wide block apart from the order columns.
               '& .po-sep': { borderLeft: '1px solid', borderLeftColor: 'divider' },
+              // #738: a line whose Lifecycle Breakdown follows on its own row hands the rule to that row.
+              '& .po-line-joined > .po-cell': { borderBottom: 'none' },
+              '& .po-lifecycle': {
+                gridColumn: '1 / -1',
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                gap: 0.5,
+                px: 1,
+                pb: 0.75,
+                borderBottom: '1px solid',
+                borderColor: 'divider',
+              },
             }}
           >
             <Box className="po-head">Order As</Box>
@@ -523,8 +543,16 @@ export function DraftCard({
             <Box className="po-head po-num">Qty</Box>
             <Box className="po-head po-num">Unit Cost</Box>
             <Box className="po-head po-num">Total Cost</Box>
-            <Box className="po-head po-num po-sep" title="Needed by schedule">
-              Need
+            {/* #738: the reconciliation step's columns, under its names. Selected Qty is what this
+                wizard pass picked; Needed and Ordered are the project's whole-schedule totals. */}
+            <Box className="po-head po-num po-sep" title="Selected Qty: what this product needs across the openings selected for this pass">
+              Selected Qty
+            </Box>
+            <Box className="po-head po-num" title="Needed: the project's total for this product across its whole hardware schedule">
+              Needed
+            </Box>
+            <Box className="po-head po-num" title="Ordered: placed on a GP PO project-wide, everything received since included">
+              Ordered
             </Box>
             <Box className="po-head po-num" title="Already on order project-wide">
               On Order
@@ -541,113 +569,142 @@ export function DraftCard({
               // #639: the recon numbers ride the row itself. Zeros are truthful on a fresh import, so an
               // absent entry falls back to 0 rather than blanking the column.
               const ctx = lineContextByPk.get(line.pk);
+              const lifecycle = ctx?.lifecycleBreakdown;
+              const hasLifecycle = (lifecycle?.size ?? 0) > 0;
               return (
                 <Box key={line.pk} sx={{ display: 'contents' }}>
-                  <Box className="po-cell po-mono">
-                    <OrderAsAutocomplete
-                      value={orderAsValues.get(line.pk) ?? ''}
-                      onChange={(next) => onUpdateOrderAs(line.pk, next)}
-                      options={priorMap.get(line.productCode) ?? []}
-                      placeholder="Order as"
-                    />
+                  <Box className={hasLifecycle ? 'po-line-joined' : undefined} sx={{ display: 'contents' }}>
+                    <Box className="po-cell po-mono">
+                      <OrderAsAutocomplete
+                        value={orderAsValues.get(line.pk) ?? ''}
+                        onChange={(next) => onUpdateOrderAs(line.pk, next)}
+                        options={priorMap.get(line.productCode) ?? []}
+                        placeholder="Order as"
+                      />
+                    </Box>
+                    <Box className="po-cell">
+                      <Typography variant="body2" sx={{ ...monoSx, fontSize: FS_MONO }}>
+                        {line.productCode}
+                      </Typography>
+                    </Box>
+                    <Box className="po-cell">
+                      <Typography variant="body2" sx={{ fontSize: FS_CELL }}>
+                        {line.hardwareCategory}
+                      </Typography>
+                    </Box>
+                    <Box className="po-cell po-cell-right po-num">
+                      {/* #632: Qty is editable in place, ceilinged at the product's selection pool minus
+                          what sibling drafts hold. Lowering proceeds with less; widening the scope stays
+                          the selection steps' job. */}
+                      <TextField
+                        size="small"
+                        type="number"
+                        value={line.qty}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          if (!Number.isNaN(val)) onUpdateLineQty(draft.id, line.pk, val);
+                        }}
+                        slotProps={{
+                          input: { sx: tabularSx },
+                          htmlInput: {
+                            min: 0,
+                            max:
+                              (selectionTotals.get(line.pk) ?? line.qty) -
+                              ((heldByProduct.get(line.pk) ?? line.qty) - line.qty),
+                            step: 1,
+                            'aria-label': `Quantity of ${line.productCode}`,
+                          },
+                        }}
+                        sx={{ width: '100%' }}
+                      />
+                    </Box>
+                    <Box className="po-cell po-cell-right po-num">
+                      <TextField
+                        size="small"
+                        type="number"
+                        value={line.unitCost}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          if (!Number.isNaN(val) && val >= 0) onUpdateUnitCost(line.pk, val);
+                        }}
+                        slotProps={{
+                          input: {
+                            startAdornment: <InputAdornment position="start">$</InputAdornment>,
+                            sx: tabularSx,
+                          },
+                          htmlInput: { min: 0, step: 0.01 },
+                        }}
+                        sx={{ width: '100%' }}
+                      />
+                    </Box>
+                    <Box className="po-cell po-cell-right po-num">
+                      <Typography variant="body2" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                        ${line.totalCost.toFixed(2)}
+                      </Typography>
+                    </Box>
+                    <Box className="po-cell po-cell-right po-num po-sep">
+                      <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                        {ctx?.needed ?? 0}
+                      </Typography>
+                    </Box>
+                    <Box className="po-cell po-cell-right po-num">
+                      <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                        {ctx?.projectNeeded ?? 0}
+                      </Typography>
+                    </Box>
+                    <Box className="po-cell po-cell-right po-num">
+                      <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                        {ctx?.ordered ?? 0}
+                      </Typography>
+                      <ViewPOsButton
+                        projectId={projectId}
+                        hardwareCategory={line.hardwareCategory}
+                        productCode={line.productCode}
+                        figure="ordered"
+                        count={ctx?.ordered ?? 0}
+                      />
+                    </Box>
+                    <Box className="po-cell po-cell-right po-num">
+                      <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                        {ctx?.onOrder ?? 0}
+                      </Typography>
+                      {/* #732: the POs behind the figure, each linked into the PO table. */}
+                      <ViewPOsButton
+                        projectId={projectId}
+                        hardwareCategory={line.hardwareCategory}
+                        productCode={line.productCode}
+                        figure="onOrder"
+                        count={ctx?.onOrder ?? 0}
+                      />
+                    </Box>
+                    <Box className="po-cell po-cell-right po-num">
+                      <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                        {ctx?.received ?? 0}
+                      </Typography>
+                    </Box>
+                    <Box className="po-cell po-cell-right po-num">
+                      <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                        {ctx?.available ?? 0}
+                      </Typography>
+                    </Box>
+                    <Box className="po-cell po-cell-right" sx={{ px: 0 }}>
+                      <IconButton
+                        size="small"
+                        aria-label={`Line actions for ${line.productCode}`}
+                        onClick={(e) => setRowMenu({ anchor: e.currentTarget, line })}
+                      >
+                        <MoreVertical size={16} strokeWidth={1.75} />
+                      </IconButton>
+                    </Box>
                   </Box>
-                  <Box className="po-cell">
-                    <Typography variant="body2" sx={{ ...monoSx, fontSize: FS_MONO }}>
-                      {line.productCode}
-                    </Typography>
-                  </Box>
-                  <Box className="po-cell">
-                    <Typography variant="body2" sx={{ fontSize: FS_CELL }}>
-                      {line.hardwareCategory}
-                    </Typography>
-                  </Box>
-                  <Box className="po-cell po-cell-right po-num">
-                    {/* #632: Qty is editable in place, ceilinged at the product's selection pool minus
-                        what sibling drafts hold. Lowering proceeds with less; widening the scope stays
-                        the selection steps' job. */}
-                    <TextField
-                      size="small"
-                      type="number"
-                      value={line.qty}
-                      onChange={(e) => {
-                        const val = parseInt(e.target.value, 10);
-                        if (!Number.isNaN(val)) onUpdateLineQty(draft.id, line.pk, val);
-                      }}
-                      slotProps={{
-                        input: { sx: tabularSx },
-                        htmlInput: {
-                          min: 0,
-                          max:
-                            (selectionTotals.get(line.pk) ?? line.qty) -
-                            ((heldByProduct.get(line.pk) ?? line.qty) - line.qty),
-                          step: 1,
-                          'aria-label': `Quantity of ${line.productCode}`,
-                        },
-                      }}
-                      sx={{ width: '100%' }}
-                    />
-                  </Box>
-                  <Box className="po-cell po-cell-right po-num">
-                    <TextField
-                      size="small"
-                      type="number"
-                      value={line.unitCost}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        if (!Number.isNaN(val) && val >= 0) onUpdateUnitCost(line.pk, val);
-                      }}
-                      slotProps={{
-                        input: {
-                          startAdornment: <InputAdornment position="start">$</InputAdornment>,
-                          sx: tabularSx,
-                        },
-                        htmlInput: { min: 0, step: 0.01 },
-                      }}
-                      sx={{ width: '100%' }}
-                    />
-                  </Box>
-                  <Box className="po-cell po-cell-right po-num">
-                    <Typography variant="body2" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                      ${line.totalCost.toFixed(2)}
-                    </Typography>
-                  </Box>
-                  <Box className="po-cell po-cell-right po-num po-sep">
-                    <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                      {ctx?.needed ?? 0}
-                    </Typography>
-                  </Box>
-                  <Box className="po-cell po-cell-right po-num">
-                    <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                      {ctx?.onOrder ?? 0}
-                    </Typography>
-                    {/* #732: the POs behind the figure, each linked into the PO table. */}
-                    <ViewPOsButton
-                      projectId={projectId}
-                      hardwareCategory={line.hardwareCategory}
-                      productCode={line.productCode}
-                      figure="onOrder"
-                      count={ctx?.onOrder ?? 0}
-                    />
-                  </Box>
-                  <Box className="po-cell po-cell-right po-num">
-                    <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                      {ctx?.received ?? 0}
-                    </Typography>
-                  </Box>
-                  <Box className="po-cell po-cell-right po-num">
-                    <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                      {ctx?.available ?? 0}
-                    </Typography>
-                  </Box>
-                  <Box className="po-cell po-cell-right" sx={{ px: 0 }}>
-                    <IconButton
-                      size="small"
-                      aria-label={`Line actions for ${line.productCode}`}
-                      onClick={(e) => setRowMenu({ anchor: e.currentTarget, line })}
-                    >
-                      <MoreVertical size={16} strokeWidth={1.75} />
-                    </IconButton>
-                  </Box>
+                  {/* #738: the reconciliation step's Lifecycle Breakdown, on its own full-width row so
+                      the chips wrap instead of stretching a column. Omitted while there is nothing to
+                      show, which is every line of a fresh import. */}
+                  {hasLifecycle && lifecycle && (
+                    <Box className="po-lifecycle" aria-label={`Lifecycle breakdown for ${line.productCode}`}>
+                      <LifecycleChips breakdown={lifecycle} />
+                    </Box>
+                  )}
                 </Box>
               );
             })}
