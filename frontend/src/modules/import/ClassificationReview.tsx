@@ -8,19 +8,16 @@ import {
   Button,
   Chip,
   Paper,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
 } from '@mui/material';
+import type { GridColDef } from '@mui/x-data-grid';
 import { Check, ChevronDown, Pencil, TriangleAlert } from 'lucide-react';
 import { distinctProductCodes, groupRowsByFields, type GroupByField } from './classificationGrouping';
 import { type ClassificationOption, type ClassificationRow, isRowClassified } from './types';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import ClassificationRowsGrid from './ClassificationRowsGrid';
 
 // #586: the review screen. The guided card flow is where classifications are made; this is where the
 // user reads back everything they decided and corrects only what's wrong. It leads with a summary
@@ -227,6 +224,46 @@ export default function ClassificationReview({
     </ToggleButtonGroup>
   );
 
+  // #733: the per-row classification cells of the shared row grid - resolved chips when read-only,
+  // toggles to correct a single line otherwise. Toggle columns are wider so both options fit unwrapped.
+  const classificationColumns: GridColDef<ClassificationRow>[] = [
+    {
+      field: 'classification',
+      headerName: hasSiteShop ? 'Scope' : 'Classification',
+      width: readOnly ? 120 : 190,
+      sortable: false,
+      renderCell: ({ row: r }) =>
+        readOnly ? (
+          r.classification ? (
+            <Chip size="small" color={scopeLookup.color[r.classification] ?? 'default'} label={scopeLookup.label[r.classification] ?? r.classification} />
+          ) : (
+            <Chip size="small" label="—" />
+          )
+        ) : (
+          renderToggle(r.classification, options, (value) => onClassify([r.classificationKey], value))
+        ),
+    },
+  ];
+  if (hasSiteShop) {
+    classificationColumns.push({
+      field: 'siteShop',
+      headerName: 'Site / Shop',
+      width: readOnly ? 150 : 250,
+      sortable: false,
+      renderCell: ({ row: r }) => {
+        if (siteShopExemptValue && r.classification === siteShopExemptValue) return <Chip size="small" label="—" />;
+        if (readOnly) {
+          return r.siteShop ? (
+            <Chip size="small" color={ssLookup.color[r.siteShop] ?? 'default'} label={ssLookup.label[r.siteShop] ?? r.siteShop} />
+          ) : (
+            <Chip size="small" label="—" />
+          );
+        }
+        return renderToggle(r.siteShop ?? '', siteShopOptions!, (value) => onClassifySiteShop!([r.classificationKey], value));
+      },
+    });
+  }
+
   return (
     <Box sx={{ minWidth: 0 }}>
       {justCompletedGuided && !handoffDismissed && (
@@ -397,67 +434,7 @@ export default function ClassificationReview({
                   </Box>
                 )}
 
-                <Box sx={{ overflowX: 'auto' }}>
-                  <Table size="small" sx={{ '& td, & th': { px: 1 } }}>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell sx={microLabelSx}>Opening</TableCell>
-                        <TableCell sx={microLabelSx}>Hand</TableCell>
-                        <TableCell sx={microLabelSx}>Door Material</TableCell>
-                        <TableCell sx={microLabelSx}>Frame Type</TableCell>
-                        <TableCell sx={microLabelSx}>Product Code</TableCell>
-                        <TableCell sx={microLabelSx}>Category</TableCell>
-                        <TableCell sx={microLabelSx} align="right">Qty</TableCell>
-                        <TableCell sx={microLabelSx}>{hasSiteShop ? 'Scope' : 'Classification'}</TableCell>
-                        {hasSiteShop && <TableCell sx={microLabelSx}>Site / Shop</TableCell>}
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {groupRows.map((r) => {
-                        const exempt = !!siteShopExemptValue && r.classification === siteShopExemptValue;
-                        return (
-                          <TableRow key={r.id}>
-                            <TableCell sx={monoSx}>{r.openingNumber}</TableCell>
-                            <TableCell>{r.hand || '—'}</TableCell>
-                            <TableCell>{r.doorMaterial || '—'}</TableCell>
-                            <TableCell>{r.frameType || '—'}</TableCell>
-                            <TableCell sx={monoSx}>{r.productCode}</TableCell>
-                            <TableCell>{r.hardwareCategory}</TableCell>
-                            <TableCell align="right" sx={tabularSx}>{r.itemQuantity}</TableCell>
-                            <TableCell>
-                              {readOnly ? (
-                                r.classification ? (
-                                  <Chip size="small" color={scopeLookup.color[r.classification] ?? 'default'} label={scopeLookup.label[r.classification] ?? r.classification} />
-                                ) : (
-                                  <Chip size="small" label="—" />
-                                )
-                              ) : (
-                                renderToggle(r.classification, options, (value) => onClassify([r.classificationKey], value))
-                              )}
-                            </TableCell>
-                            {hasSiteShop && (
-                              <TableCell>
-                                {exempt ? (
-                                  <Chip size="small" label="—" />
-                                ) : readOnly ? (
-                                  r.siteShop ? (
-                                    <Chip size="small" color={ssLookup.color[r.siteShop] ?? 'default'} label={ssLookup.label[r.siteShop] ?? r.siteShop} />
-                                  ) : (
-                                    <Chip size="small" label="—" />
-                                  )
-                                ) : (
-                                  renderToggle(r.siteShop ?? '', siteShopOptions!, (value) =>
-                                    onClassifySiteShop!([r.classificationKey], value),
-                                  )
-                                )}
-                              </TableCell>
-                            )}
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </Box>
+                <ClassificationRowsGrid rows={groupRows} classificationColumns={classificationColumns} />
               </AccordionDetails>
             </Accordion>
           );

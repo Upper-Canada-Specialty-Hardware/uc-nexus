@@ -6,15 +6,11 @@ import {
   IconButton,
   MenuItem,
   Paper,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
   TextField,
   Tooltip,
   Typography,
 } from '@mui/material';
+import type { GridColDef } from '@mui/x-data-grid';
 import { ArrowLeft, ArrowRight, Merge, Pencil, Plus, Split, X } from 'lucide-react';
 import {
   GROUP_BY_OPTIONS,
@@ -24,6 +20,7 @@ import {
 } from './classificationGrouping';
 import { type ClassificationOption, type ClassificationRow, isRowClassified } from './types';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import ClassificationRowsGrid from './ClassificationRowsGrid';
 
 // #568: which key answers each axis value. Numbers for the scope axis, letters for Site/Shop, so a
 // two-axis (PO) card reads 1/2 then S/H and a one-axis (assembly) card reads S/H alone.
@@ -115,6 +112,28 @@ export default function GuidedClassification({
     for (const o of [...options, ...(siteShopOptions ?? [])]) m[o.value] = { label: o.label, color: o.color };
     return m;
   }, [options, siteShopOptions]);
+
+  // #733: the card's rows are read-only here - the answer comes from the buttons in the sticky header -
+  // so each row shows its resolved classification as a chip.
+  const chipColumns = useMemo<GridColDef<ClassificationRow>[]>(() => {
+    const chip = (value: string | undefined) => {
+      const picked = value ? labelMap[value] : undefined;
+      return picked ? <Chip size="small" label={picked.label} color={picked.color} /> : <Chip size="small" label="—" />;
+    };
+    const cols: GridColDef<ClassificationRow>[] = [
+      { field: 'classification', headerName: 'Scope', width: 120, renderCell: ({ row }) => chip(row.classification) },
+    ];
+    if (hasSiteShop) {
+      cols.push({
+        field: 'siteShop',
+        headerName: 'Site/Shop',
+        width: 150,
+        renderCell: ({ row }) =>
+          siteShopExemptValue && row.classification === siteShopExemptValue ? chip(undefined) : chip(row.siteShop),
+      });
+    }
+    return cols;
+  }, [labelMap, hasSiteShop, siteShopExemptValue]);
 
   const groups = useMemo(() => groupRowsByFields(rows, groupByFields), [rows, groupByFields]);
 
@@ -240,6 +259,8 @@ export default function GuidedClassification({
     function onKey(e: KeyboardEvent) {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (isTextTarget(e.target as Element | null) || isTextTarget(document.activeElement)) return;
+      // #733: once a cell of the row grid has focus, the arrows move through the grid, not the cards.
+      if (e.key.startsWith('Arrow') && (e.target as Element | null)?.closest?.('.MuiDataGrid-root')) return;
       if (e.key === 'ArrowLeft') { e.preventDefault(); goPrev(); return; }
       if (e.key === 'ArrowRight') { e.preventDefault(); goNext(); return; }
       const k = e.key.toLowerCase();
@@ -508,58 +529,8 @@ export default function GuidedClassification({
           </Box>
         </Box>
 
-        <Box sx={{ overflowX: 'auto', mt: 1.5 }}>
-          <Table size="small" sx={{ '& td, & th': { px: 1 } }}>
-            <TableHead>
-              <TableRow>
-                <TableCell sx={microLabelSx}>Opening</TableCell>
-                <TableCell sx={microLabelSx}>Hand</TableCell>
-                <TableCell sx={microLabelSx}>Door Material</TableCell>
-                <TableCell sx={microLabelSx}>Frame Type</TableCell>
-                <TableCell sx={microLabelSx}>Product Code</TableCell>
-                <TableCell sx={microLabelSx}>Category</TableCell>
-                <TableCell sx={microLabelSx} align="right">Qty</TableCell>
-                <TableCell sx={microLabelSx}>Scope</TableCell>
-                {hasSiteShop && <TableCell sx={microLabelSx}>Site/Shop</TableCell>}
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {currentCard.rows.map((r) => {
-                const exempt = !!siteShopExemptValue && r.classification === siteShopExemptValue;
-                const scope = r.classification ? labelMap[r.classification] : undefined;
-                const ss = r.siteShop ? labelMap[r.siteShop] : undefined;
-                return (
-                  <TableRow key={r.id}>
-                    <TableCell sx={monoSx}>{r.openingNumber}</TableCell>
-                    <TableCell>{r.hand || '—'}</TableCell>
-                    <TableCell>{r.doorMaterial || '—'}</TableCell>
-                    <TableCell>{r.frameType || '—'}</TableCell>
-                    <TableCell sx={monoSx}>{r.productCode}</TableCell>
-                    <TableCell>{r.hardwareCategory}</TableCell>
-                    <TableCell align="right" sx={tabularSx}>{r.itemQuantity}</TableCell>
-                    <TableCell>
-                      {scope ? (
-                        <Chip size="small" label={scope.label} color={scope.color} />
-                      ) : (
-                        <Chip size="small" label="—" />
-                      )}
-                    </TableCell>
-                    {hasSiteShop && (
-                      <TableCell>
-                        {exempt ? (
-                          <Chip size="small" label="—" />
-                        ) : ss ? (
-                          <Chip size="small" label={ss.label} color={ss.color} />
-                        ) : (
-                          <Chip size="small" label="—" />
-                        )}
-                      </TableCell>
-                    )}
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
+        <Box sx={{ mt: 1.5, minWidth: 0 }}>
+          <ClassificationRowsGrid rows={currentCard.rows} classificationColumns={chipColumns} />
         </Box>
       </Paper>
 
