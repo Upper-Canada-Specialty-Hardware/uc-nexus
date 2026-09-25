@@ -45,10 +45,26 @@ interface Card {
   rows: ClassificationRow[];
   groupKey: string;
   isSplit: boolean;
+  // #798: where a split card sits among its group's cards, so it can say "split k of m".
+  splitIndex?: number;
+  splitCount?: number;
 }
 
 function uniqueKeys(rows: ClassificationRow[]): string[] {
   return Array.from(new Set(rows.map((r) => r.classificationKey)));
+}
+
+/** #798: a group's rows by the answer they share (category + product + cost), in first-seen order.
+ *  An answer is stored per classificationKey, so this - not the opening row - is the unit a split
+ *  can hand its own card: two cards over one key would silently overwrite each other. */
+function rowsByAnswer(rows: ClassificationRow[]): ClassificationRow[][] {
+  const byKey = new Map<string, ClassificationRow[]>();
+  for (const r of rows) {
+    const list = byKey.get(r.classificationKey);
+    if (list) list.push(r);
+    else byKey.set(r.classificationKey, [r]);
+  }
+  return Array.from(byKey.values());
 }
 
 function isTextTarget(el: Element | null): boolean {
@@ -99,10 +115,19 @@ export default function GuidedClassification({
   const cards = useMemo<Card[]>(() => {
     const out: Card[] = [];
     for (const g of groups) {
-      if (splitGroupKeys.has(g.key) && g.rows.length > 1) {
-        for (const r of g.rows) {
-          out.push({ id: `${g.key}::${r.id}`, label: g.label, rows: [r], groupKey: g.key, isSplit: true });
-        }
+      const answers = rowsByAnswer(g.rows);
+      if (splitGroupKeys.has(g.key) && answers.length > 1) {
+        answers.forEach((answerRows, i) => {
+          out.push({
+            id: `${g.key}::${answerRows[0].classificationKey}`,
+            label: g.label,
+            rows: answerRows,
+            groupKey: g.key,
+            isSplit: true,
+            splitIndex: i + 1,
+            splitCount: answers.length,
+          });
+        });
       } else {
         out.push({ id: g.key, label: g.label, rows: g.rows, groupKey: g.key, isSplit: false });
       }
@@ -140,7 +165,8 @@ export default function GuidedClassification({
     let idx = 0;
     for (const g of groups) {
       if (g.key === gk) break;
-      idx += next.has(g.key) && g.rows.length > 1 ? g.rows.length : 1;
+      const answers = rowsByAnswer(g.rows).length;
+      idx += next.has(g.key) && answers > 1 ? answers : 1;
     }
     setIndex(idx);
   }, [currentCard, splitGroupKeys, groups]);
@@ -280,8 +306,19 @@ export default function GuidedClassification({
     );
   }
 
-  const canSplit = !currentCard.isSplit && currentCard.rows.length > 1;
+  // #798: only a group holding more than one answer has anything to split. One product on many
+  // openings is one answer, however many rows it has.
+  const canSplit = !currentCard.isSplit && uniqueKeys(currentCard.rows).length > 1;
   const productCodes = distinctProductCodes(currentCard.rows);
+  // Two split cards can share a product code at different costs; the cost is then what tells them apart.
+  const splitSibling =
+    currentCard.isSplit &&
+    cards.some(
+      (c) =>
+        c.groupKey === currentCard.groupKey &&
+        c.id !== currentCard.id &&
+        c.rows[0].productCode === currentCard.rows[0].productCode,
+    );
 
   return (
     <Box sx={{ minWidth: 0 }}>
@@ -323,10 +360,31 @@ export default function GuidedClassification({
         >
           <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
             <Box sx={{ minWidth: 0, flex: 1 }}>
-              <Typography sx={{ ...monoSx, fontWeight: 700, fontSize: '0.875rem', wordBreak: 'break-word' }}>
-                {currentCard.label}
-              </Typography>
-              {productCodes.length > 0 && (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', minWidth: 0 }}>
+                <Typography sx={{ ...monoSx, fontWeight: 700, fontSize: '0.875rem', wordBreak: 'break-word' }}>
+                  {currentCard.label}
+                </Typography>
+                {currentCard.isSplit && (
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    label={`Split ${currentCard.splitIndex} of ${currentCard.splitCount}`}
+                    sx={tabularSx}
+                  />
+                )}
+              </Box>
+              {currentCard.isSplit && (
+                // #798: a split card is one product's answer - say which, so the cards of a split
+                // group read as different questions rather than copies of one.
+                <Typography sx={{ ...monoSx, fontWeight: 600, fontSize: '0.8125rem', wordBreak: 'break-word', mt: 0.25 }}>
+                  {currentCard.rows[0].productCode}
+                  {splitSibling && ` · $${currentCard.rows[0].unitCost.toFixed(2)}`}
+                  <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1, fontFamily: 'inherit' }}>
+                    {currentCard.rows.length === 1 ? '1 line' : `${currentCard.rows.length} lines`}
+                  </Typography>
+                </Typography>
+              )}
+              {!currentCard.isSplit && productCodes.length > 0 && (
                 <Typography
                   variant="caption"
                   color="text.secondary"
@@ -355,7 +413,7 @@ export default function GuidedClassification({
                 // Without describeChild MUI hands the tooltip prose to aria-label, and the button's
                 // visible name stops being its accessible name.
                 describeChild
-                title="Give each line of this mixed group its own classification card, so lines that need different answers are asked one at a time."
+                title="Give each product in this mixed group its own classification card, so products that need different answers are asked one at a time. Every opening of a product shares its one answer."
               >
                 <Button
                   size="small"
