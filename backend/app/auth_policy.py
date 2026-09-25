@@ -370,6 +370,8 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "locationUtilization": SIGNED_IN,
     "poReceivingDetails": SIGNED_IN,
     "projectInventoryAvailability": SIGNED_IN,
+    # The POs behind a hardwareStatusByProduct figure (#732): the same reach as that rollup.
+    "projectProductPoLines": SIGNED_IN,
     "projectProgressByProduct": SIGNED_IN,
     "pullPickSheet": SIGNED_IN,
     "pullRequestDetails": SIGNED_IN,
