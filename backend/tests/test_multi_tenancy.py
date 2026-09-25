@@ -983,6 +983,7 @@ def _borrow_warehouse_session(monkeypatch, db_session):
 
 
 def test_hardware_status_by_product_serves_the_callers_own_project(db_session, two_companies, monkeypatch):
+    from app.models.enums import HardwareItemState
     from app.models.hardware import HardwareItem
     from app.models.project import Opening
     from app.schemas.warehouse import WarehouseQueries
@@ -999,6 +1000,7 @@ def test_hardware_status_by_product_serves_the_callers_own_project(db_session, t
             hardware_category="HINGE",
             product_code="HG-100",
             item_quantity=4,
+            state=HardwareItemState.AVAILABLE,
         )
     )
     db_session.flush()
