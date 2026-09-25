@@ -8,5 +8,5 @@ contracterp-74.xml
 - `.gitignore` ignores `*.xml` everywhere except this folder (`!testing/fixtures/*.xml`), so once it's here `git add testing/fixtures/contracterp-74.xml` tracks it
 
 usage
-- import it through the Import wizard after a clean schema (in-app "DevAction: drop and rebuild schema")
-- against the local runtime: `http://localhost:5173` -> Import module -> upload this file
+- import it through the Import wizard on production, after the change under test has merged and deployed, against a TUBC project
+- the file is over the browser extension's 10 MB upload cap, so upload a trimmed subset (see testing/CLAUDE.md) or use the wizard's "Use last uploaded hardware schedule" card

@@ -147,7 +147,7 @@ Both laws are read every session and weighed on review.
 
 ## Testing
 
-See [testing/CLAUDE.md](testing/CLAUDE.md) for the simulated user testing guide (Chrome DevTools MCP, app workflows, interaction patterns). Read the `testing/` knowledgebase only when testing actually begins - not during planning or implementation - to avoid consuming context prematurely; testing, when done, is performed by the main agent directly, not the `tester` subagent.
+See [testing/CLAUDE.md](testing/CLAUDE.md) for the simulated user testing guide (app workflows, interaction patterns). End-to-end testing happens only after the PR is merged and deployed to production, driven against TUBC through the Claude in Chrome extension in the owner's signed-in Chrome; before the merge, verification is CI and code review only. Read the `testing/` knowledgebase only when testing actually begins - not during planning or implementation - to avoid consuming context prematurely; testing, when done, is performed by the main agent directly, not the `tester` subagent.
 
 Plans do NOT end with a Simulated User Testing section - omit it.
 

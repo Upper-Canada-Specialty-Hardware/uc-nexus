@@ -1,13 +1,6 @@
 # Simulated User Testing Guide
 
-This is a tester's knowledge journal for UC Nexus. It documents how the app works from a front-end user's perspective and how to drive it via Chrome DevTools MCP.
-
-> **What a PR environment is and is not is a different document:
-> [PR-ENVIRONMENT.md](PR-ENVIRONMENT.md).** There is no setup left - every non-draft PR gets a built
-> environment, a clone of production's database, and a sign-in link in one PR comment - so that file is
-> now the agent protocol that comment prints, what the environment can and cannot show you, and how to
-> read a red `preview-env` check. Read it first; this file is what you need *during* a session, not
-> what you do to start one.
+This is a tester's knowledge journal for UC Nexus. It documents how the app works from a front-end user's perspective and how to drive it through the Claude in Chrome browser extension.
 
 **Maintain this file:** Update it when you discover new behaviors, gotchas, or workflows during testing. This is a living document that grows with each testing session.
 
@@ -15,71 +8,23 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 
 ## Environment
 
-**A Railway PR environment is the only place end-to-end testing happens** (issue #182 pivot - the localdev runtime was dropped for UC Nexus e2e; zero local setup needed).
+**End-to-end testing happens on production, after the PR has merged, and nowhere else** (product owner ruling, 2026-09-25). Railway PR environments (the `uc-nexus-pr-<N>` Preview Environments, the `preview-env` check and its sticky comment, the `/testing/session` sign-in link and the `/testing/clerk-sign-in` mint flow) are abandoned as a testing surface. Do not open a PR to get an environment, do not wait on a `preview-env` check, and do not mint a sign-in token.
 
-**The `preview-env` check and its sticky comment are the only source of truth about one**, and the
-comment prints the protocol you work to. It is short, so it is here in full:
-
-```
-agent protocol
-1. the preview-env check and this comment are the only source of truth for this environment. do not query railway and do not read the workflow to diagnose it
-2. red check: re-run it once (gh run rerun <run id>). still red: report the gate this comment names to the user and stop
-3. relay DOWN: tell the user the workstation relay must be up, then poll <backend>/health every two minutes. do not test GP-dependent flows meanwhile. do not install, configure, or look for a relay anywhere, on any machine
-4. never merge the PR under test. the environment is deleted on close
-5. reset is the Reset data page, uc nexus admin -> reset data. it re-clones production into this PR's copy and touches nothing else
-```
-
-> **The `*-production-*` Railway services are off-limits to automated testing sessions.** Never
-> point a testing session at them, and never fire mutation probes at them - not to "just check"
-> something after a merge, and not because a change is already deployed there. If a thing genuinely
-> can only be observed on production, ask a human first.
->
-> As of 2026-07-30 production carries no live data yet - UC Nexus is still in a testing state, and
-> the production environment is where humans (the user and executives) test. The split is
-> deliberate anyway: agents test on Preview Environments to get ahead of the day production holds
-> real data. The plan is for today's "production" to become a proper staging environment, with a
-> true production created alongside; the agent-side rule does not change at any point in that
-> evolution.
-
-- **Railway PR environments, a.k.a. "Preview Environments" (the testing target)**: every non-draft PR gets a full ephemeral replica named `uc-nexus-pr-<N>` - frontend, backend, and a Postgres the backend clones from production on first boot. `.github/workflows/preview-env.yml` builds all three and posts one "test environment ready" comment; Railway's own PR-deploy toggle is off, so nothing else creates or deploys anything in there. Do not wait for a Railway bot comment - none was ever observed; the URLs are derivable anyway: `https://backend-uc-nexus-pr-<N>.up.railway.app` / `https://frontend-uc-nexus-pr-<N>.up.railway.app`. No PR open for what you need to test? Open a throwaway one - that is cheaper than the alternative. `VITE_GRAPHQL_URL` is a reference variable (`https://${{backend.RAILWAY_PUBLIC_DOMAIN}}/graphql`) so each environment self-wires; `TESTING_ENABLED` and Clerk keys inherit from production. **That inheritance is a copy taken when the environment is forked, not a live link** (#431): a variable added to production afterwards never reaches an environment that already exists, so set it on that environment's own backend service too and let it redeploy. **The old build failure modes are gone and should not be re-derived from an old session note**: root-directory change filtering leaving a service `SKIPPED` and 404ing, a relay-only or docs-only PR leaving the whole environment unbuilt with the backend dying on `could not translate host name "postgres.railway.internal"`, and the `railway redeploy --from-source` dance that recovered them. The workflow deploys every service for the PR head commit and waits on the deployment id it created, so a red `preview-env` check means a build or a boot failed - re-run it once, and if it stays red report the gate the comment names and stop.
-- **The database is a clone of production, and the Reset data page re-clones it.** An environment opens on production's projects, POs, inventory and settings rather than an empty schema. GP is never cloned - GP is the live SQL server the relay talks to, and **TUBC is the shared test company there, the only one to test against**. The copy carries production's UBC and UCSH rows, which are relay-dark in a preview. **A branch behind master's migrations does not boot**: the backend prints `production's schema is at <rev> and this branch does not have it: merge master into the branch` and exits, and `preview-env` names that line as the failing gate - merge master into the branch and push.
-- **The relay is the workstation relay, reported and never gated.** It finds a preview on its own and dials in a couple of minutes after the environment comes up; the comment's relay line says `relay: connected, companies TUBC` or `relay: DOWN`. A green check under a DOWN line is correct - the office machine being off is not a broken environment. DOWN is protocol item 3: tell the user, poll `<backend>/health`, test the relay-down half of the app meanwhile if that is useful, and never go looking for a relay on this box.
-
-Environments auto-delete when the PR closes, **so never merge the PR whose environment you are testing in** - it disappears mid-session and every fetch starts failing for a reason that looks like a network fault.
-- **Local (manual fallback)**: frontend `http://localhost:5173`, backend `http://localhost:8000`. Run the backend with `poetry run uvicorn main:app --reload` (from `backend/`) and the frontend with `npm run dev` (from `frontend/`). Needs a local Postgres (not provided; the worktree-localdev adoption was dropped).
-- **Auth**: Clerk sign-in, automated via one-time sign-in tokens (no manual password/verification needed).
-  - **The agent path is the `/testing/session` link in the PR's "test environment ready" comment**
-    (preview-env autonomy plan). `GET /testing/session?key=<K>` mints a ticket for a DEDICATED e2e
-    account and 302s you onto the frontend signed in; the per-env key `K` is placed by the preview-env
-    workflow and lives only in that comment. Everything below is the human `/testing/clerk-sign-in`
-    fallback - reach for it only when the comment link is not working.
-  - Backend endpoint `GET /testing/clerk-sign-in` generates the token (requires `TESTING_ENABLED=true`).
-  - Since #422 the endpoint also requires a credential: a UC Nexus Admin `Authorization` bearer, or
-    the shared testing secret in an `X-Testing-Secret` header. The secret is the bootstrap path on a
-    fresh PR environment, where by definition no session exists yet.
-  - **A Preview Environment resolves that secret on its own, with nothing set on it.** Production
-    holds `PREVIEW_TESTING_SIGN_IN_SECRET_HASH`, every preview inherits it at creation, and the
-    resolver reads it anywhere that is not production. `TESTING_SIGN_IN_SECRET_HASH` still stays
-    unset on production on purpose - its secret path must not be mintable there - and production
-    resolves to no digest however many of these variables it holds, which is what makes storing the
-    inherited one there safe. Setting `TESTING_SIGN_IN_SECRET_HASH` directly on one environment
-    still overrides, for an environment that predates the inherited variable or wants its own secret
-    (see `backend/.env.example` for the generator one-liner). `TESTING_ENABLED` was re-enabled on
-    production 2026-07-30 (humans test there until the staging/production split), so new Preview
-    Environments inherit it on again; one created while it was still false needs it set by hand.
-  - Navigate to the frontend URL with `?__clerk_ticket=TOKEN` to auto-authenticate.
-  - Tokens are one-time use; fetch a fresh one each session. Works on any runtime with the same Clerk dev instance.
-  - **Every environment inherits production Clerk keys**, so the accounts in a PR environment are real
-    staff accounts and a session minted there is a real session. The Postgres data in a PR environment
-    is disposable; the identities are not. Sign in as the account you were given, and do not mint
-    tokens for colleagues' accounts to test role behaviour - ask instead. The one exception is the
-    dedicated e2e account the `/testing/session` link mints: it is not a person, holds UC Nexus Admin,
-    and is refused on production (`app/auth._reject_e2e_account_in_production`), which is why its
-    sign-in link is safe to sit in a public PR comment.
-  - The unauthenticated version of this endpoint was itself a vulnerability (#422 / #424), fixed by
-    the gates above. Do not treat the endpoint answering on a given host as evidence that the host is
-    a test environment - production answered it too, which is exactly what #424 shut off.
-- **Test XML file**: `testing/fixtures/contracterp-74.xml` - TITAN hardware schedule export, use for Import wizard testing (upload via `upload_file`)
+- **Before the merge, verification is CI and code review only.** A PR is not click-tested before it merges. That is not permission to merge and forget: the click-through on production is part of finishing the work.
+- **Wait for the deploy.** Railway deploys the backend and frontend services automatically once master CI passes. Confirm it before testing:
+  ```bash
+  railway deployment list --service backend --environment production
+  railway deployment list --service frontend --environment production
+  ```
+  The newest row of each must be `SUCCESS` and newer than the merge. The two services deploy separately, so check both.
+- **Production URLs**: frontend `https://frontend-production-34fc.up.railway.app`, backend `https://backend-production-7866.up.railway.app` (GraphQL at `/graphql`).
+- **Production carries only dev data**, so it is safe to test on. It is still the one shared database everybody else is looking at, so create only what the scenario needs and name test records so they are recognisable.
+- **Drive it with Claude in Chrome only.** The agent drives the frontend through the Claude in Chrome extension (`mcp__claude-in-chrome__*`: `tabs_context_mcp`, `tabs_create_mcp`, `navigate`, `find`, `read_page`, `get_page_text`, `computer`, `browser_batch`, `read_console_messages`, `tabs_close_mcp`, plus `javascript_tool` and `file_upload` when needed) in the owner's own Chrome session. Never the Chrome DevTools MCP, never desktop-level clicking, and never a local runtime.
+- **No sign-in step.** The owner's Chrome is already signed in to UC Nexus. Never mint a sign-in token and never enter a password. If the page shows the Clerk sign-in form, stop and ask the owner to sign in.
+- **Test against TUBC only.** TUBC is the test company in GP, and the only one to test against. Production also holds UBC and UCSH data; leave it alone.
+- **Anything that writes to GP is an outward write, even on TUBC.** Registering a PO, approving a receive and creating a GP job all write into the live GP SQL server. Say what will be written before doing it.
+- **A relay change ships as an auto-built relay release on merge.** The workstation relay picks it up on its daily poll, or when someone presses "Update now" on the relay window. Before testing a flow that depends on relay changes, confirm the relay is on the new build: the feature's live list loads instead of the "relay out of date" fallback, or `{ relayStatus { connected company build } }` reports the new build.
+- **Test XML file**: `testing/fixtures/contracterp-74.xml` - TITAN hardware schedule export, use for Import wizard testing (upload through the extension's `file_upload` tool; see the size limit under Claude in Chrome Patterns).
 
 ### Every resolver needs a token now (#415)
 
@@ -109,8 +54,8 @@ Consequences when driving the app by script:
 
 **Nothing puts new hardware into inventory except `createReceive`, and `createReceive` is
 unconditionally GP-first through the relay.** With the relay down there is no supported way to add
-stock. What the clone already carries is yours to use, but every scenario that needs hardware that
-does not exist yet waits on the relay. Establish both in the first minute:
+stock. What production's TUBC data already carries is yours to use, but every scenario that needs
+hardware that does not exist yet waits on the relay. Establish both in the first minute:
 
 ```
 { relayStatus { connected company build } }
@@ -121,18 +66,17 @@ does not exist yet waits on the relay. Establish both in the first minute:
 eConnect round trip, on TUBC - a registered PO carries a GP-minted number and a PM00200 vendor stamp,
 and a receive posts against a real purchase order. Write on TUBC and nowhere else.
 
-**`relay: DOWN` is not a blocker to work around.** Tell the user, poll `<backend>/health` every two
-minutes, and spend the wait on the relay-down half of the app if there is something worth checking
-there. Do not improvise a seeding path; there isn't one.
+**A disconnected relay is not a blocker to work around.** Tell the user the workstation relay must be
+up, poll `relayStatus` (or the backend's `/health`) every two minutes, and spend the wait on the
+relay-down half of the app if there is something worth checking there. Do not improvise a seeding
+path; there isn't one.
 
 **The real relay runs on a separate GP-credentialed workstation. Never install, start, or configure one
 on the machine your session runs on** - `%LOCALAPPDATA%\UCNexusRelay` being absent and
 `127.0.0.1:7321` being closed are the expected state here, not a dependency to satisfy. Setting one up
 locally cannot work anyway, because this box is not domain-joined and cannot authenticate to GP SQL.
-Full rule in
-[PR-ENVIRONMENT.md](PR-ENVIRONMENT.md#the-relay-is-on-another-machine-never-stand-one-up-locally).
 
-`connected: false` on a preview is a state on that workstation, and it is not yours to diagnose:
+`connected: false` is a state on that workstation, and it is not yours to diagnose:
 report it and poll. `relayInstalls { label enrolled enrolledAt lastSeenAt }` is a read you can do from
 the app if the user asks what the backend thinks; everything below is background for reading an
 answer, not a procedure to run.
@@ -166,9 +110,9 @@ answer, not a procedure to run.
   rejected` line, read `hash_rows` and `cause`. Since #382 retired the key, `legacy_rows` is always 0
   and `encryption_key_present` always false, so neither of those two distinguishes anything any more -
   a false `encryption_key_present` is the healthy state now, not a config problem to chase.
-- `POST /admin/reset-data` never orphans the on-prem relay. It preserved the `relay_installs` rows
-  across the old rebuild (#352); on a preview it now re-clones production, and the copy carries
-  production's install row with it.
+- `POST /admin/reset-data` never orphans the on-prem relay: it preserves the `relay_installs` rows
+  across the rebuild (#352). On production it still drops and rebuilds everything else, so never run
+  it without the owner's explicit go-ahead.
 
 ### A queued GP write is not a failed one
 
@@ -235,8 +179,8 @@ this section; re-check `relayStatus` first. Two things worth knowing from that s
     an armed connection flips to disconnected ~40s after the relay actually goes quiet.
 - A `relay_status` traceback in the deploy log ending `jwt.exceptions.ExpiredSignatureError` /
   `AuthError: Invalid or expired authentication token` is **your own browser token ageing out**, not a
-  relay fault. `relayStatus` is `require_user`-gated now, so a stale `getToken()` value in an injected
-  fetch helper logs a full stack trace server-side. Re-mint with `getToken({skipCache:true})`.
+  relay fault. `relayStatus` is `require_user`-gated now, so a stale `getToken()` value in a
+  `javascript_tool` fetch helper logs a full stack trace server-side. Re-mint with `getToken({skipCache:true})`.
 
 ### Seeding inventory: the PO must come from the wizard, not the Create PO dialog
 
@@ -257,7 +201,7 @@ mutation *replaces* the draft's line items with the set you send (that is its do
 register dialog is allowed to edit them), so hand-built `lineItems` produce lines with no link back to
 the schedule rows. The PO registers, GP takes it, the receive posts and inventory appears - and every
 schedule item is still `PO_DRAFTED`, so the assembly gate refuses exactly as it does for a
-Create-PO-dialog PO. Verified 2026-08-03 on pr-460: two POs (PO0000082, PO0000083) and two receipts
+Create-PO-dialog PO. Verified 2026-08-03: two POs (PO0000082, PO0000083) and two receipts
 landed in TUBC and `projectInventoryAvailability` showed all four products, while the opening's
 hardware still read as unpurchased across the board (`openingHardwareStatus` at the time, which
 called it `PO_DRAFTED`; `adminOpeningDeepDive` now reports the same severed binding honestly, as
@@ -270,9 +214,9 @@ import-created draft otherwise blocks the register dialog with per-line `Require
 
 **The register dialog's Register button is silently inert while validation fails, and the buyer rule
 is the one that catches you.** `validate()` in `GpPurchaseOrderDialog.tsx` refuses with
-`Buyer <id> is not assigned to this project` when `registerProjectAllowed` is false, and a fresh PR
-environment has an EMPTY `buyerAssignments` table - so the very first registration on any new
-environment hits it. The button is not disabled and no toast fires; the only signal is the alert
+`Buyer <id> is not assigned to this project` when `registerProjectAllowed` is false, and a project
+nobody has registered against yet usually has no buyer assignment - so the first registration on a
+fresh project hits it. The button is not disabled and no toast fires; the only signal is the alert
 already sitting at the top of the dialog, which reads like a warning rather than a blocker. If a
 click produces no network request at all, that is what happened. Fix it properly at Admin -> Buyers
 -> Add Buyer (pick the GP buyer your account is linked to, add the project), not by scripting the
@@ -302,35 +246,14 @@ inventory with a multi-line PO. If you see 9191 again, look at what the four lin
 characters before suspecting anything else.
 
 **A USD-currency GP vendor fails registration with `taMCCurrencyValidate` error state 961.** Hit
-2026-08-10 on pr-569 with BANNER SOLUTIONS (currency showed USD, tax detail disabled as
+2026-08-10 with BANNER SOLUTIONS (currency showed USD, tax detail disabled as
 "Not applicable for a foreign-currency PO"): the push died in `taPoHdr` with
 `An error occurred in the taMCCurrencyValidate proc` - TUBC has no exchange setup for a
 foreign-currency PO. Pick a CAD vendor instead (ALLMAR INC. worked on the same PO seconds later).
 The dialog's Currency field tells you before you submit.
 
 **The register dialog's `Buyer (you)` field is the authority on your buyer identity, not the User
-Management grid.** On pr-569 the grid's GP BUYER column showed `BCPurchasing` for the signed-in
-account while the dialog submitted as `mira` - so the buyer-assignment fix (Admin -> Buyers) must
-target the id the DIALOG shows, or the alert stays. Assign the dialog's id to the project and the
-alert clears on reopen.
-
-**Receiving is now draft-first with a required packing slip and a manager approval gate.** The
-Receive wizard's location step is gone: select POs -> quantities -> ATTACH A PACKING SLIP (any
-image/pdf; required, submit stays blocked without it) -> Submit for Approval. Nothing posts to GP or
-lands in inventory until a Warehouse Manager approves it at `/app/warehouse/receive-approvals`
-(Approve & Post to GP -> confirm). Approval posts the GP receipt and the units land UNLOCATED - they
-appear on Put Away for aisle/row/bay assignment. Budget one extra hop when seeding: receive, approve,
-then put away.
-
-**A USD-currency GP vendor fails registration with `taMCCurrencyValidate` error state 961.** Hit
-2026-08-10 on pr-569 with BANNER SOLUTIONS (currency showed USD, tax detail disabled as
-"Not applicable for a foreign-currency PO"): the push died in `taPoHdr` with
-`An error occurred in the taMCCurrencyValidate proc` - TUBC has no exchange setup for a
-foreign-currency PO. Pick a CAD vendor instead (ALLMAR INC. worked on the same PO seconds later).
-The dialog's Currency field tells you before you submit.
-
-**The register dialog's `Buyer (you)` field is the authority on your buyer identity, not the User
-Management grid.** On pr-569 the grid's GP BUYER column showed `BCPurchasing` for the signed-in
+Management grid.** On 2026-08-10 the grid's GP BUYER column showed `BCPurchasing` for the signed-in
 account while the dialog submitted as `mira` - so the buyer-assignment fix (Admin -> Buyers) must
 target the id the DIALOG shows, or the alert stays. Assign the dialog's id to the project and the
 alert clears on reopen.
@@ -356,8 +279,8 @@ Two other things worth knowing when GP is refusing outright:
   `GP_REGISTERED` now comes only from `registerPoInGp` (relay push, real PM00200 vendor) or
   `create_po`'s GP-first branch for a caller already holding a GP result. With the relay line reading
   connected that path is reachable by clicking and what comes back is a real GP row on TUBC. With it
-  reading DOWN there are no NEW placed POs, and what the clone carries is all that POs Awaiting
-  Receipt, back-order reads and receiving history will show.
+  disconnected there are no NEW placed POs, and what production already holds for TUBC is all that
+  POs Awaiting Receipt, back-order reads and receiving history will show.
 - The stock pool is not an escape hatch either: there is no `createStockItem`. Stock only enters
   through a receive, or out of project inventory via `destockInventory`, so it has the same root
   dependency.
@@ -373,8 +296,8 @@ classify the whole grid to restore it.
 
 `.github/workflows/ci.yml` triggers on `push`/`pull_request` to **master only**. A PR based on
 another feature branch - the shape a stack of dependent PRs takes - therefore runs no Frontend, no
-Backend, no Migration Integrity and no Relay job at all. `gh pr checks` on it shows only the two
-Railway deploys, both green, which reads exactly like a healthy PR.
+Backend, no Migration Integrity and no Relay job at all. `gh pr checks` on it shows none of those
+jobs, and whatever few checks remain can be green, which reads exactly like a healthy PR.
 
 That matters most for the backend, because there is no local Postgres: `pytest` skips ~470 of ~600
 tests here, so CI is the only thing that ever runs them. A stacked backend change is effectively
@@ -392,118 +315,130 @@ caught two failures that all three stacked PRs were reporting as clean:
 
 ## Getting Started (Every Session)
 
-0. **Pick the environment first.** Testing runs against the PR environment for the PR you are working on. Set `PR` once and let both URLs derive from it, so there is no production URL in the snippet to fat-finger:
-   ```js
-   const PR = 420;  // <- the PR number under test
-   const BACKEND  = `https://backend-uc-nexus-pr-${PR}.up.railway.app`;
-   const FRONTEND = `https://frontend-uc-nexus-pr-${PR}.up.railway.app`;
-   ```
-1. **Sign in**: open the **"test environment ready"** comment the preview-env workflow posts on your
-   PR and navigate its sign-in link. It is `<BACKEND>/testing/session?key=<K>` and needs nothing from
-   you - one navigation lands you on `/app`, signed in as the dedicated e2e account (UC Nexus Admin).
-   The link mints a fresh Clerk ticket on every visit, so it never goes stale, survives a Reset data
-   run, and can be navigated again any time. The same comment carries the protocol and the
-   environment's relay line - `relay: connected, companies TUBC` or `relay: DOWN` - so you know before
-   you click whether the GP-gated half of the app is reachable.
-   ```js
-   // straight from the comment - no token fetch, no secret to hold
-   window.location.href = '<paste the session link from the PR comment>';
-   ```
-   - Clerk auto-authenticates — no email, password, or verification code needed.
-   - **No comment yet?** The workflow posts it once the environment is green (a couple of minutes after
-     a non-draft push). A red `preview-env` check means the environment did not come up - the comment
-     it posts names the failing gate (backend / frontend / graphql / sign-in) or the backend line that
-     blocked the boot. Re-run the check once; if it stays red, report that gate and stop.
-   - The link is safe to reuse and safe to sit in a public comment: the e2e account it mints is
-     **refused on production** (`app/auth._reject_e2e_account_in_production`), so it only ever opens
-     this disposable preview.
-2. **Reset data** (if needed): Open **UC Nexus Admin -> Reset data** (`/app/nexus-admin/reset-data`). On a
-   preview it re-clones production into that PR's copy and touches nothing else, so it is the way back
-   to a known state - not a way to empty the database.
-   - Since #442 the page mints the Clerk session token off the auth bridge and sends it as an
-     `Authorization: Bearer` header - `/admin/reset-data` sits behind `require_admin_request` (#422),
-     so the signed-in account must hold **UC Nexus Admin**. With no session it says so and skips the
-     request instead of firing a doomed unauthenticated POST.
-   - Type `reset all nexus data` into the Confirmation phrase field — the Reset data button stays disabled until it matches exactly.
-   - A MUI confirm dialog appears next — confirm it, and only then does the request fire.
-   - The outcome prints under the button and in a toast; there is no `window.alert()` to dismiss any more.
-3. **Post-login**: You land on `/app` — the Module Selector with 6 module cards.
+1. **Confirm the change is on production.** The PR is merged, master CI is green, and the newest
+   `railway deployment list --service backend --environment production` row (and the same for
+   `frontend`) is `SUCCESS` and newer than the merge. A tab opened before the deploy keeps the old
+   bundle; open a fresh tab or add a cache-buster (`?cb=1`).
+2. **Confirm the relay build, if the flow depends on it.** A relay change reaches the workstation on
+   its daily poll or through "Update now". Check that the feature's live list loads rather than the
+   "relay out of date" fallback, or read `{ relayStatus { connected company build } }`.
+3. **Open a tab.** Load the Claude in Chrome tools (one `ToolSearch` call for the whole set), call
+   `tabs_context_mcp` to see the session, then `tabs_create_mcp` for a tab of your own, and `navigate`
+   it to `https://frontend-production-34fc.up.railway.app/app`.
+4. **You are already signed in.** The tab shares the owner's Chrome session, so you land on `/app`,
+   the Module Selector. No token, no password, no verification code. If you see the Clerk sign-in form
+   instead, stop and ask the owner to sign in.
+5. **Pick TUBC.** Work in TUBC's projects and POs only, and say what will be written to GP before any
+   step that writes there.
+6. **Close your tabs** with `tabs_close_mcp` when you are done.
 
-### Human sign-in, and when the comment path is broken
+**Reset data is not a testing step any more.** On production the UC Nexus Admin -> Reset data page
+(`/app/nexus-admin/reset-data`) drops and rebuilds the whole schema. Never use it to get back to a
+known state; build the state you need in TUBC instead, and run a reset only on the owner's explicit
+instruction.
 
-`GET /testing/clerk-sign-in` is the human fallback and nothing else uses it any more. It mints a REAL
-staff session for an arbitrary email, gated on a UC Nexus Admin bearer OR the shared secret in
-`X-Testing-Secret`. Reach for it only when the comment's `/testing/session` link will not work - a red
-`preview-env` check, or `E2E_CLERK_USER_ID` unset on the environment - because it is the same
-impersonation-shaped endpoint #422 gated, not an agent convenience.
-
-   ```js
-   (async () => {
-     const PR = 420;  // <- the PR number under test
-     const SECRET = '...';  // <- preimage of that environment's TESTING_SIGN_IN_SECRET_HASH
-     const resp = await fetch(`https://backend-uc-nexus-pr-${PR}.up.railway.app/testing/clerk-sign-in`,
-       { headers: { 'X-Testing-Secret': SECRET } });
-     const { token } = await resp.json();
-     window.location.href = `https://frontend-uc-nexus-pr-${PR}.up.railway.app/?__clerk_ticket=${token}&cb=${Date.now()}`;
-     return 'Navigating with sign-in token...';
-   })()
-   ```
-   For the local fallback, use `http://localhost:8000` / `http://localhost:5173`. Do not substitute the
-   production hosts here - see the Environment section.
-
-**Don't know the inherited secret's preimage?** It lives only in the scratch of the session that minted
-it, so a later session usually cannot recover it. Do not reset production's
-`PREVIEW_TESTING_SIGN_IN_SECRET_HASH` for this - an existing environment copied the old digest at
-creation and a production reset would not reach it anyway. Instead set a per-environment override,
-which always wins: generate a pair (one-liner in `backend/.env.example`), then `railway variables
---set "TESTING_SIGN_IN_SECRET_HASH=<sha256>" --environment uc-nexus-pr-<N> --service backend`. The set
-prints nothing on success - verify with a `--json` read - and it redeploys the backend (~2 min).
-Verified on pr-575, 2026-08-10.
-
-## Chrome DevTools MCP Patterns
+## Claude in Chrome Patterns
 
 ### General Rules
-- Always `take_snapshot` after any navigation or click before acting on the page.
-- Prefer `fill_form` (batch) over individual `fill` calls — individual fills can bleed values into adjacent fields.
-- **`fill` / `fill_form` APPEND to a MUI number input that already holds a value** (a spinbutton
-  defaulted to `2` filled with `1` ends up `21`, over max, submit disabled). Seen on every default-
-  quantity dialog 2026-08-10. Set such fields via `evaluate_script` with the native value setter +
-  an `input` event instead, then re-read the value before submitting.
+- Read the page after any navigation or click before acting on it: `find` for a specific element
+  (it returns refs you can click), `read_page` for the accessibility tree, `get_page_text` for plain
+  text. Use a `computer` screenshot when you need to verify visual rendering (layout, colours,
+  spacing) or a state the tree does not expose.
+- **If every extension call times out on UC Nexus while other sites work, the extension is signed
+  out.** Ask the owner to sign it in before theorising about the app.
+- **On a fresh full page load, a screenshot can time out while the project list loads (~20s).** A
+  `read_page`, `get_page_text` or `find` call gets through first, and screenshots work after it.
+- **A screenshot or zoom can also stall while a very large list renders** (for example the PO table
+  filtered to Closed, 100k+ rows). Wait a few seconds and retry.
+- **A `left_click` on a `find` ref sometimes does nothing** on MUI ToggleButton/ButtonBase segments
+  and Tabs-like buttons (seen on the PO table status strip and the Shop Assembly
+  Pending/Worked/Rejected tabs). Take a screenshot and click by coordinate instead.
+- **`find` cannot see `aria-pressed`.** Confirm a toggle's state from a screenshot or zoom.
+- Batch predictable steps with `browser_batch`. The `computer` tool has no `mouse_move` action; use
+  `hover`.
+- **Typing into a MUI number input that already holds a value appends to it** (a spinbutton defaulted
+  to `2` typed with `1` ends up `21`, over max, submit disabled). Click the field, select all
+  (`ctrl+a`), then type the digits, and re-read the value before submitting. `form_input` sets a
+  value directly and avoids the append.
 - **`div[role="dialog"]` selectors hit the WRONG dialog inside the Import wizard.** The fullscreen
   wizard is itself a `role="dialog"`, so when it opens an inner modal (Split line, Finalize confirm,
-  over-order warning) `document.querySelector('div[role="dialog"] input...')` matches the wizard's
-  FIRST matching input, not the modal's. On 2026-08-10 that silently wrote a split quantity into the
-  first draft card's unit-cost spinbutton (persisted to the PO; caught only by re-reading the line
-  later). Always scope to the LAST dialog in document order
+  over-order warning) `document.querySelector('div[role="dialog"] input...')` in a `javascript_tool`
+  script matches the wizard's FIRST matching input, not the modal's. On 2026-08-10 that silently
+  wrote a split quantity into the first draft card's unit-cost spinbutton (persisted to the PO; caught
+  only by re-reading the line later). Always scope to the LAST dialog in document order
   (`[...document.querySelectorAll('[role="dialog"]')].pop()`) and re-read the value you set before
   submitting.
 - **The native-setter + `input` event trick can fail to reach React state** (the DOM shows the value,
   React re-renders it away - the split dialog's qty field did this while the button label still read
-  "Move 1"). When it does, drive the field with real keystrokes instead: `click` it, `press_key
-  Control+A`, then `press_key` the digits, and confirm on a state-derived readout (a button label,
-  a total) rather than the input's DOM value.
-- Use `take_screenshot` when you need to verify visual rendering (layout, colors, spacing).
+  "Move 1"). When it does, drive the field with real keystrokes instead: click it, select all, type
+  the digits, and confirm on a state-derived readout (a button label, a total) rather than the
+  input's DOM value.
+- **Scripted GraphQL calls from the page go through `javascript_tool`.** Mint a token first
+  (`await window.Clerk.session.getToken({skipCache: true})`) and send it as a bearer header; see
+  "Every resolver needs a token now" above.
 
 ### MUI Select Dropdowns
 - MUI `<Select>` renders its dropdown in a **portal** (`<div role="presentation">`), not inside the Select element.
-- After clicking a Select, call `take_snapshot` again to see the portal-mounted `<MenuItem>` elements.
+- After clicking a Select, `find` the option again (or read the page) to reach the portal-mounted `<MenuItem>` elements.
 - Click the desired `<MenuItem>` to select it.
+
+### MUI Autocomplete
+- Click the input, type, wait about 2 seconds for the options, then `find` the option and click it.
 
 ### MUI Dialogs
 - MUI `<Dialog>` also renders in a portal overlay.
-- After triggering a dialog, `take_snapshot` to see dialog content.
+- After triggering a dialog, read the page again to see the dialog content.
 - Confirm/cancel buttons may use `data-testid="confirm-dialog-confirm"` / `data-testid="confirm-dialog-cancel"`.
 
 ### MUI DataGrid
-- DataGrid virtualizes rows — only visible rows appear in the DOM.
-- Off-screen rows won't appear in snapshots; use `evaluate_script` to query grid data as fallback.
+- DataGrid virtualizes rows - only visible rows appear in the DOM.
+- Off-screen rows will not appear in `read_page` or `find`; use `javascript_tool` to query grid data as a fallback.
 - Column headers are in `role="columnheader"` elements.
 - Click a row's `gridcell` to trigger row click handlers (e.g., open detail modal).
 
 ### window.alert()
 - Some actions trigger `window.alert()`; Reset data no longer does (it reports under the button and as a toast).
-- **These block all MCP interaction** — `take_snapshot` will hang until the alert is dismissed.
-- Use `handle_dialog` with `action: "accept"` to dismiss.
+- **A native alert blocks the page**, and extension calls against that tab stall until it is
+  dismissed. Avoid triggering one from the extension; if one is open, ask the owner to dismiss it.
+
+### Lessons from driving the app
+
+- **`file_upload` caps at 10 MB and `contracterp-74.xml` is 11.5 MB**, so the real file cannot be uploaded through the tool at all. Either take the "Use last uploaded schedule" card (almost always right), or build a subset: keep everything up to `<Detail>` (that block holds all 1998 opening/assignment definitions, ~1.07 MB) then append `<Detail>` + the first N `</Material_List>`-delimited blocks + `</Detail></Contract>`. ~600 blocks lands at ~3.5 MB, parses clean, and yields "1998 openings parsed / 12746 hardware items parsed / 22 opening(s) had no hardware items assigned". Parsing is entirely client-side - nothing is persisted until Finalize - so uploading a trimmed file is safe on a database you are trying to preserve.
+- **`navigate` costs a full reload and wipes any instrumentation you injected.** React Router picks up `history.pushState(...)` + `window.dispatchEvent(new PopStateEvent('popstate'))`, so route sweeps can be done client-side with a `fetch` wrapper still installed. That wrapper is far better evidence than `read_network_requests`, which only starts recording when first called and misses everything before it, and it can see GraphQL errors - which come back **HTTP 200** with an `errors` array, so status-code filtering finds nothing.
+- **A `javascript_tool` call that hits the 45s CDP timeout keeps running in the page.** Its `await` chain continues after the tool has given up, so the next call races it and you get results tagged with the wrong route. Keep loops under ~8 route-hops, or step one route per call. If output ever looks mismatched, sleep ~6s and start over.
+- `computer screenshot` times out with "renderer may be frozen" while the Import wizard renders 1998 openings or 26k classification rows. It is not frozen - wait 10s and take it again. Same for the first paint after "Use last uploaded schedule".
+- The screenshot image is scaled down from the real viewport (1568px wide image for a 1918px window), so a card that looks cut off at the right edge usually is not. Check `document.documentElement.scrollWidth === clientWidth` before reporting a horizontal-overflow regression.
+- The Pull Request detail modal **closes on Escape since the 2026-07-28 UI revamp** (it used to swallow it). Its nested confirm dialogs are siblings, so an Escape inside a confirm closes only the confirm. "Cancel Pull" is still a real destructive action - never use it as a way out.
+- MUI option cards (import Purpose, module "Go to" cards) are `useNavigate` buttons with no `href`, so there are no anchors to click and `find`'s ref sometimes lands on the inner text node rather than the clickable card. Setting the underlying `input[type=radio]`/`input[name=select_row]` via native `.click()` works reliably and does update React state.
+- The import landing project card is a `MuiCardActionArea` **button** wrapping the `MuiPaper`. Coordinate clicks land on it only sometimes (it takes focus but does not activate, and Enter does not help either). Reliable: find the element whose `textContent` matches the project *and* whose `tagName === 'BUTTON'`, then `.focus()` + `.click()`.
+- **Select Openings is paginated at 50 rows/page, ordered by the schedule, not sorted**, and the "Filter" control is a Select (column filter), *not* a text search - there is no way to type an opening number. To enumerate or tick specific openings, scroll the `.MuiDataGrid-virtualScroller` in ~150px steps, and after each `scrollTop` assignment **dispatch a `scroll` event and wait ~450ms** or the virtualizer does not re-render and you silently collect only the first screenful (17 of 50). Keep the sweep under ~40s of `await` or the 45s CDP cap kills the call mid-loop - it leaves the page in a valid state (rows already ticked stay ticked), so just re-run and top up the selection.
+- The Receive modal has **two** confirmations: `Complete Receive` opens a nested `Confirm Receive` ("Receive N items across M PO into inventory?") whose button is just `Receive`. Scripting only the outer button looks like a silent no-op - inventory stays empty and the outbox stays at 0 because no mutation ever fired.
+- Receive modal quantity + location fields take a native value-setter + `input`/`change` event fine (no need for the ArrowUp trick), and the location block only appears once a Receive Now qty > 0. `all placed` chips per product gate `Complete Receive`.
+- **DataGrid rows can be invisible to the accessibility tree.** A read may give you `columnheader`s
+  and the pagination controls and *nothing else* - no row refs - so a ref click cannot reach a row.
+  Read rows with `javascript_tool` over `[role="row"]`, and prefer the per-cell form, which
+  gives you the column names too:
+  `[...r.querySelectorAll('[role="gridcell"]')].map(c => ({field: c.getAttribute('data-field'), text: c.innerText}))`.
+  To open one, dispatch the event yourself:
+  `cell.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}))`.
+- **Read grid rows twice after switching tabs.** A read ~3s after a tab click came back with the last
+  two cells missing (`... | Jay Puzon | 2` and nothing else); the same read a moment later had the
+  full six. It is render timing, not a bug - do not report a missing column off a single sample.
+- **Multi-line cells arrive as one string.** The Phase cell is a tag over a caption, so its `innerText`
+  reads `PENDING
+Not started` - replace newlines before matching, or assert on the parts.
+- **Waiting for a Railway deploy**: `railway deployment list --service backend --environment
+  production` (and `frontend`) says when each finished. To confirm the backend is serving the new
+  build, poll the *schema* for a field it adds rather than guessing at a duration -
+  `{ __type(name: "PickSheetSection") { fields { name } } }` until the new field appears. Backend and
+  frontend deploy separately; the backend took ~225s from merge to serving on 2026-07-28. `/health`
+  answering is not sufficient, it answers on the old build too.
+- **A scripted GraphQL read is faster than the UI for setup and assertions.** Every resolver needs a
+  token since #415, so run it from the signed-in page with `javascript_tool` and a fresh
+  `getToken({skipCache: true})` bearer. A query that is partly refused returns HTTP 200 with
+  `data.<field>: null` *and* an `errors` array - if a list looks mysteriously empty, print `errors`
+  before concluding the data is missing.
+- Allocator step (#378) specifics: the summary table is `Owed / Available / Allocated / Left to assign / Short`; each leaf card carries a `Fully covered` / `Not covered - auto-dropped` chip, an `N of M allocated` caption and an include/exclude toggle; the steppers have `aria-label`s `Add one <productCode>` / `Remove one <productCode>` and the `+` disables at `allocated === owed`. Driving a leaf's only line to 0 flips it to auto-dropped, greys the card, drops it out of the `Door leaves (N of M being sent)` count, removes its owed units from the summary, and shows an amber `N short` chip - **and Next stays enabled**, which is the whole point of the change.
 
 ---
 
@@ -804,11 +739,10 @@ the back-order grid without a manual reload; a queued receipt that drains later 
 `backOrderedItems` for the same reason. Before #416 a receive only refetched the inventory summaries.
 
 **Both grids want POs at GP_REGISTERED or later, and `registerPoInGp` is relay-gated.** With the relay
-connected, register one on TUBC and the grids fill from a real GP row. With `relay: DOWN` you get
-whatever the clone already carries and nothing new, and reaching for production instead is the exact
-move the Environment section forbids.
+connected, register one on TUBC and the grids fill from a real GP row. With the relay disconnected you
+get whatever production already holds for TUBC and nothing new.
 
-Intercept the GraphQL reads instead, when it comes to that: from an `initScript`, intercept `window.fetch`, match the operation
+Intercept the GraphQL reads instead, when it comes to that: from a `javascript_tool` script, wrap `window.fetch`, match the operation
 name in the request body (`GetOpenPOs` / `GetBackOrderedItems`) and return rows built from `new
 Date()` offsets. That drives the real components, which is enough to assert the column set, the
 "Stock PO" and em-dash fallbacks, and every urgency band in one pass.
@@ -859,7 +793,7 @@ approving no longer moves anything).
    every candidate location: `LOCATION | RECEIVED | AVAILABLE | PULLED`. There is deliberately **no
    suggested column and no autofill** - assert their absence, it is the whole point of the slice.
 4. Number inputs carry `aria-label="Pulled from <bin>"` and a `max` of that row's available, which is
-   what makes them addressable from the MCP tools.
+   what makes them addressable with the extension's `find`.
 
 **What to assert, and the traps:**
 
@@ -1108,96 +1042,56 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 
 ## Lessons Learned
 
-- `fill_form` is much more reliable than sequential `fill` calls for forms with many fields.
-- Reset data (UC Nexus Admin -> Reset data) is two gates: type `reset all nexus data`, then confirm the MUI dialog. No `window.alert()` any more.
-- Clerk sign-in tokens: Fetch from `GET /testing/clerk-sign-in` on the backend, then navigate to the frontend with `?__clerk_ticket=TOKEN`. The runtime is the PR environment for the PR under test (issue #182 moved e2e onto Railway; production is not a testing target). Clerk auto-authenticates - no form fill, no verification code. Tokens are one-time use; fetch a fresh one each session.
+- Reset data (UC Nexus Admin -> Reset data) is two gates: type `reset all nexus data`, then confirm the MUI dialog. No `window.alert()` any more. On production it drops the whole schema, so it is never a testing step (see Getting Started).
 - When viewing "All Projects", `projectId` is undefined/null in queries — this returns all POs across projects.
 - To test the Warehouse Receiving wizard's "Enter Quantities" step, you need at least one PO in ORDERED (or higher) status. DRAFT POs do not appear in the receiving wizard's PO selection list.
 - The line item field formerly called "Vendor Alias" is now called "Order As" in pre-order screens (Create PO dialog, PO detail modal) and "Ordered As" in post-order screens (Warehouse receiving wizard).
-- On the Import wizard Select Openings/Hardware step with a large XML file (1998 openings), `take_snapshot` produces an output file that exceeds the tool token limit. Use `evaluate_script` with `document.body.innerText` or targeted DOM queries to check state and click buttons. Use `evaluate_script` to click "Select All" when the snapshot uid approach times out due to large DOM.
+- On the Import wizard Select Openings/Hardware step with a large XML file (1998 openings), `read_page` produces output that exceeds the tool token limit. Use `javascript_tool` with targeted DOM queries (or `get_page_text`) to check state and click buttons. Use `javascript_tool` to click "Select All" when `find` refs time out on the large DOM.
 - Import wizard Classification step columns: Opening #, Product Code, Hardware Category, Manufacturer, List Price, Discount, Unit Cost, Qty, Classification, Site/Shop. Each row has four toggle buttons - "By UCH" / "By Others" in Classification, and "Site" / "Shop" in Site/Shop. Also has "Add group level" button and a header checkbox to select all rows. There are **two** counters ("X of Y items classified" and "X of Y in-scope items site/shop classified") and Next stays disabled until both are satisfied, so ticking only By UCH leaves the step blocked.
 - Import wizard step order for "Create Purchase Orders" purpose: Upload File -> Purpose -> Select Openings/Hardware -> Reconciliation -> Classification -> Purchase Orders -> Finalize (7 steps total).
-- For a first-time import (new project, no existing data), the Reconciliation step has no data to display — it just shows "New project — all items will be ordered fresh." The step is effectively a pass-through; do NOT use `wait_for` to wait for reconciliation data. Just click Next immediately.
-- Classification step grouping: Clicking "Add group level" creates a Level 1 dropdown pre-set to "Hardware Category" with a remove (X) button. Shows accordion rows per group with item counts, "By UCH All" and "By Others All" bulk buttons on the right, and a collapse/expand chevron. Each group shows a chip: "0/N classified" (grey, unclassified), "All By Others" (orange/amber), or "All By UCH" (green). With 26548 items the snapshot is too large — use evaluate_script to find and click buttons. Classification counter turns green when all items are classified.
+- For a first-time import (new project, no existing data), the Reconciliation step has no data to display — it just shows "New project — all items will be ordered fresh." The step is effectively a pass-through; do NOT wait for reconciliation data. Just click Next immediately.
+- Classification step grouping: Clicking "Add group level" creates a Level 1 dropdown pre-set to "Hardware Category" with a remove (X) button. Shows accordion rows per group with item counts, "By UCH All" and "By Others All" bulk buttons on the right, and a collapse/expand chevron. Each group shows a chip: "0/N classified" (grey, unclassified), "All By Others" (orange/amber), or "All By UCH" (green). With 26548 items `read_page` is too large — use `javascript_tool` to find and click buttons. Classification counter turns green when all items are classified.
 - Purchase Orders step (step 6 of 7): Shows N manufacturer group(s) each as an expandable card with checkbox, Preferred delivery date, Notes, PO Total, and a line items grid showing Product Code, Hardware Category, Total Qty, Unit Cost, Total Cost, Order As columns. Since #509 there is no vendor field on the card - the group is a TITAN manufacturer, and the GP vendor is picked at register time. Groups default unchecked. Only By UCH items appear (By Others items are excluded). With the contracterp-74.xml file, 41 groups appear.
-- Purchase Orders step: The Next button is DISABLED until at least one vendor checkbox is checked. All vendors start unchecked by default. To check all 41 vendors programmatically: use evaluate_script to call `.click()` on each `.MuiCheckbox-root` span inside each `.MuiPaper-outlined.MuiPaper-rounded` card (skip index 0 which may be a header). This triggers React's event handlers properly (direct DOM checkbox manipulation does NOT update React state).
+- Purchase Orders step: The Next button is DISABLED until at least one vendor checkbox is checked. All vendors start unchecked by default. To check all 41 vendors programmatically: use `javascript_tool` to call `.click()` on each `.MuiCheckbox-root` span inside each `.MuiPaper-outlined.MuiPaper-rounded` card (skip index 0 which may be a header). This triggers React's event handlers properly (direct DOM checkbox manipulation does NOT update React state).
 - "By Others" classification in the ALD group correctly EXCLUDES those items from vendor PO cards. Items that appear under vendor "Aluminum Door By Others" (vendor name, not classification) with ALD hardware category are separate — they are items from that vendor that were classified as "By UCH". The vendor name and the hardware category name can both contain "ALD" but refer to different things.
 - Finalize step (step 7 of 7): Shows "Review & Finalize" with Import Summary (project name, opening count, hardware item count, PO count). "Finish Import Session" button opens a "Finalize Import" MUI dialog with Cancel and Finalize buttons. After clicking Finalize, shows "Finalizing import session..." progress text, then a success overlay dialog with "Import session completed successfully!", project name, POs created count, and "View Purchase Orders" / "View Warehouse" / "Return to Home" buttons.
 - PO list expanded mini-table shows the optional "Received Qty" column only when `po.receiveRecords.length > 0`. POs whose line items have `receivedQuantity > 0` but `receiveRecords` is empty (e.g. GP-generated POs with status PARTIALLY_RECEIVED but no ReceiveRecord rows) will NOT show Received Qty — this is intentional and mirrors `PODetailModal`'s behavior.
 - The "All Projects" PO list query (`GET_PURCHASE_ORDERS` with no projectId) is the canonical example of the slow-resolver pattern described in CLAUDE.md rule #6. It eagerly loads every line item, receive record, and document for every PO across all projects. With ~19 POs in test the p90 hit 60s and p99 was ~4min (`http_response_time`). Backend CPU/memory are idle during this — it's a DB-bound issue. A project-scoped view (`projectId` set) returns much faster. If testing All Projects times out, retry with a specific project.
 - Locations page redesign (PR #160, issue #88): The `/app/warehouse/locations` page uses a master-detail rail+panel layout. Unselected state: DataGrid shows 4 columns - Location, Warehouse (chip per row), Items, Total Qty. No separate Aisle/Bay/Bin columns. Selected state (row clicked): left DataGrid collapses to a single "Location" column rail (shows location name + warehouse code chip + qty in one compact cell per row), and a right-side panel fills the remaining width showing the bin's contents, a WRD/VP chip in the panel header, and recent activity. Close button in panel returns to unselected state.
-- Locations page warehouse filter: A "Warehouse" combobox dropdown sits next to the Search locations input. Options: "All warehouses" (default), "Warden (WRD)", "VP (VP)". When a specific warehouse is selected, the "Warehouse" column disappears from the table (redundant), only that warehouse's bins show, and the count summary updates. In local testing, plain `click` on the combobox uid works fine — it opens the MUI Select portal and the options are visible in the next snapshot. (The "requires mousedown + mouseup via evaluate_script" note may have been a Railway-only issue.)
+- Locations page warehouse filter: A "Warehouse" combobox dropdown sits next to the Search locations input. Options: "All warehouses" (default), "Warden (WRD)", "VP (VP)". When a specific warehouse is selected, the "Warehouse" column disappears from the table (redundant), only that warehouse's bins show, and the count summary updates. A plain click on the combobox works — it opens the MUI Select portal and the options are reachable with `find` right after.
 - Locations page horizontal scroll: body has `overflow-x: hidden` applied. No hard min-widths on the layout. `document.documentElement.scrollWidth === clientWidth` with panel open or closed.
-- After a deploy on Railway, the previously-loaded SPA tab keeps the OLD `index.html` reference until full page reload (`navigate_page type=reload` is NOT enough). Bust by either closing the tab and `new_page` to the URL, or adding a query-param cache-buster like `?cb=1`. The HTML headers (`Cache-Control: no-cache, must-revalidate`) cover the *next* page load but not the currently-cached document.
-- MUI `Autocomplete` with `freeSolo` (used by `LocationAutocomplete` and `OrderAsAutocomplete`) is flaky to drive via `fill` — the tool tries to find a matching dropdown option and errors with "Could not find option with text X" when the value is a brand-new free-form string. Worse, when fill fails on a follow-up Autocomplete it sometimes mutates the previous field. For tests that need to set a specific value, use `evaluate_script` to set the underlying input's `value` and dispatch a synthetic `input` event, or drive the mutation directly via `curl` to the `/graphql` endpoint (the location-string normalization can be verified that way without UI flake).
-- Mutation success in the new LocationsTab triggers `refetchContents()` + parent `refetch()`, but Apollo Client's normalized cache can leave the just-mutated `InventoryLocation` entity visible in the panel until the cache settles. The DB is correct (verified by full page reload). If you need to assert post-mutation UI state, reload the page rather than trusting the immediate snapshot after `wait_for` on the success toast.
+- After a deploy on Railway, the previously-loaded SPA tab keeps the OLD `index.html` reference until a full page reload (a soft reload is NOT always enough). Bust by either closing the tab and opening a new one with `tabs_create_mcp`, or adding a query-param cache-buster like `?cb=1`. The HTML headers (`Cache-Control: no-cache, must-revalidate`) cover the *next* page load but not the currently-cached document.
+- MUI `Autocomplete` with `freeSolo` (used by `LocationAutocomplete` and `OrderAsAutocomplete`) can be flaky to drive by typing when the value is a brand-new free-form string. Follow the Autocomplete pattern (click, type, wait, `find` the option); for a value with no option, use `javascript_tool` to set the underlying input's `value` and dispatch a synthetic `input` event, or drive the mutation directly with a token-bearing `javascript_tool` fetch to `/graphql` (the location-string normalization can be verified that way without UI flake).
+- Mutation success in the new LocationsTab triggers `refetchContents()` + parent `refetch()`, but Apollo Client's normalized cache can leave the just-mutated `InventoryLocation` entity visible in the panel until the cache settles. The DB is correct (verified by full page reload). If you need to assert post-mutation UI state, reload the page rather than trusting the immediate read after the success toast.
 - The Location Cleanup screen lives at `/app/tenant-owner/location-cleanup`. It queries `locationDuplicates` which groups location triples by case-insensitive canonical form (uppercase + trim + collapse whitespace) and surfaces variants. Empty state ("No location duplicates found") is the happy path. The merge dialog calls `mergeLocations` which rewrites every matching row across inventory_locations + opening_items + stock_items and writes one MOVE audit per row.
 - The Tenant Owner Projects page (issue #67) is the first screen backed by real server-side auth. The frontend now sends the Clerk session token on every GraphQL request (Apollo auth link via `window.Clerk.session.getToken()`), and two resolvers are gated on the Tenant Owner role: `adminProjects` (query) and `updateProject` (mutation). Unauthenticated calls to them return a GraphQL error with `extensions.code = "UNAUTHENTICATED"`; signed-in non-admins get `FORBIDDEN`. Every other resolver is still ungated, so existing tests are unaffected.
 - Issues #198 and #380: free-form project creation is gone, and so is manual adoption. `createProject`/`CreateProjectInput` and `adoptGpJob`/`AdoptGpJobInput` no longer exist. Projects now appear on their own: the `gp_job_sync` background service creates one for every job in GP's job master (JC00102), on a ~5 minute timer and immediately on every relay reconnect, setting `projectId` = the GP job number and `description` = the GP job name. That means **there is no longer any way to seed a project through GraphQL without a relay** - the old ungated `adoptGpJob` fetch trick is dead. To get projects in a test environment, connect and enrol the relay and let the sync run, or hit the admin `syncGpJobs` mutation (Admin -> Projects -> "Sync from GP", which returns `{total, adopted}`) once a relay is up.
 - Issue #380: the "Create GP Job" button (`CreateGpJobDialog`) sits on the Tenant Owner Projects page since #743 - it was on the Import landing until then, which is now only a project picker. It originates a job in GP via `createGpJob(input: CreateGpJobInput!)`, which is admin-gated and requires a connected relay. Every field except the job number and name is a live GP read (`gpCustomers`, `gpCustomerAddresses`, `gpTaxSchedules`, `gpDivisions`, `gpEmployees`), so the whole form stays disabled while the relay is down. The two address selects stay disabled until a customer is picked and re-fetch when it changes. Eight optional fields sit behind a "Show optional fields" toggle. GP validates the submit and its own message is shown in the dialog - in TUBC the fiscal calendar ends 2025-09-30, so today's date reliably produces "Job cannot be created within a closed period"; use a FY2025 `createdDate` for a success path. Issue #392: Estimator and WS Manager are selects over `gpEmployees` (the GP payroll master UPR00100), not free text - the proc rejects an id that is not in that master with "The estimator does not exist in the payroll master table" (error state 51117). TUBC has exactly two employees, IANB and JONATHANR. `createGpJob` returns `{created, project}`: `created` is false when GP already held the job number and the mutation adopted it instead of creating one, so resubmitting an existing number succeeds with "already existed in GP and is now a project" rather than erroring. New projects default `offSiteStorageAgreement` to false and the GC/address fields to null, handy for testing the Projects edit flow.
-- Issue #444: both address selects in `CreateGpJobDialog` carry a "+ Add new address" row pinned last (only when that picker's customer is set). It opens a nested `AddCustomerAddressDialog` scoped to that customer and creates the code in GP via `createGpCustomerAddress` (admin-gated, relay write `create_customer_address`, RM00102 create-only - the relay pins the proc's UpdateIfExists to 0). The address code uppercases as typed; on success the picker refetches and auto-selects the new code. A duplicate code answers relay code `address_code_already_exists` rendered inside the nested dialog, which stays open with the typed input intact. Verified live on pr-445 (2026-07-30): NEXTEST1 under ELL100 in TUBC, then a full `createGpJob` using it (NEXUS-444-T1). The op is new, so a release relay build answers RELAY_OP_UNSUPPORTED on the create (the reads still work) until the relay is rebuilt.
-- A DataGrid driven by a `cache-and-network` query (e.g. the admin Projects grid) can render "0–0 of 0" for a beat on first mount before data arrives, so `take_snapshot` immediately after navigation may catch the empty state. Re-snapshot or `wait_for` a known row value before asserting the grid is empty.
-- MUI `spinbutton` (number input) fields with a pre-filled value will APPEND when driven by `fill` or `fill_form` - "3" becomes "31" if you try to fill "1". Always click the field first, then `Control+A` to select all, then `fill` with the desired value. Alternatively use `evaluate_script` to set the value directly.
-- The Transfer dialog success toast is very brief - by the time `take_snapshot` runs after the click, it may already be gone. Confirm success by observing the grid data (dialog closed + new/updated row present) rather than waiting for the toast text.
+- Issue #444: both address selects in `CreateGpJobDialog` carry a "+ Add new address" row pinned last (only when that picker's customer is set). It opens a nested `AddCustomerAddressDialog` scoped to that customer and creates the code in GP via `createGpCustomerAddress` (admin-gated, relay write `create_customer_address`, RM00102 create-only - the relay pins the proc's UpdateIfExists to 0). The address code uppercases as typed; on success the picker refetches and auto-selects the new code. A duplicate code answers relay code `address_code_already_exists` rendered inside the nested dialog, which stays open with the typed input intact. Verified live 2026-07-30: NEXTEST1 under ELL100 in TUBC, then a full `createGpJob` using it (NEXUS-444-T1). The op is new, so a release relay build answers RELAY_OP_UNSUPPORTED on the create (the reads still work) until the relay is rebuilt.
+- A DataGrid driven by a `cache-and-network` query (e.g. the admin Projects grid) can render "0–0 of 0" for a beat on first mount before data arrives, so a read immediately after navigation may catch the empty state. Read again, or wait for a known row value, before asserting the grid is empty.
+- MUI `spinbutton` (number input) fields with a pre-filled value will APPEND when typed into - "3" becomes "31" if you type "1". Always click the field first, select all (`ctrl+a`), then type the desired value. Alternatively use `form_input`, or `javascript_tool` to set the value directly.
+- The Transfer dialog success toast is very brief - by the time the next read runs after the click, it may already be gone. Confirm success by observing the grid data (dialog closed + new/updated row present) rather than waiting for the toast text.
 - There is no vendor field in PO create/edit at all since #509, and no Admin > Vendors page behind it - the local vendors table is gone. The only vendor a PO carries is the GP one (PM00200), chosen in the Register in GP dialog from the live `gpVendors` list, so a draft shows a blank vendor until it is registered. `/app/tenant-owner/vendors` now falls through to the Tenant Owner landing like any other unknown sub-route.
-- Receiving wizard: after selecting POs and clicking "Receive N Selected", the Receive modal opens. The "Receive Now" spinbutton defaults to 0. Using `fill` fails (value doesn't stick on React controlled spinbutton). Use `evaluate_script` to focus the input, then `press_key` ArrowUp to increment. ArrowUp from 0 goes directly to the max (pending qty) in one press.
-- Receiving wizard: "Assign locations & flag deficient units now" toggle appears only AFTER entering a Receive Now quantity > 0. Turn it on to get the Aisle/Bay/Bin text fields (regular textbox, not autocomplete). `fill_form` works fine on these.
-- Transfer dialog Aisle/Bay/Bin: these are comboboxes with autocomplete="list". Use `evaluate_script` to set the underlying input value (native value setter + `input` event). This reliably sets the values without triggering dropdown selection. The Transfer button enables once all three fields are filled.
+- Receiving wizard: after selecting POs and clicking "Receive N Selected", the Receive modal opens. The "Receive Now" spinbutton defaults to 0. Setting the DOM value alone fails (it does not stick on a React controlled spinbutton). Focus the input (click it, or `javascript_tool`), then press ArrowUp with the `computer` tool's `key` action to increment. ArrowUp from 0 goes directly to the max (pending qty) in one press.
+- Receiving wizard: "Assign locations & flag deficient units now" toggle appears only AFTER entering a Receive Now quantity > 0. Turn it on to get the Aisle/Bay/Bin text fields (regular textbox, not autocomplete). Typing or `form_input` works fine on these.
+- Transfer dialog Aisle/Bay/Bin: these are comboboxes with autocomplete="list". Use `javascript_tool` to set the underlying input value (native value setter + `input` event), or the Autocomplete pattern when the value is an existing option. This reliably sets the values without triggering dropdown selection. The Transfer button enables once all three fields are filled.
 - Locations page (Warden filter, panel open): when a single warehouse filter is active, the left rail single-column shows just the bin name + qty (no warehouse chip in that column, since filter is already scoped). The right panel header still shows the warehouse chip (e.g. "WRD").
-- Verifying a generated PDF (issue #230 PO document): the doc is text-based react-pdf, not an image, so `pdftotext` works. Fastest path for content assertions: use the dialog's "Save to PO documents" to upload it, query the PO's `documents { downloadUrl }` (presigned S3 URL) via GraphQL, `curl` the URL to a file, then `pdftotext -layout` (or `-raw` for the totals column, which `-layout` misaligns since Subtotal/Freight/Miscellaneous/Tax/Order-Total are right-aligned). "Generate & preview" opens a blob in a new tab that's hard to read via MCP - prefer save-then-fetch.
-- pdftotext/poppler is NOT installed on the dev machine, and naive stream-inflation can't read the text (react-pdf subsets fonts to custom glyph IDs). Working alternative: open the presigned `downloadUrl` directly in a browser tab (Chrome renders PDFs natively) and `take_screenshot` - the full totals column is readable in the image. Verified this way for issue #156 (Tariffs line + Order Total math).
+- Verifying a generated PDF (issue #230 PO document): the doc is text-based react-pdf, not an image, so `pdftotext` works. Fastest path for content assertions: use the dialog's "Save to PO documents" to upload it, query the PO's `documents { downloadUrl }` (presigned S3 URL) via GraphQL, `curl` the URL to a file, then `pdftotext -layout` (or `-raw` for the totals column, which `-layout` misaligns since Subtotal/Freight/Miscellaneous/Tax/Order-Total are right-aligned). "Generate & preview" opens a blob in a new tab that is hard to read through the extension - prefer save-then-fetch.
+- pdftotext/poppler is NOT installed on the dev machine, and naive stream-inflation can't read the text (react-pdf subsets fonts to custom glyph IDs). Working alternative: open the presigned `downloadUrl` directly in a browser tab (Chrome renders PDFs natively) and take a `computer` screenshot - the full totals column is readable in the image. Verified this way for issue #156 (Tariffs line + Order Total math).
 - Issue #156 fields: PO detail modal shows "Shipping Costs" / "Tariffs" info rows ('-' when null) and edit-mode number fields; the generate-document dialog's Freight prefills from the PO's shippingCost (saved documentData override wins) and its new Tariffs field from the PO's tariffAmount; the PDF prints a Tariffs totals line only when > 0.
 - Issue #216 buyer identity (scoped to REGISTERING by issue #256 - drafting needs neither): registering a PO into GP REQUIRES the signed-in user to have a GP buyer identity (Clerk publicMetadata.gpBuyerId, set in Admin -> User Management) AND, for project POs, a buyer assignment (Admin -> Buyers: assigned projects). Without them the register dialog blocks and the backend rejects. The test user (Jay Puzon) is linked to GP buyer "mira" with project 80003 assigned. The register dialog's Buyer field is read-only (your identity); its cost-code dropdown offers every code GP has active on the job - per-buyer cost-code designation was removed (PR #430), so there is no Designated Cost Codes field in Admin -> Buyers anymore. Stock POs (no project) skip the assignment check but still need the identity.
 - Issue #216 delivery dates: PO Requests capture "Preferred delivery date" per vendor card in the import wizard's PO step; the detail modal edits Preferred only while DRAFT and Expected only when GP-Registered/Vendor-Confirmed (server-enforced).
 - Import-created PO drafts have EMPTY Order As values unless set in the wizard's PO step - the register dialog then blocks submit with per-line 'Required' errors until each line's Order As is filled.
-- The generate dialog + admin PO-settings text fields APPEND when driven by `fill`/`fill_form` if they already hold a value (same MUI controlled-input quirk as spinbuttons). For a pre-filled field, set the value via `evaluate_script` using the native value setter + an `input` event (match the label's `for` attr to the input id), or drive the mutation directly. Empty fields fill fine.
-- Date-only fields: a `<TextField type="date">` renders as Month/Day/Year spinbuttons in the a11y tree. Set it via `evaluate_script` native setter with a `YYYY-MM-DD` string on the underlying input (dispatch `input` + `change`). Note: formatting a `YYYY-MM-DD` string with `new Date(str)` is UTC and prints the previous calendar day in a behind-UTC tz - the PO-document code parses date-only strings as local (fixed in #238), so the printed required-by should match what was entered.
-- To seed a project's job-site address for the PO document's "Use project site" ship-to option (most test projects have null address fields), call `updateProject(id, {jobSiteName, address, city, state, zip})` via `evaluate_script` (Tenant Owner gated). Then the dialog's "Use project site" button builds a real "UC Hardware Inc. - Deliver to site / ..." block.
-- PO list rows: clicking the row's StaticText via a snapshot uid may NOT open the detail modal (the a11y click can miss the row handler). Reliable alternative: `evaluate_script` finding the leaf element by text and clicking its `closest('td')`.
+- The generate dialog + admin PO-settings text fields APPEND when typed into if they already hold a value (same MUI controlled-input quirk as spinbuttons). For a pre-filled field, select all before typing, or set the value via `form_input` or `javascript_tool` using the native value setter + an `input` event (match the label's `for` attr to the input id), or drive the mutation directly. Empty fields fill fine.
+- Date-only fields: a `<TextField type="date">` renders as Month/Day/Year spinbuttons in the a11y tree. Set it via a `javascript_tool` native setter with a `YYYY-MM-DD` string on the underlying input (dispatch `input` + `change`). Note: formatting a `YYYY-MM-DD` string with `new Date(str)` is UTC and prints the previous calendar day in a behind-UTC tz - the PO-document code parses date-only strings as local (fixed in #238), so the printed required-by should match what was entered.
+- To seed a project's job-site address for the PO document's "Use project site" ship-to option (most test projects have null address fields), call `updateProject(id, {jobSiteName, address, city, state, zip})` via a `javascript_tool` fetch (Tenant Owner gated). Then the dialog's "Use project site" button builds a real "UC Hardware Inc. - Deliver to site / ..." block.
+- PO list rows: clicking the row's text via a `find` ref may NOT open the detail modal (the click can miss the row handler). Reliable alternatives: a coordinate click from a screenshot, or `javascript_tool` finding the leaf element by text and clicking its `closest('td')`.
 - Locations page bin panel "Item actions" menu (stock rows): Move / Transfer / Adjust Qty / Unlocate. "Adjust Qty" opens the shared LocationActionDialog - Confirm stays disabled until a non-zero adjustment AND a reason are entered; the helper text under the adjustment shows the computed "New qty: N" and flags negatives. Verified live: adjustment writes an ADJUSTMENT audit row (`auditLog(limit: N)`) with performedBy "UC Nexus Admin".
 - Draft PO create (issue #256 dialog) works with the relay down end to end: the created draft's `preferredDeliveryDate` round-trips exactly (entered 2026-08-15 -> stored 2026-08-15 -> detail modal renders 8/15/2026, no UTC day shift). Cancelling a draft removes it from the `purchaseOrders` list entirely.
 - Availability semantics (issue #229): available = quantity - deficient, so a 10-qty row with 7 deficient shows available 3. Read it per row via `inventoryRows` (`inventoryLocation.available`) or per combo via `projectInventoryAvailability`; cross-check against `deficientItems`. (The old `inventoryHierarchy` roll-up query that documented this is deleted.)
 - `Notification` has no `kind` field - it is `type` (`{ notifications { id type message isRead createdAt recipientRole projectId } }`). Querying `kind` fails the whole document, so a mistyped notification field takes the relay/pull/request fields in the same query down with it.
 - The bell panel is a plain MUI Popover with a "Notifications" heading and one bold row per unread item; the app-bar badge count matches `notifications` where `isRead: false`. It renders every audience regardless of your role, so 4 in the badge means 4 rows in the panel.
 - `shopAssemblyRequests` takes a `status` and defaults to **PENDING**, so `[]` means the accept queue is empty, not that no requests exist. Ask for `status: APPROVED` (or `REJECTED`) to see the rest; every row carries a derived `stage` telling you how far its pull has got.
-
-### Driving the app with the Chrome MCP tools
-
-- **`file_upload` caps at 10 MB and `contracterp-74.xml` is 11.5 MB**, so the real file cannot be uploaded through the tool at all. Either take the "Use last uploaded schedule" card (almost always right), or build a subset: keep everything up to `<Detail>` (that block holds all 1998 opening/assignment definitions, ~1.07 MB) then append `<Detail>` + the first N `</Material_List>`-delimited blocks + `</Detail></Contract>`. ~600 blocks lands at ~3.5 MB, parses clean, and yields "1998 openings parsed / 12746 hardware items parsed / 22 opening(s) had no hardware items assigned". Parsing is entirely client-side - nothing is persisted until Finalize - so uploading a trimmed file is safe on a database you are trying to preserve.
-- **`navigate` costs a full reload and wipes any instrumentation you injected.** React Router picks up `history.pushState(...)` + `window.dispatchEvent(new PopStateEvent('popstate'))`, so route sweeps can be done client-side with a `fetch` wrapper still installed. That wrapper is far better evidence than `read_network_requests`, which only starts recording when first called and misses everything before it, and it can see GraphQL errors - which come back **HTTP 200** with an `errors` array, so status-code filtering finds nothing.
-- **A `javascript_tool` call that hits the 45s CDP timeout keeps running in the page.** Its `await` chain continues after the tool has given up, so the next call races it and you get results tagged with the wrong route. Keep loops under ~8 route-hops, or step one route per call. If output ever looks mismatched, sleep ~6s and start over.
-- `computer screenshot` times out with "renderer may be frozen" while the Import wizard renders 1998 openings or 26k classification rows. It is not frozen - wait 10s and take it again. Same for the first paint after "Use last uploaded schedule".
-- The screenshot image is scaled down from the real viewport (1568px wide image for a 1918px window), so a card that looks cut off at the right edge usually is not. Check `document.documentElement.scrollWidth === clientWidth` before reporting a horizontal-overflow regression.
-- The Pull Request detail modal **closes on Escape since the 2026-07-28 UI revamp** (it used to swallow it). Its nested confirm dialogs are siblings, so an Escape inside a confirm closes only the confirm. "Cancel Pull" is still a real destructive action - never use it as a way out.
-- MUI option cards (import Purpose, module "Go to" cards) are `useNavigate` buttons with no `href`, so there are no anchors to click and `find`'s ref sometimes lands on the inner text node rather than the clickable card. Setting the underlying `input[type=radio]`/`input[name=select_row]` via native `.click()` works reliably and does update React state.
-- The import landing project card is a `MuiCardActionArea` **button** wrapping the `MuiPaper`. Coordinate clicks land on it only sometimes (it takes focus but does not activate, and Enter does not help either). Reliable: find the element whose `textContent` matches the project *and* whose `tagName === 'BUTTON'`, then `.focus()` + `.click()`.
-- **Select Openings is paginated at 50 rows/page, ordered by the schedule, not sorted**, and the "Filter" control is a Select (column filter), *not* a text search - there is no way to type an opening number. To enumerate or tick specific openings, scroll the `.MuiDataGrid-virtualScroller` in ~150px steps, and after each `scrollTop` assignment **dispatch a `scroll` event and wait ~450ms** or the virtualizer does not re-render and you silently collect only the first screenful (17 of 50). Keep the sweep under ~40s of `await` or the 45s CDP cap kills the call mid-loop - it leaves the page in a valid state (rows already ticked stay ticked), so just re-run and top up the selection.
-- The Receive modal has **two** confirmations: `Complete Receive` opens a nested `Confirm Receive` ("Receive N items across M PO into inventory?") whose button is just `Receive`. Scripting only the outer button looks like a silent no-op - inventory stays empty and the outbox stays at 0 because no mutation ever fired.
-- Receive modal quantity + location fields take a native value-setter + `input`/`change` event fine (no need for the ArrowUp trick), and the location block only appears once a Receive Now qty > 0. `all placed` chips per product gate `Complete Receive`.
-- **DataGrid rows are invisible to `take_snapshot`.** The a11y snapshot gives you `columnheader`s and
-  the pagination controls and *nothing else* - no row uids - so `click(uid)` cannot reach a row at
-  all. Read rows with `evaluate_script` over `[role="row"]`, and prefer the per-cell form, which
-  gives you the column names too:
-  `[...r.querySelectorAll('[role="gridcell"]')].map(c => ({field: c.getAttribute('data-field'), text: c.innerText}))`.
-  To open one, dispatch the event yourself:
-  `cell.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window}))`.
-- **Read grid rows twice after switching tabs.** A read ~3s after a tab click came back with the last
-  two cells missing (`... | Jay Puzon | 2` and nothing else); the same read a moment later had the
-  full six. It is render timing, not a bug - do not report a missing column off a single sample.
-- **Multi-line cells arrive as one string.** The Phase cell is a tag over a caption, so its `innerText`
-  reads `PENDING
-Not started` - replace newlines before matching, or assert on the parts.
-- **Waiting for a Railway deploy**: poll the *schema* for a field the new build adds rather than
-  guessing at a duration -
-  `{ __type(name: "PickSheetSection") { fields { name } } }` until the new field appears. Backend and
-  frontend deploy separately; the backend took ~225s from merge to serving on 2026-07-28. `/health`
-  answering is not sufficient, it answers on the old build too.
-- **Most warehouse reads are ungated, so curl is faster than the browser for setup and assertions.**
-  `pullRequests`, `inventoryItems`, `inventoryHierarchy` and `auditLog` all answer unauthenticated;
-  `shopAssemblyRequests`, `relayStatus` and the pick mutations are `require_user`. A partially-gated
-  query returns HTTP 200 with `data.<field>: null` *and* an `errors` array - if a list looks
-  mysteriously empty, print `errors` before concluding the data is missing.
-- Allocator step (#378) specifics: the summary table is `Owed / Available / Allocated / Left to assign / Short`; each leaf card carries a `Fully covered` / `Not covered - auto-dropped` chip, an `N of M allocated` caption and an include/exclude toggle; the steppers have `aria-label`s `Add one <productCode>` / `Remove one <productCode>` and the `+` disables at `allocated === owed`. Driving a leaf's only line to 0 flips it to auto-dropped, greys the card, drops it out of the `Door leaves (N of M being sent)` count, removes its owed units from the summary, and shows an amber `N short` chip - **and Next stays enabled**, which is the whole point of the change.
 
 ## 2026-07-28 UI revamp - what changed for testers
 
@@ -1210,9 +1104,9 @@ queries/mutations and every action are unchanged, but a lot of chrome moved:
   the active module. The `<- Warehouse` / `<- Projects` back buttons are gone - breadcrumbs (now
   labelled "Purchase Orders", "Start a Request") are the way back.
 - **Icons are lucide (stroke) not Material (filled)**; icon-only buttons gained aria-labels
-  (e.g. `Open <PO> details`). Snapshot selectors keyed on Material icon `data-testid`s will miss.
-- **Stat values animate** (count-up over ~0.5s on mount). A snapshot taken immediately after
-  render can catch a mid-flight number - `wait_for` the final value or re-snapshot. With
+  (e.g. `Open <PO> details`). Selectors keyed on Material icon `data-testid`s will miss.
+- **Stat values animate** (count-up over ~0.5s on mount). A read or screenshot taken immediately after
+  render can catch a mid-flight number - wait and read again. With
   `prefers-reduced-motion`, values render instantly.
 - **PO list**: the 7 stat tiles are now one status strip; segments are still the same filters
   (`aria-pressed`, `aria-label="Filter by <status>"`). The whole data row opens the detail modal;
