@@ -48,7 +48,7 @@ import { landPastedRows, parseSpreadsheetPaste } from './spreadsheetPaste';
 import { PasteSummaryBanner, SpreadsheetPastePanel, type PasteSummary } from './SpreadsheetPastePanel';
 import ProjectPicker from '../../components/ProjectPicker';
 import ProcessingStep from '../../components/ProcessingStep';
-import { monoSx, microLabelSx } from '../../theme';
+import { monoSx, microLabelSx, tabularSx } from '../../theme';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
 
@@ -2005,14 +2005,16 @@ export default function GpPurchaseOrderDialog({
                 slotProps={{ htmlInput: { maxLength: MAX_DESCRIPTION } }}
                 sx={MONO_FIELD_SX}
               />
+              {/* Qty and Unit Cost are text boxes, not number boxes (#833): a number box shows a pasted
+                  "TBD" as empty, and a flagged cell has to show what is wrong with it. */}
               <TextField
                 size="small"
-                type="number"
                 value={li.orderedQuantity}
                 onChange={(e) => updateLineItem(li.key, 'orderedQuantity', e.target.value)}
                 error={!!gridErrors[`li_${idx}_qty`]}
                 helperText={gridErrors[`li_${idx}_qty`]}
-                slotProps={{ htmlInput: { min: 1 } }}
+                slotProps={{ htmlInput: { inputMode: 'numeric', 'aria-label': `Quantity line ${idx + 1}` } }}
+                sx={{ '& input': tabularSx }}
               />
               {/* Native, so the row stays one line high; the column heading is its visible label. */}
               <TextField
@@ -2036,12 +2038,12 @@ export default function GpPurchaseOrderDialog({
               </TextField>
               <TextField
                 size="small"
-                type="number"
                 value={li.unitCost}
                 onChange={(e) => updateLineItem(li.key, 'unitCost', e.target.value)}
                 error={!!gridErrors[`li_${idx}_cost`]}
                 helperText={gridErrors[`li_${idx}_cost`]}
-                slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+                slotProps={{ htmlInput: { inputMode: 'decimal', 'aria-label': `Unit cost line ${idx + 1}` } }}
+                sx={{ '& input': tabularSx }}
               />
               {isJob && (
                 <TextField
