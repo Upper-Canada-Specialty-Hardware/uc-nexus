@@ -963,3 +963,59 @@ def test_a_po_line_item_is_scoped_through_its_purchase_order(db_session, two_com
     with pytest.raises(NotFoundError):
         tenancy.require_po_line_item_in_scope(db_session, line.id, "TUBC")
     tenancy.require_po_line_item_in_scope(db_session, line.id, OTHER)
+
+
+# --- #741: the admin Hardware Status by Project rollup ------------------------------------------
+
+
+def _borrow_warehouse_session(monkeypatch, db_session):
+    """The resolver opens its own SessionLocal, which cannot see the fixture's uncommitted rows."""
+    from app.schemas import warehouse as warehouse_schema_module
+
+    class _Borrowed:
+        def __enter__(self):
+            return db_session
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(warehouse_schema_module, "SessionLocal", lambda: _Borrowed())
+
+
+def test_hardware_status_by_product_serves_the_callers_own_project(db_session, two_companies, monkeypatch):
+    from app.models.hardware import HardwareItem
+    from app.models.project import Opening
+    from app.schemas.warehouse import WarehouseQueries
+
+    mine = two_companies["mine"]
+    opening = Opening(id=uuid.uuid4(), project_id=mine.id, opening_number="101")
+    db_session.add(opening)
+    db_session.flush()
+    db_session.add(
+        HardwareItem(
+            id=uuid.uuid4(),
+            project_id=mine.id,
+            opening_id=opening.id,
+            hardware_category="HINGE",
+            product_code="HG-100",
+            item_quantity=4,
+        )
+    )
+    db_session.flush()
+    _borrow_warehouse_session(monkeypatch, db_session)
+
+    rows = WarehouseQueries().hardware_status_by_product(_Info(["Tenant Owner"], company="TUBC"), [str(mine.id)])
+
+    assert [(r.product_code, r.required_quantity) for r in rows] == [("HG-100", 4)]
+
+
+def test_hardware_status_by_product_refuses_another_companys_project(db_session, two_companies, monkeypatch):
+    from app.schemas.warehouse import WarehouseQueries
+
+    _borrow_warehouse_session(monkeypatch, db_session)
+
+    with pytest.raises(NotFoundError):
+        WarehouseQueries().hardware_status_by_product(
+            _Info(["Tenant Owner"], company="TUBC"),
+            [str(two_companies["mine"].id), str(two_companies["theirs"].id)],
+        )
