@@ -21,8 +21,12 @@ export interface CompanyChoice {
  *
  * Pass the relay's `companies`. The chosen value is derived rather than synced into state, so a
  * relay that reconnects with a different list can never leave a stale company selected.
+ *
+ * `pinned` is a company the thing being acted on already belongs to - the chosen project's, the
+ * PO's (#831). It wins over any pick and locks the choice: a PO on a job lives in the job's company,
+ * and a register into any other is refused, so offering one would only offer a refusal.
  */
-export function useCompanyChoice(companies: string[]): CompanyChoice {
+export function useCompanyChoice(companies: string[], pinned?: string | null): CompanyChoice {
   const { isNexusAdmin, company: ownCompany } = useIdentity();
   const [picked, setPicked] = useState<string | null>(null);
 
@@ -30,6 +34,8 @@ export function useCompanyChoice(companies: string[]): CompanyChoice {
     () => (!isNexusAdmin && ownCompany ? [ownCompany] : companies),
     [isNexusAdmin, ownCompany, companies],
   );
+
+  if (pinned) return { options, company: pinned, setCompany: setPicked, locked: true };
 
   const company =
     picked && options.includes(picked)

@@ -36,6 +36,8 @@ import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { useCompanyChoice } from '../../relay/useCompanyChoice';
 import GpCompanyLabel from '../../relay/GpCompanyLabel';
+import { companyLabel } from '../../relay/companyLabel';
+import GpCompanyTag from '../../components/GpCompanyTag';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import {
@@ -572,23 +574,37 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
           {fieldError && <Alert severity="warning">{fieldError}</Alert>}
 
           <Stack direction="row" spacing={2} alignItems="center">
-            {/* #637: which company the job is created in. Read-only when there is nothing to pick. */}
-            <TextField
-              select={!companyChoice.locked}
-              label="GP company"
-              value={companyChoice.locked ? company || '—' : company}
-              onChange={(e) => companyChoice.setCompany(e.target.value)}
-              size="small"
-              disabled={companyChoice.locked}
-              sx={{ minWidth: 140 }}
-              slotProps={{ input: { sx: monoSx }, select: { renderValue: (v) => String(v) } }}
-            >
-              {companyChoice.options.map((c) => (
-                <MenuItem key={c} value={c}>
-                  <GpCompanyLabel code={c} gpCompanies={relay.gpCompanies} />
-                </MenuItem>
-              ))}
-            </TextField>
+            {/* #637: which company the job is created in. #831: a scoped user has nothing to pick, so
+                they get the shared GP company tag - code and GP's name - rather than a greyed-out
+                field holding a bare code. */}
+            {companyChoice.locked ? (
+              company ? (
+                <GpCompanyTag code={company} gpCompanies={relay.gpCompanies} caption="GP company" />
+              ) : (
+                <Typography variant="caption" color="text.secondary">
+                  GP company: none to create the job in until the relay is connected
+                </Typography>
+              )
+            ) : (
+              <TextField
+                select
+                label="GP company"
+                value={company}
+                onChange={(e) => companyChoice.setCompany(e.target.value)}
+                size="small"
+                sx={{ minWidth: 140, maxWidth: 280 }}
+                slotProps={{
+                  input: { sx: monoSx },
+                  select: { renderValue: (v) => companyLabel(String(v), relay.gpCompanies) },
+                }}
+              >
+                {companyChoice.options.map((c) => (
+                  <MenuItem key={c} value={c}>
+                    <GpCompanyLabel code={c} gpCompanies={relay.gpCompanies} />
+                  </MenuItem>
+                ))}
+              </TextField>
+            )}
             <RelayStatusChip connected={relayConnected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
             <IconButton
               size="small"

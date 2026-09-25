@@ -30,6 +30,7 @@ import DataTable from '../../components/DataTable';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { useToast } from '../../components/Toast';
+import GpCompanyTag from '../../components/GpCompanyTag';
 import { UPDATE_PO, UPDATE_PO_NOTES, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM_UNIT_COST, UPLOAD_PO_DOCUMENT, DELETE_PO_DOCUMENT, EMAIL_PO_TO_VENDOR } from '../../graphql/po';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import type { PurchaseOrder } from './index';
@@ -654,6 +655,9 @@ export default function PODetailModal({
               <Chip label="Nexus registered" size="small" variant="outlined" color="success" />
             </Tooltip>
           )}
+          {/* #831: the GP company this PO lives in - and that registering, receiving or generating it
+              writes to - in the header row every user reads first. */}
+          <GpCompanyTag code={po.company} caption="GP company" />
           {/* A mirrored PO has no Nexus request number; only show it when there is one. */}
           {po.requestNumber && (
             <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 0.75 }}>

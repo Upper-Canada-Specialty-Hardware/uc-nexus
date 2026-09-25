@@ -23,6 +23,7 @@ import { UPLOAD_PO_DOCUMENT } from '../../graphql/po';
 import { RECEIVE_DRAFT_REFETCH_QUERIES } from '../../graphql/refetch';
 import { GET_PROJECTS } from '../../graphql/shared';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
+import GpCompanyTag from '../../components/GpCompanyTag';
 import GpJobNotOpenBanner from '../../components/GpJobStateTag';
 import { extractGpError, GP_JOB_NOT_OPEN } from '../../graphql/gpError';
 import { gpJobStateLabel, isGpJobNotOpen, isGpSetupBroken, type Project } from '../../types/project';
@@ -209,6 +210,12 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   const receivablePoDetailsList = useMemo(
     () => poDetailsList.filter((d) => !heldPoIds.has(d.id)),
     [poDetailsList, heldPoIds],
+  );
+
+  // #831: the GP companies this count will post into once approved - named on the dialog.
+  const receivingCompanies = useMemo(
+    () => [...new Set(receivablePoDetailsList.map((d) => d.gpCompany).filter((c): c is string => !!c))],
+    [receivablePoDetailsList],
   );
 
   const lineItemsToReceive = useMemo(() => {
@@ -631,22 +638,29 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
             </Typography>
           </Alert>
         )}
+        {/* #831: the count posts into GP once approved, so the GP company it lands in sits on the same
+            row as the warehouse it lands in. One tag per company, though a batch is almost always one. */}
         {showEntry && (
-          <FormControl size="small" sx={{ minWidth: 240, mb: 2 }}>
-            <InputLabel id="receive-warehouse-label">Receive into warehouse</InputLabel>
-            <Select
-              labelId="receive-warehouse-label"
-              label="Receive into warehouse"
-              value={warehouseId}
-              onChange={(e) => setWarehouseId(e.target.value)}
-            >
-              {warehouses.map((w) => (
-                <MenuItem key={w.id} value={w.id}>
-                  {w.name} ({w.code}){w.isPrimary ? ' · default' : ''}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', mb: 2 }}>
+            <FormControl size="small" sx={{ minWidth: 240 }}>
+              <InputLabel id="receive-warehouse-label">Receive into warehouse</InputLabel>
+              <Select
+                labelId="receive-warehouse-label"
+                label="Receive into warehouse"
+                value={warehouseId}
+                onChange={(e) => setWarehouseId(e.target.value)}
+              >
+                {warehouses.map((w) => (
+                  <MenuItem key={w.id} value={w.id}>
+                    {w.name} ({w.code}){w.isPrimary ? ' · default' : ''}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            {receivingCompanies.map((c) => (
+              <GpCompanyTag key={c} code={c} caption="GP company" />
+            ))}
+          </Box>
         )}
         {showEntry && (
           <PackingSlipPicker

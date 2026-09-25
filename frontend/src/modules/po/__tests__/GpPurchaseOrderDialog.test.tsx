@@ -79,7 +79,8 @@ const stockDraft: PurchaseOrder = {
   requestNumber: 'REQ-001',
   projectId: null,
   status: 'DRAFT',
-  company: 'TUBC',
+  // #831: the company the relay serves - a draft registers into its own company and no other.
+  company: 'UCS',
   gpCompany: null,
   gpVendorId: null,
   vendorNameSnapshot: 'Ace Hardware Co',
@@ -313,7 +314,7 @@ function processedPo(overrides: Record<string, unknown> = {}) {
     nexusRegistered: true,
     projectId: null,
     status: 'GP_REGISTERED',
-    company: 'TUBC',
+    company: 'UCS',
     gpCompany: 'UCS',
     gpVendorId: 'V-ACE',
     vendorNameSnapshot: 'Ace Hardware Co',
@@ -490,8 +491,9 @@ describe('GpPurchaseOrderDialog', () => {
     expect(screen.getByLabelText('Buyer (you)')).toHaveValue('JSMITH');
     expect(screen.getByLabelText('Buyer (you)')).toBeDisabled();
 
-    // Company comes from the connected relay; the vendor is matched by exact name.
-    await waitFor(() => expect(screen.getByLabelText('GP company')).toHaveValue('UCS'));
+    // #831: the company is the draft's own, named up front with GP's name for it; the vendor is
+    // matched by exact name.
+    expect(await screen.findByTitle('GP company: UCS - UC Shop')).toBeInTheDocument();
     await waitForVendorPreselect();
     expect(
       screen.getByText('Imported as: Ace Hardware Co - confirm the GP vendor'),
@@ -916,6 +918,8 @@ describe('GpPurchaseOrderDialog', () => {
         tariffAmount: null,
         costCode: null,
         vendorQuoteNumber: null,
+        // #831: a PO on a job takes the job's company, so none is sent.
+        company: null,
         lineItems: [
           {
             hardwareCategory: 'Hinges',

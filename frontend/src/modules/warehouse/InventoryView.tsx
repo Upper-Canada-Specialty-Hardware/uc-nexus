@@ -4,6 +4,7 @@ import { LayoutGrid } from 'lucide-react';
 import HardwareItemsTab from './HardwareItemsTab';
 import ProjectLandingPage from '../../components/ProjectLandingPage';
 import PageHeader from '../../components/PageHeader';
+import GpCompanyTag from '../../components/GpCompanyTag';
 import { FadeIn } from '../../motion';
 import type { Project } from '../../types/project';
 
@@ -33,7 +34,17 @@ export default function InventoryView() {
       <PageHeader
         title="Inventory"
         parent={WAREHOUSE_PARENT}
-        description={projectLabel}
+        description={
+          selectedProject === 'all' ? (
+            projectLabel
+          ) : (
+            // #831: the project's GP company, inline after its name.
+            <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+              {projectLabel}
+              <GpCompanyTag code={selectedProject.company} />
+            </Box>
+          )
+        }
         actions={
           <Button
             size="small"

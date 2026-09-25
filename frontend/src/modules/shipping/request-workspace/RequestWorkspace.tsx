@@ -14,6 +14,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery } from '@apollo/client/react';
 import ProjectPicker from '../../../components/ProjectPicker';
 import PageHeader from '../../../components/PageHeader';
+import GpCompanyTag from '../../../components/GpCompanyTag';
 import GpSetupQuarantineBanner from '../../../components/GpSetupQuarantineBanner';
 import { useToast } from '../../../components/Toast';
 import { GET_PROJECTS } from '../../../graphql/shared';
@@ -163,7 +164,15 @@ function EditRoute() {
   return (
     <Box>
       <PageHeader
-        title={`Edit request ${request.requestNumber}`}
+        title={
+          // #831: the project's GP company, inline in the title row rather than a row of its own.
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Typography variant="h5" sx={{ lineHeight: 1.2 }}>
+              Edit request {request.requestNumber}
+            </Typography>
+            <GpCompanyTag code={project.company} />
+          </Stack>
+        }
         parent={REQUESTS_PARENT}
         description={`${project.description || project.projectId}. Saving replaces the request with exactly what is in the cart.`}
       />

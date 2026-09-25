@@ -1,7 +1,8 @@
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import ProjectPicker from '../ProjectPicker';
-import { GET_PROJECTS } from '../../graphql/shared';
+import { GET_PROJECTS, GET_RELAY_STATUS } from '../../graphql/shared';
+import type { Project } from '../../types/project';
 
 vi.mock('../../hooks/useIdentity', () => ({
   useIdentity: () => ({
@@ -169,5 +170,79 @@ describe('ProjectPicker GP job state (#730)', () => {
     for (const name of ['Open Job', 'Unmirrored Job']) {
       expect(await optionFor(name)).not.toHaveAttribute('aria-disabled', 'true');
     }
+  });
+});
+
+// #831: GP's name for the one company, as the relay reports it.
+const relayMock: MockedResponse = {
+  request: { query: GET_RELAY_STATUS },
+  maxUsageCount: INFINITE,
+  result: {
+    data: {
+      relayStatus: {
+        connected: true,
+        companies: ['TUBC'],
+        gpCompanies: [{ id: 'TUBC', name: 'Test UBC', __typename: 'GpCompany' }],
+        companiesError: null,
+        build: null,
+        installId: null,
+        lastConnectedAt: null,
+        lastDisconnectedAt: null,
+        lastDisconnectReason: null,
+        previewChannels: [],
+        __typename: 'RelayStatus',
+      },
+    },
+  },
+};
+
+const picked = {
+  id: 'p1',
+  projectId: 'JOB-100',
+  description: 'Main St Job',
+  client: 'ACME',
+  jobSiteName: 'Main St',
+  company: 'TUBC',
+  openingCount: 3,
+} as unknown as Project;
+
+describe('ProjectPicker GP company (#831)', () => {
+  // The identity mock above is a scoped user, not a UC NEXUS ADMIN: the company used to be shown to
+  // the admin only, which left everyone else guessing which company a PO would land in.
+  it('names the GP company on every option for a user who is not a UC Nexus Admin', async () => {
+    render(
+      <MockedProvider mocks={[projectsMock, relayMock]}>
+        <ProjectPicker value={null} onChange={vi.fn()} />
+      </MockedProvider>,
+    );
+    typeInto(screen.getByLabelText('Project'), 'Job');
+
+    for (const name of ['Main St Job', 'Elm St Job']) {
+      const option = await optionFor(name);
+      expect(within(option).getByText('TUBC')).toBeInTheDocument();
+      expect(await within(option).findByText('Test UBC')).toBeInTheDocument();
+    }
+  });
+
+  it("names the chosen project's GP company under the field, above the caller's own line", async () => {
+    render(
+      <MockedProvider mocks={[projectsMock, relayMock]}>
+        <ProjectPicker value={picked} onChange={vi.fn()} helperText="Something the caller says" />
+      </MockedProvider>,
+    );
+
+    expect(screen.getByText('GP company')).toBeInTheDocument();
+    expect(await screen.findByTitle('GP company: TUBC - Test UBC')).toBeInTheDocument();
+    expect(screen.getByText('Something the caller says')).toBeInTheDocument();
+  });
+
+  it('leaves the chosen company out where the screen already names it', () => {
+    render(
+      <MockedProvider mocks={[projectsMock, relayMock]}>
+        <ProjectPicker value={picked} onChange={vi.fn()} showSelectedCompany={false} />
+      </MockedProvider>,
+    );
+
+    expect(screen.queryByText('GP company')).toBeNull();
   });
 });

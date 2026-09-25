@@ -31,6 +31,7 @@ import { FileText } from 'lucide-react';
 import { RECEIVE_APPROVE_REFETCH_QUERIES, RECEIVE_DRAFT_REFETCH_QUERIES } from '../../graphql/refetch';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import GpErrorAlert from '../../components/GpErrorAlert';
+import GpCompanyTag from '../../components/GpCompanyTag';
 import { extractGpError, GP_JOB_NOT_OPEN, type GpError } from '../../graphql/gpError';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import GpJobNotOpenBanner from '../../components/GpJobStateTag';
@@ -452,13 +453,16 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
           <>
             {/* The relay state says what will happen rather than refusing (#376): a manager who has
                 looked at the count can approve it either way, and an unreachable relay queues it. */}
-            <Box sx={{ mb: 2 }}>
+            {/* #831: the GP company the receipt posts into sits in the same row as the relay state, so
+                the manager knows whose GP the approval writes to before pressing it. */}
+            <Box sx={{ mb: 2, display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+              <GpCompanyTag code={poDetails?.gpCompany} gpCompanies={relay.gpCompanies} caption="GP company" />
               {relayStatus === null ? (
                 <Chip size="small" label="checking GP relay…" />
               ) : relayStatus ? (
                 <Chip size="small" color="success" label="GP relay connected" />
               ) : (
-                <Alert severity="warning">
+                <Alert severity="warning" sx={{ flex: '1 1 100%' }}>
                   GP relay offline - approving will queue this receipt, and it will post itself when the
                   relay reconnects. Nothing appears in inventory until it does.
                 </Alert>
