@@ -13,7 +13,7 @@ import {
   Typography,
 } from '@mui/material';
 import { Link as RouterLink, useParams } from 'react-router-dom';
-import { Archive, ArchiveRestore, Boxes, DoorOpen, FileText, Pencil, Truck } from 'lucide-react';
+import { Archive, ArchiveRestore, Boxes, DoorOpen, FileText, Pencil, Tags, Truck } from 'lucide-react';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { GET_ADMIN_PROJECT_DETAIL, GET_ADMIN_PROJECTS, SET_PROJECT_ARCHIVED } from '../../graphql/admin';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
@@ -250,7 +250,17 @@ export default function ProjectDetailPage() {
             </>
           }
           actions={
-            <Stack direction="row" spacing={1}>
+            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+              {/* #735: correct a product's Shop / Site / By Others after import. */}
+              <Button
+                component={RouterLink}
+                to={`/app/tenant-owner/projects/${project.id}/classifications`}
+                variant="outlined"
+                size="small"
+                startIcon={<Tags {...ICON} />}
+              >
+                Hardware classifications
+              </Button>
               <Button
                 variant="outlined"
                 size="small"

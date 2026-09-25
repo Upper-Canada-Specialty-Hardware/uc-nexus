@@ -13,6 +13,7 @@ fails on it either way.
 
 import strawberry
 
+from .classification_override import ClassificationOverrideMutations
 from .custom_items import CustomItemMutations
 from .db_access import DbAccessMutations
 from .gp_outbox import GpOutboxMutations
@@ -32,6 +33,7 @@ from .warehouse import WarehouseMutations
 
 @strawberry.type
 class Mutation(
+    ClassificationOverrideMutations,
     CustomItemMutations,
     DbAccessMutations,
     GpOutboxMutations,

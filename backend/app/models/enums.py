@@ -6,6 +6,22 @@ class Classification(str, enum.Enum):
     SHOP_HARDWARE = "SHOP_HARDWARE"
 
 
+class HardwareClassificationChoice(str, enum.Enum):
+    """A product's classification as the import's classification step offers it (#734/#735).
+
+    Not stored as such: UCH_SHOP / UCH_SITE are hardware_items.classification SHOP_HARDWARE /
+    SITE_HARDWARE, and BY_OTHERS is a project_excluded_items row. UNCLASSIFIED and MIXED only
+    describe what is there now - a product nobody classified, or one whose schedule rows disagree -
+    and are never a value anybody picks.
+    """
+
+    UCH_SHOP = "UCH_SHOP"
+    UCH_SITE = "UCH_SITE"
+    BY_OTHERS = "BY_OTHERS"
+    UNCLASSIFIED = "UNCLASSIFIED"
+    MIXED = "MIXED"
+
+
 class HardwareItemState(str, enum.Enum):
     AVAILABLE = "AVAILABLE"
     IN_PO = "IN_PO"
