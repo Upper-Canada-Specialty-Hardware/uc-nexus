@@ -5,6 +5,7 @@ import { tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
 import type { DraftAttachmentType, DraftGroup, DraftInfoField } from './types';
 import { overBuyRisks } from './overBuy';
+import AddCoveredProductsDialog, { type CoveredProduct } from './AddCoveredProductsDialog';
 import {
   DraftCard,
   SplitLineDialog,
@@ -36,6 +37,9 @@ interface PurchaseOrdersStepProps {
   /** #632: per-line recon context (needed / on order / received / available), shown inline on each
    *  ledger row as the Need / On Order / Rcvd / Avail columns (#639). */
   lineContextByPk: Map<string, LineContext>;
+  /** #814: products of the selection already covered by a PO, which the drafts left out. */
+  coveredProducts?: CoveredProduct[];
+  onAddCoveredProducts?: (ids: string[]) => void;
   onToggleIncluded: (id: string) => void;
   onRenameDraft: (id: string, label: string) => void;
   onUpdateDraftInfo: (id: string, field: DraftInfoField, value: string) => void;
@@ -65,6 +69,8 @@ export default function PurchaseOrdersStep({
   orderAsValues,
   selectionTotals,
   lineContextByPk,
+  coveredProducts = [],
+  onAddCoveredProducts,
   onToggleIncluded,
   onRenameDraft,
   onUpdateDraftInfo,
@@ -94,6 +100,7 @@ export default function PurchaseOrdersStep({
   const overBuy = useMemo(() => overBuyRisks(draftGroups, lineContextByPk), [draftGroups, lineContextByPk]);
   // The split dialog is a single instance driven by the card that opened it.
   const [splitCtx, setSplitCtx] = useState<SplitContext | null>(null);
+  const [coveredOpen, setCoveredOpen] = useState(false);
   const splitTargets = useMemo(
     () =>
       splitCtx
@@ -115,10 +122,26 @@ export default function PurchaseOrdersStep({
             and PO number are confirmed later at registration in Microsoft GP.
           </Typography>
         </Box>
-        <Button variant="outlined" startIcon={<Plus size={16} strokeWidth={1.75} />} onClick={onCreateDraft} sx={{ flexShrink: 0 }}>
-          New PO draft
-        </Button>
+        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', justifyContent: 'flex-end', flexShrink: 0 }}>
+          {onAddCoveredProducts && coveredProducts.length > 0 && (
+            <Button variant="outlined" onClick={() => setCoveredOpen(true)}>
+              Add products already covered ({coveredProducts.length})
+            </Button>
+          )}
+          <Button variant="outlined" startIcon={<Plus size={16} strokeWidth={1.75} />} onClick={onCreateDraft}>
+            New PO draft
+          </Button>
+        </Box>
       </Box>
+
+      {onAddCoveredProducts && (
+        <AddCoveredProductsDialog
+          open={coveredOpen}
+          products={coveredProducts}
+          onClose={() => setCoveredOpen(false)}
+          onAdd={onAddCoveredProducts}
+        />
+      )}
 
       {/* #627: cost codes could not load, so the required-cost-code gate is waived. Say why, and that
           the code is still required when the PO is registered in GP. */}

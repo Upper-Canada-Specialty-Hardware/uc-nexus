@@ -60,6 +60,7 @@ import {
 } from './types';
 import { buildPoDrafts, toPoDraftInput } from './poDrafts';
 import * as draftOps from './draftOps';
+import { mergeAddedProducts } from './draftOps';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { plural } from '../../utils/plural';
@@ -69,12 +70,10 @@ import { mapScheduleResponseToParseResult } from './hydrateSchedule';
 import { isDoorFrameItem } from '../../types/hardwareSchedule';
 import SelectOpeningsStep from './SelectOpeningsStep';
 import SelectHardwareStep from './SelectHardwareStep';
-import ReconciliationStep from './ReconciliationStep';
 import ClassificationStep from './ClassificationStep';
 import PurchaseOrdersStep from './PurchaseOrdersStep';
 import type { GpCostCode } from './DraftOrganizer';
 import WizardNav from './WizardNav';
-import OverOrderWarningModal from './OverOrderWarningModal';
 import OverBuyConfirmModal from './OverBuyConfirmModal';
 import { overBuyRisks } from './overBuy';
 import { buildProductReconRows, type ProductReconRow } from './reconciliation';
@@ -83,7 +82,7 @@ import { buildFlagLines, composableRows, type CoverageRow } from './composer';
 
 // ---- Local Types ----
 
-type StepId = 'upload' | 'openings' | 'hardware' | 'reconciliation'
+type StepId = 'upload' | 'openings' | 'hardware'
   | 'classification' | 'purchase-orders' | 'finalize';
 
 interface StepDescriptor {
@@ -213,7 +212,6 @@ export default function ImportWizard({
   const [selectedReconItems, setSelectedReconItems] = useState<Set<string>>(new Set());
   // #567: over-ordering past the project need no longer blocks Next; it opens a confirm modal when
   // the user leaves the reconciliation step with a selection that pushes a product past its total.
-  const [overOrderModalOpen, setOverOrderModalOpen] = useState(false);
 
   // Finalize state
   const [finalizeLoading, setFinalizeLoading] = useState(false);
@@ -247,9 +245,9 @@ export default function ImportWizard({
     // #646: so does a shop-assembly request. Reconciliation is about what has been ORDERED, and the
     // PM raising a request is not deciding anything about purchasing - they are flagging the doors
     // the shop needs. What is available is the Shop Assembly Manager's question, at batching time.
-    if (isReimport && purpose !== 'schedule' && purpose !== 'assembly') {
-      base.push({ id: 'reconciliation', label: 'Reconciliation' });
-    }
+    // #814: the PO purpose's Reconciliation step is retired too. Step 5's draft lines carry every
+    // column it showed (#738), finalize's over-buying confirm replaced its Next-time warning (#736),
+    // and the one choice it offered - buying already-covered products again - is on step 5.
     // #492: the PO purpose asks so it can order in/out of scope. A shop-assembly request runs against
     // a project whose schedule is already classified, so re-asking forces the user to re-answer a
     // question the system knows - it seeds Site/Shop off the persisted items instead. #608: a schedule
@@ -264,7 +262,7 @@ export default function ImportWizard({
     // here moved to the Shop Assembly Manager's board, where somebody is actually looking at stock.
     base.push({ id: 'finalize', label: 'Finalize' });
     return base;
-  }, [purpose, isReimport, isHardwareMode]);
+  }, [purpose, isHardwareMode]);
 
   // Guard against an orphaned step. #642: with the purpose locked at open the stepper no longer
   // reshapes mid-session, so this can only catch a stale id - it lands on whatever this pathway's
@@ -526,11 +524,7 @@ export default function ImportWizard({
   // number that decides nothing - and inviting them to trim a request over stock that may well
   // arrive before the shop needs it. Availability belongs to the manager's batch screen now.
   const requestPurposeActive = open && purpose === 'po' && isReimport;
-  const {
-    data: availabilityData,
-    loading: availabilityLoading,
-    error: availabilityError,
-  } = useQuery<{ projectInventoryAvailability: InventoryAvailabilityRow[] }>(
+  const { data: availabilityData } = useQuery<{ projectInventoryAvailability: InventoryAvailabilityRow[] }>(
     GET_PROJECT_INVENTORY_AVAILABILITY,
     {
       variables: { projectId: existingProjectId },
@@ -713,10 +707,14 @@ export default function ImportWizard({
   useEffect(() => {
     if (purpose !== 'po') return;
     if (seededDraftSignature === draftSeedSig) return;
+    // #814: adding already-covered products on step 5 changes the selection too. When that is all
+    // that changed, the new products are folded into the buyer's drafts instead of re-seeding them.
+    const seeded = seedDraftGroups(vendorGroups, orderQtyOverrides);
+    const merged = draftGroups.length > 0 ? mergeAddedProducts(draftGroups, seeded) : null;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot re-seed keyed off the selection signature, same pattern as the composer
-    setDraftGroups(seedDraftGroups(vendorGroups, orderQtyOverrides));
+    setDraftGroups(merged ?? seeded);
     setSeededDraftSignature(draftSeedSig);
-  }, [purpose, draftSeedSig, vendorGroups, orderQtyOverrides, seededDraftSignature]);
+  }, [purpose, draftSeedSig, vendorGroups, orderQtyOverrides, seededDraftSignature, draftGroups]);
 
   // ---- Step Navigation ----
 
@@ -874,7 +872,49 @@ export default function ImportWizard({
     });
   }, [purpose, isReimport, reconciliationRows, selectedHardwareItems, parsed, selectedReconItems, hardwareStatusByProduct, orderQtyOverrides]);
 
-  const reconOverOrderProducts = useMemo(() => poReconRows.filter((r) => r.overOrdersProject), [poReconRows]);
+  // #814: the products of the selection the default left out - already covered by a PO - which step 5
+  // offers to buy again. By Others products are not UC Hardware's to order, so they are never offered.
+  const coveredProducts = useMemo(
+    () =>
+      poReconRows
+        .filter((r) => !r.statusBreakdown.has('BY_OTHERS'))
+        .filter((r) => r.underlyingOpeningKeys.some((k) => !selectedReconItems.has(k)))
+        .map((r) => ({
+          id: r.id,
+          productCode: r.productCode,
+          hardwareCategory: r.hardwareCategory,
+          needed: r.quantityRequiredByProject,
+          ordered: r.projectTotalOrdered,
+        })),
+    [poReconRows, selectedReconItems],
+  );
+
+  const addCoveredProducts = useCallback(
+    (ids: string[]) => {
+      const chosen = new Set(ids);
+      setSelectedReconItems((prev) => {
+        const next = new Set(prev);
+        for (const r of poReconRows) if (chosen.has(r.id)) for (const k of r.underlyingOpeningKeys) next.add(k);
+        return next;
+      });
+    },
+    [poReconRows],
+  );
+
+  // #814: the default the retired Reconciliation step applied on arrival - every (opening, product,
+  // category) still not covered by a PO - applied here once per reconcile result.
+  const autoSelectedFor = useRef<unknown>(null);
+  useEffect(() => {
+    if (purpose !== 'po' || !isReimport || !reconcileData || autoSelectedFor.current === reconcileData) return;
+    autoSelectedFor.current = reconcileData;
+    const notCovered = new Set<string>();
+    for (const row of reconciliationRows) {
+      if (row.status === 'NOT_COVERED' && row.quantity > 0) {
+        notCovered.add(`${row.openingNumber}|${row.productCode}|${row.hardwareCategory}`);
+      }
+    }
+    setSelectedReconItems(notCovered);
+  }, [purpose, isReimport, reconcileData, reconciliationRows]);
 
   // #632: step 6's per-line recon context - needed / already ordered / received / available per
   // productKey, from state the wizard already holds (no new query). Zeros are truthful on a fresh
@@ -917,23 +957,10 @@ export default function ImportWizard({
     [purpose, draftGroups, poLineContext],
   );
 
-  const advanceToNextStep = useCallback(() => {
-    const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
-    const nextStep = steps[currentIndex + 1];
-    if (nextStep) setActiveStepId(nextStep.id);
-  }, [steps, effectiveStepId]);
-
   const handleNext = useCallback(async () => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
     const nextStep = steps[currentIndex + 1];
     if (!nextStep) return;
-
-    // #567: leaving reconciliation with a selection that over-orders the project opens the confirm
-    // modal instead of advancing. Proceed anyway (handleOverOrderProceed) does the advance.
-    if (effectiveStepId === 'reconciliation' && reconOverOrderProducts.length > 0) {
-      setOverOrderModalOpen(true);
-      return;
-    }
 
     // #565: leaving the pathway's step-2 (openings, or hardware) is what kicks off reconciliation.
     if (effectiveStepId === 'openings' || effectiveStepId === 'hardware') {
@@ -942,12 +969,7 @@ export default function ImportWizard({
     }
 
     setActiveStepId(nextStep.id);
-  }, [effectiveStepId, steps, runReconcile, reconOverOrderProducts]);
-
-  const handleOverOrderProceed = useCallback(() => {
-    setOverOrderModalOpen(false);
-    advanceToNextStep();
-  }, [advanceToNextStep]);
+  }, [effectiveStepId, steps, runReconcile]);
 
   const handleBack = useCallback(() => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
@@ -1291,7 +1313,6 @@ export default function ImportWizard({
     resetDownstreamWizardState();
     setFinalizeLoading(false);
     setConfirmOpen(false);
-    setOverOrderModalOpen(false);
     setPostSuccessOpen(false);
     setHydratedFromPersisted(false);
     parser.reset();
@@ -1307,28 +1328,23 @@ export default function ImportWizard({
   const canProceedStep2 = selectedOpenings.size > 0;
   // #565: hardware mode's step-2 gate - at least one product picked.
   const canProceedHardware = selectedProductKeys.size > 0;
-  // #567: over-ordering no longer gates Next - it warns at the modal (see reconOverOrderProducts and
-  // handleNext). The PO purpose only requires a non-empty selection here.
-  // Only the PO purpose reaches this step at all now: the schedule replace and the shop-assembly
-  // flag (#646) both skip reconciliation, because neither is deciding anything about ordering.
-  const canProceedStep3 = useMemo(() => {
-    if (!isReimport) return true;
-    if (purpose === 'po') return selectedReconItems.size > 0;
-    return true;
-  }, [purpose, isReimport, selectedReconItems]);
 
   // #566: classification Next gate, lifted out of ClassificationStep. `classificationRows` is built
   // here, so the same rows the grid renders decide whether Next is live. The PO purpose needs both a
   // scope and a Site/Shop pick per in-scope (non-By-Others) line; the schedule replace (#608) is
   // single-axis, so the one Site/Shop pick lands in `classification` and there is no second axis.
+  // #814: a PO re-import's selection is the reconcile's "not yet covered" default, so classification
+  // waits for that result rather than classifying an empty selection.
+  const reconcilePending = purpose === 'po' && isReimport && (reconcileLoading || !reconcileData);
   const canProceedClassification = useMemo(() => {
+    if (reconcilePending) return false;
     const allClassified = classificationRows.every((r) => r.classification !== '');
     if (purpose !== 'po') return allClassified;
     const allSiteShopClassified = classificationRows
       .filter((r) => r.classification !== 'BY_OTHERS')
       .every((r) => (r.siteShop ?? '') !== '');
     return allClassified && allSiteShopClassified;
-  }, [classificationRows, purpose]);
+  }, [classificationRows, purpose, reconcilePending]);
 
   // #566/#570: purchase-orders Next gate. At least one included draft that actually holds lines - an
   // included-but-empty draft mints no PO, so it does not satisfy the gate.
@@ -1361,9 +1377,6 @@ export default function ImportWizard({
       break;
     case 'hardware':
       canProceedCurrentStep = canProceedHardware;
-      break;
-    case 'reconciliation':
-      canProceedCurrentStep = canProceedStep3;
       break;
     case 'classification':
       canProceedCurrentStep = canProceedClassification;
@@ -1691,31 +1704,34 @@ export default function ImportWizard({
             />
           )}
 
-          {/* ============ Step: Reconciliation ============ */}
-          {effectiveStepId === 'reconciliation' && (
-            <ReconciliationStep
-              projectId={project.id}
-              isReimport={isReimport}
-              purpose={purpose}
-              isHardwareMode={isHardwareMode}
-              reconcileLoading={reconcileLoading}
-              reconcileError={reconcileError?.message ?? null}
-              onRetryReconcile={runReconcile}
-              reconciliationRows={reconciliationRows}
-              selectedHardwareItems={selectedHardwareItems}
-              allHardwareItems={hardwareItems}
-              selectedReconItems={selectedReconItems}
-              hardwareStatusByProduct={hardwareStatusByProduct}
-              availableByProduct={availableByProduct}
-              orderQtyOverrides={orderQtyOverrides}
-              availabilityLoading={availabilityLoading && availabilityData === undefined}
-              availabilityError={availabilityError !== undefined}
-              onSelectionChange={setSelectedReconItems}
-            />
-          )}
-
           {/* ============ Step: Classification ============ */}
-          {effectiveStepId === 'classification' && (
+          {effectiveStepId === 'classification' && reconcilePending && (
+            <Typography variant="h6" sx={{ mb: 1 }}>
+              Classification
+            </Typography>
+          )}
+          {effectiveStepId === 'classification' && reconcilePending && (
+            reconcileError ? (
+              <Alert
+                severity="error"
+                action={
+                  <Button color="inherit" size="small" onClick={runReconcile}>
+                    Retry
+                  </Button>
+                }
+              >
+                Could not compare the schedule with the project&apos;s existing POs: {reconcileError.message}
+              </Alert>
+            ) : (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, py: 4 }}>
+                <CircularProgress size={20} />
+                <Typography variant="body2" color="text.secondary">
+                  Comparing the schedule with the project&apos;s existing POs…
+                </Typography>
+              </Box>
+            )
+          )}
+          {effectiveStepId === 'classification' && !reconcilePending && (
             <ClassificationStep
               classificationRows={classificationRows}
               onClassify={classifyBatch}
@@ -1738,6 +1754,8 @@ export default function ImportWizard({
               orderAsValues={orderAsValues}
               selectionTotals={poSelectionTotals}
               lineContextByPk={poLineContext}
+              coveredProducts={coveredProducts}
+              onAddCoveredProducts={addCoveredProducts}
               onToggleIncluded={toggleDraftIncluded}
               onRenameDraft={renameDraft}
               onUpdateDraftInfo={updateDraftInfo}
@@ -1852,15 +1870,6 @@ export default function ImportWizard({
           </FadeIn>
         </Box>
       </Dialog>
-
-      {/* #567: over-order confirm. Opened from handleNext when leaving reconciliation with a
-          selection that pushes a product past its project total. */}
-      <OverOrderWarningModal
-        open={overOrderModalOpen}
-        products={reconOverOrderProducts}
-        onGoBack={() => setOverOrderModalOpen(false)}
-        onProceed={handleOverOrderProceed}
-      />
 
       {/* Confirm Dialog */}
       <ConfirmDialog

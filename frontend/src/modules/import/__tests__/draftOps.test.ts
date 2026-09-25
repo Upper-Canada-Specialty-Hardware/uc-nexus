@@ -217,3 +217,37 @@ describe('conservation across a sequence of operations', () => {
     expect(groups.map((g) => g.lines.get('HG') ?? 0)).toEqual([4, 1]);
   });
 });
+
+describe('draftOps.mergeAddedProducts (#814)', () => {
+  it('adds a new product to its vendor draft and keeps the buyer slicing', () => {
+    // The buyer split HG across two drafts and renamed one; LK is newly selected under vendor a.
+    const existing = [{ ...draft('seed:a', { HG: 2 }, true), label: 'ACME' }, draft('new:1', { HG: 1 })];
+    const seeded = [draft('seed:a', { HG: 3, LK: 4 })];
+
+    const merged = draftOps.mergeAddedProducts(existing, seeded);
+
+    expect(merged?.map((g) => [g.id, g.label, Object.fromEntries(g.lines)])).toEqual([
+      ['seed:a', 'ACME', { HG: 2, LK: 4 }],
+      ['new:1', 'new:1', { HG: 1 }],
+    ]);
+    expect(merged?.[0].included).toBe(true);
+  });
+
+  it('opens a seed draft for a vendor the drafts no longer have', () => {
+    const merged = draftOps.mergeAddedProducts([draft('seed:a', { HG: 3 })], [draft('seed:a', { HG: 3 }), draft('seed:b', { LK: 1 })]);
+    expect(merged?.map((g) => g.id)).toEqual(['seed:a', 'seed:b']);
+    expect(merged?.[1].lines.get('LK')).toBe(1);
+  });
+
+  it('refuses when a held product changed total, so the caller re-seeds', () => {
+    expect(draftOps.mergeAddedProducts([draft('seed:a', { HG: 3 })], [draft('seed:a', { HG: 5, LK: 1 })])).toBeNull();
+  });
+
+  it('refuses when a held product left the selection', () => {
+    expect(draftOps.mergeAddedProducts([draft('seed:a', { HG: 3, LK: 1 })], [draft('seed:a', { HG: 3 })])).toBeNull();
+  });
+
+  it('refuses when nothing was added', () => {
+    expect(draftOps.mergeAddedProducts([draft('seed:a', { HG: 3 })], [draft('seed:a', { HG: 3 })])).toBeNull();
+  });
+});
