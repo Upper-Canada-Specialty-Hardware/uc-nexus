@@ -751,6 +751,7 @@ def shop_assembly_request_to_type(
     stage: str | None = None,
     return_note: str | None = None,
     pull_status_by_id: dict | None = None,
+    project=None,
 ) -> ShopAssemblyRequest:
     """Model -> type. `stage`, `return_note` and the batches' pull statuses are resolved by the
     *caller* in one query for the whole list.
@@ -783,6 +784,8 @@ def shop_assembly_request_to_type(
         ],
         stage=RequestStage(stage or _fallback_stage(sar)),
         return_note=return_note,
+        project_number=project.project_id if project is not None else None,
+        project_name=project.description if project is not None else None,
     )
 
 

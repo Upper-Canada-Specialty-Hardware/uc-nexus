@@ -314,6 +314,20 @@ export default function ShopAssemblyRequestsPage() {
                       <Typography component="span" sx={{ ...monoSx, fontWeight: 700 }}>
                         {req.requestNumber}
                       </Typography>
+                      {/* #740: the manager works several jobs' requests in one list, so the header
+                          names the GP job each one is for. */}
+                      {req.projectNumber && (
+                        <Typography
+                          component="span"
+                          variant="body2"
+                          sx={{ minWidth: 0, overflowWrap: 'anywhere' }}
+                        >
+                          <Box component="span" sx={{ ...monoSx, fontWeight: 600 }}>
+                            {req.projectNumber}
+                          </Box>
+                          {req.projectName && ` · ${req.projectName}`}
+                        </Typography>
+                      )}
                       <Chip
                         size="small"
                         variant="outlined"

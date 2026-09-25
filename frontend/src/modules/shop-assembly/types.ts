@@ -61,6 +61,9 @@ export interface ShopAssemblyRequest {
   id: string;
   requestNumber: string;
   projectId: string;
+  // The GP job the request was raised for (#740). Null only if the project row is gone.
+  projectNumber: string | null;
+  projectName: string | null;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   stage: string;
   createdBy: string;
