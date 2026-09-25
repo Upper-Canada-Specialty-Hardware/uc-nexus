@@ -12,7 +12,8 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { Trash2, Plus, RefreshCw, Tag } from 'lucide-react';
+import { alpha, keyframes } from '@mui/material/styles';
+import { Trash2, Plus, RefreshCw, Tag, ClipboardPaste } from 'lucide-react';
 import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
@@ -43,6 +44,8 @@ import { computeManufacturerVendorHint, type ManufacturerSuggestion } from './ma
 import GpErrorAlert from '../../components/GpErrorAlert';
 import { extractGpError, isRelayOpUnsupported, type GpError } from '../../graphql/gpError';
 import CustomItemPicker from './CustomItemPicker';
+import { landPastedRows, parseSpreadsheetPaste } from './spreadsheetPaste';
+import { PasteSummaryBanner, SpreadsheetPastePanel, type PasteSummary } from './SpreadsheetPastePanel';
 import ProjectPicker from '../../components/ProjectPicker';
 import ProcessingStep from '../../components/ProcessingStep';
 import { monoSx, microLabelSx } from '../../theme';
@@ -149,6 +152,12 @@ const MAX_ITEM_NUMBER = 30;
 const MAX_DESCRIPTION = 100;
 const MAX_CONTACT = 61;
 const MAX_COMMENT = 500;
+
+// #833: a pasted row is tinted amber for a moment, so the buyer sees which lines the paste wrote.
+const pastedRowFade = keyframes`
+  from { background-color: var(--pasted-row-tint); }
+  to { background-color: transparent; }
+`;
 
 const EMPTY_LINE_ITEM: Omit<LineItemRow, 'key' | 'id'> = {
   hardwareCategory: '',
@@ -357,6 +366,16 @@ export default function GpPurchaseOrderDialog({
   const [gpBusy, setGpBusy] = useState(false);
   // The custom-item catalog picker (#454), for ordering something that was never on a schedule.
   const [customPickerOpen, setCustomPickerOpen] = useState(false);
+  // #833: pasting rows copied from a spreadsheet. pastedKeys are every row a paste wrote, whose cells
+  // are checked as they are edited rather than only on save, so a flag clears the moment it is fixed.
+  // lastPaste is the one the summary banner describes and "Undo paste" puts back.
+  const [pastePanelOpen, setPastePanelOpen] = useState(false);
+  const [pastedKeys, setPastedKeys] = useState<ReadonlySet<number>>(() => new Set());
+  const [lastPaste, setLastPaste] = useState<{
+    summary: PasteSummary;
+    keys: number[];
+    before: { lineItems: LineItemRow[]; nextKey: number; pastedKeys: ReadonlySet<number> };
+  } | null>(null);
   // A GP/eConnect failure from create/register, shown persistently and in detail (issue #187) so the end
   // user can screenshot it. Distinct from the field-level `errors` map.
   const [gpError, setGpError] = useState<GpError | null>(null);
@@ -535,6 +554,15 @@ export default function GpPurchaseOrderDialog({
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on close, guarded by !open
     if (!open) setMfrSuggestions({});
+  }, [open]);
+
+  // #833: a paste belongs to the one sitting of the dialog it was made in.
+  useEffect(() => {
+    if (open) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on close, guarded by open
+    setPastePanelOpen(false);
+    setPastedKeys(new Set());
+    setLastPaste(null);
   }, [open]);
 
   useEffect(() => {
@@ -824,11 +852,69 @@ export default function GpPurchaseOrderDialog({
     setLineItems((prev) => prev.map((li) => (li.jobCost ? { ...li, costCode: value } : li)));
   }, []);
 
-  const validate = useCallback(() => {
-    const errs: Record<string, string> = {};
-    if (lineItems.length === 0) errs.lineItems = 'At least one line item is required';
-    for (let i = 0; i < lineItems.length; i++) {
-      const li = lineItems[i];
+  /**
+   * #833: put rows pasted from a spreadsheet onto the grid. They are free text - never matched to the
+   * catalog - and take the cost code picked for all lines, the way that pick fills every job cost line.
+   * A row still completely blank (the one the dialog opens with, say) is filled before any is added.
+   */
+  const handleSpreadsheetPaste = useCallback(
+    (text: string) => {
+      const { lines, headerSkipped } = parseSpreadsheetPaste(text, unitsOfMeasure, DEFAULT_UOFM);
+      if (lines.length === 0) return;
+      const incoming: LineItemRow[] = lines.map((l, i) => ({
+        ...EMPTY_LINE_ITEM,
+        key: nextKey + i,
+        hardwareCategory: l.itemNumber,
+        productCode: l.description,
+        orderedQuantity: l.quantity,
+        uofm: l.uofm,
+        unitCost: l.unitCost,
+        orderAs: l.orderAs,
+        costCode,
+        jobCost: true,
+      }));
+      const isBlank = (li: LineItemRow) =>
+        !li.catalogItemId &&
+        !li.hardwareCategory.trim() &&
+        !li.productCode.trim() &&
+        !li.orderAs.trim() &&
+        ['', EMPTY_LINE_ITEM.orderedQuantity].includes(li.orderedQuantity.trim()) &&
+        ['', EMPTY_LINE_ITEM.unitCost].includes(li.unitCost.trim());
+      const landed = landPastedRows(lineItems, incoming, isBlank);
+      // A filled blank row keeps its own key and draft line id: it is the same line, now written.
+      const rows = landed.rows.map((row, i) =>
+        i < lineItems.length && row !== lineItems[i] ? { ...row, key: lineItems[i].key, id: lineItems[i].id } : row,
+      );
+      const keys = landed.landedIndexes.map((i) => rows[i].key);
+      const notes = landed.landedIndexes.flatMap((rowIdx, n) =>
+        lines[n].note ? [`Line ${rowIdx + 1}: ${lines[n].note}`] : [],
+      );
+      setLastPaste({
+        summary: { added: lines.length, filledBlank: landed.filledBlank, headerSkipped, notes },
+        keys,
+        before: { lineItems, nextKey, pastedKeys },
+      });
+      setPastedKeys(new Set([...pastedKeys, ...keys]));
+      setLineItems(rows);
+      setNextKey(nextKey + lines.length);
+      // The summary says what happened; the panel gives its room back to the grid.
+      setPastePanelOpen(false);
+    },
+    [unitsOfMeasure, nextKey, costCode, lineItems, pastedKeys],
+  );
+
+  const undoPaste = useCallback(() => {
+    if (!lastPaste) return;
+    setLineItems(lastPaste.before.lineItems);
+    setNextKey(lastPaste.before.nextKey);
+    setPastedKeys(lastPaste.before.pastedKeys);
+    setLastPaste(null);
+  }, [lastPaste]);
+
+  /** What is wrong with one line of the grid, keyed the way the grid reads its errors. */
+  const lineErrors = useCallback(
+    (li: LineItemRow, i: number) => {
+      const errs: Record<string, string> = {};
       if (!li.hardwareCategory.trim()) errs[`li_${i}_cat`] = 'Required';
       else if (li.hardwareCategory.trim().length > MAX_ITEM_NUMBER)
         errs[`li_${i}_cat`] = `At most ${MAX_ITEM_NUMBER} characters`;
@@ -839,13 +925,39 @@ export default function GpPurchaseOrderDialog({
       // touches nothing in GP, and the job cost codes are not always reachable when one is raised.
       if (isRegister && isJob && li.jobCost && !li.costCode.trim())
         errs[`li_${i}_costCode`] = 'Cost code required on a job cost line';
-      const qty = parseInt(li.orderedQuantity, 10);
-      if (isNaN(qty) || qty < 1) errs[`li_${i}_qty`] = 'Must be >= 1';
-      const cost = parseFloat(li.unitCost);
-      if (isNaN(cost) || cost < 0) errs[`li_${i}_cost`] = 'Must be >= 0';
+      // Whole numbers only. parseInt alone read a pasted "1.5" as 1 and "3 boxes" as 3 (#833), so
+      // the text itself has to be digits.
+      const qtyText = li.orderedQuantity.trim();
+      if (!/^\d+$/.test(qtyText)) {
+        const numeric = /^-?(\d+\.?\d*|\.\d+)$/.test(qtyText);
+        errs[`li_${i}_qty`] = !numeric
+          ? qtyText
+            ? 'Not a number'
+            : 'Must be >= 1'
+          : parseFloat(qtyText) < 1
+            ? 'Must be >= 1'
+            : 'Whole number';
+      } else if (parseInt(qtyText, 10) < 1) errs[`li_${i}_qty`] = 'Must be >= 1';
+      // Number() rather than parseFloat for the same reason: "12 ea" is not a price of 12.
+      const costText = li.unitCost.trim();
+      const cost = costText === '' ? NaN : Number(costText);
+      if (isNaN(cost)) errs[`li_${i}_cost`] = costText ? 'Not a number' : 'Must be >= 0';
+      else if (cost < 0) errs[`li_${i}_cost`] = 'Must be >= 0';
+      // A pasted unit that is not one of GP's own would be refused at registration. Only checked on
+      // pasted lines, and only once GP's list is known: a line typed here picks from that list.
+      if (pastedKeys.has(li.key) && unitsOfMeasure.length > 0 && !unitsOfMeasure.includes(li.uofm))
+        errs[`li_${i}_uofm`] = 'Not a GP unit';
       // Order As is the one optional field on a line. Category and code are both required above -
       // they are the line's identity, and what GP is sent as the item number and the description.
-    }
+      return errs;
+    },
+    [isRegister, isJob, pastedKeys, unitsOfMeasure],
+  );
+
+  const validate = useCallback(() => {
+    const errs: Record<string, string> = {};
+    if (lineItems.length === 0) errs.lineItems = 'At least one line item is required';
+    for (let i = 0; i < lineItems.length; i++) Object.assign(errs, lineErrors(lineItems[i], i));
     // Issue #256: only register mode talks to GP - draft creation has no relay/vendor/buyer/cost-code
     // requirements at all.
     if (isRegister) {
@@ -903,7 +1015,7 @@ export default function GpPurchaseOrderDialog({
       errs.tradeDiscount = 'Must be >= 0';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, effectiveSite, sites.length, effectiveContact, comment, isJob, costCode, costCodes, shippingCost, tariffAmount, isForeignCurrency, pickedTaxScheduleId, gpTaxSchedules.length, taxSchedulesOpUnsupported, taxSchedulesFailed, miscellaneous, tradeDiscount]);
+  }, [lineItems, lineErrors, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, effectiveSite, sites.length, effectiveContact, comment, isJob, costCode, costCodes, shippingCost, tariffAmount, isForeignCurrency, pickedTaxScheduleId, gpTaxSchedules.length, taxSchedulesOpUnsupported, taxSchedulesFailed, miscellaneous, tradeDiscount]);
 
   /**
    * Stage two: read the PO back out of GP and hand the finished PO to the caller. Also what "Try
@@ -1199,6 +1311,27 @@ export default function GpPurchaseOrderDialog({
   // #730: GP refuses a PO REGISTRATION on a job it holds as inactive, closed or missing. The picker
   // already greys such projects out, so this only catches a draft saved against one before it closed.
   const gpJobBlocksRegister = isRegister && isGpJobNotOpen(selectedProject);
+
+  // #833: the grid's errors, with every pasted line checked live instead of waiting for a save, and
+  // the count of flagged cells the paste summary reports.
+  const gridErrors = useMemo(() => {
+    if (pastedKeys.size === 0) return errors;
+    const merged = { ...errors };
+    lineItems.forEach((li, idx) => {
+      if (!pastedKeys.has(li.key)) return;
+      for (const k of Object.keys(merged)) if (k.startsWith(`li_${idx}_`)) delete merged[k];
+      Object.assign(merged, lineErrors(li, idx));
+    });
+    return merged;
+  }, [errors, lineItems, pastedKeys, lineErrors]);
+  const pasteCellsToFix = useMemo(() => {
+    if (!lastPaste) return 0;
+    return lineItems.reduce(
+      (n, li, idx) => (lastPaste.keys.includes(li.key) ? n + Object.keys(lineErrors(li, idx)).length : n),
+      0,
+    );
+  }, [lastPaste, lineItems, lineErrors]);
+  const lastPasteKeys = useMemo(() => new Set(lastPaste?.keys ?? []), [lastPaste]);
 
   const actions = (
     <Stack direction="row" spacing={1}>
@@ -1754,6 +1887,16 @@ export default function GpPurchaseOrderDialog({
           Line Items
         </Typography>
         <Stack direction="row" spacing={1}>
+          {/* #833: an order already in a spreadsheet is pasted in rather than retyped line by line. */}
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<ClipboardPaste {...ICON} />}
+            onClick={() => setPastePanelOpen((o) => !o)}
+            aria-expanded={pastePanelOpen}
+          >
+            Paste from spreadsheet
+          </Button>
           {/* Frames, specialties and consumables are catalogued, not scheduled (#454), so they are
               picked rather than typed - which is what keeps the received stock matched to its
               catalog entry. */}
@@ -1776,6 +1919,18 @@ export default function GpPurchaseOrderDialog({
         onClose={() => setCustomPickerOpen(false)}
         onPick={addCatalogLineItem}
       />
+
+      {pastePanelOpen && (
+        <SpreadsheetPastePanel onPaste={handleSpreadsheetPaste} onClose={() => setPastePanelOpen(false)} />
+      )}
+      {lastPaste && (
+        <PasteSummaryBanner
+          summary={lastPaste.summary}
+          cellsToFix={pasteCellsToFix}
+          blockedAction={isRegister ? 'this PO can be registered' : 'this draft can be saved'}
+          onUndo={undoPaste}
+        />
+      )}
 
       {errors.lineItems && (
         <Typography variant="body2" color="error" sx={{ mb: 1 }}>
@@ -1812,13 +1967,19 @@ export default function GpPurchaseOrderDialog({
           {lineItems.map((li, idx) => (
             <Box
               key={li.key}
-              sx={{
+              data-pasted={lastPasteKeys.has(li.key) || undefined}
+              sx={(theme) => ({
                 display: 'grid',
                 gridTemplateColumns: lineGridColumns,
                 gap: 1,
                 mb: 1,
                 alignItems: 'start',
-              }}
+                ...(lastPasteKeys.has(li.key) && {
+                  '--pasted-row-tint': alpha(theme.palette.warning.main, 0.16),
+                  animation: `${pastedRowFade} 4s ease-out forwards`,
+                  borderRadius: 1,
+                }),
+              })}
             >
               {/* A catalogued row holds the pair the warehouse will receive the stock under, so both
                   fields are read-only on it (#454). */}
@@ -1826,8 +1987,8 @@ export default function GpPurchaseOrderDialog({
                 size="small"
                 value={li.hardwareCategory}
                 onChange={(e) => updateLineItem(li.key, 'hardwareCategory', e.target.value)}
-                error={!!errors[`li_${idx}_cat`]}
-                helperText={errors[`li_${idx}_cat`] ?? (li.catalogItemId ? 'From catalog' : undefined)}
+                error={!!gridErrors[`li_${idx}_cat`]}
+                helperText={gridErrors[`li_${idx}_cat`] ?? (li.catalogItemId ? 'From catalog' : undefined)}
                 placeholder="e.g. Hinges"
                 disabled={Boolean(li.catalogItemId)}
                 slotProps={{ htmlInput: { maxLength: MAX_ITEM_NUMBER } }}
@@ -1837,8 +1998,8 @@ export default function GpPurchaseOrderDialog({
                 size="small"
                 value={li.productCode}
                 onChange={(e) => updateLineItem(li.key, 'productCode', e.target.value)}
-                error={!!errors[`li_${idx}_code`]}
-                helperText={errors[`li_${idx}_code`]}
+                error={!!gridErrors[`li_${idx}_code`]}
+                helperText={gridErrors[`li_${idx}_code`]}
                 placeholder="e.g. AB123"
                 disabled={Boolean(li.catalogItemId)}
                 slotProps={{ htmlInput: { maxLength: MAX_DESCRIPTION } }}
@@ -1849,8 +2010,8 @@ export default function GpPurchaseOrderDialog({
                 type="number"
                 value={li.orderedQuantity}
                 onChange={(e) => updateLineItem(li.key, 'orderedQuantity', e.target.value)}
-                error={!!errors[`li_${idx}_qty`]}
-                helperText={errors[`li_${idx}_qty`]}
+                error={!!gridErrors[`li_${idx}_qty`]}
+                helperText={gridErrors[`li_${idx}_qty`]}
                 slotProps={{ htmlInput: { min: 1 } }}
               />
               {/* Native, so the row stays one line high; the column heading is its visible label. */}
@@ -1860,6 +2021,8 @@ export default function GpPurchaseOrderDialog({
                 value={li.uofm}
                 onChange={(e) => updateLineItem(li.key, 'uofm', e.target.value)}
                 disabled={unitsOfMeasure.length === 0}
+                error={!!gridErrors[`li_${idx}_uofm`]}
+                helperText={gridErrors[`li_${idx}_uofm`]}
                 slotProps={{
                   select: { native: true, inputProps: { 'aria-label': `Unit of measure line ${idx + 1}` } },
                 }}
@@ -1876,8 +2039,8 @@ export default function GpPurchaseOrderDialog({
                 type="number"
                 value={li.unitCost}
                 onChange={(e) => updateLineItem(li.key, 'unitCost', e.target.value)}
-                error={!!errors[`li_${idx}_cost`]}
-                helperText={errors[`li_${idx}_cost`]}
+                error={!!gridErrors[`li_${idx}_cost`]}
+                helperText={gridErrors[`li_${idx}_cost`]}
                 slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
               />
               {isJob && (
@@ -1886,8 +2049,8 @@ export default function GpPurchaseOrderDialog({
                   select
                   value={li.costCode}
                   onChange={(e) => updateLineItem(li.key, 'costCode', e.target.value)}
-                  error={!!errors[`li_${idx}_costCode`]}
-                  helperText={errors[`li_${idx}_costCode`]}
+                  error={!!gridErrors[`li_${idx}_costCode`]}
+                  helperText={gridErrors[`li_${idx}_costCode`]}
                   disabled={!li.jobCost}
                   slotProps={{
                     select: { native: true, inputProps: { 'aria-label': `Cost code line ${idx + 1}` } },
