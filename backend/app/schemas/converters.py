@@ -28,6 +28,7 @@ from .types import (
     GpOutboxEntry,
     GpOutboxSummary,
     GpPoEntryOptions,
+    GpPurchaseTaxSchedule,
     GpSetupIssue,
     GpShippingMethod,
     GpSite,
@@ -328,6 +329,14 @@ def gp_cost_code_master_entry_to_type(c: dict) -> GpCostCodeMasterEntry:
 
 def gp_tax_detail_to_type(t: dict) -> GpTaxDetail:
     return GpTaxDetail(tax_detail_id=t["tax_detail_id"], description=t.get("description"), percent=t["percent"])
+
+
+def gp_purchase_tax_schedule_to_type(s: dict) -> GpPurchaseTaxSchedule:
+    return GpPurchaseTaxSchedule(
+        tax_schedule_id=s["tax_schedule_id"],
+        description=s.get("description"),
+        details=[gp_tax_detail_to_type(d) for d in s.get("details") or []],
+    )
 
 
 def gp_customer_to_type(c: dict) -> GpCustomer:

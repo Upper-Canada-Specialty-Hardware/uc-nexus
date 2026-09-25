@@ -36,7 +36,11 @@ from app.services import (
     gp_processing,
     storage,
 )
-from app.services.relay_gateway import CREATE_PO_IDEMPOTENCY_FEATURE, CREATE_PO_TAX_ROWS_FEATURE
+from app.services.relay_gateway import (
+    CREATE_PO_IDEMPOTENCY_FEATURE,
+    CREATE_PO_TAX_ROWS_FEATURE,
+    CREATE_PO_TAX_SCHEDULE_FEATURE,
+)
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import (
@@ -225,6 +229,24 @@ def _fold_tax_detail_ids(input: RegisterPOInput) -> list[str]:
 _MAX_TAX_DETAIL_ID = 15
 
 
+def _tax_schedule_id(input: RegisterPOInput, tax_detail_ids: list[str]) -> str | None:
+    """The picked GP purchase tax schedule (#763), trimmed, or None. GP's TAXSCHID is char(15). A
+    schedule and a detail list together is refused: they are two ways of naming the same thing, and
+    the relay would have to pick one. Whether the schedule exists and holds a purchase detail is the
+    relay's check at write time (tax_schedule_not_found / tax_schedule_not_purchase)."""
+    schedule = (input.tax_schedule_id or "").strip() or None
+    if schedule is None:
+        return None
+    if tax_detail_ids:
+        raise ValidationError("Pick a tax schedule or tax details, not both", field="tax_schedule_id")
+    if len(schedule) > _MAX_TAX_DETAIL_ID:
+        raise ValidationError(
+            f"Tax schedule '{schedule}' is longer than GP's {_MAX_TAX_DETAIL_ID}-character TAXSCHID",
+            field="tax_schedule_id",
+        )
+    return schedule
+
+
 def _prepare_register_po(
     *,
     po_id,
@@ -233,6 +255,7 @@ def _prepare_register_po(
     cost_code,
     line_items_data,
     tax_detail_ids=None,
+    tax_schedule_id=None,
     shipping_cost=None,
     miscellaneous=None,
     trade_discount=None,
@@ -331,6 +354,7 @@ def _prepare_register_po(
         # Issue #257 / #762: freight maps from the PO's shipping_cost; misc + trade discount are the
         # register-form inputs; the tax details are the picks, already folded and checked.
         tax_detail_ids=tax_detail_ids,
+        tax_schedule_id=tax_schedule_id,
         freight_amount=shipping_cost,
         misc_amount=miscellaneous,
         trade_discount=trade_discount,
@@ -807,6 +831,7 @@ class POMutations:
             return RegisterPOResult(queued=False, outbox_entry_id=None, purchase_order=po)
 
         tax_detail_ids = _fold_tax_detail_ids(input)
+        tax_schedule_id = _tax_schedule_id(input, tax_detail_ids)
         payload = await asyncio.to_thread(
             _prepare_register_po,
             po_id=pid,
@@ -815,6 +840,7 @@ class POMutations:
             cost_code=input.cost_code,
             line_items_data=line_items_data,
             tax_detail_ids=tax_detail_ids,
+            tax_schedule_id=tax_schedule_id,
             shipping_cost=input.shipping_cost,
             miscellaneous=input.miscellaneous,
             trade_discount=input.trade_discount,
@@ -884,8 +910,11 @@ class POMutations:
                 # older build ignores it and would register a CAD PO with no tax, so a taxed
                 # registration is turned away with the same update-the-relay message. An untaxed one
                 # (no pick, or a USD vendor) has nothing for that build to ignore and goes through.
-                if tax_detail_ids:
+                if tax_detail_ids or tax_schedule_id:
                     relay_gateway.require_feature(CREATE_PO_TAX_ROWS_FEATURE, "create_po")
+                # #763: likewise a schedule, which only a relay that expands it will read.
+                if tax_schedule_id:
+                    relay_gateway.require_feature(CREATE_PO_TAX_SCHEDULE_FEATURE, "create_po")
             try:
                 gp_result = await relay_gateway.relay_call(input.gp_company, "create_po", payload)
             except (RelayUnavailableError, RelayTimeoutError):

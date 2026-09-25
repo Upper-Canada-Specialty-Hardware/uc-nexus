@@ -616,6 +616,13 @@ def _run_list_customer_addresses(company: str, payload: dict) -> dict:
     return {"company": company, "customer": customer, "addresses": rows}
 
 
+def _run_list_purchase_tax_schedules(company: str, payload: dict) -> dict:
+    ops.check_company_served(company)
+    with db.get_read_connection(company) as conn:
+        rows = econnect.list_purchase_tax_schedules(conn)
+    return {"company": company, "tax_schedules": rows}
+
+
 def _run_list_tax_schedules(company: str, payload: dict) -> dict:
     ops.check_company_served(company)
     with db.get_read_connection(company) as conn:
@@ -764,6 +771,7 @@ _OPS = {
     "list_customers": _run_list_customers,
     "list_customer_addresses": _run_list_customer_addresses,
     "list_tax_schedules": _run_list_tax_schedules,
+    "list_purchase_tax_schedules": _run_list_purchase_tax_schedules,
     "list_divisions": _run_list_divisions,
     "create_job": _run_create_job,
     # issue #392 - estimator / WS manager are validated against the payroll master, so they need a
@@ -1014,6 +1022,12 @@ CREATE_PO_IDEMPOTENCY_FEATURE = "create_po_idempotency"
 # register a CAD PO with no tax at all - so it refuses to push a taxed registration to such a build.
 CREATE_PO_TAX_ROWS_FEATURE = "create_po_tax_rows"
 
+# The feature string saying this build reads a `tax_schedule_id` on a create_po header and expands it
+# to the schedule's purchase details before writing the tax (issue #763). A backend that does not see
+# it is talking to a relay that would ignore the schedule and register a CAD PO with no tax, so it
+# refuses to push a schedule-taxed registration to such a build.
+CREATE_PO_TAX_SCHEDULE_FEATURE = "create_po_tax_schedule"
+
 # The feature string saying this build serves the full job record (issue #730): list_jobs and get_job
 # carry the job's GP state (active, inactive, closed - closed jobs read from WennSoft's history table),
 # customer, site address, division, tax schedules, estimator and manager, dates and money; update_job
@@ -1057,6 +1071,7 @@ def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
             "gp_sync_state",
             CREATE_PO_IDEMPOTENCY_FEATURE,
             CREATE_PO_TAX_ROWS_FEATURE,
+            CREATE_PO_TAX_SCHEDULE_FEATURE,
             JOB_MIRROR_FEATURE,
         ],
     }

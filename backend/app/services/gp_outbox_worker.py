@@ -25,7 +25,11 @@ from app.errors import (
 from app.repositories import gp_outbox_repository
 from app.repositories.project_repository import gp_job_refusal
 from app.services import gp_idempotency, gp_processing
-from app.services.relay_gateway import CREATE_PO_IDEMPOTENCY_FEATURE, CREATE_PO_TAX_ROWS_FEATURE
+from app.services.relay_gateway import (
+    CREATE_PO_IDEMPOTENCY_FEATURE,
+    CREATE_PO_TAX_ROWS_FEATURE,
+    CREATE_PO_TAX_SCHEDULE_FEATURE,
+)
 from app.services.relay_gateway import gateway as relay_gateway
 
 logger = logging.getLogger(__name__)
@@ -55,7 +59,15 @@ def registration_carries_tax(payload: dict) -> bool:
     header = payload.get("header") if isinstance(payload, dict) else None
     if not isinstance(header, dict):
         return False
-    return bool(header.get("tax_detail_ids")) or bool(header.get("tax_detail_id"))
+    return (
+        bool(header.get("tax_detail_ids")) or bool(header.get("tax_detail_id")) or bool(header.get("tax_schedule_id"))
+    )
+
+
+def registration_carries_tax_schedule(payload: dict) -> bool:
+    """Does a queued create_po payload name a GP purchase tax schedule (#763)?"""
+    header = payload.get("header") if isinstance(payload, dict) else None
+    return isinstance(header, dict) and bool(header.get("tax_schedule_id"))
 
 
 def _job_number_of(payload: dict) -> str | None:
@@ -212,6 +224,9 @@ async def _drain_one(row_id: uuid.UUID) -> None:
                 # write the summary-only shape GP doubles on save.
                 if registration_carries_tax(payload):
                     relay_gateway.require_feature(CREATE_PO_TAX_ROWS_FEATURE, relay_op)
+                # #763: a schedule is only read by a relay that expands it; an older one would drop it.
+                if registration_carries_tax_schedule(payload):
+                    relay_gateway.require_feature(CREATE_PO_TAX_SCHEDULE_FEATURE, relay_op)
             relay_result = await relay_gateway.relay_call(company, relay_op, payload)
             if isinstance(relay_result, dict) and relay_result.get("existing"):
                 # The earlier attempt did reach GP after all; this one got that PO back rather than a

@@ -755,3 +755,10 @@ def test_job_setup_health_refuses_more_than_one_batch():
 def test_job_setup_health_wants_a_list():
     reply = channel._dispatch("job_setup_health", "TUBC", {"jobs": "23090"})
     assert reply["error"]["error"] == "invalid_payload"
+
+
+def test_list_purchase_tax_schedules_routes_to_econnect(monkeypatch):
+    rows = [{"tax_schedule_id": "ONHST 13%", "description": None, "details": []}]
+    monkeypatch.setattr(econnect, "list_purchase_tax_schedules", lambda conn: rows)
+    reply = channel._dispatch("list_purchase_tax_schedules", "TUBC", {})
+    assert _body(reply) == {"ok": True, "result": {"company": "TUBC", "tax_schedules": rows}}

@@ -21,7 +21,11 @@ from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.repositories import import_repository, po_repository
 from app.schemas import po as po_schema
 from app.services.gp_po import build_create_po_payload
-from app.services.relay_gateway import CREATE_PO_IDEMPOTENCY_FEATURE, CREATE_PO_TAX_ROWS_FEATURE
+from app.services.relay_gateway import (
+    CREATE_PO_IDEMPOTENCY_FEATURE,
+    CREATE_PO_TAX_ROWS_FEATURE,
+    CREATE_PO_TAX_SCHEDULE_FEATURE,
+)
 
 
 def _make_project(session) -> Project:
@@ -1193,3 +1197,69 @@ def test_register_rejects_a_blank_product_code_even_with_an_order_as(db_session)
             ],
         )
     assert exc.value.field == "product_code"
+
+
+# --- #763: one GP purchase tax schedule, which the relay expands to its details ---
+
+_WITH_TAX_SCHEDULE = (*_WITH_TAX_ROWS, CREATE_PO_TAX_SCHEDULE_FEATURE)
+
+
+def test_the_tax_schedule_is_trimmed_and_refused_alongside_details():
+    from app.schemas.inputs import RegisterPOInput
+
+    def _input(**tax):
+        return RegisterPOInput(
+            po_id="po",
+            gp_vendor_id="V",
+            gp_vendor_name="Vendor",
+            gp_company="TUBC",
+            buyer_id="mira",
+            line_items=[],
+            **tax,
+        )
+
+    assert po_schema._tax_schedule_id(_input(), []) is None
+    assert po_schema._tax_schedule_id(_input(tax_schedule_id="  "), []) is None
+    assert po_schema._tax_schedule_id(_input(tax_schedule_id=" BC PURCH 12% "), []) == "BC PURCH 12%"
+    with pytest.raises(ValidationError):
+        po_schema._tax_schedule_id(_input(tax_schedule_id="BC PURCH 12%"), ["ON HST - P"])
+    with pytest.raises(ValidationError):
+        po_schema._tax_schedule_id(_input(tax_schedule_id="S" * 16), [])
+
+
+def test_the_push_carries_the_picked_tax_schedule(monkeypatch, db_session):
+    draft = _stock_draft_po(db_session)
+    pushed: list = []
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        pushed.append(payload)
+        return {"po_number": "PO0000806", "company": "TUBC"}
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call, features=_WITH_TAX_SCHEDULE)
+
+    _run_register_with_tax(draft, str(uuid.uuid4()), tax_schedule_id="BC PURCH 12%")
+
+    assert pushed[0]["header"]["tax_schedule_id"] == "BC PURCH 12%"
+    assert pushed[0]["header"]["tax_detail_ids"] == []
+
+
+def test_a_schedule_registration_is_refused_by_a_relay_that_does_not_expand_schedules(monkeypatch, db_session):
+    """A relay with the tax rows but not the schedule would ignore the schedule and register the PO
+    untaxed, so it is turned away with the update-the-relay message."""
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    calls: list = []
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        calls.append(op)
+        return {"po_number": "PO0000807", "company": "TUBC"}
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call, features=_WITH_TAX_ROWS)
+
+    try:
+        with pytest.raises(RelayOpUnsupportedError):
+            _run_register_with_tax(draft, key, tax_schedule_id="BC PURCH 12%")
+        assert calls == []
+        assert _queued_write(key) is None
+    finally:
+        _delete_queued_write(key)

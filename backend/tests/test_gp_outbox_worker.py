@@ -176,6 +176,15 @@ def test_registration_carries_tax_reads_both_the_list_and_the_older_scalar():
     assert carries({"header": {}}) is False
     assert carries({"po_number": "0000123"}) is False
     assert carries("not a dict") is False
+    assert carries({"header": {"tax_detail_ids": [], "tax_schedule_id": "BC PURCH 12%"}}) is True  # #763
+
+
+def test_registration_carries_tax_schedule_only_when_one_is_named():
+    carries = gp_outbox_worker.registration_carries_tax_schedule
+    assert carries({"header": {"tax_schedule_id": "BC PURCH 12%"}}) is True
+    assert carries({"header": {"tax_detail_ids": ["ON HST - P"]}}) is False
+    assert carries({"header": {}}) is False
+    assert carries("not a dict") is False
 
 
 def test_a_taxed_create_po_waits_for_a_relay_that_writes_the_tax_rows(_migrate_database, monkeypatch):

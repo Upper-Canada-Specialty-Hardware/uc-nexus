@@ -103,6 +103,7 @@ def build_create_po_payload(
     po_number_suffix: str | None = None,
     idempotency_key: str | None = None,
     tax_detail_ids: list[str] | None = None,
+    tax_schedule_id: str | None = None,
     freight_amount: float | None = None,
     misc_amount: float | None = None,
     trade_discount: float | None = None,
@@ -186,6 +187,9 @@ def build_create_po_payload(
             # Issue #257 / #762: GP header charges. None -> 0 for the non-null relay Decimals; an empty
             # detail list is a PO with no tax (the relay then writes no tax row at all).
             "tax_detail_ids": list(tax_detail_ids or []),
+            # #763: the picked GP purchase tax schedule, which the relay expands to its details. Only
+            # sent when there is one, so an untaxed registration still suits a relay that predates it.
+            **({"tax_schedule_id": tax_schedule_id} if tax_schedule_id else {}),
             "freight_amount": freight_amount or 0,
             "misc_amount": misc_amount or 0,
             "trade_discount": trade_discount or 0,

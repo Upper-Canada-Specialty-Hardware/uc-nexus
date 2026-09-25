@@ -10,7 +10,7 @@ import {
   RUN_GP_PROCESSING,
   GET_GP_COST_CODES,
   GET_GP_VENDORS,
-  GET_GP_TAX_DETAILS,
+  GET_GP_PURCHASE_TAX_SCHEDULES,
   GET_GP_PO_ENTRY_OPTIONS,
   GET_GP_VENDOR_ADDRESSES,
 } from '../../../graphql/po';
@@ -247,12 +247,29 @@ function baseMocks(connected = true): MockedResponse[] {
       maxUsageCount: INFINITE,
     },
     {
-      request: { query: GET_GP_TAX_DETAILS, variables: { company: 'UCS' } },
+      request: { query: GET_GP_PURCHASE_TAX_SCHEDULES, variables: { company: 'UCS' } },
       result: {
         data: {
-          gpTaxDetails: [
-            { taxDetailId: 'ON HST - P', description: 'ON HST on Purchases', percent: 13, __typename: 'GpTaxDetail' },
-            { taxDetailId: 'PST 7%', description: null, percent: 7, __typename: 'GpTaxDetail' },
+          gpPurchaseTaxSchedules: [
+            {
+              taxScheduleId: 'ONHST 13%',
+              description: 'ON HST purchases',
+              percent: 13,
+              details: [
+                { taxDetailId: 'ON HST - P', description: 'ON HST on Purchases', percent: 13, __typename: 'GpTaxDetail' },
+              ],
+              __typename: 'GpPurchaseTaxSchedule',
+            },
+            {
+              taxScheduleId: 'BC PURCH 12%',
+              description: null,
+              percent: 12,
+              details: [
+                { taxDetailId: 'BC GST 5% - P', description: null, percent: 5, __typename: 'GpTaxDetail' },
+                { taxDetailId: 'BC PST 7% PURCH', description: null, percent: 7, __typename: 'GpTaxDetail' },
+              ],
+              __typename: 'GpPurchaseTaxSchedule',
+            },
           ],
         },
       },
@@ -445,17 +462,16 @@ async function waitForVendorPreselect() {
   );
 }
 
-// Issue #257: a CAD PO requires a tax detail before it can be registered. #762: the picker is a
-// multi-select, so the listbox stays open after a pick and is closed with Escape.
-async function selectTaxDetails(...ids: string[]) {
-  const listbox = await openSelect('Tax details (required)');
-  for (const id of ids) fireEvent.click(within(listbox).getByText(new RegExp(`^${id.replace(/[%]/g, '\\$&')}`)));
-  fireEvent.keyDown(listbox, { key: 'Escape' });
+// Issue #257: a CAD PO requires a tax schedule before it can be registered. #763: one GP purchase
+// tax schedule, a single select that closes on the pick.
+async function selectTaxSchedule(id: string) {
+  const listbox = await openSelect('Tax schedule (required)');
+  fireEvent.click(within(listbox).getByText(new RegExp(`^${id.replace(/[%]/g, '\\$&')}`)));
   await closeSelect();
 }
 
 async function selectTaxDetail() {
-  await selectTaxDetails('ON HST - P');
+  await selectTaxSchedule('ONHST 13%');
 }
 
 describe('GpPurchaseOrderDialog', () => {
@@ -528,7 +544,7 @@ describe('GpPurchaseOrderDialog', () => {
 
     await waitFor(() => expect(onRegistered).toHaveBeenCalled());
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ input: { gpVendorId: 'V-ACE', taxDetailIds: ['ON HST - P'] } });
+    expect(calls[0]).toMatchObject({ input: { gpVendorId: 'V-ACE', taxScheduleId: 'ONHST 13%' } });
   });
 
   it('registers a project draft with gpCompany, a cost code and an idempotency key', async () => {
@@ -587,7 +603,7 @@ describe('GpPurchaseOrderDialog', () => {
         comment: null,
         shippingCost: 25,
         tariffAmount: null,
-        taxDetailIds: ['ON HST - P'],
+        taxScheduleId: 'ONHST 13%',
         miscellaneous: null,
         tradeDiscount: null,
         idempotencyKey: expect.stringMatching(UUID_RE) as string,
@@ -612,7 +628,7 @@ describe('GpPurchaseOrderDialog', () => {
     });
   });
 
-  it('requires a tax detail before a CAD PO can be registered (issue #257)', async () => {
+  it('requires a tax schedule before a CAD PO can be registered (issue #257, #763)', async () => {
     const calls: Record<string, unknown>[] = [];
     const registerMock: MockedResponse = {
       request: { query: REGISTER_PO_IN_GP, variables: () => true },
@@ -624,20 +640,20 @@ describe('GpPurchaseOrderDialog', () => {
     const { onSubmitted, onRegistered } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), registerMock]);
     await waitForVendorPreselect();
 
-    // No tax detail picked yet -> blocked with a clear message; nothing reaches GP.
+    // No tax schedule picked yet -> blocked with a clear message; nothing reaches GP.
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
-    expect(await screen.findByText('Select a tax detail')).toBeInTheDocument();
+    expect(await screen.findByText('Select a tax schedule')).toBeInTheDocument();
     expect(calls).toHaveLength(0);
     expect(onSubmitted).not.toHaveBeenCalled();
 
-    // Pick it and the PO registers, carrying the chosen detail.
+    // Pick it and the PO registers, carrying the chosen schedule.
     await selectTaxDetail();
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
     await waitFor(() => expect(onRegistered).toHaveBeenCalled());
-    expect(calls[0]).toMatchObject({ input: { taxDetailIds: ['ON HST - P'] } });
+    expect(calls[0]).toMatchObject({ input: { taxScheduleId: 'ONHST 13%' } });
   });
 
-  it('registers a GST plus PST PO with two picks, in the order picked (issue #762)', async () => {
+  it('registers a 12 percent PO under one schedule and says which details it taxes at (issue #763)', async () => {
     const calls: Record<string, unknown>[] = [];
     const registerMock: MockedResponse = {
       request: { query: REGISTER_PO_IN_GP, variables: () => true },
@@ -649,34 +665,15 @@ describe('GpPurchaseOrderDialog', () => {
     const { onRegistered } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), registerMock]);
     await waitForVendorPreselect();
 
-    await selectTaxDetails('PST 7%', 'ON HST - P');
-    // The closed field shows both picks.
-    expect(screen.getByLabelText('Tax details (required)')).toHaveTextContent('PST 7%, ON HST - P');
+    await selectTaxSchedule('BC PURCH 12%');
+    // The field names the details the relay will write, so GST plus PST is visible before registering.
+    expect(screen.getByText('Taxes at BC GST 5% - P 5% + BC PST 7% PURCH 7%')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
     await waitFor(() => expect(onRegistered).toHaveBeenCalled());
-    expect(calls[0]).toMatchObject({ input: { taxDetailIds: ['PST 7%', 'ON HST - P'] } });
+    expect(calls[0]).toMatchObject({ input: { taxScheduleId: 'BC PURCH 12%' } });
   });
 
-  it('unpicking a detail removes it from what is sent (issue #762)', async () => {
-    const calls: Record<string, unknown>[] = [];
-    const registerMock: MockedResponse = {
-      request: { query: REGISTER_PO_IN_GP, variables: () => true },
-      result: (vars) => {
-        calls.push(vars as Record<string, unknown>);
-        return { data: registerData() };
-      },
-    };
-    const { onRegistered } = renderDialog({ registerPo: stockDraft }, [...baseMocks(), registerMock]);
-    await waitForVendorPreselect();
-
-    // Pick both, then click the first again: a second click on a checked option unpicks it.
-    await selectTaxDetails('ON HST - P', 'PST 7%', 'ON HST - P');
-    fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
-    await waitFor(() => expect(onRegistered).toHaveBeenCalled());
-    expect(calls[0]).toMatchObject({ input: { taxDetailIds: ['PST 7%'] } });
-  });
-
-  it('manual entry takes more than one id, comma-separated, trimmed and de-duplicated (issue #762)', async () => {
+  it('manual entry takes the schedule id, trimmed (issue #763)', async () => {
     const calls: Record<string, unknown>[] = [];
     const registerMock: MockedResponse = {
       request: { query: REGISTER_PO_IN_GP, variables: () => true },
@@ -686,9 +683,9 @@ describe('GpPurchaseOrderDialog', () => {
       },
     };
     const failedTaxMocks = baseMocks().map((m) =>
-      m.request.query === GET_GP_TAX_DETAILS
+      m.request.query === GET_GP_PURCHASE_TAX_SCHEDULES
         ? {
-            request: { query: GET_GP_TAX_DETAILS, variables: { company: 'UCS' } },
+            request: { query: GET_GP_PURCHASE_TAX_SCHEDULES, variables: { company: 'UCS' } },
             result: {
               errors: [new GraphQLError('relay did not answer in time', { extensions: { code: 'RELAY_TIMEOUT' } })],
             },
@@ -699,14 +696,14 @@ describe('GpPurchaseOrderDialog', () => {
     const { onRegistered } = renderDialog({ registerPo: stockDraft }, [...failedTaxMocks, registerMock]);
     await waitForVendorPreselect();
 
-    const manualField = await screen.findByLabelText('Tax detail id (required)');
-    fireEvent.change(manualField, { target: { value: ' BC GST 5% - P , BC PST 7% PURCH,, BC GST 5% - P ' } });
+    const manualField = await screen.findByLabelText('Tax schedule id (required)');
+    fireEvent.change(manualField, { target: { value: '  BC PURCH 12%  ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
     await waitFor(() => expect(onRegistered).toHaveBeenCalled());
-    expect(calls[0]).toMatchObject({ input: { taxDetailIds: ['BC GST 5% - P', 'BC PST 7% PURCH'] } });
+    expect(calls[0]).toMatchObject({ input: { taxScheduleId: 'BC PURCH 12%' } });
   });
 
-  it('does not require a tax detail when the company defines none (issue #257)', async () => {
+  it('does not require a tax schedule when the company has no purchase schedule (issue #257)', async () => {
     const calls: Record<string, unknown>[] = [];
     const registerMock: MockedResponse = {
       request: { query: REGISTER_PO_IN_GP, variables: () => true },
@@ -718,17 +715,17 @@ describe('GpPurchaseOrderDialog', () => {
     // A company with no purchase tax details: the dropdown is empty/disabled, so registration must not
     // be hard-blocked on picking one.
     const mocksNoTax = baseMocks().map((m) =>
-      m.request.query === GET_GP_TAX_DETAILS ? { ...m, result: { data: { gpTaxDetails: [] } } } : m,
+      m.request.query === GET_GP_PURCHASE_TAX_SCHEDULES ? { ...m, result: { data: { gpPurchaseTaxSchedules: [] } } } : m,
     );
     const { onRegistered } = renderDialog({ registerPo: stockDraft }, [...mocksNoTax, registerMock]);
     await waitForVendorPreselect();
 
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
     await waitFor(() => expect(onRegistered).toHaveBeenCalled());
-    expect(calls[0]).toMatchObject({ input: { taxDetailIds: [] } });
+    expect(calls[0]).toMatchObject({ input: { taxScheduleId: null } });
   });
 
-  it('auto-switches to manual tax-detail entry when the relay is out of date (issue #315)', async () => {
+  it('auto-switches to manual tax-schedule entry when the relay is out of date (issue #315)', async () => {
     const calls: Record<string, unknown>[] = [];
     const registerMock: MockedResponse = {
       request: { query: REGISTER_PO_IN_GP, variables: () => true },
@@ -739,9 +736,9 @@ describe('GpPurchaseOrderDialog', () => {
     };
     // A relay too old to serve list_tax_details answers RELAY_OP_UNSUPPORTED - the dropdown can't load.
     const opUnsupportedMocks = baseMocks().map((m) =>
-      m.request.query === GET_GP_TAX_DETAILS
+      m.request.query === GET_GP_PURCHASE_TAX_SCHEDULES
         ? {
-            request: { query: GET_GP_TAX_DETAILS, variables: { company: 'UCS' } },
+            request: { query: GET_GP_PURCHASE_TAX_SCHEDULES, variables: { company: 'UCS' } },
             result: {
               errors: [
                 new GraphQLError('relay out of date', { extensions: { code: 'RELAY_OP_UNSUPPORTED' } }),
@@ -756,7 +753,7 @@ describe('GpPurchaseOrderDialog', () => {
 
     // The out-of-date banner shows and the manual id field replaces the dropdown.
     expect(await screen.findByText(/The GP relay is out of date/)).toBeInTheDocument();
-    const manualField = screen.getByLabelText('Tax detail id (required)');
+    const manualField = screen.getByLabelText('Tax schedule id (required)');
 
     // Still required for CAD: an empty manual field blocks the submit with a clear message.
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
@@ -765,10 +762,10 @@ describe('GpPurchaseOrderDialog', () => {
     expect(onSubmitted).not.toHaveBeenCalled();
 
     // Type the id (interior spaces preserved) and the PO registers carrying it.
-    fireEvent.change(manualField, { target: { value: '  ON HST - P  ' } });
+    fireEvent.change(manualField, { target: { value: '  ONHST 13%  ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
     await waitFor(() => expect(onRegistered).toHaveBeenCalled());
-    expect(calls[0]).toMatchObject({ input: { taxDetailIds: ['ON HST - P'] } });
+    expect(calls[0]).toMatchObject({ input: { taxScheduleId: 'ONHST 13%' } });
   });
 
   it('requires manual tax entry when the live list fails for any reason, and rejects whitespace (issue #315)', async () => {
@@ -783,9 +780,9 @@ describe('GpPurchaseOrderDialog', () => {
     // A transient failure (timeout / dropped / sql_error) - NOT op-unsupported. An empty list here can't
     // be trusted to mean "company has no purchase tax", so the manual id must be required, not optional.
     const failedTaxMocks = baseMocks().map((m) =>
-      m.request.query === GET_GP_TAX_DETAILS
+      m.request.query === GET_GP_PURCHASE_TAX_SCHEDULES
         ? {
-            request: { query: GET_GP_TAX_DETAILS, variables: { company: 'UCS' } },
+            request: { query: GET_GP_PURCHASE_TAX_SCHEDULES, variables: { company: 'UCS' } },
             result: {
               errors: [new GraphQLError('relay did not answer in time', { extensions: { code: 'RELAY_TIMEOUT' } })],
             },
@@ -797,8 +794,8 @@ describe('GpPurchaseOrderDialog', () => {
     await waitForVendorPreselect();
 
     // Generic (non-out-of-date) banner + a required manual field.
-    expect(await screen.findByText(/The live GP tax detail list could not load/)).toBeInTheDocument();
-    const manualField = screen.getByLabelText('Tax detail id (required)');
+    expect(await screen.findByText(/The live GP tax schedule list could not load/)).toBeInTheDocument();
+    const manualField = screen.getByLabelText('Tax schedule id (required)');
 
     // Empty blocks.
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
@@ -813,10 +810,10 @@ describe('GpPurchaseOrderDialog', () => {
     expect(onSubmitted).not.toHaveBeenCalled();
 
     // A real id registers.
-    fireEvent.change(manualField, { target: { value: 'PST 7%' } });
+    fireEvent.change(manualField, { target: { value: 'BC PURCH 12%' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
     await waitFor(() => expect(onRegistered).toHaveBeenCalled());
-    expect(calls[0]).toMatchObject({ input: { taxDetailIds: ['PST 7%'] } });
+    expect(calls[0]).toMatchObject({ input: { taxScheduleId: 'BC PURCH 12%' } });
   });
 
   it('registers a USD vendor PO with no tax detail (foreign currency, issue #257)', async () => {
@@ -838,7 +835,7 @@ describe('GpPurchaseOrderDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Register in GP' }));
     await waitFor(() => expect(onRegistered).toHaveBeenCalled());
     // No tax detail sent; the relay resolves the GP exchange rate + blanks TAXSCHID server-side.
-    expect(calls[0]).toMatchObject({ input: { gpVendorId: 'V-USD', taxDetailIds: [] } });
+    expect(calls[0]).toMatchObject({ input: { gpVendorId: 'V-USD', taxScheduleId: null } });
   });
 
   it('create mode saves a plain draft via CREATE_DRAFT_PO with no GP fields, even with the relay down', async () => {

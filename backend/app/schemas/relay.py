@@ -30,6 +30,7 @@ from .converters import (
     gp_employee_to_type,
     gp_job_to_type,
     gp_po_entry_options_to_type,
+    gp_purchase_tax_schedule_to_type,
     gp_tax_detail_to_type,
     gp_tax_schedule_to_type,
     gp_vendor_address_to_type,
@@ -49,6 +50,7 @@ from .types import (
     GpJob,
     GpPoEntryOptions,
     GpPoTotals,
+    GpPurchaseTaxSchedule,
     GpTaxDetail,
     GpTaxSchedule,
     GpVendor,
@@ -308,6 +310,14 @@ class RelayQueries:
         benefit. A vendor or customer list is ordinary working data; a payroll master is not."""
         result = await relay_gateway.relay_call(resolve_gp_company(info, company), "list_employees")
         return [gp_employee_to_type(e) for e in result["employees"]]
+
+    @strawberry.field
+    async def gp_purchase_tax_schedules(self, info: strawberry.Info, company: str) -> list[GpPurchaseTaxSchedule]:
+        """Live GP tax schedules holding at least one purchase tax detail (TX00101 + TX00102 + TX00201
+        TXDTLTYP=2) via the connected relay, each with those details - the register-PO tax picker (#763).
+        Schedules are GP's: Nexus reads them and never writes them."""
+        result = await relay_gateway.relay_call(resolve_gp_company(info, company), "list_purchase_tax_schedules")
+        return [gp_purchase_tax_schedule_to_type(s) for s in result["tax_schedules"]]
 
     @strawberry.field
     async def gp_tax_schedules(self, info: strawberry.Info, company: str) -> list[GpTaxSchedule]:

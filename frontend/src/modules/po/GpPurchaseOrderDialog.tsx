@@ -22,7 +22,7 @@ import {
   RUN_GP_PROCESSING,
   GET_GP_COST_CODES,
   GET_GP_VENDORS,
-  GET_GP_TAX_DETAILS,
+  GET_GP_PURCHASE_TAX_SCHEDULES,
   GET_GP_PO_ENTRY_OPTIONS,
   GET_GP_VENDOR_ADDRESSES,
   SUGGEST_VENDOR_FOR_MANUFACTURER,
@@ -132,10 +132,11 @@ interface GpCostCode {
   costElement: number; // GP Cost_Element (varies by code); the /po cost_code trailing digit
 }
 
-interface GpTaxDetailOption {
-  taxDetailId: string; // GP TAXDTLID (purchase detail, TX00201 TXDTLTYP=2)
+interface GpPurchaseTaxScheduleOption {
+  taxScheduleId: string; // GP TAXSCHID
   description: string | null;
-  percent: number; // GP TXDTLPCT
+  percent: number; // the schedule's combined purchase rate
+  details: Array<{ taxDetailId: string; description: string | null; percent: number }>;
 }
 
 // What GP falls back to when a header field is left unsaid, and the caps its own fields carry. The
@@ -326,12 +327,12 @@ export default function GpPurchaseOrderDialog({
   // Issue #156: optional order-time dollar costs. Kept as strings ('' = not entered, distinct from 0).
   const [shippingCost, setShippingCost] = useState('');
   const [tariffAmount, setTariffAmount] = useState('');
-  // Issue #257 / #762: GP header charges captured at register time. taxDetailIds are the GP purchase
-  // tax details picked from the live list (CAD only; one or more - UBC's GST plus PST is two picks),
-  // and taxDetailManual is the #315 fallback: ids typed by hand, comma-separated, when the list could
+  // Issue #257 / #763: GP header charges captured at register time. taxScheduleId is the ONE GP
+  // purchase tax schedule picked from the live list (CAD only); the relay expands it to its purchase
+  // details. taxScheduleManual is the #315 fallback: the schedule id typed by hand when the list could
   // not load. miscellaneous + tradeDiscount are dollar inputs. Freight maps from shippingCost above.
-  const [taxDetailIds, setTaxDetailIds] = useState<string[]>([]);
-  const [taxDetailManual, setTaxDetailManual] = useState('');
+  const [taxScheduleId, setTaxScheduleId] = useState('');
+  const [taxScheduleManual, setTaxScheduleManual] = useState('');
   const [miscellaneous, setMiscellaneous] = useState('');
   const [tradeDiscount, setTradeDiscount] = useState('');
   // Issue #256: create mode drafts carry the PM's preferred date. No vendor - GP owns those, and the
@@ -463,17 +464,17 @@ export default function GpPurchaseOrderDialog({
   const effectiveSite = site || (sites.length === 1 ? sites[0].code : '');
   const effectiveContact = contactEdited ? contact : selectedVendor?.contact || gpBuyerId || '';
 
-  // Issue #257: live GP purchase tax details (TX00201, TXDTLTYP=2) for the tax-detail dropdown.
+  // #763: live GP purchase tax schedules (each with its purchase details) for the one-schedule picker.
   const {
-    data: gpTaxDetailsData,
-    loading: gpTaxDetailsLoading,
-    error: gpTaxDetailsError,
-  } = useQuery<{ gpTaxDetails: GpTaxDetailOption[] }>(GET_GP_TAX_DETAILS, {
+    data: gpTaxSchedulesData,
+    loading: gpTaxSchedulesLoading,
+    error: gpTaxSchedulesError,
+  } = useQuery<{ gpPurchaseTaxSchedules: GpPurchaseTaxScheduleOption[] }>(GET_GP_PURCHASE_TAX_SCHEDULES, {
     variables: { company },
     skip: !open || !isRegister || !relayConnected || !company,
     fetchPolicy: 'cache-first',
   });
-  const gpTaxDetails = gpTaxDetailsData?.gpTaxDetails ?? [];
+  const gpTaxSchedules = gpTaxSchedulesData?.gpPurchaseTaxSchedules ?? [];
 
   // Issue #257: the PO currency is the selected GP vendor's (GP-first, resolved again server-side).
   // A foreign-currency PO (non-CAD) carries no tax schedule/detail - the relay blanks TAXSCHID and
@@ -494,25 +495,25 @@ export default function GpPurchaseOrderDialog({
   // manufacturer hint's suggestion and goes stale the moment the user picks a different vendor.
   const selectedGpVendorName = selectedVendor?.vendorName ?? null;
 
-  // Issue #315: the live tax-detail list can fail to load - the relay is too old to serve
-  // list_tax_details (RELAY_OP_UNSUPPORTED), or it timed out / dropped / errored mid-query. Rather than
-  // leave the dropdown silently disabled, auto-fall back to manual entry of the GP tax detail id.
-  // `taxDetailsFailed` is ANY load error: it's the signal that an empty list can't be trusted to mean
+  // Issue #315: the live tax-schedule list can fail to load - the relay is too old to serve
+  // list_purchase_tax_schedules (RELAY_OP_UNSUPPORTED), or it timed out / dropped / errored mid-query.
+  // Rather than leave the dropdown silently disabled, auto-fall back to manual entry of the schedule id.
+  // `taxSchedulesFailed` is ANY load error: it's the signal that an empty list can't be trusted to mean
   // "this company has no purchase tax", so for CAD the manual id becomes REQUIRED (not merely offered) -
   // otherwise a transient error would let a CAD PO register with no tax. A settled, error-free empty list
   // is the only case where the tax detail stays optional (that company genuinely defines none).
-  const taxDetailsOpUnsupported = isRelayOpUnsupported(gpTaxDetailsError);
-  const taxDetailsFailed = !!gpTaxDetailsError;
+  const taxSchedulesOpUnsupported = isRelayOpUnsupported(gpTaxSchedulesError);
+  const taxSchedulesFailed = !!gpTaxSchedulesError;
   const useManualTaxEntry =
-    isRegister && !isForeignCurrency && relayConnected && !gpTaxDetailsLoading && gpTaxDetails.length === 0;
-  // The details this registration actually sends: the dropdown picks, or the manual field split on
-  // commas (#762 - a GST plus PST PO is two ids). Only the ends of each id are trimmed: GP ids carry
-  // interior spaces ('ON HST - P'). Empty for a foreign-currency PO, which carries no tax schedule.
-  const pickedTaxDetailIds = useMemo(() => {
-    if (isForeignCurrency) return [];
-    const raw = useManualTaxEntry ? taxDetailManual.split(',') : taxDetailIds;
-    return raw.map((id) => id.trim()).filter((id, i, all) => id !== '' && all.indexOf(id) === i);
-  }, [isForeignCurrency, useManualTaxEntry, taxDetailManual, taxDetailIds]);
+    isRegister && !isForeignCurrency && relayConnected && !gpTaxSchedulesLoading && gpTaxSchedules.length === 0;
+  // The schedule this registration actually sends: the dropdown pick, or the manual id. Only the ends
+  // are trimmed: GP ids carry interior spaces ('ONHST 13%'). Null for a foreign-currency PO, which
+  // carries no tax schedule.
+  const pickedTaxScheduleId = useMemo(() => {
+    if (isForeignCurrency) return null;
+    return (useManualTaxEntry ? taxScheduleManual : taxScheduleId).trim() || null;
+  }, [isForeignCurrency, useManualTaxEntry, taxScheduleManual, taxScheduleId]);
+  const pickedTaxSchedule = gpTaxSchedules.find((t) => t.taxScheduleId === pickedTaxScheduleId) ?? null;
 
   // Issue #232: suggest the ordering vendor from each line's TITAN manufacturer. The manufacturer is
   // the derived POLineItem.manufacturer (resolved server-side from the line's linked HardwareItem),
@@ -627,8 +628,8 @@ export default function GpPurchaseOrderDialog({
       setShippingCost(registerPo.shippingCost != null ? String(registerPo.shippingCost) : '');
       setTariffAmount(registerPo.tariffAmount != null ? String(registerPo.tariffAmount) : '');
       // Issue #257: no draft-side source for these; the user enters them at register time.
-      setTaxDetailIds([]);
-      setTaxDetailManual('');
+      setTaxScheduleId('');
+      setTaxScheduleManual('');
       setMiscellaneous('');
       setTradeDiscount('');
       // GP's header fields start on their defaults; the PO date starts on today.
@@ -665,8 +666,8 @@ export default function GpPurchaseOrderDialog({
       setNotes('');
       setShippingCost('');
       setTariffAmount('');
-      setTaxDetailIds([]);
-      setTaxDetailManual('');
+      setTaxScheduleId('');
+      setTaxScheduleManual('');
       setMiscellaneous('');
       setTradeDiscount('');
       setPreferredDeliveryDate('');
@@ -876,20 +877,18 @@ export default function GpPurchaseOrderDialog({
         !costCodes.some((c) => `${c.costCode}-${c.costElement}` === costCode)
       )
         errs.costCode = 'The selected cost code is no longer on this job in GP - pick another';
-      // Issue #257 / #762: a CAD PO must carry at least one tax detail (the relay computes tax from
-      // them); a foreign-currency PO carries none (the relay blanks the schedule), so require it for CAD
-      // only. Only enforce it when the company actually defines purchase tax details - a company with
-      // none would otherwise be hard-blocked, since the dropdown is disabled/empty when gpTaxDetails is
-      // empty. Issue #315: when the live list couldn't load (any error), require the manually-entered
-      // ids instead so the CAD PO still carries tax. pickedTaxDetailIds is already trimmed, so a
-      // whitespace-only entry does not pass here. A genuinely empty list (no error) stays optional -
-      // that company may simply have no purchase tax details.
-      if (!isForeignCurrency && gpVendorId && pickedTaxDetailIds.length === 0) {
-        if (gpTaxDetails.length > 0) errs.taxDetail = 'Select a tax detail';
-        else if (taxDetailsFailed)
-          errs.taxDetail = taxDetailsOpUnsupported
-            ? 'Enter the GP tax detail id - the relay is out of date, so the list could not load'
-            : 'Enter the GP tax detail id - the live list could not load';
+      // Issue #257 / #763: a CAD PO must carry a tax schedule (the relay taxes it at the schedule's
+      // purchase details); a foreign-currency PO carries none, so require it for CAD only. Only when
+      // the company actually has a purchase schedule - one with none would otherwise be hard-blocked,
+      // since the dropdown is empty then. Issue #315: when the live list couldn't load (any error),
+      // require the manually-entered id instead so the CAD PO still carries tax. A genuinely empty
+      // list (no error) stays optional - that company may have no purchase tax schedule in GP yet.
+      if (!isForeignCurrency && gpVendorId && !pickedTaxScheduleId) {
+        if (gpTaxSchedules.length > 0) errs.taxDetail = 'Select a tax schedule';
+        else if (taxSchedulesFailed)
+          errs.taxDetail = taxSchedulesOpUnsupported
+            ? 'Enter the GP tax schedule id - the relay is out of date, so the list could not load'
+            : 'Enter the GP tax schedule id - the live list could not load';
       }
     }
     // Issue #156: optional, but a non-empty entry must be a valid non-negative dollar value.
@@ -904,7 +903,7 @@ export default function GpPurchaseOrderDialog({
       errs.tradeDiscount = 'Must be >= 0';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, effectiveSite, sites.length, effectiveContact, comment, isJob, costCode, costCodes, shippingCost, tariffAmount, isForeignCurrency, pickedTaxDetailIds, gpTaxDetails.length, taxDetailsOpUnsupported, taxDetailsFailed, miscellaneous, tradeDiscount]);
+  }, [lineItems, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, effectiveSite, sites.length, effectiveContact, comment, isJob, costCode, costCodes, shippingCost, tariffAmount, isForeignCurrency, pickedTaxScheduleId, gpTaxSchedules.length, taxSchedulesOpUnsupported, taxSchedulesFailed, miscellaneous, tradeDiscount]);
 
   /**
    * Stage two: read the PO back out of GP and hand the finished PO to the caller. Also what "Try
@@ -964,8 +963,8 @@ export default function GpPurchaseOrderDialog({
     // Issue #156: '' = not entered (null); 0 is a valid entered value.
     const shippingCostValue = shippingCost.trim() === '' ? null : parseFloat(shippingCost);
     const tariffAmountValue = tariffAmount.trim() === '' ? null : parseFloat(tariffAmount);
-    // Issue #257: same '' -> null convention. The tax details (#762: a list, empty for a
-    // foreign-currency PO) are pickedTaxDetailIds, trimmed and de-duplicated above.
+    // Issue #257: same '' -> null convention. The tax schedule (#763: one, null for a
+    // foreign-currency PO) is pickedTaxScheduleId, trimmed above.
     const miscellaneousValue = miscellaneous.trim() === '' ? null : parseFloat(miscellaneous);
     const tradeDiscountValue = tradeDiscount.trim() === '' ? null : parseFloat(tradeDiscount);
 
@@ -1000,7 +999,7 @@ export default function GpPurchaseOrderDialog({
               comment: comment.trim() || null,
               shippingCost: shippingCostValue,
               tariffAmount: tariffAmountValue,
-              taxDetailIds: pickedTaxDetailIds,
+              taxScheduleId: pickedTaxScheduleId,
               miscellaneous: miscellaneousValue,
               tradeDiscount: tradeDiscountValue,
               idempotencyKey,
@@ -1102,7 +1101,7 @@ export default function GpPurchaseOrderDialog({
     notes,
     shippingCost,
     tariffAmount,
-    pickedTaxDetailIds,
+    pickedTaxScheduleId,
     miscellaneous,
     tradeDiscount,
     isForeignCurrency,
@@ -1611,11 +1610,11 @@ export default function GpPurchaseOrderDialog({
             and point at the fix, while the manual id field below keeps CAD registration unblocked. Gated
             on useManualTaxEntry so the banner never points at a field that isn't rendered (e.g. after the
             relay disconnects, which reverts the row to the disabled dropdown). */}
-        {useManualTaxEntry && taxDetailsFailed && (
+        {useManualTaxEntry && taxSchedulesFailed && (
           <Alert severity="warning" sx={{ mt: 2 }}>
-            {taxDetailsOpUnsupported
-              ? "The GP relay is out of date and can't load live tax details. Update it (an Admin can check its build under Admin → Relay Installs), or enter the GP tax detail id manually below."
-              : 'The live GP tax detail list could not load. Enter the GP tax detail id manually below, or retry.'}
+            {taxSchedulesOpUnsupported
+              ? "The GP relay is out of date and can't load live tax schedules. Update it (an Admin can check its build under Admin → Relay Installs), or enter the GP tax schedule id manually below."
+              : 'The live GP tax schedule list could not load. Enter the GP tax schedule id manually below, or retry.'}
           </Alert>
         )}
         {/* Issue #257: GP currency (read-only, from the vendor), the CAD-only tax detail, and the
@@ -1640,66 +1639,58 @@ export default function GpPurchaseOrderDialog({
             }
           />
           {/* Issue #315: auto-switch to manual entry when the live dropdown can't serve (relay out of
-              date, or GP returned no purchase tax details). Each typed id is validated GP-side by the
-              relay's create_po (get_tax_detail_percent -> tax_detail_not_found on a bad id). #762: more
-              than one id, comma-separated, for a GST plus PST PO. */}
+              date, or GP returned no purchase tax schedule). The typed id is validated GP-side by the
+              relay's create_po (tax_schedule_not_found / tax_schedule_not_purchase). */}
           {useManualTaxEntry ? (
             <TextField
-              label={taxDetailsFailed ? 'Tax detail id (required)' : 'Tax detail id (manual)'}
-              value={taxDetailManual}
-              onChange={(e) => setTaxDetailManual(e.target.value)}
+              label={taxSchedulesFailed ? 'Tax schedule id (required)' : 'Tax schedule id (manual)'}
+              value={taxScheduleManual}
+              onChange={(e) => setTaxScheduleManual(e.target.value)}
               size="small"
               sx={{ minWidth: 260, ...MONO_FIELD_SX }}
               error={!!errors.taxDetail}
               helperText={
                 errors.taxDetail ||
-                (taxDetailsOpUnsupported
-                  ? 'Relay out of date - enter the GP tax detail id(s), comma-separated (e.g. ON HST - P)'
-                  : taxDetailsFailed
-                    ? 'Live tax details could not load - enter the GP tax detail id(s), comma-separated (e.g. ON HST - P)'
-                    : 'No live GP tax details returned - enter the id(s) manually, comma-separated, if this company uses purchase tax')
+                (taxSchedulesOpUnsupported
+                  ? 'Relay out of date - enter the GP purchase tax schedule id (e.g. ONHST 13%)'
+                  : taxSchedulesFailed
+                    ? 'Live tax schedules could not load - enter the GP purchase tax schedule id (e.g. ONHST 13%)'
+                    : 'No GP purchase tax schedule returned - enter its id manually if this company uses purchase tax')
               }
             />
           ) : (
-            /* #762: a multi-select. Every pick is written to GP as its own tax detail on the PO, on
-               the goods, the freight and the misc, so GST plus PST is two picks rather than a combined
-               schedule (none exists on the purchasing side). The relay reads each rate off GP. */
+            /* #763: one purchase tax schedule. The relay expands it to the schedule's purchase details
+               and taxes the goods, the freight and the misc at each of them. Schedules are GP's -
+               created and maintained in GP - so the list is whatever the company holds there. */
             <TextField
               select
-              label={isForeignCurrency ? 'Tax details' : 'Tax details (required)'}
-              value={isForeignCurrency ? [] : taxDetailIds}
-              onChange={(e) => {
-                const v = e.target.value as unknown;
-                setTaxDetailIds(typeof v === 'string' ? v.split(',') : (v as string[]));
-              }}
+              label={isForeignCurrency ? 'Tax schedule' : 'Tax schedule (required)'}
+              value={isForeignCurrency ? '' : taxScheduleId}
+              onChange={(e) => setTaxScheduleId(e.target.value)}
               size="small"
               sx={{ minWidth: 260 }}
-              disabled={!relayConnected || isForeignCurrency || gpTaxDetails.length === 0}
+              disabled={!relayConnected || isForeignCurrency || gpTaxSchedules.length === 0}
               error={!!errors.taxDetail}
-              slotProps={{
-                select: {
-                  multiple: true,
-                  renderValue: (selected) => (selected as string[]).join(', '),
-                },
-              }}
               helperText={
                 errors.taxDetail ||
                 (isForeignCurrency
                   ? 'Not applicable for a foreign-currency PO'
                   : !relayConnected
                     ? RELAY_DOWN_HELPER
-                    : 'Pick every detail the vendor charges - GST plus PST is two picks')
+                    : pickedTaxSchedule
+                      ? `Taxes at ${pickedTaxSchedule.details.map((d) => `${d.taxDetailId} ${d.percent}%`).join(' + ')}`
+                      : "The GP purchase tax schedule the vendor charges under")
               }
             >
-              {gpTaxDetails.map((t) => (
-                <MenuItem key={t.taxDetailId} value={t.taxDetailId}>
-                  <Checkbox size="small" checked={taxDetailIds.includes(t.taxDetailId)} sx={{ p: 0, mr: 1 }} />
+              {gpTaxSchedules.map((t) => (
+                <MenuItem key={t.taxScheduleId} value={t.taxScheduleId}>
                   <ListItemText
                     primary={
                       t.description
-                        ? `${t.taxDetailId} · ${t.description} (${t.percent}%)`
-                        : `${t.taxDetailId} (${t.percent}%)`
+                        ? `${t.taxScheduleId} · ${t.description} (${t.percent}%)`
+                        : `${t.taxScheduleId} (${t.percent}%)`
                     }
+                    secondary={t.details.map((d) => `${d.taxDetailId} ${d.percent}%`).join(' + ')}
                   />
                 </MenuItem>
               ))}
