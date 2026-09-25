@@ -13,6 +13,7 @@ fails on it either way.
 
 import strawberry
 
+from .classification_override import ClassificationOverrideQueries
 from .custom_items import CustomItemQueries
 from .dashboard import DashboardQueries
 from .db_access import DbAccessQueries
@@ -34,6 +35,7 @@ from .warehouse import WarehouseQueries
 
 @strawberry.type
 class Query(
+    ClassificationOverrideQueries,
     CustomItemQueries,
     DashboardQueries,
     DbAccessQueries,

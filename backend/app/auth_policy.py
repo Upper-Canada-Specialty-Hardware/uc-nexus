@@ -210,6 +210,13 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # company - an unscoped caller still syncs them all.
     "syncGpPos": SIGNED_IN,
     "updateProject": TENANT_OWNERS,
+    # --- classification_override.py ------------------------------------------------------
+    # The Tenant Owner module's hardware classification override (#735): correcting a product's
+    # Shop / Site / By Others after import decides what the shop and shipping may pull, for one
+    # company's own jobs, so the same bar as the rest of that module's project pages.
+    "hardwareClassificationChanges": TENANT_OWNERS,
+    "projectHardwareClassifications": TENANT_OWNERS,
+    "setHardwareClassifications": TENANT_OWNERS,
     # --- relay.py -------------------------------------------------------------------------
     # The gp_* reads are signed-in because every PO screen needs them. Three exceptions: two return
     # staff rosters by another name (`gpBuyersDetailed`, buyer ids with names, and `gpEmployees`), and

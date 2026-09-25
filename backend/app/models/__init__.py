@@ -12,6 +12,7 @@ from .gp_outbox import GpWriteOutbox  # noqa: E402, F401
 from .gp_po_sync_state import GpPoSyncState  # noqa: E402, F401
 from .gp_write import GpWriteIdempotency  # noqa: E402, F401
 from .hardware import HardwareItem  # noqa: E402, F401
+from .hardware_classification_change import HardwareClassificationChange  # noqa: E402, F401
 from .inventory import InventoryLocation  # noqa: E402, F401
 from .inventory_item_type import (  # noqa: E402, F401
     CustomInventoryItem,

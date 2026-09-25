@@ -5,6 +5,7 @@ import UserManagementPage from './UserManagementPage';
 import WarehousesPage from './WarehousesPage';
 import ProjectsPage from './ProjectsPage';
 import ProjectDetailPage from './ProjectDetailPage';
+import HardwareClassificationsPage from './HardwareClassificationsPage';
 import LocationCleanupPage from './LocationCleanupPage';
 import InventoryValuePage from './InventoryValuePage';
 import TenantOwnerLanding from './TenantOwnerLanding';
@@ -17,6 +18,7 @@ export default function TenantOwnerModule() {
       <Route index element={<TenantOwnerLanding />} />
       <Route path="projects" element={<ProjectsPage />} />
       <Route path="projects/:id" element={<ProjectDetailPage />} />
+      <Route path="projects/:id/classifications" element={<HardwareClassificationsPage />} />
       <Route path="project-purchasing-progress" element={<ProjectPurchasingProgressPage />} />
       <Route path="hardware-status" element={<HardwareStatusPage />} />
       <Route path="warehouses" element={<WarehousesPage />} />

@@ -24,6 +24,9 @@ from app.models.enums import (
     GpJobState as GpJobStateDB,
 )
 from app.models.enums import (
+    HardwareClassificationChoice as HardwareClassificationChoiceDB,
+)
+from app.models.enums import (
     HardwareItemState as HardwareItemStateDB,
 )
 from app.models.enums import (
@@ -79,6 +82,7 @@ from app.models.enums import (
 AuditAction = strawberry.enum(AuditActionDB)
 AuditEntityType = strawberry.enum(AuditEntityTypeDB)
 Classification = strawberry.enum(ClassificationDB)
+HardwareClassificationChoice = strawberry.enum(HardwareClassificationChoiceDB)
 HardwareItemState = strawberry.enum(HardwareItemStateDB)
 POStatus = strawberry.enum(POStatusDB)
 POOrigin = strawberry.enum(POOriginDB)
