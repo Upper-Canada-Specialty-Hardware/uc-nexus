@@ -9,9 +9,11 @@
  */
 import { useMemo, useState } from 'react';
 import {
+  Alert,
   Box,
   Button,
   Checkbox,
+  Chip,
   Dialog,
   DialogActions,
   DialogContent,
@@ -23,13 +25,15 @@ import {
   Menu,
   MenuItem,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
-import { FileText, MoreVertical, Paperclip, X } from 'lucide-react';
+import { AlertTriangle, FileText, MoreVertical, Paperclip, X } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import ViewPOsButton from './ViewPOsButton';
 import LifecycleChips from './LifecycleChips';
+import type { OverBuyRisk } from './overBuy';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import type { DraftAttachmentType, DraftGroup, DraftInfoField } from './types';
@@ -80,6 +84,8 @@ export interface LineContext {
   ordered: number;
   /** #738: where the product's units stand, schedule to shipped - the reconciliation's chips. */
   lifecycleBreakdown: Map<string, number>;
+  /** #736: what the project has already committed - drafted, on order and what exists. */
+  existingCommitted: number;
 }
 
 interface DraftLine {
@@ -221,6 +227,8 @@ export interface DraftCardProps {
   selectionTotals: Map<string, number>;
   heldByProduct: Map<string, number>;
   lineContextByPk: Map<string, LineContext>;
+  // #736: products the included drafts would take past the project's need, by productKey.
+  overBuy?: Map<string, OverBuyRisk>;
   onToggleIncluded: (id: string) => void;
   onRenameDraft: (id: string, label: string) => void;
   onUpdateDraftInfo: (id: string, field: DraftInfoField, value: string) => void;
@@ -249,6 +257,7 @@ export function DraftCard({
   selectionTotals,
   heldByProduct,
   lineContextByPk,
+  overBuy,
   onToggleIncluded,
   onRenameDraft,
   onUpdateDraftInfo,
@@ -283,6 +292,8 @@ export function DraftCard({
 
   const poTotal = lines.reduce((sum, l) => sum + l.totalCost, 0);
   const isEmpty = draft.lines.size === 0;
+  // #736: only an included draft orders anything, so only an included draft can over-buy.
+  const atRiskCount = draft.included ? lines.filter((l) => overBuy?.has(l.pk)).length : 0;
 
   // Card-level actions menu (merge / remove) and the per-row menu (move whole / split / remove), each
   // a single anchored Menu; the row menu remembers which line it was opened for.
@@ -290,7 +301,25 @@ export function DraftCard({
   const [rowMenu, setRowMenu] = useState<{ anchor: HTMLElement; line: DraftLine } | null>(null);
 
   return (
-    <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 2, mb: 2, opacity: draft.included ? 1 : 0.6 }}>
+    <Box
+      data-over-buy={atRiskCount > 0 ? 'true' : undefined}
+      sx={{
+        border: '1px solid',
+        borderColor: atRiskCount > 0 ? 'warning.main' : 'divider',
+        // #736: the outline thickens on a card at risk so it is spotted while scrolling the drafts.
+        boxShadow: atRiskCount > 0 ? (t) => `inset 0 0 0 1px ${t.vars?.palette.warning.main ?? t.palette.warning.main}` : 'none',
+        borderRadius: 1,
+        p: 2,
+        mb: 2,
+        opacity: draft.included ? 1 : 0.6,
+      }}
+    >
+      {atRiskCount > 0 && (
+        <Alert severity="warning" icon={<AlertTriangle size={18} strokeWidth={1.75} />} sx={{ mb: 2, py: 0 }}>
+          {atRiskCount === 1 ? '1 line' : `${atRiskCount} lines`} on this draft would take the project past what
+          its hardware schedule needs. You will be asked to confirm at Finalize.
+        </Alert>
+      )}
       {/* Header: include toggle + editable label + PO total + card menu */}
       <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 1.5, mb: 2 }}>
         <FormControlLabel
@@ -570,7 +599,8 @@ export function DraftCard({
               // absent entry falls back to 0 rather than blanking the column.
               const ctx = lineContextByPk.get(line.pk);
               const lifecycle = ctx?.lifecycleBreakdown;
-              const hasLifecycle = (lifecycle?.size ?? 0) > 0;
+              const risk = draft.included ? overBuy?.get(line.pk) : undefined;
+              const hasLifecycle = (lifecycle?.size ?? 0) > 0 || risk !== undefined;
               return (
                 <Box key={line.pk} sx={{ display: 'contents' }}>
                   <Box className={hasLifecycle ? 'po-line-joined' : undefined} sx={{ display: 'contents' }}>
@@ -700,9 +730,24 @@ export function DraftCard({
                   {/* #738: the reconciliation step's Lifecycle Breakdown, on its own full-width row so
                       the chips wrap instead of stretching a column. Omitted while there is nothing to
                       show, which is every line of a fresh import. */}
-                  {hasLifecycle && lifecycle && (
+                  {hasLifecycle && (
                     <Box className="po-lifecycle" aria-label={`Lifecycle breakdown for ${line.productCode}`}>
-                      <LifecycleChips breakdown={lifecycle} />
+                      {lifecycle && <LifecycleChips breakdown={lifecycle} />}
+                      {/* #736: the reconciliation's over-commit chip, measured against the drafts. */}
+                      {risk && (
+                        <Tooltip
+                          arrow
+                          title={`Ordering the drafts would put the project at ${risk.wouldBe} against a schedule need of ${risk.projectNeeded}. You will be asked to confirm at Finalize.`}
+                        >
+                          <Chip
+                            size="small"
+                            icon={<AlertTriangle size={14} strokeWidth={1.75} />}
+                            label={`Over-committed by ${risk.over}`}
+                            color="warning"
+                            variant="outlined"
+                          />
+                        </Tooltip>
+                      )}
                     </Box>
                   )}
                 </Box>

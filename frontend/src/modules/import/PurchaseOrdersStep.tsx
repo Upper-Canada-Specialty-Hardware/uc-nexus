@@ -4,6 +4,7 @@ import { Plus } from 'lucide-react';
 import { tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
 import type { DraftAttachmentType, DraftGroup, DraftInfoField } from './types';
+import { overBuyRisks } from './overBuy';
 import {
   DraftCard,
   SplitLineDialog,
@@ -88,6 +89,9 @@ export default function PurchaseOrdersStep({
     }
     return map;
   }, [draftGroups]);
+  // #736: the products the included drafts would take past the project's need - the same helper the
+  // wizard's finalize confirm uses, so the card that warns and the confirm that lists always agree.
+  const overBuy = useMemo(() => overBuyRisks(draftGroups, lineContextByPk), [draftGroups, lineContextByPk]);
   // The split dialog is a single instance driven by the card that opened it.
   const [splitCtx, setSplitCtx] = useState<SplitContext | null>(null);
   const splitTargets = useMemo(
@@ -141,6 +145,7 @@ export default function PurchaseOrdersStep({
               selectionTotals={selectionTotals}
               heldByProduct={heldByProduct}
               lineContextByPk={lineContextByPk}
+              overBuy={overBuy}
               onToggleIncluded={onToggleIncluded}
               onRenameDraft={onRenameDraft}
               onUpdateDraftInfo={onUpdateDraftInfo}

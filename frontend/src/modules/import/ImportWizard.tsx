@@ -75,6 +75,8 @@ import PurchaseOrdersStep from './PurchaseOrdersStep';
 import type { GpCostCode } from './DraftOrganizer';
 import WizardNav from './WizardNav';
 import OverOrderWarningModal from './OverOrderWarningModal';
+import OverBuyConfirmModal from './OverBuyConfirmModal';
+import { overBuyRisks } from './overBuy';
 import { buildProductReconRows, type ProductReconRow } from './reconciliation';
 import type { LineContext } from './DraftOrganizer';
 import { buildFlagLines, composableRows, type CoverageRow } from './composer';
@@ -217,6 +219,8 @@ export default function ImportWizard({
   const [finalizeLoading, setFinalizeLoading] = useState(false);
   const [finalizeResult, setFinalizeResult] = useState<FinalizeResultData | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // #736: the over-buying confirm that stands in for the generic one when the drafts would over-buy.
+  const [overBuyOpen, setOverBuyOpen] = useState(false);
   const [postSuccessOpen, setPostSuccessOpen] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
 
@@ -900,10 +904,18 @@ export default function ImportWizard({
         projectNeeded: recon?.quantityRequiredByProject ?? scheduleTotal.get(igk) ?? 0,
         ordered: recon?.projectTotalOrdered ?? (status ? status.onOrder + status.receivedQuantity : 0),
         lifecycleBreakdown: recon?.lifecycleBreakdown ?? new Map(),
+        existingCommitted: recon?.existingCommitted ?? 0,
       });
     }
     return map;
   }, [purpose, poReconRows, parsed, poProductCatalog, poSelectionTotals, hardwareStatusByProduct, availableByProduct]);
+
+  // #736: what finalize would over-buy, from the drafts as they stand - the same helper the step 5
+  // cards highlight from, so the confirm lists exactly the lines the cards warned about.
+  const finalizeOverBuy = useMemo(
+    () => (purpose === 'po' ? Array.from(overBuyRisks(draftGroups, poLineContext).values()) : []),
+    [purpose, draftGroups, poLineContext],
+  );
 
   const advanceToNextStep = useCallback(() => {
     const currentIndex = steps.findIndex((s) => s.id === effectiveStepId);
@@ -1187,6 +1199,7 @@ export default function ImportWizard({
 
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
+    setOverBuyOpen(false);
     setFinalizeLoading(true);
     setMutationError(null);
 
@@ -1829,7 +1842,7 @@ export default function ImportWizard({
                   size="large"
                   startIcon={<FileUp size={18} strokeWidth={1.75} />}
                   disabled={finalizeLoading || isGpSetupBroken(project)}
-                  onClick={() => setConfirmOpen(true)}
+                  onClick={() => (finalizeOverBuy.length > 0 ? setOverBuyOpen(true) : setConfirmOpen(true))}
                 >
                   Finish Import Session
                 </Button>
@@ -1868,6 +1881,14 @@ export default function ImportWizard({
         confirmLabel={canStartFromLatest && !hydratedFromPersisted ? 'Replace Schedule' : 'Finalize'}
         onConfirm={handleFinalize}
         onCancel={() => setConfirmOpen(false)}
+      />
+
+      <OverBuyConfirmModal
+        open={overBuyOpen}
+        risks={finalizeOverBuy}
+        productCodeOf={(pk) => poProductCatalog.get(pk)?.productCode ?? pk}
+        onGoBack={() => setOverBuyOpen(false)}
+        onConfirm={handleFinalize}
       />
 
       {/* Post-Success Dialog */}
