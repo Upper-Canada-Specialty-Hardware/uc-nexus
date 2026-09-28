@@ -222,6 +222,30 @@ def test_partial_ref_splits_a_row_into_in_po_and_available(db_session):
     assert poli.ordered_quantity == 2
 
 
+def test_wizard_po_lines_book_to_the_job_with_the_drafts_cost_code(db_session):
+    """#850: a wizard line starts as job cost with the draft's cost code, the way a hand-typed line
+    starts in the register dialog - not on the column default, which sent GP a line booked to no job."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    draft = _po_draft([{"opening_number": "A01", "product_code": "HG-100", "hardware_category": "HINGE"}])
+    draft["cost_code"] = "210-200-2"
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=2)],
+            "po_drafts": [draft],
+        },
+    )
+    db_session.flush()
+
+    poli = db_session.scalar(select(POLineItem))
+    assert poli.job_cost is True
+    assert poli.cost_code == "210-200-2"
+
+
 def test_two_drafts_split_one_combo_no_remainder(db_session):
     """The same combo sliced across two drafts: two POs, quantities 2 and 1, nothing left AVAILABLE."""
     project = _make_project(db_session)
