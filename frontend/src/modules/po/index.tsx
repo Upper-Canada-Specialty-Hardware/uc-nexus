@@ -802,6 +802,9 @@ function POListPage() {
           }}
           filterOptions={projectFilterOptions}
           getOptionLabel={(p) => p.description || p.projectId}
+          // #853: keyed by id, not by the label - project names repeat (a job and its change orders),
+          // and duplicate keys left stale rows in the list as it narrowed.
+          getOptionKey={(p) => p.id}
           isOptionEqualToValue={(a, b) => a.id === b.id}
           renderInput={(params) => (
             <TextField {...params} placeholder="All projects" inputProps={{ ...params.inputProps, 'aria-label': 'Filter by project' }} />

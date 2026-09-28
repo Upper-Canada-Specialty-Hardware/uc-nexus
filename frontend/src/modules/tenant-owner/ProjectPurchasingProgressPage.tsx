@@ -169,6 +169,9 @@ export default function ProjectPurchasingProgressPage() {
         loading={projectsLoading}
         isOptionEqualToValue={(opt, val) => opt.id === val.id}
         getOptionLabel={(opt) => opt.label}
+        // #853: keyed by id, not by the label - project names repeat (a job and its change orders),
+        // and duplicate keys left stale rows in the list as it narrowed.
+        getOptionKey={(opt) => opt.id}
         renderInput={(params) => (
           <TextField
             {...params}

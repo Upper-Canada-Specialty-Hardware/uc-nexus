@@ -89,6 +89,9 @@ export default function ProjectPicker({
       disabled={disabled}
       isOptionEqualToValue={(opt, val) => opt.id === val.id}
       getOptionLabel={projectLabel}
+      // #853: keyed by id, not by the label - project names repeat (a job and its change orders),
+      // and duplicate keys left stale rows in the list as it narrowed.
+      getOptionKey={(p) => p.id}
       filterOptions={projectFilterOptions}
       getOptionDisabled={gpBound ? isGpJobNotOpen : undefined}
       renderOption={(props, p) => {
