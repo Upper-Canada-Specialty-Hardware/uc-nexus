@@ -244,3 +244,47 @@ describe('ProjectPicker GP company (#831)', () => {
     expect(screen.queryByText('GP company')).toBeNull();
   });
 });
+
+// #853: project names repeat (UCSH has "Christie Gardens Suite Reno" four times). Keyed by label, the
+// duplicates collided and React left stale rows in the list as it narrowed, so a typed job number
+// showed dozens of unrelated jobs with the real match at the bottom.
+describe('ProjectPicker with repeated project names (#853)', () => {
+  const twin = (id: string, projectId: string) => ({
+    id,
+    projectId,
+    description: 'Christie Gardens Suite Reno',
+    client: null,
+    jobSiteName: null,
+    company: 'TUBC',
+    openingCount: 0,
+    __typename: 'Project',
+  });
+  const twinsMock: MockedResponse = {
+    request: { query: GET_PROJECTS },
+    maxUsageCount: INFINITE,
+    // A differently named job first, so React cannot reconcile the narrowed list by position and falls
+    // back to matching by key - which is where two identical keys leave one row behind.
+    result: {
+      data: {
+        projects: [{ ...twin('o1', 'JOB-310'), description: 'Main St Job' }, twin('t1', 'JOB-300'), twin('t2', 'JOB-301')],
+      },
+    },
+  };
+
+  it('narrows to the one job typed, with no stale rows left from the wider list', async () => {
+    render(
+      <MockedProvider mocks={[twinsMock]}>
+        <ProjectPicker value={null} onChange={vi.fn()} />
+      </MockedProvider>,
+    );
+    const input = screen.getByLabelText('Project');
+
+    typeInto(input, 'JOB');
+    expect(await screen.findAllByRole('option')).toHaveLength(3);
+
+    typeInto(input, 'JOB-301');
+    const options = await screen.findAllByRole('option');
+    expect(options).toHaveLength(1);
+    expect(options[0]).toHaveTextContent('JOB-301');
+  });
+});
