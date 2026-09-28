@@ -98,8 +98,10 @@ describe('resolveActingCompany', () => {
     expect(resolveActingCompany({ tabPick: 'UCSH', own: 'TUBC', lastPick: 'ZZZ', available })).toBe('UCSH');
   });
 
-  it('opens a new tab in the assigned company, then the last pick, then the first offered', () => {
-    expect(resolveActingCompany({ tabPick: null, own: 'TUBC', lastPick: 'ZZZ', available })).toBe('TUBC');
+  // #863: a new tab carries on where the admin last was, not back in their assigned company.
+  it('opens a new tab in the last pick, then the assigned company, then the first offered', () => {
+    expect(resolveActingCompany({ tabPick: null, own: 'TUBC', lastPick: 'ZZZ', available })).toBe('ZZZ');
+    expect(resolveActingCompany({ tabPick: null, own: 'UCSH', lastPick: null, available })).toBe('UCSH');
     expect(resolveActingCompany({ tabPick: null, own: null, lastPick: 'ZZZ', available })).toBe('ZZZ');
     expect(resolveActingCompany({ tabPick: null, own: null, lastPick: null, available })).toBe('TUBC');
   });

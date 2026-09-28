@@ -291,6 +291,7 @@ export default function NexusGpTrafficPage() {
                 connected={relay.connected}
                 companies={relay.companies}
                 gpCompanies={relay.gpCompanies}
+                showReach
               />
               {state && (
                 <Typography variant="body2" color="text.secondary" sx={tabularSx}>
