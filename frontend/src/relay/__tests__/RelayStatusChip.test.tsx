@@ -38,8 +38,11 @@ function renderChip(connected: boolean | null, companies: string[] = COMPANIES) 
   render(<RelayStatusChip connected={connected} companies={companies} gpCompanies={GP_COMPANIES} />);
 }
 
-it('shows a UC Nexus Admin the relay’s whole reach, named as GP names it', async () => {
-  renderChip(true);
+// #863: the whole reach is for the company-less admin pages that ask for it (Relay Installs, NEXUS GP
+// TRAFFIC). Everywhere else an admin works in one company and the chip names that one.
+it('shows the relay’s whole reach where the page asks for it, named as GP names it', async () => {
+  identity.company = 'UCSH';
+  render(<RelayStatusChip connected companies={COMPANIES} gpCompanies={GP_COMPANIES} showReach />);
 
   const chip = screen.getByText('TUBC +2');
   fireEvent.mouseOver(chip);
@@ -47,6 +50,17 @@ it('shows a UC Nexus Admin the relay’s whole reach, named as GP names it', asy
   expect(tip.textContent).toContain('TUBC - Test UBC');
   expect(tip.textContent).toContain('UCSH - UC Shop');
   expect(tip.textContent).toContain('UBC - Universal Building Components');
+});
+
+it('shows a UC Nexus Admin the company they are working in, not the relay’s reach', async () => {
+  identity.company = 'UCSH';
+  renderChip(true);
+
+  expect(screen.getByText('UCSH')).toBeInTheDocument();
+  expect(screen.queryByText(/\+\d/)).toBeNull();
+  fireEvent.mouseOver(screen.getByText('UCSH'));
+  const tip = await screen.findByRole('tooltip');
+  expect(tip.textContent).toContain('The GP company you are working in - switch it in the app bar.');
 });
 
 it('shows a scoped user their own company and nothing else', async () => {

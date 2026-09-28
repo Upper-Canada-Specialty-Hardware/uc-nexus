@@ -1,6 +1,7 @@
 import { Box, Chip, Stack, Tooltip } from '@mui/material';
 import { FONT_MONO } from '../theme';
 import { useIdentity } from '../hooks/useIdentity';
+import { useActingCompany } from '../company/ActingCompanyContext';
 import { companyLabel } from './companyLabel';
 import type { GpCompany } from './useRelayStatus';
 
@@ -14,6 +15,9 @@ interface RelayStatusChipProps {
   // The same codes with GP's names, so the tooltip reads "TUBC - Test UBC" rather than four codes
   // nobody can tell apart. Optional: without it the tooltip is the codes alone.
   gpCompanies?: GpCompany[];
+  // #863: the company-less admin pages (Relay Installs, NEXUS GP TRAFFIC) are about the relay's whole
+  // reach, so they keep the full list. Everywhere else the chip names the one company on screen.
+  showReach?: boolean;
 }
 
 // Shared three-state relay indicator so the PO page header and the Create PO dialog read identically.
@@ -21,8 +25,10 @@ interface RelayStatusChipProps {
 //
 // The company half reads differently for the two kinds of caller, which is why the identity is read
 // here rather than passed in: fixing it once fixes every place the indicator is used.
-export default function RelayStatusChip({ connected, companies, gpCompanies }: RelayStatusChipProps) {
-  const { isNexusAdmin, company: ownCompany } = useIdentity();
+export default function RelayStatusChip({ connected, companies, gpCompanies, showReach = false }: RelayStatusChipProps) {
+  const { isNexusAdmin } = useIdentity();
+  // #863: the company on screen - a scoped user's own, or the one a UC NEXUS ADMIN has switched to.
+  const { company: ownCompany } = useActingCompany();
 
   const status =
     connected === null ? (
@@ -37,20 +43,19 @@ export default function RelayStatusChip({ connected, companies, gpCompanies }: R
 
   // A scoped user belongs to exactly one GP company, so the relay's reach is not their story. Reading
   // "TUBC +2" here says "I am on three companies" when every row they will ever see belongs to one.
-  // Show that one company, and let the tooltip say what it means. UC NEXUS ADMIN keeps the full list
-  // below: they switch between companies (#845), so for them the indicator really is about the
-  // relay's reach.
-  if (!isNexusAdmin && ownCompany) {
+  // Show that one company, and let the tooltip say what it means. Since #863 the same holds for a
+  // UC NEXUS ADMIN: they work in one company at a time (#845), and "TUBC +2" beside a UCSH heading
+  // read as a contradiction. Only the company-less pages ask for the relay's full reach.
+  if (!showReach && ownCompany) {
     const served = companies.includes(ownCompany);
+    const who = isNexusAdmin
+      ? 'The GP company you are working in - switch it in the app bar.'
+      : 'Your GP company. Everything you see in Nexus belongs to it.';
     return (
       <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
         {status}
         <Tooltip
-          title={
-            served
-              ? 'Your GP company. Everything you see in Nexus belongs to it.'
-              : `Your GP company. The relay is connected but is not serving ${ownCompany} yet.`
-          }
+          title={served ? who : `${who} The relay is connected but is not serving ${ownCompany} yet.`}
           arrow
         >
           <Chip

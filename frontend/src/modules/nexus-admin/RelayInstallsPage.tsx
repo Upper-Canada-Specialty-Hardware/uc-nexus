@@ -454,7 +454,7 @@ export default function RelayInstallsPage() {
           description="Provision a one-time enrollment token, then enroll the relay from its Setup tab."
           actions={
             <Stack direction="row" spacing={2} alignItems="center">
-              <RelayStatusChip connected={relay.connected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
+              <RelayStatusChip connected={relay.connected} companies={relay.companies} gpCompanies={relay.gpCompanies} showReach />
               {/* Issue #315: show the live relay build so an out-of-date relay is visible at a glance. A
                   connected relay too old to advertise its build (pre-hello-frame) reports null -> 'build
                   unknown', itself a signal it needs updating. */}

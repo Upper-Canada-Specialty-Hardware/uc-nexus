@@ -67,8 +67,8 @@ export function rememberPick(company: string): void {
  * Which company an admin acts as, given what is known.
  *
  * This tab's own pick wins, so a reload never moves the admin out of the company they chose. A tab
- * with no pick of its own opens in the admin's assigned company, then the last pick from any tab, then
- * the first company offered. With the list loaded, a candidate the list does not hold is skipped -
+ * with no pick of its own opens in the last pick from any tab - the company the admin was last working
+ * in - then their assigned company, then the first company offered (#863). With the list loaded, a candidate the list does not hold is skipped -
  * a company that no longer has a relay or a project is not somewhere to work. Before the list loads
  * the first candidate is taken on trust, so the first requests are already scoped instead of mixing
  * every company together until the list arrives; the list then corrects it if it was wrong.
@@ -81,7 +81,7 @@ export function resolveActingCompany(options: {
   available: string[] | null;
 }): string | null {
   const { tabPick, own, lastPick, available } = options;
-  const candidates = [tabPick, own, lastPick].filter((c): c is string => !!c);
+  const candidates = [tabPick, lastPick, own].filter((c): c is string => !!c);
   if (available === null) return candidates[0] ?? null;
   return candidates.find((c) => available.includes(c)) ?? available[0] ?? null;
 }
