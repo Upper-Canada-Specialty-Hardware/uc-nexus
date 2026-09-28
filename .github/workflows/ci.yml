@@ -42,13 +42,13 @@ jobs:
       - run: npm run build
 
   frontend-tests:
-    name: Frontend tests (${{ matrix.shard }}/3)
+    name: Frontend tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     strategy:
       # Every shard reports, so one red shard does not hide a second one.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     defaults:
       run:
         working-directory: frontend
@@ -72,7 +72,7 @@ jobs:
 
       - run: npm ci
         if: steps.node-modules.outputs.cache-hit != 'true'
-      - run: npx vitest run --shard=${{ matrix.shard }}/3
+      - run: npx vitest run --shard=${{ matrix.shard }}/4
 
   frontend:
     name: Frontend
