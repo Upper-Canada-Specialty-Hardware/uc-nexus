@@ -1,6 +1,22 @@
 import '@testing-library/jest-dom';
 import { afterEach } from 'vitest';
 import { ApolloClient, ApolloLink, InMemoryCache } from '@apollo/client/core';
+import { Transition } from 'react-transition-group';
+
+/**
+ * Zero-length enter and exit animations under test (#870). MUI's Fade, Grow, Collapse and Slide are
+ * built on react-transition-group, so every dialog, menu and select popover otherwise waits out a
+ * 200-odd ms timer before it finishes opening or closing - time jsdom spends doing nothing,
+ * multiplied across every open and close in the suite.
+ *
+ * Not `config.disabled = true`, the library's own switch: that skips the onEnter callback, and MUI's
+ * Modal only learns a dialog has opened from onEnter. A dialog that mounted closed and was then
+ * opened and closed again never deregisters from MUI's modal stack, so whatever dialog sat beneath it
+ * stays aria-hidden and every role query inside it fails. Zeroing the timeouts instead keeps every
+ * callback, in order, and only takes the wait out.
+ */
+(Transition.prototype as unknown as { getTimeouts: () => Record<'exit' | 'enter' | 'appear', number> }).getTimeouts =
+  () => ({ exit: 0, enter: 0, appear: 0 });
 
 /**
  * Start every test with empty web storage. Components persist small bits of UI state there - the
