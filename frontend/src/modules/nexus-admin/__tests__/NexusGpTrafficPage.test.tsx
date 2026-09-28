@@ -53,7 +53,6 @@ const relayStatusMock: MockedResponse = {
         lastConnectedAt: null,
         lastDisconnectedAt: null,
         lastDisconnectReason: null,
-        previewChannels: [],
       },
     },
   },

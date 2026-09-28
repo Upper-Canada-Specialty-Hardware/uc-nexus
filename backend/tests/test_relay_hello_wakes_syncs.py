@@ -36,12 +36,6 @@ def woken(monkeypatch):
     calls: list[str] = []
     monkeypatch.setattr(main.gp_po_sync, "wake", lambda: calls.append("po"))
     monkeypatch.setattr(main.gp_job_sync, "wake", lambda: calls.append("job"))
-    monkeypatch.setattr(main.preview_registry, "channels", lambda: [])
-
-    async def no_push(channels):
-        return None
-
-    monkeypatch.setattr(main.relay_gateway, "push_channels", no_push)
     return calls
 
 

@@ -196,7 +196,6 @@ function baseMocks(connected = true): MockedResponse[] {
             lastConnectedAt: null,
             lastDisconnectedAt: null,
             lastDisconnectReason: null,
-            previewChannels: [],
             __typename: 'RelayStatus',
           },
         },

@@ -103,7 +103,7 @@ def parse(spec: str | None, tz_name: str | None, *, warned: set[str] | None = No
     """Build a Window from "HH:MM-HH:MM" and an IANA zone name.
 
     An EMPTY spec means no window at all - backfill allowed at any hour. That is deliberate and is the
-    switch a preview environment flips to exercise the backfill during the day.
+    switch a test deployment flips to exercise the backfill during the day.
 
     Anything UNPARSEABLE falls back to the DEFAULT window, never to always-allowed, and says so at
     ERROR. The safe failure for a typo is less load on GP, not more: a mistyped window that silently

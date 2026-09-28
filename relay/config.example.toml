@@ -85,15 +85,8 @@ file = "relay.log"
 # relay just runs its existing inbound HTTP server, as today). auths on connect with [auth].shared_secret.
 backend_url = "wss://backend-production-xxxx.up.railway.app/relay-link"
 
-# Railway PR environments need nothing here: production pushes the current list down this relay's own
-# backend socket and the relay dials them, dropping each one when its PR closes. Only the fixed preview
-# hostname shape is accepted, and only from the production channel. Set false to dial only what this
-# file names. (The old name for this key, discover_preview_backends, still works.)
-#accept_pushed_preview_backends = true
-
 # ADD a test backend here, naming ONLY the new one - one channel per URL, so a backend can be tested
-# without dropping production (#414). Now mostly for what production cannot know about: a local dev
-# backend, or anything outside the Railway project. The same enrolled secret authenticates on all of
+# without dropping production (#414), such as a local dev backend. The same enrolled secret authenticates on all of
 # them. The production channel is unrestricted; every other URL is pinned to the sandbox TUBC and
 # refuses any other company, reads and writes alike - GP testing happens in TUBC and nowhere else.
 # Re-read on a timer since #456, so no restart after editing; remove the URL when you are done with it.

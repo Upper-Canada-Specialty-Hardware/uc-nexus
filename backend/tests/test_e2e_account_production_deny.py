@@ -1,10 +1,8 @@
 """The dedicated e2e account is refused on production, at the identity chokepoint.
 
-GET /testing/session mints a session for E2E_CLERK_USER_ID and the link lives in a public PR comment;
-every environment shares the one production Clerk instance, so that ticket is a valid PRODUCTION JWT.
-The deny pinned here is what makes the link safe to hand around - without it, repo read plus a leaked
-key would be a staff-level session on production. Same shape as test_testing_sign_in_secret.py: the
-load-bearing assertions are the ones proving the refusal fires on production and stays inert
+The account used to be minted into PR environments (retired, #868) and may still exist in Clerk;
+every environment shares the one production Clerk instance, so a session for it is a valid PRODUCTION
+JWT. The load-bearing assertions are the ones proving the refusal fires on production and stays inert
 everywhere else.
 
 Nothing here hits api.clerk.com - the two chokepoint tests fake the JWT verify so a "verified" e2e
@@ -52,10 +50,10 @@ def test_production_is_recognised_however_cased_or_padded(monkeypatch, name):
         auth._reject_e2e_account_in_production(_E2E_USER)
 
 
-def test_the_account_is_allowed_on_a_preview_environment(monkeypatch):
-    # The whole point: a first-class account everywhere BUT production.
+def test_the_account_is_allowed_off_production(monkeypatch):
+    # A first-class account everywhere BUT production.
     monkeypatch.setattr(config, "E2E_CLERK_USER_ID", _E2E_USER)
-    monkeypatch.setattr(config, "RAILWAY_ENVIRONMENT_NAME", "uc-nexus-pr-999")
+    monkeypatch.setattr(config, "RAILWAY_ENVIRONMENT_NAME", "staging")
     auth._reject_e2e_account_in_production(_E2E_USER)  # no raise
 
 

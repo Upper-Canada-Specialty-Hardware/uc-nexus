@@ -82,7 +82,6 @@ interface RelayStatusShape {
   lastConnectedAt: string | null;
   lastDisconnectedAt: string | null;
   lastDisconnectReason: string | null;
-  previewChannels: string[];
 }
 
 function gpCompany(id: string, name: string): GpCompanyShape {
@@ -99,7 +98,6 @@ const DISCONNECTED_STATUS: RelayStatusShape = {
   lastConnectedAt: null,
   lastDisconnectedAt: null,
   lastDisconnectReason: null,
-  previewChannels: [],
 };
 
 function relayStatusMock(overrides: Partial<RelayStatusShape> = {}): MockedResponse {
@@ -350,33 +348,6 @@ it('shows no company block or error when nothing is connected', async () => {
   await screen.findByRole('button', { name: /adopt next connection/i }, GRID_TIMEOUT);
   expect(screen.queryByText(/^gp companies$/i)).toBeNull();
   expect(screen.queryByText(/reported no GP companies/i)).toBeNull();
-});
-
-it('names each preview channel by its environment, with the socket url in a tooltip', async () => {
-  const url = 'wss://uc-nexus-pr-661.up.railway.app/relay-link';
-  renderPage([
-    relayStatusMock({
-      connected: true,
-      companies: ['TUBC'],
-      gpCompanies: [gpCompany('TUBC', 'Test UBC')],
-      installId: 'install-1',
-      previewChannels: [url],
-    }),
-    installsMock,
-    windowMock(null),
-  ]);
-
-  const chip = await screen.findByText('uc-nexus-pr-661', {}, GRID_TIMEOUT);
-  expect(screen.getByText(/preview channels/i)).toBeTruthy();
-  fireEvent.mouseOver(chip);
-  expect((await screen.findByRole('tooltip', {}, GRID_TIMEOUT)).textContent).toContain(url);
-});
-
-it('hides the preview channel block when the relay is dialling none', async () => {
-  // Production-only state: everywhere else the list is empty, and a labelled empty group is noise.
-  renderPage([statusMock, installsMock, windowMock(null)]);
-  await screen.findByRole('button', { name: /adopt next connection/i }, GRID_TIMEOUT);
-  expect(screen.queryByText(/preview channels/i)).toBeNull();
 });
 
 // --- provisioning ---------------------------------------------------------------------------------

@@ -19,7 +19,6 @@ from app.errors import RelayUnavailableError, ValidationError
 from app.schemas import relay as relay_module
 from app.schemas.enums import RelayEventKind
 from app.schemas.queries import Query
-from app.services import preview_registry
 from app.services.relay_gateway import RelayGateway
 
 
@@ -551,26 +550,6 @@ def test_a_read_is_refused_with_the_relays_own_reason_when_it_serves_nothing(mon
     with pytest.raises(RelayUnavailableError) as e:
         asyncio.run(run())
     assert "GP is unreachable" in str(e.value)
-
-
-def test_relay_status_carries_the_preview_channels_it_is_pushing(monkeypatch):
-    monkeypatch.setattr(relay_module, "relay_gateway", RelayGateway())
-    monkeypatch.setattr(
-        relay_module.preview_registry,
-        "channels",
-        lambda: ["wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"],
-    )
-    assert Query().relay_status(FakeInfo()).preview_channels == [
-        "wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"
-    ]
-
-
-def test_relay_status_preview_channels_is_empty_off_production(monkeypatch):
-    # The registry only ever fills on production; everywhere else this is the honest empty answer rather
-    # than a null the frontend has to special-case.
-    monkeypatch.setattr(relay_module, "relay_gateway", RelayGateway())
-    preview_registry.reset()
-    assert Query().relay_status(FakeInfo()).preview_channels == []
 
 
 def test_relay_events_returns_the_newest_first(monkeypatch):

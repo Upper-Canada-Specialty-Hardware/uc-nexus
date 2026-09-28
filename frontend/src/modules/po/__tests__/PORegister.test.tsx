@@ -209,7 +209,6 @@ function mocks(heldRegistrations: Record<string, unknown>[] = []): MockedRespons
             lastConnectedAt: null,
             lastDisconnectedAt: null,
             lastDisconnectReason: null,
-            previewChannels: [],
           },
         },
       },

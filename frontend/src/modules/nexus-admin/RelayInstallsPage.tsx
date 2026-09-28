@@ -99,17 +99,6 @@ const EVENT_KIND_COLOR: Record<string, 'default' | 'info' | 'success' | 'warning
   ADOPTED: 'info',
 };
 
-/** wss://uc-nexus-pr-661.up.railway.app/relay-link -> uc-nexus-pr-661. The full url is the tooltip. */
-function previewChannelName(url: string): string {
-  const m = /uc-nexus-pr-\d+/i.exec(url);
-  if (m) return m[0];
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-}
-
 function fmtCountdown(expiresAt: string): string {
   const ms = parseServerDate(expiresAt).getTime() - Date.now();
   if (ms <= 0) return 'expired';
@@ -520,25 +509,6 @@ export default function RelayInstallsPage() {
                 label={<GpCompanyLabel code={c.id} gpCompanies={relay.gpCompanies} />}
                 sx={{ textTransform: 'none' }}
               />
-            ))}
-          </Stack>
-        )}
-        {/* Production only: the preview environments this relay is also dialling. Empty everywhere
-            else, and an empty group would be a labelled blank. */}
-        {relay.previewChannels.length > 0 && (
-          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
-            <Box component="span" sx={microLabelSx}>
-              Preview channels
-            </Box>
-            {relay.previewChannels.map((url) => (
-              <Tooltip key={url} title={url} arrow>
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  label={previewChannelName(url)}
-                  sx={{ fontFamily: FONT_MONO, textTransform: 'none' }}
-                />
-              </Tooltip>
             ))}
           </Stack>
         )}

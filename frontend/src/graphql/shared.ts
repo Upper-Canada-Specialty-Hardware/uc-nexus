@@ -60,7 +60,7 @@ export const GET_NOTIFICATIONS = gql`
 // shared relayStatus document on purpose: a second document selecting a different subset of this
 // (un-normalized) root field would replace it in the cache on every poll instead of merging.
 // gpCompanies is the same list with GP's own display name on each code, and companiesError says why a
-// connected relay reported none. previewChannels is empty outside production.
+// connected relay reported none.
 export const GET_RELAY_STATUS = gql`
   query GetRelayStatus {
     relayStatus {
@@ -76,7 +76,6 @@ export const GET_RELAY_STATUS = gql`
       lastConnectedAt
       lastDisconnectedAt
       lastDisconnectReason
-      previewChannels
     }
   }
 `;

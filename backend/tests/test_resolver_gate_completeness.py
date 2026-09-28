@@ -164,16 +164,6 @@ _ROUTE_GATES = frozenset({"require_admin_request"})
 _ROUTE_EXEMPT: dict[str, str] = {
     "health": "public liveness probe; deploy healthchecks call it anonymously, and it reads no database",
     "relay_link": "authenticated by the enrolled relay's Bearer secret on the websocket handshake, not Clerk",
-    "register_preview_channel": (
-        "gated inline on is_production_environment + a constant-time compare of the shared preview "
-        "registry secret; the caller is a preview backend, which has no Clerk session"
-    ),
-    "unregister_preview_channel": "same inline preview-registry gate as register_preview_channel",
-    "get_testing_session": (
-        "gated inline on TESTING_ENABLED + is_preview_environment + a constant-time per-env key-hash "
-        "compare; require_admin_request is the wrong gate for it by design (the whole point is a "
-        "no-session preview sign-in), and the account it mints is refused on production"
-    ),
 }
 
 

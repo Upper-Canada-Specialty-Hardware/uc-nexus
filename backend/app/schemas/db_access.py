@@ -3,8 +3,8 @@
 Every field here is gated on the "DB Admin" role in ROOT_FIELD_POLICY (app/auth_policy.py) - the tier
 ABOVE UC Nexus Admin, so unlike the rest of that module these do NOT admit a plain admin. The
 repository (db_access_repository) carries the real guardrails and refuses every operation when the
-feature is disabled (no proxy configured, or a preview environment), so a resolver that slipped past
-the gate still cannot mint anything.
+feature is disabled (no proxy configured), so a resolver that slipped past the gate still cannot
+mint anything.
 
 `postgresAdmins` and `postgresAccessAudit` are ROSTER_BACKED: they need the Clerk roster both to
 authorize the caller's role and to put names/emails on the rows, so the two come from one Clerk call.

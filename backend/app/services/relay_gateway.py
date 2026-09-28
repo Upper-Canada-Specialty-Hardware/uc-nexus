@@ -30,7 +30,6 @@ import asyncio
 import logging
 import time
 import uuid
-from collections.abc import Sequence
 from datetime import datetime
 
 from fastapi import WebSocket
@@ -88,14 +87,9 @@ _SHUTDOWN_TIMEOUT_SECONDS = 2.0
 DISCONNECT_REASON_PEER = "peer closed or socket dropped"
 DISCONNECT_REASON_SHUTDOWN = "closed for server shutdown"
 
-# The hello feature flag a relay sets to say it understands a pushed {"type": "channels"} frame (#654).
-# Absent on every build that predates the push, which is why push_channels is a no-op without it: an
-# older relay would treat the frame as a job reply and log an uncorrelated id.
-CHANNELS_FEATURE = "channels"
-
 # The hello feature flag a relay sets to say it understands a pushed {"type": "gp_sync_state"} frame
 # (#679). Absent on every build that predates NEXUS GP TRAFFIC, and push_gp_sync_state is a no-op
-# without it for the same reason push_channels is: an older relay would read the frame as a job reply.
+# without it: an older relay would treat the frame as a job reply and log an uncorrelated id.
 GP_SYNC_STATE_FEATURE = "gp_sync_state"
 
 # The hello feature flag a relay sets to say it reads the `idempotency_key` on a create_po payload,
@@ -460,27 +454,6 @@ class RelayGateway:
         - rather than after GP has already run the write."""
         if not self.has_feature(name):
             raise RelayOpUnsupportedError(op)
-
-    async def push_channels(self, urls: Sequence[str]) -> None:
-        """Hand the connected relay the full list of preview backends it should ALSO be dialling (#654).
-
-        Sent right after a hello that advertises the `channels` feature, and again whenever the list
-        changes while the socket is up. Always the WHOLE list, never a delta: the relay reconciles what
-        it holds against what it was last told, so a lost frame costs one interval rather than leaving
-        the two sides permanently disagreeing, and an empty list is a meaningful answer (no previews).
-
-        A no-op with nothing connected or with a relay that predates the feature - an older build would
-        read the frame as a job reply and log an uncorrelated id. Failures are swallowed: a channel list
-        is an advisory, and the socket's own teardown path owns a genuinely dead connection."""
-        socket = self._socket
-        if socket is None:
-            return
-        if not self.has_feature(CHANNELS_FEATURE):
-            return
-        try:
-            await socket.send_json({"type": "channels", "urls": list(urls)})
-        except Exception as e:
-            logger.warning("could not push preview channels to the relay: %s", e)
 
     async def push_gp_sync_state(self, snapshot: dict) -> None:
         """Hand the connected relay this backend's own GP SYNC STATE (#679), so the NEXUS GP TRAFFIC tab

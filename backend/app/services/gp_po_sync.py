@@ -77,7 +77,7 @@ BACKFILL_MAX_PAGES_PER_PASS = _env_number("GP_PO_SYNC_BACKFILL_MAX_PAGES_PER_PAS
 # WHEN the history drain is allowed to run. Massive sync jobs may not run during the working day, so
 # the backfill - and only the backfill - is confined to a nightly window in Toronto wall-clock time.
 # The open-book refresh, the by-number closure fetch and the job sync are bounded and budgeted, so they
-# keep running all day. An EMPTY window means no gate at all, which is what a preview environment sets
+# keep running all day. An EMPTY window means no gate at all, which is what a test deployment sets
 # to exercise the backfill in the afternoon.
 BACKFILL_WINDOW = gp_window.parse(
     os.getenv("GP_PO_SYNC_BACKFILL_WINDOW", gp_window.DEFAULT_WINDOW),

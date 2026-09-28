@@ -43,7 +43,7 @@ def build_config_toml(fields: dict) -> str:
     ]
     # [channel] is normally absent - the backend URL is baked. It appears only when extra test backends
     # were added by hand (#414), and then it must survive a re-run of the wizard: those URLs exist
-    # nowhere else, so dropping them would silently disconnect a PR environment mid-test.
+    # nowhere else, so dropping them would silently disconnect a test backend mid-test.
     backend_url = fields.get("backend_url")
     extra = fields.get("extra_backend_urls")
     if backend_url or extra:

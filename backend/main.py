@@ -1,7 +1,5 @@
 import asyncio
 import contextlib
-import hashlib
-import hmac
 import inspect
 import logging
 import os
@@ -12,14 +10,13 @@ from datetime import datetime
 from typing import Any
 
 import strawberry
-from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse
 from graphql import GraphQLError, GraphQLResolveInfo
 from strawberry.extensions import SchemaExtension
 from strawberry.fastapi import GraphQLRouter
 
-from app import config
 from app.auth import get_context, require_admin_request
 from app.auth_policy import enforce_root_field
 from app.database import SessionLocal
@@ -33,9 +30,6 @@ from app.services import (
     gp_outbox_worker,
     gp_po_sync,
     gp_sync_state,
-    preview_announce,
-    preview_clone_role,
-    preview_registry,
     relay_adopt,
     relay_events,
 )
@@ -73,10 +67,6 @@ ADOPT_HELLO_TIMEOUT_SECONDS = 5.0
 # build. The hello is the relay's first frame, so this is only ever spent on a relay old enough not to
 # send one - and recording that connection late, with an unknown build, still beats not recording it.
 CONNECTED_EVENT_HELLO_GRACE_SECONDS = 5.0
-
-# The header a preview presents on /preview-channels. Not Authorization: this is not a relay
-# credential and must not be confusable with one on either side.
-PREVIEW_REGISTRY_HEADER = "x-preview-registry-secret"
 
 
 class ResolverGuardExtension(SchemaExtension):
@@ -172,9 +162,6 @@ async def lifespan(_app: FastAPI):
     Started here rather than lazily on first use so a queue that filled during a deploy starts
     draining as soon as the new container is up, with nobody having to visit a page. Under
     TestClient(app) this runs too, and is harmless: with no relay registered neither loop queries."""
-    # Production only, and only when PREVIEW_CLONE_PASSWORD is set: the read-only login a preview
-    # environment dumps this database through. Never fatal - see the module.
-    preview_clone_role.ensure_role_on_startup()
     tasks: list[asyncio.Task] = []
     if gp_outbox_worker.enabled():
         tasks.append(asyncio.create_task(gp_outbox_worker.run_forever()))
@@ -187,19 +174,9 @@ async def lifespan(_app: FastAPI):
     # Inert until a relay advertising the feature connects (#679).
     if gp_sync_state.enabled():
         tasks.append(asyncio.create_task(gp_sync_state.run_forever()))
-    # Production ages out preview announcements; a preview that wants the real workstation relay
-    # announces itself to production. Neither runs anywhere else (#654).
-    if preview_registry.enabled():
-        tasks.append(asyncio.create_task(preview_registry.run_prune_forever()))
-    if preview_announce.enabled():
-        tasks.append(asyncio.create_task(preview_announce.run_forever()))
     try:
         yield
     finally:
-        # Before the socket closes and before the tasks are cancelled: production should stop offering
-        # this preview as a channel as soon as it is going away, rather than a TTL later.
-        if preview_announce.enabled():
-            await preview_announce.withdraw_once()
         # Close the relay socket cleanly BEFORE stopping the workers (#353 PR F). The relay then knows
         # this is a restart rather than a blip and reconnects at once; anything it was about to send
         # will queue on the outbox and drain when it does.
@@ -267,10 +244,6 @@ async def _relay_read_loop(websocket: WebSocket) -> None:
     the heartbeat (issue #277), anything else is a {id, ok, result|error} job reply to correlate with
     relay_call().
 
-    A hello is answered with the current preview channel list, which is the whole of #654's push: the
-    relay learns which preview backends to also dial over the socket it has already authenticated,
-    instead of polling a second endpoint with a second copy of its credential.
-
     It also re-wakes the GP sync loops, because the hello is where the GP company list actually
     arrives: the wake they get from /relay-link fires at try_register, one frame too early to be
     useful."""
@@ -285,7 +258,6 @@ async def _relay_read_loop(websocket: WebSocket) -> None:
                 message.get("company_names"),
                 message.get("companies_error"),
             )
-            await relay_gateway.push_channels(preview_registry.channels())
             # And the first GP SYNC STATE goes out now rather than up to a push interval later, so the
             # relay window's NEXUS GP TRAFFIC tab has something to show the moment it connects (#679).
             gp_sync_state.wake()
@@ -351,7 +323,6 @@ async def _await_hello(websocket: WebSocket) -> bool:
         message.get("company_names"),
         message.get("companies_error"),
     )
-    await relay_gateway.push_channels(preview_registry.channels())
     # The same immediate GP SYNC STATE push the read loop's hello branch asks for (#679): an adopted
     # relay's NEXUS GP TRAFFIC tab must not wait out a push interval that a re-enrolled one does not.
     gp_sync_state.wake()
@@ -412,68 +383,6 @@ async def _record_connected(websocket: WebSocket, install_id, connected_at: date
         build=relay_gateway.build if live else None,
         companies=relay_gateway.companies if live else None,
     )
-
-
-def _authorize_preview_registry(request: Request) -> None:
-    """The gate on both /preview-channels routes (#654).
-
-    Ordered so a failing gate never leaks how the next one would have answered, the same rule
-    /testing/session follows. The environment check is FIRST: anywhere but production these routes do
-    not exist at all, whatever credential is presented, because a preview that could register channels
-    could advertise other previews to the workstation relay. Only then is the secret compared, and only
-    then is the environment name validated.
-
-    Compared as SHA-256 digests in constant time. Both sides hold the secret itself here (a preview has
-    to present it), so this is a real shared credential rather than a verifier - hashing before the
-    compare keeps the comparison a fixed length regardless of what was presented."""
-    if not config.is_production_environment():
-        raise HTTPException(status_code=404, detail="Not Found")
-    expected = (config.PREVIEW_REGISTRY_SECRET or "").strip()
-    presented = (request.headers.get(PREVIEW_REGISTRY_HEADER) or "").strip()
-    if not expected or not presented:
-        raise HTTPException(status_code=401, detail="preview registry secret required")
-    if not hmac.compare_digest(
-        hashlib.sha256(presented.encode("utf-8")).digest(), hashlib.sha256(expected.encode("utf-8")).digest()
-    ):
-        raise HTTPException(status_code=401, detail="preview registry secret required")
-
-
-def _validated_environment(name: object) -> str:
-    """A `uc-nexus-pr-<N>` name, or a 400. This is the only thing standing between "something authorized
-    posted a string" and "the relay dials the host that string names", so it is anchored, not a
-    prefix test."""
-    if not isinstance(name, str) or not preview_registry.is_preview_environment_name(name):
-        raise HTTPException(status_code=400, detail="environment must be a uc-nexus-pr-<N> name")
-    return name.strip()
-
-
-@app.post("/preview-channels", status_code=204)
-async def register_preview_channel(request: Request):
-    """A preview environment announcing that it exists and wants the workstation relay to dial it.
-
-    Called at that preview's startup and every two minutes after (app/services/preview_announce.py).
-    The repeat is the liveness signal: production expires an environment that stops calling, which is
-    how a torn-down PR stops being dialled without anything having to notice the PR closed."""
-    _authorize_preview_registry(request)
-    try:
-        body = await request.json()
-    except Exception:
-        body = None
-    environment = _validated_environment((body or {}).get("environment") if isinstance(body, dict) else None)
-    if preview_registry.note_announcement(environment):
-        await preview_registry.publish()
-    return Response(status_code=204)
-
-
-@app.delete("/preview-channels/{environment}", status_code=204)
-async def unregister_preview_channel(request: Request, environment: str):
-    """A preview saying goodbye on a clean shutdown. Idempotent: withdrawing something already expired
-    is a success, because the caller's intent - stop dialling me - is satisfied either way."""
-    _authorize_preview_registry(request)
-    name = _validated_environment(environment)
-    if preview_registry.forget(name):
-        await preview_registry.publish()
-    return Response(status_code=204)
 
 
 @app.websocket("/relay-link")
@@ -579,79 +488,9 @@ async def relay_link(websocket: WebSocket):
         relay_gateway.unregister(websocket)
 
 
-def _reset_by_recloning(source_url: str):
-    """The /admin/reset-data body on a preview environment that can reach production.
-
-    A preview's data IS production's data, taken at first boot, so "reset" here means "take it again"
-    rather than "empty the schema". Nothing is preserved across it and nothing is re-synced
-    afterwards: the copy already carries the relay install, the warehouses and the projects that
-    reset_preservation exists to rescue, so snapshotting them would be restoring rows over identical
-    rows, and the GP job sync pass would re-adopt projects the clone just brought.
-
-    The clone runs in-process rather than as `python -m app.preview_clone`: the endpoint already runs
-    alembic in-process right after it, and calling the function hands back the counts this response
-    reports instead of leaving them to be scraped out of a child's stdout. pg_dump and pg_restore are
-    subprocesses either way."""
-    from alembic.config import Config
-    from sqlalchemy import text
-
-    from alembic import command
-    from app import preview_clone
-    from app.database import engine
-
-    with engine.connect() as conn:
-        conn.execute(text("DROP SCHEMA public CASCADE"))
-        conn.execute(text("CREATE SCHEMA public"))
-        conn.commit()
-
-    try:
-        result = preview_clone.clone_production_into_this_database(source_url)
-    except Exception as e:
-        # The schema is already gone at this point, so this leaves an empty database - which the next
-        # deploy's entrypoint clones into again. Saying so beats a bare 500.
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": f"Re-clone failed, so this database is now empty: {e}",
-                "code": "CLONE_FAILED",
-            },
-        )
-
-    # Production's revision forward to this branch's head, exactly as the entrypoint does on first boot.
-    command.upgrade(Config("alembic.ini"), "head")
-
-    with engine.connect() as conn:
-        counts = preview_clone.table_row_counts(conn)
-    rows = sum(counts.values())
-    populated = {name: n for name, n in counts.items() if n}
-
-    # The frontend alerts `message` verbatim, so it carries the summary.
-    message = (
-        f"re-cloned production into this PR: {rows} rows across {len(populated)} of {len(counts)} tables"
-        f", from alembic revision {result.source_revision or 'unknown'}"
-    )
-    if result.outbox_cancelled:
-        message += f". Cancelled {result.outbox_cancelled} queued GP write(s) carried over from production"
-
-    return {
-        "status": "ok",
-        "message": message,
-        "cloned": True,
-        "source_revision": result.source_revision,
-        "tables": len(counts),
-        "tables_populated": len(populated),
-        "rows": rows,
-        "table_counts": counts,
-        "gp_writes_cancelled": result.outbox_cancelled,
-    }
-
-
 @app.post("/admin/reset-data")
 def reset_data(request: Request):
     """Drop and rebuild the entire public schema via alembic. Dev use only.
-
-    On a preview environment with a clone source configured this means something different - see
-    `_reset_by_recloning`, which takes production's database again instead of emptying this one.
 
     Gated twice on purpose. This endpoint is total data loss on one unauthenticated POST, and it was
     previously reachable by anyone who knew the URL on a public Railway domain - no auth, no
@@ -670,7 +509,7 @@ def reset_data(request: Request):
     from sqlalchemy import text
 
     from alembic import command
-    from app.config import TESTING_ENABLED, is_preview_environment, preview_clone_source_url
+    from app.config import TESTING_ENABLED
     from app.database import engine
     from app.services import reset_preservation
 
@@ -682,10 +521,6 @@ def reset_data(request: Request):
     except AppError as e:
         status = 403 if e.code == "FORBIDDEN" else 401
         return JSONResponse(status_code=status, content={"error": str(e), "code": e.code})
-
-    clone_source = preview_clone_source_url() if is_preview_environment() else None
-    if clone_source is not None:
-        return _reset_by_recloning(clone_source)
 
     with engine.connect() as conn:
         snap = reset_preservation.snapshot(conn)
@@ -738,11 +573,10 @@ def get_clerk_sign_in_token(request: Request, email: str = "jayp@ucsh.com"):
     not a test target, checked first so a production deployment refuses outright rather than leaking
     whether the caller's credential would have been good enough. Then the caller must prove they are
     already a UC Nexus Admin, or present the shared testing secret in X-Testing-Secret - the
-    bootstrap path for a fresh PR environment, where the whole point of this endpoint is that no
-    session exists yet. Auth is not optional here: every environment shares the production Clerk
-    instance, so what this mints is a real session for a real staff account, a UC Nexus Admin
-    included, and with only the environment switch this route was a full impersonation primitive on
-    any deployment where the switch was left on."""
+    bootstrap path for a deployment where no session exists yet. Auth is not optional here: every
+    environment shares the production Clerk instance, so what this mints is a real session for a real
+    staff account, a UC Nexus Admin included, and with only the environment switch this route was a
+    full impersonation primitive on any deployment where the switch was left on."""
     import hashlib
     import hmac
 
@@ -753,9 +587,6 @@ def get_clerk_sign_in_token(request: Request, email: str = "jayp@ucsh.com"):
     if not TESTING_ENABLED:
         return JSONResponse(status_code=403, content={"error": "Testing is not enabled"})
 
-    # Resolved rather than read: a preview environment inherits the digest from production under a
-    # different name and would otherwise need it set by hand, one manual step per PR. Production
-    # itself still resolves to "" no matter which variable is present there.
     expected_hash = testing_sign_in_secret_hash()
     presented = (request.headers.get("x-testing-secret") or "").strip()
     secret_ok = bool(expected_hash) and bool(presented)
@@ -793,83 +624,3 @@ def get_clerk_sign_in_token(request: Request, email: str = "jayp@ucsh.com"):
     token_resp.raise_for_status()
     data = token_resp.json()
     return {"token": data["token"], "url": data.get("url", ""), "user_id": user_id}
-
-
-@app.get("/testing/session")
-def get_testing_session(request: Request, key: str = ""):
-    """The hands-off preview sign-in link (preview-env autonomy plan). Mint a session for the dedicated
-    e2e account and 302 to THIS preview's frontend, already authenticated - the one link a PR's "test
-    environment ready" comment hands an agent, safe to sit in that comment.
-
-    Gated, in order, so a failing gate never leaks how the next one would have answered:
-      1. TESTING_ENABLED - off any deployment that is not a test target.
-      2. is_preview_environment() - a uc-nexus-pr-<N> environment ONLY. Production and local never
-         mint here however their variables are set, and the frontend origin below is only derivable
-         for that name shape.
-      3. sha256(key) == TESTING_SESSION_KEY_HASH, constant-time. The per-env key K that the workflow
-         generated and placed on this backend; the backend stores only the hash, and K itself lives
-         nowhere but the PR comment.
-
-    Then mints a Clerk sign-in ticket for E2E_CLERK_USER_ID and NOTHING else - no email parameter,
-    nothing else selectable here - and redirects with ?__clerk_ticket=<token>. Every visit mints
-    fresh, so the link never goes stale, is never consumed, and survives DevAction resets and
-    redeploys for the environment's whole life. What keeps a leaked link cheap is not this route but
-    the production deny on the account it mints (app/auth._reject_e2e_account_in_production): the worst
-    a leak opens is a disposable preview whose only GP reach is the TUBC sandbox.
-
-    Deliberately NOT the /testing/clerk-sign-in path: that one mints a REAL staff session for an
-    arbitrary email and stays the human fallback, gated on an admin bearer or X-Testing-Secret. No
-    agent flow touches it any more."""
-    import hashlib
-    import hmac
-    import time
-
-    import httpx
-
-    from app.config import (
-        CLERK_SECRET_KEY,
-        E2E_CLERK_USER_ID,
-        TESTING_ENABLED,
-        TESTING_SESSION_KEY_HASH,
-        is_preview_environment,
-        preview_frontend_origin,
-    )
-
-    if not TESTING_ENABLED:
-        return JSONResponse(status_code=403, content={"error": "Testing is not enabled"})
-    if not is_preview_environment():
-        return JSONResponse(
-            status_code=403,
-            content={"error": "This route is available only on a preview environment"},
-        )
-
-    expected_hash = (TESTING_SESSION_KEY_HASH or "").strip().lower()
-    presented = (key or "").strip()
-    key_ok = bool(expected_hash) and bool(presented)
-    if key_ok:
-        digest = hashlib.sha256(presented.encode("utf-8")).hexdigest()
-        key_ok = hmac.compare_digest(digest, expected_hash)
-    if not key_ok:
-        return JSONResponse(status_code=401, content={"error": "Invalid or missing key", "code": "UNAUTHENTICATED"})
-
-    e2e_user_id = (E2E_CLERK_USER_ID or "").strip()
-    if not e2e_user_id:
-        # The key checked out but the environment has no e2e account to mint - a provisioning gap on
-        # this backend, not a caller error. Say so rather than 401-ing, which would read as a bad key.
-        return JSONResponse(
-            status_code=500,
-            content={"error": "E2E_CLERK_USER_ID is not configured on this environment"},
-        )
-
-    # Short expiry: a stale ticket is one navigation away from a fresh one, so nothing is gained by a
-    # long-lived mint sitting in a URL.
-    token_resp = httpx.post(
-        "https://api.clerk.com/v1/sign_in_tokens",
-        headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"},
-        json={"user_id": e2e_user_id, "expires_in_seconds": 300},
-    )
-    token_resp.raise_for_status()
-    token = token_resp.json()["token"]
-
-    destination = f"{preview_frontend_origin()}/?__clerk_ticket={token}&cb={int(time.time())}"
-    return RedirectResponse(url=destination, status_code=302)

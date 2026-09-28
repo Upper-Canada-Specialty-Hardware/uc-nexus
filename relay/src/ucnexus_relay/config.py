@@ -6,7 +6,7 @@ import tomllib
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import BaseModel, field_validator
 
 from . import dpapi
 
@@ -138,7 +138,7 @@ class LoggingCfg(BaseModel):
 # reordering backend_url can never accidentally hand a test backend unrestricted company access.
 PRODUCTION_BACKEND_URL = "wss://backend-production-7866.up.railway.app/relay-link"
 
-# What a NON-PRIMARY channel (a Railway PR environment, a local dev backend) may target. Reads AND
+# What a NON-PRIMARY channel (a local dev backend, any test backend) may target. Reads AND
 # writes are served on those channels - that is the whole point, a PR that touches GP has to be
 # verifiable before it merges - but only against the sandbox company, so the worst a test backend can
 # do is write to a sandbox. Baked deliberately: an operator-editable value here would be one typo away
@@ -185,7 +185,7 @@ def primary_url(urls: list[str]) -> str:
 class ChannelCfg(BaseModel):
     # Outbound wss URL(s) to UC Nexus backend relay gateways. A bare string is one channel (every
     # config.toml written before #414 is exactly this); a list opens one connection per URL, so a
-    # workstation can serve a Railway PR environment WITHOUT dropping production - the reason a list
+    # workstation can serve a test backend WITHOUT dropping production - the reason a list
     # exists at all. Empty (blank string, or empty list) disables the channel entirely and the relay
     # runs only its inbound HTTP server. Baked dev default: production alone.
     backend_url: str | list[str] = PRODUCTION_BACKEND_URL
@@ -195,17 +195,8 @@ class ChannelCfg(BaseModel):
     # inherits the sandbox pin and every real UBC/UCSH job is refused. Listing only the extra URL here
     # cannot express that mistake, because production's URL comes from the baked default untouched.
     extra_backend_urls: list[str] = []
-    # Accept the preview-environment list the PRODUCTION backend pushes down the socket it already
-    # holds, and dial those too, so a PR environment stops needing a hand edit on this machine. Only
-    # ADDS to the two keys above, only accepts the fixed preview hostname shape, and a pushed channel
-    # can never be the primary one - so it inherits the sandbox company pin like any other non-primary
-    # channel. Off means this relay dials exactly what is written here. The old key name
-    # (discover_preview_backends, from when the relay polled for the list) still sets it, so a
-    # config.toml written before the push model keeps meaning what it said.
-    accept_pushed_preview_backends: bool = Field(
-        default=True,
-        validation_alias=AliasChoices("accept_pushed_preview_backends", "discover_preview_backends"),
-    )
+    # (accept_pushed_preview_backends / discover_preview_backends is gone with the pushed preview
+    # list (#868). A config.toml that still names either key loads fine: unknown keys are ignored.)
     # the `websockets` client's own ping_interval/ping_timeout default to 20s/20s, which already
     # satisfies the ~20s keepalive the channel needs to hold a corporate-proxy idle timeout open -
     # these just make that tunable without a code change.
