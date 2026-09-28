@@ -90,7 +90,7 @@ def test_a_window_that_does_not_wrap_midnight():
 
 
 def test_an_empty_window_allows_every_hour():
-    """The switch a preview environment flips to exercise the drain in the afternoon."""
+    """The switch a test deployment flips to exercise the drain in the afternoon."""
     window = _window("")
     assert window.always is True
     assert window.allows(_utc("2026-07-15T17:00:00")) is True

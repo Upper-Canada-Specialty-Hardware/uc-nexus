@@ -172,10 +172,9 @@ async def get_context(request: Request) -> dict:
 def _reject_e2e_account_in_production(user_id: str | None) -> None:
     """Refuse the dedicated e2e testing account (config.E2E_CLERK_USER_ID) on production.
 
-    GET /testing/session mints a Clerk sign-in ticket for that account and the link sits in a public
-    PR comment. Every environment shares the one production Clerk instance, so a ticket minted for the
-    account is a valid PRODUCTION session JWT - this deny is the whole reason the link is safe to hand
-    around, and the property the design leans on rather than a defence in depth. It is enforced at the
+    The account used to be minted into PR environments (retired, #868) and may still exist. Every
+    environment shares the one production Clerk instance, so a session for the account is a valid
+    PRODUCTION session JWT, and this deny keeps it off production. It is enforced at the
     identity chokepoint every gated resolver funnels through (authenticated_user_id) and at the plain
     routes' gate (require_admin_request), so it holds whichever surface the token is presented to,
     GraphQL or an admin route alike.

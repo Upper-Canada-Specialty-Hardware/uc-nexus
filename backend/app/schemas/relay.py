@@ -18,7 +18,7 @@ from app.errors import (
 from app.models.relay_install import RelayInstall
 from app.repositories import relay_event_repository, relay_repository
 from app.services import nexus_companies as nexus_companies_service
-from app.services import preview_registry, relay_adopt
+from app.services import relay_adopt
 from app.services import relay_gateway as relay_gateway_module
 from app.services.relay_gateway import gateway as relay_gateway
 
@@ -169,9 +169,9 @@ class RelayQueries:
         """Whether the outbound relay WS channel is currently connected (and, if so, the GP companies it
         discovered), for the relay status chip and the company-aware PO/receive/adopt dialogs.
 
-        Answered entirely from the gateway's in-memory state plus the preview registry - no database
-        read at all. This is polled by every open tab, so it has to stay cheap enough to be, and the
-        gateway is the only thing that can be right about a live socket anyway (#654)."""
+        Answered entirely from the gateway's in-memory state - no database read at all. This is polled
+        by every open tab, so it has to stay cheap enough to be, and the gateway is the only thing that
+        can be right about a live socket anyway (#654)."""
         live_install = relay_gateway.install_id
         companies = relay_gateway.companies
         names = relay_gateway.company_names
@@ -185,7 +185,6 @@ class RelayQueries:
             last_connected_at=relay_gateway.last_connected_at,
             last_disconnected_at=relay_gateway.last_disconnected_at,
             last_disconnect_reason=relay_gateway.last_disconnect_reason,
-            preview_channels=preview_registry.channels(),
         )
 
     @strawberry.field

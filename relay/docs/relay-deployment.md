@@ -68,13 +68,9 @@ configure config.toml
   (`DYNAMICS..SY01500`, `[sql] system_db`) on every channel connect, so a company added in GP needs no
   edit here. the Setup tab's "Test GP connection" lists what it found; a relay that cannot read the
   master serves nothing and says so on the Status tab.
-- there is nothing to configure for Railway PR environments. production pushes the current preview list
-  down the relay's own backend socket (a `{"type": "channels", "urls": [...]}` frame, re-sent whenever it
-  changes) and the relay dials the difference within about a second, dropping a channel when its PR
-  closes. it accepts only `wss://backend-uc-nexus-pr-<N>.up.railway.app/relay-link`, only from the
-  production channel, and every such channel is pinned to the sandbox companies. set
-  `[channel] accept_pushed_preview_backends = false` to refuse them and dial only what this file names;
-  `[channel] extra_backend_urls` still ADDS a backend production cannot know about (a local dev backend).
+- the relay dials exactly the backends this file names. `[channel] extra_backend_urls` ADDS a test
+  backend (a local dev backend) beside production, pinned to the sandbox companies. (Railway PR
+  environments were retired as a test surface in #868, and production no longer pushes a list of them.)
 
 enroll - sets the secret, DPAPI-encrypted (the normal path)
 - in UC Nexus an admin runs "provision relay install" and gets a one-time enrollment token. then on the

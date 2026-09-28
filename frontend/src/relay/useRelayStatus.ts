@@ -35,8 +35,6 @@ export interface RelayStatusInfo {
   lastConnectedAt: string | null;
   lastDisconnectedAt: string | null;
   lastDisconnectReason: string | null;
-  // Production only: the preview-environment sockets the relay is being told to dial as well.
-  previewChannels: string[];
 }
 
 // Single definition of the relay-status poll (backend relayStatus field, the relay-to-backend WS
@@ -54,7 +52,6 @@ export function useRelayStatus(options?: { skip?: boolean }): RelayStatusInfo {
       lastConnectedAt: string | null;
       lastDisconnectedAt: string | null;
       lastDisconnectReason: string | null;
-      previewChannels: string[];
     };
   }>(GET_RELAY_STATUS, {
     pollInterval: 10_000,
@@ -71,6 +68,5 @@ export function useRelayStatus(options?: { skip?: boolean }): RelayStatusInfo {
     lastConnectedAt: data?.relayStatus.lastConnectedAt ?? null,
     lastDisconnectedAt: data?.relayStatus.lastDisconnectedAt ?? null,
     lastDisconnectReason: data?.relayStatus.lastDisconnectReason ?? null,
-    previewChannels: data?.relayStatus.previewChannels ?? NO_STRINGS,
   };
 }

@@ -768,73 +768,9 @@ def test_the_companies_error_is_cleared_on_register_and_on_disconnect():
     assert gateway.companies_error is None
 
 
-def test_push_channels_sends_the_whole_list_to_a_relay_that_asked_for_it():
-    async def run():
-        gateway = RelayGateway()
-        ws = FakeWebSocket()
-        gateway.try_register(ws)
-        gateway.note_hello("relay-v0.2.0", ["list_vendors"], ["TUBC"], ["channels"])
-
-        await gateway.push_channels(["wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"])
-
-        assert ws.sent == [{"type": "channels", "urls": ["wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"]}]
-
-    asyncio.run(run())
-
-
-def test_an_empty_channel_list_is_still_pushed():
-    # "There are no previews" and "we never told you" are different answers, and the relay retires a
-    # channel that stops being listed - so the empty list has to be sent, not skipped.
-    async def run():
-        gateway = RelayGateway()
-        ws = FakeWebSocket()
-        gateway.try_register(ws)
-        gateway.note_hello("relay-v0.2.0", [], ["TUBC"], ["channels"])
-        await gateway.push_channels([])
-        assert ws.sent == [{"type": "channels", "urls": []}]
-
-    asyncio.run(run())
-
-
-def test_push_channels_is_a_no_op_for_a_relay_that_does_not_speak_it():
-    # An older build would read the frame as a job reply and log an uncorrelated id.
-    async def run():
-        gateway = RelayGateway()
-        ws = FakeWebSocket()
-        gateway.try_register(ws)
-        gateway.note_hello("relay-v0.1.0-build.30", ["list_vendors"], ["TUBC"])
-        await gateway.push_channels(["wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"])
-        assert ws.sent == []
-
-    asyncio.run(run())
-
-
-def test_push_channels_is_a_no_op_with_nothing_connected():
-    async def run():
-        await RelayGateway().push_channels(["wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"])
-
-    asyncio.run(run())  # must not raise
-
-
-def test_a_failed_channel_push_does_not_reach_the_caller():
-    # A channel list is advisory; the socket's own teardown path owns a genuinely dead connection.
-    class _Broken(FakeWebSocket):
-        async def send_json(self, data):
-            raise RuntimeError("socket is gone")
-
-    async def run():
-        gateway = RelayGateway()
-        ws = _Broken()
-        gateway.try_register(ws)
-        gateway.note_hello("relay-v0.2.0", [], ["TUBC"], ["channels"])
-        await gateway.push_channels([])
-
-    asyncio.run(run())  # must not raise
-
-
 # --- the GP SYNC STATE frame (#679) -----------------------------------------------------------------
-# Same push contract as the channel list, for the same reason: a build that never advertised the
-# feature would read the frame as a job reply and log an uncorrelated id.
+# A build that never advertised the feature would read the frame as a job reply and log an uncorrelated
+# id, so nothing is pushed to it.
 
 
 def test_push_gp_sync_state_sends_the_document_to_a_relay_that_asked_for_it():

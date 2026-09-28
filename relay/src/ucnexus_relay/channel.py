@@ -12,11 +12,9 @@ never dropped to test a PR. The same enrolled secret authenticates on all of the
 on its hash, and a PR environment is seeded with that hash rather than issued a credential of its own).
 
 That set is reconciled against config.toml on a tick rather than read once (issue #456), so adding or
-removing a preview environment needs no restart - see `run_forever` for why that mattered enough to
-build. The preview URLs themselves are not written there at all any more: PRODUCTION pushes the current
-list down the socket it already holds, as a {"type": "channels"} frame, and the relay unions it with
-whatever config.toml names (see `_handle_channels_frame`). Nothing on the workstation is edited when a
-PR opens or closes.
+removing a backend needs no restart - see `run_forever` for why that mattered enough to build. The
+pushed preview-environment list that used to be unioned with it is gone (#868): PR environments were
+retired as a test surface, so config.toml is the only source of backend URLs.
 
 Which backend a channel points at decides what it may reach: the production URL is unrestricted, every
 other URL is pinned to the sandbox companies (config.NON_PRIMARY_ALLOWED_COMPANIES). Reads and writes
@@ -40,7 +38,6 @@ import asyncio
 import hashlib
 import json
 import logging
-import re
 import threading
 import time
 from collections import deque
@@ -1048,8 +1045,8 @@ def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
     own company master (companies.py), so the backend can route a job to a relay that can actually answer
     it instead of learning company_not_allowed on the round-trip. Both are empty and `companies_error`
     carries the reason when that master could not be read - a relay that cannot tell which companies
-    exist serves none of them. `features` says what this build understands beyond jobs - "channels" means
-    it accepts a pushed preview-channel list, "gp_sync_state" that it accepts the backend's account of
+    exist serves none of them. `features` says what this build understands beyond jobs - "gp_sync_state"
+    that it accepts the backend's account of
     its own sync work, "create_po_idempotency" that a create_po carrying an idempotency key can be
     retried safely, and "create_po_tax_rows" that a create_po's `tax_detail_ids` list is read and
     written as GP writes tax, and "job_mirror" that jobs come as full records with their GP state and
@@ -1067,7 +1064,6 @@ def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
         "company_names": names,
         "companies_error": error,
         "features": [
-            "channels",
             "gp_sync_state",
             CREATE_PO_IDEMPOTENCY_FEATURE,
             CREATE_PO_TAX_ROWS_FEATURE,
@@ -1134,8 +1130,8 @@ async def _run_once(url: str, secret: str, cfg) -> None:
             global _INFLIGHT, _LAST_JOB_AT
             _INFLIGHT += 1
             # The channel this job arrived on rides along on the RELAY TRAFFIC row: a job from a
-            # preview backend is real GP work, and an operator looking at the tab has to be able to
-            # tell whose work it was.
+            # non-production backend is real GP work, and an operator looking at the tab has to be able
+            # to tell whose work it was.
             entry = _traffic_start(job, url)
             reply: dict = {}
             try:
@@ -1176,10 +1172,6 @@ async def _run_once(url: str, secret: str, cfg) -> None:
                     # Backend heartbeat (issue #277): answer through the same writer queue so the pong
                     # never interleaves mid-frame with a job reply, and don't dispatch it as a job.
                     await send_queue.put(pong)
-                    continue
-                if isinstance(job, dict) and job.get("type") == "channels":
-                    # The preview-environment list, pushed rather than polled. Nothing to answer.
-                    _handle_channels_frame(job, url)
                     continue
                 if isinstance(job, dict) and job.get("type") == "gp_sync_state":
                     # The backend's account of its own sync work, pushed rather than polled. Nothing to
@@ -1317,108 +1309,11 @@ def _configured_channels() -> tuple[list[str], str] | None:
         return None
 
 
-# The ONLY shape a pushed channel may take. This is the load-bearing check on this side: the relay
-# holds GP credentials, so "the backend told me to" is not sufficient reason to dial a host. Anchored
-# and fully literal apart from the PR number, so no frame off the socket can name an arbitrary
-# destination - the worst a compromised or buggy backend can produce is a Railway preview address that
-# does not exist, which fails to connect and retries harmlessly.
-_PUSHED_URL_RE = re.compile(r"^wss://backend-uc-nexus-pr-\d+\.up\.railway\.app/relay-link$")
-
-# The preview channels production last pushed. None means "never told", which is different from "told,
-# and there are none" - the latter is an empty list and legitimately retires every pushed channel. A
-# push REPLACES this wholesale: the frame carries the full list every time, so a URL absent from it is
-# a preview environment that has gone away.
-_pushed: list[str] | None = None
-
-# Set by a push so the supervisor reconciles at once instead of sitting out the rest of its tick. A PR
-# environment coming up in about a second rather than up to ten is the whole reason the backend pushes
-# rather than the relay polling. Bound to the supervisor's own loop and cleared when it exits, so a
-# frame arriving with no supervisor running (there is none - the channels live under it) is a no-op.
-_wake: asyncio.Event | None = None
-
-
-def _pushed_urls() -> list[str]:
-    """Whatever production last pushed. Empty until the first frame, so this can only ever ADD to what
-    config.toml names - a relay that never hears from production behaves exactly as it did before the
-    pushed list existed."""
-    return list(_pushed or [])
-
-
-def _accepts_pushed_channels() -> bool:
-    try:
-        return bool(get_settings().channel.accept_pushed_preview_backends)
-    except Exception:
-        # An unreadable config is already logged by the supervisor's own read; refusing the push is the
-        # conservative half of "cannot tell".
-        return False
-
-
-def _handle_channels_frame(frame: dict, url: str) -> None:
-    """Take a {"type": "channels", "urls": [...]} push and make it the pushed set.
-
-    PRIMARY channel only. A preview backend is the least trusted thing this process talks to, and one
-    that could name the next backends to dial would be able to walk the relay onto a host of its
-    choosing; production is the only channel whose word is taken for this."""
-    global _pushed
-
-    if not is_primary_backend_url(url):
-        logger.debug(
-            "ignoring a channel list pushed by a non-production backend",
-            extra={"category": "pushed_channels_ignored", "url": url},
-        )
-        return
-    if not _accepts_pushed_channels():
-        return
-
-    raw = frame.get("urls")
-    if not isinstance(raw, list):
-        logger.warning(
-            "ignored a channels frame with no usable url list",
-            extra={"category": "pushed_channels_rejected", "url": url},
-        )
-        return
-
-    accepted, rejected = [], []
-    for candidate in raw:
-        pushed = candidate.strip() if isinstance(candidate, str) else ""
-        # is_primary_backend_url as well as the pattern: belt and braces, so a pushed URL can never take
-        # production's identity and shed the sandbox company pin that makes this safe at all.
-        if _PUSHED_URL_RE.match(pushed) and not is_primary_backend_url(pushed):
-            if pushed not in accepted:
-                accepted.append(pushed)
-        elif pushed:
-            rejected.append(pushed)
-    if rejected:
-        logger.warning(
-            "ignored pushed channel URLs that do not match the preview backend pattern",
-            extra={"category": "pushed_channels_rejected", "rejected": rejected},
-        )
-
-    previous = _pushed_urls()
-    _pushed = accepted
-    if previous == accepted:
-        return  # the same list re-sent (a reconnect, or a push we already applied)
-    logger.info(
-        "backend channels pushed",
-        extra={
-            "urls": accepted,
-            "added": sorted(set(accepted) - set(previous)),
-            # Named as well as added, for the same reason the supervisor names them: a removal
-            # otherwise logs `added: []` and leaves the operator diffing two lines by eye.
-            "removed": sorted(set(previous) - set(accepted)),
-        },
-    )
-    if _wake is not None:
-        _wake.set()
-
-
 def _handle_gp_sync_state_frame(frame: dict, url: str) -> None:
     """Take a {"type": "gp_sync_state", ...} push and keep it as this channel's GP SYNC STATE.
 
-    Accepted from ANY channel, unlike the pushed channel list above. That frame names the next hosts a
-    GP-credentialed process will dial, so only production's word is taken for it; this one names no
-    host and changes no behaviour at all. It is stored, published on /health and rendered in the
-    desktop window's NEXUS GP TRAFFIC tab, so the worst a preview backend can do with it is misdescribe
+    Accepted from ANY channel: it names no host and changes no behaviour at all. It is stored, published on /health and rendered in the
+    desktop window's NEXUS GP TRAFFIC tab, so the worst a non-production backend can do with it is misdescribe
     its own sync work to whoever is reading that backend's row.
 
     One copy per URL, so two backends' accounts never overwrite each other, and a frame that does not
@@ -1441,7 +1336,7 @@ def _handle_gp_sync_state_frame(frame: dict, url: str) -> None:
 def gp_sync_state_snapshot() -> dict | None:
     """The gp_sync_state block /health publishes: the PRIMARY channel's copy, or the first one stored
     when no primary has sent one (a dev checkout dialling localhost, or a workstation whose production
-    backend is older than this feature while a preview one is not). None until any frame has arrived,
+    backend is older than this feature while a test one is not). None until any frame has arrived,
     which is what the window renders as "not received"."""
     # Copied once before it is walked, for the reason channel_state_snapshot spells out: /health is
     # served on a threadpool worker while the read loop can be inserting a key on the event loop.
@@ -1469,19 +1364,15 @@ def _warn_if_no_primary(urls: list[str]) -> None:
         )
 
 
-async def _wait_for_next_tick(stop_event: asyncio.Event | None, wake: asyncio.Event) -> None:
-    """Sit out the reconcile interval, returning early when shutdown is requested or a pushed channel
-    list woke us. `wake` is cleared AFTER the wait rather than before it, so a push that lands while a
-    reconcile pass is still running gets its own pass instead of being swallowed by that one."""
-    waiters = [asyncio.ensure_future(wake.wait())]
-    if stop_event is not None:
-        waiters.append(asyncio.ensure_future(stop_event.wait()))
+async def _wait_for_next_tick(stop_event: asyncio.Event | None) -> None:
+    """Sit out the reconcile interval, returning early when shutdown is requested."""
+    if stop_event is None:
+        await asyncio.sleep(CHANNEL_RECONCILE_SECONDS)
+        return
     try:
-        await asyncio.wait(waiters, timeout=CHANNEL_RECONCILE_SECONDS, return_when=asyncio.FIRST_COMPLETED)
-    finally:
-        for waiter in waiters:
-            waiter.cancel()
-        wake.clear()
+        await asyncio.wait_for(stop_event.wait(), timeout=CHANNEL_RECONCILE_SECONDS)
+    except asyncio.TimeoutError:
+        pass
 
 
 async def run_forever(stop_event: asyncio.Event | None = None) -> None:
@@ -1510,17 +1401,11 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
     What is deliberately NOT reconciled is a channel that died: the task set is diffed against the URL
     set, not against liveness. `_run_channel` catches per attempt and is not supposed to exit, so one
     that does is a bug worth seeing in the log rather than papering over with a respawn loop."""
-    global _wake
-
     tasks: dict[str, asyncio.Task] = {}
     # The secret each running channel dialled with, so a re-enrolment can be told from a steady state.
     # Hashes, not the secret itself.
     secrets: dict[str, str] = {}
     known: set[str] | None = None
-    # Created here rather than at import: an asyncio.Event binds to the loop that first waits on it, and
-    # the supervisor is the only thing that waits on this one.
-    wake = asyncio.Event()
-    _wake = wake
 
     async def _supervised(url: str) -> None:
         """Log a channel that escapes its own retry loop. _run_channel is not supposed to - it catches
@@ -1577,17 +1462,8 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
     try:
         while True:
             channels = _configured_channels()
-            urls = None
-            secret_hash = ""
             if channels is not None:
-                configured, secret_hash = channels
-                # Union, config first, so a hand-added URL keeps its position and a pushed one can only
-                # ever be additive. Dedup is backend_urls' job for the config half; this repeats it
-                # across the join because the same PR environment may legitimately be in both while an
-                # operator is mid-migration off the manual step.
-                seen = {url.strip().rstrip("/").lower() for url in configured}
-                urls = configured + [u for u in _pushed_urls() if u.strip().rstrip("/").lower() not in seen]
-            if urls is not None:
+                urls, secret_hash = channels
                 if known != set(urls):
                     # Only on a change, so a steady relay logs this once at startup rather than every
                     # tick - and an operator grepping relay.log sees the edit they just made.
@@ -1607,13 +1483,12 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
                 await _reconcile(urls, secret_hash)
             if stop_event is not None and stop_event.is_set():
                 return
-            # Wait rather than sleeping through the interval, so neither a shutdown nor a pushed
-            # channel list is held up for most of a tick.
-            await _wait_for_next_tick(stop_event, wake)
+            # Wait rather than sleeping through the interval, so a shutdown is not held up for most of
+            # a tick.
+            await _wait_for_next_tick(stop_event)
             if stop_event is not None and stop_event.is_set():
                 return
     finally:
-        _wake = None
         # Reap them rather than just cancelling: cli.py cancels THIS task on shutdown, and a bare
         # cancel() would leave the children pending as the loop closes ("Task was destroyed but it is
         # pending"). CancelledError is a BaseException, so a cancelled child is not logged above.

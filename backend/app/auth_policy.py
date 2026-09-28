@@ -113,7 +113,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # rotates or revokes internet-reachable read-write Postgres logins, so unlike the rest of the
     # UC Nexus Admin module these name DB_ADMIN_ROLE and admit no one else - there is no admin
     # bypass in this table. The repository refuses all five again when the feature is disabled (no
-    # proxy / a preview env).
+    # proxy configured).
     "postgresAdmins": DB_ADMIN_ROLE,
     "postgresAccessAudit": DB_ADMIN_ROLE,
     "mintPostgresAdmin": DB_ADMIN_ROLE,

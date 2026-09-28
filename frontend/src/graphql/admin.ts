@@ -550,7 +550,7 @@ export const MIGRATE_SHAREPOINT_INVENTORY = gql`
 
 // ---------------------------------------------------------------------------
 // Direct database access (db-admin-postgres-access). DB-Admin gated on the backend, and every field
-// refuses when the feature is disabled (no proxy / a preview env). The mint/rotate credential is
+// refuses when the feature is disabled (no proxy configured). The mint/rotate credential is
 // returned once and lives only in that response - the page reads it no-cache so it never sits in Apollo.
 // ---------------------------------------------------------------------------
 

@@ -181,9 +181,6 @@ class RelayStatus:
     # Why the connected relay reported no companies - GP unreachable, a relay too old to look. Null when
     # it reported some, and when nothing is connected. What the pickers show instead of an empty list.
     companies_error: str | None = None
-    # The preview backends this backend is telling the relay to also dial (#654). Non-empty only on
-    # production, which is the only environment that keeps a registry.
-    preview_channels: list[str] = strawberry.field(default_factory=list)
 
 
 @strawberry.type

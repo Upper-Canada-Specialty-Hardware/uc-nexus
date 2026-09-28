@@ -54,7 +54,6 @@ function relayStatusMock(connected: boolean): MockedResponse {
           lastConnectedAt: null,
           lastDisconnectedAt: null,
           lastDisconnectReason: null,
-          previewChannels: [],
           __typename: 'RelayStatus',
         },
       },

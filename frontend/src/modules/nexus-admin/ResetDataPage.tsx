@@ -170,12 +170,10 @@ export default function ResetDataPage() {
         </Paper>
       </Box>
 
-      {/* The endpoint does two different things and the copy has to say which one you are about to
-          get: a PR environment re-clones production, everywhere else it empties the schema. */}
       <ConfirmDialog
         open={confirmOpen}
         title="Reset data?"
-        message="On a PR environment this re-clones production's database into this PR's own database and touches nothing else - GP and production are not written to. Anywhere else it DROPS the entire public schema and rebuilds it from migrations, and all data is lost."
+        message="This DROPS the entire public schema and rebuilds it from migrations, and all data is lost."
         confirmLabel="Reset data"
         confirmColor="error"
         cancelLabel="Cancel"

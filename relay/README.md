@@ -333,33 +333,14 @@ with the old secret and would never dial again to find out - which reads as "enr
 working". the supervisor records a hash of the secret each channel connected with, and restarts any
 channel whose hash no longer matches config.toml, logging a WARNING with `category: secret_changed`.
 
-preview environments (no longer configured here at all)
+preview environments (retired, #868)
 
-**production pushes the preview list; nothing on this workstation names it.** production knows which
-Railway PR environments exist and pushes the full list down the socket it already holds, as a
-`{"type": "channels", "urls": [...]}` frame - once after the relay's hello, then again whenever the list
-changes. the relay unions it with whatever config.toml names and dials the difference within about a
-second. a URL that stops being listed has its channel cancelled, so a closed PR's environment stops
-being dialled without anyone touching this machine.
+production used to push a list of Railway PR environments down this socket as a `{"type": "channels"}`
+frame, and the relay dialled them too. PR environments were retired as a test surface, so that push is
+gone: the relay dials exactly what config.toml names. an old config.toml that still carries
+`accept_pushed_preview_backends` or `discover_preview_backends` loads fine; the key is ignored.
 
-what the relay will accept off that frame is narrow, on purpose - this process holds GP credentials, so
-"the backend said so" is not on its own a reason to dial a host:
-
-- only `wss://backend-uc-nexus-pr-<N>.up.railway.app/relay-link`, matched whole. anything else is
-  dropped with a WARNING naming it (`category: pushed_channels_rejected`)
-- only off the PRODUCTION channel. a preview backend that could name the next backend to dial would be
-  able to walk the relay onto a host of its choosing, so a frame from anywhere else is ignored
-- never production's own URL, so a pushed channel is always non-primary and always carries the sandbox
-  company pin
-
-`accept_pushed_preview_backends = false` under `[channel]` turns the whole thing off and the relay dials
-exactly what config.toml names. that key used to be `discover_preview_backends`, from when the relay
-polled production over https for the same list; the old name still loads and still means the same thing,
-so a config.toml written before the push model needs no edit. the relay advertises `features:
-["channels"]` on its hello frame, which is how the backend knows a build will understand a push at all.
-
-`extra_backend_urls` still works and still only ADDS. it is now for what production cannot know about: a
-local dev backend, or anything outside the Railway project.
+`extra_backend_urls` still works and still only ADDS - for a local dev backend, say.
 
 the ops newer than `create_po` / `create_receipt` are channel-only - they have no HTTP route, because
 the browser hop is no longer the live path.

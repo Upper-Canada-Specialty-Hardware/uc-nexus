@@ -42,28 +42,19 @@ def test_loads_a_real_config_with_secret(tmp_path):
     assert s.auth.shared_secret == "plain-dev-secret"  # plaintext (dev) passes dpapi.unprotect unchanged
 
 
-# --- pushed preview channels ------------------------------------------------------------------------
+# --- retired pushed preview channels (#868) --------------------------------------------------------
 
 
-def test_pushed_preview_channels_are_accepted_by_default():
-    assert ChannelCfg().accept_pushed_preview_backends is True
-
-
-def test_a_config_written_before_the_push_model_still_loads(tmp_path):
-    # The key was discover_preview_backends when the relay polled for the list. A workstation's
-    # config.toml is edited by hand and nobody is going to visit every one of them to rename a key.
-    cfg = tmp_path / "config.toml"
-    cfg.write_text("[channel]\ndiscover_preview_backends = false\n", encoding="utf-8")
-    s = get_settings(str(cfg))
-    assert s.channel.accept_pushed_preview_backends is False  # and it still MEANS what it said
-
-
-def test_the_new_key_name_wins_when_both_are_present(tmp_path):
+def test_a_config_still_naming_the_retired_preview_keys_loads(tmp_path):
+    # A workstation's config.toml is edited by hand and nobody is going to visit every one of them to
+    # delete a key, so the retired keys must be ignored rather than fail the load.
     cfg = tmp_path / "config.toml"
     cfg.write_text(
         "[channel]\naccept_pushed_preview_backends = true\ndiscover_preview_backends = false\n", encoding="utf-8"
     )
-    assert get_settings(str(cfg)).channel.accept_pushed_preview_backends is True
+    s = get_settings(str(cfg))
+    assert not hasattr(s.channel, "accept_pushed_preview_backends")
+    assert s.channel.backend_urls == ChannelCfg().backend_urls
 
 
 # --- update channel ---------------------------------------------------------------------------------

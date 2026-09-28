@@ -505,15 +505,12 @@ def test_delete_allows_a_different_disconnected_install_while_one_is_live(_migra
         _delete_install(other_id)
 
 
-# --- pushing the preview channel list down the socket (#654) ---------------------------------------
+# --- no preview channel list is pushed any more (#868) ---------------------------------------------
 
 
-def test_the_read_loop_pushes_the_preview_channels_after_a_hello(monkeypatch):
-    """The whole of #654's push: the relay learns which preview backends to also dial over the socket
-    it has already authenticated, instead of polling a second endpoint with a second copy of its
-    credential - the drift that left every fresh preview relay-dark."""
-    urls = ["wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"]
-    monkeypatch.setattr(main.preview_registry, "channels", lambda: urls)
+def test_a_hello_advertising_the_retired_channels_feature_is_pushed_nothing(monkeypatch):
+    # A relay build from before #868 still lists "channels"; the backend no longer sends it anything.
+    monkeypatch.setattr(main.gp_sync_state, "wake", lambda: None)
 
     async def run():
         ws = _FakeRelaySocket(
@@ -532,30 +529,6 @@ def test_the_read_loop_pushes_the_preview_channels_after_a_hello(monkeypatch):
         try:
             with pytest.raises(WebSocketDisconnect):
                 await main._relay_read_loop(ws)
-            assert ws.sent == [{"type": "channels", "urls": urls}]
-        finally:
-            gateway.unregister(ws)
-
-    asyncio.run(run())
-
-
-def test_a_relay_that_does_not_advertise_the_feature_is_pushed_nothing(monkeypatch):
-    # Every build before #654 sends {type, build, ops} and would read the frame as a job reply.
-    monkeypatch.setattr(
-        main.preview_registry, "channels", lambda: ["wss://backend-uc-nexus-pr-9.up.railway.app/relay-link"]
-    )
-
-    async def run():
-        ws = _FakeRelaySocket(
-            [
-                {"type": "hello", "build": "relay-v0.1.0-build.30", "ops": ["list_vendors"]},
-                WebSocketDisconnect(),
-            ]
-        )
-        gateway.try_register(ws)
-        try:
-            with pytest.raises(WebSocketDisconnect):
-                await main._relay_read_loop(ws)
             assert ws.sent == []
         finally:
             gateway.unregister(ws)
@@ -563,34 +536,9 @@ def test_a_relay_that_does_not_advertise_the_feature_is_pushed_nothing(monkeypat
     asyncio.run(run())
 
 
-def test_an_adopted_socket_is_pushed_the_channels_too(monkeypatch):
-    # An adopted connection goes through _await_hello rather than the read loop, so the push has to be
-    # on both paths or a recovered relay silently stops learning about previews.
-    urls = ["wss://backend-uc-nexus-pr-554.up.railway.app/relay-link"]
-    monkeypatch.setattr(main.preview_registry, "channels", lambda: urls)
-
-    async def run():
-        ws = _FakeRelaySocket(
-            [
-                {"type": "hello", "build": "relay-v0.2.0", "ops": [], "companies": ["TUBC"], "features": ["channels"]},
-                WebSocketDisconnect(),
-            ]
-        )
-        gateway.try_register(ws)
-        try:
-            with pytest.raises(WebSocketDisconnect):
-                await main._serve_relay_link(ws, require_hello=True)
-            assert {"type": "channels", "urls": urls} in ws.sent
-        finally:
-            gateway.unregister(ws)
-
-    asyncio.run(run())
-
-
 def test_an_adopted_socket_asks_for_the_gp_sync_state_push_at_once(monkeypatch):
-    # Same reasoning as the channels push above (#679): the adopt path consumes the hello itself, so
-    # without its own wake an adopted relay's NEXUS GP TRAFFIC tab sits empty for a whole push interval.
-    monkeypatch.setattr(main.preview_registry, "channels", lambda: [])
+    # The adopt path consumes the hello itself (#679), so without its own wake an adopted relay's NEXUS
+    # GP TRAFFIC tab sits empty for a whole push interval.
     woken: list[str] = []
     monkeypatch.setattr(main.gp_sync_state, "wake", lambda: woken.append("state"))
 

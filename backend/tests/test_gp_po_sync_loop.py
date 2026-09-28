@@ -871,7 +871,7 @@ def test_the_backfill_runs_inside_the_window(monkeypatch):
 
 
 def test_an_empty_window_lets_the_backfill_run_in_the_afternoon(monkeypatch):
-    """The switch a preview environment flips to exercise the drain during the day."""
+    """The switch a test deployment flips to exercise the drain during the day."""
     pages = []
     _at(monkeypatch, DAYTIME)
     monkeypatch.setattr(gp_po_sync, "BACKFILL_WINDOW", gp_window.parse("", "America/Toronto"))
