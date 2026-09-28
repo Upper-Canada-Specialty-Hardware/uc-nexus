@@ -1002,6 +1002,12 @@ def finalize_import_session(
                     received_quantity=0,
                     unit_cost=Decimal(str(cost)) if cost else Decimal("0"),
                     order_as=alias_lookup.get((cat, code)),
+                    # #850: a wizard PO is always on a project, so its lines book to the job with the
+                    # draft's own cost code - the same start a hand-typed line gets in the register
+                    # dialog. Left to the column default they opened unticked, and a buyer who just
+                    # pressed Register sent GP non-inventoried lines with no cost code.
+                    job_cost=True,
+                    cost_code=po.cost_code,
                 )
                 session.add(poli)
                 session.flush()
