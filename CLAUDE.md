@@ -91,7 +91,7 @@ Alembic `env.py` reads `DATABASE_URL` from `.env` (via python-dotenv). The `comp
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `master`:
 
-- **Frontend**: `Frontend build` (`npm ci` → `lint` → `build`) beside four `Frontend tests (i/4)` shards (`vitest run --shard=i/4`); the `Frontend` job gathers them and is the check the master ruleset requires
+- **Frontend**: `Frontend build` (`npm ci` → `lint` → `build`) beside four `Frontend tests (i/4)` shards (`vitest run --shard=i/4`); the `Frontend` job gathers them and is the check the master ruleset requires. On a PR, a `Changes` job skips the jobs whose folder (frontend/, backend/, relay/) is untouched; a change to ci.yml, and every master push, runs everything
 - **Backend**: `poetry install` → `ruff check` → `ruff format --check` → `pytest` → `alembic upgrade head`
 - **Migration Integrity**: `upgrade head` → `downgrade base` → `upgrade head` → `alembic check`
 
