@@ -9,7 +9,6 @@ import {
   Table,
   TableBody,
   TableCell,
-  TableContainer,
   TableHead,
   TableRow,
   TextField,
@@ -39,6 +38,8 @@ import {
 } from './requestCart';
 import { isShopClassified, SHOP_FRAMING } from './classificationChip';
 import { monoSx, microLabelSx, tabularSx } from '../../../theme';
+import FitTable, { type FitTableColumn } from '../../../components/FitTable';
+import { FIT_CELL_WRAP_SX } from '../../../components/fitColumns';
 
 /** The thin projectOpenings row the picker reads (#608 review): opening fields + the two source-card
  *  counts, none of the HardwareItem detail the wizard's full schedule read materializes. */
@@ -533,6 +534,30 @@ interface LaneTableProps {
  * tint that used to carry that job are gone: the table a row sits in is the answer, and the two
  * columns they cost are two columns the 1366px case cannot spare.
  */
+/**
+ * #909: both lane tables fit their width and never scroll sideways, sharing one set of resizable
+ * widths remembered per person so the lanes line up. The counts hold four digits (their headers wrap
+ * to two lines under denseTableSx), Add holds the quantity field, and Product and Category give way
+ * last; the expander is fixed.
+ */
+function hinted(id: string, label: string, hint: string, min: number, weight: number): FitTableColumn {
+  return { id, label, min, weight, align: 'right', header: <HeaderHint label={label} hint={hint} /> };
+}
+
+const LANE_COLUMNS: FitTableColumn[] = [
+  { id: 'expand', label: 'Breakdown', min: 36, fixed: 36, header: null },
+  { id: 'product', label: 'Product', min: 120, weight: 2 },
+  { id: 'category', label: 'Category', min: 96, weight: 1.4 },
+  hinted('required', 'Required', PRODUCT_HINTS.required, 60, 0.5),
+  hinted('assembled', 'Through shop', PRODUCT_HINTS.assembled, 60, 0.5),
+  hinted('shipped', 'Shipped out', PRODUCT_HINTS.shipped, 60, 0.5),
+  hinted('claimed', 'Claimed', PRODUCT_HINTS.claimed, 60, 0.5),
+  hinted('free', 'Free', PRODUCT_HINTS.free, 60, 0.5),
+  hinted('suggested', 'Suggested', PRODUCT_HINTS.suggested, 60, 0.5),
+  hinted('onOrder', 'On order', PRODUCT_HINTS.onOrder, 60, 0.5),
+  hinted('add', 'Add', PRODUCT_HINTS.add, 84, 0.6),
+];
+
 function LaneTable({
   lane,
   aggs,
@@ -572,145 +597,112 @@ function LaneTable({
           Add all suggested - {lane} ({contributing})
         </Button>
       </Stack>
-      <TableContainer sx={{ overflowX: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
-        <Table size="small" sx={denseTableSx}>
-          <TableHead>
-            <TableRow>
-              <TableCell sx={{ width: 32 }} />
-              <TableCell>Product</TableCell>
-              <TableCell>Category</TableCell>
-              <TableCell align="right">
-                <HeaderHint label="Required" hint={PRODUCT_HINTS.required} />
-              </TableCell>
-              <TableCell align="right">
-                <HeaderHint label="Through shop" hint={PRODUCT_HINTS.assembled} />
-              </TableCell>
-              <TableCell align="right">
-                <HeaderHint label="Shipped out" hint={PRODUCT_HINTS.shipped} />
-              </TableCell>
-              <TableCell align="right">
-                <HeaderHint label="Claimed" hint={PRODUCT_HINTS.claimed} />
-              </TableCell>
-              <TableCell align="right">
-                <HeaderHint label="Free" hint={PRODUCT_HINTS.free} />
-              </TableCell>
-              <TableCell align="right">
-                <HeaderHint label="Suggested" hint={PRODUCT_HINTS.suggested} />
-              </TableCell>
-              <TableCell align="right">
-                <HeaderHint label="On order" hint={PRODUCT_HINTS.onOrder} />
-              </TableCell>
-              <TableCell align="right">
-                <HeaderHint label="Add" hint={PRODUCT_HINTS.add} />
-              </TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {aggs.map((agg) => {
-              const inCart = productLinesQuantity(cart, agg.rows);
-              const muted = agg.suggestedQuantity === 0 && inCart === 0;
-              // The live free pool for this product right now - every cart line of it (these
-              // openings, other openings, the loose lane) already deducted.
-              const freeNow = remainingForProduct(cart, agg.key, headroom);
-              // A suggestion the pool cannot cover in full: the lines still go and claim what stock
-              // can, so this is a flag, not a block.
-              const short = agg.suggestedQuantity > 0 && freeNow + inCart < agg.suggestedQuantity;
-              const expanded = expandedProducts.has(agg.key);
-              return (
-                <Fragment key={agg.key}>
-                  <TableRow hover sx={{ opacity: muted ? 0.5 : 1 }}>
-                    <TableCell>
-                      <Button
-                        size="small"
-                        variant="text"
-                        onClick={() => onToggleProduct(agg.key)}
-                        aria-label={`${expanded ? 'Hide' : 'Show'} per-opening breakdown for ${agg.productCode}`}
-                        sx={{ minWidth: 0, p: 0.25, color: 'text.secondary' }}
-                      >
-                        {expanded ? (
-                          <ChevronDown size={16} strokeWidth={1.75} />
-                        ) : (
-                          <ChevronRight size={16} strokeWidth={1.75} />
-                        )}
-                      </Button>
-                    </TableCell>
-                    <TableCell sx={{ ...monoSx, overflowWrap: 'anywhere' }}>{agg.productCode}</TableCell>
-                    <TableCell sx={{ fontSize: '0.8125rem' }}>{agg.hardwareCategory}</TableCell>
-                    <TableCell align="right" sx={contextCol}>
-                      {agg.requiredQuantity}
-                    </TableCell>
-                    <TableCell align="right" sx={contextCol}>
-                      {agg.assembledQuantity}
-                    </TableCell>
-                    <TableCell align="right" sx={contextCol}>
-                      {agg.shippedQuantity}
-                    </TableCell>
-                    <TableCell align="right" sx={contextCol}>
-                      {agg.claimedQuantity}
-                    </TableCell>
-                    <TableCell align="right" sx={numCol}>
-                      {freeNow}
-                    </TableCell>
-                    <TableCell align="right" sx={short ? { ...numCol, color: 'warning.main' } : numCol}>
-                      {agg.suggestedQuantity}
-                    </TableCell>
-                    <TableCell align="right" sx={contextCol}>
-                      {agg.onOrderQuantity}
-                    </TableCell>
-                    <TableCell align="right" sx={{ width: 1, whiteSpace: 'nowrap' }}>
-                      {inCart > 0 ? (
-                        <TextField
-                          size="small"
-                          type="number"
-                          value={inCart}
-                          onChange={(e) =>
-                            onCartChange(
-                              setProductQuantity(cart, agg.rows, Number.parseInt(e.target.value, 10), headroom),
-                            )
-                          }
-                          slotProps={{
-                            htmlInput: {
-                              min: 0,
-                              'aria-label': `Quantity of ${agg.productCode} across selected openings`,
-                            },
-                          }}
-                          sx={{ width: 68, '& input': { textAlign: 'right', px: 1 } }}
-                        />
-                      ) : (
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          disabled={agg.suggestedQuantity === 0 || freeNow === 0}
-                          onClick={() =>
-                            onCartChange(setProductQuantity(cart, agg.rows, agg.suggestedQuantity, headroom))
-                          }
-                        >
-                          Add
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                  {expanded && (
-                    <TableRow>
-                      {/* The lane table's own padding rule outranks a plain cell sx, so the
-                          breakdown's flush edge is doubled to win it. */}
-                      <TableCell colSpan={11} sx={{ '&&': { p: 0 }, bgcolor: 'action.hover' }}>
-                        <ProductOpeningBreakdown
-                          agg={agg}
-                          cart={cart}
-                          headroom={headroom}
-                          onCartChange={onCartChange}
-                          openingMeta={openingMeta}
-                        />
-                      </TableCell>
-                    </TableRow>
+      <FitTable storageKey="request-workspace-schedule" columns={LANE_COLUMNS} tableSx={denseTableSx}>
+        {aggs.map((agg) => {
+          const inCart = productLinesQuantity(cart, agg.rows);
+          const muted = agg.suggestedQuantity === 0 && inCart === 0;
+          // The live free pool for this product right now - every cart line of it (these
+          // openings, other openings, the loose lane) already deducted.
+          const freeNow = remainingForProduct(cart, agg.key, headroom);
+          // A suggestion the pool cannot cover in full: the lines still go and claim what stock
+          // can, so this is a flag, not a block.
+          const short = agg.suggestedQuantity > 0 && freeNow + inCart < agg.suggestedQuantity;
+          const expanded = expandedProducts.has(agg.key);
+          return (
+            <Fragment key={agg.key}>
+              <TableRow hover sx={{ opacity: muted ? 0.5 : 1 }}>
+                <TableCell>
+                  <Button
+                    size="small"
+                    variant="text"
+                    onClick={() => onToggleProduct(agg.key)}
+                    aria-label={`${expanded ? 'Hide' : 'Show'} per-opening breakdown for ${agg.productCode}`}
+                    sx={{ minWidth: 0, p: 0.25, color: 'text.secondary' }}
+                  >
+                    {expanded ? (
+                      <ChevronDown size={16} strokeWidth={1.75} />
+                    ) : (
+                      <ChevronRight size={16} strokeWidth={1.75} />
+                    )}
+                  </Button>
+                </TableCell>
+                <TableCell sx={{ ...monoSx, ...FIT_CELL_WRAP_SX }}>{agg.productCode}</TableCell>
+                <TableCell sx={{ fontSize: '0.8125rem' }} title={agg.hardwareCategory}>
+                  {agg.hardwareCategory}
+                </TableCell>
+                <TableCell align="right" sx={contextCol}>
+                  {agg.requiredQuantity}
+                </TableCell>
+                <TableCell align="right" sx={contextCol}>
+                  {agg.assembledQuantity}
+                </TableCell>
+                <TableCell align="right" sx={contextCol}>
+                  {agg.shippedQuantity}
+                </TableCell>
+                <TableCell align="right" sx={contextCol}>
+                  {agg.claimedQuantity}
+                </TableCell>
+                <TableCell align="right" sx={numCol}>
+                  {freeNow}
+                </TableCell>
+                <TableCell align="right" sx={short ? { ...numCol, color: 'warning.main' } : numCol}>
+                  {agg.suggestedQuantity}
+                </TableCell>
+                <TableCell align="right" sx={contextCol}>
+                  {agg.onOrderQuantity}
+                </TableCell>
+                <TableCell align="right" sx={{ width: 1, whiteSpace: 'nowrap' }}>
+                  {inCart > 0 ? (
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={inCart}
+                      onChange={(e) =>
+                        onCartChange(
+                          setProductQuantity(cart, agg.rows, Number.parseInt(e.target.value, 10), headroom),
+                        )
+                      }
+                      slotProps={{
+                        htmlInput: {
+                          min: 0,
+                          'aria-label': `Quantity of ${agg.productCode} across selected openings`,
+                        },
+                      }}
+                      sx={{ width: 68, '& input': { textAlign: 'right', px: 1 } }}
+                    />
+                  ) : (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      disabled={agg.suggestedQuantity === 0 || freeNow === 0}
+                      onClick={() =>
+                        onCartChange(setProductQuantity(cart, agg.rows, agg.suggestedQuantity, headroom))
+                      }
+                    >
+                      Add
+                    </Button>
                   )}
-                </Fragment>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </TableContainer>
+                </TableCell>
+              </TableRow>
+              {expanded && (
+                <TableRow>
+                  {/* The lane table's own padding rule outranks a plain cell sx, so the
+                      breakdown's flush edge is doubled to win it. */}
+                  <TableCell colSpan={11} sx={{ '&&': { p: 0, whiteSpace: 'normal' }, bgcolor: 'action.hover' }}>
+                    <ProductOpeningBreakdown
+                      agg={agg}
+                      cart={cart}
+                      headroom={headroom}
+                      onCartChange={onCartChange}
+                      openingMeta={openingMeta}
+                    />
+                  </TableCell>
+                </TableRow>
+              )}
+            </Fragment>
+          );
+        })}
+      </FitTable>
     </Box>
   );
 }

@@ -6,6 +6,8 @@ import { NEXUS_REGISTER_PO_LINES } from '../../graphql/po';
 import { GET_PROJECT_SCHEDULE_PRODUCTS } from '../../graphql/admin';
 import { useToast } from '../../components/Toast';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import ColumnResizeHandle from '../../components/ColumnResizeHandle';
+import { useFitColumns, type FitColumn } from '../../components/fitColumns';
 import { productKeyOf, suggestScheduleProduct, type ScheduleProduct } from './nexusRegistrationMatch';
 import type { PurchaseOrder } from './index';
 
@@ -34,6 +36,15 @@ interface RowState {
 }
 
 const BLANK_ROW: RowState = { productKey: '', category: '', code: '', tieQuantity: '0' };
+
+/** #909: the space each grid cell keeps on its right, standing in for a grid gap. */
+const CELL_GAP_PX = 8;
+
+/** Every cell shrinks to its track, and keeps the gutter a grid gap would have given it. */
+const CELL_GUTTER_SX = {
+  '& > *': { minWidth: 0 },
+  '& > *:not(:last-child)': { mr: `${CELL_GAP_PX}px` },
+} as const;
 
 export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
   const { showToast } = useToast();
@@ -166,17 +177,40 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
     }
   };
 
-  // Sized to content, with the identity column absorbing the slack. Narrower than the panel it sits
-  // in only when the dialog itself is narrow, where the wrapper scrolls rather than widening the page.
-  const gridTemplateColumns = isProjectPo
-    ? 'minmax(0, 1.1fr) minmax(0, 1.4fr) 52px 52px 52px minmax(0, 1.6fr) 132px 104px'
-    : 'minmax(0, 1.1fr) minmax(0, 1.4fr) 52px 52px 52px minmax(0, 1.2fr) minmax(0, 1.2fr) 104px';
-
-  // The first two columns are what the line holds now; on a PO with no project the last two are
-  // where the schedule's own hardware category and product code are typed.
-  const headings = isProjectPo
-    ? ['Item Number', 'Description', 'Ord', 'Rec', 'Out', 'Product', 'Tie qty', '']
-    : ['Item Number', 'Description', 'Ord', 'Rec', 'Out', 'Hardware Category', 'Product Code', ''];
+  // #909: the grid always fits the panel and never scrolls sideways. useFitColumns shares the width
+  // among the columns, each down to a minimum that keeps its value readable (GP's own item number and
+  // description wrap rather than clip), and remembers what the person resized. Each minimum includes
+  // the gutter a cell keeps on its right (CELL_GAP_PX); the grid has no gap of its own, or the tracks
+  // the hook hands out would add up to more than the width it measured.
+  //
+  // The first two columns are what the line holds now; on a PO with no project the next-to-last two
+  // are where the schedule's own hardware category and product code are typed.
+  const {
+    setContainer: setGridBox,
+    columns,
+    gridTemplate: gridTemplateColumns,
+    handle: resizeHandle,
+  } = useFitColumns('po-nexus-registration', [
+    { id: 'itemNumber', label: 'Item Number', min: 104, weight: 1.1 },
+    { id: 'description', label: 'Description', min: 120, weight: 1.4 },
+    // Up to four digits under a three-letter heading.
+    { id: 'ordered', label: 'Ord', min: 52, weight: 0.3 },
+    { id: 'received', label: 'Rec', min: 52, weight: 0.3 },
+    { id: 'outstanding', label: 'Out', min: 52, weight: 0.3 },
+    ...(isProjectPo
+      ? ([
+          // A schedule product's 'category / code' in the native select, beside its arrow.
+          { id: 'product', label: 'Product', min: 168, weight: 1.6 },
+          // The quantity box and its "max N" note.
+          { id: 'tieQty', label: 'Tie qty', min: 136, weight: 0.6 },
+        ] satisfies FitColumn[])
+      : ([
+          { id: 'hardwareCategory', label: 'Hardware Category', min: 128, weight: 1.2 },
+          { id: 'productCode', label: 'Product Code', min: 128, weight: 1.2 },
+        ] satisfies FitColumn[])),
+    // The Registered chip.
+    { id: 'status', label: 'Status', min: 104, fixed: 104 },
+  ]);
 
   return (
     <Box sx={{ mt: 3, p: 2, border: '1px solid', borderColor: 'divider', borderRadius: 1, minWidth: 0 }}>
@@ -189,140 +223,148 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
           : "Say which product each GP line is for. Nexus then keeps that name instead of GP's. This PO is not on a job, so there is no schedule hardware to tie to it."}
       </Typography>
 
-      <Box sx={{ overflowX: 'auto', minWidth: 0 }}>
-        <Box sx={{ minWidth: 700 }}>
-          <Box
-            sx={{
-              display: 'grid',
-              gridTemplateColumns,
-              gap: 1,
-              alignItems: 'center',
-              pb: 0.5,
-              borderBottom: '1px solid',
-              borderColor: 'divider',
-            }}
-          >
-            {headings.map((heading, idx) => (
-              <Typography
-                key={heading || `spacer-${idx}`}
-                component="div"
-                sx={{ ...microLabelSx, minWidth: 0 }}
-              >
-                {heading}
-              </Typography>
-            ))}
-          </Box>
+      <Box ref={setGridBox} data-testid="nexus-registration-grid" sx={{ minWidth: 0 }}>
+        <Box
+          sx={{
+            display: 'grid',
+            gridTemplateColumns,
+            alignItems: 'center',
+            pb: 0.5,
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+          }}
+        >
+          {columns.map((c, i) =>
+            c.fixed === undefined ? (
+              // A header cell with its resize handle; the wording ellipsizes rather than widening it.
+              <Box key={c.id} title={c.label} sx={{ position: 'relative', minWidth: 0, pr: `${CELL_GAP_PX}px` }}>
+                <Typography component="div" noWrap sx={{ ...microLabelSx, minWidth: 0 }}>
+                  {c.label}
+                </Typography>
+                <ColumnResizeHandle binding={resizeHandle(i)} />
+              </Box>
+            ) : (
+              <Box key={c.id} />
+            ),
+          )}
+        </Box>
 
-          {po.lineItems.map((li) => {
-            const row = rowFor(li.id);
-            const outstanding = outstandingOf(li);
-            const cap = capFor(li, row);
-            return (
-              <Box
-                key={li.id}
-                sx={{
-                  display: 'grid',
-                  gridTemplateColumns,
-                  gap: 1,
-                  alignItems: 'center',
-                  py: 0.75,
-                  borderBottom: '1px solid',
-                  borderColor: 'divider',
-                }}
-              >
-                <Box sx={{ ...monoSx, minWidth: 0, overflowWrap: 'anywhere' }}>
-                  {li.hardwareCategory}
-                </Box>
-                <Box sx={{ minWidth: 0, overflowWrap: 'anywhere', fontSize: '0.875rem' }}>
-                  {li.productCode}
-                </Box>
-                <Box sx={{ ...tabularSx, minWidth: 0, fontSize: '0.875rem' }}>{li.orderedQuantity}</Box>
-                <Box sx={{ ...tabularSx, minWidth: 0, fontSize: '0.875rem' }}>{li.receivedQuantity}</Box>
-                <Box sx={{ ...tabularSx, minWidth: 0, fontSize: '0.875rem' }}>{outstanding}</Box>
+        {po.lineItems.map((li) => {
+          const row = rowFor(li.id);
+          const outstanding = outstandingOf(li);
+          const cap = capFor(li, row);
+          return (
+            <Box
+              key={li.id}
+              sx={{
+                display: 'grid',
+                gridTemplateColumns,
+                alignItems: 'center',
+                py: 0.75,
+                borderBottom: '1px solid',
+                borderColor: 'divider',
+                ...CELL_GUTTER_SX,
+              }}
+            >
+              <Box sx={{ ...monoSx, minWidth: 0, overflowWrap: 'anywhere' }}>
+                {li.hardwareCategory}
+              </Box>
+              <Box sx={{ minWidth: 0, overflowWrap: 'anywhere', fontSize: '0.875rem' }}>
+                {li.productCode}
+              </Box>
+              <Box sx={{ ...tabularSx, minWidth: 0, fontSize: '0.875rem' }}>{li.orderedQuantity}</Box>
+              <Box sx={{ ...tabularSx, minWidth: 0, fontSize: '0.875rem' }}>{li.receivedQuantity}</Box>
+              <Box sx={{ ...tabularSx, minWidth: 0, fontSize: '0.875rem' }}>{outstanding}</Box>
 
-                {li.nexusRegistered ? (
-                  <Box
-                    sx={{
-                      minWidth: 0,
-                      gridColumn: 'span 2',
-                      color: 'text.secondary',
-                      fontSize: '0.875rem',
-                      overflowWrap: 'anywhere',
-                    }}
-                  >
-                    {li.hardwareCategory} /{' '}
-                    <Box component="span" sx={monoSx}>
-                      {li.productCode}
-                    </Box>
+              {li.nexusRegistered ? (
+                <Box
+                  sx={{
+                    minWidth: 0,
+                    gridColumn: 'span 2',
+                    color: 'text.secondary',
+                    fontSize: '0.875rem',
+                    overflowWrap: 'anywhere',
+                  }}
+                >
+                  {li.hardwareCategory} /{' '}
+                  <Box component="span" sx={monoSx}>
+                    {li.productCode}
                   </Box>
-                ) : isProjectPo ? (
-                  <>
+                </Box>
+              ) : isProjectPo ? (
+                <>
+                  <TextField
+                    select
+                    id={`nexus-registration-product-${li.id}`}
+                    size="small"
+                    value={row.productKey}
+                    onChange={(e) => {
+                      const key = e.target.value;
+                      const picked = productsByKey.get(key);
+                      const nextCap = picked ? Math.min(outstanding, picked.availableQuantity) : outstanding;
+                      setRow(li.id, { productKey: key, tieQuantity: String(nextCap) });
+                    }}
+                    // Native, so the row stays one line high and the picker reads as the column it
+                    // sits in. The column heading is its visible label; the select carries its own.
+                    slotProps={{ select: { native: true, inputProps: { 'aria-label': 'Product' } } }}
+                    sx={{ minWidth: 0 }}
+                  >
+                    <option value="">Not registered</option>
+                    {products.map((p) => (
+                      <option key={productKeyOf(p)} value={productKeyOf(p)}>
+                        {p.hardwareCategory} / {p.productCode}
+                      </option>
+                    ))}
+                  </TextField>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
                     <TextField
-                      select
-                      id={`nexus-registration-product-${li.id}`}
                       size="small"
-                      value={row.productKey}
-                      onChange={(e) => {
-                        const key = e.target.value;
-                        const picked = productsByKey.get(key);
-                        const nextCap = picked ? Math.min(outstanding, picked.availableQuantity) : outstanding;
-                        setRow(li.id, { productKey: key, tieQuantity: String(nextCap) });
-                      }}
-                      // Native, so the row stays one line high and the picker reads as the column it
-                      // sits in. The column heading is its visible label; the select carries its own.
-                      slotProps={{ select: { native: true, inputProps: { 'aria-label': 'Product' } } }}
+                      type="number"
+                      value={row.tieQuantity}
+                      onChange={(e) => setRow(li.id, { tieQuantity: e.target.value })}
+                      disabled={!row.productKey}
+                      slotProps={{ htmlInput: { min: 0, max: cap, 'aria-label': 'Tie quantity' } }}
+                      // Gives way before the note does when the column is scaled down (#909).
+                      sx={{ width: 76, flexShrink: 1, minWidth: 48 }}
+                    />
+                    <Typography
+                      component="span"
+                      variant="caption"
+                      color="text.secondary"
+                      noWrap
                       sx={{ minWidth: 0 }}
                     >
-                      <option value="">Not registered</option>
-                      {products.map((p) => (
-                        <option key={productKeyOf(p)} value={productKeyOf(p)}>
-                          {p.hardwareCategory} / {p.productCode}
-                        </option>
-                      ))}
-                    </TextField>
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
-                      <TextField
-                        size="small"
-                        type="number"
-                        value={row.tieQuantity}
-                        onChange={(e) => setRow(li.id, { tieQuantity: e.target.value })}
-                        disabled={!row.productKey}
-                        slotProps={{ htmlInput: { min: 0, max: cap, 'aria-label': 'Tie quantity' } }}
-                        sx={{ width: 76, flexShrink: 0 }}
-                      />
-                      <Typography component="span" variant="caption" color="text.secondary" noWrap>
-                        max {cap}
-                      </Typography>
-                    </Box>
-                  </>
-                ) : (
-                  <>
-                    <TextField
-                      size="small"
-                      value={row.category}
-                      onChange={(e) => setRow(li.id, { category: e.target.value })}
-                      slotProps={{ htmlInput: { 'aria-label': 'Hardware Category' } }}
-                      sx={{ minWidth: 0 }}
-                    />
-                    <TextField
-                      size="small"
-                      value={row.code}
-                      onChange={(e) => setRow(li.id, { code: e.target.value })}
-                      slotProps={{ htmlInput: { 'aria-label': 'Product Code' } }}
-                      sx={{ minWidth: 0 }}
-                    />
-                  </>
-                )}
+                      max {cap}
+                    </Typography>
+                  </Box>
+                </>
+              ) : (
+                <>
+                  <TextField
+                    size="small"
+                    value={row.category}
+                    onChange={(e) => setRow(li.id, { category: e.target.value })}
+                    slotProps={{ htmlInput: { 'aria-label': 'Hardware Category' } }}
+                    sx={{ minWidth: 0 }}
+                  />
+                  <TextField
+                    size="small"
+                    value={row.code}
+                    onChange={(e) => setRow(li.id, { code: e.target.value })}
+                    slotProps={{ htmlInput: { 'aria-label': 'Product Code' } }}
+                    sx={{ minWidth: 0 }}
+                  />
+                </>
+              )}
 
-                <Box sx={{ minWidth: 0 }}>
-                  {li.nexusRegistered && (
-                    <Chip label="Registered" size="small" variant="outlined" color="success" />
-                  )}
-                </Box>
+              <Box sx={{ minWidth: 0 }}>
+                {li.nexusRegistered && (
+                  <Chip label="Registered" size="small" variant="outlined" color="success" />
+                )}
               </Box>
-            );
-          })}
-        </Box>
+            </Box>
+          );
+        })}
       </Box>
 
       <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 1.5 }}>

@@ -10,6 +10,7 @@ import {
   Typography,
 } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 import { useQuery } from '@apollo/client/react';
 import { GET_RECEIVES } from '../../graphql/warehouse';
 import { GET_PROJECTS } from '../../graphql/shared';
@@ -93,12 +94,14 @@ export default function ReceivesPage() {
         field: 'occurredAt',
         headerName: 'Date',
         width: 130,
+        minWidth: 110,
         valueFormatter: (value: string) => parseServerDate(value).toLocaleDateString(),
       },
       {
         field: 'status',
         headerName: 'Status',
         width: 160,
+        minWidth: 130,
         renderCell: (params) => (
           <Chip
             size="small"
@@ -111,6 +114,7 @@ export default function ReceivesPage() {
         field: 'poNumber',
         headerName: 'PO #',
         width: 150,
+        minWidth: 110,
         renderCell: (params) => (
           <Typography component="span" sx={monoSx}>
             {(params.value as string | null) ?? '—'}
@@ -118,12 +122,13 @@ export default function ReceivesPage() {
         ),
       },
       { field: 'projectName', headerName: 'Project', flex: 1, minWidth: 150 },
-      { field: 'lineCount', headerName: 'Lines', type: 'number', width: 90 },
-      { field: 'totalQuantity', headerName: 'Qty', type: 'number', width: 90 },
+      { field: 'lineCount', headerName: 'Lines', type: 'number', width: 90, minWidth: 80 },
+      { field: 'totalQuantity', headerName: 'Qty', type: 'number', width: 90, minWidth: 80 },
       {
         field: 'receiptNumber',
         headerName: 'RCT #',
         width: 140,
+        minWidth: 110,
         renderCell: (params) => (
           <Typography component="span" sx={monoSx}>
             {(params.value as string | null) ?? '—'}
@@ -135,6 +140,9 @@ export default function ReceivesPage() {
     ],
     [],
   );
+
+  // #909: the columns fit the grid's width and never scroll sideways; resized widths are remembered.
+  const { setContainer, gridProps } = useGridColumnFit('warehouse.receives', columns as GridColDef[]);
 
   return (
     <Box sx={{ p: 3 }}>
@@ -196,8 +204,9 @@ export default function ReceivesPage() {
       ) : (
         <>
           <DataGrid
+            ref={setContainer}
+            {...gridProps}
             rows={rows}
-            columns={columns}
             density="compact"
             disableRowSelectionOnClick
             initialState={{ pagination: { paginationModel: { pageSize: 50 } } }}

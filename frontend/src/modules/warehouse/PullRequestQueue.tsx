@@ -150,6 +150,7 @@ const columns: GridColDef[] = [
     field: 'open',
     headerName: '',
     width: 44,
+    resizable: false,
     sortable: false,
     filterable: false,
     align: 'center',

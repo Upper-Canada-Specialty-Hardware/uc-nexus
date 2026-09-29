@@ -11,11 +11,7 @@ import {
   Divider,
   IconButton,
   Stack,
-  Table,
-  TableBody,
   TableCell,
-  TableContainer,
-  TableHead,
   TableRow,
   TextField,
   Tooltip,
@@ -23,6 +19,7 @@ import {
 } from '@mui/material';
 import { Check, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { FadeIn } from '../../motion';
 import { plural } from '../../utils/plural';
 import {
@@ -56,6 +53,28 @@ interface BatchReviewPanelProps {
 
 /** Figures are sized to their digits so the identifier columns take the slack. */
 const NUM_COL = { ...tabularSx, width: 1, whiteSpace: 'nowrap' } as const;
+
+/**
+ * #909: both tables fit their width and never scroll sideways; columns are resizable and remembered
+ * per person, per table. The counts hold four digits and their header, Send holds its quantity box,
+ * and product code and category take the slack, ellipsizing with the full value on hover.
+ */
+const OPENING_COLUMNS: FitTableColumn[] = [
+  { id: 'productCode', label: 'Product Code', min: 120, weight: 1.4 },
+  { id: 'hardwareCategory', label: 'Hardware Category', min: 120, weight: 1.4 },
+  { id: 'owed', label: 'Owed', min: 68, weight: 0.4, align: 'right' },
+  { id: 'free', label: 'Free', min: 64, weight: 0.4, align: 'right' },
+  { id: 'send', label: 'Send', min: 104, weight: 0.5, align: 'right', dense: true },
+  { id: 'short', label: 'Short', min: 68, weight: 0.4, align: 'right' },
+];
+
+const SUMMARY_COLUMNS: FitTableColumn[] = [
+  { id: 'productCode', label: 'Product Code', min: 120, weight: 1.4 },
+  { id: 'hardwareCategory', label: 'Hardware Category', min: 120, weight: 1.4 },
+  { id: 'owed', label: 'Owed', min: 68, weight: 0.4, align: 'right' },
+  { id: 'free', label: 'Free', min: 64, weight: 0.4, align: 'right' },
+  { id: 'sending', label: 'Sending', min: 84, weight: 0.4, align: 'right' },
+];
 
 /**
  * The Shop Assembly Manager's batch composer (#643/#644/#706).
@@ -294,85 +313,73 @@ export default function BatchReviewPanel({
 
           {current && (
             <FadeIn key={current.openingNumber} y={4}>
-              <TableContainer sx={{ overflowX: 'auto' }}>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Product Code</TableCell>
-                      <TableCell>Hardware Category</TableCell>
-                      <TableCell align="right">Owed</TableCell>
-                      <TableCell align="right">Free</TableCell>
-                      <TableCell align="right">Send</TableCell>
-                      <TableCell align="right">Short</TableCell>
+              <FitTable storageKey="batch-review-opening" columns={OPENING_COLUMNS} bare>
+                {current.lines.map((line) => {
+                  const key = lineKey(line);
+                  const allocated = allocation.get(key) ?? 0;
+                  const free = freeFor(line, allocation, lines);
+                  const ceiling = ceilingFor(line, allocation, lines);
+                  const short = line.requestedQuantity - allocated;
+                  return (
+                    <TableRow key={key} hover>
+                      <TableCell sx={monoSx} title={line.productCode}>
+                        {line.productCode}
+                      </TableCell>
+                      <TableCell title={line.hardwareCategory}>{line.hardwareCategory}</TableCell>
+                      <TableCell align="right" sx={NUM_COL}>
+                        {line.requestedQuantity}
+                      </TableCell>
+                      {/* What this opening can still take: the pool less what every other
+                          opening's boxes already hold, which is why entering a quantity on one
+                          door lowers another's headroom. The tooltip is the whole pool, as it
+                          stood before this batch touched it. */}
+                      <TableCell align="right" sx={NUM_COL}>
+                        <Tooltip
+                          arrow
+                          title={`${line.availableQuantity} free across the project before this batch`}
+                        >
+                          <span>{free}</span>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell align="right" sx={{ ...NUM_COL, px: 1 }}>
+                        <TextField
+                          size="small"
+                          type="number"
+                          // Empty rather than a zero: a box showing 0 reads as an answer already
+                          // given, and none has been given until the manager types one.
+                          value={allocated > 0 ? allocated : ''}
+                          disabled={busy}
+                          onChange={(e) => {
+                            const raw = Number(e.target.value);
+                            const next = Number.isFinite(raw) ? Math.floor(raw) : 0;
+                            setLineQuantity(key, Math.max(0, Math.min(ceiling, next)));
+                          }}
+                          inputProps={{
+                            min: 0,
+                            max: ceiling,
+                            'aria-label': `Send ${line.productCode} for ${line.openingNumber}`,
+                            style: { textAlign: 'right', width: 56 },
+                          }}
+                        />
+                      </TableCell>
+                      {/* What batching this opening would forfeit, so it only carries a hue
+                          once there is something to forfeit. On an opening with empty boxes
+                          the figure is simply what it is owed, and colouring that would make a
+                          freshly opened request a wall of amber. */}
+                      <TableCell
+                        align="right"
+                        sx={{
+                          ...NUM_COL,
+                          color: short > 0 && currentCoverage !== 'NONE' ? 'warning.main' : 'text.disabled',
+                          fontWeight: short > 0 && currentCoverage !== 'NONE' ? 600 : 400,
+                        }}
+                      >
+                        {short}
+                      </TableCell>
                     </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {current.lines.map((line) => {
-                      const key = lineKey(line);
-                      const allocated = allocation.get(key) ?? 0;
-                      const free = freeFor(line, allocation, lines);
-                      const ceiling = ceilingFor(line, allocation, lines);
-                      const short = line.requestedQuantity - allocated;
-                      return (
-                        <TableRow key={key} hover>
-                          <TableCell sx={monoSx}>{line.productCode}</TableCell>
-                          <TableCell>{line.hardwareCategory}</TableCell>
-                          <TableCell align="right" sx={NUM_COL}>
-                            {line.requestedQuantity}
-                          </TableCell>
-                          {/* What this opening can still take: the pool less what every other
-                              opening's boxes already hold, which is why entering a quantity on one
-                              door lowers another's headroom. The tooltip is the whole pool, as it
-                              stood before this batch touched it. */}
-                          <TableCell align="right" sx={NUM_COL}>
-                            <Tooltip
-                              arrow
-                              title={`${line.availableQuantity} free across the project before this batch`}
-                            >
-                              <span>{free}</span>
-                            </Tooltip>
-                          </TableCell>
-                          <TableCell align="right" sx={NUM_COL}>
-                            <TextField
-                              size="small"
-                              type="number"
-                              // Empty rather than a zero: a box showing 0 reads as an answer already
-                              // given, and none has been given until the manager types one.
-                              value={allocated > 0 ? allocated : ''}
-                              disabled={busy}
-                              onChange={(e) => {
-                                const raw = Number(e.target.value);
-                                const next = Number.isFinite(raw) ? Math.floor(raw) : 0;
-                                setLineQuantity(key, Math.max(0, Math.min(ceiling, next)));
-                              }}
-                              inputProps={{
-                                min: 0,
-                                max: ceiling,
-                                'aria-label': `Send ${line.productCode} for ${line.openingNumber}`,
-                                style: { textAlign: 'right', width: 56 },
-                              }}
-                            />
-                          </TableCell>
-                          {/* What batching this opening would forfeit, so it only carries a hue
-                              once there is something to forfeit. On an opening with empty boxes
-                              the figure is simply what it is owed, and colouring that would make a
-                              freshly opened request a wall of amber. */}
-                          <TableCell
-                            align="right"
-                            sx={{
-                              ...NUM_COL,
-                              color: short > 0 && currentCoverage !== 'NONE' ? 'warning.main' : 'text.disabled',
-                              fontWeight: short > 0 && currentCoverage !== 'NONE' ? 600 : 400,
-                            }}
-                          >
-                            {short}
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </TableContainer>
+                  );
+                })}
+              </FitTable>
 
               {!hasAnythingFree(current.lines) && (
                 <Alert severity="info" sx={{ mt: 1 }}>
@@ -404,52 +411,41 @@ export default function BatchReviewPanel({
           </Stack>
         </AccordionSummary>
         <AccordionDetails>
-          <TableContainer sx={{ overflowX: 'auto' }}>
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Product Code</TableCell>
-                  <TableCell>Hardware Category</TableCell>
-                  <TableCell align="right">Owed</TableCell>
-                  <TableCell align="right">Free</TableCell>
-                  <TableCell align="right">Sending</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {summary.map((row) => (
-                  <TableRow key={`${row.hardwareCategory}|${row.productCode}`} hover>
-                    <TableCell sx={monoSx}>{row.productCode}</TableCell>
-                    <TableCell>{row.hardwareCategory}</TableCell>
-                    <TableCell align="right" sx={NUM_COL}>
-                      {row.owed}
-                    </TableCell>
-                    <TableCell align="right" sx={NUM_COL}>
-                      {row.available}
-                    </TableCell>
-                    <TableCell
-                      align="right"
-                      sx={{
-                        ...NUM_COL,
-                        color: row.allocated > row.available ? 'error.main' : 'inherit',
-                        fontWeight: row.allocated > row.available ? 600 : 400,
-                      }}
-                    >
-                      {row.allocated}
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {summary.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={5}>
-                      <Typography variant="body2" color="text.secondary">
-                        Nothing is in this batch yet.
-                      </Typography>
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </TableContainer>
+          <FitTable storageKey="batch-review-summary" columns={SUMMARY_COLUMNS} bare>
+            {summary.map((row) => (
+              <TableRow key={`${row.hardwareCategory}|${row.productCode}`} hover>
+                <TableCell sx={monoSx} title={row.productCode}>
+                  {row.productCode}
+                </TableCell>
+                <TableCell title={row.hardwareCategory}>{row.hardwareCategory}</TableCell>
+                <TableCell align="right" sx={NUM_COL}>
+                  {row.owed}
+                </TableCell>
+                <TableCell align="right" sx={NUM_COL}>
+                  {row.available}
+                </TableCell>
+                <TableCell
+                  align="right"
+                  sx={{
+                    ...NUM_COL,
+                    color: row.allocated > row.available ? 'error.main' : 'inherit',
+                    fontWeight: row.allocated > row.available ? 600 : 400,
+                  }}
+                >
+                  {row.allocated}
+                </TableCell>
+              </TableRow>
+            ))}
+            {summary.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={5}>
+                  <Typography variant="body2" color="text.secondary">
+                    Nothing is in this batch yet.
+                  </Typography>
+                </TableCell>
+              </TableRow>
+            )}
+          </FitTable>
         </AccordionDetails>
       </Accordion>
 

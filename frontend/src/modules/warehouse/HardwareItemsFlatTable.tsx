@@ -6,6 +6,7 @@ import {
   type GridRowSelectionModel,
   GridToolbar,
 } from '@mui/x-data-grid';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 import { useQuery } from '@apollo/client/react';
 import { TriangleAlert } from 'lucide-react';
 import { GET_INVENTORY_ROWS } from '../../graphql/warehouse';
@@ -264,23 +265,25 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
           </Box>
         ),
       },
-      { field: 'warehouseCode', headerName: 'Warehouse', width: 120 },
+      { field: 'warehouseCode', headerName: 'Warehouse', width: 120, minWidth: 110 },
       {
         field: 'location',
         headerName: 'Location',
         width: 130,
+        minWidth: 110,
         renderCell: (params) => (
           <Typography component="span" sx={monoSx}>
             {params.value as string}
           </Typography>
         ),
       },
-      { field: 'quantity', headerName: 'Qty', type: 'number', width: 90 },
+      { field: 'quantity', headerName: 'Qty', type: 'number', width: 90, minWidth: 70 },
       {
         field: 'deficient',
         headerName: 'Deficient',
         type: 'number',
         width: 110,
+        minWidth: 100,
         renderCell: (params) =>
           (params.value as number) > 0 ? (
             <Chip label={params.value as number} color="warning" size="small" />
@@ -293,6 +296,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
         headerName: 'Unit Cost',
         type: 'number',
         width: 110,
+        minWidth: 100,
         valueFormatter: (value: number | null) => formatCurrency(value),
       },
       {
@@ -300,6 +304,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
         headerName: 'Line Value',
         type: 'number',
         width: 120,
+        minWidth: 110,
         valueFormatter: (value: number | null) => formatCurrency(value),
       },
       { field: 'vendorName', headerName: 'Vendor', flex: 1, minWidth: 140 },
@@ -307,6 +312,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
         field: 'poNumber',
         headerName: 'PO #',
         width: 140,
+        minWidth: 110,
         renderCell: (params) => (
           <Typography component="span" sx={monoSx}>
             {(params.value as string | null) ?? '—'}
@@ -317,6 +323,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
         field: 'receivedAt',
         headerName: 'Received',
         width: 130,
+        minWidth: 110,
         valueFormatter: (value: string | null) =>
           value ? parseServerDate(value).toLocaleDateString() : '—',
       },
@@ -329,6 +336,11 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
 
     return cols;
   }, [projectId]);
+
+  // #909: the columns fit the grid's width and never scroll sideways; resized widths are remembered.
+  const { setContainer, gridProps } = useGridColumnFit('warehouse.inventory.items', columns as GridColDef[], {
+    checkboxSelection: true,
+  });
 
   if (loading) {
     return (
@@ -348,8 +360,9 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
     <>
       <Box sx={{ position: 'relative', height: 'calc(100vh - 320px)', minHeight: 360 }}>
         <DataGrid
+          ref={setContainer}
+          {...gridProps}
           rows={rows}
-          columns={columns}
           density="compact"
           checkboxSelection
           disableRowSelectionOnClick
@@ -360,7 +373,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
           slotProps={{ toolbar: { showQuickFilter: true, csvOptions: { fileName: 'inventory' } } }}
           initialState={{ pagination: { paginationModel: { pageSize: 50 } } }}
           pageSizeOptions={[25, 50, 100]}
-          sx={{ '& .MuiDataGrid-cell:focus': { outline: 'none' } }}
+          sx={[gridProps.sx, { '& .MuiDataGrid-cell:focus': { outline: 'none' } }]}
         />
 
         <SelectionActionBar count={selectedRows.length} onClear={clearSelection}>

@@ -15,6 +15,7 @@ import {
   MenuItem,
 } from '@mui/material';
 import { DataGrid, type GridColDef, type GridRowSelectionModel } from '@mui/x-data-grid';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 import { useQuery } from '@apollo/client/react';
 import { TriangleAlert } from 'lucide-react';
 import TransferDialog, { type TransferSource } from './TransferDialog';
@@ -179,7 +180,7 @@ export default function StockPoolView() {
     [selectedRows],
   );
 
-  const columns: GridColDef<StockItem>[] = [
+  const columns = useMemo<GridColDef<StockItem>[]>(() => [
     {
       field: 'hardwareCategory',
       headerName: 'Item Number',
@@ -215,12 +216,14 @@ export default function StockPoolView() {
       field: 'quantity',
       headerName: 'Qty',
       width: 80,
+      minWidth: 70,
       type: 'number',
     },
     {
       field: 'deficientQuantity',
       headerName: 'Deficient',
       width: 100,
+      minWidth: 100,
       type: 'number',
       renderCell: ({ row }) =>
         row.deficientQuantity > 0 ? (
@@ -233,6 +236,7 @@ export default function StockPoolView() {
       field: 'available',
       headerName: 'Available',
       width: 100,
+      minWidth: 100,
       type: 'number',
     },
     {
@@ -241,6 +245,7 @@ export default function StockPoolView() {
       field: 'unitCost',
       headerName: 'Unit Cost',
       width: 110,
+      minWidth: 100,
       type: 'number',
       valueFormatter: (value: number | null) => (value != null ? `$${value.toFixed(2)}` : '—'),
     },
@@ -248,6 +253,7 @@ export default function StockPoolView() {
       field: 'warehouseId',
       headerName: 'Warehouse',
       width: 120,
+      minWidth: 110,
       renderCell: ({ row }) =>
         row.warehouseId ? (
           <Chip label={warehouseCode.get(row.warehouseId) ?? '—'} size="small" variant="outlined" />
@@ -268,7 +274,12 @@ export default function StockPoolView() {
         </Typography>
       ),
     },
-  ];
+  ], [typesByCode, warehouseCode]);
+
+  // #909: the columns fit the grid's width and never scroll sideways; resized widths are remembered.
+  const { setContainer, gridProps } = useGridColumnFit('warehouse.stock-pool', columns as GridColDef[], {
+    checkboxSelection: true,
+  });
 
   return (
     <Box>
@@ -345,8 +356,9 @@ export default function StockPoolView() {
       ) : (
         <Box sx={{ position: 'relative', height: 'calc(100vh - 320px)' }}>
           <DataGrid
+            ref={setContainer}
+            {...gridProps}
             rows={rows}
-            columns={columns}
             getRowId={(r) => r.id}
             loading={loading}
             checkboxSelection

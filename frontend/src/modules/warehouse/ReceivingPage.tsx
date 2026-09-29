@@ -2,16 +2,11 @@ import { useState, useMemo, useCallback } from 'react';
 import {
   Box,
   Typography,
-  Paper,
   Chip,
   Button,
   CircularProgress,
   Alert,
-  Table,
-  TableBody,
   TableCell,
-  TableContainer,
-  TableHead,
   TableRow,
   ToggleButton,
   ToggleButtonGroup,
@@ -26,6 +21,7 @@ import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import DataTable from '../../components/DataTable';
 import SelectionActionBar, { BarButton } from '../../components/SelectionActionBar';
 import PageHeader from '../../components/PageHeader';
+import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import GpWriteQueuePanel from '../../components/GpWriteQueuePanel';
 import ReceiveModal from './ReceiveModal';
 import ReceivingHistory from './ReceivingHistory';
@@ -91,6 +87,19 @@ const RECEIVING_VIEWS: ReceivingView[] = ['receive', 'drafts', 'history'];
 // The one write this page is answerable for: a GP RECEIVE ENTRY that has not reached GP yet. A
 // constant rather than an inline array so the panel's query keeps one identity across renders.
 const HELD_GP_RECEIVE_ENTRY_OPS = ['create_receipt'];
+
+// #909: Recent Activity fits its width and never scrolls sideways; columns are resizable and
+// remembered per person. Minimums hold a local date and time, a PO number, a GP receipt number and
+// the item count whole; the receiver's name takes the slack and ellipsizes with it on hover.
+const RECENT_COLUMNS: FitTableColumn[] = [
+  { id: 'date', label: 'Date', min: 164, weight: 1 },
+  { id: 'receivedBy', label: 'Received By', min: 110, weight: 1.6 },
+  { id: 'poNumber', label: 'PO Number', min: 100, weight: 0.8 },
+  // #447: the GP receipt, beside the PO it was posted against. This row is the last thing a receiver
+  // sees after booking one in, so it is where the number is most likely to be wanted.
+  { id: 'receipt', label: 'GP Receipt', min: 110, weight: 0.8 },
+  { id: 'items', label: 'Items Received', min: 116, weight: 0.5, align: 'right' },
+];
 
 interface BackOrderedItem {
   poLineItemId: string;
@@ -168,27 +177,31 @@ const backOrderColumns: GridColDef[] = [
     field: 'productCode',
     headerName: 'Description',
     flex: 1,
+    minWidth: 150,
     renderCell: (params) => <MonoCell value={params.value as string | null} />,
   },
-  { field: 'hardwareCategory', headerName: 'Item Number', flex: 1 },
-  { field: 'projectName', headerName: 'Project', flex: 1 },
-  { field: 'vendorName', headerName: 'Vendor', flex: 1 },
+  { field: 'hardwareCategory', headerName: 'Item Number', flex: 1, minWidth: 130 },
+  { field: 'projectName', headerName: 'Project', flex: 1, minWidth: 140 },
+  { field: 'vendorName', headerName: 'Vendor', flex: 1, minWidth: 140 },
   {
     field: 'poNumber',
     headerName: 'PO #',
     flex: 0.7,
+    minWidth: 110,
     renderCell: (params) => <MonoCell value={params.value as string | null} />,
   },
   // Ordered and Received beside Outstanding because the bare outstanding number does not say whether
   // a line is untouched or nearly complete, and "2 of 10" and "2 of 3" are very different problems.
   // The deleted Deliveries accordion was the only place this breakdown showed.
-  { field: 'orderedQuantity', headerName: 'Ordered', flex: 0.5, type: 'number' },
-  { field: 'receivedQuantity', headerName: 'Received', flex: 0.5, type: 'number' },
-  { field: 'outstandingQuantity', headerName: 'Outstanding', flex: 0.6, type: 'number' },
+  { field: 'orderedQuantity', headerName: 'Ordered', flex: 0.5, minWidth: 90, type: 'number' },
+  { field: 'receivedQuantity', headerName: 'Received', flex: 0.5, minWidth: 95, type: 'number' },
+  { field: 'outstandingQuantity', headerName: 'Outstanding', flex: 0.6, minWidth: 115, type: 'number' },
   {
     field: 'expectedDeliveryDate',
     headerName: 'Expected',
     flex: 1,
+    // The date and its urgency chip side by side.
+    minWidth: 190,
     renderCell: (params) => {
       const date = params.value as string | null;
       return (
@@ -302,6 +315,7 @@ export default function ReceivingPage() {
         field: 'poNumber',
         headerName: 'PO Number',
         flex: 0.8,
+        minWidth: 120,
         renderCell: (params) => (
           <Typography component="span" sx={{ ...monoSx, fontWeight: 600 }}>
             {params.value as string}
@@ -312,6 +326,7 @@ export default function ReceivingPage() {
         field: 'vendorName',
         headerName: 'Vendor',
         flex: 1,
+        minWidth: 150,
         // #701: a PO raised in GP with no vendor on it yet says so in plain words, and the hover
         // says whose gap it is. Every other row prints the vendor name exactly as it did before.
         renderCell: (params) => {
@@ -329,11 +344,13 @@ export default function ReceivingPage() {
           );
         },
       },
-      { field: 'projectName', headerName: 'Project', flex: 1 },
+      { field: 'projectName', headerName: 'Project', flex: 1, minWidth: 140 },
       {
         field: 'expectedDeliveryDate',
         headerName: 'Expected Delivery',
         flex: 1,
+        // The date and its urgency chip side by side.
+        minWidth: 190,
         renderCell: (params) => {
           const date = params.value as string | null;
           return (
@@ -352,18 +369,22 @@ export default function ReceivingPage() {
         field: 'pendingLines',
         headerName: 'Pending Lines',
         flex: 0.6,
+        minWidth: 120,
         type: 'number',
       },
       {
         field: 'pendingQty',
         headerName: 'Back Order',
         flex: 0.6,
+        minWidth: 110,
         type: 'number',
       },
       {
         field: 'status',
         headerName: 'Status',
         flex: 0.7,
+        // Room for the status chip and, briefly, the draft-pending chip beside it.
+        minWidth: 130,
         renderCell: (params) => {
           const status = params.value as string;
           // Short labels for the two common receiving states; the shared formatter handles the rest so a
@@ -682,37 +703,21 @@ export default function ReceivingPage() {
       )}
       {!recentLoading && !recentError && recentRecords.length > 0 && (
         <FadeIn y={8}>
-          <TableContainer component={Paper} variant="outlined">
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Date</TableCell>
-                  <TableCell>Received By</TableCell>
-                  <TableCell>PO Number</TableCell>
-                  {/* #447: the GP receipt, beside the PO it was posted against. This row is the
-                      last thing a receiver sees after booking one in, so it is where the number is
-                      most likely to be wanted. */}
-                  <TableCell>GP Receipt</TableCell>
-                  <TableCell align="right">Items Received</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {recentRecords.map((record) => (
-                  <TableRow key={record.receiveRecord.id} hover>
-                    <TableCell sx={tabularSx}>
-                      {formatDateTime(record.receiveRecord.receivedAt)}
-                    </TableCell>
-                    <TableCell>{record.receiveRecord.receivedBy}</TableCell>
-                    <TableCell sx={monoSx}>{record.poNumber ?? '\u2014'}</TableCell>
-                    <TableCell sx={monoSx}>
-                      {record.receiveRecord.receiptNumber ?? '\u2014'}
-                    </TableCell>
-                    <TableCell align="right">{record.totalItemsReceived}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
+          <FitTable storageKey="receiving-recent-activity" columns={RECENT_COLUMNS}>
+            {recentRecords.map((record) => (
+              <TableRow key={record.receiveRecord.id} hover>
+                <TableCell sx={tabularSx}>
+                  {formatDateTime(record.receiveRecord.receivedAt)}
+                </TableCell>
+                <TableCell title={record.receiveRecord.receivedBy}>{record.receiveRecord.receivedBy}</TableCell>
+                <TableCell sx={monoSx}>{record.poNumber ?? '\u2014'}</TableCell>
+                <TableCell sx={monoSx}>
+                  {record.receiveRecord.receiptNumber ?? '\u2014'}
+                </TableCell>
+                <TableCell align="right">{record.totalItemsReceived}</TableCell>
+              </TableRow>
+            ))}
+          </FitTable>
         </FadeIn>
       )}
         </>
