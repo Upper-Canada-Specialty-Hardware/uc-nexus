@@ -16,6 +16,7 @@ import { infoHeader } from '../../components/InfoColumnHeader';
 import PageHeader from '../../components/PageHeader';
 import { monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 import type { Project } from '../../types/project';
 
 interface StatusRow {
@@ -64,6 +65,8 @@ function countColumn(
     headerName: label,
     type: 'number',
     width,
+    // The width is sized to the header title and its info icon, so it is also the floor.
+    minWidth: width,
     headerAlign: 'right',
     align: 'right',
     renderHeader: infoHeader(label, tooltip),
@@ -191,6 +194,8 @@ export default function HardwareStatusPage() {
   const withoutSchedule = selected.filter((s) => !s.hasSchedule);
   const anySchedule = withoutSchedule.length < selected.length;
   const columns = useMemo(() => buildColumns(anySchedule), [anySchedule]);
+  // #909: the grid fits its width and remembers resized columns.
+  const { setContainer, gridProps } = useGridColumnFit('tenant-owner.hardware-status', columns);
 
   return (
     <Box>
@@ -291,8 +296,9 @@ export default function HardwareStatusPage() {
       {hasSelection && rows.length > 0 && (
         <Box sx={{ height: 'calc(100vh - 300px)', width: '100%' }}>
           <DataGrid
+            ref={setContainer}
+            {...gridProps}
             rows={rows}
-            columns={columns}
             density="compact"
             pageSizeOptions={[25, 50, 100]}
             initialState={{ pagination: { paginationModel: { pageSize: 50 } } }}
