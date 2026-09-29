@@ -29,16 +29,19 @@ interface SelectionActionBarProps {
   count: number;
   onClear: () => void;
   children: ReactNode;
+  /** Gap below the pill, in px. The default clears a DataGrid's pagination footer; a table with no
+   *  footer (Put Away's, #857) passes a smaller one. */
+  bottom?: number;
 }
 
-export default function SelectionActionBar({ count, onClear, children }: SelectionActionBarProps) {
+export default function SelectionActionBar({ count, onClear, children, bottom = 68 }: SelectionActionBarProps) {
   return (
     <Box
       sx={{
         position: 'absolute',
         left: 0,
         right: 0,
-        bottom: 68,
+        bottom,
         display: 'flex',
         justifyContent: 'center',
         px: 2,

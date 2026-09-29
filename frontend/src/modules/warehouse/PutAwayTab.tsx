@@ -1,6 +1,7 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, type ReactNode } from 'react';
 import {
   Box,
+  Checkbox,
   Typography,
   Accordion,
   AccordionSummary,
@@ -35,6 +36,7 @@ import {
   ASSIGN_STOCK_ITEM_LOCATION,
 } from '../../graphql/warehouse';
 import PageHeader from '../../components/PageHeader';
+import SelectionActionBar, { BarButton } from '../../components/SelectionActionBar';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
@@ -51,24 +53,33 @@ const ASSIGN_COL: FitTableColumn = { id: 'assign', label: 'Assign', min: 96, fix
 // The three bin pickers share the destination column evenly and shrink with it (minWidth 0).
 const DESTINATION_FIELDS_SX = { display: 'flex', gap: 1, minWidth: 0, '& > *': { flex: 1, minWidth: 0 } } as const;
 const WAREHOUSE_COL: FitTableColumn = { id: 'warehouse', label: 'Warehouse', min: 64, weight: 0.5 };
+// #857: the tick box for putting several rows away at once. Fixed and narrow, first in the row; the
+// header holds the select-all box. Its 40 px came out of the project table's minimums (description,
+// PO number and the quantity field) so the destination pickers still fit whole at ~770 px.
+const SELECT_WIDTH = 40;
+function selectColumn(header: ReactNode): FitTableColumn {
+  return { id: 'select', label: 'Select', min: SELECT_WIDTH, fixed: SELECT_WIDTH, header, align: 'center', flush: true };
+}
 
-function projectColumns(showWarehouse: boolean): FitTableColumn[] {
+function projectColumns(showWarehouse: boolean, selectHeader: ReactNode): FitTableColumn[] {
   return [
-    { id: 'description', label: 'Description', min: 96, weight: 1.3 },
+    selectColumn(selectHeader),
+    { id: 'description', label: 'Description', min: 80, weight: 1.3 },
     ...(showWarehouse ? [WAREHOUSE_COL] : []),
     { id: 'qty', label: 'Qty', min: 56, weight: 0.35, align: 'right' },
-    { id: 'po', label: 'PO#', min: 88, weight: 0.8 },
+    { id: 'po', label: 'PO#', min: 80, weight: 0.8 },
     { id: 'received', label: 'Received', min: 88, weight: 0.7 },
     // One destination cell instead of three unlabelled columns: the fields carry their own
     // Aisle/Row/Bay labels rather than relying on a header three rows up.
     DESTINATION_COL,
-    { id: 'putAwayQty', label: 'Qty to put away', min: 88, weight: 0.7, align: 'right', dense: true },
+    { id: 'putAwayQty', label: 'Qty to put away', min: 72, weight: 0.7, align: 'right', dense: true },
     ASSIGN_COL,
   ];
 }
 
-function stockColumns(showWarehouse: boolean): FitTableColumn[] {
+function stockColumns(showWarehouse: boolean, selectHeader: ReactNode): FitTableColumn[] {
   return [
+    selectColumn(selectHeader),
     { id: 'description', label: 'Description', min: 96, weight: 1.2 },
     { id: 'itemNumber', label: 'Item Number', min: 88, weight: 1 },
     ...(showWarehouse ? [WAREHOUSE_COL] : []),
@@ -126,6 +137,29 @@ interface LocationInput {
   bay: string;
 }
 
+const EMPTY_LOCATION: LocationInput = { aisle: '', row: '', bay: '' };
+
+/** A row that can be ticked for putting away several at once (#857). Project rows and stock-pool
+ *  rows share one selection and one bin; `kind` says which mutation puts each one away. */
+interface BulkRow {
+  key: string;
+  kind: 'inventory' | 'stock';
+  id: string;
+  /** '' for a row with no warehouse (pre-#572), which groups with the other warehouse-less rows. */
+  warehouseKey: string;
+  warehouseId: string | null;
+  productCode: string;
+}
+
+interface BulkFailure {
+  key: string;
+  productCode: string;
+  message: string;
+}
+
+const inventoryKey = (id: string) => `inventory:${id}`;
+const stockKey = (id: string) => `stock:${id}`;
+
 // ---- Helpers ----
 
 // Flat, hairline-bordered group. minWidth:0 on the summary content keeps a long category name
@@ -164,6 +198,11 @@ export default function PutAwayTab() {
   const [assigningId, setAssigningId] = useState<string | null>(null);
   // Per-row "put N of these somewhere else" entry. Empty means the whole row goes to one bin.
   const [splitQty, setSplitQty] = useState<Record<string, string>>({});
+  // #857: ticked rows, keyed by inventoryKey / stockKey, and the one bin the bar puts them all in.
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set());
+  const [bulkLocation, setBulkLocation] = useState<LocationInput>(EMPTY_LOCATION);
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkFailures, setBulkFailures] = useState<BulkFailure[]>([]);
 
   // Queries
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
@@ -392,6 +431,188 @@ export default function PutAwayTab() {
     [getLocationInput, assignStockLocation, showToast, refetchStock],
   );
 
+  // ---- Put several rows away at once (#857) ----
+
+  // The stock pool only shows without a project or PO filter, so only then can its rows be ticked.
+  const showStockPool = !projectFilter && !poFilter && stockRows.length > 0;
+  // Every row on the page that can be ticked. A tick on a row the filters have since hidden stops
+  // counting, so the bar never puts away something the user cannot see.
+  const bulkRows = useMemo(() => {
+    const m = new Map<string, BulkRow>();
+    for (const item of filteredItems) {
+      const il = item.inventoryLocation;
+      const key = inventoryKey(il.id);
+      m.set(key, {
+        key,
+        kind: 'inventory',
+        id: il.id,
+        warehouseKey: il.warehouseId ?? '',
+        warehouseId: il.warehouseId,
+        productCode: il.productCode,
+      });
+    }
+    if (showStockPool) {
+      for (const si of stockRows) {
+        const key = stockKey(si.id);
+        m.set(key, {
+          key,
+          kind: 'stock',
+          id: si.id,
+          warehouseKey: si.warehouseId ?? '',
+          warehouseId: si.warehouseId,
+          productCode: si.productCode,
+        });
+      }
+    }
+    return m;
+  }, [filteredItems, stockRows, showStockPool]);
+
+  const selectedRows = useMemo(
+    () => Array.from(selectedKeys).flatMap((k) => bulkRows.get(k) ?? []),
+    [selectedKeys, bulkRows],
+  );
+  // One bin is in one warehouse, so the first tick fixes which warehouse the rest must come from.
+  const selectionWarehouse: BulkRow | null = selectedRows[0] ?? null;
+
+  const warehouseLabel = useCallback(
+    (warehouseId: string | null) =>
+      warehouseId ? (warehouseCode.get(warehouseId) ?? 'another warehouse') : 'no warehouse',
+    [warehouseCode],
+  );
+
+  /** Why a row cannot join the selection, or null when it can. */
+  const tickBlockedReason = useCallback(
+    (warehouseKey: string, warehouseId: string | null): string | null => {
+      if (!selectionWarehouse || selectionWarehouse.warehouseKey === warehouseKey) return null;
+      return `Only rows from the same warehouse can be put away together. This row is in ${warehouseLabel(
+        warehouseId,
+      )}; the ticked rows are in ${warehouseLabel(selectionWarehouse.warehouseId)}.`;
+    },
+    [selectionWarehouse, warehouseLabel],
+  );
+
+  const clearSelection = useCallback(() => {
+    setSelectedKeys(new Set());
+    setBulkLocation(EMPTY_LOCATION);
+  }, []);
+
+  const toggleRow = useCallback((key: string) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  /** The select-all box over one table: ticks that table's rows from the selection's warehouse (or,
+   *  with nothing ticked yet, from its first row's), and unticks them when they are all ticked. */
+  const renderSelectAll = (tableRows: BulkRow[]): ReactNode => {
+    const warehouseKey = selectionWarehouse?.warehouseKey ?? tableRows[0]?.warehouseKey ?? '';
+    const eligible = tableRows.filter((r) => r.warehouseKey === warehouseKey);
+    const tickedHere = tableRows.filter((r) => selectedKeys.has(r.key)).length;
+    const allTicked = eligible.length > 0 && eligible.every((r) => selectedKeys.has(r.key));
+    const blocked = eligible.length === 0;
+    const box = (
+      <Checkbox
+        size="small"
+        checked={allTicked}
+        indeterminate={tickedHere > 0 && !allTicked}
+        disabled={blocked || bulkRunning}
+        onChange={() =>
+          setSelectedKeys((prev) => {
+            const next = new Set(prev);
+            for (const r of eligible) {
+              if (allTicked) next.delete(r.key);
+              else next.add(r.key);
+            }
+            return next;
+          })
+        }
+        inputProps={{ 'aria-label': 'Select all rows in this table' }}
+      />
+    );
+    return blocked ? (
+      <Tooltip title="Only rows from the same warehouse can be put away together, and none of these are.">
+        <span>{box}</span>
+      </Tooltip>
+    ) : (
+      box
+    );
+  };
+
+  const renderSelectCell = (row: BulkRow) => {
+    const reason = tickBlockedReason(row.warehouseKey, row.warehouseId);
+    const box = (
+      <Checkbox
+        size="small"
+        checked={selectedKeys.has(row.key)}
+        disabled={!!reason || bulkRunning}
+        onChange={() => toggleRow(row.key)}
+        inputProps={{ 'aria-label': `Select ${row.productCode}` }}
+      />
+    );
+    return (
+      <TableCell align="center" sx={{ px: 0 }}>
+        {reason ? (
+          <Tooltip title={reason}>
+            <span>{box}</span>
+          </Tooltip>
+        ) : (
+          box
+        )}
+      </TableCell>
+    );
+  };
+
+  const bulkOptions = optionsFor(selectionWarehouse?.warehouseId ?? null, bulkLocation);
+  const bulkValid = !!selectionWarehouse && isDefinedLocation(selectionWarehouse.warehouseId, bulkLocation);
+
+  // Each ticked row's whole quantity goes to the one bin, through the same mutation its own Assign
+  // button calls - one row at a time, so a failure is pinned to the row it belongs to. The rows that
+  // failed stay ticked with the reason listed, ready to try again; the rest leave the queue.
+  const handleBulkPutAway = useCallback(async () => {
+    const rows = selectedRows;
+    if (rows.length === 0) return;
+    const aisle = bulkLocation.aisle.trim();
+    const row = bulkLocation.row.trim();
+    const bay = bulkLocation.bay.trim();
+    setBulkRunning(true);
+    setBulkFailures([]);
+    const failures: BulkFailure[] = [];
+    for (const r of rows) {
+      try {
+        if (r.kind === 'inventory') {
+          await assignLocation({ variables: { inventoryLocationId: r.id, aisle, row, bay } });
+        } else {
+          await assignStockLocation({ variables: { stockItemId: r.id, aisle, row, bay } });
+        }
+      } catch (err: unknown) {
+        failures.push({
+          key: r.key,
+          productCode: r.productCode,
+          message: err instanceof Error ? err.message : 'Failed to put away',
+        });
+      }
+    }
+    const done = rows.length - failures.length;
+    const bin = `${aisle}-${row}-${bay}`;
+    setSelectedKeys(new Set(failures.map((f) => f.key)));
+    setBulkFailures(failures);
+    if (failures.length === 0) {
+      setBulkLocation(EMPTY_LOCATION);
+      showToast(`${done} ${done === 1 ? 'row' : 'rows'} put away in ${bin}`, 'success');
+    } else {
+      showToast(
+        `${done} of ${rows.length} rows put away in ${bin}; ${failures.length} did not - they are still ticked`,
+        'error',
+      );
+    }
+    if (rows.some((r) => r.kind === 'inventory')) refetch();
+    if (rows.some((r) => r.kind === 'stock')) refetchStock();
+    setBulkRunning(false);
+  }, [selectedRows, bulkLocation, assignLocation, assignStockLocation, showToast, refetch, refetchStock]);
+
   // ---- Render ----
 
   if (loading && !unlocatedData) {
@@ -413,7 +634,7 @@ export default function PutAwayTab() {
       <PageHeader
         title="Put Away"
         parent={{ label: 'Warehouse', to: '/app/warehouse' }}
-        description="Received hardware with no rack location yet. Pick a defined aisle, row and bay for each row — locations are defined on the Locations tab."
+        description="Received hardware with no rack location yet. Pick a defined aisle, row and bay for each row, or tick several rows from one warehouse and put them all in one bin — locations are defined on the Locations tab."
       />
 
       {/* Filters */}
@@ -472,6 +693,25 @@ export default function PutAwayTab() {
         )}
       </Box>
 
+      {/* #857: the rows a bulk put-away could not place, by name and with the reason, so the user
+          knows exactly which are still ticked and why. */}
+      {bulkFailures.length > 0 && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setBulkFailures([])}>
+          {bulkFailures.length === 1 ? '1 row was' : `${bulkFailures.length} rows were`} not put away and
+          {bulkFailures.length === 1 ? ' is' : ' are'} still ticked:
+          <Box component="ul" sx={{ m: 0, mt: 0.5, pl: 2.5 }}>
+            {bulkFailures.map((f) => (
+              <li key={f.key}>
+                <Box component="span" sx={monoSx}>
+                  {f.productCode}
+                </Box>
+                : {f.message}
+              </li>
+            ))}
+          </Box>
+        </Alert>
+      )}
+
       {filteredItems.length === 0 && (
         <Alert severity={items.length === 0 ? 'success' : 'info'} sx={{ mt: 2 }}>
           {items.length === 0
@@ -509,16 +749,26 @@ export default function PutAwayTab() {
                   </Box>
                 </AccordionSummary>
                 <AccordionDetails>
-                  <FitTable storageKey="put-away-project" columns={projectColumns(showWarehouse)}>
+                  <FitTable
+                    storageKey="put-away-project"
+                    columns={projectColumns(
+                      showWarehouse,
+                      renderSelectAll(
+                        categoryItems.flatMap((i) => bulkRows.get(inventoryKey(i.inventoryLocation.id)) ?? []),
+                      ),
+                    )}
+                  >
                     {categoryItems.map((item) => {
                       const id = item.inventoryLocation.id;
                       const loc = getLocationInput(id);
                       const rowOptions = optionsFor(item.inventoryLocation.warehouseId, loc);
                       const valid = isDefinedLocation(item.inventoryLocation.warehouseId, loc);
                       const isAssigning = assigningId === id;
+                      const bulkRow = bulkRows.get(inventoryKey(id));
 
                       return (
-                        <TableRow key={id} hover>
+                        <TableRow key={id} hover selected={selectedKeys.has(inventoryKey(id))}>
+                          {bulkRow ? renderSelectCell(bulkRow) : <TableCell />}
                           <TableCell sx={monoSx} title={item.inventoryLocation.productCode}>
                             {item.inventoryLocation.productCode}
                             {/* Site/Shop off the PO line, else the schedule's dominant value
@@ -638,7 +888,7 @@ export default function PutAwayTab() {
       {/* Stock pool: project-less, so it honors only the warehouse filter and is hidden under a
           project or PO filter (stock carries neither). assignStockItemLocation gives each unlocated
           row its aisle/row/bay. */}
-      {!projectFilter && !poFilter && stockRows.length > 0 && (
+      {showStockPool && (
         <Box sx={{ mt: 4 }}>
           <Typography variant="h6" sx={{ mb: 0.5 }}>
             Stock Pool
@@ -646,15 +896,23 @@ export default function PutAwayTab() {
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
             Unlocated fungible stock with no project claim. Give each a rack location.
           </Typography>
-          <FitTable storageKey="put-away-stock-pool" columns={stockColumns(showStockWarehouse)}>
+          <FitTable
+            storageKey="put-away-stock-pool"
+            columns={stockColumns(
+              showStockWarehouse,
+              renderSelectAll(stockRows.flatMap((si) => bulkRows.get(stockKey(si.id)) ?? [])),
+            )}
+          >
             {stockRows.map((si) => {
               const id = si.id;
               const loc = getLocationInput(id);
               const rowOptions = optionsFor(si.warehouseId, loc);
               const valid = isDefinedLocation(si.warehouseId, loc);
               const isAssigning = assigningId === id;
+              const bulkRow = bulkRows.get(stockKey(id));
               return (
-                <TableRow key={id} hover>
+                <TableRow key={id} hover selected={selectedKeys.has(stockKey(id))}>
+                  {bulkRow ? renderSelectCell(bulkRow) : <TableCell />}
                   <TableCell sx={monoSx} title={si.productCode}>
                     {si.productCode}
                   </TableCell>
@@ -715,6 +973,61 @@ export default function PutAwayTab() {
           </FitTable>
         </Box>
       )}
+
+      {/* #857: the selection bar for putting the ticked rows away together. Its frame is sticky to
+          the bottom of the viewport, so the bar stays in reach however far down the ticked rows sit;
+          while it shows, the frame's own height is room at the end of the page, so it never covers
+          the last row. Same bar as Inventory and Stock Pool, holding the same registry pickers the
+          rows use, narrowed to the ticked rows' warehouse. */}
+      <Box
+        sx={{
+          position: 'sticky',
+          bottom: 0,
+          height: selectedRows.length > 0 ? 96 : 0,
+          zIndex: 5,
+          pointerEvents: 'none',
+        }}
+      >
+        <SelectionActionBar count={selectedRows.length} onClear={clearSelection} bottom={16}>
+          <Box sx={{ display: 'flex', gap: 1, px: 0.5, py: 0.5, '& > *': { width: 88, minWidth: 0 } }}>
+            <LocationAutocomplete
+              label="Aisle"
+              value={bulkLocation.aisle}
+              onChange={(v) => setBulkLocation((prev) => ({ ...prev, aisle: v }))}
+              options={bulkOptions.aisles}
+              freeSolo={false}
+              disabled={bulkRunning}
+            />
+            <LocationAutocomplete
+              label="Row"
+              value={bulkLocation.row}
+              onChange={(v) => setBulkLocation((prev) => ({ ...prev, row: v }))}
+              options={bulkOptions.rows}
+              freeSolo={false}
+              disabled={bulkRunning}
+            />
+            <LocationAutocomplete
+              label="Bay"
+              value={bulkLocation.bay}
+              onChange={(v) => setBulkLocation((prev) => ({ ...prev, bay: v }))}
+              options={bulkOptions.bays}
+              freeSolo={false}
+              disabled={bulkRunning}
+            />
+          </Box>
+          <BarButton
+            variant="contained"
+            label={
+              bulkRunning
+                ? 'Putting away…'
+                : `Put away ${selectedRows.length} ${selectedRows.length === 1 ? 'row' : 'rows'} here`
+            }
+            onClick={handleBulkPutAway}
+            disabled={!bulkValid || bulkRunning}
+            reason={bulkRunning ? undefined : 'Pick a defined aisle, row and bay first.'}
+          />
+        </SelectionActionBar>
+      </Box>
     </Box>
   );
 }
