@@ -37,6 +37,7 @@ import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import NexusRegistrationPanel from './NexusRegistrationPanel';
 import POGenerateDialog from './POGenerateDialog';
+import { poDocumentGate } from './poDocumentGate';
 import { poVendorLabel, NO_GP_VENDOR, NO_GP_VENDOR_HINT } from './poVendorName';
 import { formatPoOrderDate, isGpEmptyDate, NO_GP_DATE_HINT } from './poOrderDate';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
@@ -89,6 +90,9 @@ interface PODetailModalProps {
   // Relay status owned by the PO page (single source of truth) - gates the Register in GP action.
   // null while the page's first relayStatus check is in flight.
   relayConnected?: boolean | null;
+  // #858: a PO REGISTRATION for this PO is waiting on PENDING GP WRITES. The PO page already joins the
+  // queue onto its rows, so it hands the answer down rather than this modal reading the queue again.
+  registrationQueued?: boolean;
 }
 
 // --- Component ---
@@ -99,6 +103,7 @@ export default function PODetailModal({
   onClose,
   onRefetch,
   relayConnected: relayConnectedProp,
+  registrationQueued = false,
 }: PODetailModalProps) {
   const { showToast } = useToast();
 
@@ -536,9 +541,10 @@ export default function PODetailModal({
   // live PO against the job that Nexus had dropped. Once GP has it, GP is where it gets unwound.
   const canCancel = po.status === 'DRAFT';
 
-  // The supplier PO document reads the buyer list + GP totals live, so it's only for a PO that
-  // exists in GP (has a GP company + number) and needs the relay connected.
-  const canGenerate = !!po.gpCompany && !!po.poNumber && po.status !== 'CANCELLED';
+  // #858: the supplier PO document reads its details from GP, so it is offered only for a PO GP
+  // holds and has been read back from - hidden on a Nexus Draft, held while the registration or its
+  // GP-PROCESSING read-back is still running, and held while the relay is down.
+  const documentGate = poDocumentGate(po, { registrationQueued, relayConnected });
 
   const displayTitle = po.poNumber ? `PO: ${po.poNumber}` : `Request: ${po.requestNumber}`;
 
@@ -577,19 +583,25 @@ export default function PODetailModal({
             </Button>
           )}
           <Box sx={{ flex: 1 }} />
-          {canGenerate && (
+          {documentGate !== 'hidden' && (
             <Tooltip
-              title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to generate a PO document (buyer + GP totals are read live)'}
+              title={
+                documentGate === 'relayDown'
+                  ? 'GP relay not connected - the PO document reads its details from GP, so start the relay to generate it'
+                  : ''
+              }
               arrow
             >
               <span>
                 <Button
                   variant="outlined"
-                  startIcon={<FileText {...ICON} />}
+                  startIcon={
+                    documentGate === 'registering' ? <CircularProgress size={16} /> : <FileText {...ICON} />
+                  }
                   onClick={() => setGenerateOpen(true)}
-                  disabled={!relayConnected}
+                  disabled={documentGate !== 'ready'}
                 >
-                  Generate PO Document
+                  {documentGate === 'registering' ? 'Registering in GP, please wait' : 'Generate PO Document'}
                 </Button>
               </span>
             </Tooltip>

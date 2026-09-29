@@ -45,6 +45,7 @@ import GpCompanyLabel from '../../relay/GpCompanyLabel';
 import { useActingCompany } from '../../company/ActingCompanyContext';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
+import { isAwaitingGpReadBack } from './poDocumentGate';
 import { isStatusCardActive, toggleStatusCard } from './statusCardFilter';
 import { HIGHLIGHT_PARAM, PROJECT_PARAM, parseHighlightParam } from './poTableLinks';
 import { Routes, Route, useNavigate, useSearchParams } from 'react-router-dom';
@@ -562,6 +563,8 @@ function POListPage() {
     loading: selectedLoading,
     error: selectedError,
     refetch: refetchSelected,
+    startPolling: startPollingSelected,
+    stopPolling: stopPollingSelected,
   } = useQuery<{ purchaseOrder: PurchaseOrder | null }>(GET_PURCHASE_ORDER, {
     variables: { id: selectedPOId },
     skip: !selectedPOId,
@@ -576,6 +579,17 @@ function POListPage() {
   const projects = useMemo(() => projectsData?.projects ?? [], [projectsData?.projects]);
   const projectsById = useMemo<ProjectsById>(() => new Map(projects.map((p) => [p.id, p])), [projects]);
   const selectedPO = selectedData?.purchaseOrder ?? null;
+
+  // #858: while the open PO's registration is queued or GP's copy has not been read back yet, the
+  // detail holds its Generate PO Document button. Re-read the PO until that settles, so the button
+  // comes up on its own instead of waiting for the person to close and reopen the PO.
+  const selectedAwaitingGp =
+    !!selectedPO && (queuedPoIds.has(selectedPO.id) || isAwaitingGpReadBack(selectedPO));
+  useEffect(() => {
+    if (!selectedAwaitingGp) return;
+    startPollingSelected(10_000);
+    return () => stopPollingSelected();
+  }, [selectedAwaitingGp, startPollingSelected, stopPollingSelected]);
 
   const projectNumberOf = (po: POListRow) => (po.projectId ? projectsById.get(po.projectId)?.projectId ?? '' : '');
   const projectNameOf = (po: POListRow) => {
@@ -991,6 +1005,7 @@ function POListPage() {
             onClose={handleCloseModal}
             onRefetch={handleRefetch}
             relayConnected={relayConnected}
+            registrationQueued={queuedPoIds.has(selectedPO.id)}
           />
         ) : (
           <Modal open title="Purchase Order" onClose={handleCloseModal} maxWidth="lg">

@@ -14,6 +14,7 @@ import PurchaseOrderDocument, { type PurchaseOrderDocumentProps } from './Purcha
 import type { PurchaseOrder } from './index';
 import { monoSx, microLabelSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
+import { documentCurrencyFromGp, formatGpAddress, type GpPoHeader } from './gpPoHeader';
 
 /** Section separator for this form: a 2px ink rule under a micro-label. */
 function SectionHeading({ children }: { children: ReactNode }) {
@@ -54,6 +55,19 @@ interface GpPoTotals {
   freight: number;
   miscellaneous: number;
   taxAmount: number;
+  // Null from a relay build older than #858, or when GP's header could not be read.
+  header: GpPoHeader | null;
+}
+
+/**
+ * One document field that GP can fill (#858). The buyer's saved value always wins; a field with none
+ * shows what GP holds, then the fallback, until the buyer types - and from then on it is theirs,
+ * even if they clear it. Derived rather than copied in an effect, so GP's answer arriving after the
+ * form is up fills the empty fields without ever overwriting one the buyer has touched.
+ */
+function useGpPrefilled(saved: string | null | undefined, gp: string | null | undefined, fallback = '') {
+  const [edit, setEdit] = useState<string | null>(saved ? saved : null);
+  return [edit ?? gp ?? fallback, setEdit] as const;
 }
 
 function formatDocDate(dateStr: string | null | undefined): string {
@@ -73,9 +87,9 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
-// Outer loader: the dialog hard-requires the relay (the Generate button is gated on it + a GP-
-// registered PO), so it fetches the boilerplate, the live GP buyers, and the PO's GP totals, then
-// renders the form once. The inner form initializes its state from those props (no effect-sync).
+// Outer loader. The boilerplate and the job number are Nexus's own, so the form waits for them. #858:
+// GP's side - the buyers and the PO's totals and header - is read fresh every time the dialog opens
+// and streams into the form, which shows those fields loading rather than holding the whole dialog.
 export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGenerateDialogProps) {
   const company = po.gpCompany ?? '';
   const poNumber = po.poNumber ?? '';
@@ -83,19 +97,20 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
   const { data: settingsData, loading: sLoading } = useQuery<{ poDocumentSettings: PODocumentSettings }>(
     GET_PO_DOCUMENT_SETTINGS, { skip: !open },
   );
-  const { data: buyersData, loading: bLoading } = useQuery<{ gpBuyers: string[] }>(GET_GP_BUYERS, {
+  const { data: buyersData } = useQuery<{ gpBuyers: string[] }>(GET_GP_BUYERS, {
     variables: { company }, skip: !open || !company,
   });
-  const { data: totalsData, loading: tLoading } = useQuery<{ gpPoTotals: GpPoTotals | null }>(GET_GP_PO_TOTALS, {
-    variables: { company, poNumber }, skip: !open || !company || !poNumber,
-  });
+  const { data: totalsData, loading: tLoading, error: tError } = useQuery<{ gpPoTotals: GpPoTotals | null }>(
+    GET_GP_PO_TOTALS,
+    { variables: { company, poNumber }, skip: !open || !company || !poNumber, fetchPolicy: 'network-only' },
+  );
   // Only for the document's Project Number field (the job number); ship-to is now free text.
   const { data: projectData, loading: pLoading } = useQuery<{ projectShipTo: { projectId: string } | null }>(
     GET_PROJECT_SHIP_TO, { variables: { projectId: po.projectId }, skip: !open || !po.projectId },
   );
 
   const settings = settingsData?.poDocumentSettings;
-  const loading = sLoading || bLoading || tLoading || pLoading;
+  const loading = sLoading || pLoading;
 
   return (
     <Dialog open={open} onClose={loading ? undefined : onClose} maxWidth="md" fullWidth>
@@ -111,6 +126,8 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
           settings={settings}
           buyers={buyersData?.gpBuyers ?? []}
           gpTotals={totalsData?.gpPoTotals ?? null}
+          gpLoading={tLoading}
+          gpError={tError ? tError.message : null}
           projectNumber={projectData?.projectShipTo?.projectId ?? null}
           onClose={onClose}
           onRefetch={onRefetch}
@@ -131,31 +148,50 @@ interface GenerateFormProps {
   settings: PODocumentSettings;
   buyers: string[];
   gpTotals: GpPoTotals | null;
+  /** GP's totals and header are still being read. */
+  gpLoading: boolean;
+  /** Why GP's totals and header could not be read, when they could not. */
+  gpError: string | null;
   projectNumber: string | null;
   onClose: () => void;
   onRefetch: () => void;
 }
 
-function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, onRefetch }: GenerateFormProps) {
+function GenerateForm({
+  po, settings, buyers, gpTotals, gpLoading, gpError, projectNumber, onClose, onRefetch,
+}: GenerateFormProps) {
   const { showToast } = useToast();
   const dd = po.documentData;
+  const gp = gpTotals?.header ?? null;
 
-  const [vendorAddress, setVendorAddress] = useState(dd?.vendorAddress ?? '');
-  const [buyerName, setBuyerName] = useState(dd?.buyerName ?? po.buyerId ?? '');
-  const [currency, setCurrency] = useState(dd?.currency ?? 'CAD');
-  const [shipTo, setShipTo] = useState(dd?.shipTo ?? '');
-  const [shippingMethod, setShippingMethod] = useState(dd?.shippingMethod ?? '');
+  // #858: saved document values first, then what GP holds on the PO, then the old fallbacks.
+  const [vendorAddress, setVendorAddress] = useGpPrefilled(
+    dd?.vendorAddress, formatGpAddress(gp?.vendorAddress, poVendorName(po) || null),
+  );
+  const [buyerName, setBuyerName] = useGpPrefilled(dd?.buyerName, gp?.buyerId, po.buyerId ?? '');
+  const [currency, setCurrency] = useGpPrefilled(
+    dd?.currency, gp ? documentCurrencyFromGp(gp.currency) : null, 'CAD',
+  );
+  const [shipTo, setShipTo] = useGpPrefilled(dd?.shipTo, formatGpAddress(gp?.shipTo));
+  const [shippingMethod, setShippingMethod] = useGpPrefilled(dd?.shippingMethod, gp?.shippingMethod);
   const [quotationNumber, setQuotationNumber] = useState(dd?.quotationNumber ?? '');
   // Required-by: saved override, else the vendor's expected date, else the PM's preferred date
   // (issue #216 - pre-send, expected doesn't exist yet, so the doc asks for the preferred date).
   const [requiredBy, setRequiredBy] = useState(
     dd?.requiredByOverride ?? po.expectedDeliveryDate ?? po.preferredDeliveryDate ?? '',
   );
-  // Totals: saved override if this PO was generated before, else the PO's own order-time value
-  // (issue #156), else the GP-read values, else 0.
-  const [freight, setFreight] = useState(String(dd?.freight ?? po.shippingCost ?? gpTotals?.freight ?? 0));
-  const [miscellaneous, setMiscellaneous] = useState(String(dd?.miscellaneous ?? gpTotals?.miscellaneous ?? 0));
-  const [taxAmount, setTaxAmount] = useState(String(dd?.taxAmount ?? gpTotals?.taxAmount ?? 0));
+  // Totals: saved override if this PO was generated before, else GP's own figures (#858: GP holds
+  // the PO, so its freight comes ahead of the order-time value Nexus kept, issue #156), else 0.
+  const gpAmount = (n: number | undefined) => (n == null ? null : String(n));
+  const [freight, setFreight] = useGpPrefilled(
+    dd ? String(dd.freight) : null, gpAmount(gpTotals?.freight), String(po.shippingCost ?? 0),
+  );
+  const [miscellaneous, setMiscellaneous] = useGpPrefilled(
+    dd ? String(dd.miscellaneous) : null, gpAmount(gpTotals?.miscellaneous), '0',
+  );
+  const [taxAmount, setTaxAmount] = useGpPrefilled(
+    dd ? String(dd.taxAmount) : null, gpAmount(gpTotals?.taxAmount), '0',
+  );
   const [taxLabel, setTaxLabel] = useState(dd?.taxLabel ?? 'Taxes');
   const [tariffAmount, setTariffAmount] = useState(String(dd?.tariffAmount ?? po.tariffAmount ?? 0));
   const [includeFsc, setIncludeFsc] = useState(dd?.includeFsc ?? false);
@@ -297,16 +333,40 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
     ? `Health-care tariff SA-code note (effective until ${formatDocDate(settings.usaTariffEffectiveUntil)})`
     : 'USA health-care tariff SA-code note';
 
+  // #858: a field GP fills shows it is waiting on GP while the read is in flight - unless the buyer
+  // saved a value for it, which GP never replaces. The field stays editable throughout.
+  const gpWaiting = (saved: unknown) => gpLoading && (saved === null || saved === undefined || saved === '');
+  const gpAdornment = (saved: unknown) =>
+    gpWaiting(saved)
+      ? { endAdornment: <CircularProgress size={14} aria-label="Reading from GP" sx={{ flexShrink: 0 }} /> }
+      : undefined;
+  const gpHelper = (saved: unknown, otherwise?: string) =>
+    gpWaiting(saved) ? 'Reading from GP…' : otherwise;
+
   return (
     <>
       <DialogContent dividers>
         <Stack spacing={2} sx={{ mt: 1 }}>
+          {gpError && (
+            <Alert severity="warning">
+              This PO&apos;s details could not be read from GP, so the fields GP would fill are left for you
+              to fill in. {gpError}
+            </Alert>
+          )}
+          {!gpLoading && !gpError && gpTotals && !gpTotals.header && (
+            <Alert severity="info">
+              GP did not send this PO&apos;s addresses or shipping method (the GP relay may be out of date), so
+              fill them in by hand.
+            </Alert>
+          )}
           <Typography component="h3" sx={microLabelSx}>Vendor &amp; buyer</Typography>
           <TextField
             label="Vendor mailing address" value={vendorAddress}
             onChange={(e) => setVendorAddress(e.target.value)}
             fullWidth size="small" multiline minRows={2}
             placeholder={`${poVendorName(po)}\nStreet\nCity, Prov  Postal`}
+            helperText={gpHelper(dd?.vendorAddress)}
+            slotProps={{ input: gpAdornment(dd?.vendorAddress) }}
           />
           <Stack direction="row" spacing={2}>
             <FormControl fullWidth size="small">
@@ -317,7 +377,7 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
                   <MenuItem key={b} value={b}>{b}</MenuItem>
                 ))}
               </Select>
-              <FormHelperText>Registered GP buyer for this PO.</FormHelperText>
+              <FormHelperText>{gpHelper(dd?.buyerName, 'Registered GP buyer for this PO.')}</FormHelperText>
             </FormControl>
             <FormControl size="small" sx={{ minWidth: 140 }}>
               <InputLabel>Currency</InputLabel>
@@ -332,12 +392,15 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
           <TextField
             label="Ship-to block" value={shipTo} onChange={(e) => setShipTo(e.target.value)}
             fullWidth size="small" multiline minRows={3}
-            helperText="Free text. Leave empty to print nothing under Ship To."
+            helperText={gpHelper(dd?.shipTo, 'Free text. Leave empty to print nothing under Ship To.')}
+            slotProps={{ input: gpAdornment(dd?.shipTo) }}
           />
           <TextField
             label="Shipping method" value={shippingMethod}
             onChange={(e) => setShippingMethod(e.target.value)}
             fullWidth size="small"
+            helperText={gpHelper(dd?.shippingMethod)}
+            slotProps={{ input: gpAdornment(dd?.shippingMethod) }}
           />
 
           <SectionHeading>Header details</SectionHeading>
@@ -353,16 +416,18 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
             />
           </Stack>
 
-          <SectionHeading>Totals (pre-filled from the PO / GP - override if needed)</SectionHeading>
+          <SectionHeading>Totals (filled from GP - override if needed)</SectionHeading>
           <Stack direction="row" spacing={2}>
             <TextField
               label="Freight" type="number" value={freight} onChange={(e) => setFreight(e.target.value)}
-              fullWidth size="small" slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+              fullWidth size="small" helperText={gpHelper(dd?.freight)}
+              slotProps={{ htmlInput: { min: 0, step: 0.01 }, input: gpAdornment(dd?.freight) }}
             />
             <TextField
               label="Miscellaneous" type="number" value={miscellaneous}
               onChange={(e) => setMiscellaneous(e.target.value)}
-              fullWidth size="small" slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+              fullWidth size="small" helperText={gpHelper(dd?.miscellaneous)}
+              slotProps={{ htmlInput: { min: 0, step: 0.01 }, input: gpAdornment(dd?.miscellaneous) }}
             />
             <TextField
               label="Tariffs" type="number" value={tariffAmount}
@@ -373,7 +438,8 @@ function GenerateForm({ po, settings, buyers, gpTotals, projectNumber, onClose, 
           <Stack direction="row" spacing={2}>
             <TextField
               label="Tax amount" type="number" value={taxAmount} onChange={(e) => setTaxAmount(e.target.value)}
-              fullWidth size="small" slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
+              fullWidth size="small" helperText={gpHelper(dd?.taxAmount)}
+              slotProps={{ htmlInput: { min: 0, step: 0.01 }, input: gpAdornment(dd?.taxAmount) }}
             />
             <TextField
               label="Tax label" value={taxLabel} onChange={(e) => setTaxLabel(e.target.value)}

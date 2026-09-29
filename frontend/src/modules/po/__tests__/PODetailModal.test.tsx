@@ -149,6 +149,7 @@ function renderModal(
   po: PurchaseOrder,
   mocks: MockedResponse[] = [],
   relayConnected: boolean | null = null,
+  registrationQueued = false,
 ) {
   const onClose = vi.fn();
   const onRefetch = vi.fn();
@@ -161,6 +162,7 @@ function renderModal(
           onClose={onClose}
           onRefetch={onRefetch}
           relayConnected={relayConnected}
+          registrationQueued={registrationQueued}
         />
       </ToastProvider>
     </MockedProvider>,
@@ -460,5 +462,38 @@ describe('PODetailModal', () => {
     renderModal({ ...registeredPo, origin: 'NEXUS', nexusRegistered: true }, []);
 
     expect(screen.queryByText('Nexus registered')).not.toBeInTheDocument();
+  });
+});
+
+// #858: the document reads its details from GP, so the button follows the PO's standing in GP.
+describe('PODetailModal Generate PO Document', () => {
+  const readBack = { ...registeredPo, gpSyncedAt: '2026-09-29T12:00:00Z' };
+
+  it('is not offered on a Nexus Draft', () => {
+    renderModal(draftPo, [], true);
+    expect(screen.queryByRole('button', { name: /Generate PO Document/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Registering in GP/ })).toBeNull();
+  });
+
+  it('waits while the registration is queued', () => {
+    renderModal(draftPo, [], true, true);
+    expect(screen.getByRole('button', { name: 'Registering in GP, please wait' })).toBeDisabled();
+  });
+
+  it("waits while GP's copy is still being read back", () => {
+    renderModal(registeredPo, [], true);
+    expect(screen.getByRole('button', { name: 'Registering in GP, please wait' })).toBeDisabled();
+  });
+
+  it('is held, with the reason, while the GP relay is not connected', () => {
+    renderModal(readBack, [], false);
+    const button = screen.getByRole('button', { name: 'Generate PO Document' });
+    expect(button).toBeDisabled();
+    expect(screen.getByLabelText(/GP relay not connected - the PO document reads its details from GP/)).toBeInTheDocument();
+  });
+
+  it('is offered once the PO is registered and read back', () => {
+    renderModal(readBack, [], true);
+    expect(screen.getByRole('button', { name: 'Generate PO Document' })).toBeEnabled();
   });
 });
