@@ -26,6 +26,7 @@ import {
 import { Ellipsis, MapPin, Plus, X } from 'lucide-react';
 import { motion } from 'motion/react';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import {
@@ -213,12 +214,13 @@ function buildUtilColumns(
             field: 'warehouseId',
             headerName: 'Warehouse',
             width: 130,
+            minWidth: 110,
             renderCell: ({ row }: { row: UtilRow }) => warehouseChip(row.warehouseId, warehouseCode),
           } as GridColDef<UtilRow>,
         ]
       : []),
-    { field: 'itemCount', headerName: 'Items', width: 100, type: 'number' },
-    { field: 'totalQuantity', headerName: 'Total Qty', width: 120, type: 'number' },
+    { field: 'itemCount', headerName: 'Items', width: 100, minWidth: 80, type: 'number' },
+    { field: 'totalQuantity', headerName: 'Total Qty', width: 120, minWidth: 110, type: 'number' },
     // #632: define / deactivate management, only for the roles the mutations accept.
     ...(manage
       ? [
@@ -226,6 +228,7 @@ function buildUtilColumns(
             field: 'manage',
             headerName: '',
             width: 120,
+            resizable: false,
             sortable: false,
             renderCell: ({ row }: { row: UtilRow }) => {
               if (!row.definedId) {
@@ -819,6 +822,13 @@ export default function LocationsTab() {
     [selected, warehouseCode, warehouseFilter, canManage, handleDeactivate, handleDefineRow],
   );
 
+  // #909: the columns fit the grid's width and never scroll sideways; resized widths are remembered.
+  // The compact rail is its own grid with its own widths.
+  const { setContainer, gridProps } = useGridColumnFit(
+    selected !== null ? 'warehouse.locations.rail' : 'warehouse.locations',
+    columns as GridColDef[],
+  );
+
   const isSelectedRow = useCallback(
     (row: LocationEntry) =>
       selected !== null &&
@@ -925,22 +935,26 @@ export default function LocationsTab() {
             style={{ minWidth: 0, height: 600, flexShrink: 0 }}
           >
             <DataGrid
+              ref={setContainer}
+              {...gridProps}
               rows={rows}
-              columns={columns}
               pageSizeOptions={[10, 25, 50]}
               initialState={{ pagination: { paginationModel: { pageSize: 25 } } }}
               disableRowSelectionOnClick
               onRowClick={handleRowClick}
               density="compact"
               getRowClassName={(p) => (isSelectedRow(p.row) ? 'row-selected' : '')}
-              sx={(theme) => ({
-                '& .MuiDataGrid-row': { cursor: 'pointer' },
-                // Same amber selection edge the theme gives every other selected row.
-                '& .row-selected': {
-                  bgcolor: 'action.selected',
-                  boxShadow: `inset 3px 0 0 ${theme.vars.palette.secondary.main}`,
-                },
-              })}
+              sx={[
+                gridProps.sx,
+                (theme) => ({
+                  '& .MuiDataGrid-row': { cursor: 'pointer' },
+                  // Same amber selection edge the theme gives every other selected row.
+                  '& .row-selected': {
+                    bgcolor: 'action.selected',
+                    boxShadow: `inset 3px 0 0 ${theme.vars.palette.secondary.main}`,
+                  },
+                }),
+              ]}
             />
           </motion.div>
           {selected && (

@@ -168,27 +168,31 @@ const backOrderColumns: GridColDef[] = [
     field: 'productCode',
     headerName: 'Description',
     flex: 1,
+    minWidth: 150,
     renderCell: (params) => <MonoCell value={params.value as string | null} />,
   },
-  { field: 'hardwareCategory', headerName: 'Item Number', flex: 1 },
-  { field: 'projectName', headerName: 'Project', flex: 1 },
-  { field: 'vendorName', headerName: 'Vendor', flex: 1 },
+  { field: 'hardwareCategory', headerName: 'Item Number', flex: 1, minWidth: 130 },
+  { field: 'projectName', headerName: 'Project', flex: 1, minWidth: 140 },
+  { field: 'vendorName', headerName: 'Vendor', flex: 1, minWidth: 140 },
   {
     field: 'poNumber',
     headerName: 'PO #',
     flex: 0.7,
+    minWidth: 110,
     renderCell: (params) => <MonoCell value={params.value as string | null} />,
   },
   // Ordered and Received beside Outstanding because the bare outstanding number does not say whether
   // a line is untouched or nearly complete, and "2 of 10" and "2 of 3" are very different problems.
   // The deleted Deliveries accordion was the only place this breakdown showed.
-  { field: 'orderedQuantity', headerName: 'Ordered', flex: 0.5, type: 'number' },
-  { field: 'receivedQuantity', headerName: 'Received', flex: 0.5, type: 'number' },
-  { field: 'outstandingQuantity', headerName: 'Outstanding', flex: 0.6, type: 'number' },
+  { field: 'orderedQuantity', headerName: 'Ordered', flex: 0.5, minWidth: 90, type: 'number' },
+  { field: 'receivedQuantity', headerName: 'Received', flex: 0.5, minWidth: 95, type: 'number' },
+  { field: 'outstandingQuantity', headerName: 'Outstanding', flex: 0.6, minWidth: 115, type: 'number' },
   {
     field: 'expectedDeliveryDate',
     headerName: 'Expected',
     flex: 1,
+    // The date and its urgency chip side by side.
+    minWidth: 190,
     renderCell: (params) => {
       const date = params.value as string | null;
       return (
@@ -302,6 +306,7 @@ export default function ReceivingPage() {
         field: 'poNumber',
         headerName: 'PO Number',
         flex: 0.8,
+        minWidth: 120,
         renderCell: (params) => (
           <Typography component="span" sx={{ ...monoSx, fontWeight: 600 }}>
             {params.value as string}
@@ -312,6 +317,7 @@ export default function ReceivingPage() {
         field: 'vendorName',
         headerName: 'Vendor',
         flex: 1,
+        minWidth: 150,
         // #701: a PO raised in GP with no vendor on it yet says so in plain words, and the hover
         // says whose gap it is. Every other row prints the vendor name exactly as it did before.
         renderCell: (params) => {
@@ -329,11 +335,13 @@ export default function ReceivingPage() {
           );
         },
       },
-      { field: 'projectName', headerName: 'Project', flex: 1 },
+      { field: 'projectName', headerName: 'Project', flex: 1, minWidth: 140 },
       {
         field: 'expectedDeliveryDate',
         headerName: 'Expected Delivery',
         flex: 1,
+        // The date and its urgency chip side by side.
+        minWidth: 190,
         renderCell: (params) => {
           const date = params.value as string | null;
           return (
@@ -352,18 +360,22 @@ export default function ReceivingPage() {
         field: 'pendingLines',
         headerName: 'Pending Lines',
         flex: 0.6,
+        minWidth: 120,
         type: 'number',
       },
       {
         field: 'pendingQty',
         headerName: 'Back Order',
         flex: 0.6,
+        minWidth: 110,
         type: 'number',
       },
       {
         field: 'status',
         headerName: 'Status',
         flex: 0.7,
+        // Room for the status chip and, briefly, the draft-pending chip beside it.
+        minWidth: 130,
         renderCell: (params) => {
           const status = params.value as string;
           // Short labels for the two common receiving states; the shared formatter handles the rest so a
