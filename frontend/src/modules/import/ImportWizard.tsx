@@ -15,8 +15,11 @@ import {
   Paper,
   Chip,
   Divider,
+  Checkbox,
+  FormControlLabel,
 } from '@mui/material';
 import { CheckCircle2, CloudUpload, FileText, FileUp, History, X } from 'lucide-react';
+import { checkJobNumber } from './jobNumberCheck';
 import { useLazyQuery, useMutation, useQuery } from '@apollo/client/react';
 import { useWizard } from '../../contexts/WizardContext';
 import { useToast } from '../../components/Toast';
@@ -451,6 +454,8 @@ export default function ImportWizard({
   // ---- Derived Data ----
 
   const parsed = parser.parseResult;
+  // #855: the parse result the user confirmed a job-number mismatch for (see canProceedStep0).
+  const [mismatchConfirmedFor, setMismatchConfirmedFor] = useState<typeof parsed | null>(null);
   const openings = parsed?.openings ?? [];
   const hardwareItems = parsed?.hardwareItems ?? [];
 
@@ -1328,7 +1333,11 @@ export default function ImportWizard({
 
   // ---- Step validations ----
 
-  const canProceedStep0 = parser.state === 'done';
+  // #855: a file for another job holds step 1 until the user says, on purpose, to import it here. The
+  // confirmation belongs to the parsed file itself, so a new upload asks again without a reset effect.
+  const jobCheck = checkJobNumber(parsed?.project?.submittal_job_no, project.projectId);
+  const mismatchConfirmed = parsed != null && mismatchConfirmedFor === parsed;
+  const canProceedStep0 = parser.state === 'done' && (jobCheck !== 'mismatch' || mismatchConfirmed);
   const canProceedStep2 = selectedOpenings.size > 0;
   // #565: hardware mode's step-2 gate - at least one product picked.
   const canProceedHardware = selectedProductKeys.size > 0;
@@ -1682,6 +1691,38 @@ export default function ImportWizard({
                       {hydratedFromPersisted ? 'Choose Different Source' : 'Upload Different File'}
                     </Button>
                   </Paper>
+
+                  {/* #855: the file names its own job; importing it onto another lands the wrong doors
+                      and hardware there, and everything built from them after. */}
+                  {jobCheck === 'mismatch' && (
+                    <Alert severity="warning" sx={{ mb: 2 }}>
+                      This file is for job{' '}
+                      <Box component="span" sx={monoSx}>
+                        {parsed.project.submittal_job_no}
+                      </Box>
+                      , but you chose{' '}
+                      <Box component="span" sx={monoSx}>
+                        {project.projectId}
+                      </Box>
+                      {project.description ? ` (${project.description})` : ''}. Check the file before going on.
+                      <FormControlLabel
+                        sx={{ display: 'flex', mt: 0.5 }}
+                        control={
+                          <Checkbox
+                            size="small"
+                            checked={mismatchConfirmed}
+                            onChange={(e) => setMismatchConfirmedFor(e.target.checked ? parsed : null)}
+                          />
+                        }
+                        label={`Import it into ${project.projectId} anyway`}
+                      />
+                    </Alert>
+                  )}
+                  {jobCheck === 'unknown' && (
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                      This file doesn't say which job it is for, so it can't be checked against {project.projectId}.
+                    </Typography>
+                  )}
 
                   <ValidationSummaryDisplay summary={parsed.validationSummary} />
                 </Box>
