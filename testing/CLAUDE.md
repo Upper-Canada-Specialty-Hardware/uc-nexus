@@ -8,7 +8,7 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 
 ## Environment
 
-**End-to-end testing happens on production, after the PR has merged, and nowhere else** (product owner ruling, 2026-09-25). Railway PR environments (the `uc-nexus-pr-<N>` Preview Environments, the `preview-env` check and its sticky comment, the `/testing/session` sign-in link and the `/testing/clerk-sign-in` mint flow) are abandoned as a testing surface. Do not open a PR to get an environment, do not wait on a `preview-env` check, and do not mint a sign-in token.
+**End-to-end testing happens on production, after the PR has merged, and nowhere else** (product owner ruling, 2026-09-25). PR environments are retired: their workflows and the backend and relay plumbing behind them were removed under #868 (PRs #874 and #877), so there is no environment to open, no check to wait on and no sign-in token to mint.
 
 - **Before the merge, verification is CI and code review only.** A PR is not click-tested before it merges. That is not permission to merge and forget: the click-through on production is part of finishing the work.
 - **Wait for the deploy.** Railway deploys the backend and frontend services automatically once master CI passes. Confirm it before testing:
@@ -22,9 +22,10 @@ This is a tester's knowledge journal for UC Nexus. It documents how the app work
 - **Drive it with Claude in Chrome only.** The agent drives the frontend through the Claude in Chrome extension (`mcp__claude-in-chrome__*`: `tabs_context_mcp`, `tabs_create_mcp`, `navigate`, `find`, `read_page`, `get_page_text`, `computer`, `browser_batch`, `read_console_messages`, `tabs_close_mcp`, plus `javascript_tool` and `file_upload` when needed) in the owner's own Chrome session. Never the Chrome DevTools MCP, never desktop-level clicking, and never a local runtime.
 - **No sign-in step.** The owner's Chrome is already signed in to UC Nexus. Never mint a sign-in token and never enter a password. If the page shows the Clerk sign-in form, stop and ask the owner to sign in.
 - **Test against TUBC only.** TUBC is the test company in GP, and the only one to test against. Production also holds UBC and UCSH data; leave it alone.
+- **A UC NEXUS ADMIN works in one GP company at a time (#845, PRs #849, #862 and #864).** The owner's account is an admin, so the app bar carries a company switcher (its `aria-label` reads `GP company: <company>. Switch company`). Switching remembers the pick and resets the Apollo store. The pick is per tab (sessionStorage), and a new tab starts on the last pick made in any tab (localStorage). Every request carries the choice in the `X-Nexus-Company` header, which scopes the PO table, projects, warehouse, shipping and the GP reads to that company. User Management, Relay Installs, NEXUS GP TRAFFIC, Reset data and Database Access are cross-company and say "All GP companies - the company in the app bar does not apply here" under the title. **Switch to TUBC before touching test data, and switch back to the owner's usual company when you finish**, because the owner's next new tab opens on whatever you picked last.
 - **Anything that writes to GP is an outward write, even on TUBC.** Registering a PO, approving a receive and creating a GP job all write into the live GP SQL server. Say what will be written before doing it.
-- **A relay change ships as an auto-built relay release on merge.** The workstation relay picks it up on its daily poll, or when someone presses "Update now" on the relay window. Before testing a flow that depends on relay changes, confirm the relay is on the new build: the feature's live list loads instead of the "relay out of date" fallback, or `{ relayStatus { connected company build } }` reports the new build.
-- **Test XML file**: `testing/fixtures/contracterp-74.xml` - TITAN hardware schedule export, use for Import wizard testing (upload through the extension's `file_upload` tool; see the size limit under Claude in Chrome Patterns).
+- **A relay change ships as an auto-built relay release on merge.** The workstation relay picks it up on its daily poll, or when someone presses "Update now" on the relay window. Before testing a flow that depends on relay changes, confirm the relay is on the new build: the feature's live list loads instead of the "relay out of date" fallback, or `{ relayStatus { connected companies build } }` reports the new build. (`relayStatus` has no `company` field; it carries `companies`, the codes the relay serves, and `gpCompanies { id name }`, the same list with GP's names.)
+- **Test XML file**: `testing/fixtures/contracterp-74.xml` - TITAN hardware schedule export (job `22713`), use for Import wizard testing. It is too large for the extension's upload tool, and the tool only accepts files the session was given, so upload a trimmed copy built in the session's scratchpad; see "Lessons from driving the app" under Claude in Chrome Patterns.
 
 ### Every resolver needs a token now (#415)
 
@@ -47,6 +48,11 @@ Consequences when driving the app by script:
 - Admin-gated reads worth knowing, because a non-admin session gets FORBIDDEN rather than an empty
   list: `users`, `adminStats`, `adminOpeningStatuses`, `adminOpeningDeepDive`, `locationDuplicates`. Their writes too -
   the warehouse CRUD, `overrideInventoryQuantity`, `mergeLocations`.
+- **Send `X-Nexus-Company` too** (#845). Apollo adds it to every request from the switcher's pick,
+  but a hand-built `fetch` does not, and an admin request without it is unscoped: it reads every
+  company at once. Send `X-Nexus-Company: TUBC` so a scripted read sees what the page sees. A code the
+  backend does not know is refused with `Unknown GP company 'X'.` (`VALIDATION_ERROR`); for anyone who
+  is not a UC NEXUS ADMIN the header is ignored.
 - `require_admin` costs a Clerk Backend API round-trip per call (`require_user` does not), so a page
   hitting several admin resolvers at once is legitimately slower than the equivalent user page.
 
@@ -58,7 +64,7 @@ stock. What production's TUBC data already carries is yours to use, but every sc
 hardware that does not exist yet waits on the relay. Establish both in the first minute:
 
 ```
-{ relayStatus { connected company build } }
+{ relayStatus { connected companies build } }
 { inventoryRows { inventoryLocation { hardwareCategory quantity } } }
 ```
 
@@ -182,45 +188,34 @@ this section; re-check `relayStatus` first. Two things worth knowing from that s
   relay fault. `relayStatus` is `require_user`-gated now, so a stale `getToken()` value in a
   `javascript_tool` fetch helper logs a full stack trace server-side. Re-mint with `getToken({skipCache:true})`.
 
-### Seeding inventory: the PO must come from the wizard, not the Create PO dialog
+### Seeding inventory: any received PO counts, a wizard PO also moves the schedule
 
-**A manually-created PO seeds inventory but cannot open the assembly Reconciliation gate.** This costs
-an hour if you learn it the hard way. The gate is `computeAvailableQty` in `ReconciliationStep.tsx`,
-which for `purpose === 'assembly'` returns `breakdown.get('RECEIVED')` - the *lifecycle status of the
-hardware-schedule item*, not live stock. Receiving against a PO built in the **Create PO dialog**
-produces real `InventoryLocation` rows (`projectInventoryAvailability` shows them, the allocator would
-happily reserve them) while every schedule row stays `Gap Remaining`, so Reconciliation still says
-`No items have In Inventory status` and Next stays disabled.
+**Stock from any received PO can now be batched for shop assembly.** An earlier revision of this
+section said a PO from the Create PO dialog could not open the assembly wizard's Reconciliation gate.
+That gate is gone twice over: a shop-assembly request is a flag over openings that checks nothing at
+creation (#646, PR #660), and the wizard's Reconciliation step was retired (#814, PR #825). The
+availability check now runs when the Shop Assembly Manager creates a batch
+(`create_shop_assembly_batch` gates on the project's live inventory), so received stock counts
+whichever dialog raised its PO.
 
-To seed stock that *counts*, run the wizard with purpose **Create Purchase Orders** over the openings
-you intend to assemble, then register + receive that PO. Its lines are bound to the schedule items, so
-receiving flips them to `In Inventory: N` and the gate opens.
+**The schedule is where the origin still matters.** Only a PO raised through the wizard with purpose
+**Create Purchase Orders** has lines bound to the schedule's hardware items, so only receiving that
+PO moves those items to received in Hardware Status by Project and `adminOpeningDeepDive`. Use the
+wizard when the test is about schedule status, and either path when all you need is stock.
 
 **A wizard-created PO loses that binding if you register it by calling `registerPoInGp` yourself.** The
 mutation *replaces* the draft's line items with the set you send (that is its documented job - the
 register dialog is allowed to edit them), so hand-built `lineItems` produce lines with no link back to
 the schedule rows. The PO registers, GP takes it, the receive posts and inventory appears - and every
-schedule item is still `PO_DRAFTED`, so the assembly gate refuses exactly as it does for a
-Create-PO-dialog PO. Verified 2026-08-03: two POs (PO0000082, PO0000083) and two receipts
-landed in TUBC and `projectInventoryAvailability` showed all four products, while the opening's
-hardware still read as unpurchased across the board (`openingHardwareStatus` at the time, which
-called it `PO_DRAFTED`; `adminOpeningDeepDive` now reports the same severed binding honestly, as
-`notPurchased`). Drive the register
-**dialog** when the schedule linkage matters; scripting the mutation is only safe when all you want is
-stock in the pool. Keep the GP footprint small by using the
-Reconciliation step's own checkboxes (PO purpose only): `Deselect All`, then tick just the one product
-you want, and at the PO step check a single manufacturer card. Fill **Order As** on that step - an
-import-created draft otherwise blocks the register dialog with per-line `Required` errors.
-
-**The register dialog's Register button is silently inert while validation fails, and the buyer rule
-is the one that catches you.** `validate()` in `GpPurchaseOrderDialog.tsx` refuses with
-`Buyer <id> is not assigned to this project` when `registerProjectAllowed` is false, and a project
-nobody has registered against yet usually has no buyer assignment - so the first registration on a
-fresh project hits it. The button is not disabled and no toast fires; the only signal is the alert
-already sitting at the top of the dialog, which reads like a warning rather than a blocker. If a
-click produces no network request at all, that is what happened. Fix it properly at Admin -> Buyers
--> Add Buyer (pick the GP buyer your account is linked to, add the project), not by scripting the
-mutation.
+schedule item still reads as unpurchased. Verified 2026-08-03: two POs (PO0000082, PO0000083) and two
+receipts landed in TUBC and `projectInventoryAvailability` showed all four products, while the
+opening's hardware still read as unpurchased across the board (`adminOpeningDeepDive` reports the
+severed binding as `notPurchased`). Drive the register **dialog** when the schedule linkage matters;
+scripting the mutation is only safe when all you want is stock in the pool. Keep the GP footprint
+small on the wizard's Organize PO Drafts step: tick a single draft card (every card starts unticked),
+and trim it with each line's `Line actions for <productCode>` menu -> `Remove line`. Fill **Order As**
+on that step - an import-created draft otherwise blocks the register dialog with per-line `Required`
+errors.
 
 **A PO whose lines share a GP item number used to fail with eConnect 9191. It is the item numbers,
 not the line count** (issue #538, fixed). An earlier revision of this file blamed the line count and
@@ -252,11 +247,9 @@ characters before suspecting anything else.
 foreign-currency PO. Pick a CAD vendor instead (ALLMAR INC. worked on the same PO seconds later).
 The dialog's Currency field tells you before you submit.
 
-**The register dialog's `Buyer (you)` field is the authority on your buyer identity, not the User
-Management grid.** On 2026-08-10 the grid's GP BUYER column showed `BCPurchasing` for the signed-in
-account while the dialog submitted as `mira` - so the buyer-assignment fix (Admin -> Buyers) must
-target the id the DIALOG shows, or the alert stays. Assign the dialog's id to the project and the
-alert clears on reopen.
+**There is no buyer-assignment gate any more (#695), and no Buyers page.** The register dialog's
+read-only `Buyer (you)` field shows the signed-in user's GP identity, set in User Management; since
+#724 that identity needs the PO User role, and removing the role clears it.
 
 **Receiving is now draft-first with a required packing slip and a manager approval gate.** The
 Receive wizard's location step is gone: select POs -> quantities -> ATTACH A PACKING SLIP (any
@@ -287,10 +280,10 @@ Two other things worth knowing when GP is refusing outright:
 
 **A re-import wipes the classification of every item it does not re-classify.** `finalize_import_session`
 re-persists the selected openings' hardware items with whatever the Classification step sent, so a
-run whose step only lists the one item needing ordering (the assembly purpose does this) leaves the
-rest with `classification = null`. Anything reading Site/Shop - the #451 coverage groups, the
-shop-assembly filter - then sees them as unclassified. Re-run the PO purpose over the opening and
-classify the whole grid to restore it.
+run whose step only lists some of the items leaves the rest with `classification = null`. Anything
+reading Site/Shop - the #451 coverage groups, the shop-assembly filter - then sees them as
+unclassified. Re-run the PO purpose over the opening and classify the whole grid to restore it, or
+correct the items on the Tenant Owner's hardware classification page (`/app/tenant-owner/projects/:id/classifications`, #735).
 
 ### A stacked PR gets NO CI, and backend tests are the thing you lose
 
@@ -313,6 +306,18 @@ caught two failures that all three stacked PRs were reporting as clean:
   all build the schema. Pass `create_type=False` on the column's reference.
 - a delivery-request test payload one field short after `DELIVERY_REQUEST_FIELDS` grew.
 
+### What CI runs on a PR to master
+
+- **The frontend tests run in four shards** (`Frontend tests (1/4)` to `(4/4)`, `vitest run
+  --shard=i/4`) beside one `Frontend build` job (npm ci, lint, build). A `Frontend` job gathers them,
+  and it is the check the master ruleset requires (#837 and #870, PRs #867 and #880). A red shard
+  shows under its own name; `Frontend` only says that something below it failed.
+- **A PR only runs the jobs for the folders it touches** (#869, PR #883). A `Changes` job diffs the
+  PR: `frontend/` runs the frontend jobs, `backend/` runs Backend and Migration Integrity, and
+  `relay/` runs Relay. A job skipped this way counts as passing, so a docs-only or frontend-only PR
+  legitimately shows Backend as skipped. A change to `ci.yml` and every push to master run
+  everything, and so does a failed `Changes` job.
+
 ## Getting Started (Every Session)
 
 1. **Confirm the change is on production.** The PR is merged, master CI is green, and the newest
@@ -321,16 +326,17 @@ caught two failures that all three stacked PRs were reporting as clean:
    bundle; open a fresh tab or add a cache-buster (`?cb=1`).
 2. **Confirm the relay build, if the flow depends on it.** A relay change reaches the workstation on
    its daily poll or through "Update now". Check that the feature's live list loads rather than the
-   "relay out of date" fallback, or read `{ relayStatus { connected company build } }`.
+   "relay out of date" fallback, or read `{ relayStatus { connected companies build } }`.
 3. **Open a tab.** Load the Claude in Chrome tools (one `ToolSearch` call for the whole set), call
    `tabs_context_mcp` to see the session, then `tabs_create_mcp` for a tab of your own, and `navigate`
    it to `https://frontend-production-34fc.up.railway.app/app`.
 4. **You are already signed in.** The tab shares the owner's Chrome session, so you land on `/app`,
    the Module Selector. No token, no password, no verification code. If you see the Clerk sign-in form
    instead, stop and ask the owner to sign in.
-5. **Pick TUBC.** Work in TUBC's projects and POs only, and say what will be written to GP before any
-   step that writes there.
-6. **Close your tabs** with `tabs_close_mcp` when you are done.
+5. **Switch to TUBC.** Pick TUBC in the app-bar company switcher, work in TUBC's projects and POs
+   only, and say what will be written to GP before any step that writes there.
+6. **Put the switcher back and close your tabs.** Switch back to the company the owner was working in
+   (a new tab opens on the last pick), then close your tabs with `tabs_close_mcp`.
 
 **Reset data is not a testing step any more.** On production the UC Nexus Admin -> Reset data page
 (`/app/nexus-admin/reset-data`) drops and rebuilds the whole schema. Never use it to get back to a
@@ -374,8 +380,16 @@ instruction.
   the digits, and confirm on a state-derived readout (a button label, a total) rather than the
   input's DOM value.
 - **Scripted GraphQL calls from the page go through `javascript_tool`.** Mint a token first
-  (`await window.Clerk.session.getToken({skipCache: true})`) and send it as a bearer header; see
-  "Every resolver needs a token now" above.
+  (`await window.Clerk.session.getToken({skipCache: true})`) and send it as a bearer header, with
+  `X-Nexus-Company: TUBC` beside it; see "Every resolver needs a token now" above.
+- **Check that the tab is visible before measuring anything or typing.** When the Chrome window sits
+  behind other windows, the tab reports `document.visibilityState === "hidden"` and Chrome throttles
+  its timers. A timing loop built on `await new Promise(r => setTimeout(r, n))` then shows fake
+  multi-second freezes, keystrokes can land in the wrong field, and count-up gauges (the Warehouse
+  landing's, for example) stay at 0. Read `document.visibilityState` first; if it is `hidden`, bring the
+  window forward with the Windows MCP `App` tool (mode `switch`, name `UC Nexus - Google Chrome`), and
+  take measurements synchronously (`performance.now()` around the work itself) rather than across
+  awaited timers.
 
 ### MUI Select Dropdowns
 - MUI `<Select>` renders its dropdown in a **portal** (`<div role="presentation">`), not inside the Select element.
@@ -403,17 +417,16 @@ instruction.
 
 ### Lessons from driving the app
 
-- **`file_upload` caps at 10 MB and `contracterp-74.xml` is 11.5 MB**, so the real file cannot be uploaded through the tool at all. Either take the "Use last uploaded schedule" card (almost always right), or build a subset: keep everything up to `<Detail>` (that block holds all 1998 opening/assignment definitions, ~1.07 MB) then append `<Detail>` + the first N `</Material_List>`-delimited blocks + `</Detail></Contract>`. ~600 blocks lands at ~3.5 MB, parses clean, and yields "1998 openings parsed / 12746 hardware items parsed / 22 opening(s) had no hardware items assigned". Parsing is entirely client-side - nothing is persisted until Finalize - so uploading a trimmed file is safe on a database you are trying to preserve.
+- **`file_upload` caps at 10 MB and `contracterp-74.xml` is 11.5 MB**, so the real file cannot be uploaded through the tool at all. **The tool also accepts only files the session was given**; the session's scratchpad directory counts, so build the upload there rather than in the repository. Either take the "Use last uploaded schedule" card (almost always right), or build a subset: keep everything up to and including `<Detail>` (the part before it holds all 1998 opening/assignment definitions, ~1.07 MB), then the first ~600 `</Material_List>`-delimited blocks, then `</Detail></Contract>`. That lands at about 3.6 MB, parses clean, still carries `Submittal_Job_No` 22713, and yields "1998 openings parsed / 12746 hardware items parsed / 22 opening(s) had no hardware items assigned". Parsing is entirely client-side - nothing is persisted until Finalize - so uploading a trimmed file is safe on a database you are trying to preserve.
 - **`navigate` costs a full reload and wipes any instrumentation you injected.** React Router picks up `history.pushState(...)` + `window.dispatchEvent(new PopStateEvent('popstate'))`, so route sweeps can be done client-side with a `fetch` wrapper still installed. That wrapper is far better evidence than `read_network_requests`, which only starts recording when first called and misses everything before it, and it can see GraphQL errors - which come back **HTTP 200** with an `errors` array, so status-code filtering finds nothing.
 - **A `javascript_tool` call that hits the 45s CDP timeout keeps running in the page.** Its `await` chain continues after the tool has given up, so the next call races it and you get results tagged with the wrong route. Keep loops under ~8 route-hops, or step one route per call. If output ever looks mismatched, sleep ~6s and start over.
 - `computer screenshot` times out with "renderer may be frozen" while the Import wizard renders 1998 openings or 26k classification rows. It is not frozen - wait 10s and take it again. Same for the first paint after "Use last uploaded schedule".
 - The screenshot image is scaled down from the real viewport (1568px wide image for a 1918px window), so a card that looks cut off at the right edge usually is not. Check `document.documentElement.scrollWidth === clientWidth` before reporting a horizontal-overflow regression.
 - The Pull Request detail modal **closes on Escape since the 2026-07-28 UI revamp** (it used to swallow it). Its nested confirm dialogs are siblings, so an Escape inside a confirm closes only the confirm. "Cancel Pull" is still a real destructive action - never use it as a way out.
-- MUI option cards (import Purpose, module "Go to" cards) are `useNavigate` buttons with no `href`, so there are no anchors to click and `find`'s ref sometimes lands on the inner text node rather than the clickable card. Setting the underlying `input[type=radio]`/`input[name=select_row]` via native `.click()` works reliably and does update React state.
+- MUI option cards (module "Go to" cards, the PO module's "Create a PO" chooser) are `useNavigate` buttons with no `href`, so there are no anchors to click and `find`'s ref sometimes lands on the inner text node rather than the clickable card. Setting the underlying `input[type=radio]`/`input[name=select_row]` via native `.click()` works reliably and does update React state.
 - The import landing project card is a `MuiCardActionArea` **button** wrapping the `MuiPaper`. Coordinate clicks land on it only sometimes (it takes focus but does not activate, and Enter does not help either). Reliable: find the element whose `textContent` matches the project *and* whose `tagName === 'BUTTON'`, then `.focus()` + `.click()`.
 - **Select Openings is paginated at 50 rows/page, ordered by the schedule, not sorted**, and the "Filter" control is a Select (column filter), *not* a text search - there is no way to type an opening number. To enumerate or tick specific openings, scroll the `.MuiDataGrid-virtualScroller` in ~150px steps, and after each `scrollTop` assignment **dispatch a `scroll` event and wait ~450ms** or the virtualizer does not re-render and you silently collect only the first screenful (17 of 50). Keep the sweep under ~40s of `await` or the 45s CDP cap kills the call mid-loop - it leaves the page in a valid state (rows already ticked stay ticked), so just re-run and top up the selection.
-- The Receive modal has **two** confirmations: `Complete Receive` opens a nested `Confirm Receive` ("Receive N items across M PO into inventory?") whose button is just `Receive`. Scripting only the outer button looks like a silent no-op - inventory stays empty and the outbox stays at 0 because no mutation ever fired.
-- Receive modal quantity + location fields take a native value-setter + `input`/`change` event fine (no need for the ArrowUp trick), and the location block only appears once a Receive Now qty > 0. `all placed` chips per product gate `Complete Receive`.
+- The Receive modal has **two** confirmations: `Submit for Approval` opens a nested `Submit for Approval` confirm ("Submit N items across M PO(s) for a Warehouse Manager to review? ...") whose button is just `Submit`. Scripting only the outer button looks like a silent no-op - no receive draft appears because no mutation ever fired.
 - **DataGrid rows can be invisible to the accessibility tree.** A read may give you `columnheader`s
   and the pagination controls and *nothing else* - no row refs - so a ref click cannot reach a row.
   Read rows with `javascript_tool` over `[role="row"]`, and prefer the per-cell form, which
@@ -435,10 +448,16 @@ Not started` - replace newlines before matching, or assert on the parts.
   answering is not sufficient, it answers on the old build too.
 - **A scripted GraphQL read is faster than the UI for setup and assertions.** Every resolver needs a
   token since #415, so run it from the signed-in page with `javascript_tool` and a fresh
-  `getToken({skipCache: true})` bearer. A query that is partly refused returns HTTP 200 with
+  `getToken({skipCache: true})` bearer, plus `X-Nexus-Company: TUBC`. A query that is partly refused returns HTTP 200 with
   `data.<field>: null` *and* an `errors` array - if a list looks mysteriously empty, print `errors`
   before concluding the data is missing.
-- Allocator step (#378) specifics: the summary table is `Owed / Available / Allocated / Left to assign / Short`; each leaf card carries a `Fully covered` / `Not covered - auto-dropped` chip, an `N of M allocated` caption and an include/exclude toggle; the steppers have `aria-label`s `Add one <productCode>` / `Remove one <productCode>` and the `+` disables at `allocated === owed`. Driving a leaf's only line to 0 flips it to auto-dropped, greys the card, drops it out of the `Door leaves (N of M being sent)` count, removes its owed units from the summary, and shows an amber `N short` chip - **and Next stays enabled**, which is the whole point of the change.
+- **No horizontal scroll anywhere, tables included (#856, PR #907).** The project instructions file's
+  second UI law now covers tables and grids: columns fit their container through the shared
+  `useFitColumns` hook (`frontend/src/components/fitColumns.ts`) and the `FitTable` component, and
+  each header edge is a resize handle (drag it, or focus the `Resize <column> column` separator and use
+  the arrow keys). Widths are remembered per person in localStorage. A table that scrolls sideways
+  inside its own box is a regression now, not an acceptable fallback; check the table container's
+  `scrollWidth === clientWidth` as well as the page's.
 
 ---
 
@@ -447,26 +466,32 @@ Not started` - replace newlines before matching, or assert on the parts.
 ```
 /                          -> Clerk Sign-In
 /app                       -> Module Selector (6 module cards)
-/app/import                -> Start a Request (project landing -> hardware schedule wizard). NOT in the
-                              sidebar since #471 - reached from the "Start a Request" button in the Shop
-                              Assembly and Shipping headers, which append ?purpose=assembly|shipping
-                              (Shipping also passes ?projectId=, so its button opens the wizard directly).
-                              In the PO module since #480 there is no separate Start a Request button:
-                              "Create a PO" opens a chooser, and "From hardware schedule" navigates here
-                              with ?purpose=po
-/app/po                    -> Purchase Orders (project landing -> PO list)
+/app/import                -> Hardware schedule wizard (project landing -> wizard). NOT in the sidebar
+                              since #471. The purpose is fixed by the link (#642): Shop Assembly's
+                              "Start a Request" appends ?purpose=assembly, the PO module's "Create a PO"
+                              chooser opens "From schedule - by opening" (?purpose=po) or "From schedule -
+                              by hardware" (?purpose=po&mode=hardware), and a bare /app/import is the
+                              schedule import itself. An old ?purpose=shipping link redirects to
+                              /app/shipping/requests/new
+/app/po                    -> The PO table (no project landing; ?project=<id> and ?highlight=<ids>, #851)
+/app/po/document-settings  -> PO Document Settings
 /app/warehouse             -> Warehouse landing (stat cards + Go-to cards for sub-routes)
 /app/warehouse/inventory   -> Inventory (hardware items by project)
 /app/warehouse/locations   -> Locations (master-detail bin browser)
-/app/warehouse/receiving   -> Receiving wizard
+/app/warehouse/receiving   -> Receiving (POs awaiting receipt, back-ordered items, recent activity)
+/app/warehouse/receive-approvals -> Receive approvals (Warehouse Manager)
 /app/warehouse/put-away    -> Put Away (unlocated items queue)
-/app/warehouse/pull-requests -> Pull Requests
+/app/warehouse/pull-requests -> Pull Requests (and /:id/pick, the pick page)
 /app/warehouse/stock-pool  -> Stock Pool (non-project stock items)
 /app/warehouse/deficient-items -> Deficient Items Review
-/app/warehouse/shipments   -> Shipments (global packing slip list + return dialog)
-/app/shop-assembly         -> Shop Assembly landing (stat cards + one Go-to card)
-/app/shop-assembly/requests  -> Requests: accept / reject / reopen, with the stage each has reached
-/app/shipping              -> Shipping Out (ship-ready items, packing slips)
+/app/warehouse/shipments   -> redirects to /app/shipping/shipments
+/app/shop-assembly         -> Shop Assembly landing (stat cards, Start a Request, one Go-to card)
+/app/shop-assembly/requests  -> Requests: Pending / Worked / Rejected; batches are made here (#646)
+/app/shipping              -> Shipping landing (Start a Request opens /app/shipping/requests/new)
+/app/shipping/requests     -> Shipping requests: Pending / Accepted / Rejected, "New request"
+/app/shipping/requests/new -> Request workspace (schedule and loose lines in one cart, #608)
+/app/shipping/staging      -> Staging (the staged pool, packing slips)
+/app/shipping/shipments    -> Shipments (packing slip list, lifecycle, return dialog; ?slip=PS-...)
 /app/tenant-owner          -> Tenant Owner (projects, warehouses, dashboards, users)
 /app/nexus-admin           -> UC Nexus Admin (users, relay, GP traffic, system setup)
 ```
@@ -477,7 +502,7 @@ Not started` - replace newlines before matching, or assert on the parts.
 
 The module guides below are organised by *screen*, which is the wrong shape for a first read: one
 request's journey crosses three of them. This is that journey once, with the screen that owns each
-step. Everything in it is exercisable against Railway.
+step. Everything in it is exercisable on production against TUBC.
 
 **v1 does not manage doors.** The opening is a label - demand attribution before receiving, a text
 tag on a line after it - and hardware exits the system when a pull completes. There is no assembled
@@ -486,19 +511,19 @@ build / ship / are complete" is not a question this version answers.
 
 | # | What happens | Where you do it | What changes underneath |
 | --- | --- | --- | --- |
-| 1 | **Compose** a request | Shop Assembly or Shipping -> Start a Request | The composer offers `owed - sent - claimed` per opening; you assign what is free to each line. A PENDING request, and the hardware is **reserved** on the spot (#342) |
-| 2 | **Accept** it | Shop Assembly -> Requests, or Shipping -> Requests | A PENDING warehouse pull carrying one line per allocated request line. A pure human gate - nothing is re-checked, nothing is spent. Rejecting instead is what releases the claim |
+| 1 | **Raise** a request | Shipping -> Start a Request (the request workspace); Shop Assembly -> Start a Request (the wizard) | Shipping out: the workspace offers `owed - sent - claimed` per opening; you assign what is free to each line, and the hardware is **reserved** on the spot (#342). Shop assembly: the request only flags openings and records what each is owed. It reserves nothing and checks nothing (#646) |
+| 2 | **Accept** it (shipping out) or **batch** it (shop assembly) | Shipping -> Requests, or Shop Assembly -> Requests | Shipping out: accepting mints a PENDING warehouse pull, a pure human gate; rejecting is what releases the claim. Shop assembly: the Shop Assembly Manager batches pending openings with per-line allocations. A batch is gated on available inventory for exactly those allocations, reserves under its own id and mints one pull numbered `<request>-B<n>` |
 | 3a | **Start the pick** | Warehouse -> Pull Requests -> Start pick | The pull is claimed and opened. **Nothing moves**, and there is no sufficiency gate - a pull with an empty shelf still opens (#367) |
 | 3b | **Confirm the pick** | The pick page, `/pull-requests/:id/pick` | The picker dictates a quantity per location; confirming deducts *those rows* and consumes the claim, atomically. This is the only moment inventory moves |
-| 4 | **Hand it over** | Warehouse -> Pull Requests -> Mark as Pulled | The pull completes. **This is a terminal exit** - for shop assembly the cart goes to the bench and the system stops looking; for shipping out the hardware joins the staged pool |
-| 5 | **Ship** (shipping out only) | Shipping Out -> Staging / Ship | A packing slip against what the completed pull staged, then SCHEDULED -> PICKED_UP -> DELIVERED |
-| - | **Undo the pull** while it is being picked | Warehouse -> Pull Requests -> Cancel Pull | Stock restocked to the rows it came off, request back to Pending with its claim re-created (#343). Refused on a completed pull - the hardware has been handed over |
-| - | **See where every request is** | Shop Assembly -> Requests | The stage chip: Requested -> Accepted -> Pulling -> Done, with Rejected off the ladder |
+| 4 | **Hand it over** | Warehouse -> Pull Requests -> Send to shop / Send to staging | The pull completes. **This is a terminal exit** - for shop assembly the cart goes to the bench and the system stops looking; for shipping out the hardware joins the staged pool |
+| 5 | **Ship** (shipping out only) | Shipping -> Staging | A packing slip against what the completed pull staged, then SCHEDULED -> PICKED_UP -> DELIVERED |
+| - | **Undo the pull** while it is being picked | Warehouse -> Pull Requests -> Cancel Pull | Stock restocked to the rows it came off (#343). A shipping request goes back to Pending with its claim re-created; a shop-assembly batch's openings go back to pending and nothing is re-reserved (#646). Refused on a completed pull - the hardware has been handed over |
+| - | **See where every request is** | Shop Assembly -> Requests, Shipping -> Requests | The stage chip: Requested -> Accepted -> Pulling -> Done, with Rejected off the ladder |
 
 Three things a fresh reader gets wrong every time:
 
 - **Reserved is not deducted.** Between steps 1 and 3b the hardware is claimed but still on the shelf,
-  so the Warehouse inventory number and the Start-a-Request availability number legitimately disagree.
+  so the Warehouse inventory number and the request workspace's availability number legitimately disagree.
 - **Started is not picked either (#367).** A pull sits IN_PROGRESS from the moment somebody presses
   Start pick, which is *before* any stock has moved. `Status` alone can no longer tell you whether
   the hardware has left - the queue's **Phase** column and `pickedAt` are what answer that.
@@ -513,83 +538,94 @@ Three things a fresh reader gets wrong every time:
 
 ### Purchase Orders Module
 
-**Entry**: `/app/po` -> Project landing page (select a project or "All Projects")
+**Entry**: `/app/po` opens the PO table directly; there is no project landing in front of it.
 
-**PO List Page**:
-- Header: back to projects button, title, **"Create PO" button** (opens manual PO creation dialog)
-- **Stat cards** (display-only since PR #142): Total, Draft, Ordered, Vendor Confirmed, Partially Received, Closed, Cancelled. No longer clickable — they're a dashboard, not a filter.
-- The Tabs row that used to sit below the cards was removed in PR #142. Status filtering now lives in the column filter row instead.
-- **Expand all / Collapse all** buttons above the table — open or close every row currently visible under the active filters/sort
-- Collapsible MUI Table: leftmost chevron column + PO/Request #, Status, Vendor, Order Date, Items
-- **Sortable column headers** (PR #142): every header is a `TableSortLabel` button — click to sort asc, click again to flip to desc. Nulls (Drafts without orderedAt or vendor) always sort last regardless of direction.
-- **Filter row** below headers (PR #142): PO# text search · Status multi-select chip dropdown · Vendor text search · Order Date from/to date inputs · Items numeric ≥ input. All filtering is client-side; the GraphQL query no longer takes a `status` variable.
-- Chevron toggles an inline line-item mini-table (Product Code, Order As, Hardware Category, Ordered Qty, optional Received Qty, Unit Cost, Line Total)
-- Clicking a data cell (not the chevron) opens the PO detail modal — same modal as before
-- **Expand all** targets only the currently-visible (filtered + sorted) rows — not the raw fetch.
-- The Status multi-select uses underlying enum values (DRAFT, PARTIALLY_RECEIVED, etc.) but displays formatted labels. When driving via JS, the option's a11y `value` attribute reflects the display label, but the actual MUI state holds the enum value — so test by observing filtered rows, not by reading the option's a11y value.
+**The PO table** (#851, PR #892):
+- Header: **Document Settings** (PO Manager and Tenant Owner) and **Create a PO**, which opens a
+  chooser: "From schedule - by opening", "From schedule - by hardware" (both open the import wizard)
+  and "Manual entry" (the Create PO dialog).
+- **It opens on every status, newest first** (creation date descending, Nexus drafts and GP-mirrored
+  POs together). An earlier default showed only the open GP statuses and hid a draft someone had just
+  raised; that is gone.
+- **Status strip**: two captioned boxes, NEXUS (Total, Nexus Draft) and GP STATUSES (GP-Registered,
+  Vendor Confirmed, Partially Received, Closed, Cancelled). A segment only narrows the table
+  (`aria-label="Filter by <label>"`, `aria-pressed`); the pressed one is tinted and underlined, and
+  nothing reads pressed when nothing narrows it (Total never does).
+- **Search ignores the status filter.** While the box (`Search PO #, request #, vendor, or project…`)
+  holds text the query sends no statuses, the strip dims, and "Searching all statuses" shows beside
+  it; clearing the box brings the pressed segment back. The search also matches the project's job
+  number and name, case-insensitively.
+- **There is no project dropdown.** `?project=<project id>` (the Nexus id, not the job number; the
+  project detail page links this way) shows a removable project chip beside the search box. An
+  All / Nexus / GP toggle filters by origin.
+- **`?highlight=<id>,<id>`** tints those rows amber, fading over about 4 seconds, and scrolls the first
+  into view; the parameter is dropped once the tint fades. The wizard's "View purchase orders" button
+  opens the table this way on the POs it just created.
+- Columns: Project (job number over the name), PO / Request #, Status, Vendor, Created By, Creation
+  Date, Order Date, Items. PO / Request #, Status, Vendor, Creation Date and Order Date sort on the
+  server. A draft shows its request number with a `Nexus Draft` chip; a GP-born PO carries a `GP` chip.
+  The whole row opens the detail modal, and so does the trailing `Open <PO> details` button. There is
+  no expandable line-item mini-table any more.
+- **Held PO registrations** sits above the table when there is anything to show (#854, PR #895). It
+  lists only pending, in-flight and failed GP writes, each labelled
+  `Register PO-REQ-nnn (job nnnnn) in GP` (a stock PO has no job). The admin GP write queue still
+  lists everything.
+- Paged server-side, 25, 50 or 100 rows a page.
 
 **Create PO Dialog** (manual PO creation, issue #256 - draft-first, NO relay needed):
-- Title "Create PO Request (Draft)"; the Create PO button works with the relay offline
-- Project selector (optional, all projects — buyer assignments only gate the register step)
+- Title "Create PO Request (Draft)"; reached through Create a PO -> "Manual entry", and it works with
+  the relay offline
+- Project selector (optional)
 - Preferred delivery date. There is NO vendor field (#509): GP owns vendors, and the GP one is picked
   at register time
 - Shipping costs / Tariffs (optional), Notes
 - Line items grid: Hardware Category, Product Code, Qty, Unit Cost, Order As (REQUIRED per line; no Classification column - the PM sets site/shop at import)
 - "Add Item" button to add rows, delete button per row (minimum 1 item)
-- Submit ("Create Draft") creates a DRAFT PO with auto-generated request number (PO-REQ-XXX); no GP push. Registering into GP is the separate "Register in GP" action on the draft (relay + buyer identity required there)
+- Submit ("Create Draft") creates a DRAFT PO with auto-generated request number (PO-REQ-XXX); no GP push. Registering into GP is the separate "Register in GP" action on the draft (relay + GP buyer identity required there)
 
 **PO Detail Modal**:
 - Shows: status chip, PO number, vendor (the GP `vendorNameSnapshot`, blank on an unregistered
   draft), quote #, dates, "No Project" label if project-less
 - Line items grid: product code, hardware category, Order As, classification, ordered/received qty, unit cost, line total
-- "Openings on this PO" section (#302), between Line Items and Documents - one row per (opening, leaf)
-  the PO's hardware was bought for: opening number, a `Leaf N` chip, the hardware ordered against it
-  (`2x E90600IC 626`), and a `building / floor / location` caption on the right. See below for which
-  POs have one at all.
 - Documents section with upload capability
 - Receiving history
-- Actions: Edit (header fields + line item Order As/costs), Register in GP, Cancel PO. There is no
-  "Mark as Ordered" button and there has not been one for some time - the mutation behind it was
-  deleted outright in #509
+- Actions: Edit (header fields + line item Order As/costs), Register in GP (disabled while the relay
+  is down), Generate PO Document (see below), and Cancel PO, which only a draft offers. There is no
+  "Mark as Ordered" button - the mutation behind it was deleted outright in #509
 
-**Only a wizard-created PO has an "Openings on this PO" section**, and its absence is not a bug. The
-link is `HardwareItem.po_line_item_id`, which only the Import wizard's Create-Purchase-Orders path
-stamps; a PO built in the Create PO dialog, a stock PO, or one seeded straight into GP has no hardware
-schedule behind it, so `poOpenings` returns `[]` and the whole section (its rule included) renders
-nothing rather than an empty heading. Check `{ poOpenings(poId: "...") { openingNumber leaf } }` before
-concluding the resolver is broken.
+**The "Openings on this PO" section is gone from the detail modal.** It used to list the openings and
+leaves a wizard-created PO was bought for. The link it drew on still exists in the data (a wizard PO's
+lines are bound to the schedule's hardware items), so a wizard PO still moves the schedule when it is
+received; there is just no section on the PO that shows it.
 
-To produce one cheaply - the whole run is a couple of minutes and touches nothing else:
-
-1. Purchase Orders -> **Start a Request** -> project card -> **Use last uploaded schedule** -> Purpose **Create Purchase Orders** (already preselected by the button).
-2. Select Openings: tick 2 openings via `document.querySelector('.MuiDataGrid-row[data-id="0501-EX"] input[type=checkbox]').click()`. Prefer openings whose Hand column shows a pair (`RHRA/LHR`) so the section has more than one leaf to show.
-3. Reconciliation: **Deselect All**, then tick exactly one product row (`data-id` is `"<category>|<productCode>"`). That is what keeps the PO to one line and one manufacturer group.
-4. Classification: click By UCH + Shop on each row (both counters must fill).
-5. Purchase Orders: tick the single manufacturer card's checkbox. The card carries only a preferred date and notes - there is no vendor field to fill (#509).
-6. Finalize -> Finish Import Session -> Finalize -> **View Purchase Orders**, then the `Open <PO-REQ-NNN> details` button.
-
-The per-leaf quantities in the section sum to the line item's Ordered Qty - that is the cheapest
-correctness check on the join (e.g. `1x` on 0442-EX leaf 1 plus `2x`/`1x` on 0501-EX leaves 1 and 2
-against an ordered qty of 4).
+**Register Purchase Order in GP dialog** (#858, PR #915):
+- The GP vendor is a type-to-search pick that matches the vendor id or any part of the name; each
+  option shows the name with the mono id. The "no saved or matching GP vendor for <manufacturer>"
+  hint clears as soon as a vendor is picked.
+- One totals row under the lines: subtotal, trade discount (only when entered), freight,
+  miscellaneous, tax and total, in the vendor's currency, updating live, with the caption "Tax is an
+  estimate; GP calculates the final amount". With no tax schedule picked it reads "Pick a tax schedule"
+  and "Total before tax"; a foreign-currency PO carries no tax. The estimate can be a cent or two off
+  GP, which rounds per line.
 
 **PO Lifecycle**:
 ```
-DRAFT -> ORDERED -> VENDOR_CONFIRMED -> PARTIALLY_RECEIVED -> CLOSED
-                                    \-> PARTIALLY_RECEIVED -> CLOSED
-  \-> CANCELLED (from DRAFT, ORDERED, or VENDOR_CONFIRMED)
+DRAFT -> GP_REGISTERED -> VENDOR_CONFIRMED -> PARTIALLY_RECEIVED -> CLOSED
+                       \-> PARTIALLY_RECEIVED -> CLOSED
+  \-> CANCELLED (a Nexus draft only)
 ```
 - **DRAFT -> GP_REGISTERED** happens only by registering the PO in GP (`registerPoInGp`, relay
   required), or via `create_po`'s GP-first branch for a caller already holding a GP result. Both
   carry a real PM00200 vendor. #509 deleted `markPoAsOrdered`, which used to fake this transition
   with no relay and no GP vendor
-- **VENDOR_CONFIRMED** auto-triggers when ORDERED PO has both vendor quote number and vendor acknowledgement document; auto-reverts if either is removed
+- **VENDOR_CONFIRMED** auto-triggers when a GP_REGISTERED PO has both vendor quote number and vendor acknowledgement document; auto-reverts if either is removed
 - **Receiving** a PO without a project will show error: "PO must be associated with a project before receiving"
 
-**A cancelled PO disappears from the list entirely, and the CANCELLED stat card is always 0.**
-`cancel_po` (`po_repository.py`) sets `status = CANCELLED` *and* `deleted_at` in the same write, while
-`get_purchase_orders` filters `deleted_at IS NULL`. So the cancelled PO is gone from the grid, gone
-from the TOTAL, and the CANCELLED card it should be counted in can never be non-zero. Observed live
-2026-07-29 with a cancelled PO definitely present in the database.
+**A draft cancelled in Nexus disappears from the table entirely.** `cancel_po` (`po_repository.py`)
+only accepts a DRAFT, and it sets `status = CANCELLED` *and* `deleted_at` in the same write, while the
+table filters `deleted_at IS NULL`. So the cancelled draft is gone from the rows and from Total, and
+it is never counted under Cancelled. The Cancelled segment counts only POs mirrored from GP as
+cancelled there, which keep `deleted_at` empty.
 
 Two consequences when testing:
 
@@ -602,28 +638,63 @@ Two consequences when testing:
   something changed but not which row, and you cannot query a soft-deleted PO back through GraphQL to
   find out afterwards.
 
-**Generate PO Document** (issue #230): button on the PO detail modal action bar, shown for any non-cancelled PO. Opens a dialog that builds the finished supplier PO as a client-side PDF (`@react-pdf/renderer`), replacing the old hand-edit-GP's-doc workflow. No relay involved.
-- Dialog fields pre-fill from the PO, its saved `PODocumentData`, and `poDocumentSettings`: vendor mailing address, buyer (from `buyerId`), currency (CAD `$` / USD `$US`), ship-to (warehouse dropdown | "Use project site" button | custom text - the resolved block is stored verbatim), shipping method, quote # (stored as `quotation_number`), required-by (defaults to `expectedDeliveryDate`), freight/misc/tax + tax label, and three conditional toggles (wood-door FSC, USA tariff, international customs).
+**Generate PO Document** (issue #230; gated and prefilled from GP since #858, PR #915): a button on the PO detail modal action bar that opens a dialog building the finished supplier PO as a client-side PDF (`@react-pdf/renderer`).
+- **When the button shows** (`poDocumentGate.ts`): hidden on a Nexus draft and on a cancelled PO. It
+  shows disabled with a spinner as "Registering in GP, please wait" while the PO's registration sits
+  in the pending GP writes, or while GP has it but GP-PROCESSING has not read it back yet (a Nexus PO
+  past draft with no GP read stamped on it); the detail re-reads the PO every 10 seconds until that
+  settles. It is disabled with a tooltip while the GP relay is not connected, and enabled once the PO
+  is registered, read back, and the relay is up.
+- **The dialog prefills from GP.** Each time it opens, `gpPoTotals` reads the PO's header from GP
+  (shipping method, vendor address code, buyer, currency, the vendor purchase address and the ship-to).
+  Saved document values always win, GP fills only the empty fields, and anything typed before GP
+  answers is kept. GP-fed fields show "Reading from GP…" while the read runs. The header read needs
+  relay build 87 or later (the build cut from PR #915); an older relay sends no header, and the dialog
+  says the addresses and shipping method must be filled in by hand. Freight prefers GP's freight over
+  the order-time shipping cost when nothing is saved.
+- Dialog fields also pre-fill from the PO, its saved `PODocumentData`, and `poDocumentSettings`: vendor mailing address, buyer (from `buyerId`), currency (CAD `$` / USD `$US`), ship-to (warehouse dropdown | "Use project site" button | custom text - the resolved block is stored verbatim), shipping method, quote # (stored as `quotation_number`), required-by (defaults to `expectedDeliveryDate`), freight/misc/tax + tax label, and three conditional toggles (wood-door FSC, USA tariff, international customs).
 - **Generate & preview** opens the PDF in a new tab (`window.open` blob). **Save to PO documents** persists `PODocumentData` + uploads the PDF as a `GENERATED_PO` document (appears in the Documents list, label "Generated PO", downloadable via presigned URL). Both first call `savePoDocumentData`, so re-opening the dialog pre-fills.
 - Doc math: each line ext = ordered x unitCost; Subtotal = sum of ext; Order Total = Subtotal + Freight + Miscellaneous + Tax. The item column shows `hardwareCategory` (main line) + `orderAs` (Reference line). Boilerplate (tax numbers, mandatory bullets, signature, footer) always prints; the FSC / USA-tariff / customs blocks print only when their toggle is on.
 - Company-wide boilerplate lives at the PO module's Document Settings page (`/app/po/document-settings`, "Document Settings" button in the PO list header - it moved out of Admin); the per-PO gaps are captured in this dialog.
 
-### Import Module (Start a Request)
+### Import Module (the hardware schedule wizard)
 
-**Entry**: the **Start a Request** button in the PO, Shop Assembly or Shipping header (#471 - it has
-no sidebar entry of its own). That lands on `/app/import`, a project picker; choosing a project opens
-the wizard (full-screen dialog) with the originating module's purpose already selected on step 2. A
-bare `/app/import` still works if typed, it just asks for the purpose like it always did.
+**Entry**: `/app/import` has no sidebar entry (#471). It is a project landing; choosing a project
+opens the wizard (a full-screen dialog). **There is no Purpose step (#642):** the link that opened the
+wizard fixes its purpose, and the wizard's header names it together with the project -
+`<title> · <job number> <name>` (#859, PR #904), for example `Create Purchase Orders · 22713 ...`.
 
-**Wizard Steps**:
-1. Upload File — drag/drop or browse for XML file from TITAN
-2. Purpose — choose: Create Purchase Orders, Shop Assembly Request, or Shipping Out
-3. Select Openings/Hardware — pick which openings and hardware items to include
-4. Reconciliation — shows what's already been imported (for re-imports)
-5. (Conditional) Classification, Purchase Orders, Shop Assembly, or Shipping PRs step
-6. Finalize — review and submit
+**The project landing shows jobs active in GP (#852, PR #898).** It is the same landing the
+Warehouse Inventory page uses. The grid holds recent projects plus the jobs active in GP; inactive,
+closed and not-in-GP jobs sit behind a `Show inactive jobs (N)` toggle beside the search box. The
+search spans every job, draws at most 100 cards and says `Showing 100 of N matches. Keep typing to
+narrow.` A company with no active job shows a hint pointing at the toggle rather than an empty grid.
+A TUBC test project that has gone inactive in GP is behind the toggle, not missing.
 
-**Result**: Creates a project (or updates existing), openings, hardware items, and the selected output (POs, SAR, shipping PRs).
+| Opened from | Title | Steps |
+| --- | --- | --- |
+| PO -> Create a PO -> "From schedule - by opening" (`?purpose=po`) | Create Purchase Orders | Upload File -> Select Openings -> Classification -> Organize PO Drafts -> Finalize |
+| PO -> Create a PO -> "From schedule - by hardware" (`?purpose=po&mode=hardware`) | Create Purchase Orders | Upload File -> Select Hardware -> Classification -> Organize PO Drafts -> Finalize |
+| Shop Assembly -> Start a Request (`?purpose=assembly`) | Create Shop Assembly Request | Upload File -> Select Openings -> Finalize |
+| A bare `/app/import`, or the shipping workspace's schedule link (`?purpose=schedule`) | Import Hardware Schedule | Upload File -> Classification -> Finalize |
+
+- **The Reconciliation step is gone (#814, PR #825).** The PO flow's Organize PO Drafts step carries
+  every column it showed (needed, ordered, on order, received, available, and the lifecycle
+  breakdown per line), a finalize confirm warns about over-buying (#736), and products the project
+  already covers can be added back on that step. Anything in an older note about Reconciliation's
+  `Deselect All`, its product checkboxes or its assembly gate describes a step that no longer exists.
+- **The shop-assembly flow flags openings and nothing else (#646, PR #660).** No compose step, no
+  availability check and no reservation at creation; the Shop Assembly Manager allocates and checks
+  stock when making a batch (see the Shop Assembly module). Site/Shop comes from the persisted
+  schedule (#492).
+- **Shipping requests are not composed here any more.** They are built in the shipping request
+  workspace (`/app/shipping/requests/new`, #608), and an old `?purpose=shipping` link redirects there.
+
+**Result**: the wizard persists the openings and hardware items and creates the purpose's output: PO
+drafts, a shop-assembly request, or just the schedule. The success screen (`ImportSuccessDialog`)
+offers one primary button per kind created - **View purchase orders** (the PO table with
+`?highlight=` on the new drafts), **View shop assembly requests** or **View shipping requests** - and
+Return to Home. There is no "View Warehouse" button any more.
 
 **You almost never need to upload the XML.** Step 1 offers two cards: "Upload new TITAN XML" and
 **"Use last uploaded hardware schedule"**, the second captioned with what is already persisted
@@ -632,90 +703,54 @@ bare `/app/import` still works if typed, it just asks for the purpose like it al
 behaves identically without a multi-megabyte parse. Take it unless the thing under test *is* the
 parser. "Choose Different Source" on the loaded panel gets you back to the two cards.
 
-**Step count depends on the purpose**, and the stepper is the quickest way to tell which flow you are in:
+**A file for another job holds Next (#855, PR #901).** When the TITAN file's `Submittal_Job_No`
+differs from the chosen project's job number (trimmed, case-insensitive), step 1 shows a warning
+naming both jobs and a checkbox, `Import it into <job> anyway`; Next stays disabled until it is
+ticked. The tick belongs to that parsed file, so a new upload asks again. A file with no job number
+gets a quiet note instead of a block. **Owner note (2026-09-28): on TUBC any available test schedule
+may be uploaded onto any TUBC project; tick the confirmation.** `contracterp-74.xml` and its trimmed
+subsets are job 22713.
 
-| Purpose | Steps |
-| --- | --- |
-| Create Purchase Orders | Upload File -> Purpose -> Select Openings -> Reconciliation -> Classification -> Purchase Orders -> Finalize (7) |
-| Pull Request for Shop Assembly | Upload File -> Purpose -> Select Openings -> Reconciliation -> Shop Assembly -> Finalize (6) |
-| Pull Request for Shipping Out | Upload File -> Purpose -> Select Openings -> Reconciliation -> Shipping PRs -> Finalize (6) |
+**Organize PO Drafts** seeds one draft card per manufacturer, every card unticked; tick the cards to
+order. Lines move between cards (`Line actions for <productCode>` -> Move all to / Split… / Remove
+line), and each card carries the vendor label, preferred delivery date, cost code, vendor quote
+number, notes and attachments. The line ledger fits the card with resizable columns (#856, PR #907);
+below 1000px of ledger width the six project numbers (Selected Qty, Needed, Ordered, On Order, Rcvd,
+Avail) fold into one **Selected / Needed** column, whose value shows the full split on hover or
+focus.
 
-Since #492 the assembly flow has no Classification step: Site/Shop is read off the persisted
-schedule (the values a PO request wrote). Items never classified are named in an info banner on the
-Shop Assembly step and left out of the request.
-
-**Reconciliation is a hard gate on the assembly flow, and it fires before the Shop Assembly step.**
-With nothing in inventory it shows a red alert - `No items have In Inventory status. There is nothing
-available to assemble.` - and **Next is disabled**, so the wizard stops at step 4. The per-combo detail
-is in the table underneath (Hardware Category / Product Code / Qty Needed / Qty Available / Lifecycle
-Breakdown, each short line chipped `Gap Remaining: N`), not in the alert text. Worth knowing because
-the slice-4 shortfall alert everyone quotes (`<CATEGORY> <CODE>: need N, M available (R reserved by
-other requests) - short S`) lives on the **Shop Assembly** step, which you cannot reach at all when
-availability is zero across the board. To exercise *that* message you need stock on the shelf and a
-competing reservation; a bare empty warehouse only ever gets you the Reconciliation gate.
-
-The same step on the **shipping** flow is advisory, not a gate: `Items that are In Inventory or Built
-onto Opening can be included in shipping pull requests. Items with zero availability are excluded. You
-may proceed with partial quantities if needed.` Next stays enabled. The gate for shipping is one step
-later - with nothing shippable, the Shipping PRs step shows `Nothing on the selected openings is in a
-shippable state. Assembled leaves already on another shipping request are not listed.`, an added
-"Shipping PR #1" card lists `Select items (0 selected):` with no rows, and Next is disabled.
-
-**Creating a request RESERVES inventory (#342).** This is the single biggest behavioural change to
-the wizard, and it changes what "it worked" looks like at every downstream step.
-
-- The Shop Assembly and Shipping PRs steps both read `projectInventoryAvailability`, where
-  `availableQuantity = onHandQuantity - deficientQuantity - reservedQuantity`. **Next is disabled**
-  while the selection asks for more than that, and a red alert lists every short combo as
-  `<CATEGORY> <CODE>: need N, M available (R reserved by other requests) - short S`.
-- The Shop Assembly step now also renders a "Hardware this request would reserve" table (Needed /
-  Available / Reserved elsewhere per product), and refuses to proceed at all when no item was
-  classified as Shop Hardware.
-- The Shipping PRs step shows "<n> available" under each **loose** line only. Assembled door leaves
-  never show one and are never gated - their hardware left fungible inventory at assembly.
-- Next is also disabled while the availability lookup is in flight or has failed. An unknown count is
-  not treated as "fine", so a mocked/blocked GraphQL call reads as a blocked wizard, not a bug.
-- Driving `finalizeImportSession` directly past the UI gate gets an `INSUFFICIENT_INVENTORY` error
-  naming every short combo, and **nothing at all is created** - no request, no reservations, no
-  openings. Useful for exercising the gate without walking the wizard.
-- To make a shortfall on demand: create one request that claims most of a product, then start a
-  second request for the same product through Start a Request. The second one is short *even though the shelf count is
-  unchanged* - that is the reservation working, and `reserved by other requests` in the message is
-  how to tell it from genuinely absent stock.
-- Other creation-time refusals (all `VALIDATION_ERROR`): a request with zero openings; an opening
-  with zero items; a shipping request with zero lines; a leaf already inside a live shop-assembly
-  request; a leaf already on a live shipping-out request; a leaf claimed by the *other* request type.
-- **Re-upload with `replaceSchedule: true`** is never blocked. Live PENDING requests are rewritten to
-  the openings that survived (their reservations rebuilt from what is left), a request that loses
-  everything is auto-REJECTED by "Hardware Schedule Import", accepted requests are left alone, and
-  every live request gets an `integrityNote` that shows as an amber alert on the accept screen.
+**Re-upload with `replaceSchedule: true`** is never blocked. Live PENDING requests are rewritten to
+the openings that survived, a request that loses everything is auto-REJECTED by "Hardware Schedule
+Import", accepted requests are left alone, and every live request gets an `integrityNote` that shows as
+an amber alert on its request screen.
 
 ### Warehouse Module
 
 **Two different "available" numbers, and they are supposed to differ (#342).** The Inventory view's
-availability is `on-hand - deficient`: what is physically unspoken-for in the building. The Start a
-Task wizard's is `on-hand - deficient - reservations`: what may still be *claimed*. A product can
-read 10 available in the warehouse and 0 available in the wizard; that is not a bug, it means live
-requests are holding it.
+availability is `on-hand - deficient`: what is physically unspoken-for in the building. The shipping
+request workspace and the shop-assembly batch gate use `on-hand - deficient - reservations`: what may
+still be *claimed*. A product can read 10 available in the warehouse and 0 available to a new request;
+that is not a bug, it means live requests or batches are holding it.
 
-**Confirming a pick consumes its source request's reservation (#367 moved this off approve).** A pull
-whose request reserved exactly what it needs still picks fine - the check excludes the request's own
-claim (self-coverage). **Every claim has a request behind it** - no pull holds one directly, so a
+**Confirming a pick consumes its source request's (or batch's) reservation (#367 moved this off
+approve).** A pull whose request reserved exactly what it needs still picks fine - the check excludes
+the request's own claim (self-coverage). **Every claim has a request behind it** - no pull holds one directly, so a
 pull whose source request was rejected after the accept simply competes with everyone else and
 consumes nothing.
 
 
-**Entry**: `/app/warehouse` -> Warehouse landing page with stat cards and "Go to" card buttons for: Inventory, Locations, Receiving, Put Away, Pull Requests, Stock Pool, Deficient Items, Shipments. (No longer "three tabs" - this has evolved to a full landing page.) Since PR #395 the Deficient Items card shows `deficientCount` (deficient units across project inventory + stock pool - the same rows the review page lists, amber edge when non-zero). The card count matching its destination page is the thing to assert.
+**Entry**: `/app/warehouse` -> Warehouse landing page with stat cards and "Go to" card buttons for: Receives, Receive Approvals, Inventory, Locations, Receiving, Put Away, Pull Requests, Stock Pool, Deficient Items and Custom Items. Shipments moved to the Shipping module. Since PR #395 the Deficient Items card shows `deficientCount` (deficient units across project inventory + stock pool - the same rows the review page lists, amber edge when non-zero). The card count matching its destination page is the thing to assert.
 
 **There is no Deliveries page any more (#416).** It was a read-only lens over active POs, and its "Upcoming Deliveries" accordion asked `expectedDeliveries` for the exact PO population `openPOs` already drew the Receiving page's awaiting-receipt table from - the same three statuses, not soft-deleted - so on one page it would have been the same list twice. Only the back-order grid survived the merge, as a **Back-Ordered Items** section of Receiving; the accordion's urgency chip moved onto the awaiting-receipt table's Expected Delivery column. `expectedDeliveries` is gone from the schema entirely (querying it errors `Cannot query field`), `backOrderedPoCount` (the count of active POs still owed anything, not a unit sum) now rides the **Receiving** card as "N POs back-ordered", and `/app/warehouse/deliveries` redirects to `/app/warehouse/receiving`. Anything in an older session note about a Deliveries card, its project landing, or its "All Projects" toggle (PR #397) describes a page that no longer exists.
 
 **Inventory tab default**: Navigating directly to `/app/warehouse/inventory` defaults to "All Projects" view — shows the "Projects" back button, "All Projects" heading, and the Hardware Items grid immediately. There is no Opening Items tab any more: nothing assembled is tracked. The ProjectLandingPage is NOT shown on initial load. Clicking "Projects" brings up the ProjectLandingPage where you can filter to a specific project or click "All Projects" to return to the all-projects view.
 
-**Receiving** (wizard):
-1. Select POs to receive (shows ORDERED/VENDOR_CONFIRMED/PARTIALLY_RECEIVED POs)
-2. Enter quantities received per line item — line items grid shows: Product Code, Ordered As, Hardware Category, Ordered Qty, Already Received, Pending, Receive Now
-3. Assign storage locations (aisle/bay/bin)
-- Receiving auto-transitions PO status (ORDERED -> PARTIALLY_RECEIVED -> CLOSED)
+**Receiving**: select POs awaiting receipt (GP-Registered, Vendor Confirmed, Partially Received) ->
+enter quantities (Product Code, Ordered As, Hardware Category, Ordered Qty, Already Received, Pending,
+Receive Now) -> attach a packing slip -> Submit for Approval. A Warehouse Manager approves it at
+`/app/warehouse/receive-approvals`, which posts the GP receipt; the units land unlocated and go
+through Put Away (see "Receiving is now draft-first" near the top). Receiving moves the PO to
+PARTIALLY_RECEIVED and then CLOSED.
 
 **Receive/History toggle since #447** (PR #450): the page header carries a two-button toggle. The
 Receive side is everything below; the History side is the Receiving History view - every PO that
@@ -733,6 +768,11 @@ Activity**. The back-order grid is line-level and cross-project (no project land
 Project column that reads "Stock PO" for a project-less PO, and chips how late or soon each line is
 (`3d overdue` / `Today` / `Tomorrow` / `In 5d`, nothing beyond a week or with no date). The same chip
 sits on the awaiting-receipt table's Expected Delivery column.
+
+**POs Awaiting Receipt has a search box (#857, PR #912).** It matches the PO number, vendor, and the
+project's job number or name, case-insensitively, and narrows as you type (client-side, since every
+open PO is already loaded). The heading reads `(12 of 265)` while searching and `(265)` otherwise, a
+no-match line shows when nothing matches, and the grid shows 25 rows a page.
 
 A successful receive now refetches this page's own three reads, so a line the receipt closed leaves
 the back-order grid without a manual reload; a queued receipt that drains later evicts
@@ -759,7 +799,8 @@ reason that has nothing to do with the code under test. This is the same trap as
 **Inventory**: Browse by hardware category and product code, see storage locations.
 
 **Pull Requests**: Queue of pull requests from shop assembly or shipping modules. Two tabs (Shop
-Assembly / Shipping Out); clicking a row opens the detail modal. Since #367 the old Staging column is
+Assembly / Shipping Out); clicking a row opens the detail modal. Both grids grow with their rows up
+to 520px and then scroll inside the grid (#856). Since #367 the old Staging column is
 a **Phase** column - a tag over a line of detail, because `Status` stopped being enough once picking
 became its own phase:
 
@@ -768,12 +809,11 @@ became its own phase:
 | `Pending` | Not started | Nobody has pressed Start pick |
 | `Picking` | Nothing off the shelf yet | IN_PROGRESS, `pickedAt` null, no pick lines |
 | `Short` | Part-picked - remainder outstanding | A short confirm landed; some stock is gone, the rest is owed |
-| `Staging` | `4 of 8 staged` | Picked, now building carts |
-| `Picked` | Ready to hand over | Picked. Marking it pulled completes it, which is where v1 stops following the hardware |
+| `Picked` | Ready to hand over | Picked. **Send to shop** (shop assembly) or **Send to staging** (shipping out) completes it, which is where v1 stops following the hardware |
 | `Completed` / `Cancelled` | - | Terminal |
 
-An IN_PROGRESS row reading `PICKED` in Phase is the normal, correct state for a shipping-out or
-replacement pull - Status and Phase disagreeing is the point of the column.
+An IN_PROGRESS row reading `Picked` in Phase is the normal, correct state until someone hands it
+over - Status and Phase disagreeing is the point of the column.
 
 #### The pick (#367) - where inventory actually moves
 
@@ -789,7 +829,7 @@ approving no longer moves anything).
    deducted** - verify with `inventoryItems` before and after.
 2. The page: `PICK SHEET` eyebrow, mono PR number, phase tag, project and requester; gauges for
    `PRODUCT CODES / REQUIRED / ENTERED / REMAINING`; then one section per product code.
-3. Each section lists **every leaf in full** (`OWED TO 1 LEAF`, `015.2 · L1 × 1`) and a ledger of
+3. Each section lists **every opening it is owed to** (`Owed to 1 opening`) and a ledger of
    every candidate location: `LOCATION | RECEIVED | AVAILABLE | PULLED`. There is deliberately **no
    suggested column and no autofill** - assert their absence, it is the whole point of the slice.
 4. Number inputs carry `aria-label="Pulled from <bin>"` and a `max` of that row's available, which is
@@ -834,32 +874,13 @@ the pick confirmation, because a pure fetch pull is confirmable before a single 
 leaf lists, every location with Received/Available, **blank write-in boxes**, and a
 `Picked by / Date / Keyed into Nexus by` signature footer.
 
-**Per-leaf staging (#343, relaid out as sections in #367)** is the shop-assembly pull's execution
-view, inside the detail modal between the header and the Items table, headed
-`Stage carts (N of M leaves)`. **It only appears once the pick is confirmed** - before that there is
-nothing on a cart to declare.
+**There is no per-leaf staging any more.** The `Stage carts` panel, the `Staging` phase and the
+`Mark as Pulled` button are gone with the door leaves: a picked pull is handed over whole with
+**Send to shop** or **Send to staging**, which completes it after its own confirm dialog.
 
-- One bordered **section per door leaf**, not a table row: header is the mono leaf identity
-  (`015.2 · L1`) plus building/floor, with the hardware beneath as ledger rows
-  (category | mono product code | right-aligned qty). The old single-cell bulleted list is gone.
-- The section carries a 3px left edge: amber when selected, green once staged, hairline otherwise.
-- Confirming is **two-step**: tick the checkboxes (`Stage <opening> · LN` - note the new identity
-  format), press `Confirm N staged`, then confirm the dialog. A tick alone writes nothing.
-  `Select all remaining` ticks every un-staged section.
-- Each confirmed leaf is **immediately** assignable/workable in Shop Assembly, while the rest of
-  the pull is still un-staged. This is the thing to exercise: stage one leaf of a pair, then go to
-  `/app/shop-assembly/assemble` and claim it while its sibling still shows as waiting.
-- An already-staged section has a disabled checkbox and a green "Staged" tag with who staged it and when.
-- Staging the **last** leaf completes the pull (toast: "All carts staged - <PR> is complete.").
-  The panel then renders read-only, so the record of who staged what survives.
-- `Mark as Pulled` still exists and now means "stage everything remaining and finish"; its confirm
-  dialog says so.
-- Nothing moves in inventory at staging. Stock was deducted when the **pick was confirmed**, and
-  `stage_pull_openings` refuses outright until it has been.
-
-**Cancel Pull (#343)**: an outlined red button in the modal's action bar on any IN_PROGRESS pull, and
-on a COMPLETED *shop-assembly* pull (there "completed" only means every cart is built). Absent on a
-PENDING pull - reopen or reject the source request instead - and on a completed shipping-out pull.
+**Cancel Pull (#343)**: an outlined red button in the modal's action bar on an IN_PROGRESS pull
+only. Absent on a PENDING pull (discard the shop-assembly batch, or reopen or reject the shipping
+request, instead) and on a completed one.
 
 - It opens its own modal (not the standard ConfirmDialog) with a warning alert, an optional Reason
   textarea, `Keep pull` and `Cancel pull and restock`.
@@ -871,10 +892,11 @@ PENDING pull - reopen or reject the source request instead - and on a completed 
 - **Only a pull being picked can be cancelled.** A completed one has handed its hardware over - to
   the bench or to a shipping desk - and v1 does not follow it past that point, so there is nothing
   left to reverse. The button is absent on a completed row.
-- After a cancel: stock is back in project inventory on the rows it came off, and the source request
-  is back in the Shop Assembly / Shipping accept queue as Pending with its claim re-created.
-  Re-accepting it mints a **new** pull with the **same request number** - so a search by number can
-  legitimately return a cancelled row and a live one.
+- After a cancel: stock is back in project inventory on the rows it came off. A shipping request is
+  back in the Shipping accept queue as Pending with its claim re-created, and re-accepting it mints a
+  **new** pull with the **same request number** - so a search by number can legitimately return a
+  cancelled row and a live one. A shop-assembly batch's openings go back to pending on their request
+  and nothing is re-reserved (#646).
 
 **Stock Pool** (`/app/warehouse/stock-pool`): Shows stock items not tied to a project. Has a "Warehouse" filter dropdown in the filter row with options "All warehouses", "Warden (WRD)", "VP (VP)". Grid has a "Warehouse" column (visible when data rows exist). Empty state shows "Nothing in the stock pool yet" message.
 
@@ -884,16 +906,26 @@ PENDING pull - reopen or reject the source request instead - and on a completed 
 
 Both entry points open a "Transfer <productCode>" MUI dialog with: an "X available to transfer." line, a "Destination warehouse" dropdown (defaults to the source item's warehouse), Aisle/Bay/Bin MUI Autocomplete fields (suggest existing bin values; are comboboxes with autocomplete="list", NOT plain text boxes), and a Quantity spinbutton defaulting to the available quantity (max=available). Transfer button stays disabled until all three location fields are filled. On success, the dialog closes, the grid refreshes automatically (source row qty drops, a new row appears at the destination bin if it didn't exist), and a success toast fires briefly. To open autocomplete suggestions: focus the input then dispatch a keydown ArrowDown event.
 
-**Receiving warehouse selector** (PR #158): When receiving a PO, the Receive modal includes a "Receive into warehouse" dropdown near the top, defaulting to "Warden (WRD) · default". Only visible when a PO is in ORDERED/VENDOR_CONFIRMED/PARTIALLY_RECEIVED state and you open the receive flow.
+**Receiving warehouse selector** (PR #158): When receiving a PO, the Receive modal includes a "Receive into warehouse" dropdown near the top, defaulting to "Warden (WRD) · default". Only visible when a PO is GP_REGISTERED, VENDOR_CONFIRMED or PARTIALLY_RECEIVED and you open the receive flow.
 
 **Put Away** (`/app/warehouse/put-away`): Lists unlocated project inventory items grouped by hardware category. Each row shows Product Code, Qty, PO#, Received date, and Aisle/Bay/Bin comboboxes + an "Assign" button (disabled until all three location fields filled). Has a "Filter by Project" dropdown. Items returned to project inventory via the Return dialog appear here immediately.
 
-**Shipments page** (`/app/warehouse/shipments`, issue #89):
-- Global list of all shipped packing slips (across projects). Reachable from: direct URL, Warehouse landing "Shipments" card, sidebar nav under Warehouse.
-- Grid columns: Packing slip #, Project, Shipped by, Shipped date, Loose units, Actions column with "Return" button.
-- Filter controls: "Search packing slip #" text input (filters by packing slip number), "Project" dropdown.
-- "Loose units" column shows total loose-line qty originally shipped (does NOT decrease as returns are recorded).
-- "Return" button opens the Return dialog for that packing slip.
+**Put Away several rows at once (#857, PR #912).** The project tables and the stock pool table open
+with a tick column, and one selection spans both sections. **One warehouse at a time:** once a row is
+ticked, rows from other warehouses are disabled with a tooltip naming both warehouses, and a table's
+header box ticks that table's rows from the selection's warehouse. A selection bar sticky at the
+bottom of the viewport carries aisle / row / bay pickers narrowed to that warehouse and a
+`Put away N rows here` button, which sends each row whole to that bin through the per-row assign, one
+at a time. Rows that fail stay ticked and are listed with the reason above the tables; the rest are
+cleared. The per-row Assign stays for partial quantities. Both tables are fit-to-width tables with
+resizable columns (#856); Assign is a fixed last column, always in view.
+
+**Shipments page** (`/app/shipping/shipments`, issue #89; `/app/warehouse/shipments` redirects there):
+- Global list of all shipped packing slips (across projects), in the Shipping module.
+- **`?slip=PS-...` opens the page searched to that slip with its row expanded** (#859, PR #904);
+  collapsing the row by hand drops the parameter. The confirm-shipment toast links here.
+- Expandable rows, a slip search and a Project filter; the row layout and the status-gated actions,
+  Return included, are described under the Shipping module ("Shipments carry a lifecycle").
 
 **Return dialog** (issue #89):
 - Title: "Return shipment <PS-NUMBER>"
@@ -923,40 +955,44 @@ Both entry points open a "Transfer <productCode>" MUI dialog with: an "X availab
 **Entry**: `/app/shop-assembly` -> landing page: "Active Pull Requests" and "Awaiting Review" stat
 cards, a **Start a Request** button, and one "Go to" card for Requests.
 
-The module is two screens in v1. Composing happens in the import wizard (the button deep-links to
+The module is two screens in v1. A request is raised in the import wizard (the button deep-links to
 `?purpose=assembly`), and everything after the pull completes is untracked - the bench is outside the
 system.
 
-**Requests page**, `/app/shop-assembly/requests`. A Pending / Accepted / Rejected toggle:
+**A request is a flag, and the Shop Assembly Manager works it in batches (#646, PR #660).** Raising a
+request records the openings and what each is owed. It reserves nothing, checks nothing and mints no
+pull. On the Requests page the manager opens a pending request and allocates a **batch**: a subset of
+its pending openings with per-line quantities (partial is allowed). Creating the batch gates on the
+project's available inventory for exactly those allocations, reserves them under the batch's own id,
+and mints one warehouse pull numbered `<request number>-B<n>`. Batching an opening consumes it; an
+opening with nothing allocatable cannot be batched and stays pending. **Dismiss remaining** writes off
+what is left, and **Reject request** is only offered while nothing has been batched. Batch, dismiss,
+reject and discard are gated to the Shop Assembly Manager role set (`SHOP_ASSEMBLY_MANAGERS` in
+`backend/app/auth_policy.py`).
 
-- **Pending** is the queue: Accept mints the warehouse pull, Reject releases the claim.
-- **Accepted** shows every accepted request with its **stage chip** (Accepted / Pulling / Done) and a
-  count per rung above the list - this is where the old Pipeline page went. Reopen is offered on
-  every row but **disabled with the reason beside it** once the warehouse has started the pull; that
-  is deliberate, because hiding it reads as a missing feature rather than a closed window.
-- **Rejected** is history.
+**Requests page**, `/app/shop-assembly/requests`. A Pending / Worked / Rejected toggle:
 
-Expanding a row shows its lines **grouped by opening tag**, with Owed and Allocated per line and a
-`N short` chip where they differ. Grouping is display only - the lines are flat underneath, and a
-line raised straight off inventory carries no opening at all and sorts last under "No opening".
+- **Pending** is the queue: requests with openings still waiting, where batches are made.
+- **Worked** shows requests where every opening has been batched or dismissed, with each batch and
+  its **stage chip** (Accepted / Pulling / Done). **Discard** undoes a batch and hands its openings
+  back to pending, and only works while the warehouse has not started that batch's pull.
+- **Rejected** is history. Nothing was reserved for those requests, so nothing was released.
 
-**Accept is a pure human gate since #342.** There is no inventory check on Accept and no shortfall
-can surface there - the hardware was reserved when the request was created. Accepting neither spends
-nor releases that claim; confirming the pick spends it; **rejecting** is the only thing that releases
-it.
-
-**The short count is on the summary line, not buried in the tables.** Approving a request that is
-knowingly short is fine; approving one without knowing it is short is not.
-
-**The Shop Assembly Manager role gates nothing in v1.** It stays defined in Clerk (its only consumer
-was the assignment roster), so a user holding it sees exactly what anybody else does.
+**Cancelling a batch's pull** returns only that batch's openings to pending and re-reserves nothing;
+the restocked units go back to the free pool.
 
 ### Shipping Module
 
-**Entry**: `/app/shipping` -> Project landing page -> ship-ready items browser
+**Entry**: `/app/shipping` -> Shipping landing. **Start a Request** opens the request workspace
+(`/app/shipping/requests/new`, #608), which composes schedule lines and loose inventory lines in one
+cart and carries its own project picker. Requests are accepted at `/app/shipping/requests`
+(Pending / Accepted / Rejected, with a **New request** button), packing slips are built in Staging
+(`/app/shipping/staging`), and shipped slips live on Shipments (`/app/shipping/shipments`).
 
-- Shows opening items and loose items ready to ship
-- Create packing slips, confirm shipments
+**Confirming a shipment leaves a toast that stays (#859, PR #904).** It reads `Shipment PS-...
+confirmed` and carries a **View shipment** action to `/app/shipping/shipments?slip=PS-...`; a toast
+with an action stays until it is closed, taken or replaced. It used to be a four-second toast fired as
+the dialog closed, gone before anyone could read it.
 
 **The confirm step is the Delivery Request form since #447** (PR #450). Confirming a cart opens a
 sectioned dialog (Shipment / Shipper / Pickup location / Deliver To questionnaire / Contacts), not
@@ -969,7 +1005,7 @@ regenerates from the STORED fields, so an edit shows up on the next print.
 
 **Shipments carry a lifecycle since #447**: SCHEDULED -> PICKED_UP -> DELIVERED, strict one-way; the
 states document the truck's journey only and move no inventory. The Shipments page
-(`/app/warehouse/shipments`) is expandable rows now, not a DataGrid: row = slip #, project, status
+(`/app/shipping/shipments`) is expandable rows now, not a DataGrid: row = slip #, project, status
 chip, shipped by, created, pick-up, delivery, carrier; expansion = the item lines plus the actions,
 each status-gated - Delivery Request (always), Edit (SCHEDULED only, full-replace semantics, a
 cleared field really clears), Mark Picked Up (SCHEDULED), Mark Delivered (PICKED_UP), Return
@@ -977,20 +1013,16 @@ cleared field really clears), Mark Picked Up (SCHEDULED), Mark Delivered (PICKED
 cache with no reload - assert on the row, do not wait for a refetch.
 
 **Hardware only reaches the staged pool when its SHIPPING_OUT pull is COMPLETED.** Confirming the
-pick leaves the pull IN_PROGRESS with phase "Picked - ready to hand over" and the Ship tab stays
-empty; "Mark as Pulled" in the pull detail modal is what completes it. Budget for that extra step
+pick leaves the pull IN_PROGRESS with phase "Picked - Ready to hand over" and Staging stays empty;
+"Send to staging" in the pull detail modal is what completes it. Budget for that extra step
 when scripting the chain.
 
-**The shipping wizard composes off the same query shop assembly does.** On the Shipping Out step you
-get one row per (opening, product) with Still owed / Already sent / On order and a Send box clamped
-to what is genuinely free. Shop Hardware is filtered out - it goes to the bench, not on a truck -
-and unclassified lines DO appear here, because hardware nobody classified goes to site by default
-rather than being silently dropped.
-
-- There is no per-leaf selection and no "ship it short" confirmation any more. Sending short is the
-  ordinary case: assign less than the suggestion, or untick the line.
-- **Re-run auto-assign** rebuilds the allocation from current availability. It is also what a
-  race refusal triggers, with a banner saying availability moved.
+**The request workspace's schedule tab composes off what is still owed.** Products show Still owed
+(required, less what has already left and what other requests hold), On order and the free pool, and
+the cart takes no more than is free. Since #647 the tab splits products into a shop lane
+(`SHOP_HARDWARE`) and a site lane; unclassified hardware reads as site, and the site lane says so.
+Sending short is the ordinary case: add less than the suggestion, or leave the line out. Creating the
+request reserves its loose hardware (#342), which is why accepting it is a pure human gate.
 
 ### Tenant Owner and UC Nexus Admin Modules
 
@@ -1010,8 +1042,12 @@ cross-tenant half: User Management, Relay Installs, Nexus GP Traffic, SharePoint
   shipping pulls not yet on a packing slip. Zero counts render dimmed. A "Filter products…" box
   appears once a project is selected and matches product code or category.
 - Warehouses (`/app/tenant-owner/warehouses`) — warehouse CRUD (PR #158, issue #88); see below
-- Projects (`/app/tenant-owner/projects`) — edit project details + OSSA flag (see below)
-- User Management (`/app/nexus-admin/users`) — assign Clerk roles
+- Projects (`/app/tenant-owner/projects`) — edit project details + OSSA flag (see below); a project's
+  detail page is `/app/tenant-owner/projects/:id`, and its hardware classification page (#735) is
+  `/app/tenant-owner/projects/:id/classifications`
+- Inventory Value (`/app/tenant-owner/inventory-value`)
+- User Management (`/app/tenant-owner/users` for the tenant, `/app/nexus-admin/users` across every
+  company) — assign Clerk roles
 - Location Cleanup (`/app/tenant-owner/location-cleanup`)
 - (PO Document Settings moved to the PO module: `/app/po/document-settings`; see below. Unknown `/app/tenant-owner/*` sub-routes silently render the Tenant Owner landing, not a 404,
   and every `/app/admin/*` path redirects to it.)
@@ -1043,20 +1079,17 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 ## Lessons Learned
 
 - Reset data (UC Nexus Admin -> Reset data) is two gates: type `reset all nexus data`, then confirm the MUI dialog. No `window.alert()` any more. On production it drops the whole schema, so it is never a testing step (see Getting Started).
-- When viewing "All Projects", `projectId` is undefined/null in queries — this returns all POs across projects.
-- To test the Warehouse Receiving wizard's "Enter Quantities" step, you need at least one PO in ORDERED (or higher) status. DRAFT POs do not appear in the receiving wizard's PO selection list.
+- To test Receiving's quantity step you need at least one PO at GP_REGISTERED or later. Nexus drafts do not appear in the POs Awaiting Receipt list.
 - The line item field formerly called "Vendor Alias" is now called "Order As" in pre-order screens (Create PO dialog, PO detail modal) and "Ordered As" in post-order screens (Warehouse receiving wizard).
 - On the Import wizard Select Openings/Hardware step with a large XML file (1998 openings), `read_page` produces output that exceeds the tool token limit. Use `javascript_tool` with targeted DOM queries (or `get_page_text`) to check state and click buttons. Use `javascript_tool` to click "Select All" when `find` refs time out on the large DOM.
-- Import wizard Classification step columns: Opening #, Product Code, Hardware Category, Manufacturer, List Price, Discount, Unit Cost, Qty, Classification, Site/Shop. Each row has four toggle buttons - "By UCH" / "By Others" in Classification, and "Site" / "Shop" in Site/Shop. Also has "Add group level" button and a header checkbox to select all rows. There are **two** counters ("X of Y items classified" and "X of Y in-scope items site/shop classified") and Next stays disabled until both are satisfied, so ticking only By UCH leaves the step blocked.
-- Import wizard step order for "Create Purchase Orders" purpose: Upload File -> Purpose -> Select Openings/Hardware -> Reconciliation -> Classification -> Purchase Orders -> Finalize (7 steps total).
-- For a first-time import (new project, no existing data), the Reconciliation step has no data to display — it just shows "New project — all items will be ordered fresh." The step is effectively a pass-through; do NOT wait for reconciliation data. Just click Next immediately.
-- Classification step grouping: Clicking "Add group level" creates a Level 1 dropdown pre-set to "Hardware Category" with a remove (X) button. Shows accordion rows per group with item counts, "By UCH All" and "By Others All" bulk buttons on the right, and a collapse/expand chevron. Each group shows a chip: "0/N classified" (grey, unclassified), "All By Others" (orange/amber), or "All By UCH" (green). With 26548 items `read_page` is too large — use `javascript_tool` to find and click buttons. Classification counter turns green when all items are classified.
-- Purchase Orders step (step 6 of 7): Shows N manufacturer group(s) each as an expandable card with checkbox, Preferred delivery date, Notes, PO Total, and a line items grid showing Product Code, Hardware Category, Total Qty, Unit Cost, Total Cost, Order As columns. Since #509 there is no vendor field on the card - the group is a TITAN manufacturer, and the GP vendor is picked at register time. Groups default unchecked. Only By UCH items appear (By Others items are excluded). With the contracterp-74.xml file, 41 groups appear.
-- Purchase Orders step: The Next button is DISABLED until at least one vendor checkbox is checked. All vendors start unchecked by default. To check all 41 vendors programmatically: use `javascript_tool` to call `.click()` on each `.MuiCheckbox-root` span inside each `.MuiPaper-outlined.MuiPaper-rounded` card (skip index 0 which may be a header). This triggers React's event handlers properly (direct DOM checkbox manipulation does NOT update React state).
+- Import wizard Classification step (#568/#586, #734): a guided pass walks the unclassified item groups, then a review lists everything. On the PO flow each group takes one answer - **UCH Shop**, **UCH Site** or **By Others** - on keys 1, 2 and 3 (By Others takes the items out of scope); the schedule flow asks Shop / Site only. The counter reads `N of M classified`, and Next waits until everything is classified.
+- Import wizard step order for "Create Purchase Orders": Upload File -> Select Openings (or Select Hardware) -> Classification -> Organize PO Drafts -> Finalize (5 steps). There is no Purpose step (#642) and no Reconciliation step (#814).
+- Classification step grouping: "Add group level" adds a grouping level (Level 1 defaults to Hardware Category). With tens of thousands of items `read_page` is too large; use `javascript_tool` to find and click buttons.
+- Organize PO Drafts step (step 4 of 5): one draft card per manufacturer, each with an include checkbox, the vendor label, preferred delivery date, cost code, vendor quote number, notes, attachments, a PO total and the line ledger. There is no GP vendor pick here (#509); the GP vendor is chosen at register time. Only UCH-scoped items appear (By Others items are excluded). With the full contracterp-74.xml file, 41 manufacturer cards appear.
+- Organize PO Drafts: Next is disabled until at least one draft card is ticked, and every card starts unticked. To tick many at once, use `javascript_tool` to `.click()` each card's `.MuiCheckbox-root`; direct DOM checkbox manipulation does NOT update React state.
 - "By Others" classification in the ALD group correctly EXCLUDES those items from vendor PO cards. Items that appear under vendor "Aluminum Door By Others" (vendor name, not classification) with ALD hardware category are separate — they are items from that vendor that were classified as "By UCH". The vendor name and the hardware category name can both contain "ALD" but refer to different things.
-- Finalize step (step 7 of 7): Shows "Review & Finalize" with Import Summary (project name, opening count, hardware item count, PO count). "Finish Import Session" button opens a "Finalize Import" MUI dialog with Cancel and Finalize buttons. After clicking Finalize, shows "Finalizing import session..." progress text, then a success overlay dialog with "Import session completed successfully!", project name, POs created count, and "View Purchase Orders" / "View Warehouse" / "Return to Home" buttons.
-- PO list expanded mini-table shows the optional "Received Qty" column only when `po.receiveRecords.length > 0`. POs whose line items have `receivedQuantity > 0` but `receiveRecords` is empty (e.g. GP-generated POs with status PARTIALLY_RECEIVED but no ReceiveRecord rows) will NOT show Received Qty — this is intentional and mirrors `PODetailModal`'s behavior.
-- The "All Projects" PO list query (`GET_PURCHASE_ORDERS` with no projectId) is the canonical example of the slow-resolver pattern described in CLAUDE.md rule #6. It eagerly loads every line item, receive record, and document for every PO across all projects. With ~19 POs in test the p90 hit 60s and p99 was ~4min (`http_response_time`). Backend CPU/memory are idle during this — it's a DB-bound issue. A project-scoped view (`projectId` set) returns much faster. If testing All Projects times out, retry with a specific project.
+- Finalize step: shows "Review & Finalize" with an Import Summary. "Finish Import Session" opens a "Finalize Import" dialog (an over-buying confirm stands in for it when a draft would over-buy, #736). After Finalize, a success dialog reads "Import session completed successfully!" and offers one button per kind created (View purchase orders / View shop assembly requests / View shipping requests) plus Return to Home (#859).
+- The PO list used to be the canonical slow-resolver example (the old "All Projects" query loaded every line item, receive record and document for every PO, with a p99 near 4 minutes). The PO table is paged and sorted server-side now, so a slow PO table is worth an HTTP-log look (rule 6 in the project instructions file) rather than an assumption.
 - Locations page redesign (PR #160, issue #88): The `/app/warehouse/locations` page uses a master-detail rail+panel layout. Unselected state: DataGrid shows 4 columns - Location, Warehouse (chip per row), Items, Total Qty. No separate Aisle/Bay/Bin columns. Selected state (row clicked): left DataGrid collapses to a single "Location" column rail (shows location name + warehouse code chip + qty in one compact cell per row), and a right-side panel fills the remaining width showing the bin's contents, a WRD/VP chip in the panel header, and recent activity. Close button in panel returns to unselected state.
 - Locations page warehouse filter: A "Warehouse" combobox dropdown sits next to the Search locations input. Options: "All warehouses" (default), "Warden (WRD)", "VP (VP)". When a specific warehouse is selected, the "Warehouse" column disappears from the table (redundant), only that warehouse's bins show, and the count summary updates. A plain click on the combobox works — it opens the MUI Select portal and the options are reachable with `find` right after.
 - Locations page horizontal scroll: body has `overflow-x: hidden` applied. No hard min-widths on the layout. `document.documentElement.scrollWidth === clientWidth` with panel open or closed.
@@ -1064,7 +1097,7 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - MUI `Autocomplete` with `freeSolo` (used by `LocationAutocomplete` and `OrderAsAutocomplete`) can be flaky to drive by typing when the value is a brand-new free-form string. Follow the Autocomplete pattern (click, type, wait, `find` the option); for a value with no option, use `javascript_tool` to set the underlying input's `value` and dispatch a synthetic `input` event, or drive the mutation directly with a token-bearing `javascript_tool` fetch to `/graphql` (the location-string normalization can be verified that way without UI flake).
 - Mutation success in the new LocationsTab triggers `refetchContents()` + parent `refetch()`, but Apollo Client's normalized cache can leave the just-mutated `InventoryLocation` entity visible in the panel until the cache settles. The DB is correct (verified by full page reload). If you need to assert post-mutation UI state, reload the page rather than trusting the immediate read after the success toast.
 - The Location Cleanup screen lives at `/app/tenant-owner/location-cleanup`. It queries `locationDuplicates` which groups location triples by case-insensitive canonical form (uppercase + trim + collapse whitespace) and surfaces variants. Empty state ("No location duplicates found") is the happy path. The merge dialog calls `mergeLocations` which rewrites every matching row across inventory_locations + opening_items + stock_items and writes one MOVE audit per row.
-- The Tenant Owner Projects page (issue #67) is the first screen backed by real server-side auth. The frontend now sends the Clerk session token on every GraphQL request (Apollo auth link via `window.Clerk.session.getToken()`), and two resolvers are gated on the Tenant Owner role: `adminProjects` (query) and `updateProject` (mutation). Unauthenticated calls to them return a GraphQL error with `extensions.code = "UNAUTHENTICATED"`; signed-in non-admins get `FORBIDDEN`. Every other resolver is still ungated, so existing tests are unaffected.
+- The Tenant Owner Projects page (issue #67) is the first screen backed by real server-side auth. The frontend now sends the Clerk session token on every GraphQL request (Apollo auth link via `window.Clerk.session.getToken()`), and two resolvers are gated on the Tenant Owner role: `adminProjects` (query) and `updateProject` (mutation). Unauthenticated calls to them return a GraphQL error with `extensions.code = "UNAUTHENTICATED"`; signed-in non-admins get `FORBIDDEN`. Since #415 every other resolver is gated too (see "Every resolver needs a token now").
 - Issues #198 and #380: free-form project creation is gone, and so is manual adoption. `createProject`/`CreateProjectInput` and `adoptGpJob`/`AdoptGpJobInput` no longer exist. Projects now appear on their own: the `gp_job_sync` background service creates one for every job in GP's job master (JC00102), on a ~5 minute timer and immediately on every relay reconnect, setting `projectId` = the GP job number and `description` = the GP job name. That means **there is no longer any way to seed a project through GraphQL without a relay** - the old ungated `adoptGpJob` fetch trick is dead. To get projects in a test environment, connect and enrol the relay and let the sync run, or hit the admin `syncGpJobs` mutation (Admin -> Projects -> "Sync from GP", which returns `{total, adopted}`) once a relay is up.
 - Issue #380: the "Create GP Job" button (`CreateGpJobDialog`) sits on the Tenant Owner Projects page since #743 - it was on the Import landing until then, which is now only a project picker. It originates a job in GP via `createGpJob(input: CreateGpJobInput!)`, which is admin-gated and requires a connected relay. Every field except the job number and name is a live GP read (`gpCustomers`, `gpCustomerAddresses`, `gpTaxSchedules`, `gpDivisions`, `gpEmployees`), so the whole form stays disabled while the relay is down. The two address selects stay disabled until a customer is picked and re-fetch when it changes. Eight optional fields sit behind a "Show optional fields" toggle. GP validates the submit and its own message is shown in the dialog - in TUBC the fiscal calendar ends 2025-09-30, so today's date reliably produces "Job cannot be created within a closed period"; use a FY2025 `createdDate` for a success path. Issue #392: Estimator and WS Manager are selects over `gpEmployees` (the GP payroll master UPR00100), not free text - the proc rejects an id that is not in that master with "The estimator does not exist in the payroll master table" (error state 51117). TUBC has exactly two employees, IANB and JONATHANR. `createGpJob` returns `{created, project}`: `created` is false when GP already held the job number and the mutation adopted it instead of creating one, so resubmitting an existing number succeeds with "already existed in GP and is now a project" rather than erroring. New projects default `offSiteStorageAgreement` to false and the GC/address fields to null, handy for testing the Projects edit flow.
 - Issue #444: both address selects in `CreateGpJobDialog` carry a "+ Add new address" row pinned last (only when that picker's customer is set). It opens a nested `AddCustomerAddressDialog` scoped to that customer and creates the code in GP via `createGpCustomerAddress` (admin-gated, relay write `create_customer_address`, RM00102 create-only - the relay pins the proc's UpdateIfExists to 0). The address code uppercases as typed; on success the picker refetches and auto-selects the new code. A duplicate code answers relay code `address_code_already_exists` rendered inside the nested dialog, which stays open with the typed input intact. Verified live 2026-07-30: NEXTEST1 under ELL100 in TUBC, then a full `createGpJob` using it (NEXUS-444-T1). The op is new, so a release relay build answers RELAY_OP_UNSUPPORTED on the create (the reads still work) until the relay is rebuilt.
@@ -1072,14 +1105,13 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - MUI `spinbutton` (number input) fields with a pre-filled value will APPEND when typed into - "3" becomes "31" if you type "1". Always click the field first, select all (`ctrl+a`), then type the desired value. Alternatively use `form_input`, or `javascript_tool` to set the value directly.
 - The Transfer dialog success toast is very brief - by the time the next read runs after the click, it may already be gone. Confirm success by observing the grid data (dialog closed + new/updated row present) rather than waiting for the toast text.
 - There is no vendor field in PO create/edit at all since #509, and no Admin > Vendors page behind it - the local vendors table is gone. The only vendor a PO carries is the GP one (PM00200), chosen in the Register in GP dialog from the live `gpVendors` list, so a draft shows a blank vendor until it is registered. `/app/tenant-owner/vendors` now falls through to the Tenant Owner landing like any other unknown sub-route.
-- Receiving wizard: after selecting POs and clicking "Receive N Selected", the Receive modal opens. The "Receive Now" spinbutton defaults to 0. Setting the DOM value alone fails (it does not stick on a React controlled spinbutton). Focus the input (click it, or `javascript_tool`), then press ArrowUp with the `computer` tool's `key` action to increment. ArrowUp from 0 goes directly to the max (pending qty) in one press.
-- Receiving wizard: "Assign locations & flag deficient units now" toggle appears only AFTER entering a Receive Now quantity > 0. Turn it on to get the Aisle/Bay/Bin text fields (regular textbox, not autocomplete). Typing or `form_input` works fine on these.
+- Receiving: after selecting POs on POs Awaiting Receipt, the Receive modal opens. The "Receive Now" spinbutton defaults to 0. Setting the DOM value alone fails (it does not stick on a React controlled spinbutton). Focus the input (click it, or `javascript_tool`), then press ArrowUp with the `computer` tool's `key` action to increment. ArrowUp from 0 goes directly to the max (pending qty) in one press.
 - Transfer dialog Aisle/Bay/Bin: these are comboboxes with autocomplete="list". Use `javascript_tool` to set the underlying input value (native value setter + `input` event), or the Autocomplete pattern when the value is an existing option. This reliably sets the values without triggering dropdown selection. The Transfer button enables once all three fields are filled.
 - Locations page (Warden filter, panel open): when a single warehouse filter is active, the left rail single-column shows just the bin name + qty (no warehouse chip in that column, since filter is already scoped). The right panel header still shows the warehouse chip (e.g. "WRD").
 - Verifying a generated PDF (issue #230 PO document): the doc is text-based react-pdf, not an image, so `pdftotext` works. Fastest path for content assertions: use the dialog's "Save to PO documents" to upload it, query the PO's `documents { downloadUrl }` (presigned S3 URL) via GraphQL, `curl` the URL to a file, then `pdftotext -layout` (or `-raw` for the totals column, which `-layout` misaligns since Subtotal/Freight/Miscellaneous/Tax/Order-Total are right-aligned). "Generate & preview" opens a blob in a new tab that is hard to read through the extension - prefer save-then-fetch.
 - pdftotext/poppler is NOT installed on the dev machine, and naive stream-inflation can't read the text (react-pdf subsets fonts to custom glyph IDs). Working alternative: open the presigned `downloadUrl` directly in a browser tab (Chrome renders PDFs natively) and take a `computer` screenshot - the full totals column is readable in the image. Verified this way for issue #156 (Tariffs line + Order Total math).
 - Issue #156 fields: PO detail modal shows "Shipping Costs" / "Tariffs" info rows ('-' when null) and edit-mode number fields; the generate-document dialog's Freight prefills from the PO's shippingCost (saved documentData override wins) and its new Tariffs field from the PO's tariffAmount; the PDF prints a Tariffs totals line only when > 0.
-- Issue #216 buyer identity (scoped to REGISTERING by issue #256 - drafting needs neither): registering a PO into GP REQUIRES the signed-in user to have a GP buyer identity (Clerk publicMetadata.gpBuyerId, set in Admin -> User Management) AND, for project POs, a buyer assignment (Admin -> Buyers: assigned projects). Without them the register dialog blocks and the backend rejects. The test user (Jay Puzon) is linked to GP buyer "mira" with project 80003 assigned. The register dialog's Buyer field is read-only (your identity); its cost-code dropdown offers every code GP has active on the job - per-buyer cost-code designation was removed (PR #430), so there is no Designated Cost Codes field in Admin -> Buyers anymore. Stock POs (no project) skip the assignment check but still need the identity.
+- Issue #216 buyer identity (scoped to REGISTERING by issue #256 - drafting needs neither): registering a PO into GP requires the signed-in user to have a GP buyer identity, set in User Management and, since #724, only for a user holding the PO User role. There is no per-project buyer assignment any more (#695). The register dialog's Buyer field is read-only (your identity); its cost-code dropdown offers every code GP has active on the job.
 - Issue #216 delivery dates: PO Requests capture "Preferred delivery date" per vendor card in the import wizard's PO step; the detail modal edits Preferred only while DRAFT and Expected only when GP-Registered/Vendor-Confirmed (server-enforced).
 - Import-created PO drafts have EMPTY Order As values unless set in the wizard's PO step - the register dialog then blocks submit with per-line 'Required' errors until each line's Order As is filled.
 - The generate dialog + admin PO-settings text fields APPEND when typed into if they already hold a value (same MUI controlled-input quirk as spinbuttons). For a pre-filled field, select all before typing, or set the value via `form_input` or `javascript_tool` using the native value setter + an `input` event (match the label's `for` attr to the input id), or drive the mutation directly. Empty fields fill fine.
@@ -1091,7 +1123,11 @@ Inventory quantity corrections are NOT here — they live in the Warehouse modul
 - Availability semantics (issue #229): available = quantity - deficient, so a 10-qty row with 7 deficient shows available 3. Read it per row via `inventoryRows` (`inventoryLocation.available`) or per combo via `projectInventoryAvailability`; cross-check against `deficientItems`. (The old `inventoryHierarchy` roll-up query that documented this is deleted.)
 - `Notification` has no `kind` field - it is `type` (`{ notifications { id type message isRead createdAt recipientRole projectId } }`). Querying `kind` fails the whole document, so a mistyped notification field takes the relay/pull/request fields in the same query down with it.
 - The bell panel is a plain MUI Popover with a "Notifications" heading and one bold row per unread item; the app-bar badge count matches `notifications` where `isRead: false`. It renders every audience regardless of your role, so 4 in the badge means 4 rows in the panel.
-- `shopAssemblyRequests` takes a `status` and defaults to **PENDING**, so `[]` means the accept queue is empty, not that no requests exist. Ask for `status: APPROVED` (or `REJECTED`) to see the rest; every row carries a derived `stage` telling you how far its pull has got.
+- Project autocompletes (the ProjectPicker used by shipping and others, Hardware Status by Project and
+  Project Purchasing Progress) key their options by project id since #853 (PR #889). They used to key
+  by name, and a company with repeated project names (UCSH has many) left ghost rows as the list
+  narrowed - 36 options for one real match. A stale extra option in a picker is that bug coming back.
+- `shopAssemblyRequests` takes a `status` and defaults to **PENDING**, so `[]` means no request is waiting, not that no requests exist. Ask for `status: APPROVED` (the Worked view) or `REJECTED` to see the rest; every row carries a derived `stage`.
 
 ## 2026-07-28 UI revamp - what changed for testers
 
@@ -1101,27 +1137,19 @@ queries/mutations and every action are unchanged, but a lot of chrome moved:
 - **Navigation is a persistent left rail on desktop** (collapsible via the panel icon in the app
   bar; state persists in localStorage `uc-nexus-rail-collapsed`). The hamburger-opens-drawer flow
   now exists only below the `md` breakpoint. Sub-items expand under
-  the active module. The `<- Warehouse` / `<- Projects` back buttons are gone - breadcrumbs (now
-  labelled "Purchase Orders", "Start a Request") are the way back.
+  the active module. The `<- Warehouse` / `<- Projects` back buttons are gone; since #711 every page
+  below a landing has a page header whose parent link is the way back (the breadcrumbs are gone too).
 - **Icons are lucide (stroke) not Material (filled)**; icon-only buttons gained aria-labels
   (e.g. `Open <PO> details`). Selectors keyed on Material icon `data-testid`s will miss.
 - **Stat values animate** (count-up over ~0.5s on mount). A read or screenshot taken immediately after
   render can catch a mid-flight number - wait and read again. With
   `prefers-reduced-motion`, values render instantly.
-- **PO list**: the 7 stat tiles are now one status strip; segments are still the same filters
-  (`aria-pressed`, `aria-label="Filter by <status>"`). The whole data row opens the detail modal;
-  the leading chevron cell only toggles the line-item expand. Empty modal fields render an em-dash
-  `—` (was `-`).
+- **PO list**: the stat tiles became one status strip (since split into NEXUS and GP STATUSES boxes, #682, and optional since #851); segments carry `aria-pressed` and `aria-label="Filter by <label>"`. The whole data row opens the detail modal. Empty modal fields render an em-dash `—` (was `-`).
 - **Escape behavior changed on purpose**: Pull Request detail modal now closes on Escape;
   Receive modal and Transfer dialog now *block* Escape once you have typed values into them
   (they used to discard silently). The assembly modal's close semantics are unchanged.
-- **Shipping browse (Ship tab)** lists the staged pool - what a completed shipping-out pull put on
-  the floor, minus what a slip has already carried out - with a text search and the container
-  workspace beside it. The per-leaf status panel it used to carry is gone with the leaves.
-- **Import wizard**: step 1 shows a single success strip (the old second green alert is merged
-  in); Purpose options are cards now but the radio semantics and the exact label strings
-  ("Create Purchase Orders", "Pull Request for Shop Assembly", "Pull Request for Shipping Out")
-  are unchanged.
+- **Shipping browse** (now the Staging page, `/app/shipping/staging`) lists the staged pool - what a completed shipping-out pull put on the floor, minus what a slip has already carried out - with a text search and the container workspace beside it.
+- **Import wizard**: step 1 shows a single success strip (the old second green alert is merged in). The Purpose cards this revamp introduced are gone since #642; the link that opens the wizard fixes the purpose.
 - **Warehouse/Admin/Shop-Assembly landings**: the "Go to" cards now carry live counts (pending
   pulls, unlocated, deficient, etc.), driven by the same queries as before.
 - **The reset button** became visible in light mode here (it was ink-on-ink); it has since left the
