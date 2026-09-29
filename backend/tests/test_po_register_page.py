@@ -73,6 +73,63 @@ def test_backslash_in_search_does_not_break(db_session):
     assert _search_numbers(db_session, "\\") == set()
 
 
+# --- #851: the search also matches the PO's project -------------------------------------------------
+# The PO table lost its project picker, so the search box has to find a PO by its project's job number
+# or name. A stock PO has no project and must still be found by its own number (the outer join).
+
+
+def _make_project(session, *, number, name, company="TUBC"):
+    project = Project(id=uuid.uuid4(), company=company, project_id=number, description=name)
+    session.add(project)
+    session.flush()
+    return project
+
+
+def test_search_matches_the_projects_job_number(db_session):
+    project = _make_project(db_session, number="J-851-ALPHA", name="Harbour Tower")
+    on_job = _make_po(db_session, po_number="PO-851-1")
+    on_job.project_id = project.id
+    _make_po(db_session, po_number="PO-851-2")
+    db_session.flush()
+
+    assert _search_numbers(db_session, "j-851-alpha") == {on_job.po_number}
+
+
+def test_search_matches_the_projects_name_case_insensitively(db_session):
+    project = _make_project(db_session, number="J-851-BETA", name="Harbour Tower 851")
+    on_job = _make_po(db_session, po_number="PO-851-3")
+    on_job.project_id = project.id
+    db_session.flush()
+
+    assert _search_numbers(db_session, "harbour tower 851") == {on_job.po_number}
+
+
+def test_a_stock_po_with_no_project_is_still_found_by_its_number(db_session):
+    stock = _make_po(db_session, po_number="PO-851-STOCK")
+    db_session.flush()
+
+    rows, _counts, total = po_repository.get_purchase_orders_page(db_session, search="851-STOCK")
+    assert [r.po_number for r in rows] == [stock.po_number]
+    assert total == 1
+
+
+def test_project_search_stays_inside_the_callers_company(db_session):
+    # Both companies have a job whose name matches; only the caller's company's PO may come back.
+    ours = _make_project(db_session, number="J-851-T1", name="Shared Name 851", company="TUBC")
+    theirs = _make_project(db_session, number="J-851-T2", name="Shared Name 851", company="TUCSH")
+    mine = _make_po(db_session, po_number="PO-851-MINE")
+    mine.project_id = ours.id
+    other = _make_po(db_session, po_number="PO-851-OTHER")
+    other.company = "TUCSH"
+    other.gp_company = "TUCSH"
+    other.project_id = theirs.id
+    db_session.flush()
+
+    rows, _counts, total = po_repository.get_purchase_orders_page(db_session, search="shared name 851", company="TUBC")
+    assert {r.po_number for r in rows} == {mine.po_number}
+    assert total == 1
+
+
 def test_page_row_carries_line_item_count_scalar_not_collection(db_session):
     po = _make_po(db_session, po_number="PO-COUNT-1")
     for ord_ in (1, 2):

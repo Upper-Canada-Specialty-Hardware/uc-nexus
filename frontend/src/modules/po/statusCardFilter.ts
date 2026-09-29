@@ -15,10 +15,13 @@ export interface StatusFilterable {
  *
  * Exactly-one, not "includes": a card is a shortcut to a single status, so it must not light up as a
  * side effect of a broader multi-select made in the filter row - that would claim the table is showing
- * one status when it is showing three. Total is active when nothing is filtered by status.
+ * one status when it is showing three.
+ *
+ * Total never reads as active (#851). Everything is the table's resting state, not a choice someone
+ * made, so with nothing pressed nothing looks pressed; Total is only the way back out of a narrowing.
  */
 export function isStatusCardActive<T extends StatusFilterable>(filterState: T, status: string | null): boolean {
-  if (status === null) return filterState.statuses.size === 0;
+  if (status === null) return false;
   return filterState.statuses.size === 1 && filterState.statuses.has(status);
 }
 

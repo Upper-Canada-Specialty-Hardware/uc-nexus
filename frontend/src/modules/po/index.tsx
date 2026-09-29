@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Box,
   Typography,
@@ -20,12 +20,10 @@ import {
   TextField,
   InputAdornment,
   Tooltip,
-  Autocomplete,
   ToggleButton,
   ToggleButtonGroup,
-  createFilterOptions,
 } from '@mui/material';
-import { alpha, type Theme } from '@mui/material/styles';
+import { alpha, keyframes, type Theme } from '@mui/material/styles';
 import { Plus, ChevronRight, Settings, Search, RefreshCw } from 'lucide-react';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
@@ -48,6 +46,7 @@ import { useActingCompany } from '../../company/ActingCompanyContext';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
 import { isStatusCardActive, toggleStatusCard } from './statusCardFilter';
+import { HIGHLIGHT_PARAM, PROJECT_PARAM, parseHighlightParam } from './poTableLinks';
 import { Routes, Route, useNavigate, useSearchParams } from 'react-router-dom';
 import { useIdentity } from '../../hooks/useIdentity';
 import PODocumentSettingsPage from './PODocumentSettingsPage';
@@ -254,9 +253,17 @@ const activeSegmentTint = (t: Theme) =>
 
 const STAT_CARD_COUNT = STAT_CARD_GROUPS.reduce((n, g) => n + g.cards.length, 0);
 
-// The register defaults to the open work rather than the full company history the backfill loads:
-// what is live and being acted on. Total (and the Cancelled/Closed segments) reach the rest.
-const OPEN_STATUSES = ['GP_REGISTERED', 'VENDOR_CONFIRMED', 'PARTIALLY_RECEIVED'];
+// #851: the table opens on everything, newest first (DEFAULT_SORT), drafts and GP-mirrored POs
+// together. It used to open on the three open GP statuses, which hid a draft someone had just raised
+// while no segment looked pressed to say so. The segments are now optional narrowing only.
+
+// #851: rows the import wizard has just created are tinted amber for a moment when the table opens on
+// them, the same fade as the spreadsheet paste tint in the register dialog (#833).
+const highlightedRowFade = keyframes`
+  from { background-color: var(--highlighted-row-tint); }
+  to { background-color: transparent; }
+`;
+const HIGHLIGHT_MS = 4000;
 
 // The one write this module is answerable for: a PO REGISTRATION that has not reached GP yet. A
 // constant rather than an inline array so the panel's query keeps one identity across renders.
@@ -285,10 +292,6 @@ function poDisplayId(po: POListRow): string {
 // Project columns: POs carry only projectId (a UUID); the human number + name come from the projects
 // list, joined client-side via this map.
 type ProjectsById = Map<string, Project>;
-
-const projectFilterOptions = createFilterOptions<Project>({
-  stringify: (p) => `${p.projectId} ${p.description ?? ''}`,
-});
 
 // --- Sortable column header ---
 
@@ -331,9 +334,11 @@ interface POTableRowProps {
   onOpen: () => void;
   // #353 PR E: this PO has a GP write on the outbox. Joined client-side, not a per-row resolver.
   gpWriteQueued: boolean;
+  // #851: one of the POs the import wizard just created; tinted for a moment on arrival.
+  highlighted?: boolean;
 }
 
-function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued }: POTableRowProps) {
+function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, highlighted = false }: POTableRowProps) {
   const hugSx = { width: '1%', whiteSpace: 'nowrap' as const };
   // #701: where a PO raised in GP carries no vendor, or no document date, the cell says so in plain
   // words. A bare dash left the reader unable to tell an empty field in GP from Nexus failing to
@@ -345,7 +350,15 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued }: P
     <TableRow
       hover
       onClick={onOpen}
-      sx={{ cursor: 'pointer', '&:hover .po-row-chevron': { color: 'text.primary' } }}
+      data-highlighted={highlighted || undefined}
+      sx={(theme) => ({
+        cursor: 'pointer',
+        '&:hover .po-row-chevron': { color: 'text.primary' },
+        ...(highlighted && {
+          '--highlighted-row-tint': alpha(theme.palette.warning.main, 0.16),
+          animation: `${highlightedRowFade} ${HIGHLIGHT_MS}ms ease-out forwards`,
+        }),
+      })}
     >
       {/* #632: one Project column - mono number over the truncated name - so the register fits
           1366px without the container growing an x-scroll. */}
@@ -467,9 +480,15 @@ function POListPage() {
   // Server-driven filter / sort / page state.
   const [searchInput, setSearchInput] = useState('');
   const [committedSearch, setCommittedSearch] = useState('');
-  const [statuses, setStatuses] = useState<Set<string>>(() => new Set(OPEN_STATUSES));
+  const [statuses, setStatuses] = useState<Set<string>>(() => new Set());
   const [origin, setOrigin] = useState<OriginFilter>('ALL');
-  const [projectId, setProjectId] = useState<string | null>(null);
+  // #851: the project scope lives in the link (`?project=<id>`), not in a picker: the project detail
+  // page opens the table on its own project, and the Sidebar's plain link lands unscoped even while
+  // this page is already mounted, because the scope is read from the URL on every render.
+  const projectId = searchParams.get(PROJECT_PARAM);
+  // #851: the import wizard's new drafts, tinted and scrolled to when the table opens on them.
+  const highlightParam = searchParams.get(HIGHLIGHT_PARAM);
+  const highlightIds = useMemo(() => new Set(parseHighlightParam(highlightParam)), [highlightParam]);
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(25);
@@ -505,10 +524,14 @@ function POListPage() {
     poStatistics: POStatistics;
   }>(GET_PO_STATISTICS);
 
+  // #851: a search spans every status. Someone looking up a PO by number should find it whichever
+  // segment happens to be pressed; clearing the search returns to that segment's narrowing.
+  const searchingAllStatuses = committedSearch !== '';
+
   const pageVariables = useMemo(
     () => ({
       search: committedSearch || null,
-      statuses: statuses.size ? Array.from(statuses) : null,
+      statuses: !searchingAllStatuses && statuses.size ? Array.from(statuses) : null,
       origin: origin === 'ALL' ? null : origin,
       projectId: projectId || null,
       sortField: sort.field,
@@ -516,7 +539,7 @@ function POListPage() {
       limit: rowsPerPage,
       offset: page * rowsPerPage,
     }),
-    [committedSearch, statuses, origin, projectId, sort, rowsPerPage, page],
+    [committedSearch, searchingAllStatuses, statuses, origin, projectId, sort, rowsPerPage, page],
   );
 
   const {
@@ -559,6 +582,26 @@ function POListPage() {
     return p?.description || p?.projectId || '';
   };
 
+  // #851: once the highlighted rows have rendered, bring the first into view, then drop the link's
+  // highlight when the tint has faded so a reload or a later refetch does not tint them again.
+  const tableRef = useRef<HTMLDivElement>(null);
+  const highlightShown = highlightIds.size > 0 && !pageLoading && rows.some((r) => highlightIds.has(r.id));
+  useEffect(() => {
+    if (!highlightShown) return;
+    // jsdom has no scrollIntoView, hence the optional call.
+    tableRef.current?.querySelector('[data-highlighted]')?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    const t = setTimeout(() => {
+      setSearchParams(
+        (prev) => {
+          prev.delete(HIGHLIGHT_PARAM);
+          return prev;
+        },
+        { replace: true },
+      );
+    }, HIGHLIGHT_MS);
+    return () => clearTimeout(t);
+  }, [highlightShown, setSearchParams]);
+
   // Clamp the page when the server's total shrinks under it without a filter change - cancel the last
   // PO on the last page and the query would otherwise sit past the end on the empty state until a
   // filter moved. Adjusted during render (React's prescribed alternative to a state-sync effect): the
@@ -579,6 +622,17 @@ function POListPage() {
 
   const handleCardClick = (status: string | null) => {
     setStatuses((prev) => toggleStatusCard({ statuses: prev }, status).statuses);
+    setPage(0);
+  };
+
+  const clearProjectScope = () => {
+    setSearchParams(
+      (prev) => {
+        prev.delete(PROJECT_PARAM);
+        return prev;
+      },
+      { replace: true },
+    );
     setPage(0);
   };
 
@@ -695,7 +749,16 @@ function POListPage() {
             {STAT_CARD_GROUPS.map((group) => (
               <Box
                 key={group.caption}
-                sx={{ minWidth: 0, display: 'flex', flexDirection: 'column' }}
+                // #851: a search spans every status, so the strip steps back while one is typed - a
+                // pressed segment is not narrowing the table in that moment. Still clickable: the
+                // press applies again once the search is cleared.
+                sx={{
+                  minWidth: 0,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  opacity: searchingAllStatuses ? 0.45 : 1,
+                  transition: 'opacity 0.2s ease',
+                }}
               >
                 <Typography component="div" sx={{ ...microLabelSx, textAlign: 'center', mb: 0.5 }}>
                   {group.caption}
@@ -768,6 +831,17 @@ function POListPage() {
                 </Paper>
               </Box>
             ))}
+            {/* Sits in the strip's own row, beside the boxes it explains, so it costs no height. */}
+            {searchingAllStatuses && (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                role="status"
+                sx={{ alignSelf: 'flex-end', pb: 1.5, minWidth: 0 }}
+              >
+                Searching all statuses
+              </Typography>
+            )}
           </Box>
         </StaggerList>
       </FadeIn>
@@ -776,11 +850,13 @@ function POListPage() {
           only on the admin queue. It renders nothing while there are none. */}
       <GpWriteQueuePanel ops={HELD_PO_REGISTRATION_OPS} compact heading="Held PO registrations" />
 
-      {/* Filter bar: search reaches full history; project + origin narrow it. Server-driven. */}
+      {/* Filter bar: search reaches full history, projects included (#851); origin narrows it, and a
+          link's project scope shows as a chip. Server-driven. */}
       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, mb: 1.5, alignItems: 'center' }}>
         <TextField
           size="small"
-          placeholder="Search PO #, request #, or vendor…"
+          placeholder="Search PO #, request #, vendor, or project…"
+          inputProps={{ 'aria-label': 'Search purchase orders' }}
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
           InputProps={{
@@ -792,25 +868,30 @@ function POListPage() {
           }}
           sx={{ flex: 1, minWidth: 260 }}
         />
-        <Autocomplete
-          size="small"
-          options={projects}
-          value={projects.find((p) => p.id === projectId) ?? null}
-          onChange={(_e, selected) => {
-            setProjectId(selected?.id ?? null);
-            setPage(0);
-          }}
-          filterOptions={projectFilterOptions}
-          getOptionLabel={(p) => p.description || p.projectId}
-          // #853: keyed by id, not by the label - project names repeat (a job and its change orders),
-          // and duplicate keys left stale rows in the list as it narrowed.
-          getOptionKey={(p) => p.id}
-          isOptionEqualToValue={(a, b) => a.id === b.id}
-          renderInput={(params) => (
-            <TextField {...params} placeholder="All projects" inputProps={{ ...params.inputProps, 'aria-label': 'Filter by project' }} />
-          )}
-          sx={{ minWidth: 220 }}
-        />
+        {/* #851: the project picker is gone - the search box finds a project by number or name. A
+            link that opens the table on one project (the project detail page) shows that scope here,
+            and removing the chip lifts it. */}
+        {projectId && (
+          <Chip
+            size="small"
+            variant="outlined"
+            label={
+              <Box component="span" sx={{ display: 'flex', gap: 0.75, minWidth: 0 }}>
+                <Box component="span" sx={monoSx}>
+                  {projectsById.get(projectId)?.projectId ?? 'Project'}
+                </Box>
+                {projectsById.get(projectId)?.description && (
+                  <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {projectsById.get(projectId)?.description}
+                  </Box>
+                )}
+              </Box>
+            }
+            title={projectsById.get(projectId)?.description ?? undefined}
+            onDelete={clearProjectScope}
+            sx={{ maxWidth: 320, minWidth: 0 }}
+          />
+        )}
         <ToggleButtonGroup
           size="small"
           exclusive
@@ -830,7 +911,7 @@ function POListPage() {
       </Box>
 
       {/* PO Table */}
-      <TableContainer component={Paper}>
+      <TableContainer component={Paper} ref={tableRef}>
         <Table size="small">
           <TableHead>
             <TableRow>
@@ -873,6 +954,7 @@ function POListPage() {
                   projectName={projectNameOf(po)}
                   onOpen={() => handleOpenPO(po.id)}
                   gpWriteQueued={queuedPoIds.has(po.id)}
+                  highlighted={highlightIds.has(po.id)}
                 />
               ))}
           </TableBody>

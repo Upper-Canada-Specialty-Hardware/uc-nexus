@@ -1004,7 +1004,14 @@ def get_purchase_orders_page(
         filters.append(PurchaseOrder.origin == origin)
     if project_id is not None:
         filters.append(PurchaseOrder.project_id == project_id)
-    if search and search.strip():
+    # #851: the search also matches the PO's project - its job number and its name - so the PO table
+    # needs no separate project picker. An OUTER join because a stock PO has no project and must still
+    # match on its own number or vendor. Still one query: the join is added only while searching, and a
+    # PO has at most one project, so it never multiplies rows or the count.
+    from app.models.project import Project as ProjectModel
+
+    join_project = bool(search and search.strip())
+    if join_project:
         # Escape LIKE wildcards so a user typing % or _ searches for the literal character instead of
         # matching everything (backslash first, or it would double-escape the escapes we add after).
         escaped = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -1014,10 +1021,15 @@ def get_purchase_orders_page(
                 PurchaseOrder.po_number.ilike(term, escape="\\"),
                 PurchaseOrder.request_number.ilike(term, escape="\\"),
                 PurchaseOrder.vendor_name_snapshot.ilike(term, escape="\\"),
+                ProjectModel.project_id.ilike(term, escape="\\"),
+                ProjectModel.description.ilike(term, escape="\\"),
             )
         )
 
-    total = session.scalar(select(func.count()).select_from(PurchaseOrder).where(*filters)) or 0
+    def _with_project(stmt):
+        return stmt.outerjoin(ProjectModel, PurchaseOrder.project_id == ProjectModel.id) if join_project else stmt
+
+    total = session.scalar(_with_project(select(func.count()).select_from(PurchaseOrder)).where(*filters)) or 0
 
     col = _PAGE_SORT_COLUMNS.get(sort_field, PurchaseOrder.created_at)
     ordering = col.desc() if sort_dir == "desc" else col.asc()
@@ -1025,7 +1037,7 @@ def get_purchase_orders_page(
     offset = max(0, int(offset or 0))
     rows = list(
         session.scalars(
-            select(PurchaseOrder)
+            _with_project(select(PurchaseOrder))
             .where(*filters)
             # id as the tiebreaker so a page boundary is stable when the sort column ties.
             .order_by(ordering, PurchaseOrder.id)

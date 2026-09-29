@@ -30,6 +30,7 @@ import { useHardwareScheduleParser } from '../../hooks/useHardwareScheduleParser
 import { useNavigate } from 'react-router-dom';
 import { GET_PROJECT_EXCLUDED_ITEMS, GET_PROJECT_HARDWARE_SCHEDULE, RECONCILE_SCHEDULE, FINALIZE_IMPORT_SESSION } from '../../graphql/import';
 import { UPLOAD_PO_DOCUMENT, GET_GP_COST_CODES } from '../../graphql/po';
+import { poTableHighlightHref } from '../po/poTableLinks';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { GET_PROJECT_INVENTORY_AVAILABILITY } from '../../graphql/warehouse';
@@ -1297,7 +1298,9 @@ export default function ImportWizard({
       setPostSuccessOpen(false);
       if (action === 'po') {
         onClose();
-        navigate('/app/po');
+        // #851: the PO table opens on its default view (everything, newest first), so the drafts just
+        // created are at the top; their ids ride along so the table tints them and scrolls to them.
+        navigate(poTableHighlightHref(finalizeResult?.purchaseOrders.map((po) => po.id) ?? []));
       } else if (action === 'inventory') {
         onClose();
         navigate('/app/warehouse');
@@ -1306,7 +1309,7 @@ export default function ImportWizard({
         navigate('/app');
       }
     },
-    [onClose, navigate],
+    [onClose, navigate, finalizeResult],
   );
 
   const handleClose = useCallback(() => {

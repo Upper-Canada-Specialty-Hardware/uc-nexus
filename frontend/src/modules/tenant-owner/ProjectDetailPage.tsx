@@ -28,6 +28,7 @@ import { parseServerDay } from '../../utils/serverDate';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import { formatPoStatus, poStatusChipColor, PO_STATUS_VALUES } from '../po/poStatus';
+import { poTableProjectHref } from '../po/poTableLinks';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import ProjectEditDialog, { type ProjectFormValue } from './ProjectEditDialog';
@@ -297,7 +298,8 @@ export default function ProjectDetailPage() {
             color={project.openingCount === 0 ? 'text.secondary' : undefined}
           />
         </StatTile>
-        <StatTile to="/app/po" ariaLabel="Open Purchase Orders">
+        {/* #851: both doors into the PO table open it on this project, shown there as a removable chip. */}
+        <StatTile to={poTableProjectHref(project.id)} ariaLabel="Open this project's purchase orders">
           <StatCard
             icon={<FileText size={20} strokeWidth={1.75} />}
             label="Purchase orders"
@@ -331,8 +333,8 @@ export default function ProjectDetailPage() {
             <Typography component="h2" sx={microLabelSx}>
               Purchase orders by status
             </Typography>
-            <Link component={RouterLink} to="/app/po" variant="body2" underline="hover">
-              Open register
+            <Link component={RouterLink} to={poTableProjectHref(project.id)} variant="body2" underline="hover">
+              Open PO table
             </Link>
           </Stack>
           {poTotal === 0 ? (
