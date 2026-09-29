@@ -8,6 +8,7 @@ from datetime import datetime
 
 import strawberry
 
+from app.models.enums import PoolKind as PoolKindDB
 from app.models.enums import ShippingOutRequestStatus as ShippingOutRequestStatusDB
 from app.models.enums import ShopAssemblyRequestStatus as ShopAssemblyRequestStatusDB
 from app.models.project import Project as ProjectModel
@@ -464,6 +465,7 @@ def po_to_type(po, receive_records=None) -> PurchaseOrder:
         # is not registered (all() of nothing is True, which would be the wrong answer here).
         nexus_registered=bool(line_items) and all(li.nexus_registered for li in line_items),
         project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
+        pool_kind=getattr(po, "pool_kind", None) or PoolKindDB.STOCK,
         status=po.status,
         cost_code=po.cost_code,
         company=po.company,
@@ -1103,6 +1105,7 @@ def stock_item_to_type(si) -> StockItem:
         deficient_quantity=deficient_qty,
         available=si.quantity - deficient_qty,
         unit_cost=float(si.unit_cost) if getattr(si, "unit_cost", None) is not None else None,
+        kind=getattr(si, "kind", None) or PoolKindDB.STOCK,
         aisle=si.aisle,
         row=si.row,
         bay=si.bay,

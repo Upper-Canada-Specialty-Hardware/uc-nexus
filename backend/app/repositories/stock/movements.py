@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
-from app.models.enums import AuditAction, AuditEntityType, DestockSource
+from app.models.enums import AuditAction, AuditEntityType, DestockSource, PoolKind
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.stock_item import StockItem
 from app.repositories.warehouse import (
@@ -287,8 +287,12 @@ def receive_into_stock(
     received_by: str,
     po_number: str | None,
     unit_cost: Decimal | None = None,
+    kind: PoolKind = PoolKind.STOCK,
 ) -> StockItem:
     """Receive vendor PO directly into the stock pool. Used when PO has no project_id.
+
+    `kind` is the PO's own Stock / Overhead choice (#832); every off-PO caller (the SharePoint
+    migration) takes the STOCK default.
 
     `unit_cost` is the off-PO cost for units with no PO line to hang it on (the SharePoint migration).
     A receipt into an EMPTY row (fresh, or drained by allocation) replaces the row's cost outright -
@@ -319,6 +323,7 @@ def receive_into_stock(
         row=row,
         bay=bay,
         received_at=received_at,
+        kind=kind,
     )
     was_empty = stock_row.quantity == 0 and (stock_row.deficient_quantity or 0) == 0
     stock_row.quantity += quantity
@@ -341,6 +346,7 @@ def receive_into_stock(
             "hardwareCategory": hardware_category,
             "productCode": product_code,
             "poNumber": po_number,
+            "kind": kind.value,
             "location": location_detail(aisle, row, bay, warehouse_id),
         },
     )
@@ -492,6 +498,8 @@ def transfer_inventory(
             row=dest_row,
             bay=dest_bay,
             received_at=now,
+            # The units keep their Stock / Overhead flag wherever they go (#832).
+            kind=si.kind,
         )
         target.quantity += quantity
         # Carry an off-PO cost onto the destination pool row (fills a null only).

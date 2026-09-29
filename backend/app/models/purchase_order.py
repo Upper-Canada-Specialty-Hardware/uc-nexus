@@ -21,7 +21,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
-from .enums import Classification, PODocumentType, POOrigin, POStatus
+from .enums import Classification, PODocumentType, PoolKind, POOrigin, POStatus
 
 if TYPE_CHECKING:
     from .hardware import HardwareItem
@@ -87,6 +87,16 @@ class PurchaseOrder(Base):
     # of the two-pass guard: one missed pass is a race with a GP edit, two is a deletion.
     gp_missing_since: Mapped[datetime | None] = mapped_column(nullable=True)
     project_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    # Stock or Overhead (#832): which half of the no-project pool this PO's receipts land in. Only
+    # meaningful when project_id is null - a PO on a job receives into the job's inventory, and is
+    # always stored STOCK so the column never claims a kind for units that never reach the pool.
+    # Chosen on the DRAFT; a GP-mirrored PO takes the default.
+    pool_kind: Mapped[PoolKind] = mapped_column(
+        Enum(PoolKind, name="pool_kind", create_constraint=True),
+        nullable=False,
+        default=PoolKind.STOCK,
+        server_default=PoolKind.STOCK.value,
+    )
     status: Mapped[POStatus] = mapped_column(Enum(POStatus, name="po_status", create_constraint=True), nullable=False)
     # GP cost code chosen per-PO (the issue #121 dropdown, 'phase-step-element' e.g. '210-200-2'),
     # applied to every job-cost line when pushed to GP. Null for stock POs / not-yet-pushed.

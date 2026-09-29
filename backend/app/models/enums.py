@@ -290,6 +290,8 @@ class AuditAction(str, enum.Enum):
     # carrying what was restocked, which openings were released, and what happened to the source
     # request - the PULL_RESTOCK rows above are the per-inventory-row detail of the same event.
     PULL_CANCELLED = "PULL_CANCELLED"
+    # Units of a pool row were re-flagged between Stock and Overhead (#832).
+    POOL_KIND_CHANGE = "POOL_KIND_CHANGE"
 
 
 class ReturnDisposition(str, enum.Enum):
@@ -298,6 +300,18 @@ class ReturnDisposition(str, enum.Enum):
     RETURN_TO_PROJECT = "RETURN_TO_PROJECT"
     NON_STOCK = "NON_STOCK"
     RMA_DEFECTIVE = "RMA_DEFECTIVE"
+
+
+class PoolKind(str, enum.Enum):
+    """Which half of the no-project pool a stock_items row is (#832).
+
+    Overhead is not a separate system: it is a flag on rows of the same pool, and everything that
+    works for stock works for overhead. The flag is chosen once per PO (purchase_orders.pool_kind) and
+    rides into the pool on receive; every other route into the pool lands as STOCK.
+    """
+
+    STOCK = "STOCK"
+    OVERHEAD = "OVERHEAD"
 
 
 class DestockSource(str, enum.Enum):

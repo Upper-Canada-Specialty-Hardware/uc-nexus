@@ -51,7 +51,7 @@ from .converters import (
     po_list_row_to_type,
     po_to_type,
 )
-from .enums import PODocumentType, POOrigin, POStatus
+from .enums import PODocumentType, PoolKind, POOrigin, POStatus
 from .inputs import (
     CreateDraftPOInput,
     NexusRegisterPoLinesInput,
@@ -710,6 +710,7 @@ class POMutations:
                 # A stock PO has no project to take a tenant from, so it takes the caller's. An admin
                 # (unscoped) raising one must say which company it is for - `company` on the input.
                 company=scope or input.company,
+                pool_kind=input.pool_kind,
             )
             session.commit()
             return po_to_type(po_repository.reload_po(session, po.id))
@@ -1016,6 +1017,8 @@ class POMutations:
         # Issue #156: tri-state (omitted / null / value) - null clears, 0 is a valid entered value.
         shipping_cost: float | None = strawberry.UNSET,
         tariff_amount: float | None = strawberry.UNSET,
+        # #832: Stock or Overhead, draft-only and ignored on a PO with a project. Null leaves it alone.
+        pool_kind: PoolKind | None = None,
     ) -> PurchaseOrder:
         from app.repositories.po_repository import _UNSET
 
@@ -1036,6 +1039,7 @@ class POMutations:
                 notes=notes,
                 shipping_cost=_UNSET if shipping_cost is strawberry.UNSET else shipping_cost,
                 tariff_amount=_UNSET if tariff_amount is strawberry.UNSET else tariff_amount,
+                pool_kind=pool_kind,
             )
             session.commit()
             return po_to_type(po_repository.reload_po(session, po.id))

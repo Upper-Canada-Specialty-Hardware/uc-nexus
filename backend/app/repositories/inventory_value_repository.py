@@ -15,8 +15,9 @@ company can hold thousands of inventory rows across hundreds of projects, and th
 resolver - so the number of statements has to be a constant, not a function of how many projects the
 company has.
 
-The three buckets are a partition of the company: a project is OSSA or it is not, and the stock pool
-belongs to neither because it belongs to no job. Nothing is counted twice and nothing is left out.
+The four buckets are a partition of the company: a project is OSSA or it is not, and the pool belongs
+to neither because it belongs to no job - it splits Stock / Overhead by each row's own kind (#832).
+Nothing is counted twice and nothing is left out.
 """
 
 import uuid
@@ -28,7 +29,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
-from app.models.enums import PullPickLineState, PullRequestSource, PullRequestStatus
+from app.models.enums import PoolKind, PullPickLineState, PullRequestSource, PullRequestStatus
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.inventory_value import DoorsOnHand, InventoryValueSettings
 from app.models.project import Project
@@ -44,6 +45,9 @@ from app.repositories import shipping_repository
 OSSA = "OSSA"
 NON_OSSA = "NON_OSSA"
 GENERAL_STOCK = "GENERAL_STOCK"
+# The Overhead half of the pool (#832). Hardware only: the general DOORS ON HAND row stays with
+# GENERAL_STOCK, so doors are never split between the two.
+OVERHEAD = "OVERHEAD"
 
 _CENTS = Decimal("0.01")
 _ZERO = Decimal("0")
@@ -245,16 +249,24 @@ def _staged_value_by_project(session: Session, company: str) -> dict[uuid.UUID, 
     return dict(value)
 
 
-def _stock_pool_value(session: Session, company: str) -> Decimal:
-    """The jobless pool, priced off the rows' own off-PO cost - the same expression the warehouse
-    dashboard's stock tile uses. Stock scopes through its WAREHOUSE, never a project (#637)."""
-    total = session.scalar(
-        select(func.coalesce(func.sum(StockItemModel.quantity * func.coalesce(StockItemModel.unit_cost, 0)), 0))
+def _stock_pool_value(session: Session, company: str) -> dict[PoolKind, Decimal]:
+    """The jobless pool, per kind (#832), priced off the rows' own off-PO cost - the same expression the
+    warehouse dashboard's stock tile uses. Stock scopes through its WAREHOUSE, never a project (#637).
+    One grouped statement; a kind with no rows is zero."""
+    rows = session.execute(
+        select(
+            StockItemModel.kind,
+            func.coalesce(func.sum(StockItemModel.quantity * func.coalesce(StockItemModel.unit_cost, 0)), 0),
+        )
         .select_from(StockItemModel)
         .join(Warehouse, StockItemModel.warehouse_id == Warehouse.id)
         .where(Warehouse.company == company)
-    )
-    return Decimal(total or 0)
+        .group_by(StockItemModel.kind)
+    ).all()
+    values = {kind: _ZERO for kind in PoolKind}
+    for kind, total in rows:
+        values[kind] = Decimal(total or 0)
+    return values
 
 
 # --- the page ------------------------------------------------------------------------------------
@@ -295,14 +307,21 @@ def get_inventory_value(session: Session, company: str) -> dict:
     )
 
     average_door_cost = Decimal(settings.average_door_cost or 0)
-    buckets = {OSSA: _empty_bucket(), NON_OSSA: _empty_bucket(), GENERAL_STOCK: _empty_bucket()}
+    buckets = {
+        OSSA: _empty_bucket(),
+        NON_OSSA: _empty_bucket(),
+        GENERAL_STOCK: _empty_bucket(),
+        OVERHEAD: _empty_bucket(),
+    }
 
     # Hardware. Every project of the company falls in exactly one of the two project buckets, and a
     # project with no rows at all contributes nothing rather than being skipped as unknown.
     for project_id, value in list(shelf.items()) + list(staged.items()):
         bucket = OSSA if ossa_flags.get(project_id) else NON_OSSA
         buckets[bucket]["hardware_value"] += value
-    buckets[GENERAL_STOCK]["hardware_value"] = _stock_pool_value(session, company)
+    pool = _stock_pool_value(session, company)
+    buckets[GENERAL_STOCK]["hardware_value"] = pool[PoolKind.STOCK]
+    buckets[OVERHEAD]["hardware_value"] = pool[PoolKind.OVERHEAD]
 
     # Doors.
     rows = []
@@ -336,6 +355,7 @@ def get_inventory_value(session: Session, company: str) -> dict:
         "ossa": buckets[OSSA],
         "non_ossa": buckets[NON_OSSA],
         "general_stock": buckets[GENERAL_STOCK],
+        "overhead": buckets[OVERHEAD],
         "average_door_cost": _cents(average_door_cost),
         "average_door_cost_updated_at": settings.updated_at,
         "average_door_cost_updated_by": settings.updated_by,

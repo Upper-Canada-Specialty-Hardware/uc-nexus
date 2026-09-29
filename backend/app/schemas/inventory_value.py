@@ -39,6 +39,7 @@ def _inventory_value_to_type(data: dict) -> InventoryValue:
         ossa=_bucket(data["ossa"]),
         non_ossa=_bucket(data["non_ossa"]),
         general_stock=_bucket(data["general_stock"]),
+        overhead=_bucket(data["overhead"]),
         average_door_cost=float(data["average_door_cost"]),
         average_door_cost_updated_at=data["average_door_cost_updated_at"],
         average_door_cost_updated_by=data["average_door_cost_updated_by"],

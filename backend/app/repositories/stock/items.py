@@ -7,11 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
-from app.models.enums import AuditAction, AuditEntityType
+from app.models.enums import AuditAction, AuditEntityType, PoolKind
 from app.models.stock_item import StockItem
 from app.repositories.warehouse import ensure_registered_location, location_detail, normalize_location_value
 
-from .common import _find_or_create_stock_row, _log_audit_event, _validate_location_fields
+from .common import _find_or_create_stock_row, _find_stock_row, _log_audit_event, _validate_location_fields
 
 
 def get_stock_items(
@@ -24,6 +24,7 @@ def get_stock_items(
     only_unlocated: bool = False,
     *,
     company: str | None = None,
+    kind: PoolKind | None = None,
 ) -> list[StockItem]:
     """List stock_items optionally filtered by product code, category, aisle, deficient-only, or
     unlocated-only (no aisle - the rows the Put Away stock section works through).
@@ -53,6 +54,8 @@ def get_stock_items(
         stmt = stmt.where(StockItem.warehouse_id == warehouse_id)
     if only_unlocated:
         stmt = stmt.where(StockItem.aisle.is_(None))
+    if kind is not None:
+        stmt = stmt.where(StockItem.kind == kind)
     if company is not None:
         from app.repositories import tenancy
 
@@ -271,6 +274,8 @@ def reclassify_stock_item(
         row=si.row,
         bay=si.bay,
         received_at=now,
+        # A reclassify changes what the units are, not which half of the pool they sit in (#832).
+        kind=si.kind,
     )
     new_row.quantity += quantity
     # The units keep their off-PO cost across the split, the same as a full in-place reclassify
@@ -307,3 +312,118 @@ def reclassify_stock_item(
         detail=detail,
     )
     return (new_row, si)
+
+
+def set_stock_item_kind(
+    session: Session,
+    *,
+    stock_item_id: uuid.UUID,
+    kind: PoolKind,
+    quantity: int,
+    performed_by: str,
+) -> tuple[StockItem, StockItem | None]:
+    """Re-flag `quantity` units of a pool row as Stock or Overhead (#832).
+
+    The units move to the row of the other kind on the same shelf, which is created or merged into.
+    When every unit of the row moves and there is no such row yet, the row's own flag flips in place
+    instead, so it keeps its id.
+
+    Only sound units move (1..available), the same rule reclassify applies: deficient units are
+    condemned and stay on their row, under the kind they were condemned under, until the deficiency is
+    resolved. That keeps a deficiency review pointing at the row it was raised against.
+
+    Returns (row_now_holding_the_units, source_row_or_none) - the second is None on an in-place flip.
+    """
+    if quantity < 1:
+        raise ValidationError("quantity must be >= 1", field="quantity")
+    if not performed_by:
+        raise ValidationError("performed_by is required", field="performed_by")
+
+    si = get_stock_item(session, stock_item_id)
+    if si.kind == kind:
+        raise ValidationError(f"This row is already {kind.value.lower()}", field="kind")
+    available = si.quantity - (si.deficient_quantity or 0)
+    if quantity > available:
+        raise ValidationError(
+            "Quantity exceeds the row's available units; deficient units must be resolved first",
+            field="quantity",
+        )
+
+    from_kind = si.kind
+    target = _find_stock_row(
+        session,
+        warehouse_id=si.warehouse_id,
+        hardware_category=si.hardware_category,
+        product_code=si.product_code,
+        aisle=si.aisle,
+        row=si.row,
+        bay=si.bay,
+        kind=kind,
+    )
+
+    if target is None and quantity == si.quantity:
+        si.kind = kind
+        session.flush()
+        _log_audit_event(
+            session,
+            project_id=None,
+            entity_type=AuditEntityType.STOCK_ITEM,
+            entity_id=si.id,
+            action=AuditAction.POOL_KIND_CHANGE,
+            performed_by=performed_by,
+            detail={
+                "fromKind": from_kind.value,
+                "toKind": kind.value,
+                "quantity": quantity,
+                "hardwareCategory": si.hardware_category,
+                "productCode": si.product_code,
+                "location": location_detail(si.aisle, si.row, si.bay, si.warehouse_id),
+            },
+        )
+        return (si, None)
+
+    if target is None:
+        target = _find_or_create_stock_row(
+            session,
+            warehouse_id=si.warehouse_id,
+            hardware_category=si.hardware_category,
+            product_code=si.product_code,
+            aisle=si.aisle,
+            row=si.row,
+            bay=si.bay,
+            received_at=si.received_at,
+            kind=kind,
+        )
+    target_was_empty = target.quantity == 0 and (target.deficient_quantity or 0) == 0
+    si.quantity -= quantity
+    target.quantity += quantity
+    # The units keep their off-PO cost. An empty destination takes it outright (its own cost describes
+    # units that are gone, the rule receive_into_stock applies); one still holding units only has a
+    # null filled.
+    if target_was_empty:
+        target.unit_cost = si.unit_cost
+    elif si.unit_cost is not None and target.unit_cost is None:
+        target.unit_cost = si.unit_cost
+    session.flush()
+
+    detail = {
+        "fromKind": from_kind.value,
+        "toKind": kind.value,
+        "quantity": quantity,
+        "hardwareCategory": si.hardware_category,
+        "productCode": si.product_code,
+        "location": location_detail(si.aisle, si.row, si.bay, si.warehouse_id),
+        "originalStockItemId": str(si.id),
+        "newStockItemId": str(target.id),
+    }
+    for entity_id in (si.id, target.id):
+        _log_audit_event(
+            session,
+            project_id=None,
+            entity_type=AuditEntityType.STOCK_ITEM,
+            entity_id=entity_id,
+            action=AuditAction.POOL_KIND_CHANGE,
+            performed_by=performed_by,
+            detail=detail,
+        )
+    return (target, si)

@@ -260,6 +260,7 @@ def create_receive(
                         received_at=receive_record.received_at,
                         received_by=received_by,
                         po_number=po.po_number,
+                        kind=po.pool_kind,
                     )
             else:
                 stock_repository.receive_into_stock(
@@ -275,6 +276,7 @@ def create_receive(
                     received_at=receive_record.received_at,
                     received_by=received_by,
                     po_number=po.po_number,
+                    kind=po.pool_kind,
                 )
         elif locations:
             for loc in locations:

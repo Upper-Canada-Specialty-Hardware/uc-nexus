@@ -344,6 +344,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "markStockItemUnlocated": SIGNED_IN,
     "moveStockLocation": SIGNED_IN,
     "reclassifyStockItem": SIGNED_IN,
+    "setStockItemKind": SIGNED_IN,
     "reportInventoryDeficiency": SIGNED_IN,
     "reportStockDeficiency": SIGNED_IN,
     "resolveDeficiency": SIGNED_IN,

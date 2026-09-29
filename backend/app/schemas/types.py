@@ -14,6 +14,7 @@ from .enums import (
     NotificationType,
     PickOutcome,
     PODocumentType,
+    PoolKind,
     POOrigin,
     POStatus,
     PullRequestSource,
@@ -729,6 +730,9 @@ class PurchaseOrder:
     # description. The paged register does not publish it - its rows never load the line collection.
     nexus_registered: bool
     project_id: strawberry.ID | None
+    # #832: which half of the no-project pool this PO's receipts land in. Always STOCK on a PO with a
+    # project, where it decides nothing.
+    pool_kind: PoolKind
     status: POStatus
     cost_code: str | None
     # The tenant that owns the PO (#637), distinct from gp_company, which is only stamped at GP
@@ -1920,6 +1924,8 @@ class StockItem:
     available: int
     # Off-PO cost per unit (the SharePoint migration writes it; a PO-received pool row carries none).
     unit_cost: float | None
+    # Stock or Overhead (#832).
+    kind: PoolKind
     aisle: str | None
     row: str | None
     bay: str | None
@@ -1959,6 +1965,14 @@ class DeficientItemRow:
 @strawberry.type
 class ReclassifyStockResult:
     reclassified_stock_item: "StockItem"
+    original_stock_item: "StockItem | None"
+
+
+@strawberry.type
+class SetStockItemKindResult:
+    """The row now holding the re-flagged units, and the row they came off (null on an in-place flip)."""
+
+    stock_item: "StockItem"
     original_stock_item: "StockItem | None"
 
 
@@ -2381,7 +2395,10 @@ class InventoryValue:
     company: str
     ossa: InventoryValueBucket
     non_ossa: InventoryValueBucket
+    # The no-project pool, split Stock / Overhead (#832). general_stock is the Stock half plus the
+    # general DOORS ON HAND row; overhead is the Overhead half and never carries doors.
     general_stock: InventoryValueBucket
+    overhead: InventoryValueBucket
     average_door_cost: float
     average_door_cost_updated_at: datetime | None
     average_door_cost_updated_by: str | None
