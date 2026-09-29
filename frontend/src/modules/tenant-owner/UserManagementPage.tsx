@@ -31,6 +31,7 @@ import PageHeader from '../../components/PageHeader';
 import { useIdentity } from '../../hooks/useIdentity';
 import { microLabelSx, monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 import GpIdentityChooser from './GpIdentityChooser';
 import { useGpBuyers, type GpBuyersState } from './useGpBuyers';
 import GpCompanyLabel from '../../relay/GpCompanyLabel';
@@ -107,6 +108,7 @@ const COMPANY_COLUMN: GridColDef = {
   field: 'company',
   headerName: 'Company',
   width: 130,
+  minWidth: 120,
   valueGetter: (_value: unknown, row: ClerkUser) => row.company || '',
   renderCell: (params) =>
     params.row.company ? (
@@ -124,6 +126,7 @@ const BASE_COLUMNS: GridColDef[] = [
     field: 'avatar',
     headerName: '',
     width: 60,
+    resizable: false,
     sortable: false,
     filterable: false,
     renderCell: (params) => (
@@ -139,6 +142,7 @@ const BASE_COLUMNS: GridColDef[] = [
     field: 'name',
     headerName: 'Name',
     flex: 1,
+    minWidth: 120,
     valueGetter: (_value: unknown, row: ClerkUser) =>
       [row.firstName, row.lastName].filter(Boolean).join(' ') || '-',
   },
@@ -146,6 +150,7 @@ const BASE_COLUMNS: GridColDef[] = [
     field: 'email',
     headerName: 'Email',
     flex: 1.5,
+    minWidth: 180,
     renderCell: (params) => (
       <Box component="span" sx={monoSx}>
         {params.row.email}
@@ -156,6 +161,8 @@ const BASE_COLUMNS: GridColDef[] = [
     field: 'roles',
     headerName: 'Roles',
     flex: 2,
+    // The role tags wrap onto more lines, so one tag's width is enough.
+    minWidth: 160,
     // The sortable/filterable value stays the joined string; the cell reads it back as tags.
     valueGetter: (_value: unknown, row: ClerkUser) =>
       row.roles.length > 0 ? row.roles.join(', ') : 'No roles',
@@ -181,6 +188,7 @@ const BASE_COLUMNS: GridColDef[] = [
     field: 'gpBuyerId',
     headerName: 'GP Buyer',
     width: 120,
+    minWidth: 110,
     valueGetter: (_value: unknown, row: ClerkUser) => row.gpBuyerId || '—',
     renderCell: (params) => (
       <Box component="span" sx={params.row.gpBuyerId ? monoSx : undefined}>
@@ -218,6 +226,8 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
         : BASE_COLUMNS,
     [nexusScope],
   );
+  // #909: the grid fits its width and remembers resized columns, one set per page that mounts it.
+  const { setContainer, gridProps } = useGridColumnFit(nexusScope ? 'nexus-admin.users' : 'tenant-owner.users', columns);
   const { showToast } = useToast();
   const [selectedUser, setSelectedUser] = useState<ClerkUser | null>(null);
   const [editRoles, setEditRoles] = useState<string[]>([]);
@@ -421,8 +431,9 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
       </FadeIn>
 
       <DataGrid
+        ref={setContainer}
+        {...gridProps}
         rows={users}
-        columns={columns}
         loading={loading}
         onRowClick={handleRowClick}
         autoHeight
@@ -430,10 +441,13 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
         disableRowSelectionOnClick
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-        sx={{
-          '& .MuiDataGrid-row': { cursor: 'pointer' },
-          '& .MuiDataGrid-cell': { py: 0.75 },
-        }}
+        sx={[
+          gridProps.sx,
+          {
+            '& .MuiDataGrid-row': { cursor: 'pointer' },
+            '& .MuiDataGrid-cell': { py: 0.75 },
+          },
+        ]}
       />
 
       {/* #699: two columns so the whole account fits a normal screen without scrolling, and the

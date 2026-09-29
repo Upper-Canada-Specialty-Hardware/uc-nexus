@@ -1,4 +1,4 @@
-import { render, screen, waitFor, configure } from '@testing-library/react';
+import { render, screen, waitFor, configure, fireEvent } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import NexusRegistrationPanel from '../NexusRegistrationPanel';
@@ -157,4 +157,74 @@ it('shows an already registered line read-only', async () => {
   expect(screen.queryByLabelText('Product')).not.toBeInTheDocument();
   // Nothing to send, so the save button has nothing to do.
   expect(screen.getByRole('button', { name: 'Register in Nexus' })).toBeDisabled();
+});
+
+// #909: the grid fits the panel with resizable columns instead of scrolling sideways.
+describe('grid width (#909)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Report every observed box as `width` px wide; jsdom lays nothing out. */
+  function stubWidth(width: number) {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        private cb: ResizeObserverCallback;
+        constructor(cb: ResizeObserverCallback) {
+          this.cb = cb;
+        }
+        observe() {
+          this.cb([{ contentRect: { width } } as ResizeObserverEntry], this as unknown as ResizeObserver);
+        }
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+  }
+
+  /** The header row's column widths, read off the rule its own class carries (jsdom computes no
+   *  grid tracks). */
+  function tracks(): number[] {
+    const header = screen.getByTestId('nexus-registration-grid').firstElementChild as HTMLElement;
+    const css = Array.from(document.querySelectorAll('style'))
+      .map((s) => s.textContent ?? '')
+      .join('\n');
+    const gridClass = Array.from(header.classList).find((c) => c.startsWith('css-')) as string;
+    const rule = css.slice(css.lastIndexOf(`.${gridClass}{`));
+    const value = /grid-template-columns:([^;]+);/.exec(rule)?.[1] ?? '';
+    return value.trim().split(/\s+/).map((t) => parseFloat(t));
+  }
+
+  it('fits the panel exactly, never scrolls sideways, and resizes from the keyboard', async () => {
+    stubWidth(900);
+    renderPanel(makePo(), [scheduleMock([product()])]);
+    await screen.findByLabelText('Product');
+
+    for (const name of ['Item Number', 'Description', 'Ord', 'Rec', 'Out', 'Product', 'Tie qty']) {
+      expect(screen.getByRole('separator', { name: `Resize ${name} column` })).toBeInTheDocument();
+    }
+    const widths = tracks();
+    expect(widths).toHaveLength(8);
+    expect(widths.reduce((a, b) => a + b, 0)).toBeCloseTo(900, 0);
+    const grid = screen.getByTestId('nexus-registration-grid');
+    for (const el of [grid, grid.parentElement as HTMLElement, grid.firstElementChild as HTMLElement]) {
+      expect(['auto', 'scroll']).not.toContain(getComputedStyle(el).overflowX);
+    }
+
+    const handle = screen.getByRole('separator', { name: 'Resize Product column' });
+    const before = Number(handle.getAttribute('aria-valuenow'));
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(Number(handle.getAttribute('aria-valuenow'))).toBe(before + 16);
+  });
+
+  it('gives the typed identity columns their own handles on a PO with no project', async () => {
+    stubWidth(760);
+    renderPanel(makePo({ projectId: null }), []);
+    await screen.findByLabelText('Hardware Category');
+
+    expect(screen.getByRole('separator', { name: 'Resize Hardware Category column' })).toBeInTheDocument();
+    expect(screen.getByRole('separator', { name: 'Resize Product Code column' })).toBeInTheDocument();
+    expect(tracks().reduce((a, b) => a + b, 0)).toBeCloseTo(760, 0);
+  });
 });

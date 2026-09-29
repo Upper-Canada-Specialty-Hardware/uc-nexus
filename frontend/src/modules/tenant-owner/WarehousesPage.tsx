@@ -20,6 +20,7 @@ import PageHeader from '../../components/PageHeader';
 import { useIdentity } from '../../hooks/useIdentity';
 import { monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 import WarehouseEditDialog, { type WarehouseFormValue } from './WarehouseEditDialog';
 
 interface Warehouse {
@@ -109,6 +110,7 @@ export default function WarehousesPage() {
         field: 'code',
         headerName: 'Code',
         width: 100,
+        minWidth: 90,
         renderCell: (params) => (
           <Box component="span" sx={monoSx}>
             {params.row.code}
@@ -121,6 +123,7 @@ export default function WarehousesPage() {
         field: 'company',
         headerName: 'Company',
         width: 110,
+        minWidth: 110,
         renderCell: (params) => (
           <Box component="span" sx={monoSx}>
             {params.row.company}
@@ -140,6 +143,7 @@ export default function WarehousesPage() {
         field: 'isPrimary',
         headerName: 'Primary',
         width: 110,
+        minWidth: 110,
         renderCell: (params) =>
           params.row.isPrimary ? <Chip label="Primary" size="small" variant="outlined" /> : null,
       },
@@ -148,6 +152,7 @@ export default function WarehousesPage() {
         field: 'isActive',
         headerName: 'Status',
         width: 110,
+        minWidth: 110,
         renderCell: (params) =>
           params.row.isActive ? (
             <Chip label="Active" size="small" variant="outlined" />
@@ -161,6 +166,7 @@ export default function WarehousesPage() {
         field: 'actions',
         headerName: '',
         width: 60,
+        resizable: false,
         sortable: false,
         filterable: false,
         renderCell: (params) =>
@@ -180,6 +186,8 @@ export default function WarehousesPage() {
     }
     return cols;
   }, [ownsTenant]);
+  // #909: the grid fits its width and remembers resized columns.
+  const { setContainer, gridProps } = useGridColumnFit('tenant-owner.warehouses', columns);
 
   return (
     <Box>
@@ -197,15 +205,16 @@ export default function WarehousesPage() {
       </FadeIn>
 
       <DataGrid
+        ref={setContainer}
+        {...gridProps}
         rows={warehouses}
-        columns={columns}
         loading={loading}
         onRowClick={handleRowClick}
         autoHeight
         disableRowSelectionOnClick
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-        sx={{ '& .MuiDataGrid-row': { cursor: 'pointer' } }}
+        sx={[gridProps.sx, { '& .MuiDataGrid-row': { cursor: 'pointer' } }]}
       />
 
       <WarehouseEditDialog open={editOpen} warehouse={editing} onClose={() => setEditOpen(false)} />

@@ -7,12 +7,8 @@ import {
   Button,
   Alert,
   Paper,
-  Table,
-  TableHead,
-  TableBody,
   TableRow,
   TableCell,
-  TableContainer,
   TableSortLabel,
   TablePagination,
   IconButton,
@@ -36,6 +32,7 @@ import {
 import { GET_GP_OUTBOX, GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
 import Modal from '../../components/Modal';
+import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import GpWriteQueuePanel from '../../components/GpWriteQueuePanel';
 import PODetailModal from './PODetailModal';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
@@ -296,34 +293,41 @@ function poDisplayId(po: POListRow): string {
 // list, joined client-side via this map.
 type ProjectsById = Map<string, Project>;
 
-// --- Sortable column header ---
+// --- Columns ---
 
-interface SortHeaderProps {
-  field: SortField;
-  label: string;
-  align?: 'left' | 'right';
-  hug?: boolean;
-  sortState: SortState;
-  onSort: (field: SortField) => void;
-}
-
-function SortHeader({ field, label, align = 'left', hug = true, sortState, onSort }: SortHeaderProps) {
-  const active = sortState.field === field;
-  return (
-    <TableCell
-      align={align}
-      sortDirection={active ? sortState.dir : false}
-      sx={hug ? { width: '1%', whiteSpace: 'nowrap' } : undefined}
-    >
-      <TableSortLabel
-        active={active}
-        direction={active ? sortState.dir : 'asc'}
-        onClick={() => onSort(field)}
-      >
-        {label}
-      </TableSortLabel>
-    </TableCell>
-  );
+/**
+ * #909: the PO table fits its width and never scrolls sideways; columns are resizable and remembered
+ * per person. Minimums hold a project number, a PO number with its GP or Nexus Draft chip, a status
+ * chip, a local date (or "No date in GP") and the item count whole; the vendor takes the slack, and
+ * vendor, creator and project name ellipsize with the full value on hover. The chevron is fixed.
+ */
+function poTableColumns(sortState: SortState, onSort: (field: SortField) => void): FitTableColumn[] {
+  const sortable = (field: SortField, label: string, min: number, weight: number): FitTableColumn => {
+    const active = sortState.field === field;
+    return {
+      id: field,
+      label,
+      min,
+      weight,
+      sortDirection: active ? sortState.dir : false,
+      header: (
+        <TableSortLabel active={active} direction={active ? sortState.dir : 'asc'} onClick={() => onSort(field)}>
+          {label}
+        </TableSortLabel>
+      ),
+    };
+  };
+  return [
+    { id: 'project', label: 'Project', min: 120, weight: 1.2 },
+    sortable('poNumber', 'PO / Request #', 176, 1),
+    sortable('status', 'Status', 136, 1),
+    sortable('vendor', 'Vendor', 140, 3),
+    { id: 'createdBy', label: 'Created By', min: 100, weight: 1 },
+    sortable('createdAt', 'Creation Date', 112, 0.7),
+    sortable('orderedAt', 'Order Date', 112, 0.7),
+    { id: 'items', label: 'Items', min: 64, weight: 0.4, align: 'right' },
+    { id: 'open', label: 'Open', min: 48, fixed: 48, header: null, flush: true },
+  ];
 }
 
 const PO_TABLE_COLUMN_COUNT = 9;
@@ -365,8 +369,8 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, hig
     >
       {/* #632: one Project column - mono number over the truncated name - so the register fits
           1366px without the container growing an x-scroll. */}
-      <TableCell sx={{ ...hugSx, maxWidth: 180 }}>
-        <Box component="span" sx={{ ...monoSx, display: 'block' }}>
+      <TableCell sx={hugSx} title={projectNumber || undefined}>
+        <Box component="span" sx={{ ...monoSx, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           {projectNumber || '-'}
         </Box>
         {projectName && (
@@ -375,7 +379,7 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, hig
             color="text.secondary"
             noWrap
             title={projectName}
-            sx={{ display: 'block', minWidth: 0, maxWidth: 172 }}
+            sx={{ display: 'block', minWidth: 0 }}
           >
             {projectName}
           </Typography>
@@ -413,7 +417,7 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, hig
         </Box>
       </TableCell>
       {/* The one stretch column: absorbs the slack and truncates instead of widening the table. */}
-      <TableCell sx={{ maxWidth: 0 }}>
+      <TableCell>
         {noGpVendor ? (
           <Tooltip title={NO_GP_VENDOR_HINT} arrow>
             <Typography variant="body2" noWrap>
@@ -426,8 +430,8 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, hig
           </Typography>
         )}
       </TableCell>
-      <TableCell sx={{ ...hugSx, maxWidth: 150 }}>
-        <Typography variant="body2" noWrap title={po.createdBy || undefined} sx={{ maxWidth: 142 }}>
+      <TableCell sx={hugSx}>
+        <Typography variant="body2" noWrap title={po.createdBy || undefined}>
           {po.createdBy || '-'}
         </Typography>
       </TableCell>
@@ -447,7 +451,7 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, hig
         {po.lineItemCount}
       </TableCell>
       {/* Says the row goes somewhere, and gives the keyboard the same door the mouse has. */}
-      <TableCell sx={{ width: 44, py: 0 }} align="right">
+      <TableCell sx={{ px: 0.5, py: 0 }} align="center">
         <IconButton
           size="small"
           className="po-row-chevron"
@@ -932,67 +936,55 @@ function POListPage() {
       </Box>
 
       {/* PO Table */}
-      <TableContainer component={Paper} ref={tableRef}>
-        <Table size="small">
-          <TableHead>
+      <Box ref={tableRef} sx={{ minWidth: 0 }}>
+        <FitTable
+          storageKey="po-table"
+          columns={poTableColumns(sort, handleSortClick)}
+          footer={
+            <TablePagination
+              component="div"
+              count={totalCount}
+              page={page}
+              onPageChange={(_e, p) => setPage(p)}
+              rowsPerPage={rowsPerPage}
+              onRowsPerPageChange={(e) => {
+                setRowsPerPage(parseInt(e.target.value, 10));
+                setPage(0);
+              }}
+              rowsPerPageOptions={ROWS_PER_PAGE_OPTIONS}
+            />
+          }
+        >
+          {pageLoading && (
             <TableRow>
-              <TableCell sx={{ width: '1%', whiteSpace: 'nowrap' }}>Project</TableCell>
-              <SortHeader field="poNumber" label="PO / Request #" sortState={sort} onSort={handleSortClick} />
-              <SortHeader field="status" label="Status" sortState={sort} onSort={handleSortClick} />
-              <SortHeader field="vendor" label="Vendor" hug={false} sortState={sort} onSort={handleSortClick} />
-              <TableCell sx={{ width: '1%', whiteSpace: 'nowrap' }}>Created By</TableCell>
-              <SortHeader field="createdAt" label="Creation Date" sortState={sort} onSort={handleSortClick} />
-              <SortHeader field="orderedAt" label="Order Date" sortState={sort} onSort={handleSortClick} />
-              <TableCell align="right" sx={{ width: '1%', whiteSpace: 'nowrap' }}>
-                Items
+              <TableCell colSpan={PO_TABLE_COLUMN_COUNT} align="center" sx={{ py: 4 }}>
+                <CircularProgress size={24} />
               </TableCell>
-              <TableCell sx={{ width: 44 }} />
             </TableRow>
-          </TableHead>
-          <TableBody>
-            {pageLoading && (
-              <TableRow>
-                <TableCell colSpan={PO_TABLE_COLUMN_COUNT} align="center" sx={{ py: 4 }}>
-                  <CircularProgress size={24} />
-                </TableCell>
-              </TableRow>
-            )}
-            {!pageLoading && rows.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={PO_TABLE_COLUMN_COUNT} align="center" sx={{ py: 4 }}>
-                  <Typography variant="body2" color="text.secondary">
-                    No purchase orders match the current filters.
-                  </Typography>
-                </TableCell>
-              </TableRow>
-            )}
-            {!pageLoading &&
-              rows.map((po) => (
-                <POTableRow
-                  key={po.id}
-                  po={po}
-                  projectNumber={projectNumberOf(po)}
-                  projectName={projectNameOf(po)}
-                  onOpen={() => handleOpenPO(po.id)}
-                  gpWriteQueued={queuedPoIds.has(po.id)}
-                  highlighted={highlightIds.has(po.id)}
-                />
-              ))}
-          </TableBody>
-        </Table>
-        <TablePagination
-          component="div"
-          count={totalCount}
-          page={page}
-          onPageChange={(_e, p) => setPage(p)}
-          rowsPerPage={rowsPerPage}
-          onRowsPerPageChange={(e) => {
-            setRowsPerPage(parseInt(e.target.value, 10));
-            setPage(0);
-          }}
-          rowsPerPageOptions={ROWS_PER_PAGE_OPTIONS}
-        />
-      </TableContainer>
+          )}
+          {!pageLoading && rows.length === 0 && (
+            <TableRow>
+              <TableCell colSpan={PO_TABLE_COLUMN_COUNT} align="center" sx={{ py: 4 }}>
+                <Typography variant="body2" color="text.secondary">
+                  No purchase orders match the current filters.
+                </Typography>
+              </TableCell>
+            </TableRow>
+          )}
+          {!pageLoading &&
+            rows.map((po) => (
+              <POTableRow
+                key={po.id}
+                po={po}
+                projectNumber={projectNumberOf(po)}
+                projectName={projectNameOf(po)}
+                onOpen={() => handleOpenPO(po.id)}
+                gpWriteQueued={queuedPoIds.has(po.id)}
+                highlighted={highlightIds.has(po.id)}
+              />
+            ))}
+        </FitTable>
+      </Box>
 
       {/* Detail Modal - the selected PO's full detail, fetched by id. The modal opens the instant a
           row is clicked so the click never reads as dead: a spinner shows while the PO loads, then

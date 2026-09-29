@@ -35,6 +35,7 @@ import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 import { parseServerDate } from '../../utils/serverDate';
 
 // The one local prerequisite the page cannot do for the admin: the psqlODBC driver, installed once per
@@ -261,6 +262,8 @@ export default function DbAccessPage() {
         field: 'status',
         headerName: 'Status',
         width: 180,
+        // The chips wrap, so one chip is the floor.
+        minWidth: 120,
         sortable: false,
         filterable: false,
         renderCell: (p) => {
@@ -281,6 +284,7 @@ export default function DbAccessPage() {
         field: 'createdAt',
         headerName: 'Created',
         width: 170,
+        minWidth: 150,
         valueFormatter: (v: string) => fmtDate(v),
         cellClassName: 'ts-cell',
       },
@@ -288,6 +292,7 @@ export default function DbAccessPage() {
         field: 'lastRotatedAt',
         headerName: 'Last rotated',
         width: 170,
+        minWidth: 150,
         valueFormatter: (v: string | null) => fmtDate(v),
         cellClassName: 'ts-cell',
       },
@@ -295,6 +300,7 @@ export default function DbAccessPage() {
         field: 'actions',
         headerName: 'Actions',
         width: 200,
+        resizable: false,
         sortable: false,
         filterable: false,
         renderCell: (p) => {
@@ -320,6 +326,8 @@ export default function DbAccessPage() {
     ],
     [handleRotate, rotatingRole],
   );
+  // #909: the grid fits its width and remembers resized columns.
+  const { setContainer, gridProps } = useGridColumnFit('nexus-admin.db-access.logins', columns);
 
   if (!isDbAdmin) {
     return (
@@ -413,8 +421,9 @@ export default function DbAccessPage() {
         Minted logins
       </Typography>
       <DataGrid
+        ref={setContainer}
+        {...gridProps}
         rows={admins}
-        columns={columns}
         getRowId={(row) => row.dbRole}
         loading={loading}
         autoHeight
@@ -422,7 +431,7 @@ export default function DbAccessPage() {
         disableRowSelectionOnClick
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-        sx={{ '& .ts-cell': { ...monoSx, ...tabularSx, color: 'text.secondary' } }}
+        sx={[gridProps.sx, { '& .ts-cell': { ...monoSx, ...tabularSx, color: 'text.secondary' } }]}
       />
 
       <Box sx={{ mt: 2 }}>
