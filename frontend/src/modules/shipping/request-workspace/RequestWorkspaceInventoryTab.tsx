@@ -11,11 +11,7 @@ import {
   MenuItem,
   Skeleton,
   Stack,
-  Table,
-  TableBody,
   TableCell,
-  TableContainer,
-  TableHead,
   TableRow,
   TextField,
   Typography,
@@ -33,6 +29,8 @@ import {
 } from './requestCart';
 import { classificationChip, isShopClassified, SHOP_FRAMING, shopRowTintSx } from './classificationChip';
 import { monoSx, microLabelSx, tabularSx } from '../../../theme';
+import FitTable, { type FitTableColumn } from '../../../components/FitTable';
+import { FIT_CELL_WRAP_SX } from '../../../components/fitColumns';
 
 interface Props {
   cart: CartLine[];
@@ -49,6 +47,18 @@ interface Props {
 type SortKey = 'product' | 'free';
 
 const numCol = { ...tabularSx, width: 1, whiteSpace: 'nowrap' } as const;
+
+// #909: each category's table fits the lane's width and never scrolls sideways; columns are
+// resizable and remembered per person, the same widths for every category so they line up. Take is
+// sized to hold the quantity field (or Add) beside Take all free; the counts hold four digits and
+// their headers. Product takes the slack and wraps its on-schedule hint under the code.
+const INVENTORY_COLUMNS: FitTableColumn[] = [
+  { id: 'product', label: 'Product', min: 150, weight: 2.4 },
+  { id: 'onHand', label: 'On hand', min: 84, weight: 0.5, align: 'right' },
+  { id: 'reserved', label: 'Reserved', min: 88, weight: 0.5, align: 'right' },
+  { id: 'free', label: 'Free', min: 72, weight: 0.5, align: 'right' },
+  { id: 'take', label: 'Take', min: 216, weight: 1, align: 'right', dense: true },
+];
 
 /** The openings still owed a product, as a short label - the first two, then a "+n" tail so a
  *  popular product does not run the hint off the row. */
@@ -237,103 +247,90 @@ export default function RequestWorkspaceInventoryTab({
                     >
                       {group.category}
                     </Typography>
-                    <TableContainer sx={{ overflowX: 'auto' }}>
-                      <Table size="small">
-                        <TableHead>
-                          <TableRow>
-                            <TableCell>Product</TableCell>
-                            <TableCell align="right">On hand</TableCell>
-                            <TableCell align="right">Reserved</TableCell>
-                            <TableCell align="right">Free</TableCell>
-                            <TableCell align="right">Take</TableCell>
+                    <FitTable storageKey="request-workspace-inventory" columns={INVENTORY_COLUMNS} bare>
+                      {group.rows.map((row) => {
+                        const loose = {
+                          openingNumber: null,
+                          hardwareCategory: row.hardwareCategory,
+                          productCode: row.productCode,
+                        };
+                        const current = lineQuantity(cart, loose);
+                        const remaining = remainingForProduct(
+                          cart,
+                          productKey(row),
+                          headroom,
+                          `|${row.hardwareCategory}|${row.productCode}`,
+                        );
+                        const onSchedule = scheduledByProduct.get(productKey(row));
+                        const shop = isShopClassified(row.classification);
+                        return (
+                          <TableRow key={row.productCode} hover sx={shop ? shopRowTintSx : undefined}>
+                            <TableCell sx={FIT_CELL_WRAP_SX} title={row.productCode}>
+                              <Stack direction="row" spacing={0.75} alignItems="center">
+                                <Box component="span" sx={monoSx}>
+                                  {row.productCode}
+                                </Box>
+                                {classificationChip(row.classification)}
+                              </Stack>
+                              {onSchedule && onSchedule.length > 0 && (
+                                <Typography variant="caption" color="warning.main" sx={{ display: 'block' }}>
+                                  on schedule for {formatOpenings(onSchedule)} - tag it above
+                                </Typography>
+                              )}
+                            </TableCell>
+                            <TableCell align="right" sx={numCol}>
+                              {row.onHandQuantity}
+                            </TableCell>
+                            <TableCell align="right" sx={{ ...numCol, color: 'text.secondary' }}>
+                              {row.reservedQuantity}
+                            </TableCell>
+                            <TableCell align="right" sx={numCol}>
+                              {row.availableQuantity}
+                            </TableCell>
+                            <TableCell align="right" sx={{ px: 1 }}>
+                              <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end">
+                                {current > 0 ? (
+                                  <TextField
+                                    size="small"
+                                    type="number"
+                                    value={current}
+                                    onChange={(e) =>
+                                      onCartChange(
+                                        setLineQuantity(cart, loose, Number.parseInt(e.target.value, 10), headroom),
+                                      )
+                                    }
+                                    slotProps={{
+                                      htmlInput: {
+                                        min: 0,
+                                        'aria-label': `Quantity of ${row.productCode} to send loose`,
+                                      },
+                                    }}
+                                    sx={{ width: 76, '& input': { textAlign: 'right' } }}
+                                  />
+                                ) : (
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    disabled={remaining === 0}
+                                    onClick={() => onCartChange(setLineQuantity(cart, loose, 1, headroom))}
+                                  >
+                                    Add
+                                  </Button>
+                                )}
+                                <Button
+                                  size="small"
+                                  variant="text"
+                                  disabled={remaining === 0}
+                                  onClick={() => onCartChange(takeAllFreeLoose(cart, row, headroom))}
+                                >
+                                  Take all free
+                                </Button>
+                              </Stack>
+                            </TableCell>
                           </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {group.rows.map((row) => {
-                            const loose = {
-                              openingNumber: null,
-                              hardwareCategory: row.hardwareCategory,
-                              productCode: row.productCode,
-                            };
-                            const current = lineQuantity(cart, loose);
-                            const remaining = remainingForProduct(
-                              cart,
-                              productKey(row),
-                              headroom,
-                              `|${row.hardwareCategory}|${row.productCode}`,
-                            );
-                            const onSchedule = scheduledByProduct.get(productKey(row));
-                            const shop = isShopClassified(row.classification);
-                            return (
-                              <TableRow key={row.productCode} hover sx={shop ? shopRowTintSx : undefined}>
-                                <TableCell>
-                                  <Stack direction="row" spacing={0.75} alignItems="center">
-                                    <Box component="span" sx={monoSx}>
-                                      {row.productCode}
-                                    </Box>
-                                    {classificationChip(row.classification)}
-                                  </Stack>
-                                  {onSchedule && onSchedule.length > 0 && (
-                                    <Typography variant="caption" color="warning.main" sx={{ display: 'block' }}>
-                                      on schedule for {formatOpenings(onSchedule)} - tag it above
-                                    </Typography>
-                                  )}
-                                </TableCell>
-                                <TableCell align="right" sx={numCol}>
-                                  {row.onHandQuantity}
-                                </TableCell>
-                                <TableCell align="right" sx={{ ...numCol, color: 'text.secondary' }}>
-                                  {row.reservedQuantity}
-                                </TableCell>
-                                <TableCell align="right" sx={numCol}>
-                                  {row.availableQuantity}
-                                </TableCell>
-                                <TableCell align="right" sx={{ width: 1, whiteSpace: 'nowrap' }}>
-                                  <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end">
-                                    {current > 0 ? (
-                                      <TextField
-                                        size="small"
-                                        type="number"
-                                        value={current}
-                                        onChange={(e) =>
-                                          onCartChange(
-                                            setLineQuantity(cart, loose, Number.parseInt(e.target.value, 10), headroom),
-                                          )
-                                        }
-                                        slotProps={{
-                                          htmlInput: {
-                                            min: 0,
-                                            'aria-label': `Quantity of ${row.productCode} to send loose`,
-                                          },
-                                        }}
-                                        sx={{ width: 76, '& input': { textAlign: 'right' } }}
-                                      />
-                                    ) : (
-                                      <Button
-                                        size="small"
-                                        variant="outlined"
-                                        disabled={remaining === 0}
-                                        onClick={() => onCartChange(setLineQuantity(cart, loose, 1, headroom))}
-                                      >
-                                        Add
-                                      </Button>
-                                    )}
-                                    <Button
-                                      size="small"
-                                      variant="text"
-                                      disabled={remaining === 0}
-                                      onClick={() => onCartChange(takeAllFreeLoose(cart, row, headroom))}
-                                    >
-                                      Take all free
-                                    </Button>
-                                  </Stack>
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
+                        );
+                      })}
+                    </FitTable>
                   </Box>
                 ))}
               </Box>

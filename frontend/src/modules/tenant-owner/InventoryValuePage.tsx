@@ -6,11 +6,7 @@ import {
   Card,
   IconButton,
   InputAdornment,
-  Table,
-  TableBody,
   TableCell,
-  TableContainer,
-  TableHead,
   TableRow,
   TextField,
   Tooltip,
@@ -21,6 +17,7 @@ import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
 import ProjectPicker from '../../components/ProjectPicker';
 import PageHeader from '../../components/PageHeader';
+import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { useToast } from '../../components/Toast';
 import { useActingCompany } from '../../company/ActingCompanyContext';
 import { extractGpError } from '../../graphql/gpError';
@@ -289,6 +286,16 @@ const TOTAL_CELL_SX = {
   bgcolor: 'action.hover',
 } as const;
 
+// #909: doors on hand fits the card's width with resizable columns remembered per person. Type holds
+// "Non-OSSA", Quantity holds its 92 px field, the remove button is fixed, and Description takes the
+// slack, ellipsizing the project name with the full value on hover.
+const DOOR_COLUMNS: FitTableColumn[] = [
+  { id: 'type', label: 'Type', min: 96, weight: 0.6 },
+  { id: 'description', label: 'Description', min: 160, weight: 3 },
+  { id: 'quantity', label: 'Quantity', min: 124, weight: 0.6, align: 'right' },
+  { id: 'remove', label: 'Remove', min: 48, fixed: 48, header: null },
+];
+
 /**
  * Put the page a mutation answered with straight back into the query it came from.
  *
@@ -361,49 +368,35 @@ function DoorsOnHandTable({ company, value }: { company: string; value: Inventor
           Doors on hand
         </Typography>
       </Box>
-      {/* The table scrolls inside its own bounds if it ever has to; the page never widens. */}
-      <TableContainer sx={{ overflowX: 'auto' }}>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Type</TableCell>
-              <TableCell>Description</TableCell>
-              <TableCell align="right" sx={{ width: 110 }}>
-                Quantity
-              </TableCell>
-              <TableCell sx={{ width: 48 }} />
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {general.map((row) => (
-              <DoorRow key={row.id} row={row} onSave={handleSave} />
-            ))}
-            <TotalRow label="Stock total" quantity={sum(general)} />
+      {/* #909: the table fits the card's width and never scrolls sideways, not even inside itself. */}
+      <FitTable storageKey="inventory-value-doors-on-hand" columns={DOOR_COLUMNS} bare>
+        {general.map((row) => (
+          <DoorRow key={row.id} row={row} onSave={handleSave} />
+        ))}
+        <TotalRow label="Stock total" quantity={sum(general)} />
 
-            {ossa.map((row) => (
-              <DoorRow
-                key={row.id}
-                row={row}
-                onSave={handleSave}
-                onRemove={() => removeRow({ variables: { id: row.id } })}
-              />
-            ))}
-            <TotalRow label="OSSA total" quantity={sum(ossa)} />
+        {ossa.map((row) => (
+          <DoorRow
+            key={row.id}
+            row={row}
+            onSave={handleSave}
+            onRemove={() => removeRow({ variables: { id: row.id } })}
+          />
+        ))}
+        <TotalRow label="OSSA total" quantity={sum(ossa)} />
 
-            {nonOssa.map((row) => (
-              <DoorRow
-                key={row.id}
-                row={row}
-                onSave={handleSave}
-                onRemove={() => removeRow({ variables: { id: row.id } })}
-              />
-            ))}
-            <TotalRow label="Non-OSSA total" quantity={sum(nonOssa)} />
+        {nonOssa.map((row) => (
+          <DoorRow
+            key={row.id}
+            row={row}
+            onSave={handleSave}
+            onRemove={() => removeRow({ variables: { id: row.id } })}
+          />
+        ))}
+        <TotalRow label="Non-OSSA total" quantity={sum(nonOssa)} />
 
-            <TotalRow label="Total door inventory" quantity={sum(rows)} />
-          </TableBody>
-        </Table>
-      </TableContainer>
+        <TotalRow label="Total door inventory" quantity={sum(rows)} />
+      </FitTable>
       <Box sx={{ px: 2, py: 1.5, display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
         <ProjectPicker
           value={null}
@@ -456,7 +449,7 @@ function DoorRow({
   return (
     <TableRow hover>
       <TableCell sx={{ whiteSpace: 'nowrap' }}>{type}</TableCell>
-      <TableCell sx={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <TableCell title={isGeneral ? undefined : [label, row.projectName].filter(Boolean).join(' · ')}>
         {isGeneral ? (
           'Stock/non-stock'
         ) : (
@@ -498,8 +491,10 @@ function DoorRow({
 function TotalRow({ label, quantity }: { label: string; quantity: number }) {
   return (
     <TableRow>
-      <TableCell sx={TOTAL_CELL_SX}>{label}</TableCell>
-      <TableCell sx={TOTAL_CELL_SX} />
+      {/* Across Type and Description: "Total door inventory" is wider than the Type column needs. */}
+      <TableCell colSpan={2} sx={TOTAL_CELL_SX}>
+        {label}
+      </TableCell>
       <TableCell align="right" sx={{ ...TOTAL_CELL_SX, ...tabularSx, pr: 2.5 }}>
         {quantity}
       </TableCell>

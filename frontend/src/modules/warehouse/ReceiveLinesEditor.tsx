@@ -2,11 +2,7 @@ import {
   Box,
   Button,
   Paper,
-  Table,
-  TableBody,
   TableCell,
-  TableContainer,
-  TableHead,
   TableRow,
   TextField,
   Typography,
@@ -14,6 +10,7 @@ import {
 import { poVendorName } from '../po/poVendorName';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { type PODetails } from './receiveLines';
+import FitTable, { type FitTableColumn } from '../../components/FitTable';
 
 /**
  * What a receive says was counted, and where it goes - the one editor behind every screen that
@@ -34,7 +31,8 @@ import { type PODetails } from './receiveLines';
  *
  * #632: a plain table at natural height, not a paginated grid - a delivery is counted top to bottom
  * against the packing slip, and a page boundary in the middle of that hides lines mid-count. The
- * dialog scrolls vertically; the table only ever scrolls sideways inside its own container.
+ * dialog scrolls vertically, and since #909 the table fits the dialog's width rather than scrolling
+ * sideways inside its own container.
  */
 export interface ReceiveLinesEditorProps {
   /** One entry per PO being received. The review screens pass exactly one. */
@@ -46,7 +44,27 @@ export interface ReceiveLinesEditorProps {
   showPoHeaders: boolean;
 }
 
-const numHeadSx = { ...microLabelSx, whiteSpace: 'nowrap' as const };
+/** Headers in the micro-label face; FitTable's header cell already holds them to one line. */
+function micro(label: string) {
+  return (
+    <Box component="span" sx={microLabelSx}>
+      {label}
+    </Box>
+  );
+}
+
+// #909: resizable columns remembered per person. Receive Now holds the quantity field beside its
+// Fill button; the counts hold four digits; description, Ordered As and item number give way first
+// and ellipsize with the full value on hover.
+const RECEIVE_COLUMNS: FitTableColumn[] = [
+  { id: 'description', label: 'Description', min: 112, weight: 1.3, header: micro('Description') },
+  { id: 'orderAs', label: 'Ordered As', min: 100, weight: 1.2, header: micro('Ordered As') },
+  { id: 'itemNumber', label: 'Item Number', min: 100, weight: 1.2, header: micro('Item Number') },
+  { id: 'ordered', label: 'Ordered Qty', min: 72, weight: 0.5, align: 'right', header: micro('Ordered Qty') },
+  { id: 'received', label: 'Already Received', min: 80, weight: 0.5, align: 'right', header: micro('Already Received') },
+  { id: 'pending', label: 'Pending', min: 68, weight: 0.5, align: 'right', header: micro('Pending') },
+  { id: 'receiveNow', label: 'Receive Now', min: 184, weight: 1, header: micro('Receive Now') },
+];
 
 export default function ReceiveLinesEditor({
   poDetailsList,
@@ -86,100 +104,83 @@ export default function ReceiveLinesEditor({
             Notes: {details.notes}
           </Typography>
         )}
-        <TableContainer sx={{ overflowX: 'auto' }}>
-          <Table size="small" sx={{ '& td, & th': { px: 1 } }}>
-            <TableHead>
-              <TableRow>
-                <TableCell sx={microLabelSx}>Description</TableCell>
-                <TableCell sx={microLabelSx}>Ordered As</TableCell>
-                <TableCell sx={microLabelSx}>Item Number</TableCell>
-                <TableCell sx={numHeadSx} align="right">
-                  Ordered Qty
+        <FitTable storageKey="receive-lines" columns={RECEIVE_COLUMNS} bare tableSx={{ '& > tbody > tr > td, & > thead > tr > th': { px: 1 } }}>
+          {rows.map((row) => {
+            const fullyReceived = row.pending === 0;
+            const currentValue = receiveQuantities[row.id] ?? 0;
+            const hasError = currentValue > row.pending;
+            return (
+              <TableRow
+                key={row.id}
+                sx={
+                  fullyReceived
+                    ? { bgcolor: 'action.disabledBackground', '& td': { color: 'text.disabled' } }
+                    : undefined
+                }
+              >
+                <TableCell sx={monoSx} title={row.productCode}>
+                  {row.productCode}
                 </TableCell>
-                <TableCell sx={numHeadSx} align="right">
-                  Already Received
+                <TableCell sx={monoSx} title={row.orderAs || undefined}>
+                  {row.orderAs || '—'}
                 </TableCell>
-                <TableCell sx={numHeadSx} align="right">
-                  Pending
+                <TableCell title={row.hardwareCategory}>{row.hardwareCategory}</TableCell>
+                <TableCell align="right" sx={tabularSx}>
+                  {row.orderedQuantity}
                 </TableCell>
-                <TableCell sx={{ ...microLabelSx, whiteSpace: 'nowrap', width: 190 }}>Receive Now</TableCell>
+                <TableCell align="right" sx={tabularSx}>
+                  {row.receivedQuantity}
+                </TableCell>
+                <TableCell align="right" sx={tabularSx}>
+                  {row.pending}
+                </TableCell>
+                <TableCell>
+                  {fullyReceived ? (
+                    <Typography variant="body2" color="text.disabled">
+                      Fully Received
+                    </Typography>
+                  ) : (
+                    <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.75 }}>
+                      <TextField
+                        type="number"
+                        size="small"
+                        value={currentValue}
+                        error={hasError}
+                        helperText={hasError ? `Max: ${row.pending}` : undefined}
+                        slotProps={{
+                          htmlInput: {
+                            min: 0,
+                            max: row.pending,
+                            style: { width: '70px' },
+                            // The column header is out of the accessibility tree for this cell
+                            // input, so the field names itself and the PO line it belongs to.
+                            'aria-label': `Receive now — ${row.productCode} (max ${row.pending})`,
+                          },
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          onQuantityChange(row.id, isNaN(val) ? 0 : val);
+                        }}
+                      />
+                      {/* #632: the whole-line-arrived shortcut - fills the pending quantity. */}
+                      <Button
+                        size="small"
+                        variant="text"
+                        disabled={currentValue === row.pending}
+                        aria-label={`Fill pending for ${row.productCode} (${row.pending})`}
+                        onClick={() => onQuantityChange(row.id, row.pending)}
+                        sx={{ ...tabularSx, flexShrink: 0, minWidth: 0, px: 0.75, mt: 0.25 }}
+                      >
+                        Fill {row.pending}
+                      </Button>
+                    </Box>
+                  )}
+                </TableCell>
               </TableRow>
-            </TableHead>
-            <TableBody>
-              {rows.map((row) => {
-                const fullyReceived = row.pending === 0;
-                const currentValue = receiveQuantities[row.id] ?? 0;
-                const hasError = currentValue > row.pending;
-                return (
-                  <TableRow
-                    key={row.id}
-                    sx={
-                      fullyReceived
-                        ? { bgcolor: 'action.disabledBackground', '& td': { color: 'text.disabled' } }
-                        : undefined
-                    }
-                  >
-                    <TableCell sx={monoSx}>{row.productCode}</TableCell>
-                    <TableCell sx={monoSx}>{row.orderAs || '—'}</TableCell>
-                    <TableCell>{row.hardwareCategory}</TableCell>
-                    <TableCell align="right" sx={tabularSx}>
-                      {row.orderedQuantity}
-                    </TableCell>
-                    <TableCell align="right" sx={tabularSx}>
-                      {row.receivedQuantity}
-                    </TableCell>
-                    <TableCell align="right" sx={tabularSx}>
-                      {row.pending}
-                    </TableCell>
-                    <TableCell>
-                      {fullyReceived ? (
-                        <Typography variant="body2" color="text.disabled">
-                          Fully Received
-                        </Typography>
-                      ) : (
-                        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.75 }}>
-                          <TextField
-                            type="number"
-                            size="small"
-                            value={currentValue}
-                            error={hasError}
-                            helperText={hasError ? `Max: ${row.pending}` : undefined}
-                            slotProps={{
-                              htmlInput: {
-                                min: 0,
-                                max: row.pending,
-                                style: { width: '70px' },
-                                // The column header is out of the accessibility tree for this cell
-                                // input, so the field names itself and the PO line it belongs to.
-                                'aria-label': `Receive now — ${row.productCode} (max ${row.pending})`,
-                              },
-                            }}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) => {
-                              const val = parseInt(e.target.value, 10);
-                              onQuantityChange(row.id, isNaN(val) ? 0 : val);
-                            }}
-                          />
-                          {/* #632: the whole-line-arrived shortcut - fills the pending quantity. */}
-                          <Button
-                            size="small"
-                            variant="text"
-                            disabled={currentValue === row.pending}
-                            aria-label={`Fill pending for ${row.productCode} (${row.pending})`}
-                            onClick={() => onQuantityChange(row.id, row.pending)}
-                            sx={{ ...tabularSx, flexShrink: 0, minWidth: 0, px: 0.75, mt: 0.25 }}
-                          >
-                            Fill {row.pending}
-                          </Button>
-                        </Box>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </TableContainer>
+            );
+          })}
+        </FitTable>
       </Paper>
     );
   };

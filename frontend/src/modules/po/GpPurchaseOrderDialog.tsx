@@ -52,6 +52,8 @@ import ProjectPicker from '../../components/ProjectPicker';
 import ProcessingStep from '../../components/ProcessingStep';
 import { computeRegisterTotals, formatMoney } from './registerTotals';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import ColumnResizeHandle from '../../components/ColumnResizeHandle';
+import { useFitColumns, type FitColumn } from '../../components/fitColumns';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
 
@@ -153,6 +155,8 @@ const DEFAULT_VENDOR_ADDRESS_CODE = 'PRIMARY';
 const DEFAULT_UOFM = 'Each';
 const MAX_ITEM_NUMBER = 30;
 const MAX_DESCRIPTION = 100;
+/** #909: the space each line grid cell keeps on its right, standing in for a grid gap. */
+const LINE_CELL_GAP_PX = 8;
 const MAX_CONTACT = 61;
 const MAX_COMMENT = 500;
 
@@ -1290,12 +1294,51 @@ export default function GpPurchaseOrderDialog({
             ? 'Carried from the PO draft - change it if wrong'
             : '';
 
-  // Sized to content, with the two text fields absorbing the slack. The grid scrolls inside its own
-  // container when the dialog is narrower than its columns need; the page itself never widens.
-  const lineGridColumns = isJob
-    ? 'minmax(0, 1fr) minmax(0, 1.3fr) 56px 96px 88px minmax(0, 1fr) 64px minmax(0, 0.9fr) 40px'
-    : 'minmax(0, 1.2fr) minmax(0, 1.5fr) 56px 96px 88px minmax(0, 1.1fr) 40px';
-  const lineGridMinWidth = isJob ? 880 : 620;
+  // #909: the line grid always fits the dialog and never scrolls sideways. useFitColumns shares the
+  // width among the columns, each down to a minimum that keeps its value readable (the text inputs
+  // scroll their own text past it), and remembers what the buyer resized. Create and Register show
+  // the same grid, so they share one stored layout. Each minimum includes the gutter a cell keeps
+  // on its right (LINE_CELL_GAP_PX); the grid has no gap of its own, or the tracks the hook hands
+  // out would add up to more than the width it measured. When a project PO's nine columns do not
+  // fit even at their minimums, the hook scales every column down in proportion.
+  const {
+    setContainer: setLineGridBox,
+    columns: lineColumns,
+    gridTemplate: lineGridColumns,
+    handle: lineResizeHandle,
+  } = useFitColumns('po-line-items', [
+    // About sixteen of the thirty characters GP allows, in the mono face.
+    { id: 'itemNumber', label: 'Item Number', min: 148, weight: 1.2 },
+    { id: 'description', label: 'Description', min: 148, weight: 1.6 },
+    // Four digits.
+    { id: 'qty', label: 'Qty', min: 64, weight: 0.35 },
+    // The unit name beside the native select's arrow.
+    { id: 'uofm', label: 'U of M', min: 88, weight: 0.5 },
+    // A price such as 1234.56.
+    { id: 'unitCost', label: 'Unit Cost', min: 96, weight: 0.6 },
+    // A cost code and a job cost flag only mean anything on a PO that has a project.
+    ...(isJob
+      ? ([
+          // A 'phase-step-element' code beside the select's arrow.
+          { id: 'costCode', label: 'Cost Code', min: 136, weight: 0.9 },
+          { id: 'jobCost', label: 'Job cost', min: 64, weight: 0.3 },
+        ] satisfies FitColumn[])
+      : []),
+    { id: 'orderAs', label: 'Order As', min: 112, weight: 1 },
+    { id: 'remove', label: 'Remove line', min: 40, fixed: 40 },
+  ]);
+  /** A line grid header cell with its resize handle; the wording ellipsizes rather than widening it. */
+  const lineHead = (index: number) => {
+    const text = lineColumns[index].label;
+    return (
+      <Box key={lineColumns[index].id} title={text} sx={{ position: 'relative', minWidth: 0, pr: `${LINE_CELL_GAP_PX}px` }}>
+        <Typography sx={{ ...microLabelSx, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {text}
+        </Typography>
+        <ColumnResizeHandle binding={lineResizeHandle(index)} />
+      </Box>
+    );
+  };
 
   // The codes a line may book to: everything GP has active on the job, in the same
   // 'phase-step-element' form the header pick uses.
@@ -2021,165 +2064,150 @@ export default function GpPurchaseOrderDialog({
       {/* Item Number and Description are GP's own two text fields on a GP PO LINE ITEM. Site/shop
           classification is set by the PM at request creation (issue #216), so there is no
           Classification column here - register mode passes the draft's values through. */}
-      <Box sx={{ overflowX: 'auto', minWidth: 0 }}>
-        <Box sx={{ minWidth: lineGridMinWidth }}>
+      <Box ref={setLineGridBox} data-testid="po-line-grid" sx={{ minWidth: 0 }}>
+        <Box sx={{ display: 'grid', gridTemplateColumns: lineGridColumns, mb: 0.5 }}>
+          {lineColumns.map((c, i) => (c.fixed === undefined ? lineHead(i) : <Box key={c.id} />))}
+        </Box>
+
+        {/* Line item rows */}
+        {lineItems.map((li, idx) => (
           <Box
-            sx={{
+            key={li.key}
+            data-pasted={lastPasteKeys.has(li.key) || undefined}
+            sx={(theme) => ({
               display: 'grid',
               gridTemplateColumns: lineGridColumns,
-              gap: 1,
-              mb: 0.5,
-            }}
+              mb: 1,
+              alignItems: 'start',
+              // Every cell shrinks to its track, and keeps the gutter a grid gap would have given it.
+              '& > *': { minWidth: 0 },
+              '& > *:not(:last-child)': { mr: `${LINE_CELL_GAP_PX}px` },
+              ...(lastPasteKeys.has(li.key) && {
+                '--pasted-row-tint': alpha(theme.palette.warning.main, 0.16),
+                animation: `${pastedRowFade} 4s ease-out forwards`,
+                borderRadius: 1,
+              }),
+            })}
           >
-            <Typography sx={microLabelSx}>Item Number</Typography>
-            <Typography sx={microLabelSx}>Description</Typography>
-            <Typography sx={microLabelSx}>Qty</Typography>
-            <Typography sx={microLabelSx}>U of M</Typography>
-            <Typography sx={microLabelSx}>Unit Cost</Typography>
-            {/* A cost code and a job cost flag only mean anything on a PO that has a project. */}
-            {isJob && <Typography sx={microLabelSx}>Cost Code</Typography>}
-            {isJob && <Typography sx={microLabelSx}>Job cost</Typography>}
-            <Typography sx={microLabelSx}>Order As</Typography>
-            <Box />
-          </Box>
-
-          {/* Line item rows */}
-          {lineItems.map((li, idx) => (
-            <Box
-              key={li.key}
-              data-pasted={lastPasteKeys.has(li.key) || undefined}
-              sx={(theme) => ({
-                display: 'grid',
-                gridTemplateColumns: lineGridColumns,
-                gap: 1,
-                mb: 1,
-                alignItems: 'start',
-                ...(lastPasteKeys.has(li.key) && {
-                  '--pasted-row-tint': alpha(theme.palette.warning.main, 0.16),
-                  animation: `${pastedRowFade} 4s ease-out forwards`,
-                  borderRadius: 1,
-                }),
-              })}
+            {/* A catalogued row holds the pair the warehouse will receive the stock under, so both
+                fields are read-only on it (#454). */}
+            <TextField
+              size="small"
+              value={li.hardwareCategory}
+              onChange={(e) => updateLineItem(li.key, 'hardwareCategory', e.target.value)}
+              error={!!gridErrors[`li_${idx}_cat`]}
+              helperText={gridErrors[`li_${idx}_cat`] ?? (li.catalogItemId ? 'From catalog' : undefined)}
+              placeholder="e.g. Hinges"
+              disabled={Boolean(li.catalogItemId)}
+              // #909: a column narrower than the value scrolls the input's own text, never the grid.
+              slotProps={{ htmlInput: { maxLength: MAX_ITEM_NUMBER } }}
+              sx={li.catalogItemId ? MONO_FIELD_SX : undefined}
+            />
+            <TextField
+              size="small"
+              value={li.productCode}
+              onChange={(e) => updateLineItem(li.key, 'productCode', e.target.value)}
+              error={!!gridErrors[`li_${idx}_code`]}
+              helperText={gridErrors[`li_${idx}_code`]}
+              placeholder="e.g. AB123"
+              disabled={Boolean(li.catalogItemId)}
+              slotProps={{ htmlInput: { maxLength: MAX_DESCRIPTION } }}
+              sx={MONO_FIELD_SX}
+            />
+            {/* Qty and Unit Cost are text boxes, not number boxes (#833): a number box shows a pasted
+                "TBD" as empty, and a flagged cell has to show what is wrong with it. */}
+            <TextField
+              size="small"
+              value={li.orderedQuantity}
+              onChange={(e) => updateLineItem(li.key, 'orderedQuantity', e.target.value)}
+              error={!!gridErrors[`li_${idx}_qty`]}
+              helperText={gridErrors[`li_${idx}_qty`]}
+              slotProps={{ htmlInput: { inputMode: 'numeric', 'aria-label': `Quantity line ${idx + 1}` } }}
+              sx={{ '& input': tabularSx }}
+            />
+            {/* Native, so the row stays one line high; the column heading is its visible label. */}
+            <TextField
+              size="small"
+              select
+              value={li.uofm}
+              onChange={(e) => updateLineItem(li.key, 'uofm', e.target.value)}
+              disabled={unitsOfMeasure.length === 0}
+              error={!!gridErrors[`li_${idx}_uofm`]}
+              helperText={gridErrors[`li_${idx}_uofm`]}
+              slotProps={{
+                select: { native: true, inputProps: { 'aria-label': `Unit of measure line ${idx + 1}` } },
+              }}
+              sx={{ minWidth: 0 }}
             >
-              {/* A catalogued row holds the pair the warehouse will receive the stock under, so both
-                  fields are read-only on it (#454). */}
-              <TextField
-                size="small"
-                value={li.hardwareCategory}
-                onChange={(e) => updateLineItem(li.key, 'hardwareCategory', e.target.value)}
-                error={!!gridErrors[`li_${idx}_cat`]}
-                helperText={gridErrors[`li_${idx}_cat`] ?? (li.catalogItemId ? 'From catalog' : undefined)}
-                placeholder="e.g. Hinges"
-                disabled={Boolean(li.catalogItemId)}
-                slotProps={{ htmlInput: { maxLength: MAX_ITEM_NUMBER } }}
-                sx={li.catalogItemId ? MONO_FIELD_SX : undefined}
-              />
-              <TextField
-                size="small"
-                value={li.productCode}
-                onChange={(e) => updateLineItem(li.key, 'productCode', e.target.value)}
-                error={!!gridErrors[`li_${idx}_code`]}
-                helperText={gridErrors[`li_${idx}_code`]}
-                placeholder="e.g. AB123"
-                disabled={Boolean(li.catalogItemId)}
-                slotProps={{ htmlInput: { maxLength: MAX_DESCRIPTION } }}
-                sx={MONO_FIELD_SX}
-              />
-              {/* Qty and Unit Cost are text boxes, not number boxes (#833): a number box shows a pasted
-                  "TBD" as empty, and a flagged cell has to show what is wrong with it. */}
-              <TextField
-                size="small"
-                value={li.orderedQuantity}
-                onChange={(e) => updateLineItem(li.key, 'orderedQuantity', e.target.value)}
-                error={!!gridErrors[`li_${idx}_qty`]}
-                helperText={gridErrors[`li_${idx}_qty`]}
-                slotProps={{ htmlInput: { inputMode: 'numeric', 'aria-label': `Quantity line ${idx + 1}` } }}
-                sx={{ '& input': tabularSx }}
-              />
-              {/* Native, so the row stays one line high; the column heading is its visible label. */}
+              {withCurrentValue(unitsOfMeasure, li.uofm).map((u) => (
+                <option key={u} value={u}>
+                  {u}
+                </option>
+              ))}
+            </TextField>
+            <TextField
+              size="small"
+              value={li.unitCost}
+              onChange={(e) => updateLineItem(li.key, 'unitCost', e.target.value)}
+              error={!!gridErrors[`li_${idx}_cost`]}
+              helperText={gridErrors[`li_${idx}_cost`]}
+              slotProps={{ htmlInput: { inputMode: 'decimal', 'aria-label': `Unit cost line ${idx + 1}` } }}
+              sx={{ '& input': tabularSx }}
+            />
+            {isJob && (
               <TextField
                 size="small"
                 select
-                value={li.uofm}
-                onChange={(e) => updateLineItem(li.key, 'uofm', e.target.value)}
-                disabled={unitsOfMeasure.length === 0}
-                error={!!gridErrors[`li_${idx}_uofm`]}
-                helperText={gridErrors[`li_${idx}_uofm`]}
+                value={li.costCode}
+                onChange={(e) => updateLineItem(li.key, 'costCode', e.target.value)}
+                error={!!gridErrors[`li_${idx}_costCode`]}
+                helperText={gridErrors[`li_${idx}_costCode`]}
+                disabled={!li.jobCost}
                 slotProps={{
-                  select: { native: true, inputProps: { 'aria-label': `Unit of measure line ${idx + 1}` } },
+                  select: { native: true, inputProps: { 'aria-label': `Cost code line ${idx + 1}` } },
                 }}
-                sx={{ minWidth: 0 }}
+                sx={{ minWidth: 0, '& select': monoSx }}
               >
-                {withCurrentValue(unitsOfMeasure, li.uofm).map((u) => (
-                  <option key={u} value={u}>
-                    {u}
+                <option value="">None</option>
+                {withCurrentValue(costCodeOptions, li.costCode).map((code) => (
+                  <option key={code} value={code}>
+                    {code}
                   </option>
                 ))}
               </TextField>
+            )}
+            {isJob && (
+              <Checkbox
+                size="small"
+                checked={li.jobCost}
+                onChange={(e) => updateLineItem(li.key, 'jobCost', e.target.checked)}
+                slotProps={{ input: { 'aria-label': `Job cost line ${idx + 1}` } }}
+                sx={{ p: 0.5, justifySelf: 'start' }}
+              />
+            )}
+            {li.catalogItemId ? (
+              // No Order As on a custom item (see addCatalogLineItem); the cell stays so the grid lines up.
+              <Box />
+            ) : (
               <TextField
                 size="small"
-                value={li.unitCost}
-                onChange={(e) => updateLineItem(li.key, 'unitCost', e.target.value)}
-                error={!!gridErrors[`li_${idx}_cost`]}
-                helperText={gridErrors[`li_${idx}_cost`]}
-                slotProps={{ htmlInput: { inputMode: 'decimal', 'aria-label': `Unit cost line ${idx + 1}` } }}
-                sx={{ '& input': tabularSx }}
+                value={li.orderAs}
+                onChange={(e) => updateLineItem(li.key, 'orderAs', e.target.value)}
+                placeholder="e.g. ML2010"
+                sx={MONO_FIELD_SX}
               />
-              {isJob && (
-                <TextField
-                  size="small"
-                  select
-                  value={li.costCode}
-                  onChange={(e) => updateLineItem(li.key, 'costCode', e.target.value)}
-                  error={!!gridErrors[`li_${idx}_costCode`]}
-                  helperText={gridErrors[`li_${idx}_costCode`]}
-                  disabled={!li.jobCost}
-                  slotProps={{
-                    select: { native: true, inputProps: { 'aria-label': `Cost code line ${idx + 1}` } },
-                  }}
-                  sx={{ minWidth: 0, '& select': monoSx }}
-                >
-                  <option value="">None</option>
-                  {withCurrentValue(costCodeOptions, li.costCode).map((code) => (
-                    <option key={code} value={code}>
-                      {code}
-                    </option>
-                  ))}
-                </TextField>
-              )}
-              {isJob && (
-                <Checkbox
-                  size="small"
-                  checked={li.jobCost}
-                  onChange={(e) => updateLineItem(li.key, 'jobCost', e.target.checked)}
-                  slotProps={{ input: { 'aria-label': `Job cost line ${idx + 1}` } }}
-                  sx={{ p: 0.5, justifySelf: 'start' }}
-                />
-              )}
-              {li.catalogItemId ? (
-                // No Order As on a custom item (see addCatalogLineItem); the cell stays so the grid lines up.
-                <Box />
-              ) : (
-                <TextField
-                  size="small"
-                  value={li.orderAs}
-                  onChange={(e) => updateLineItem(li.key, 'orderAs', e.target.value)}
-                  placeholder="e.g. ML2010"
-                  sx={MONO_FIELD_SX}
-                />
-              )}
-              <IconButton
-                size="small"
-                color="error"
-                aria-label={`Remove line item ${idx + 1}`}
-                onClick={() => removeLineItem(li.key)}
-                disabled={lineItems.length <= 1}
-              >
-                <Trash2 {...ICON} />
-              </IconButton>
-            </Box>
-          ))}
-        </Box>
+            )}
+            <IconButton
+              size="small"
+              color="error"
+              aria-label={`Remove line item ${idx + 1}`}
+              onClick={() => removeLineItem(li.key)}
+              disabled={lineItems.length <= 1}
+            >
+              <Trash2 {...ICON} />
+            </IconButton>
+          </Box>
+        ))}
       </Box>
       {/* #858: what the PO comes to before it is registered, updating as the lines and charges
           change. One compact row under the lines, which is where a buyer reads a total. */}

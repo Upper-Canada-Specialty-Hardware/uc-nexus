@@ -16,14 +16,12 @@ import {
   InputAdornment,
   InputLabel,
   MenuItem,
-  Paper,
   Select,
   Skeleton,
   Stack,
   Table,
   TableBody,
   TableCell,
-  TableContainer,
   TableHead,
   TableRow,
   TextField,
@@ -66,6 +64,8 @@ import {
 import { CONTAINER_TYPE_LABEL, isStacked } from './staging';
 import PageHeader from '../../components/PageHeader';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import FitTable, { type FitTableColumn } from '../../components/FitTable';
+import { FIT_CELL_WRAP_SX } from '../../components/fitColumns';
 import { FadeIn } from '../../motion';
 import { parseServerDate, parseServerDay } from '../../utils/serverDate';
 
@@ -94,6 +94,27 @@ function shippedUnits(slip: PackingSlip): number {
 /** A calendar date the way the Delivery Request carries it, or a dash when it was left blank. */
 function formatDay(value: string | null | undefined): string {
   return value ? parseServerDay(value).toLocaleDateString() : '-';
+}
+
+/**
+ * #909: the shipments table fits its width and never scrolls sideways; columns are resizable and
+ * remembered per person. Minimums hold a packing slip number, the widest status chip and a local date
+ * whole; names, project, method and carrier ellipsize with the full value on hover. The expander is
+ * fixed, and the expanded detail row spans the table and wraps as before.
+ */
+function shipmentColumns(isGlobal: boolean): FitTableColumn[] {
+  return [
+    { id: 'expand', label: 'Expand', min: 44, fixed: 44, header: null, flush: true },
+    { id: 'packingSlip', label: 'Packing slip', min: 112, weight: 1 },
+    ...(isGlobal ? [{ id: 'project', label: 'Project', min: 120, weight: 1.5 }] : []),
+    { id: 'status', label: 'Status', min: 112, weight: 0.8 },
+    { id: 'shippedBy', label: 'Shipped by', min: 96, weight: 1 },
+    { id: 'created', label: 'Created', min: 96, weight: 0.7 },
+    { id: 'pickup', label: 'Pick-up', min: 96, weight: 0.7 },
+    { id: 'delivery', label: 'Delivery', min: 96, weight: 0.7 },
+    { id: 'method', label: 'Method', min: 88, weight: 0.8 },
+    { id: 'carrier', label: 'Carrier / Tag / BOL', min: 120, weight: 1.3 },
+  ];
 }
 
 type LifecycleAction = 'PICKED_UP' | 'DELIVERED';
@@ -329,76 +350,102 @@ export default function ShipmentsList({ projectId, heading }: Props) {
       ) : error && !data ? (
         <Alert severity="error">Error loading shipments: {error.message}</Alert>
       ) : (
-        <TableContainer component={Paper} variant="outlined">
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell sx={{ width: 44 }} />
-                <TableCell>Packing slip</TableCell>
-                {isGlobal && <TableCell>Project</TableCell>}
-                <TableCell>Status</TableCell>
-                <TableCell>Shipped by</TableCell>
-                <TableCell>Created</TableCell>
-                <TableCell>Pick-up</TableCell>
-                <TableCell>Delivery</TableCell>
-                <TableCell>Method</TableCell>
-                <TableCell>Carrier / Tag / BOL</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {visible.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={columnCount + 1}>
-                    <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
-                      No shipments match this search.
-                    </Typography>
-                  </TableCell>
-                </TableRow>
-              )}
-              {visible.map((slip) => {
-                const isOpen = expanded.has(slip.id) || slip.id === linkedSlipId;
-                const status = shipmentStatusDisplay(slip.status);
-                const returnable = shippedUnits(slip);
-                return (
-                  <Fragment key={slip.id}>
-                    <TableRow
-                      hover
-                      sx={{ '& > *': { borderBottom: isOpen ? 'unset' : undefined } }}
+        <FitTable storageKey="shipments-list" columns={shipmentColumns(isGlobal)}>
+          {visible.length === 0 && (
+            <TableRow>
+              <TableCell colSpan={columnCount + 1}>
+                <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
+                  No shipments match this search.
+                </Typography>
+              </TableCell>
+            </TableRow>
+          )}
+          {visible.map((slip) => {
+            const isOpen = expanded.has(slip.id) || slip.id === linkedSlipId;
+            const status = shipmentStatusDisplay(slip.status);
+            const returnable = shippedUnits(slip);
+            return (
+              <Fragment key={slip.id}>
+                <TableRow
+                  hover
+                  sx={{ '& > *': { borderBottom: isOpen ? 'unset' : undefined } }}
+                >
+                  <TableCell sx={{ px: 0.5 }}>
+                    <IconButton
+                      size="small"
+                      onClick={() => toggle(slip.id)}
+                      aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${slip.packingSlipNumber}`}
+                      aria-expanded={isOpen}
                     >
-                      <TableCell>
-                        <IconButton
-                          size="small"
-                          onClick={() => toggle(slip.id)}
-                          aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${slip.packingSlipNumber}`}
-                          aria-expanded={isOpen}
+                      {isOpen ? (
+                        <ChevronDown size={16} strokeWidth={1.75} />
+                      ) : (
+                        <ChevronRight size={16} strokeWidth={1.75} />
+                      )}
+                    </IconButton>
+                  </TableCell>
+                  <TableCell sx={{ ...monoSx, fontWeight: 600 }}>
+                    {slip.packingSlipNumber}
+                  </TableCell>
+                  {isGlobal && <TableCell title={projectLabel(slip.projectId)}>{projectLabel(slip.projectId)}</TableCell>}
+                  <TableCell>
+                    <Chip size="small" label={status.label} color={status.color} />
+                  </TableCell>
+                  <TableCell title={slip.shippedBy}>{slip.shippedBy}</TableCell>
+                  <TableCell sx={tabularSx}>
+                    {parseServerDate(slip.createdAt).toLocaleDateString()}
+                  </TableCell>
+                  <TableCell sx={tabularSx}>{formatDay(slip.pickupDate)}</TableCell>
+                  <TableCell sx={tabularSx}>{formatDay(slip.deliveryDate)}</TableCell>
+                  <TableCell title={slip.shipmentMethod || undefined}>{slip.shipmentMethod || '-'}</TableCell>
+                  <TableCell title={slip.carrierTagBol || undefined}>{slip.carrierTagBol || '-'}</TableCell>
+                </TableRow>
+                <TableRow>
+                  <TableCell
+                    sx={{ ...FIT_CELL_WRAP_SX, py: 0, borderBottom: isOpen ? undefined : 'none' }}
+                    colSpan={columnCount + 1}
+                  >
+                    <Collapse in={isOpen} timeout="auto" unmountOnExit>
+                      <Box sx={{ py: 2 }}>
+                        <Typography
+                          sx={{
+                            ...microLabelSx,
+                            pb: 0.5,
+                            mb: 1,
+                            borderBottom: '2px solid',
+                            borderColor: 'text.primary',
+                          }}
                         >
-                          {isOpen ? (
-                            <ChevronDown size={16} strokeWidth={1.75} />
-                          ) : (
-                            <ChevronRight size={16} strokeWidth={1.75} />
-                          )}
-                        </IconButton>
-                      </TableCell>
-                      <TableCell sx={{ ...monoSx, fontWeight: 600 }}>
-                        {slip.packingSlipNumber}
-                      </TableCell>
-                      {isGlobal && <TableCell>{projectLabel(slip.projectId)}</TableCell>}
-                      <TableCell>
-                        <Chip size="small" label={status.label} color={status.color} />
-                      </TableCell>
-                      <TableCell>{slip.shippedBy}</TableCell>
-                      <TableCell sx={tabularSx}>
-                        {parseServerDate(slip.createdAt).toLocaleDateString()}
-                      </TableCell>
-                      <TableCell sx={tabularSx}>{formatDay(slip.pickupDate)}</TableCell>
-                      <TableCell sx={tabularSx}>{formatDay(slip.deliveryDate)}</TableCell>
-                      <TableCell>{slip.shipmentMethod || '-'}</TableCell>
-                      <TableCell>{slip.carrierTagBol || '-'}</TableCell>
-                    </TableRow>
-                    <TableRow>
-                      <TableCell sx={{ py: 0, borderBottom: isOpen ? undefined : 'none' }} colSpan={columnCount + 1}>
-                        <Collapse in={isOpen} timeout="auto" unmountOnExit>
-                          <Box sx={{ py: 2 }}>
+                          Material description ({slip.items.length})
+                        </Typography>
+                        <Table size="small" sx={{ mb: 2 }}>
+                          <TableHead>
+                            <TableRow>
+                              <TableCell>Opening</TableCell>
+                              <TableCell>Product code</TableCell>
+                              <TableCell>Hardware category</TableCell>
+                              <TableCell align="right">Qty</TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {slip.items.map((item) => (
+                              <TableRow key={item.id}>
+                                <TableCell sx={monoSx}>{item.openingNumber || '-'}</TableCell>
+                                <TableCell sx={monoSx}>{item.productCode || '-'}</TableCell>
+                                <TableCell>{item.hardwareCategory || '-'}</TableCell>
+                                <TableCell align="right" sx={tabularSx}>
+                                  {item.quantity}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+
+                        {/* How the load was arranged (#451). Absent on slips cut before
+                            containers existed, which is why this is conditional rather than an
+                            empty section. */}
+                        {(slip.containers ?? []).length > 0 && (
+                          <Box sx={{ mb: 2 }}>
                             <Typography
                               sx={{
                                 ...microLabelSx,
@@ -408,159 +455,118 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                                 borderColor: 'text.primary',
                               }}
                             >
-                              Material description ({slip.items.length})
+                              Containers ({(slip.containers ?? []).length})
                             </Typography>
-                            <Table size="small" sx={{ mb: 2 }}>
-                              <TableHead>
-                                <TableRow>
-                                  <TableCell>Opening</TableCell>
-                                  <TableCell>Product code</TableCell>
-                                  <TableCell>Hardware category</TableCell>
-                                  <TableCell align="right">Qty</TableCell>
-                                </TableRow>
-                              </TableHead>
-                              <TableBody>
-                                {slip.items.map((item) => (
-                                  <TableRow key={item.id}>
-                                    <TableCell sx={monoSx}>{item.openingNumber || '-'}</TableCell>
-                                    <TableCell sx={monoSx}>{item.productCode || '-'}</TableCell>
-                                    <TableCell>{item.hardwareCategory || '-'}</TableCell>
-                                    <TableCell align="right" sx={tabularSx}>
-                                      {item.quantity}
-                                    </TableCell>
-                                  </TableRow>
-                                ))}
-                              </TableBody>
-                            </Table>
-
-                            {/* How the load was arranged (#451). Absent on slips cut before
-                                containers existed, which is why this is conditional rather than an
-                                empty section. */}
-                            {(slip.containers ?? []).length > 0 && (
-                              <Box sx={{ mb: 2 }}>
-                                <Typography
-                                  sx={{
-                                    ...microLabelSx,
-                                    pb: 0.5,
-                                    mb: 1,
-                                    borderBottom: '2px solid',
-                                    borderColor: 'text.primary',
-                                  }}
-                                >
-                                  Containers ({(slip.containers ?? []).length})
-                                </Typography>
-                                <Stack spacing={1.5}>
-                                  {(slip.containers ?? []).map((container) => {
-                                    const stacked = isStacked(container.containerType);
-                                    const ordered = [...container.items].sort(
-                                      (a, b) => a.position - b.position,
-                                    );
-                                    return (
-                                      <Box key={container.id}>
-                                        <Box
-                                          sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}
+                            <Stack spacing={1.5}>
+                              {(slip.containers ?? []).map((container) => {
+                                const stacked = isStacked(container.containerType);
+                                const ordered = [...container.items].sort(
+                                  (a, b) => a.position - b.position,
+                                );
+                                return (
+                                  <Box key={container.id}>
+                                    <Box
+                                      sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}
+                                    >
+                                      <Package size={16} strokeWidth={1.75} />
+                                      <Typography variant="body2" sx={{ ...monoSx, fontWeight: 700 }}>
+                                        {container.name}
+                                      </Typography>
+                                      <Chip
+                                        size="small"
+                                        variant="outlined"
+                                        label={CONTAINER_TYPE_LABEL[container.containerType]}
+                                      />
+                                      {stacked && ordered.length > 1 && (
+                                        <Typography variant="caption" color="text.secondary">
+                                          loaded in this order, first on at the bottom
+                                        </Typography>
+                                      )}
+                                    </Box>
+                                    <Stack spacing={0.25} sx={{ pl: 3 }}>
+                                      {ordered.map((item, index) => (
+                                        <Typography
+                                          key={item.id}
+                                          variant="body2"
+                                          sx={{ ...monoSx, ...tabularSx }}
                                         >
-                                          <Package size={16} strokeWidth={1.75} />
-                                          <Typography variant="body2" sx={{ ...monoSx, fontWeight: 700 }}>
-                                            {container.name}
-                                          </Typography>
-                                          <Chip
-                                            size="small"
-                                            variant="outlined"
-                                            label={CONTAINER_TYPE_LABEL[container.containerType]}
-                                          />
-                                          {stacked && ordered.length > 1 && (
-                                            <Typography variant="caption" color="text.secondary">
-                                              loaded in this order, first on at the bottom
-                                            </Typography>
-                                          )}
-                                        </Box>
-                                        <Stack spacing={0.25} sx={{ pl: 3 }}>
-                                          {ordered.map((item, index) => (
-                                            <Typography
-                                              key={item.id}
-                                              variant="body2"
-                                              sx={{ ...monoSx, ...tabularSx }}
-                                            >
-                                              {stacked && `${index + 1}. `}
-                                              {`${item.productCode} × ${item.quantity}`}
-                                              {item.openingNumber ? ` · ${item.openingNumber}` : ''}
-                                            </Typography>
-                                          ))}
-                                        </Stack>
-                                      </Box>
-                                    );
-                                  })}
-                                </Stack>
-                              </Box>
-                            )}
-
-                            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                startIcon={<FileText size={18} strokeWidth={1.75} />}
-                                disabled={generatingFor === slip.id}
-                                onClick={() => handleViewPdf(slip)}
-                              >
-                                {generatingFor === slip.id ? 'Generating...' : 'Delivery Request'}
-                              </Button>
-                              {slip.status === 'SCHEDULED' && (
-                                <Button
-                                  size="small"
-                                  variant="outlined"
-                                  startIcon={<Pencil size={18} strokeWidth={1.75} />}
-                                  onClick={() => setEditing(slip)}
-                                >
-                                  Edit
-                                </Button>
-                              )}
-                              {slip.status === 'SCHEDULED' && (
-                                <Button
-                                  size="small"
-                                  variant="outlined"
-                                  startIcon={<Truck size={18} strokeWidth={1.75} />}
-                                  onClick={() => setLifecycle({ slip, action: 'PICKED_UP' })}
-                                >
-                                  Mark Picked Up
-                                </Button>
-                              )}
-                              {slip.status === 'PICKED_UP' && (
-                                <Button
-                                  size="small"
-                                  variant="outlined"
-                                  startIcon={<PackageCheck size={18} strokeWidth={1.75} />}
-                                  onClick={() => setLifecycle({ slip, action: 'DELIVERED' })}
-                                >
-                                  Mark Delivered
-                                </Button>
-                              )}
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                startIcon={<CornerUpLeft size={18} strokeWidth={1.75} />}
-                                disabled={returnable === 0}
-                                onClick={() =>
-                                  setActiveSlip({
-                                    id: slip.id,
-                                    packingSlipNumber: slip.packingSlipNumber,
-                                    projectName: projectLabel(slip.projectId),
-                                  })
-                                }
-                              >
-                                Return
-                              </Button>
+                                          {stacked && `${index + 1}. `}
+                                          {`${item.productCode} × ${item.quantity}`}
+                                          {item.openingNumber ? ` · ${item.openingNumber}` : ''}
+                                        </Typography>
+                                      ))}
+                                    </Stack>
+                                  </Box>
+                                );
+                              })}
                             </Stack>
                           </Box>
-                        </Collapse>
-                      </TableCell>
-                    </TableRow>
-                  </Fragment>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </TableContainer>
+                        )}
+
+                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            startIcon={<FileText size={18} strokeWidth={1.75} />}
+                            disabled={generatingFor === slip.id}
+                            onClick={() => handleViewPdf(slip)}
+                          >
+                            {generatingFor === slip.id ? 'Generating...' : 'Delivery Request'}
+                          </Button>
+                          {slip.status === 'SCHEDULED' && (
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              startIcon={<Pencil size={18} strokeWidth={1.75} />}
+                              onClick={() => setEditing(slip)}
+                            >
+                              Edit
+                            </Button>
+                          )}
+                          {slip.status === 'SCHEDULED' && (
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              startIcon={<Truck size={18} strokeWidth={1.75} />}
+                              onClick={() => setLifecycle({ slip, action: 'PICKED_UP' })}
+                            >
+                              Mark Picked Up
+                            </Button>
+                          )}
+                          {slip.status === 'PICKED_UP' && (
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              startIcon={<PackageCheck size={18} strokeWidth={1.75} />}
+                              onClick={() => setLifecycle({ slip, action: 'DELIVERED' })}
+                            >
+                              Mark Delivered
+                            </Button>
+                          )}
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            startIcon={<CornerUpLeft size={18} strokeWidth={1.75} />}
+                            disabled={returnable === 0}
+                            onClick={() =>
+                              setActiveSlip({
+                                id: slip.id,
+                                packingSlipNumber: slip.packingSlipNumber,
+                                projectName: projectLabel(slip.projectId),
+                              })
+                            }
+                          >
+                            Return
+                          </Button>
+                        </Stack>
+                      </Box>
+                    </Collapse>
+                  </TableCell>
+                </TableRow>
+              </Fragment>
+            );
+          })}
+        </FitTable>
       )}
 
       {slips.length > visible.length && (
