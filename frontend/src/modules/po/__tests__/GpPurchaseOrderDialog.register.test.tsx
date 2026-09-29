@@ -449,6 +449,7 @@ describe('GpPurchaseOrderDialog', () => {
               poNumber: null,
               requestNumber: 'REQ-009',
               projectId: 'p1',
+              poolKind: 'STOCK',
               status: 'DRAFT',
               gpCompany: null,
               gpVendorId: null,
@@ -515,6 +516,8 @@ describe('GpPurchaseOrderDialog', () => {
         vendorQuoteNumber: null,
         // #831: a PO on a job takes the job's company, so none is sent.
         company: null,
+        // #832: a PO on a job receives into the job, so no Stock / Overhead choice is sent.
+        poolKind: null,
         lineItems: [
           {
             hardwareCategory: 'Hinges',
@@ -533,6 +536,61 @@ describe('GpPurchaseOrderDialog', () => {
         ],
       },
     });
+  });
+
+  it('create mode offers Stock or Overhead on a PO with no project and sends the pick (#832)', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const createDraftMock: MockedResponse = {
+      request: { query: CREATE_DRAFT_PO, variables: () => true },
+      result: (vars) => {
+        calls.push(vars as Record<string, unknown>);
+        return {
+          data: {
+            createDraftPo: {
+              __typename: 'PurchaseOrder',
+              id: 'po-10',
+              poNumber: null,
+              requestNumber: 'REQ-010',
+              projectId: null,
+              poolKind: 'OVERHEAD',
+              status: 'DRAFT',
+              gpCompany: null,
+              gpVendorId: null,
+              vendorNameSnapshot: null,
+              notes: null,
+              preferredDeliveryDate: null,
+              createdAt: '2026-07-02T12:00:00Z',
+              updatedAt: '2026-07-02T12:00:00Z',
+              lineItems: [],
+              receiveRecords: [],
+              documents: [],
+            },
+          },
+        };
+      },
+    };
+    const { onSubmitted } = renderDialog({ relayConnected: false }, [...baseMocks(false), createDraftMock]);
+
+    // No project picked: the choice is there, defaulting to Stock.
+    expect(screen.getByRole('button', { name: 'Stock' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Overhead' }));
+
+    fireEvent.change(screen.getByPlaceholderText('e.g. Hinges'), { target: { value: 'Hinges' } });
+    fireEvent.change(screen.getByPlaceholderText('e.g. AB123'), { target: { value: 'AB123' } });
+    fireEvent.change(screen.getByDisplayValue('0'), { target: { value: '3.5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Draft' }));
+
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    expect(calls[0]).toMatchObject({ input: { projectId: null, poolKind: 'OVERHEAD' } });
+  });
+
+  it('create mode hides Stock or Overhead once a project is picked (#832)', async () => {
+    renderDialog({ relayConnected: false }, baseMocks(false));
+    expect(screen.getByRole('button', { name: 'Overhead' })).toBeInTheDocument();
+
+    typeInto(screen.getByLabelText('Project (Optional)'), 'Main St');
+    fireEvent.click(await screen.findByText('Main St Job'));
+    expect(screen.queryByRole('button', { name: 'Overhead' })).toBeNull();
   });
 
   it('surfaces the GP failure detail and reuses the same idempotency key on retry', async () => {

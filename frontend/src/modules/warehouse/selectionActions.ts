@@ -40,6 +40,7 @@ export type SelectionActionKey =
   | 'allocate'
   | 'reclassify'
   | 'reportDeficient'
+  | 'setKind'
   // multi-capable
   | 'move'
   | 'transfer'
@@ -83,6 +84,8 @@ export function computeSelectionActions(rows: SelectionRow[]): SelectionActions 
     allocate: singleOnly(availableGate),
     flagDeficient: singleOnly(availableGate),
     reportDeficient: singleOnly(availableGate),
+    // #832: Mark as Overhead / Mark as Stock moves sound units only, so it needs some available.
+    setKind: singleOnly(availableGate),
 
     unlocate: count > 0 ? ENABLED : { enabled: false },
 

@@ -68,6 +68,8 @@ const PAGE = {
   ossa: bucket(59.25, 5, 1250),
   nonOssa: bucket(24, 2, 500),
   generalStock: bucket(25, 6, 1500),
+  // #832: the Overhead half of the pool - hardware only, never doors.
+  overhead: bucket(12, 0, 0),
   averageDoorCost: 250,
   averageDoorCostUpdatedAt: '2026-09-08T12:00:00',
   averageDoorCostUpdatedBy: 'Greg',
@@ -116,18 +118,22 @@ async function rowFor(label: string) {
   return row;
 }
 
-it('shows the three figures as currency with their hardware/doors split', async () => {
+it('shows the four figures as currency with their hardware/doors split', async () => {
   renderPage();
 
   expect(await screen.findByText(currency(1309.25))).toBeInTheDocument(); // OSSA
   expect(screen.getByText(currency(524))).toBeInTheDocument(); // Non-OSSA
-  expect(screen.getByText(currency(1525))).toBeInTheDocument(); // General stock
+  expect(screen.getByText(currency(1525))).toBeInTheDocument(); // Stock
+  expect(screen.getByText(currency(12))).toBeInTheDocument(); // Overhead
 
   // The tile labels. 'OSSA' / 'Non-OSSA' also appear as Type cells in the doors table, so the
   // check is that each label sits in the same tile as its figure.
   expect(screen.getByText(currency(1309.25)).closest('.MuiCard-root')).toHaveTextContent('OSSA');
   expect(screen.getByText(currency(524)).closest('.MuiCard-root')).toHaveTextContent('Non-OSSA');
-  expect(screen.getByText(currency(1525)).closest('.MuiCard-root')).toHaveTextContent('General stock');
+  expect(screen.getByText(currency(1525)).closest('.MuiCard-root')).toHaveTextContent('Stock');
+  // #832: Stock and Overhead are two separate figures, replacing the one stock/non-stock figure.
+  expect(screen.getByText(currency(12)).closest('.MuiCard-root')).toHaveTextContent('Overhead');
+  expect(screen.queryByText('General stock')).not.toBeInTheDocument();
 
   expect(screen.getByText(/hardware \$59\.25 · doors \$1,250\.00/)).toBeInTheDocument();
 });
@@ -163,8 +169,9 @@ it('subtotals each group of the doors table from the rows on screen', async () =
 it('the general row is a line of the table, not something that can be removed', async () => {
   renderPage();
 
-  await screen.findByText('General');
-  expect(screen.getByText('Stock/non-stock')).toBeInTheDocument();
+  // #832: the general doors row is the Stock line - the pool is no longer named "non-stock".
+  expect(within(await rowFor('General')).getByText('Stock')).toBeInTheDocument();
+  expect(screen.queryByText('Stock/non-stock')).not.toBeInTheDocument();
   expect(screen.queryByLabelText('Remove General')).not.toBeInTheDocument();
   // A project row does carry the control.
   expect(screen.getByLabelText('Remove JOB-001')).toBeInTheDocument();

@@ -319,6 +319,7 @@ export const GET_STOCK_ITEMS = gql`
     $onlyDeficient: Boolean
     $warehouseId: ID
     $onlyUnlocated: Boolean
+    $kind: PoolKind
   ) {
     stockItems(
       productCodeContains: $productCodeContains
@@ -327,6 +328,7 @@ export const GET_STOCK_ITEMS = gql`
       onlyDeficient: $onlyDeficient
       warehouseId: $warehouseId
       onlyUnlocated: $onlyUnlocated
+      kind: $kind
     ) {
       id
       warehouseId
@@ -336,6 +338,7 @@ export const GET_STOCK_ITEMS = gql`
       deficientQuantity
       available
       unitCost
+      kind
       aisle
       row
       bay
@@ -761,6 +764,21 @@ export const RECLASSIFY_STOCK_ITEM = gql`
       originalStockItem {
         id hardwareCategory productCode quantity deficientQuantity available
         aisle row bay
+      }
+    }
+  }
+`;
+
+// #832: re-flag `quantity` sound units of a pool row as Stock or Overhead. The units move to the
+// other kind's row on the same shelf; a whole row with no such row flips in place.
+export const SET_STOCK_ITEM_KIND = gql`
+  mutation SetStockItemKind($input: SetStockItemKindInput!) {
+    setStockItemKind(input: $input) {
+      stockItem {
+        id kind quantity deficientQuantity available
+      }
+      originalStockItem {
+        id kind quantity deficientQuantity available
       }
     }
   }

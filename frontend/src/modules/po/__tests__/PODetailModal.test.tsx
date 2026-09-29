@@ -126,6 +126,7 @@ function updatePoData(po: PurchaseOrder) {
       __typename: 'PurchaseOrder',
       id: po.id,
       poNumber: po.poNumber,
+      poolKind: po.poolKind ?? 'STOCK',
       requestNumber: po.requestNumber,
       status: po.status,
       gpVendorId: po.gpVendorId,
@@ -237,6 +238,8 @@ describe('PODetailModal', () => {
       notes: null,
       shippingCost: 0,
       tariffAmount: null,
+      // #832: a PO on a job has no Stock / Overhead choice to send.
+      poolKind: null,
     });
     expect(onRefetch).toHaveBeenCalled();
   });
@@ -271,6 +274,7 @@ describe('PODetailModal', () => {
       notes: null,
       shippingCost: 12.5,
       tariffAmount: null,
+      poolKind: null,
     });
   });
 
@@ -339,8 +343,42 @@ describe('PODetailModal', () => {
         notes: null,
         shippingCost: 12.5,
         tariffAmount: 3,
+        poolKind: null,
       },
     ]);
+  });
+
+  it('shows and edits Stock or Overhead only on a draft with no project (#832)', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const stockDraft: PurchaseOrder = { ...draftPo, projectId: null, poolKind: 'STOCK' };
+    const mocks: MockedResponse[] = [
+      {
+        request: { query: UPDATE_PO, variables: () => true },
+        result: (vars) => {
+          calls.push(vars as Record<string, unknown>);
+          return { data: updatePoData({ ...stockDraft, poolKind: 'OVERHEAD' }) };
+        },
+      },
+    ];
+    renderModal(stockDraft, mocks);
+
+    // Read mode names the choice beside "No Project".
+    expect(screen.getByText('Stock or Overhead')).toBeInTheDocument();
+    expect(screen.getByText('Stock')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Overhead' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await screen.findByText('PO updated successfully');
+    expect(calls[0]).toMatchObject({ id: 'po-1', poolKind: 'OVERHEAD' });
+  });
+
+  it('offers no Stock or Overhead choice on a PO with a project (#832)', () => {
+    renderModal(draftPo);
+    expect(screen.queryByText('Stock or Overhead')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(screen.queryByRole('button', { name: 'Overhead' })).toBeNull();
   });
 
   it('cancels the PO only after confirmation and closes the modal', async () => {

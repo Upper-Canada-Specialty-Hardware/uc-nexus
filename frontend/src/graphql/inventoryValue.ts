@@ -9,6 +9,7 @@ export const INVENTORY_VALUE_FIELDS = `
   ossa { hardwareValue doorCount doorValue totalValue }
   nonOssa { hardwareValue doorCount doorValue totalValue }
   generalStock { hardwareValue doorCount doorValue totalValue }
+  overhead { hardwareValue doorCount doorValue totalValue }
   averageDoorCost
   averageDoorCostUpdatedAt
   averageDoorCostUpdatedBy

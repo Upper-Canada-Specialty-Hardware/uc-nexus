@@ -35,6 +35,14 @@ describe('computeSelectionActions', () => {
     expect(a.move.enabled).toBe(true);
   });
 
+  it('offers Mark as Overhead / Stock on one row with units available (#832)', () => {
+    expect(computeSelectionActions([row()]).setKind.enabled).toBe(true);
+    expect(computeSelectionActions([row({ available: 0 })]).setKind.enabled).toBe(false);
+    const two = computeSelectionActions([row(), row()]);
+    expect(two.setKind.enabled).toBe(false);
+    expect(two.setKind.reason).toBe(SINGLE_ONLY_REASON);
+  });
+
   it('disables destock when a single row has zero on hand', () => {
     const a = computeSelectionActions([row({ quantity: 0, available: 0 })]);
     expect(a.destock.enabled).toBe(false);

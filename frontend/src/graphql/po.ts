@@ -38,6 +38,8 @@ export const PURCHASE_ORDER_DETAIL_FIELDS = gql`
     # "Nexus registered" chip reads.
     nexusRegistered
     projectId
+    # #832: Stock or Overhead - which half of the pool a PO with no project receives into.
+    poolKind
     status
     # #637: the tenant that owns the PO. A draft has one from the moment it is raised; gpCompany
     # is only stamped at GP registration.
@@ -417,10 +419,11 @@ export const UPDATE_PO_NOTES = gql`
 `;
 
 export const UPDATE_PO = gql`
-  mutation UpdatePO($id: ID!, $expectedDeliveryDate: Date, $preferredDeliveryDate: Date, $poNumber: String, $vendorQuoteNumber: String, $notes: String, $shippingCost: Float, $tariffAmount: Float) {
-    updatePo(id: $id, expectedDeliveryDate: $expectedDeliveryDate, preferredDeliveryDate: $preferredDeliveryDate, poNumber: $poNumber, vendorQuoteNumber: $vendorQuoteNumber, notes: $notes, shippingCost: $shippingCost, tariffAmount: $tariffAmount) {
+  mutation UpdatePO($id: ID!, $expectedDeliveryDate: Date, $preferredDeliveryDate: Date, $poNumber: String, $vendorQuoteNumber: String, $notes: String, $shippingCost: Float, $tariffAmount: Float, $poolKind: PoolKind) {
+    updatePo(id: $id, expectedDeliveryDate: $expectedDeliveryDate, preferredDeliveryDate: $preferredDeliveryDate, poNumber: $poNumber, vendorQuoteNumber: $vendorQuoteNumber, notes: $notes, shippingCost: $shippingCost, tariffAmount: $tariffAmount, poolKind: $poolKind) {
       id
       poNumber
+      poolKind
       requestNumber
       status
       gpVendorId
@@ -559,6 +562,7 @@ export const CREATE_DRAFT_PO = gql`
       poNumber
       requestNumber
       projectId
+      poolKind
       status
       gpCompany
       gpVendorId
