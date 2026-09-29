@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useState } from 'react';
-import { DataGrid, type GridColDef, type GridColumnResizeParams } from '@mui/x-data-grid';
+import { useMemo } from 'react';
+import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import type { ClassificationRow } from './types';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 
 // #733: the row table under a guided classification card and inside every review group. Both used to
 // be plain MUI tables, which cannot be resized; this is one DataGrid both render, so a user can drag
@@ -11,50 +12,27 @@ import { microLabelSx, monoSx, tabularSx } from '../../theme';
 // The hardware category itself arrives from TITAN already cut to 15 characters ("IC Mortise Cyli");
 // that is the export, not this grid, and was ruled out of scope in #788.
 
-// Widths a user drags to are remembered in this browser, per column, and shared by both tables since
-// they carry the same columns. A convenience only: storage can be missing or refuse writes, and the
-// grid then just starts from its default widths.
-const WIDTHS_KEY = 'ucnexus.import.classificationColumnWidths';
-
-function readWidths(): Record<string, number> {
-  try {
-    const raw = localStorage.getItem(WIDTHS_KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : null;
-    if (!parsed || typeof parsed !== 'object') return {};
-    const out: Record<string, number> = {};
-    for (const [field, width] of Object.entries(parsed)) {
-      if (typeof width === 'number' && Number.isFinite(width) && width > 0) out[field] = width;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function writeWidths(widths: Record<string, number>) {
-  try {
-    localStorage.setItem(WIDTHS_KEY, JSON.stringify(widths));
-  } catch {
-    // Storage refused: the width still holds for this session, it just is not remembered.
-  }
-}
+// #909: the columns fit the grid's width and never scroll sideways. Widths a person drags to are
+// remembered per person under one key shared by both tables, since they carry the same columns.
+const CLASSIFICATION_ROWS_STORAGE_KEY = 'import.classification.rows';
 
 const dash = (value: unknown) => (value ? String(value) : '—');
 
-// Short values get a fixed width sized to their content; Product Code and Category are the long,
-// variable ones, so they flex and absorb the slack.
+// Short values get a narrow share sized to their content; Product Code and Category are the long,
+// variable ones, so they take the larger share of the slack.
 const DATA_COLUMNS: GridColDef<ClassificationRow>[] = [
-  { field: 'openingNumber', headerName: 'Opening', width: 100, cellClassName: 'mono-cell' },
-  { field: 'hand', headerName: 'Hand', width: 80, valueFormatter: dash },
-  { field: 'doorMaterial', headerName: 'Door Material', width: 130, valueFormatter: dash },
-  { field: 'frameType', headerName: 'Frame Type', width: 120, valueFormatter: dash },
-  { field: 'productCode', headerName: 'Product Code', flex: 1, minWidth: 150, cellClassName: 'mono-cell' },
-  { field: 'hardwareCategory', headerName: 'Category', flex: 1, minWidth: 140 },
+  { field: 'openingNumber', headerName: 'Opening', width: 100, minWidth: 90, cellClassName: 'mono-cell' },
+  { field: 'hand', headerName: 'Hand', width: 80, minWidth: 64, valueFormatter: dash },
+  { field: 'doorMaterial', headerName: 'Door Material', width: 130, minWidth: 110, valueFormatter: dash },
+  { field: 'frameType', headerName: 'Frame Type', width: 120, minWidth: 100, valueFormatter: dash },
+  { field: 'productCode', headerName: 'Product Code', flex: 1.5, minWidth: 150, cellClassName: 'mono-cell' },
+  { field: 'hardwareCategory', headerName: 'Category', flex: 1.5, minWidth: 140 },
   {
     field: 'itemQuantity',
     headerName: 'Qty',
     type: 'number',
     width: 70,
+    minWidth: 60,
     cellClassName: 'figure-cell',
   },
 ];
@@ -70,31 +48,24 @@ interface ClassificationRowsGridProps {
 }
 
 export default function ClassificationRowsGrid({ rows, classificationColumns }: ClassificationRowsGridProps) {
-  const [widths, setWidths] = useState<Record<string, number>>(readWidths);
-
   const columns = useMemo<GridColDef<ClassificationRow>[]>(
-    () =>
-      [...DATA_COLUMNS, ...classificationColumns].map((col) => {
-        const saved = widths[col.field];
-        // A dragged width replaces flex: a flex column would otherwise re-spread and undo the drag.
-        return saved ? { ...col, width: saved, flex: undefined } : col;
-      }),
-    [classificationColumns, widths],
+    () => [
+      ...DATA_COLUMNS,
+      // The classification cells hold chips or toggle buttons: their declared width is the least
+      // that keeps the control whole.
+      ...classificationColumns.map((col) =>
+        col.minWidth === undefined && col.width ? { ...col, minWidth: col.width } : col,
+      ),
+    ],
+    [classificationColumns],
   );
-
-  const onColumnWidthChange = useCallback((params: GridColumnResizeParams) => {
-    setWidths((prev) => {
-      const next = { ...prev, [params.colDef.field]: Math.round(params.width) };
-      writeWidths(next);
-      return next;
-    });
-  }, []);
+  const { setContainer, gridProps: fit } = useGridColumnFit(CLASSIFICATION_ROWS_STORAGE_KEY, columns);
 
   return (
     <DataGrid
+      ref={setContainer}
+      {...fit}
       rows={rows}
-      columns={columns}
-      onColumnWidthChange={onColumnWidthChange}
       density="compact"
       getRowHeight={() => 'auto'}
       autoHeight
@@ -105,22 +76,25 @@ export default function ClassificationRowsGrid({ rows, classificationColumns }: 
       hideFooter={rows.length <= PAGE_SIZE}
       pageSizeOptions={[PAGE_SIZE]}
       initialState={{ pagination: { paginationModel: { pageSize: PAGE_SIZE } } }}
-      sx={{
-        border: 0,
-        '& .MuiDataGrid-columnHeaderTitle': microLabelSx,
-        // Wrap, never ellipsize: the full value is always readable at any column width.
-        '& .MuiDataGrid-cell': {
-          whiteSpace: 'normal',
-          wordBreak: 'break-word',
-          lineHeight: 1.43,
-          py: 0.75,
-          display: 'flex',
-          alignItems: 'center',
+      sx={[
+        fit.sx,
+        {
+          border: 0,
+          '& .MuiDataGrid-columnHeaderTitle': microLabelSx,
+          // Wrap, never ellipsize: the full value is always readable at any column width.
+          '& .MuiDataGrid-cell': {
+            whiteSpace: 'normal',
+            wordBreak: 'break-word',
+            lineHeight: 1.43,
+            py: 0.75,
+            display: 'flex',
+            alignItems: 'center',
+          },
+          '& .MuiDataGrid-cell--textRight': { justifyContent: 'flex-end' },
+          '& .mono-cell': monoSx,
+          '& .figure-cell': tabularSx,
         },
-        '& .MuiDataGrid-cell--textRight': { justifyContent: 'flex-end' },
-        '& .mono-cell': monoSx,
-        '& .figure-cell': tabularSx,
-      }}
+      ]}
     />
   );
 }

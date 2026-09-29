@@ -5,6 +5,7 @@ import type { ParsedHardwareItem } from '../../types/hardwareSchedule';
 import { itemGroupKey } from './types';
 import { matchesFacets, hasActiveFacets, type FacetConfig, type FacetSelections } from './facets';
 import FacetBar from './FacetBar';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 import { monoSx, tabularSx } from '../../theme';
 
 // ---- Row type ----
@@ -204,15 +205,18 @@ export default function SelectHardwareStep({
         field: 'unitCost',
         headerName: 'Unit Cost',
         width: 110,
+        minWidth: 100,
         type: 'number',
         valueFormatter: (value: number) => formatUsd(value),
       },
-      { field: 'totalQuantity', headerName: 'Total Qty', width: 100, type: 'number' },
+      { field: 'totalQuantity', headerName: 'Total Qty', width: 100, minWidth: 90, type: 'number' },
       {
         field: 'orderQty',
         headerName: 'Order Qty',
         description: 'How many of this product to order. Defaults to the schedule total.',
         width: 110,
+        // The quantity field is 72px; the cell keeps it whole.
+        minWidth: 100,
         sortable: false,
         filterable: false,
         renderCell: (params) => (
@@ -230,16 +234,23 @@ export default function SelectHardwareStep({
         headerName: 'Ext. Cost',
         description: 'Unit cost × total quantity',
         width: 130,
+        minWidth: 110,
         type: 'number',
         // Derived, not stored on the row: unit cost is a product property and total quantity the
         // schedule roll-up, so the product of the two is computed here rather than duplicated upstream.
         valueGetter: (_value, row: HardwareProductRow) => row.unitCost * row.totalQuantity,
         valueFormatter: (value: number) => formatUsd(value),
       },
-      { field: 'openingCount', headerName: 'Openings', width: 100, type: 'number' },
+      { field: 'openingCount', headerName: 'Openings', width: 100, minWidth: 90, type: 'number' },
     ],
     [orderQtyOverrides, selectedProductKeys, onOrderQtyChange],
   );
+
+  // #909: the columns fit the grid's width (never a sideways scroll) and resize by the header edge,
+  // remembered per person. Virtualization stays on: a schedule can carry thousands of products.
+  const { setContainer, gridProps: fit } = useGridColumnFit('import.select-hardware.products', columns, {
+    checkboxSelection: true,
+  });
 
   const rowSelectionModel = useMemo<GridRowSelectionModel>(
     () => ({ type: 'include' as const, ids: new Set<string>(selectedProductKeys) }),
@@ -313,11 +324,12 @@ export default function SelectHardwareStep({
           )}
         </Box>
 
-        <Box sx={{ flex: 1, minHeight: 0 }}>
+        <Box sx={{ flex: 1, minHeight: 0, minWidth: 0 }}>
           <DataGrid
-            sx={{ '& .mono-cell': monoSx }}
+            ref={setContainer}
+            {...fit}
+            sx={[fit.sx, { '& .mono-cell': monoSx }]}
             rows={filteredRows}
-            columns={columns}
             checkboxSelection
             rowSelectionModel={rowSelectionModel}
             onRowSelectionModelChange={handleGridSelectionChange}

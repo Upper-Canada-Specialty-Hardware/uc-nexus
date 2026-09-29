@@ -15,6 +15,7 @@ import {
   matchesFacets,
 } from './openingFacets';
 import { monoSx, tabularSx } from '../../theme';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 
 // The opening-selection experience, extracted from SelectOpeningsStep so the shipping request
 // workspace can reuse it verbatim (#608 follow-up): the paste-a-list filter with matched/unmatched
@@ -57,29 +58,32 @@ interface OpeningSelectionPanelProps {
   /** The panel's height. The grid scrolls inside it; the page never grows sideways for it. */
   height?: number | string;
   pageSize?: number;
+  /** #909: the key a person's resized column widths are remembered under. Defaults to the import
+   *  wizard's key with the default columns; another caller passes its own, or widths last the visit. */
+  storageKey?: string | null;
 }
 
-// The wizard's default columns - Building and Location grow, the dimensional/keying detail stays a
-// fixed width. Kept here so callers who want full parity get it for free.
+// The wizard's default columns - Building and Location take the larger share, the dimensional/keying detail a
+// small one down to its minimum. Kept here so callers who want full parity get it for free.
 const DEFAULT_COLUMNS: GridColDef<PanelRow>[] = [
-  { field: 'opening_number', headerName: 'Opening #', width: 110, cellClassName: 'mono-cell' },
+  { field: 'opening_number', headerName: 'Opening #', width: 110, minWidth: 100, cellClassName: 'mono-cell' },
   { field: 'building', headerName: 'Building', flex: 1, minWidth: 130 },
-  { field: 'floor', headerName: 'Floor', width: 80 },
+  { field: 'floor', headerName: 'Floor', width: 80, minWidth: 70 },
   { field: 'location', headerName: 'Location', flex: 1.2, minWidth: 150 },
-  { field: 'location_to', headerName: 'Location To', width: 120 },
-  { field: 'location_from', headerName: 'Location From', width: 120 },
-  { field: 'hand', headerName: 'Hand', width: 70 },
-  { field: 'single_pair', headerName: 'Single/Pair', width: 100 },
-  { field: 'width', headerName: 'Width', width: 70 },
-  { field: 'length', headerName: 'Length', width: 70 },
-  { field: 'door_thickness', headerName: 'Door Thickness', width: 120 },
-  { field: 'jamb_thickness', headerName: 'Jamb Thickness', width: 120 },
-  { field: 'door_type', headerName: 'Door Type', width: 100 },
-  { field: 'frame_type', headerName: 'Frame Type', width: 100 },
-  { field: 'interior_exterior', headerName: 'Int/Ext', width: 80 },
-  { field: 'keying', headerName: 'Keying', width: 100 },
-  { field: 'heading_no', headerName: 'Heading #', width: 100 },
-  { field: 'assignment_multiplier', headerName: 'Multiplier', width: 90 },
+  { field: 'location_to', headerName: 'Location To', width: 120, minWidth: 110 },
+  { field: 'location_from', headerName: 'Location From', width: 120, minWidth: 120 },
+  { field: 'hand', headerName: 'Hand', width: 70, minWidth: 64 },
+  { field: 'single_pair', headerName: 'Single/Pair', width: 100, minWidth: 100 },
+  { field: 'width', headerName: 'Width', width: 70, minWidth: 70 },
+  { field: 'length', headerName: 'Length', width: 70, minWidth: 76 },
+  { field: 'door_thickness', headerName: 'Door Thickness', width: 120, minWidth: 120 },
+  { field: 'jamb_thickness', headerName: 'Jamb Thickness', width: 120, minWidth: 120 },
+  { field: 'door_type', headerName: 'Door Type', width: 100, minWidth: 90 },
+  { field: 'frame_type', headerName: 'Frame Type', width: 100, minWidth: 96 },
+  { field: 'interior_exterior', headerName: 'Int/Ext', width: 80, minWidth: 76 },
+  { field: 'keying', headerName: 'Keying', width: 100, minWidth: 80 },
+  { field: 'heading_no', headerName: 'Heading #', width: 100, minWidth: 90 },
+  { field: 'assignment_multiplier', headerName: 'Multiplier', width: 90, minWidth: 90 },
 ];
 
 const DEFAULT_COLUMN_VISIBILITY: GridColumnVisibilityModel = {
@@ -106,7 +110,16 @@ export default function OpeningSelectionPanel({
   title = 'Openings',
   height = 'calc(100vh - 260px)',
   pageSize = 50,
+  storageKey,
 }: OpeningSelectionPanelProps) {
+  // #909: visibility is held here, not only as the grid's initial state, so the column fit knows
+  // which columns take width when a person shows or hides one from the column menu.
+  const [visibility, setVisibility] = useState<GridColumnVisibilityModel>(columnVisibilityModel);
+  const { setContainer, gridProps: fit } = useGridColumnFit(
+    storageKey !== undefined ? storageKey : columns === DEFAULT_COLUMNS ? 'import.select-openings.openings' : null,
+    columns,
+    { checkboxSelection: true, columnVisibilityModel: visibility },
+  );
   const [filterText, setFilterText] = useState('');
   const [activeFilter, setActiveFilter] = useState<string[] | null>(null);
   const [unmatchedNumbers, setUnmatchedNumbers] = useState<string[]>([]);
@@ -271,9 +284,12 @@ export default function OpeningSelectionPanel({
         </Box>
         <Box sx={{ flex: 1, minHeight: 0, minWidth: 0 }}>
           <DataGrid
-            sx={{ '& .mono-cell': monoSx }}
+            ref={setContainer}
+            {...fit}
+            sx={[fit.sx, { '& .mono-cell': monoSx }]}
             rows={filteredRows}
-            columns={columns}
+            columnVisibilityModel={visibility}
+            onColumnVisibilityModelChange={setVisibility}
             checkboxSelection
             rowSelectionModel={rowSelectionModel}
             onRowSelectionModelChange={handleGridSelectionChange}
@@ -283,10 +299,7 @@ export default function OpeningSelectionPanel({
             disableColumnFilter
             density="compact"
             pageSizeOptions={[25, 50, 100]}
-            initialState={{
-              pagination: { paginationModel: { pageSize } },
-              columns: { columnVisibilityModel },
-            }}
+            initialState={{ pagination: { paginationModel: { pageSize } } }}
             disableRowSelectionOnClick
           />
         </Box>

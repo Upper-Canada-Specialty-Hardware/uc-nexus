@@ -43,7 +43,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const WIDTHS_KEY = 'ucnexus.import.classificationColumnWidths';
+// #909: the widths live under the shared grid-fit key for this grid.
+const WIDTHS_KEY = 'uc-nexus:grid-column-widths:import.classification.rows';
 
 function headerCell(field: string): HTMLElement {
   const el = document.querySelector<HTMLElement>(`.MuiDataGrid-columnHeader[data-field="${field}"]`);
@@ -70,6 +71,13 @@ describe('ClassificationRowsGrid', () => {
     localStorage.setItem(WIDTHS_KEY, JSON.stringify({ hardwareCategory: 333 }));
     render(<ClassificationRowsGrid rows={[makeRow('1')]} classificationColumns={[]} />);
     expect(headerCell('hardwareCategory').style.width).toBe('333px');
+  });
+
+  it('never scrolls sideways: the horizontal scrollbar is hidden and the scroller clips', () => {
+    const { container } = render(<ClassificationRowsGrid rows={[makeRow('1')]} classificationColumns={[]} />);
+    const scroller = container.querySelector<HTMLElement>('.MuiDataGrid-virtualScroller');
+    expect(scroller).not.toBeNull();
+    expect(getComputedStyle(scroller!).overflowX).toBe('hidden');
   });
 
   it('ignores a corrupt stored width instead of failing to render', () => {

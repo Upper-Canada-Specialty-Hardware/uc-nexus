@@ -243,3 +243,33 @@ describe('SelectOpeningsStep', () => {
     expect(onSelect).toHaveBeenLastCalledWith(new Set(['O-1']));
   });
 });
+
+/** An in-memory Storage: the runner may expose none, and each test wants its own. */
+function memoryStorage(): Storage {
+  const items = new Map<string, string>();
+  return {
+    get length() {
+      return items.size;
+    },
+    clear: () => items.clear(),
+    getItem: (key) => items.get(key) ?? null,
+    key: (index) => [...items.keys()][index] ?? null,
+    removeItem: (key) => void items.delete(key),
+    setItem: (key, value) => void items.set(key, String(value)),
+  };
+}
+
+// #909: the openings grid fits its width with remembered column widths, and never scrolls sideways.
+describe('OpeningSelectionPanel column fit', () => {
+  beforeEach(() => vi.stubGlobal('localStorage', memoryStorage()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('restores a width remembered under its own key and hides the horizontal scroll', () => {
+    localStorage.setItem('uc-nexus:grid-column-widths:import.select-openings.openings', JSON.stringify({ building: 222 }));
+    const { container } = render(<Harness />);
+    const header = container.querySelector<HTMLElement>('.MuiDataGrid-columnHeader[data-field="building"]');
+    expect(header?.style.width).toBe('222px');
+    const scroller = container.querySelector<HTMLElement>('.MuiDataGrid-virtualScroller');
+    expect(getComputedStyle(scroller!).overflowX).toBe('hidden');
+  });
+});
