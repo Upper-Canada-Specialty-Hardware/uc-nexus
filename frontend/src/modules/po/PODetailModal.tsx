@@ -477,6 +477,8 @@ export default function PODetailModal({
         if (col.field === 'orderAs' && canEditItems) {
           return {
             ...col,
+            // #909: the Order As field is an autocomplete; this keeps its input whole.
+            minWidth: 170,
             renderCell: (params) =>
               params.row.customInventoryItemId ? null : (
                 <OrderAsAutocomplete
@@ -878,6 +880,8 @@ export default function PODetailModal({
         <SectionHeading>Line Items</SectionHeading>
         {po.lineItems.length > 0 ? (
           <DataTable
+            // #909: remount on the switch, so the grid reads the widths remembered under the new key.
+            key={editing ? 'edit' : 'view'}
             columns={editing ? editLineItemColumns : lineItemColumns}
             storageKey={editing ? 'po.detail.line-items.edit' : 'po.detail.line-items'}
             rows={po.lineItems}
