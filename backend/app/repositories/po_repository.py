@@ -425,6 +425,8 @@ def register_po_in_gp(
                 field="project_id",
             )
         po.project_id = project_id
+        # On a job its receipts go to the job's inventory, so the pool kind has nothing to say (#832).
+        po.pool_kind = PoolKind.STOCK
 
     cleaned_gp_vendor_id = gp_vendor_id.strip() if gp_vendor_id else ""
     if not cleaned_gp_vendor_id:
