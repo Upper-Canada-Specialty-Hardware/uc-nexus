@@ -208,7 +208,9 @@ function PullRequestColumn({ source, heading }: PullRequestColumnProps) {
         onRowClick={handleRowClick}
         // The phase cell is a tag over a line of detail (#367); the default 52px row clips it.
         rowHeight={64}
-        height={520}
+        // #856: a queue usually holds one or two pulls, and a fixed 520 px left most of the grid
+        // empty. It hugs its rows now; 520 px stays as the ceiling past which it scrolls itself.
+        maxHeight={520}
         localeText={{ noRowsLabel: 'No pull requests' }}
         sx={{
           cursor: 'pointer',
