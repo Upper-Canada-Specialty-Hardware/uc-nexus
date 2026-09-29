@@ -10,9 +10,16 @@ const filter = (statuses: string[] = [], rest: Record<string, unknown> = {}) => 
 });
 
 describe('isStatusCardActive', () => {
-  it('marks Total active only when nothing is filtered by status', () => {
-    expect(isStatusCardActive(filter(), null)).toBe(true);
+  it('never marks Total active, filtered or not (#851)', () => {
+    // Everything is the resting view: with nothing pressed, nothing may look pressed.
+    expect(isStatusCardActive(filter(), null)).toBe(false);
     expect(isStatusCardActive(filter(['DRAFT']), null)).toBe(false);
+  });
+
+  it('marks no status card active while nothing is filtered by status', () => {
+    for (const status of ['DRAFT', 'GP_REGISTERED', 'CLOSED']) {
+      expect(isStatusCardActive(filter(), status)).toBe(false);
+    }
   });
 
   it('marks a status card active when it is the only status filtered', () => {

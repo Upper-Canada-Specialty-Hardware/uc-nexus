@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within, configure } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within, configure } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
@@ -57,11 +57,34 @@ vi.mock('../../../hooks/useIdentity', () => ({
  *  the queue to (#754). */
 const outboxAsked: Record<string, unknown>[] = [];
 
+/** Every variable set the table page was read with, so a test can say what the table asked for (#851). */
+const pageAsked: Record<string, unknown>[] = [];
+
 beforeEach(() => {
   identity.isNexusAdmin = true;
   identity.company = null;
   outboxAsked.length = 0;
+  pageAsked.length = 0;
 });
+
+// #851: the one project a link can scope the table to.
+const PROJECTS = [
+  {
+    __typename: 'Project',
+    id: 'proj-1',
+    projectId: 'J-23094',
+    description: 'Harbour Tower',
+    client: null,
+    jobSiteName: null,
+    scheduleFilename: null,
+    company: 'TUBC',
+    openingCount: 0,
+    gpSetupOk: null,
+    gpSetupCheckedAt: null,
+    gpSetupIssues: [],
+    gpJobState: null,
+  },
+];
 
 const INFINITE = Number.POSITIVE_INFINITY;
 
@@ -137,8 +160,8 @@ const ROWS = [
   }),
 ];
 
-// The variable matchers are permissive on purpose: the register's default status filter excludes
-// DRAFT, and what is under test is what the row renders, not which rows the server picks.
+// The variable matchers are permissive on purpose: what is under test is what the row renders, not
+// which rows the server picks. The variables the table asked with are recorded in pageAsked (#851).
 function mocks(heldRegistrations: Record<string, unknown>[] = []): MockedResponse[] {
   return [
     // #754: the held PO registrations the table shows. It sits before the catch-all below because
@@ -155,7 +178,13 @@ function mocks(heldRegistrations: Record<string, unknown>[] = []): MockedRespons
       maxUsageCount: INFINITE,
     },
     {
-      request: { query: PURCHASE_ORDERS_PAGE, variables: () => true },
+      request: {
+        query: PURCHASE_ORDERS_PAGE,
+        variables: (v: Record<string, unknown>) => {
+          pageAsked.push(v);
+          return true;
+        },
+      },
       result: {
         data: {
           purchaseOrdersPage: { __typename: 'PurchaseOrderPage', rows: ROWS, totalCount: ROWS.length },
@@ -183,7 +212,7 @@ function mocks(heldRegistrations: Record<string, unknown>[] = []): MockedRespons
     },
     {
       request: { query: GET_PROJECTS, variables: () => true },
-      result: { data: { projects: [] } },
+      result: { data: { projects: PROJECTS } },
       maxUsageCount: INFINITE,
     },
     {
@@ -416,4 +445,92 @@ it('opens the detail of the purchase order named in the link', async () => {
   renderRegister([], '/?po=po-registered');
 
   expect(await screen.findByText('PO detail for po-registered')).toBeInTheDocument();
+});
+
+// --- #851: everything by default, search across statuses and projects, highlighted new drafts -----
+
+/** The variables of the table's latest page read. */
+const lastPageAsk = () => pageAsked[pageAsked.length - 1];
+
+const SEGMENT_LABELS = [
+  'Total',
+  'Nexus Draft',
+  'GP-Registered',
+  'Vendor Confirmed',
+  'Partially Received',
+  'Closed',
+  'Cancelled',
+];
+
+it('opens on every status, newest first, with no segment looking pressed', async () => {
+  renderRegister();
+  await screen.findByText('PO-2001');
+
+  expect(lastPageAsk()).toMatchObject({ statuses: null, sortField: 'createdAt', sortDir: 'desc', projectId: null });
+  for (const label of SEGMENT_LABELS) {
+    expect(screen.getByRole('button', { name: `Filter by ${label}` })).toHaveAttribute('aria-pressed', 'false');
+  }
+});
+
+it('narrows to a pressed segment, which then reads as pressed', async () => {
+  renderRegister();
+  await screen.findByText('PO-2001');
+
+  fireEvent.click(screen.getByRole('button', { name: 'Filter by Nexus Draft' }));
+
+  await waitFor(() => expect(lastPageAsk()).toMatchObject({ statuses: ['DRAFT'] }));
+  expect(screen.getByRole('button', { name: 'Filter by Nexus Draft' })).toHaveAttribute('aria-pressed', 'true');
+});
+
+it('searches every status while the search box has text, and narrows again once it is cleared', async () => {
+  renderRegister();
+  await screen.findByText('PO-2001');
+  fireEvent.click(screen.getByRole('button', { name: 'Filter by Nexus Draft' }));
+  await waitFor(() => expect(lastPageAsk()).toMatchObject({ statuses: ['DRAFT'] }));
+
+  const search = screen.getByRole('textbox', { name: 'Search purchase orders' });
+  expect(search).toHaveAttribute('placeholder', 'Search PO #, request #, vendor, or project…');
+  fireEvent.change(search, { target: { value: 'harbour' } });
+
+  await waitFor(() => expect(lastPageAsk()).toMatchObject({ search: 'harbour', statuses: null }));
+  expect(screen.getByText('Searching all statuses')).toBeInTheDocument();
+
+  fireEvent.change(search, { target: { value: '' } });
+
+  await waitFor(() => expect(lastPageAsk()).toMatchObject({ search: null, statuses: ['DRAFT'] }));
+  expect(screen.queryByText('Searching all statuses')).toBeNull();
+});
+
+it('has no project picker', async () => {
+  renderRegister();
+  await screen.findByText('PO-2001');
+
+  expect(screen.queryByRole('combobox', { name: 'Filter by project' })).toBeNull();
+  expect(screen.queryByPlaceholderText('All projects')).toBeNull();
+});
+
+it('shows a link’s project scope as a chip, and removing it lifts the scope', async () => {
+  renderRegister([], '/?project=proj-1');
+  await screen.findByText('PO-2001');
+
+  expect(lastPageAsk()).toMatchObject({ projectId: 'proj-1' });
+  expect(await screen.findByText('J-23094')).toBeInTheDocument();
+  expect(screen.getByText('Harbour Tower')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByTestId('CancelIcon'));
+
+  await waitFor(() => expect(lastPageAsk()).toMatchObject({ projectId: null }));
+  expect(screen.queryByText('J-23094')).toBeNull();
+});
+
+it('tints the purchase orders the link names, and only those', async () => {
+  renderRegister([], '/?highlight=po-draft,po-draft-no-vendor');
+
+  const rowOf = (text: string) => screen.getByText(text).closest('tr') as HTMLElement;
+  await screen.findByText('PO-REQ-001');
+  expect(rowOf('PO-REQ-001')).toHaveAttribute('data-highlighted', 'true');
+  expect(rowOf('PO-REQ-002')).toHaveAttribute('data-highlighted', 'true');
+  expect(rowOf('PO-2001')).not.toHaveAttribute('data-highlighted');
+  // The table still opens on its default view: the highlight never narrows it.
+  expect(lastPageAsk()).toMatchObject({ statuses: null, search: null, projectId: null });
 });
