@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor, within, configure } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import ShipmentsList from '../ShipmentsList';
 import {
@@ -158,13 +159,15 @@ const warehousesMock: MockedResponse = {
   },
 };
 
-function renderList(mocks: MockedResponse[]) {
+function renderList(mocks: MockedResponse[], url = '/app/shipping/shipments') {
   render(
-    <MockedProvider mocks={[projectsMock, warehousesMock, ...mocks]}>
-      <ToastProvider>
-        <ShipmentsList />
-      </ToastProvider>
-    </MockedProvider>,
+    <MemoryRouter initialEntries={[url]}>
+      <MockedProvider mocks={[projectsMock, warehousesMock, ...mocks]}>
+        <ToastProvider>
+          <ShipmentsList />
+        </ToastProvider>
+      </MockedProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -175,6 +178,27 @@ async function expandRow(packingSlipNumber: string) {
 }
 
 describe('ShipmentsList', () => {
+  it('opens on the slip a link names, searched to it and expanded (#859)', async () => {
+    renderList(
+      [
+        packingSlipsMock([
+          slip(),
+          slip({ id: 'ps-2', packingSlipNumber: 'PS-0020', status: 'PICKED_UP' }),
+        ]),
+      ],
+      '/app/shipping/shipments?slip=PS-0019',
+    );
+
+    expect(await screen.findByText('SIL-40002-228')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Search packing slip #' })).toHaveValue('PS-0019');
+    expect(screen.queryByText('PS-0020')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Collapse PS-0019' })).toBeInTheDocument();
+
+    // Collapsing it by hand is honoured - the link does not hold it open.
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse PS-0019' }));
+    expect(await screen.findByRole('button', { name: 'Expand PS-0019' })).toBeInTheDocument();
+  });
+
   it('shows where each shipment has got to, with its dates and carrier', async () => {
     renderList([
       packingSlipsMock([

@@ -299,6 +299,7 @@ def test_shop_assembly_request_created_pending(db_session):
                 },
             ],
         },
+        created_by="Dana Planner",
     )
     db_session.flush()
 
@@ -309,7 +310,8 @@ def test_shop_assembly_request_created_pending(db_session):
     assert sar is not None
     assert sar.request_number.endswith("-001")
     assert sar.status == ShopAssemblyRequestStatus.PENDING
-    assert sar.created_by == "Hardware Schedule Import"
+    # #859: the person who finalized is the requester, not the import.
+    assert sar.created_by == "Dana Planner"
     assert sar.project_id == project.id
     assert result["shop_assembly_request"].id == sar.id
 

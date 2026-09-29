@@ -6,20 +6,27 @@ import {
   useEffect,
   type ReactNode,
 } from 'react';
-import { Box, IconButton, Paper, Typography, type AlertColor } from '@mui/material';
+import { Box, Button, IconButton, Paper, Typography, type AlertColor } from '@mui/material';
 import { AnimatePresence, motion } from 'motion/react';
 import { CheckCircle2, AlertTriangle, XCircle, Info, X } from 'lucide-react';
 import { springs } from '../motion';
 
+/** A next step the toast offers beside its message, e.g. "View shipment" (#859). */
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 interface ToastMessage {
   message: string;
   severity: AlertColor;
+  action?: ToastAction;
   /** Distinct per showToast call so a repeat of the same text still re-animates. */
   key: number;
 }
 
 interface ToastContextType {
-  showToast: (message: string, severity?: AlertColor) => void;
+  showToast: (message: string, severity?: AlertColor, action?: ToastAction) => void;
 }
 
 const ToastContext = createContext<ToastContextType | undefined>(undefined);
@@ -36,13 +43,15 @@ const ICONS: Record<AlertColor, typeof Info> = {
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
-  const showToast = useCallback((message: string, severity: AlertColor = 'info') => {
-    setToast({ message, severity, key: Date.now() });
+  const showToast = useCallback((message: string, severity: AlertColor = 'info', action?: ToastAction) => {
+    setToast({ message, severity, action, key: Date.now() });
   }, []);
 
-  // Re-armed on every toast (the key changes), so a second toast gets its own full dwell.
+  // Re-armed on every toast (the key changes), so a second toast gets its own full dwell. A toast
+  // that carries an action stays until it is closed, taken or replaced (#859): a confirmed shipment's
+  // four-second toast was gone before anyone read the slip number, and the link to it went with it.
   useEffect(() => {
-    if (!toast) return;
+    if (!toast || toast.action) return;
     const timer = window.setTimeout(() => setToast(null), AUTO_HIDE_MS);
     return () => window.clearTimeout(timer);
   }, [toast]);
@@ -97,6 +106,19 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 <Typography variant="body2" sx={{ flexGrow: 1, minWidth: 0, py: '1px' }}>
                   {toast.message}
                 </Typography>
+                {toast.action && (
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      const action = toast.action;
+                      setToast(null);
+                      action?.onClick();
+                    }}
+                    sx={{ flexShrink: 0, my: '-3px', whiteSpace: 'nowrap' }}
+                  >
+                    {toast.action.label}
+                  </Button>
+                )}
                 <IconButton
                   size="small"
                   aria-label="Close"

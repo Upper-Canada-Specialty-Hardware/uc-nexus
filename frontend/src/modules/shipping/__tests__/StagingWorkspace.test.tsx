@@ -1,9 +1,21 @@
 import { render, screen, fireEvent, waitFor, within, configure } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import StagingWorkspace from '../StagingWorkspace';
 import { sameStagedStock } from '../staging';
-import { GET_STAGING_POOL, SET_CONTAINER_ITEMS } from '../../../graphql/shipping';
+import { DELIVERY_REQUEST_FIELDS } from '../../../types/deliveryRequestFields';
+import {
+  CONFIRM_SHIPMENT_FROM_CONTAINERS,
+  GET_SHIPMENT_METHODS,
+  GET_STAGING_POOL,
+  SET_CONTAINER_ITEMS,
+} from '../../../graphql/shipping';
+
+// The confirm form names the shipper from the signed-in account.
+vi.mock('@clerk/clerk-react', () => ({
+  useUser: () => ({ user: { fullName: 'Darren W', publicMetadata: {} } }),
+}));
 
 /**
  * Arranging the staging pool into what physically goes on the truck (#451).
@@ -86,13 +98,24 @@ function poolRow(itemLabel: string) {
   return screen.getByRole('group', { name: itemLabel });
 }
 
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location">{location.pathname + location.search}</div>;
+}
+
 function renderWorkspace(mocks: MockedResponse[]) {
   render(
-    <MockedProvider mocks={mocks}>
-      <ToastProvider>
-        <StagingWorkspace projectId={PROJECT_ID} />
-      </ToastProvider>
-    </MockedProvider>,
+    <MemoryRouter initialEntries={['/app/shipping/staging']}>
+      <MockedProvider mocks={mocks}>
+        <ToastProvider>
+          <Routes>
+            <Route path="/app/shipping/staging" element={<StagingWorkspace projectId={PROJECT_ID} />} />
+            <Route path="*" element={null} />
+          </Routes>
+          <LocationProbe />
+        </ToastProvider>
+      </MockedProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -280,5 +303,87 @@ describe('adding a manual line', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add manual line to Box 1' }));
 
     await waitFor(() => expect(fired).toHaveBeenCalled());
+  });
+});
+
+describe('confirming a shipment (#859)', () => {
+  const loaded = container({
+    items: [
+      {
+        __typename: 'ShipmentContainerItem',
+        id: 'ci-1',
+        shipmentContainerId: 'c-1',
+        openingNumber: '101',
+        hardwareCategory: 'HINGE',
+        productCode: 'HG-100',
+        quantity: 4,
+        isManual: false,
+        position: 0,
+      },
+    ],
+    createdAt: '2026-09-25T00:00:00Z',
+    updatedAt: '2026-09-25T00:00:00Z',
+  });
+
+  const methodsMock: MockedResponse = {
+    request: { query: GET_SHIPMENT_METHODS, variables: { activeOnly: true } },
+    maxUsageCount: INFINITE,
+    result: { data: { shipmentMethods: [] } },
+  };
+
+  const confirmMock: MockedResponse = {
+    request: { query: CONFIRM_SHIPMENT_FROM_CONTAINERS, variables: () => true },
+    result: {
+      data: {
+        confirmShipmentFromContainers: {
+          __typename: 'PackingSlip',
+          id: 'ps-2',
+          packingSlipNumber: 'PS-00002',
+          projectId: PROJECT_ID,
+          status: 'SCHEDULED',
+          shippedBy: 'Darren W',
+          shippedAt: '2026-09-25T00:00:00Z',
+          createdAt: '2026-09-25T00:00:00Z',
+          ...Object.fromEntries(DELIVERY_REQUEST_FIELDS.map((f) => [f, null])),
+          pickedUpAt: null,
+          pickedUpBy: null,
+          deliveredAt: null,
+          deliveredBy: null,
+          items: [],
+          containers: [],
+        },
+      },
+    },
+  };
+
+  it('names the new packing slip in a toast that links to the shipment', async () => {
+    renderWorkspace([poolMock({ containers: [loaded] }), methodsMock, confirmMock]);
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Include Box 1 in this shipment' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Ship 1 container' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm shipment' }));
+
+    expect(await screen.findByText('Shipment PS-00002 confirmed')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'View shipment' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent('/app/shipping/shipments?slip=PS-00002'),
+    );
+    await waitFor(() => expect(screen.queryByText('Shipment PS-00002 confirmed')).not.toBeInTheDocument());
+  });
+
+  it('keeps the toast up past the ordinary dwell, since it carries the way to the shipment', async () => {
+    renderWorkspace([poolMock({ containers: [loaded] }), methodsMock, confirmMock]);
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Include Box 1 in this shipment' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Ship 1 container' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm shipment' }));
+    expect(await screen.findByText('Shipment PS-00002 confirmed')).toBeInTheDocument();
+
+    // The plain toast goes after four seconds; this one waits to be closed or taken.
+    await new Promise((resolve) => setTimeout(resolve, 4500));
+    expect(screen.getByText('Shipment PS-00002 confirmed')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'View shipment' })).toBeInTheDocument();
   });
 });
