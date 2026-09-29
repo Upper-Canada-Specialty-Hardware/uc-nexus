@@ -138,3 +138,45 @@ describe('FitTable (#856)', () => {
     expect(colWidths()[0] + colWidths()[1] + colWidths()[2]).toBeCloseTo(340);
   });
 });
+
+describe('FitTable options (#909)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('renders a footer inside the box and keeps aria-sort on a sorted header', () => {
+    stubWidth(340);
+    const columns: FitTableColumn[] = [{ ...TABLE_COLUMNS[0], sortDirection: 'desc' }, ...TABLE_COLUMNS.slice(1)];
+    const { container } = render(
+      <FitTable storageKey="test-footer" columns={columns} footer={<div>page 1 of 2</div>}>
+        <TableRow>
+          <TableCell>widget</TableCell>
+          <TableCell>3</TableCell>
+          <TableCell>go</TableCell>
+        </TableRow>
+      </FitTable>,
+    );
+
+    const box = container.querySelector('[data-fit-table="test-footer"]') as HTMLElement;
+    expect(box).toContainElement(screen.getByText('page 1 of 2'));
+    expect(screen.getAllByRole('columnheader')[0]).toHaveAttribute('aria-sort', 'descending');
+  });
+
+  it('scrolls a height-capped box up and down only, under a sticky header', () => {
+    stubWidth(340);
+    const { container } = render(
+      <FitTable storageKey="test-capped" columns={TABLE_COLUMNS} maxHeight={200}>
+        <TableRow>
+          <TableCell>widget</TableCell>
+          <TableCell>3</TableCell>
+          <TableCell>go</TableCell>
+        </TableRow>
+      </FitTable>,
+    );
+
+    const box = container.querySelector('[data-fit-table="test-capped"]') as HTMLElement;
+    expect(getComputedStyle(box).overflowX).toBe('hidden');
+    expect(getComputedStyle(box).overflowY).toBe('auto');
+    expect(screen.getAllByRole('separator')).toHaveLength(2);
+  });
+});

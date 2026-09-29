@@ -2,16 +2,11 @@ import { useState, useMemo, useCallback } from 'react';
 import {
   Box,
   Typography,
-  Paper,
   Chip,
   Button,
   CircularProgress,
   Alert,
-  Table,
-  TableBody,
   TableCell,
-  TableContainer,
-  TableHead,
   TableRow,
   ToggleButton,
   ToggleButtonGroup,
@@ -26,6 +21,7 @@ import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import DataTable from '../../components/DataTable';
 import SelectionActionBar, { BarButton } from '../../components/SelectionActionBar';
 import PageHeader from '../../components/PageHeader';
+import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import GpWriteQueuePanel from '../../components/GpWriteQueuePanel';
 import ReceiveModal from './ReceiveModal';
 import ReceivingHistory from './ReceivingHistory';
@@ -91,6 +87,19 @@ const RECEIVING_VIEWS: ReceivingView[] = ['receive', 'drafts', 'history'];
 // The one write this page is answerable for: a GP RECEIVE ENTRY that has not reached GP yet. A
 // constant rather than an inline array so the panel's query keeps one identity across renders.
 const HELD_GP_RECEIVE_ENTRY_OPS = ['create_receipt'];
+
+// #909: Recent Activity fits its width and never scrolls sideways; columns are resizable and
+// remembered per person. Minimums hold a local date and time, a PO number, a GP receipt number and
+// the item count whole; the receiver's name takes the slack and ellipsizes with it on hover.
+const RECENT_COLUMNS: FitTableColumn[] = [
+  { id: 'date', label: 'Date', min: 164, weight: 1 },
+  { id: 'receivedBy', label: 'Received By', min: 110, weight: 1.6 },
+  { id: 'poNumber', label: 'PO Number', min: 100, weight: 0.8 },
+  // #447: the GP receipt, beside the PO it was posted against. This row is the last thing a receiver
+  // sees after booking one in, so it is where the number is most likely to be wanted.
+  { id: 'receipt', label: 'GP Receipt', min: 110, weight: 0.8 },
+  { id: 'items', label: 'Items Received', min: 116, weight: 0.5, align: 'right' },
+];
 
 interface BackOrderedItem {
   poLineItemId: string;
@@ -681,37 +690,21 @@ export default function ReceivingPage() {
       )}
       {!recentLoading && !recentError && recentRecords.length > 0 && (
         <FadeIn y={8}>
-          <TableContainer component={Paper} variant="outlined">
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Date</TableCell>
-                  <TableCell>Received By</TableCell>
-                  <TableCell>PO Number</TableCell>
-                  {/* #447: the GP receipt, beside the PO it was posted against. This row is the
-                      last thing a receiver sees after booking one in, so it is where the number is
-                      most likely to be wanted. */}
-                  <TableCell>GP Receipt</TableCell>
-                  <TableCell align="right">Items Received</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {recentRecords.map((record) => (
-                  <TableRow key={record.receiveRecord.id} hover>
-                    <TableCell sx={tabularSx}>
-                      {formatDateTime(record.receiveRecord.receivedAt)}
-                    </TableCell>
-                    <TableCell>{record.receiveRecord.receivedBy}</TableCell>
-                    <TableCell sx={monoSx}>{record.poNumber ?? '\u2014'}</TableCell>
-                    <TableCell sx={monoSx}>
-                      {record.receiveRecord.receiptNumber ?? '\u2014'}
-                    </TableCell>
-                    <TableCell align="right">{record.totalItemsReceived}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
+          <FitTable storageKey="receiving-recent-activity" columns={RECENT_COLUMNS}>
+            {recentRecords.map((record) => (
+              <TableRow key={record.receiveRecord.id} hover>
+                <TableCell sx={tabularSx}>
+                  {formatDateTime(record.receiveRecord.receivedAt)}
+                </TableCell>
+                <TableCell title={record.receiveRecord.receivedBy}>{record.receiveRecord.receivedBy}</TableCell>
+                <TableCell sx={monoSx}>{record.poNumber ?? '\u2014'}</TableCell>
+                <TableCell sx={monoSx}>
+                  {record.receiveRecord.receiptNumber ?? '\u2014'}
+                </TableCell>
+                <TableCell align="right">{record.totalItemsReceived}</TableCell>
+              </TableRow>
+            ))}
+          </FitTable>
         </FadeIn>
       )}
         </>

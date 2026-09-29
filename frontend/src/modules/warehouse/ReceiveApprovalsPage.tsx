@@ -4,12 +4,7 @@ import {
   Box,
   Chip,
   CircularProgress,
-  Paper,
-  Table,
-  TableBody,
   TableCell,
-  TableContainer,
-  TableHead,
   TableRow,
   ToggleButton,
   ToggleButtonGroup,
@@ -24,6 +19,7 @@ import { GET_PROJECTS } from '../../graphql/shared';
 import { monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
 import PageHeader from '../../components/PageHeader';
+import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import ReceiveDraftReviewModal from './ReceiveDraftReviewModal';
 import type { ReceiveDraft } from './receiveDraftTypes';
 
@@ -32,6 +28,23 @@ const DASH = '—';
 const WAREHOUSE_PARENT = { label: 'Warehouse', to: '/app/warehouse' };
 
 type View = 'PENDING_APPROVAL' | 'REJECTED';
+
+/**
+ * #909: the drafts table fits its width and never scrolls sideways; columns are resizable and
+ * remembered per person. Minimums hold a PO number, a local date and time, the unit count and the
+ * widest status chip whole; project, submitter and reason ellipsize with the full value on hover.
+ */
+function approvalColumns(view: View): FitTableColumn[] {
+  return [
+    { id: 'poNumber', label: 'PO Number', min: 100, weight: 0.8 },
+    { id: 'project', label: 'Project', min: 120, weight: 1.5 },
+    { id: 'submittedBy', label: 'Submitted By', min: 100, weight: 1 },
+    { id: 'submitted', label: 'Submitted', min: 164, weight: 0.8 },
+    { id: 'units', label: 'Units', min: 64, weight: 0.4, align: 'right' },
+    ...(view === 'REJECTED' ? [{ id: 'reason', label: 'Reason', min: 140, weight: 1.8 }] : []),
+    { id: 'status', label: 'Status', min: 176, weight: 1 },
+  ];
+}
 
 function formatDateTime(value: string | null): string {
   if (!value) return DASH;
@@ -133,69 +146,54 @@ export default function ReceiveApprovalsPage() {
       )}
 
       {drafts.length > 0 && (
-        <TableContainer component={Paper} variant="outlined">
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>PO Number</TableCell>
-                <TableCell>Project</TableCell>
-                <TableCell>Submitted By</TableCell>
-                <TableCell>Submitted</TableCell>
-                <TableCell align="right">Units</TableCell>
-                {view === 'REJECTED' && <TableCell>Reason</TableCell>}
-                <TableCell>Status</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {drafts.map((draft) => {
-                const openable = draft.status === 'PENDING_APPROVAL' || draft.status === 'APPROVING';
-                return (
-                <TableRow
-                  key={draft.id}
-                  hover
-                  // Pending drafts open for review. APPROVING ones open too, and deliberately: that
-                  // is a draft whose approval died somewhere ambiguous, and the only way out is a
-                  // retry carrying the key it is still claimed under. A rejected draft is back with
-                  // its author, so it stays read-only here.
-                  sx={{ cursor: openable ? 'pointer' : 'default' }}
-                  onClick={() => openable && setOpenDraft(draft)}
-                >
-                  <TableCell sx={monoSx}>{draft.poNumber ?? DASH}</TableCell>
-                  <TableCell>
-                    {draft.projectId ? (projectMap.get(draft.projectId) ?? DASH) : 'Stock PO'}
-                  </TableCell>
-                  <TableCell>{draft.createdBy}</TableCell>
-                  <TableCell sx={tabularSx}>{formatDateTime(draft.createdAt)}</TableCell>
-                  <TableCell align="right" sx={tabularSx}>
-                    {draft.totalQuantity}
-                  </TableCell>
-                  {view === 'REJECTED' && (
-                    <TableCell sx={{ maxWidth: 280 }}>
-                      <Typography variant="body2" noWrap title={draft.rejectionReason ?? ''}>
-                        {draft.rejectionReason ?? DASH}
-                      </Typography>
-                    </TableCell>
-                  )}
-                  <TableCell>
-                    {draft.status === 'PENDING_APPROVAL' && (
-                      <Chip size="small" color="warning" label="Awaiting approval" />
-                    )}
-                    {draft.status === 'REJECTED' && (
-                      <Chip size="small" color="error" label={`Rejected by ${draft.reviewedBy ?? 'a reviewer'}`} />
-                    )}
-                    {/* Not a progress spinner: an approval holds this status only while its relay
-                        call is in flight, so a row still showing it is one whose approval died and
-                        needs retrying. */}
-                    {draft.status === 'APPROVING' && (
-                      <Chip size="small" color="warning" variant="outlined" label="Posting to GP — retry" />
-                    )}
-                  </TableCell>
-                </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </TableContainer>
+        <FitTable storageKey="receive-approvals" columns={approvalColumns(view)}>
+          {drafts.map((draft) => {
+            const openable = draft.status === 'PENDING_APPROVAL' || draft.status === 'APPROVING';
+            return (
+            <TableRow
+              key={draft.id}
+              hover
+              // Pending drafts open for review. APPROVING ones open too, and deliberately: that
+              // is a draft whose approval died somewhere ambiguous, and the only way out is a
+              // retry carrying the key it is still claimed under. A rejected draft is back with
+              // its author, so it stays read-only here.
+              sx={{ cursor: openable ? 'pointer' : 'default' }}
+              onClick={() => openable && setOpenDraft(draft)}
+            >
+              <TableCell sx={monoSx}>{draft.poNumber ?? DASH}</TableCell>
+              <TableCell title={draft.projectId ? projectMap.get(draft.projectId) : undefined}>
+                {draft.projectId ? (projectMap.get(draft.projectId) ?? DASH) : 'Stock PO'}
+              </TableCell>
+              <TableCell title={draft.createdBy}>{draft.createdBy}</TableCell>
+              <TableCell sx={tabularSx}>{formatDateTime(draft.createdAt)}</TableCell>
+              <TableCell align="right" sx={tabularSx}>
+                {draft.totalQuantity}
+              </TableCell>
+              {view === 'REJECTED' && (
+                <TableCell>
+                  <Typography variant="body2" noWrap title={draft.rejectionReason ?? ''}>
+                    {draft.rejectionReason ?? DASH}
+                  </Typography>
+                </TableCell>
+              )}
+              <TableCell>
+                {draft.status === 'PENDING_APPROVAL' && (
+                  <Chip size="small" color="warning" label="Awaiting approval" />
+                )}
+                {draft.status === 'REJECTED' && (
+                  <Chip size="small" color="error" label={`Rejected by ${draft.reviewedBy ?? 'a reviewer'}`} />
+                )}
+                {/* Not a progress spinner: an approval holds this status only while its relay
+                    call is in flight, so a row still showing it is one whose approval died and
+                    needs retrying. */}
+                {draft.status === 'APPROVING' && (
+                  <Chip size="small" color="warning" variant="outlined" label="Posting to GP — retry" />
+                )}
+              </TableCell>
+            </TableRow>
+            );
+          })}
+        </FitTable>
       )}
 
       <ReceiveDraftReviewModal
