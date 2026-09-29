@@ -9,6 +9,8 @@ export interface FitTableColumn extends FitColumn {
   align?: 'left' | 'right' | 'center';
   /** Tighter side padding for a cell holding inputs, so the inputs get the width (#856). */
   dense?: boolean;
+  /** No side padding at all: a narrow fixed checkbox column whose control fills it (#857). */
+  flush?: boolean;
 }
 
 interface FitTableProps {
@@ -62,6 +64,7 @@ export default function FitTable({ storageKey, columns, children }: FitTableProp
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
                   ...(c.dense ? { px: 1 } : {}),
+                  ...(c.flush ? { px: 0 } : {}),
                 }}
               >
                 {c.header ?? (c.fixed === undefined ? c.label : null)}

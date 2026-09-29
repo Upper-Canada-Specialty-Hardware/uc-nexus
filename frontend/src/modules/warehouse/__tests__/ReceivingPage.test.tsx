@@ -1,4 +1,4 @@
-import { render, screen, configure, waitFor } from '@testing-library/react';
+import { render, screen, configure, waitFor, fireEvent } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
@@ -67,7 +67,11 @@ beforeEach(() => {
   outboxAsked.length = 0;
 });
 
-function mocks(heldReceiveEntries: Record<string, unknown>[] = []): MockedResponse[] {
+function mocks(
+  heldReceiveEntries: Record<string, unknown>[] = [],
+  openPos: Record<string, unknown>[] = OPEN_POS,
+  projects: Record<string, unknown>[] = [],
+): MockedResponse[] {
   return [
     // #754: the receives that have not reached GP yet, which the page now shows on the dock.
     {
@@ -83,12 +87,12 @@ function mocks(heldReceiveEntries: Record<string, unknown>[] = []): MockedRespon
     },
     {
       request: { query: GET_OPEN_POS_SUMMARY, variables: () => true },
-      result: { data: { openPosSummary: OPEN_POS } },
+      result: { data: { openPosSummary: openPos } },
       maxUsageCount: INFINITE,
     },
     {
       request: { query: GET_PROJECTS, variables: () => true },
-      result: { data: { projects: [] } },
+      result: { data: { projects } },
       maxUsageCount: INFINITE,
     },
     {
@@ -116,10 +120,14 @@ function mocks(heldReceiveEntries: Record<string, unknown>[] = []): MockedRespon
   ];
 }
 
-function renderPage(heldReceiveEntries: Record<string, unknown>[] = []) {
+function renderPage(
+  heldReceiveEntries: Record<string, unknown>[] = [],
+  openPos: Record<string, unknown>[] = OPEN_POS,
+  projects: Record<string, unknown>[] = [],
+) {
   render(
     <MemoryRouter initialEntries={['/app/warehouse/receiving']}>
-      <MockedProvider mocks={mocks(heldReceiveEntries)}>
+      <MockedProvider mocks={mocks(heldReceiveEntries, openPos, projects)}>
         <ToastProvider>
           <ReceivingPage />
         </ToastProvider>
@@ -184,4 +192,83 @@ it('says nothing about held GP receive entries while there are none', async () =
 
   await screen.findByText('Ace Hardware Co');
   expect(screen.queryByText('Held GP receive entries')).toBeNull();
+});
+
+// --- #857: searching the POs awaiting receipt ----------------------------------------------------
+
+const PROJECTS = [
+  { __typename: 'Project', id: 'proj-1', projectId: '23094', description: 'Harbour Tower' },
+  { __typename: 'Project', id: 'proj-2', projectId: '24110', description: 'Maple School' },
+];
+
+const SEARCH_POS = [
+  openPo({ id: 'po-a', poNumber: 'PO-4001', vendorNameSnapshot: 'Ace Hardware Co', projectId: 'proj-1' }),
+  openPo({ id: 'po-b', poNumber: 'PO-4002', vendorNameSnapshot: 'Beacon Locks', projectId: 'proj-2' }),
+  openPo({ id: 'po-c', poNumber: 'PO-5003', vendorNameSnapshot: 'Beacon Locks', projectId: null }),
+];
+
+function searchBox() {
+  return screen.getByRole('textbox', { name: 'Search POs awaiting receipt' });
+}
+
+async function renderSearchable() {
+  renderPage([], SEARCH_POS, PROJECTS);
+  await screen.findByText('PO-4001');
+  // The project names come from a second query; wait for them so a project search has them.
+  await screen.findByText('Harbour Tower');
+}
+
+it('narrows the list by PO number as it is typed, and says how much of it shows', async () => {
+  await renderSearchable();
+
+  fireEvent.change(searchBox(), { target: { value: 'po-40' } });
+
+  expect(screen.getByText('PO-4001')).toBeInTheDocument();
+  expect(screen.getByText('PO-4002')).toBeInTheDocument();
+  expect(screen.queryByText('PO-5003')).toBeNull();
+  expect(screen.getByText('POs Awaiting Receipt (2 of 3)')).toBeInTheDocument();
+});
+
+it('narrows the list by vendor', async () => {
+  await renderSearchable();
+
+  fireEvent.change(searchBox(), { target: { value: 'beacon' } });
+
+  expect(screen.queryByText('PO-4001')).toBeNull();
+  expect(screen.getByText('PO-4002')).toBeInTheDocument();
+  expect(screen.getByText('PO-5003')).toBeInTheDocument();
+});
+
+it("narrows the list by the project's job number or name", async () => {
+  await renderSearchable();
+
+  fireEvent.change(searchBox(), { target: { value: '23094' } });
+  expect(screen.getByText('PO-4001')).toBeInTheDocument();
+  expect(screen.queryByText('PO-4002')).toBeNull();
+  expect(screen.getByText('POs Awaiting Receipt (1 of 3)')).toBeInTheDocument();
+
+  fireEvent.change(searchBox(), { target: { value: 'maple' } });
+  expect(screen.getByText('PO-4002')).toBeInTheDocument();
+  expect(screen.queryByText('PO-4001')).toBeNull();
+
+  // Cleared, the whole list and its plain count come back.
+  fireEvent.change(searchBox(), { target: { value: '' } });
+  expect(screen.getByText('PO-5003')).toBeInTheDocument();
+  expect(screen.getByText('POs Awaiting Receipt (3)')).toBeInTheDocument();
+});
+
+it('says so when nothing matches the search', async () => {
+  await renderSearchable();
+
+  fireEvent.change(searchBox(), { target: { value: 'zzz' } });
+
+  expect(screen.getByText(/No POs awaiting receipt match/)).toBeInTheDocument();
+  expect(screen.getByText('POs Awaiting Receipt (0 of 3)')).toBeInTheDocument();
+});
+
+it('shows 25 POs a page', async () => {
+  const many = Array.from({ length: 30 }, (_, i) => openPo({ id: `po-${i}`, poNumber: `PO-${6000 + i}` }));
+  renderPage([], many);
+
+  expect(await screen.findByText('1–25 of 30')).toBeInTheDocument();
 });

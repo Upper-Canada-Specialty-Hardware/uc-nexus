@@ -16,7 +16,10 @@ import {
   ToggleButton,
   ToggleButtonGroup,
   Tooltip,
+  TextField,
+  InputAdornment,
 } from '@mui/material';
+import { Search } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
@@ -206,6 +209,7 @@ export default function ReceivingPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalPOIds, setModalPOIds] = useState<string[]>([]);
   const [selectedPOIds, setSelectedPOIds] = useState<string[]>([]);
+  const [poSearch, setPoSearch] = useState('');
   const { hasRole, ownsTenant } = useIdentity();
   const canReview = ownsTenant || hasRole('Warehouse Manager');
 
@@ -287,6 +291,9 @@ export default function ReceivingPage() {
     }
     return map;
   }, [projects]);
+  // #857: the search matches a PO's project by job number as well as by name, and the grid prints
+  // only one of them, so the lookup keeps the job number too.
+  const jobNumberById = useMemo(() => new Map(projects.map((p) => [p.id, p.projectId])), [projects]);
 
   // PO rows
   const poColumns: GridColDef[] = useMemo(
@@ -398,13 +405,30 @@ export default function ReceivingPage() {
         poNumber: po.poNumber ?? '\u2014',
         vendorName: poVendorLabel(po) || '\u2014',
         projectName: po.projectId ? (projectMap.get(po.projectId) ?? '\u2014') : 'Stock PO',
+        jobNumber: po.projectId ? (jobNumberById.get(po.projectId) ?? '') : '',
         expectedDeliveryDate: po.expectedDeliveryDate,
         pendingLines: po.pendingLineCount,
         pendingQty: po.pendingQuantity,
         status: po.status,
         pendingDraftCount: pendingDraftsByPoId.get(po.id)?.length ?? 0,
       })),
-    [openPOsData, projectMap, pendingDraftsByPoId],
+    [openPOsData, projectMap, jobNumberById, pendingDraftsByPoId],
+  );
+
+  // #857: the list runs to hundreds of POs, so a receiver with a delivery in hand narrows it as they
+  // type, the way the PO table's search reads: PO number, vendor, or the project's job number or
+  // name. Client-side, because every open PO is already loaded on this page.
+  const poSearchTerm = poSearch.trim().toLowerCase();
+  const filteredPoRows = useMemo(
+    () =>
+      poSearchTerm
+        ? poRows.filter((row) =>
+            [row.poNumber, row.vendorName, row.projectName, row.jobNumber].some((field) =>
+              field.toLowerCase().includes(poSearchTerm),
+            ),
+          )
+        : poRows,
+    [poRows, poSearchTerm],
   );
 
   const backOrderRows = useMemo(
@@ -514,8 +538,32 @@ export default function ReceivingPage() {
           borderColor: 'text.primary',
         }}
       >
-        POs Awaiting Receipt{poRows.length > 0 ? ` (${poRows.length})` : ''}
+        POs Awaiting Receipt
+        {/* #857: while a search is typed the count says how much of the list it is showing. */}
+        {poRows.length > 0
+          ? poSearchTerm
+            ? ` (${filteredPoRows.length} of ${poRows.length})`
+            : ` (${poRows.length})`
+          : ''}
       </Typography>
+
+      {poRows.length > 0 && (
+        <TextField
+          size="small"
+          placeholder="Search PO #, vendor, or project…"
+          inputProps={{ 'aria-label': 'Search POs awaiting receipt' }}
+          value={poSearch}
+          onChange={(e) => setPoSearch(e.target.value)}
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <Search size={18} strokeWidth={1.75} />
+              </InputAdornment>
+            ),
+          }}
+          sx={{ mb: 1.5, width: '100%', maxWidth: 480 }}
+        />
+      )}
 
       {openPOsLoading && (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -536,12 +584,19 @@ export default function ReceivingPage() {
             ` ${pendingDraftCount} ${pendingDraftCount === 1 ? 'receive is' : 'receives are'} waiting on a Warehouse Manager.`}
         </Alert>
       )}
-      {!openPOsLoading && !openPOsError && poRows.length > 0 && (
+      {!openPOsLoading && !openPOsError && poRows.length > 0 && filteredPoRows.length === 0 && (
+        <Alert severity="info" sx={{ mb: 3 }}>
+          No POs awaiting receipt match &ldquo;{poSearch.trim()}&rdquo;.
+        </Alert>
+      )}
+      {!openPOsLoading && !openPOsError && filteredPoRows.length > 0 && (
         // position: relative anchors the floating selection bar (#617 pattern) over this grid alone.
         <Box sx={{ mb: 4, position: 'relative' }}>
           <DataTable
             columns={poColumns}
-            rows={poRows}
+            rows={filteredPoRows}
+            // #857: 25 a page rather than the table default of 10 - the list is long and is scanned.
+            initialState={{ pagination: { paginationModel: { pageSize: 25 } } }}
             checkboxSelection
             rowSelectionModel={{ type: 'include' as const, ids: new Set(selectedPOIds) }}
             onRowSelectionModelChange={(newModel) =>
