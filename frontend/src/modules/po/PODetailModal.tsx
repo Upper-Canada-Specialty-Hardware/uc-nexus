@@ -879,6 +879,7 @@ export default function PODetailModal({
         {po.lineItems.length > 0 ? (
           <DataTable
             columns={editing ? editLineItemColumns : lineItemColumns}
+            storageKey={editing ? 'po.detail.line-items.edit' : 'po.detail.line-items'}
             rows={po.lineItems}
             height={lineItemGridHeight}
             getRowId={(row) => row.id}

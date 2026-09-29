@@ -240,6 +240,7 @@ export default function PullRequestHistoryPage() {
 
       <DataTable
         columns={columns}
+        storageKey="warehouse.pull-request-history"
         rows={rows}
         loading={loading}
         onRowClick={handleRowClick}

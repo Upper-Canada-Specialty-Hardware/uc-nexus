@@ -5,6 +5,7 @@ import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_GP_OUTBOX, GET_GP_OUTBOX_SUMMARY } from '../graphql/shared';
 import { RETRY_GP_OUTBOX_ENTRY, CANCEL_GP_OUTBOX_ENTRY } from '../graphql/admin';
 import ConfirmDialog from './ConfirmDialog';
+import { useGridColumnFit } from './useGridColumnFit';
 import { useToast } from './Toast';
 import { microLabelSx, monoSx, tabularSx } from '../theme';
 import { parseServerDate } from '../utils/serverDate';
@@ -164,6 +165,8 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
         field: 'actions',
         headerName: 'Actions',
         width: 170,
+        // #909: the two buttons need exactly this; the fit keeps it fixed rather than flexing.
+        resizable: false,
         sortable: false,
         filterable: false,
         renderCell: (p) => {
@@ -185,6 +188,11 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
     ];
     return compact ? all.filter((c) => COMPACT_FIELDS.includes(c.field)) : all;
   }, [compact]);
+
+  // #909: the columns fit the panel's width instead of scrolling sideways, and a person's resized
+  // widths are remembered - apart for the admin queue and a module's compact mounting, whose column
+  // sets differ.
+  const { setContainer, gridProps: fit } = useGridColumnFit(compact ? 'gp-write-queue.compact' : 'gp-write-queue.admin', columns);
 
   const handleRetry = useCallback(() => {
     if (retryTarget) retryEntry({ variables: { id: retryTarget.id } });
@@ -210,8 +218,9 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
       </Typography>
 
       <DataGrid
+        ref={setContainer}
+        {...fit}
         rows={entries}
-        columns={columns}
         loading={loading}
         autoHeight
         // A handful of rows in the normal case, and the row actions must always be reachable - see
@@ -223,7 +232,7 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
         hideFooter={compact && entries.length <= 10}
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-        sx={{ '& .ts-cell': { ...monoSx, ...tabularSx, color: 'text.secondary' } }}
+        sx={[fit.sx, { '& .ts-cell': { ...monoSx, ...tabularSx, color: 'text.secondary' } }]}
       />
 
       <ConfirmDialog

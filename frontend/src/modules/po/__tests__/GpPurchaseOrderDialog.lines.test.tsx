@@ -351,3 +351,104 @@ it("follows the picked vendor's own shipping method, address and contact", async
   expect(screen.getByLabelText('Vendor address')).toHaveTextContent('REMIT');
   expect(screen.getByLabelText('Contact')).toHaveValue('Allegion Desk');
 });
+
+// --- The line grid fits the dialog (#909) --------------------------------------------------------------
+// The grid sat in a sideways-scrolling box with a fixed minimum width. It now shares the width it is
+// given among its columns, each resizable from its header edge, and never scrolls sideways.
+
+describe('line grid width (#909)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Report every observed box as `width` px wide; jsdom lays nothing out. */
+  function stubWidth(width: number) {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        private cb: ResizeObserverCallback;
+        constructor(cb: ResizeObserverCallback) {
+          this.cb = cb;
+        }
+        observe() {
+          this.cb([{ contentRect: { width } } as ResizeObserverEntry], this as unknown as ResizeObserver);
+        }
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+  }
+
+  /** The header row's column widths, read off the rule its own class carries (jsdom computes no
+   *  grid tracks). */
+  function lineTracks(): number[] {
+    const header = screen.getByTestId('po-line-grid').firstElementChild as HTMLElement;
+    const css = Array.from(document.querySelectorAll('style'))
+      .map((s) => s.textContent ?? '')
+      .join('\n');
+    const gridClass = Array.from(header.classList).find((c) => c.startsWith('css-')) as string;
+    const rule = css.slice(css.lastIndexOf(`.${gridClass}{`));
+    const tracks = /grid-template-columns:([^;]+);/.exec(rule)?.[1] ?? '';
+    return tracks.trim().split(/\s+/).map((t) => parseFloat(t));
+  }
+
+  function width(name: string): number {
+    return Number(screen.getByRole('separator', { name: `Resize ${name} column` }).getAttribute('aria-valuenow'));
+  }
+
+  it('fits the dialog exactly, with a resize handle on every column but remove', async () => {
+    stubWidth(800);
+    renderDialog({ registerPo: stockDraft });
+
+    await screen.findByRole('separator', { name: 'Resize Item Number column' });
+    for (const name of ['Item Number', 'Description', 'Qty', 'U of M', 'Unit Cost', 'Order As']) {
+      expect(screen.getByRole('separator', { name: `Resize ${name} column` })).toBeInTheDocument();
+    }
+    // No project, so no cost code or job cost column.
+    expect(screen.queryByRole('separator', { name: 'Resize Cost Code column' })).not.toBeInTheDocument();
+
+    const tracks = lineTracks();
+    expect(tracks).toHaveLength(7);
+    expect(tracks.reduce((a, b) => a + b, 0)).toBeCloseTo(800, 0);
+    const grid = screen.getByTestId('po-line-grid');
+    for (const el of [grid, grid.parentElement as HTMLElement, grid.firstElementChild as HTMLElement]) {
+      expect(['auto', 'scroll']).not.toContain(getComputedStyle(el).overflowX);
+    }
+  });
+
+  it("scales a project PO's nine columns down in proportion when even their minimums do not fit", async () => {
+    stubWidth(700);
+    renderDialog({ registerPo: projectDraft }, [...baseMocks(), costCodesMock()]);
+
+    await screen.findByRole('separator', { name: 'Resize Cost Code column' });
+    expect(screen.getByRole('separator', { name: 'Resize Job cost column' })).toBeInTheDocument();
+
+    const tracks = lineTracks();
+    expect(tracks).toHaveLength(9);
+    // Everything still fits: the remove button keeps its 40 px and the rest share 660 px by minimum.
+    expect(tracks.reduce((a, b) => a + b, 0)).toBeCloseTo(700, 0);
+    expect(tracks[8]).toBe(40);
+    const scale = 660 / 856;
+    expect(width('Item Number')).toBe(Math.round(148 * scale));
+    expect(width('Qty')).toBe(Math.round(64 * scale));
+  });
+
+  it('widens a column from the keyboard and remembers it under the one key create and register share', async () => {
+    stubWidth(900);
+    // This runner exposes no Storage, so hand the page a plain in-memory one.
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+      clear: () => store.clear(),
+    });
+    renderDialog({ registerPo: stockDraft });
+
+    const handle = await screen.findByRole('separator', { name: 'Resize Description column' });
+    const before = width('Description');
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(width('Description')).toBe(before + 16);
+    expect(store.get('uc-nexus:column-widths:po-line-items')).toContain('description');
+  });
+});

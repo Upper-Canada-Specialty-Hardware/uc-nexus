@@ -203,6 +203,7 @@ function PullRequestColumn({ source, heading }: PullRequestColumnProps) {
       )}
       <DataTable
         columns={columns}
+        storageKey="warehouse.pull-request-queue"
         rows={requests}
         loading={loading}
         onRowClick={handleRowClick}
