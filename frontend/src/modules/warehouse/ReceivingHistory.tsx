@@ -8,11 +8,9 @@ import {
   CircularProgress,
   IconButton,
   MenuItem,
-  Paper,
   Table,
   TableBody,
   TableCell,
-  TableContainer,
   TableHead,
   TableRow,
   TextField,
@@ -24,6 +22,8 @@ import { useQuery } from '@apollo/client/react';
 import { formatPoStatus, poStatusChipColor } from '../po/poStatus';
 import { GET_PO_RECEIVING_DETAILS, GET_RECEIVING_HISTORY_POS } from '../../graphql/warehouse';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import FitTable, { type FitTableColumn } from '../../components/FitTable';
+import { FIT_CELL_WRAP_SX } from '../../components/fitColumns';
 import { springs } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
 
@@ -31,6 +31,21 @@ const ICON = { size: 18, strokeWidth: 1.75 } as const;
 
 // Expander + PO + vendor + project + status + received-of-ordered + receives + last received.
 const HISTORY_COLUMN_COUNT = 8;
+
+// #909: the history table fits its width and never scrolls sideways; columns are resizable and
+// remembered per person. Minimums hold a PO number, the widest status chip, "received of ordered"
+// and a local date and time whole; vendor and project take the slack and ellipsize with the full
+// value on hover. The expander is fixed, and the expanded receives row spans the table.
+const HISTORY_COLUMNS: FitTableColumn[] = [
+  { id: 'expand', label: 'Expand', min: 48, fixed: 48, header: null, flush: true },
+  { id: 'poNumber', label: 'PO Number', min: 104, weight: 0.8 },
+  { id: 'vendor', label: 'Vendor', min: 120, weight: 2 },
+  { id: 'project', label: 'Project', min: 120, weight: 1.6 },
+  { id: 'status', label: 'Status', min: 120, weight: 0.8 },
+  { id: 'received', label: 'Received', min: 100, weight: 0.6, align: 'right' },
+  { id: 'receives', label: 'Receives', min: 84, weight: 0.4, align: 'right' },
+  { id: 'lastReceived', label: 'Last Received', min: 164, weight: 0.9 },
+];
 
 // How many POs the table paints before the "show more" tail, the same page size ShipmentsList uses.
 // This view is the one warehouse surface that keeps CLOSED POs, so it is also the one that grows
@@ -217,7 +232,7 @@ function HistoryRow({ po, projectName, expanded, onToggle }: HistoryRowProps) {
   return (
     <>
       <TableRow hover sx={{ cursor: 'pointer', '& > *': { borderBottom: 'unset' } }} onClick={onToggle}>
-        <TableCell sx={{ width: 48 }}>
+        <TableCell sx={{ px: 0.5 }}>
           <IconButton
             size="small"
             aria-label={expanded ? `Collapse receives for ${label}` : `Expand receives for ${label}`}
@@ -236,8 +251,8 @@ function HistoryRow({ po, projectName, expanded, onToggle }: HistoryRowProps) {
           </IconButton>
         </TableCell>
         <TableCell sx={{ ...hugSx, ...monoSx, fontWeight: 600 }}>{label}</TableCell>
-        <TableCell>{po.vendorName || DASH}</TableCell>
-        <TableCell>{projectName}</TableCell>
+        <TableCell title={po.vendorName || undefined}>{po.vendorName || DASH}</TableCell>
+        <TableCell title={projectName}>{projectName}</TableCell>
         <TableCell sx={hugSx}>
           <Chip label={formatPoStatus(po.status)} color={poStatusChipColor(po.status)} size="small" />
         </TableCell>
@@ -252,7 +267,10 @@ function HistoryRow({ po, projectName, expanded, onToggle }: HistoryRowProps) {
         <TableCell sx={{ ...hugSx, ...tabularSx }}>{formatDateTime(po.lastReceivedAt)}</TableCell>
       </TableRow>
       <TableRow>
-        <TableCell sx={{ p: 0, borderBottom: expanded ? undefined : 'none' }} colSpan={HISTORY_COLUMN_COUNT}>
+        <TableCell
+          sx={{ ...FIT_CELL_WRAP_SX, p: 0, borderBottom: expanded ? undefined : 'none' }}
+          colSpan={HISTORY_COLUMN_COUNT}
+        >
           <Collapse in={expanded} timeout={220} unmountOnExit>
             <Box sx={{ p: 2, bgcolor: 'action.hover' }}>
               <Typography component="h3" sx={{ ...microLabelSx, mb: 1 }}>
@@ -384,33 +402,17 @@ export default function ReceivingHistory({ projects, projectMap }: ReceivingHist
         </Alert>
       )}
       {rows.length > 0 && (
-        <TableContainer component={Paper} variant="outlined">
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell sx={{ width: 48 }} />
-                <TableCell>PO Number</TableCell>
-                <TableCell>Vendor</TableCell>
-                <TableCell>Project</TableCell>
-                <TableCell>Status</TableCell>
-                <TableCell align="right">Received</TableCell>
-                <TableCell align="right">Receives</TableCell>
-                <TableCell>Last Received</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {visible.map((po) => (
-                <HistoryRow
-                  key={po.id}
-                  po={po}
-                  projectName={po.projectId ? (projectMap.get(po.projectId) ?? DASH) : 'Stock PO'}
-                  expanded={expandedIds.has(po.id)}
-                  onToggle={() => toggle(po.id)}
-                />
-              ))}
-            </TableBody>
-          </Table>
-        </TableContainer>
+        <FitTable storageKey="receiving-history" columns={HISTORY_COLUMNS}>
+          {visible.map((po) => (
+            <HistoryRow
+              key={po.id}
+              po={po}
+              projectName={po.projectId ? (projectMap.get(po.projectId) ?? DASH) : 'Stock PO'}
+              expanded={expandedIds.has(po.id)}
+              onToggle={() => toggle(po.id)}
+            />
+          ))}
+        </FitTable>
       )}
 
       {rows.length > visible.length && (

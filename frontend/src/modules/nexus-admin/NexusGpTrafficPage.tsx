@@ -4,13 +4,8 @@ import {
   Box,
   Chip,
   Link,
-  Paper,
   Stack,
-  Table,
-  TableBody,
   TableCell,
-  TableContainer,
-  TableHead,
   TableRow,
   Typography,
 } from '@mui/material';
@@ -19,6 +14,8 @@ import { Link as RouterLink } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import { StatCard, StatCardSkeleton, type StatCardAccent } from '../../components/StatCard';
 import PageHeader from '../../components/PageHeader';
+import FitTable, { type FitTableColumn } from '../../components/FitTable';
+import { FIT_CELL_WRAP_SX } from '../../components/fitColumns';
 import { GET_GP_SYNC_STATE } from '../../graphql/admin';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useRelayStatus, type GpCompany } from '../../relay/useRelayStatus';
@@ -38,6 +35,18 @@ import { fmtDate, fmtRelative } from '../../utils/serverDate';
 // The snapshot is cheap (no PO rows are loaded to build it) and the things it reports move on a
 // seconds scale: a NEW PO CHECK runs every two minutes, an OPEN-POS SYNC page every few seconds.
 const POLL_MS = 5_000;
+
+// #909: the companies table fits its width and never scrolls sideways, with columns resizable and
+// remembered per person. Minimums hold a status chip with its cursor, a relative time with its
+// count, and a PO count whole; Open-PO sync is the one sentence, so it takes the slack and wraps.
+const COMPANY_COLUMNS: FitTableColumn[] = [
+  { id: 'company', label: 'Company', min: 110, weight: 1 },
+  { id: 'initialization', label: 'First-time initialization', min: 150, weight: 1 },
+  { id: 'openPass', label: 'Open-PO sync', min: 180, weight: 2.5 },
+  { id: 'newPoCheck', label: 'New PO check', min: 150, weight: 1 },
+  { id: 'jobsSync', label: 'Jobs sync', min: 200, weight: 1.2 },
+  { id: 'mirrored', label: 'Mirrored POs', min: 96, weight: 0.6, align: 'right' },
+];
 
 interface GpSyncRelay {
   connected: boolean;
@@ -379,68 +388,51 @@ export default function NexusGpTrafficPage() {
       {state && state.companies.length === 0 ? (
         <Alert severity="info">No GP company is mirrored yet.</Alert>
       ) : state ? (
-        <TableContainer component={Paper} variant="outlined" sx={{ overflowX: 'auto', minWidth: 0 }}>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell sx={{ whiteSpace: 'nowrap' }}>Company</TableCell>
-                <TableCell sx={{ whiteSpace: 'nowrap' }}>First-time initialization</TableCell>
-                {/* The one cell that carries a sentence, so it takes the slack the others leave. */}
-                <TableCell sx={{ width: '100%' }}>Open-PO sync</TableCell>
-                <TableCell sx={{ whiteSpace: 'nowrap' }}>New PO check</TableCell>
-                <TableCell sx={{ whiteSpace: 'nowrap' }}>Jobs sync</TableCell>
-                <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
-                  Mirrored POs
-                </TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {state.companies.map((row) => (
-                <TableRow key={row.company} hover>
-                  <TableCell sx={{ whiteSpace: 'nowrap' }}>
-                    <GpCompanyLabel code={row.company} gpCompanies={gpCompanies} />
-                  </TableCell>
-                  <TableCell sx={{ whiteSpace: 'nowrap' }}>
-                    <InitializationCell row={row} />
-                  </TableCell>
-                  <TableCell>
-                    <OpenPassCell row={row} />
-                  </TableCell>
-                  <TableCell sx={{ ...tabularSx, whiteSpace: 'nowrap' }}>
-                    {row.lastNewPoCheckAt ? (
-                      `${fmtRelative(row.lastNewPoCheckAt)}${
-                        row.lastNewPoCheckPos !== null
-                          ? ` · ${row.lastNewPoCheckPos.toLocaleString()} new`
-                          : ''
-                      }`
-                    ) : (
-                      <Box component="span" sx={{ color: 'text.secondary' }}>
-                        never
-                      </Box>
-                    )}
-                  </TableCell>
-                  <TableCell sx={{ ...tabularSx, whiteSpace: 'nowrap' }}>
-                    {row.lastJobsSyncAt ? (
-                      `${fmtRelative(row.lastJobsSyncAt)}${
-                        row.lastJobsSync
-                          ? ` · ${row.lastJobsSync.adopted.toLocaleString()} adopted of ${row.lastJobsSync.total.toLocaleString()}`
-                          : ''
-                      }`
-                    ) : (
-                      <Box component="span" sx={{ color: 'text.secondary' }}>
-                        never
-                      </Box>
-                    )}
-                  </TableCell>
-                  <TableCell align="right" sx={{ ...tabularSx, whiteSpace: 'nowrap' }}>
-                    {row.mirroredPos.toLocaleString()}
-                    <SubLine>{`${row.openPos.toLocaleString()} open`}</SubLine>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </TableContainer>
+        <FitTable storageKey="nexus-gp-traffic-companies" columns={COMPANY_COLUMNS}>
+          {state.companies.map((row) => (
+            <TableRow key={row.company} hover>
+              <TableCell>
+                <GpCompanyLabel code={row.company} gpCompanies={gpCompanies} />
+              </TableCell>
+              <TableCell>
+                <InitializationCell row={row} />
+              </TableCell>
+              <TableCell sx={FIT_CELL_WRAP_SX}>
+                <OpenPassCell row={row} />
+              </TableCell>
+              <TableCell sx={{ ...tabularSx, whiteSpace: 'nowrap' }}>
+                {row.lastNewPoCheckAt ? (
+                  `${fmtRelative(row.lastNewPoCheckAt)}${
+                    row.lastNewPoCheckPos !== null
+                      ? ` · ${row.lastNewPoCheckPos.toLocaleString()} new`
+                      : ''
+                  }`
+                ) : (
+                  <Box component="span" sx={{ color: 'text.secondary' }}>
+                    never
+                  </Box>
+                )}
+              </TableCell>
+              <TableCell sx={{ ...tabularSx, whiteSpace: 'nowrap' }}>
+                {row.lastJobsSyncAt ? (
+                  `${fmtRelative(row.lastJobsSyncAt)}${
+                    row.lastJobsSync
+                      ? ` · ${row.lastJobsSync.adopted.toLocaleString()} adopted of ${row.lastJobsSync.total.toLocaleString()}`
+                      : ''
+                  }`
+                ) : (
+                  <Box component="span" sx={{ color: 'text.secondary' }}>
+                    never
+                  </Box>
+                )}
+              </TableCell>
+              <TableCell align="right" sx={{ ...tabularSx, whiteSpace: 'nowrap' }}>
+                {row.mirroredPos.toLocaleString()}
+                <SubLine>{`${row.openPos.toLocaleString()} open`}</SubLine>
+              </TableCell>
+            </TableRow>
+          ))}
+        </FitTable>
       ) : null}
 
       {writes && (

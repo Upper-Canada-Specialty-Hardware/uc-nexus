@@ -13,12 +13,7 @@ import {
   AlertTitle,
   Chip,
   IconButton,
-  Paper,
-  Table,
-  TableBody,
   TableCell,
-  TableContainer,
-  TableHead,
   TableRow,
   Tooltip,
 } from '@mui/material';
@@ -36,6 +31,8 @@ import {
 } from '../../graphql/admin';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import PageHeader from '../../components/PageHeader';
+import FitTable, { type FitTableColumn } from '../../components/FitTable';
+import { FIT_CELL_WRAP_SX } from '../../components/fitColumns';
 import GpWriteQueuePanel from '../../components/GpWriteQueuePanel';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
@@ -98,6 +95,19 @@ const EVENT_KIND_COLOR: Record<string, 'default' | 'info' | 'success' | 'warning
   REFUSED_SECRET: 'error',
   ADOPTED: 'info',
 };
+
+// #909: the events ledger fits its width and never scrolls sideways; columns are resizable and
+// remembered per person. Minimums hold a full local timestamp, the longest event chip and a build
+// number whole; install and companies ellipsize with the full value on hover, and Reason, the one
+// column that can run long, takes the slack and wraps.
+const EVENT_COLUMNS: FitTableColumn[] = [
+  { id: 'at', label: 'Time', min: 176, weight: 1 },
+  { id: 'kind', label: 'Event', min: 136, weight: 0.8 },
+  { id: 'install', label: 'Install', min: 96, weight: 0.9 },
+  { id: 'build', label: 'Build', min: 64, weight: 0.4 },
+  { id: 'companies', label: 'Companies', min: 96, weight: 0.8 },
+  { id: 'reason', label: 'Reason', min: 160, weight: 2.4 },
+];
 
 function fmtCountdown(expiresAt: string): string {
   const ms = parseServerDate(expiresAt).getTime() - Date.now();
@@ -606,59 +616,44 @@ export default function RelayInstallsPage() {
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
           The last {EVENT_LIMIT} relay-link connections, refusals included, newest first.
         </Typography>
-        <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 320 }}>
-          {/* The theme paints table heads transparent for the ledger rule; a sticky head needs paper
-              behind it or rows scroll through the labels. */}
-          <Table size="small" stickyHeader sx={{ '& .MuiTableCell-stickyHeader': { bgcolor: 'background.paper' } }}>
-            <TableHead>
-              <TableRow>
-                <TableCell sx={{ whiteSpace: 'nowrap' }}>Time</TableCell>
-                <TableCell sx={{ whiteSpace: 'nowrap' }}>Event</TableCell>
-                <TableCell sx={{ whiteSpace: 'nowrap' }}>Install</TableCell>
-                <TableCell sx={{ whiteSpace: 'nowrap' }}>Build</TableCell>
-                <TableCell sx={{ whiteSpace: 'nowrap' }}>Companies</TableCell>
-                {/* The one column that can be long, so it takes the slack the fixed ones leave. */}
-                <TableCell sx={{ width: '100%' }}>Reason</TableCell>
+        <FitTable storageKey="relay-connection-events" columns={EVENT_COLUMNS} maxHeight={320}>
+          {events.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={6}>
+                <Typography variant="body2" color="text.secondary">
+                  No connection events recorded yet.
+                </Typography>
+              </TableCell>
+            </TableRow>
+          ) : (
+            events.map((e) => (
+              <TableRow key={e.id} hover>
+                {/* Exact, not relative: this ledger exists to be lined up against a deploy log, and
+                    the installs grid beside it shows its timestamps the same way. */}
+                <TableCell sx={{ ...monoSx, ...tabularSx, whiteSpace: 'nowrap', color: 'text.secondary' }}>
+                  {fmtDate(e.at)}
+                </TableCell>
+                <TableCell>
+                  <Chip
+                    size="small"
+                    label={e.kind.replace(/_/g, ' ')}
+                    color={EVENT_KIND_COLOR[e.kind] ?? 'default'}
+                  />
+                </TableCell>
+                <TableCell sx={monoSx} title={e.installLabel ?? undefined}>
+                  {e.installLabel ?? '—'}
+                </TableCell>
+                <TableCell sx={{ ...monoSx, whiteSpace: 'nowrap', color: 'text.secondary' }}>
+                  {e.build ?? '—'}
+                </TableCell>
+                <TableCell sx={monoSx} title={e.companies?.join(', ') || undefined}>
+                  {e.companies && e.companies.length > 0 ? e.companies.join(', ') : '—'}
+                </TableCell>
+                <TableCell sx={{ ...FIT_CELL_WRAP_SX, color: 'text.secondary' }}>{e.reason ?? '—'}</TableCell>
               </TableRow>
-            </TableHead>
-            <TableBody>
-              {events.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={6}>
-                    <Typography variant="body2" color="text.secondary">
-                      No connection events recorded yet.
-                    </Typography>
-                  </TableCell>
-                </TableRow>
-              ) : (
-                events.map((e) => (
-                  <TableRow key={e.id} hover>
-                    {/* Exact, not relative: this ledger exists to be lined up against a deploy log, and
-                        the installs grid beside it shows its timestamps the same way. */}
-                    <TableCell sx={{ ...monoSx, ...tabularSx, whiteSpace: 'nowrap', color: 'text.secondary' }}>
-                      {fmtDate(e.at)}
-                    </TableCell>
-                    <TableCell>
-                      <Chip
-                        size="small"
-                        label={e.kind.replace(/_/g, ' ')}
-                        color={EVENT_KIND_COLOR[e.kind] ?? 'default'}
-                      />
-                    </TableCell>
-                    <TableCell sx={{ ...monoSx, whiteSpace: 'nowrap' }}>{e.installLabel ?? '—'}</TableCell>
-                    <TableCell sx={{ ...monoSx, whiteSpace: 'nowrap', color: 'text.secondary' }}>
-                      {e.build ?? '—'}
-                    </TableCell>
-                    <TableCell sx={{ ...monoSx, whiteSpace: 'nowrap' }}>
-                      {e.companies && e.companies.length > 0 ? e.companies.join(', ') : '—'}
-                    </TableCell>
-                    <TableCell sx={{ color: 'text.secondary' }}>{e.reason ?? '—'}</TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </TableContainer>
+            ))
+          )}
+        </FitTable>
       </Box>
 
       {/* #353 PR E: the GP writes that were accepted while the relay was down live here, next to the

@@ -9,11 +9,7 @@ import {
   Chip,
   CircularProgress,
   Stack,
-  Table,
-  TableBody,
   TableCell,
-  TableContainer,
-  TableHead,
   TableRow,
   ToggleButton,
   ToggleButtonGroup,
@@ -35,6 +31,7 @@ import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import PageHeader from '../../components/PageHeader';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
+import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { plural } from '../../utils/plural';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
 import BatchReviewPanel from './BatchReviewPanel';
@@ -52,6 +49,15 @@ type View = 'PENDING' | 'APPROVED' | 'REJECTED';
 
 /** Figures are sized to their digits so the identifier columns take the slack. */
 const NUM_COL = { ...tabularSx, width: 1, whiteSpace: 'nowrap' } as const;
+
+// #909: the owed ledger fits its width and never scrolls sideways; columns are resizable and
+// remembered per person. The count holds four digits under its header; product code and category
+// take the slack and ellipsize with the full value on hover.
+const OWED_COLUMNS: FitTableColumn[] = [
+  { id: 'productCode', label: 'Product Code', min: 120, weight: 1.4 },
+  { id: 'hardwareCategory', label: 'Hardware Category', min: 120, weight: 1.4 },
+  { id: 'owed', label: 'Owed when raised', min: 128, weight: 0.5, align: 'right' },
+];
 
 const VIEW_COPY: Record<View, { description: string; empty: string }> = {
   PENDING: {
@@ -506,39 +512,30 @@ function OwedLedger({ items }: { items: RequestItem[] }) {
   return (
     // One ledger, not one per opening. The grouping is a row inside it: repeating a three-column
     // header above every door turns a twenty-opening request into twenty tables of chrome.
-    <TableContainer sx={{ overflowX: 'auto' }}>
-      <Table size="small">
-        <TableHead>
+    <FitTable storageKey="shop-assembly-owed-ledger" columns={OWED_COLUMNS} bare>
+      {groupByOpening(items).map(([openingNumber, group]) => (
+        <Fragment key={openingNumber}>
           <TableRow>
-            <TableCell>Product Code</TableCell>
-            <TableCell>Hardware Category</TableCell>
-            <TableCell align="right">Owed when raised</TableCell>
+            <TableCell
+              colSpan={3}
+              sx={{ ...monoSx, fontWeight: 600, borderBottom: 'none', pt: 2, pb: 0.5 }}
+            >
+              {openingNumber}
+            </TableCell>
           </TableRow>
-        </TableHead>
-        <TableBody>
-          {groupByOpening(items).map(([openingNumber, group]) => (
-            <Fragment key={openingNumber}>
-              <TableRow>
-                <TableCell
-                  colSpan={3}
-                  sx={{ ...monoSx, fontWeight: 600, borderBottom: 'none', pt: 2, pb: 0.5 }}
-                >
-                  {openingNumber}
-                </TableCell>
-              </TableRow>
-              {group.map((item) => (
-                <TableRow key={item.id} hover>
-                  <TableCell sx={monoSx}>{item.productCode}</TableCell>
-                  <TableCell>{item.hardwareCategory}</TableCell>
-                  <TableCell align="right" sx={NUM_COL}>
-                    {item.requestedQuantity}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </Fragment>
+          {group.map((item) => (
+            <TableRow key={item.id} hover>
+              <TableCell sx={monoSx} title={item.productCode}>
+                {item.productCode}
+              </TableCell>
+              <TableCell title={item.hardwareCategory}>{item.hardwareCategory}</TableCell>
+              <TableCell align="right" sx={NUM_COL}>
+                {item.requestedQuantity}
+              </TableCell>
+            </TableRow>
           ))}
-        </TableBody>
-      </Table>
-    </TableContainer>
+        </Fragment>
+      ))}
+    </FitTable>
   );
 }

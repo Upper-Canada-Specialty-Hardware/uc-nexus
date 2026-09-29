@@ -172,3 +172,15 @@ describe('ReceiveLinesEditor table shape (#632)', () => {
     expect(screen.getByText(/Notes: box crushed/)).toBeInTheDocument();
   });
 });
+
+describe('ReceiveLinesEditor fits its width (#909)', () => {
+  it('never scrolls sideways and offers a resize handle on every column', () => {
+    const { container } = render(<Harness poDetailsList={[po([line()])]} />);
+
+    const box = container.querySelector('[data-fit-table="receive-lines"]') as HTMLElement;
+    expect(['auto', 'scroll']).not.toContain(getComputedStyle(box).overflowX);
+    expect(getComputedStyle(box.querySelector('table') as HTMLElement).tableLayout).toBe('fixed');
+    expect(screen.getAllByRole('separator')).toHaveLength(7);
+    expect(screen.getByRole('separator', { name: 'Resize Receive Now column' })).toHaveAttribute('tabindex', '0');
+  });
+});

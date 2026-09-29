@@ -150,11 +150,12 @@ describe('BatchReviewPanel', () => {
 
     // The heading is always there; the table under it is not rendered until expanded.
     const summary = screen.getByText('Product summary');
-    expect(screen.queryByRole('columnheader', { name: 'Sending' })).not.toBeInTheDocument();
+    // #909: a FitTable header's name also carries its resize handle's, so match on how it starts.
+    expect(screen.queryByRole('columnheader', { name: /^Sending / })).not.toBeInTheDocument();
 
     fireEvent.click(summary);
 
-    const row = within(screen.getByRole('columnheader', { name: 'Sending' }).closest('table')!);
+    const row = within(screen.getByRole('columnheader', { name: /^Sending / }).closest('table')!);
     expect(row.getByText('HG-100')).toBeInTheDocument();
   });
 

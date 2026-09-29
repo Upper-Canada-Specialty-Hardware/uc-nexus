@@ -26,6 +26,13 @@ export interface FitColumn {
 
 type Weights = Record<string, number>;
 
+/**
+ * A FitTable body cell that wraps instead of ellipsizing (#909): a column whose value is a sentence
+ * (a reason, a sync status line), or a detail row spanning the whole table. Doubled so it outranks
+ * the table's own clip rule, which is more specific than a plain cell style.
+ */
+export const FIT_CELL_WRAP_SX = { '&&': { whiteSpace: 'normal', overflowWrap: 'anywhere' } } as const;
+
 const STORAGE_PREFIX = 'uc-nexus:column-widths:';
 /** One arrow press moves a column edge this far; with Shift, four times as far. */
 export const KEY_STEP_PX = 16;
