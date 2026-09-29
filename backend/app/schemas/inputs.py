@@ -7,6 +7,7 @@ from .enums import (
     DeficiencyResolution,
     DestockSource,
     MigrationDestination,
+    PoolKind,
     ReturnDisposition,
     TransferSourceType,
 )
@@ -439,6 +440,9 @@ class CreateDraftPOInput:
     # raise one for their own. It exists for a UC NEXUS ADMIN, who is unscoped and therefore has no
     # company of their own for a jobless PO to inherit.
     company: str | None = None
+    # #832: Stock or Overhead, for a PO with no project - which half of the pool its receipts land in.
+    # Null is STOCK. Ignored (stored STOCK) when project_id is set.
+    pool_kind: PoolKind | None = None
 
 
 @strawberry.input
@@ -896,6 +900,15 @@ class ReclassifyStockItemInput:
     new_product_code: str
     quantity: int
     reason_text: str | None = None
+
+
+@strawberry.input
+class SetStockItemKindInput:
+    """Re-flag `quantity` sound units of a pool row as Stock or Overhead (#832)."""
+
+    stock_item_id: strawberry.ID
+    kind: PoolKind
+    quantity: int
 
 
 @strawberry.input

@@ -23,7 +23,7 @@ from .converters import (
     inventory_location_to_type,
     stock_item_to_type,
 )
-from .enums import DeficientItemSource
+from .enums import DeficientItemSource, PoolKind
 from .inputs import (
     AdjustStockQuantityInput,
     AllocateStockToProjectInput,
@@ -33,6 +33,7 @@ from .inputs import (
     ReportInventoryDeficiencyInput,
     ReportStockDeficiencyInput,
     ResolveDeficiencyInput,
+    SetStockItemKindInput,
     TransferInventoryInput,
 )
 from .types import (
@@ -40,6 +41,7 @@ from .types import (
     DeficientItemRow,
     InventoryLocation,
     ReclassifyStockResult,
+    SetStockItemKindResult,
     StockItem,
     TransferResult,
 )
@@ -57,6 +59,8 @@ class StockQueries:
         only_deficient: bool = False,
         warehouse_id: strawberry.ID | None = None,
         only_unlocated: bool = False,
+        # #832: Stock or Overhead only; null is both.
+        kind: PoolKind | None = None,
     ) -> list[StockItem]:
         with SessionLocal() as session:
             rows = stock_repository.get_stock_items(
@@ -68,6 +72,7 @@ class StockQueries:
                 warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
                 only_unlocated=only_unlocated,
                 company=tenant_scope(info),
+                kind=kind,
             )
             return [stock_item_to_type(r) for r in rows]
 
@@ -297,6 +302,31 @@ class StockMutations:
                 session.refresh(original)
             return ReclassifyStockResult(
                 reclassified_stock_item=stock_item_to_type(new_row),
+                original_stock_item=stock_item_to_type(original) if original else None,
+            )
+
+    @strawberry.mutation
+    def set_stock_item_kind(self, info: strawberry.Info, input: SetStockItemKindInput) -> SetStockItemKindResult:
+        """Mark `quantity` sound units of a pool row as Stock or Overhead (#832). The units move to the
+        row of the other kind on the same shelf (created or merged into); a whole row with no such
+        twin flips in place."""
+        auth = current_user(info)
+        actor = resolve_display_name(auth["user_id"])
+        with SessionLocal() as session:
+            tenancy.require_stock_item_in_scope(session, uuid.UUID(str(input.stock_item_id)), tenant_scope(info))
+            target, original = stock_repository.set_stock_item_kind(
+                session,
+                stock_item_id=uuid.UUID(str(input.stock_item_id)),
+                kind=input.kind,
+                quantity=input.quantity,
+                performed_by=actor,
+            )
+            session.commit()
+            session.refresh(target)
+            if original is not None:
+                session.refresh(original)
+            return SetStockItemKindResult(
+                stock_item=stock_item_to_type(target),
                 original_stock_item=stock_item_to_type(original) if original else None,
             )
 

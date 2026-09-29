@@ -36,6 +36,9 @@ from app.models.enums import (
     PODocumentType as PODocumentTypeDB,
 )
 from app.models.enums import (
+    PoolKind as PoolKindDB,
+)
+from app.models.enums import (
     POOrigin as POOriginDB,
 )
 from app.models.enums import (
@@ -86,6 +89,7 @@ HardwareClassificationChoice = strawberry.enum(HardwareClassificationChoiceDB)
 HardwareItemState = strawberry.enum(HardwareItemStateDB)
 POStatus = strawberry.enum(POStatusDB)
 POOrigin = strawberry.enum(POOriginDB)
+PoolKind = strawberry.enum(PoolKindDB)
 PullRequestSource = strawberry.enum(PullRequestSourceDB)
 PullRequestStatus = strawberry.enum(PullRequestStatusDB)
 PullPickLineState = strawberry.enum(PullPickLineStateDB)

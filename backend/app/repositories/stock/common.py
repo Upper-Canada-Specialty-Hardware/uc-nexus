@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.errors import ValidationError
 from app.models.audit_log import InventoryAuditLog
-from app.models.enums import AuditAction, AuditEntityType
+from app.models.enums import AuditAction, AuditEntityType, PoolKind
 from app.models.stock_item import StockItem
 from app.repositories.warehouse import normalize_location_value
 
@@ -54,7 +54,7 @@ def _normalize_optional_location_fields(
     return (a, b, c)
 
 
-def _find_or_create_stock_row(
+def _find_stock_row(
     session: Session,
     *,
     warehouse_id: uuid.UUID,
@@ -63,12 +63,13 @@ def _find_or_create_stock_row(
     aisle: str | None,
     row: str | None,
     bay: str | None,
-    received_at: datetime,
-) -> StockItem:
-    """Find an existing stock row matching (warehouse, category, code, aisle, row, bay) or create one with qty=0.
+    kind: PoolKind = PoolKind.STOCK,
+) -> StockItem | None:
+    """The pool row matching (warehouse, category, code, aisle, row, bay, kind), or None.
 
-    Caller is responsible for incrementing quantity and writing audit events. Location fields are
-    normalized here so writes from any entry path (destock, allocate, receive) match canonical form.
+    The kind is part of the key (#832): a stock row and an overhead row of the same product on the
+    same shelf are two rows and never merge. Location fields are normalized here so writes from any
+    entry path (destock, allocate, receive) match canonical form.
     """
     aisle = normalize_location_value(aisle)
     row = normalize_location_value(row)
@@ -78,6 +79,7 @@ def _find_or_create_stock_row(
         StockItem.warehouse_id == warehouse_id,
         StockItem.hardware_category == hardware_category,
         StockItem.product_code == product_code,
+        StockItem.kind == kind,
     )
     if aisle is None:
         stmt = stmt.where(StockItem.aisle.is_(None))
@@ -91,8 +93,38 @@ def _find_or_create_stock_row(
         stmt = stmt.where(StockItem.bay.is_(None))
     else:
         stmt = stmt.where(StockItem.bay == bay)
+    return session.scalars(stmt).first()
 
-    existing = session.scalars(stmt).first()
+
+def _find_or_create_stock_row(
+    session: Session,
+    *,
+    warehouse_id: uuid.UUID,
+    hardware_category: str,
+    product_code: str,
+    aisle: str | None,
+    row: str | None,
+    bay: str | None,
+    received_at: datetime,
+    kind: PoolKind = PoolKind.STOCK,
+) -> StockItem:
+    """Find an existing pool row matching (warehouse, category, code, aisle, row, bay, kind) or create
+    one with qty=0.
+
+    `kind` defaults to STOCK because every route into the pool lands as stock except a receive off an
+    overhead PO (#832); moves of an existing row (transfer, reclassify split) pass the row's own kind so
+    the units keep it. Caller is responsible for incrementing quantity and writing audit events.
+    """
+    existing = _find_stock_row(
+        session,
+        warehouse_id=warehouse_id,
+        hardware_category=hardware_category,
+        product_code=product_code,
+        aisle=aisle,
+        row=row,
+        bay=bay,
+        kind=kind,
+    )
     if existing is not None:
         return existing
 
@@ -102,9 +134,10 @@ def _find_or_create_stock_row(
         product_code=product_code,
         quantity=0,
         deficient_quantity=0,
-        aisle=aisle,
-        row=row,
-        bay=bay,
+        aisle=normalize_location_value(aisle),
+        row=normalize_location_value(row),
+        bay=normalize_location_value(bay),
+        kind=kind,
         received_at=received_at,
     )
     session.add(new_row)

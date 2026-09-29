@@ -24,6 +24,7 @@ from .items import (
     mark_stock_item_unlocated,
     move_stock_location,
     reclassify_stock_item,
+    set_stock_item_kind,
 )
 from .movements import (
     allocate_stock_to_project,
@@ -50,5 +51,6 @@ __all__ = [
     "report_inventory_deficiency",
     "report_stock_deficiency",
     "resolve_deficiency",
+    "set_stock_item_kind",
     "transfer_inventory",
 ]

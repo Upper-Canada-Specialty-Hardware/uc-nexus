@@ -2,14 +2,15 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, Numeric, String
+from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
+from .enums import PoolKind
 
 
 class StockItem(Base):
-    """Company-owned shelf hardware not tied to any project (non-stock inventory)."""
+    """Company-owned shelf hardware not tied to any project: the Stock & Overhead pool (#832)."""
 
     __tablename__ = "stock_items"
     __table_args__ = (
@@ -33,6 +34,14 @@ class StockItem(Base):
     product_code: Mapped[str] = mapped_column(String, nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     deficient_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Stock or Overhead (#832). Part of the row's identity: a stock row and an overhead row of the same
+    # product on the same shelf are two rows and never merge (see _find_or_create_stock_row).
+    kind: Mapped[PoolKind] = mapped_column(
+        Enum(PoolKind, name="pool_kind", create_constraint=True),
+        nullable=False,
+        default=PoolKind.STOCK,
+        server_default=PoolKind.STOCK.value,
+    )
     aisle: Mapped[str | None] = mapped_column(String(20), nullable=True)
     row: Mapped[str | None] = mapped_column(String(20), nullable=True)
     bay: Mapped[str | None] = mapped_column(String(20), nullable=True)

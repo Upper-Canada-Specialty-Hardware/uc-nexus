@@ -15,6 +15,7 @@ from app.models.enums import (
     Classification,
     HardwareItemState,
     PODocumentType,
+    PoolKind,
     POOrigin,
     POStatus,
     ReceiveDraftStatus,
@@ -180,6 +181,13 @@ def _coerce_order_cost(value, field: str) -> Decimal | None:
     return amount
 
 
+def _effective_pool_kind(project_id: uuid.UUID | None, pool_kind: PoolKind | None) -> PoolKind:
+    """The pool kind a PO stores (#832): the caller's pick on a PO with no project, STOCK otherwise."""
+    if project_id is not None or pool_kind is None:
+        return PoolKind.STOCK
+    return pool_kind
+
+
 def create_po(
     session: Session,
     line_items: list[dict],
@@ -197,8 +205,14 @@ def create_po(
     created_by_user_id: str | None = None,
     vendor_quote_number: str | None = None,
     company: str | None = None,
+    pool_kind: PoolKind | None = None,
 ) -> PurchaseOrder:
     """Create a manual PO with line items. No hardware items are created.
+
+    `pool_kind` is the Stock / Overhead choice of a PO with no project (#832), STOCK when omitted. A PO
+    on a project is always stored STOCK whatever is sent: its receipts go to the job's inventory, never
+    the pool, so the choice has nothing to decide and silently dropping it is less surprising than
+    refusing a request whose only fault is a leftover toggle.
 
     `company` is the tenant (#637). A PO on a project takes the PROJECT's company, always - a PO and
     the job it is raised against cannot belong to different tenants - so the argument only decides a
@@ -241,6 +255,7 @@ def create_po(
         company=company,
         request_number=request_number,
         project_id=project_id,
+        pool_kind=_effective_pool_kind(project_id, pool_kind),
         status=POStatus.DRAFT,
         notes=notes,
         cost_code=cleaned_cost_code,
@@ -1067,6 +1082,7 @@ def update_po(
     notes: str | None = None,
     shipping_cost=_UNSET,
     tariff_amount=_UNSET,
+    pool_kind: PoolKind | None = None,
 ) -> PurchaseOrder:
     """
     - Validate PO exists + not soft-deleted (NotFoundError)
@@ -1097,6 +1113,16 @@ def update_po(
         if project is None:
             raise NotFoundError(f"Project {project_id} not found")
         po.project_id = project_id
+        # A PO moved onto a job no longer receives into the pool, so its pool kind reverts (#832).
+        po.pool_kind = PoolKind.STOCK
+
+    # #832: the Stock / Overhead choice is a draft field, like the preferred delivery date - it decides
+    # where the receipts land, and nothing is received before registration. On a PO with a project it
+    # is ignored (see _effective_pool_kind), so a stale toggle never fails an unrelated edit.
+    if pool_kind is not None and po.project_id is None and pool_kind != po.pool_kind:
+        if po.status != POStatus.DRAFT:
+            raise InvalidStateTransitionError("Stock or Overhead can only be changed on a Draft PO request")
+        po.pool_kind = pool_kind
 
     if po_number is not None:
         cleaned = po_number.strip() or None
