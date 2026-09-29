@@ -44,6 +44,8 @@ import { formatPoStatus, poStatusChipColor } from './poStatus';
 import { monoSx, tabularSx, microLabelSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
+import { PoolKindToggle } from '../../components/PoolKind';
+import { POOL_KIND_LABEL, type PoolKind } from '../../types/poolKind';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
 
@@ -117,6 +119,8 @@ export default function PODetailModal({
   // Issue #156: optional order-time dollar costs, kept as strings ('' = not entered, distinct from 0).
   const [shippingCost, setShippingCost] = useState(po.shippingCost != null ? String(po.shippingCost) : '');
   const [tariffAmount, setTariffAmount] = useState(po.tariffAmount != null ? String(po.tariffAmount) : '');
+  // #832: Stock or Overhead - a draft field, and only on a PO with no project.
+  const [poolKind, setPoolKind] = useState<PoolKind>(po.poolKind ?? 'STOCK');
   const [poNumberError, setPoNumberError] = useState('');
   const [aliasEdits, setAliasEdits] = useState<Record<string, string>>({});
   const [unitCostEdits, setUnitCostEdits] = useState<Record<string, string>>({});
@@ -229,6 +233,7 @@ export default function PODetailModal({
     setNotes(po.notes ?? '');
     setShippingCost(po.shippingCost != null ? String(po.shippingCost) : '');
     setTariffAmount(po.tariffAmount != null ? String(po.tariffAmount) : '');
+    setPoolKind(po.poolKind ?? 'STOCK');
     setPoNumberError('');
     const initialAliases: Record<string, string> = {};
     const initialUnitCosts: Record<string, string> = {};
@@ -298,6 +303,8 @@ export default function PODetailModal({
         // Issue #156: '' = not entered (null clears); 0 is a valid entered value.
         shippingCost: shippingCost.trim() === '' ? null : parseFloat(shippingCost),
         tariffAmount: tariffAmount.trim() === '' ? null : parseFloat(tariffAmount),
+        // #832: sent only where it can change - a draft with no project. Null leaves it alone.
+        poolKind: isDraft && !po.projectId ? poolKind : null,
       },
     });
   };
@@ -709,6 +716,7 @@ export default function PODetailModal({
               fullWidth
               size="small"
             />
+            {po.status === 'DRAFT' && !po.projectId && <PoolKindToggle value={poolKind} onChange={setPoolKind} />}
             {/* Issue #216: preferred is the PM's ask, editable only on the DRAFT request; expected is
                 the vendor's answer, only enterable once GP-Registered (and before receiving). */}
             {po.status === 'DRAFT' ? (
@@ -810,6 +818,10 @@ export default function PODetailModal({
               {/* A PO with a project shows it in the list; here only its absence is worth a line -
                   the modal has the project's id, not its human number. */}
               {!po.projectId && <InfoField label="Project" value="No Project" />}
+              {/* #832: where a PO with no project receives into. */}
+              {!po.projectId && (
+                <InfoField label="Stock or Overhead" value={POOL_KIND_LABEL[po.poolKind ?? 'STOCK']} />
+              )}
               <Box sx={{ gridColumn: '1 / -1', minWidth: 0 }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.25 }}>
                   <Typography component="div" sx={microLabelSx}>

@@ -29,6 +29,7 @@ import {
   GET_GP_PO_ENTRY_OPTIONS,
   GET_GP_VENDOR_ADDRESSES,
   SUGGEST_VENDOR_FOR_MANUFACTURER,
+  UPDATE_PO,
 } from '../../graphql/po';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { useIdentity } from '../../hooks/useIdentity';
@@ -41,6 +42,8 @@ import RelayStatusChip from '../../relay/RelayStatusChip';
 import { useRelayStatus } from '../../relay/useRelayStatus';
 import { useActingCompany } from '../../company/ActingCompanyContext';
 import GpCompanyTag from '../../components/GpCompanyTag';
+import { PoolKindToggle } from '../../components/PoolKind';
+import type { PoolKind } from '../../types/poolKind';
 import { poVendorName } from './poVendorName';
 import { computeManufacturerVendorHint, type ManufacturerSuggestion } from './manufacturerVendorHint';
 import GpErrorAlert from '../../components/GpErrorAlert';
@@ -396,10 +399,15 @@ export default function GpPurchaseOrderDialog({
   // hand. Create mode only - in register mode the PO already exists and the field lives on its
   // detail modal, where it also drives the VENDOR_CONFIRMED transition.
   const [vendorQuoteNumber, setVendorQuoteNumber] = useState('');
+  // #832: Stock or Overhead, for a PO with no project - which half of the pool its receipts land in.
+  // Offered only while no project is picked; a PO on a job receives into the job and ignores it.
+  const [poolKind, setPoolKind] = useState<PoolKind>('STOCK');
 
   const [createDraftPo, { loading: createLoading }] = useMutation<{ createDraftPo: { requestNumber: string } }>(
     CREATE_DRAFT_PO,
   );
+  // Register mode only: a changed Stock / Overhead pick is saved onto the draft before it registers.
+  const [updatePoolKind] = useMutation(UPDATE_PO);
   const [registerPoInGp, { loading: registerLoading }] = useMutation<{
     // #353 PR E: `queued` true means the GP relay was unreachable and the registration is on the
     // durable outbox; the PO comes back still DRAFT.
@@ -687,6 +695,7 @@ export default function GpPurchaseOrderDialog({
     if (registerPo) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time form seed on open, guarded by seededRef
       setProjectId(registerPo.projectId ?? '');
+      setPoolKind(registerPo.poolKind ?? 'STOCK');
       setNotes(registerPo.notes ?? '');
       setShippingCost(registerPo.shippingCost != null ? String(registerPo.shippingCost) : '');
       setTariffAmount(registerPo.tariffAmount != null ? String(registerPo.tariffAmount) : '');
@@ -726,6 +735,7 @@ export default function GpPurchaseOrderDialog({
       setNextKey((rows.length || 1) + 1);
     } else {
       setProjectId(defaultProjectId ?? '');
+      setPoolKind('STOCK');
       setNotes('');
       setShippingCost('');
       setTariffAmount('');
@@ -1126,6 +1136,11 @@ export default function GpPurchaseOrderDialog({
       // GP-first, server-side (issue #199): the resolver pushes to GP via the relay before persisting
       // anything, so a GP rejection changes nothing in UC Nexus.
       if (registerPo) {
+        // #832: the Stock / Overhead pick is a draft field, so it lands on the draft first - the
+        // registration itself does not carry it. Only when it changed and the PO has no project.
+        if (!projectId && poolKind !== (registerPo.poolKind ?? 'STOCK')) {
+          await updatePoolKind({ variables: { id: registerPo.id, poolKind } });
+        }
         const resp = await registerPoInGp({
           variables: {
             input: {
@@ -1191,6 +1206,9 @@ export default function GpPurchaseOrderDialog({
               // company wins) and for a scoped caller (their own wins); for a UC NEXUS ADMIN it is
               // the acting company (#845), the same one the request header carries.
               company: projectId ? null : company || null,
+              // #832: which half of the pool a PO with no project receives into. Not sent with a
+              // project - the backend would ignore it anyway.
+              poolKind: projectId ? null : poolKind,
               lineItems: lineItemsInput,
             },
           },
@@ -1234,6 +1252,10 @@ export default function GpPurchaseOrderDialog({
     }
   }, [
     validate,
+    poolKind,
+    updatePoolKind,
+    projectLocked,
+    vendorQuoteNumber,
     isJob,
     costCode,
     effectiveShippingMethod,
@@ -1255,7 +1277,6 @@ export default function GpPurchaseOrderDialog({
     pickedTaxScheduleId,
     miscellaneous,
     tradeDiscount,
-    isForeignCurrency,
     registerPo,
     isRegister,
     createDraftPo,
@@ -1565,6 +1586,7 @@ export default function GpPurchaseOrderDialog({
                 : ' '
           }
         />
+        {!projectId && <PoolKindToggle value={poolKind} onChange={setPoolKind} />}
 
         {isRegister ? (
           <Box>

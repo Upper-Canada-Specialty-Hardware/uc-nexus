@@ -12,7 +12,7 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
-import { CircleDollarSign, Package, PackageCheck, Trash2, Warehouse } from 'lucide-react';
+import { Boxes, CircleDollarSign, Package, PackageCheck, Trash2, Warehouse } from 'lucide-react';
 import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
 import ProjectPicker from '../../components/ProjectPicker';
@@ -52,7 +52,10 @@ interface InventoryValue {
   company: string;
   ossa: Bucket;
   nonOssa: Bucket;
+  /** #832: the Stock half of the no-project pool, plus the general doors on hand row. */
   generalStock: Bucket;
+  /** #832: the Overhead half of the no-project pool. Hardware only - doors stay with Stock. */
+  overhead: Bucket;
   averageDoorCost: number;
   averageDoorCostUpdatedAt: string | null;
   averageDoorCostUpdatedBy: string | null;
@@ -126,9 +129,9 @@ export default function InventoryValuePage() {
         <>
           <Box sx={{ display: 'flex', gap: 1.5, mb: 3, flexWrap: 'wrap' }}>
             {loading && !value ? (
-              Array.from({ length: 3 }).map((_, i) => <StatCardSkeleton key={i} />)
+              Array.from({ length: 4 }).map((_, i) => <StatCardSkeleton key={i} />)
             ) : value ? (
-              <StaggerList count={3}>
+              <StaggerList count={4}>
                 <FigureTile
                   label="OSSA"
                   icon={<PackageCheck {...TILE_ICON} />}
@@ -140,9 +143,14 @@ export default function InventoryValuePage() {
                   bucket={value.nonOssa}
                 />
                 <FigureTile
-                  label="General stock"
+                  label="Stock"
                   icon={<Warehouse {...TILE_ICON} />}
                   bucket={value.generalStock}
+                />
+                <FigureTile
+                  label="Overhead"
+                  icon={<Boxes {...TILE_ICON} />}
+                  bucket={value.overhead}
                 />
               </StaggerList>
             ) : null}
@@ -180,8 +188,8 @@ const COUNTED: Array<[string, string]> = [
     'Priced from the inventory rows it was picked off. A pull made before pick sheets existed is priced at the project’s average cost for that product, or zero if nothing on the project has a cost.',
   ],
   [
-    'Shelf stock that belongs to no job',
-    'The stock pool, at its own recorded cost. This is the hardware half of General stock.',
+    'Stock and overhead that belong to no job',
+    'The Stock Pool, at its own recorded cost, split by each row’s kind: Stock rows are the hardware half of Stock, and Overhead rows are the whole of Overhead.',
   ],
   [
     'Doors, from the table above',
@@ -451,7 +459,7 @@ function DoorRow({
       <TableCell sx={{ whiteSpace: 'nowrap' }}>{type}</TableCell>
       <TableCell title={isGeneral ? undefined : [label, row.projectName].filter(Boolean).join(' · ')}>
         {isGeneral ? (
-          'Stock/non-stock'
+          'Stock'
         ) : (
           <>
             <Box component="span" sx={monoSx}>

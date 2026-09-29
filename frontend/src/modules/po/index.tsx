@@ -54,6 +54,7 @@ import { AnimatedNumber, FadeIn, StaggerItem, StaggerList } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
 import { formatPoOrderDate, isGpEmptyDate, NO_GP_DATE_HINT } from './poOrderDate';
 import { poVendorLabel, NO_GP_VENDOR, NO_GP_VENDOR_HINT } from './poVendorName';
+import type { PoolKind } from '../../types/poolKind';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
 
@@ -150,6 +151,9 @@ export interface PurchaseOrder {
   // True when every one of this PO's lines is a NEXUS REGISTERED LINE.
   nexusRegistered: boolean;
   projectId: string | null;
+  // #832: Stock or Overhead - which half of the pool a PO with no project receives into. Optional
+  // because not every document that builds a PurchaseOrder selects it.
+  poolKind?: PoolKind;
   status: string;
   // #637: the tenant that owns the PO. Stamped when the PO is raised, so a draft has it too,
   // unlike gpCompany, which arrives only at GP registration.

@@ -13,6 +13,8 @@ import {
   InputLabel,
   Select,
   MenuItem,
+  ToggleButton,
+  ToggleButtonGroup,
 } from '@mui/material';
 import { DataGrid, type GridColDef, type GridRowSelectionModel } from '@mui/x-data-grid';
 import { useGridColumnFit } from '../../components/useGridColumnFit';
@@ -31,6 +33,9 @@ import { GET_STOCK_ITEMS } from '../../graphql/warehouse';
 import ReclassifyStockModal from './stock/ReclassifyStockModal';
 import AllocateStockModal from './stock/AllocateStockModal';
 import ReportStockDeficiencyModal from './stock/ReportStockDeficiencyModal';
+import SetStockKindModal from './stock/SetStockKindModal';
+import { PoolKindChip } from '../../components/PoolKind';
+import { POOL_KIND_LABEL, otherPoolKind, type PoolKind } from '../../types/poolKind';
 import PageHeader from '../../components/PageHeader';
 import { microLabelSx, monoSx } from '../../theme';
 import { useInventoryItemTypes } from '../../hooks/useCustomItems';
@@ -51,6 +56,8 @@ export interface StockItem {
   available: number;
   /** Off-PO cost per unit (the SharePoint migration writes it); null on PO-received pool stock. */
   unitCost: number | null;
+  /** #832: Stock or Overhead. */
+  kind: PoolKind;
   aisle: string | null;
   row: string | null;
   bay: string | null;
@@ -60,7 +67,10 @@ export interface StockItem {
 }
 
 /** A single-target stock modal reached from the selection bar. */
-type StockSingleModal = 'reclassify' | 'allocate' | 'report-deficient' | 'history';
+type StockSingleModal = 'reclassify' | 'allocate' | 'report-deficient' | 'history' | 'set-kind';
+
+/** #832: the All / Stock / Overhead filter. ALL sends no kind, so the read returns both. */
+type KindFilter = 'ALL' | PoolKind;
 
 function toTarget(s: StockItem): LocationActionTarget {
   return {
@@ -93,6 +103,7 @@ export default function StockPoolView() {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [onlyDeficient, setOnlyDeficient] = useState(false);
   const [warehouseFilter, setWarehouseFilter] = useState('');
+  const [kindFilter, setKindFilter] = useState<KindFilter>('ALL');
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<StockItem | null>(null);
@@ -111,6 +122,7 @@ export default function StockPoolView() {
         hardwareCategory: categoryFilter || null,
         onlyDeficient,
         warehouseId: warehouseFilter || null,
+        kind: kindFilter === 'ALL' ? null : kindFilter,
       },
       fetchPolicy: 'cache-and-network',
     },
@@ -162,6 +174,8 @@ export default function StockPoolView() {
   );
   const actionStates = useMemo(() => computeSelectionActions(selectionRows), [selectionRows]);
   const first = selectedRows[0] ?? null;
+  // #832: Mark as Overhead / Mark as Stock - one row at a time, since it asks how many units.
+  const markLabel = `Mark as ${POOL_KIND_LABEL[otherPoolKind(first?.kind ?? 'STOCK')]}`;
 
   const openSingleModal = useCallback(
     (m: StockSingleModal) => {
@@ -181,6 +195,15 @@ export default function StockPoolView() {
   );
 
   const columns = useMemo<GridColDef<StockItem>[]>(() => [
+    {
+      // #832: Stock or Overhead at a glance - a chip sized to its word, not a stretching column.
+      field: 'kind',
+      headerName: 'Kind',
+      width: 100,
+      minWidth: 96,
+      valueGetter: (_value, row) => POOL_KIND_LABEL[row.kind ?? 'STOCK'],
+      renderCell: ({ row }) => <PoolKindChip kind={row.kind ?? 'STOCK'} />,
+    },
     {
       field: 'hardwareCategory',
       headerName: 'Item Number',
@@ -286,7 +309,7 @@ export default function StockPoolView() {
       <PageHeader
         title="Stock Pool"
         parent={{ label: 'Warehouse', to: '/app/warehouse' }}
-        description="Fungible hardware with no project claim on it."
+        description="Stock and Overhead: hardware with no project claim on it."
         actions={
           /* The screen's one amber: the filter that is currently switched on. */
           <Button
@@ -299,7 +322,23 @@ export default function StockPoolView() {
         }
       />
 
-      <Stack direction="row" spacing={2} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
+      <Stack direction="row" spacing={2} useFlexGap flexWrap="wrap" alignItems="center" sx={{ mb: 2 }}>
+        <ToggleButtonGroup
+          size="small"
+          exclusive
+          value={kindFilter}
+          onChange={(_e, v: KindFilter | null) => {
+            if (v) {
+              setKindFilter(v);
+              clearSelection();
+            }
+          }}
+          aria-label="Filter by Stock or Overhead"
+        >
+          <ToggleButton value="ALL">All</ToggleButton>
+          <ToggleButton value="STOCK">{POOL_KIND_LABEL.STOCK}</ToggleButton>
+          <ToggleButton value="OVERHEAD">{POOL_KIND_LABEL.OVERHEAD}</ToggleButton>
+        </ToggleButtonGroup>
         <TextField
           label="Product code contains"
           size="small"
@@ -400,6 +439,13 @@ export default function StockPoolView() {
               disabled={!actionStates.allocate.enabled}
               reason={actionStates.allocate.reason}
             />
+            {/* #832: re-flag part or all of the row. The label names what it becomes. */}
+            <BarButton
+              label={markLabel}
+              onClick={() => openSingleModal('set-kind')}
+              disabled={!actionStates.setKind.enabled}
+              reason={actionStates.setKind.reason}
+            />
             <BarMoreMenu
               items={[
                 {
@@ -434,6 +480,9 @@ export default function StockPoolView() {
       )}
       {selected && modal === 'report-deficient' && (
         <ReportStockDeficiencyModal item={selected} onClose={closeModal} onSuccess={afterMutation} />
+      )}
+      {selected && modal === 'set-kind' && (
+        <SetStockKindModal item={selected} onClose={closeModal} onSuccess={afterMutation} />
       )}
       {selected && modal === 'history' && (
         <AuditHistoryDrawer

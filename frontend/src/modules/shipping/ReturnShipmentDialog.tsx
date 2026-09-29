@@ -27,7 +27,7 @@ type Disposition = 'RETURN_TO_PROJECT' | 'NON_STOCK' | 'RMA_DEFECTIVE';
 
 const DISPOSITION_OPTIONS: { value: Disposition; label: string }[] = [
   { value: 'RETURN_TO_PROJECT', label: 'Return to project inventory' },
-  { value: 'NON_STOCK', label: 'Move to non-stock' },
+  { value: 'NON_STOCK', label: 'Move to the stock pool' },
   { value: 'RMA_DEFECTIVE', label: 'Defective / RMA' },
 ];
 
