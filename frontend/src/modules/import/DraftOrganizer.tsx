@@ -7,7 +7,7 @@
  * so that step stays the orchestrator (cost-code fetch, layout, dialog state) and the per-card query
  * for prior order-as values stays hook-safe inside a component.
  */
-import { useLayoutEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Alert,
   Box,
@@ -32,6 +32,8 @@ import { AlertTriangle, FileText, MoreVertical, Paperclip, X } from 'lucide-reac
 import { useQuery } from '@apollo/client/react';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import InfoHeaderLabel from '../../components/InfoHeaderLabel';
+import ColumnResizeHandle from '../../components/ColumnResizeHandle';
+import { useFitColumns, type FitColumn } from '../../components/fitColumns';
 import ViewPOsButton from './ViewPOsButton';
 import LifecycleChips from './LifecycleChips';
 import type { OverBuyRisk } from './overBuy';
@@ -217,35 +219,19 @@ const FS_HEAD = 'clamp(0.5625rem, 1.1cqw, 0.6875rem)';
 
 // #856: below this ledger width (a ~850 px window, or a laptop with a side panel open) the six
 // read-only project numbers took ~40% of the row and starved Order As and Unit Cost until their values
-// clipped. There they fold into one Sel / Need column whose hover gives the full split. 1000 px is
-// about where all thirteen tracks still fit with Order As and Unit Cost at full value.
+// clipped. There they fold into one Selected / Needed column whose hover gives the full split. 1000 px
+// is about where all thirteen columns still fit at their minimums.
 const LEDGER_COMPACT_BELOW_PX = 1000;
 
-/** #856: whether the ledger's own box is narrower than the compact breakpoint. Measured on the box,
- *  not the viewport, because the navigation rail and the wizard's padding decide how much of the
- *  window the ledger actually gets. Without ResizeObserver (or before the first measure) it stays
- *  wide, which is today's layout. */
-function useNarrowLedger(): [(el: HTMLElement | null) => void, boolean] {
-  const [el, setEl] = useState<HTMLElement | null>(null);
-  const [narrow, setNarrow] = useState(false);
-  useLayoutEffect(() => {
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    // The observer reports once on observe, after layout and before paint, so a narrow window never
-    // flashes the six-column layout.
-    const observer = new ResizeObserver((entries) => {
-      const width = entries[0]?.contentRect.width ?? 0;
-      if (width > 0) setNarrow(width < LEDGER_COMPACT_BELOW_PX);
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [el]);
-  return [setEl, narrow];
-}
+// #856: Order As, Unit Cost and Total Cost never go narrower than their longest value on the card, so
+// resizing another column can never clip one (`EGT...` and `$ 10` for 1006.00 before). The mono and
+// tabular type tops out near 8 px a character; the constants cover the input chrome - the clear button
+// on Order As, the $ adornment, spinner and outline padding on Unit Cost - plus the cell padding.
+const CHAR_PX = 8;
+const ORDER_AS_CHROME_PX = 48;
+const UNIT_COST_CHROME_PX = 72;
+const TEXT_CELL_PAD_PX = 16;
 
-// #856: Order As and Unit Cost are sized to the longest value on the card so neither ever clips
-// (`EGT...` and `$ 10` for 1006.00 at a narrow width). The mono type tops out near 8 px a character;
-// the constants cover the input chrome - the clear button on Order As, and the $ adornment, spinner
-// and outline padding on Unit Cost - plus the cell padding.
 /** #856: the compact ledger's hover - the six numbers the wide ledger shows as columns, one per line,
  *  under the reconciliation step's names. */
 function LedgerSplit({ ctx }: { ctx: LineContext | undefined }) {
@@ -270,10 +256,6 @@ function LedgerSplit({ ctx }: { ctx: LineContext | undefined }) {
     </Box>
   );
 }
-
-const CHAR_PX = 8;
-const ORDER_AS_CHROME_PX = 48;
-const UNIT_COST_CHROME_PX = 72;
 
 export interface DraftCardProps {
   projectId: string;
@@ -361,8 +343,8 @@ export function DraftCard({
   const [cardMenuAnchor, setCardMenuAnchor] = useState<HTMLElement | null>(null);
   const [rowMenu, setRowMenu] = useState<{ anchor: HTMLElement; line: DraftLine } | null>(null);
 
-  // #856: the compact ledger and the content-sized Order As / Unit Cost tracks.
-  const [ledgerRef, compact] = useNarrowLedger();
+  // #856: the ledger always fits the card - no sideways scroll - with columns a person can resize.
+  // Order As, Unit Cost and Total Cost bottom out at their longest value; the text columns ellipsize.
   const orderAsPx = useMemo(() => {
     // The placeholder ("Order as") is the floor, so an empty field still reads.
     const longest = lines.reduce((max, l) => Math.max(max, (orderAsValues.get(l.pk) ?? '').length), 8);
@@ -373,16 +355,49 @@ export function DraftCard({
     const longest = lines.reduce((max, l) => Math.max(max, String(l.unitCost).length, l.unitCost.toFixed(2).length), 4);
     return longest * CHAR_PX + UNIT_COST_CHROME_PX;
   }, [lines]);
-  const ledgerColumns = [
-    `minmax(${orderAsPx}px, 1.15fr)`,
-    'minmax(0, 1.25fr)',
-    'minmax(0, 1.05fr)',
-    'clamp(54px, 7cqw, 86px)',
-    `${unitCostPx}px`,
-    'auto',
-    compact ? 'auto' : 'auto auto auto auto auto auto',
-    '36px',
-  ].join(' ');
+  const totalCostPx = useMemo(() => {
+    const longest = lines.reduce((max, l) => Math.max(max, `$${l.totalCost.toFixed(2)}`.length), 5);
+    return longest * CHAR_PX + TEXT_CELL_PAD_PX;
+  }, [lines]);
+  const {
+    setContainer: setLedgerBox,
+    containerWidth: ledgerWidth,
+    columns: ledgerColumns,
+    gridTemplate: ledgerTemplate,
+    handle: resizeHandle,
+  } = useFitColumns('po-draft-ledger', (width) => {
+    const compactNow = width > 0 && width < LEDGER_COMPACT_BELOW_PX;
+    // Header minimums fit the header wording at the ledger's largest header type.
+    const numbers: FitColumn[] = compactNow
+      ? [{ id: 'selectedNeeded', label: 'Selected / Needed', min: 170, weight: 0.9 }]
+      : [
+          { id: 'selectedQty', label: 'Selected Qty', min: 104, weight: 0.5 },
+          { id: 'needed', label: 'Needed', min: 60, weight: 0.4 },
+          { id: 'ordered', label: 'Ordered', min: 88, weight: 0.45 },
+          { id: 'onOrder', label: 'On Order', min: 96, weight: 0.45 },
+          { id: 'rcvd', label: 'Rcvd', min: 48, weight: 0.35 },
+          { id: 'avail', label: 'Avail', min: 52, weight: 0.35 },
+        ];
+    return [
+      { id: 'orderAs', label: 'Order As', min: orderAsPx, weight: 1.15 },
+      { id: 'partNumber', label: 'Scheduled Part Number', min: 72, weight: 1.25 },
+      { id: 'category', label: 'Hardware Category', min: 60, weight: 1.05 },
+      { id: 'qty', label: 'Qty', min: 64, weight: 0.55 },
+      { id: 'unitCost', label: 'Unit Cost', min: unitCostPx, weight: 0.8 },
+      { id: 'totalCost', label: 'Total Cost', min: totalCostPx, weight: 0.6 },
+      ...numbers,
+      { id: 'actions', label: 'Line actions', min: 36, fixed: 36 },
+    ];
+  });
+  const compact = ledgerWidth > 0 && ledgerWidth < LEDGER_COMPACT_BELOW_PX;
+  const colIndex = (id: string) => ledgerColumns.findIndex((c) => c.id === id);
+  /** A header cell with its resize handle; the wording ellipsizes rather than widening the column. */
+  const head = (id: string, text: string, className = '', title?: string) => (
+    <Box className={`po-head ${className}`} title={title ?? text}>
+      <span className="po-head-text">{text}</span>
+      <ColumnResizeHandle binding={resizeHandle(colIndex(id))} />
+    </Box>
+  );
 
   return (
     <Box
@@ -595,21 +610,16 @@ export function DraftCard({
           No lines. Move some in from another draft.
         </Typography>
       ) : (
-        // Below the grid's workable minimum the ledger scrolls inside its own bounds - the sanctioned
-        // wide-data-grid affordance; the page itself never widens.
-        <Box ref={ledgerRef} sx={{ overflowX: 'auto' }}>
+        // #856: the ledger fits the card's width and never scrolls sideways; useFitColumns shares the
+        // width among the columns, each down to its minimum, and remembers what the buyer resized.
+        <Box ref={setLedgerBox} sx={{ minWidth: 0 }}>
           <Box
             data-ledger-layout={compact ? 'compact' : 'full'}
             sx={{
               display: 'grid',
-              // #856: the compact ledger drops five tracks, so its floor drops with them.
-              minWidth: compact ? 560 : 760,
               // #639: a size container, so the cqw type ramp above resolves against the card's width.
               containerType: 'inline-size',
-              // Part number and category absorb the slack; Order As and Unit Cost never shrink below
-              // their longest value (#856), and every numeric track is content-sized, so the 1-4 digit
-              // recon columns spend only the width their header needs.
-              gridTemplateColumns: ledgerColumns,
+              gridTemplateColumns: ledgerTemplate,
               '& .po-head': {
                 ...microLabelSx,
                 fontSize: FS_HEAD,
@@ -617,6 +627,15 @@ export function DraftCard({
                 py: 0.75,
                 borderBottom: '2px solid',
                 borderColor: 'text.primary',
+                // The resize handle sits on the header's right edge.
+                position: 'relative',
+                minWidth: 0,
+              },
+              '& .po-head-text': {
+                display: 'block',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
               },
               '& .po-cell': {
                 px: 1,
@@ -652,44 +671,48 @@ export function DraftCard({
               },
             }}
           >
-            <Box className="po-head">Order As</Box>
-            <Box className="po-head">Scheduled Part Number</Box>
-            <Box className="po-head">Hardware Category</Box>
-            <Box className="po-head po-num">Qty</Box>
-            <Box className="po-head po-num">Unit Cost</Box>
-            <Box className="po-head po-num">Total Cost</Box>
+            {head('orderAs', 'Order As')}
+            {head('partNumber', 'Scheduled Part Number')}
+            {head('category', 'Hardware Category')}
+            {head('qty', 'Qty', 'po-num')}
+            {head('unitCost', 'Unit Cost', 'po-num')}
+            {head('totalCost', 'Total Cost', 'po-num')}
             {compact ? (
               // #856: the narrow ledger folds the six project numbers into one column; hovering a value
               // gives the full split, and the (i) says so.
               <Box className="po-head po-num po-sep">
                 <InfoHeaderLabel
-                  label="Sel / Need"
+                  label="Selected / Needed"
                   tooltip="Selected Qty / Needed. Hover a value for the full split: Selected Qty, Needed, Ordered, On Order, Received and Available."
                   labelSx={{ fontSize: FS_HEAD }}
                 />
+                <ColumnResizeHandle binding={resizeHandle(colIndex('selectedNeeded'))} />
               </Box>
             ) : (
               <>
                 {/* #738: the reconciliation step's columns, under its names. Selected Qty is what this
                     wizard pass picked; Needed and Ordered are the project's whole-schedule totals. */}
-                <Box className="po-head po-num po-sep" title="Selected Qty: what this product needs across the openings selected for this pass">
-                  Selected Qty
-                </Box>
-                <Box className="po-head po-num" title="Needed: the project's total for this product across its whole hardware schedule">
-                  Needed
-                </Box>
-                <Box className="po-head po-num" title="Ordered: placed on a GP PO project-wide, everything received since included">
-                  Ordered
-                </Box>
-                <Box className="po-head po-num" title="Already on order project-wide">
-                  On Order
-                </Box>
-                <Box className="po-head po-num" title="Received project-wide">
-                  Rcvd
-                </Box>
-                <Box className="po-head po-num" title="Available in inventory">
-                  Avail
-                </Box>
+                {head(
+                  'selectedQty',
+                  'Selected Qty',
+                  'po-num po-sep',
+                  'Selected Qty: what this product needs across the openings selected for this pass',
+                )}
+                {head(
+                  'needed',
+                  'Needed',
+                  'po-num',
+                  "Needed: the project's total for this product across its whole hardware schedule",
+                )}
+                {head(
+                  'ordered',
+                  'Ordered',
+                  'po-num',
+                  'Ordered: placed on a GP PO project-wide, everything received since included',
+                )}
+                {head('onOrder', 'On Order', 'po-num', 'Already on order project-wide')}
+                {head('rcvd', 'Rcvd', 'po-num', 'Received project-wide')}
+                {head('avail', 'Avail', 'po-num', 'Available in inventory')}
               </>
             )}
             <Box className="po-head" />
@@ -712,13 +735,25 @@ export function DraftCard({
                         placeholder="Order as"
                       />
                     </Box>
+                    {/* #856: the text columns give way first when another column is widened; they
+                        ellipsize, with the full value on hover. */}
                     <Box className="po-cell">
-                      <Typography variant="body2" sx={{ ...monoSx, fontSize: FS_MONO }}>
+                      <Typography
+                        variant="body2"
+                        noWrap
+                        title={line.productCode}
+                        sx={{ ...monoSx, fontSize: FS_MONO, minWidth: 0 }}
+                      >
                         {line.productCode}
                       </Typography>
                     </Box>
                     <Box className="po-cell">
-                      <Typography variant="body2" sx={{ fontSize: FS_CELL }}>
+                      <Typography
+                        variant="body2"
+                        noWrap
+                        title={line.hardwareCategory}
+                        sx={{ fontSize: FS_CELL, minWidth: 0 }}
+                      >
                         {line.hardwareCategory}
                       </Typography>
                     </Box>

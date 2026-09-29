@@ -12,13 +12,8 @@ import {
   Select,
   FormControl,
   InputLabel,
-  Table,
-  TableBody,
   TableCell,
-  TableContainer,
-  TableHead,
   TableRow,
-  Paper,
   TextField,
   Tooltip,
   Chip,
@@ -44,25 +39,45 @@ import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
 import { type WarehouseLocationDef, normalizeLocationValue } from './receiveDraftTypes';
-import type { SxProps, Theme } from '@mui/material';
+import FitTable, { type FitTableColumn } from '../../components/FitTable';
 
-// #856: Assign is the row's only action, and at a narrow width (~850 px) it sat past the right edge of
-// the table's own scroll area. The last cell is pinned to that edge so it is always in view; the
-// other columns scroll under it. It needs its own background to cover them, a hairline to show where
-// the scroll passes beneath, and the row's hover tint layered on so a hovered row still reads as one.
-const pinnedActionCellSx: SxProps<Theme> = {
-  position: 'sticky',
-  right: 0,
-  zIndex: 1,
-  bgcolor: 'background.paper',
-  boxShadow: (t) => `inset 1px 0 0 ${(t.vars ?? t).palette.divider}`,
-  'tr:hover > &': {
-    backgroundImage: (t) => {
-      const tint = (t.vars ?? t).palette.action.hover;
-      return `linear-gradient(${tint}, ${tint})`;
-    },
-  },
-};
+// #856: at ~850 px Assign, the row's only action, sat past the right edge of the table's own scroll
+// area. Both tables now fit their width and never scroll sideways, so Assign is always in view; the
+// columns are resizable and remembered per person. Minimums hold each value whole: a PO number, a
+// date, three bin pickers, the quantity field and the Assign button. Description and item number
+// give way first and ellipsize, with the full value on hover.
+const DESTINATION_COL: FitTableColumn = { id: 'destination', label: 'Destination', min: 248, weight: 2.2, dense: true };
+const ASSIGN_COL: FitTableColumn = { id: 'assign', label: 'Assign', min: 96, fixed: 96, header: null };
+// The three bin pickers share the destination column evenly and shrink with it (minWidth 0).
+const DESTINATION_FIELDS_SX = { display: 'flex', gap: 1, minWidth: 0, '& > *': { flex: 1, minWidth: 0 } } as const;
+const WAREHOUSE_COL: FitTableColumn = { id: 'warehouse', label: 'Warehouse', min: 64, weight: 0.5 };
+
+function projectColumns(showWarehouse: boolean): FitTableColumn[] {
+  return [
+    { id: 'description', label: 'Description', min: 96, weight: 1.3 },
+    ...(showWarehouse ? [WAREHOUSE_COL] : []),
+    { id: 'qty', label: 'Qty', min: 56, weight: 0.35, align: 'right' },
+    { id: 'po', label: 'PO#', min: 88, weight: 0.8 },
+    { id: 'received', label: 'Received', min: 88, weight: 0.7 },
+    // One destination cell instead of three unlabelled columns: the fields carry their own
+    // Aisle/Row/Bay labels rather than relying on a header three rows up.
+    DESTINATION_COL,
+    { id: 'putAwayQty', label: 'Qty to put away', min: 88, weight: 0.7, align: 'right', dense: true },
+    ASSIGN_COL,
+  ];
+}
+
+function stockColumns(showWarehouse: boolean): FitTableColumn[] {
+  return [
+    { id: 'description', label: 'Description', min: 96, weight: 1.2 },
+    { id: 'itemNumber', label: 'Item Number', min: 88, weight: 1 },
+    ...(showWarehouse ? [WAREHOUSE_COL] : []),
+    { id: 'qty', label: 'Qty', min: 56, weight: 0.35, align: 'right' },
+    { id: 'received', label: 'Received', min: 88, weight: 0.7 },
+    DESTINATION_COL,
+    ASSIGN_COL,
+  ];
+}
 
 // ---- Types ----
 
@@ -494,144 +509,125 @@ export default function PutAwayTab() {
                   </Box>
                 </AccordionSummary>
                 <AccordionDetails>
-                  <TableContainer component={Paper} variant="outlined">
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Description</TableCell>
-                          {showWarehouse && <TableCell>Warehouse</TableCell>}
-                          <TableCell align="right">Qty</TableCell>
-                          <TableCell>PO#</TableCell>
-                          <TableCell>Received</TableCell>
-                          {/* One destination cell instead of three unlabelled columns: the fields
-                              now carry their own Aisle/Row/Bay labels rather than relying on a
-                              header three rows up. */}
-                          <TableCell sx={{ minWidth: 300 }}>Destination</TableCell>
-                          <TableCell align="right" sx={{ minWidth: 110 }}>
-                            Qty to put away
-                          </TableCell>
-                          <TableCell sx={pinnedActionCellSx} />
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {categoryItems.map((item) => {
-                          const id = item.inventoryLocation.id;
-                          const loc = getLocationInput(id);
-                          const rowOptions = optionsFor(item.inventoryLocation.warehouseId, loc);
-                          const valid = isDefinedLocation(item.inventoryLocation.warehouseId, loc);
-                          const isAssigning = assigningId === id;
+                  <FitTable storageKey="put-away-project" columns={projectColumns(showWarehouse)}>
+                    {categoryItems.map((item) => {
+                      const id = item.inventoryLocation.id;
+                      const loc = getLocationInput(id);
+                      const rowOptions = optionsFor(item.inventoryLocation.warehouseId, loc);
+                      const valid = isDefinedLocation(item.inventoryLocation.warehouseId, loc);
+                      const isAssigning = assigningId === id;
 
-                          return (
-                            <TableRow key={id} hover>
-                              <TableCell sx={monoSx}>
-                                {item.inventoryLocation.productCode}
-                                {/* Site/Shop off the PO line, else the schedule's dominant value
-                                    (migrated stock has no PO line). Inline with the code rather
-                                    than a column: most rows have one, and a dedicated column would
-                                    spread a small chip across empty width. */}
-                                {item.classification && (
-                                  <Chip
-                                    size="small"
-                                    variant="outlined"
-                                    color={item.classification === 'SITE_HARDWARE' ? 'success' : 'info'}
-                                    label={item.classification === 'SITE_HARDWARE' ? 'Site' : 'Shop'}
-                                    sx={{ ml: 1 }}
-                                  />
-                                )}
-                              </TableCell>
-                              {showWarehouse && (
-                                <TableCell>
-                                  {item.inventoryLocation.warehouseId ? (
-                                    <Chip
-                                      label={warehouseCode.get(item.inventoryLocation.warehouseId) ?? '—'}
-                                      size="small"
-                                      variant="outlined"
-                                    />
-                                  ) : (
-                                    '—'
-                                  )}
-                                </TableCell>
-                              )}
-                              <TableCell align="right">
-                                {item.inventoryLocation.quantity}
-                              </TableCell>
-                              <TableCell sx={monoSx}>{item.poNumber ?? '\u2014'}</TableCell>
-                              <TableCell sx={tabularSx}>
-                                {formatDate(item.inventoryLocation.receivedAt)}
-                              </TableCell>
-                              <TableCell>
-                                {/* #632: strict picks from the defined-locations registry, scoped
-                                    to the item's warehouse. Aisle narrows rows, aisle+row narrow
-                                    bays; Assign stays grey until the triple matches a defined
-                                    location exactly. */}
-                                <Box sx={{ display: 'flex', gap: 1, minWidth: 300 }}>
-                                  <LocationAutocomplete
-                                    label="Aisle"
-                                    value={loc.aisle}
-                                    onChange={(v) => updateLocationInput(id, 'aisle', v)}
-                                    options={rowOptions.aisles}
-                                    freeSolo={false}
-                                  />
-                                  <LocationAutocomplete
-                                    label="Row"
-                                    value={loc.row}
-                                    onChange={(v) => updateLocationInput(id, 'row', v)}
-                                    options={rowOptions.rows}
-                                    freeSolo={false}
-                                  />
-                                  <LocationAutocomplete
-                                    label="Bay"
-                                    value={loc.bay}
-                                    onChange={(v) => updateLocationInput(id, 'bay', v)}
-                                    options={rowOptions.bays}
-                                    freeSolo={false}
-                                  />
-                                </Box>
-                              </TableCell>
-                              <TableCell align="right">
-                                {/* Blank means the whole row. A number under the row quantity
-                                    splits it: that many go to this bin, the remainder comes back
-                                    to the queue for a shelf of its own. */}
-                                <Tooltip title="Leave blank to put the whole row away here.">
-                                  <TextField
-                                    size="small"
-                                    type="number"
-                                    placeholder={String(item.inventoryLocation.quantity)}
-                                    value={splitQty[id] ?? ''}
-                                    onChange={(e) =>
-                                      setSplitQty((prev) => ({ ...prev, [id]: e.target.value }))
-                                    }
-                                    inputProps={{
-                                      min: 1,
-                                      max: item.inventoryLocation.quantity,
-                                      'aria-label': `Quantity of ${item.inventoryLocation.productCode} to put away`,
-                                    }}
-                                    sx={{ width: 96 }}
-                                  />
-                                </Tooltip>
-                              </TableCell>
-                              <TableCell sx={pinnedActionCellSx}>
-                                <Button
-                                  variant="contained"
+                      return (
+                        <TableRow key={id} hover>
+                          <TableCell sx={monoSx} title={item.inventoryLocation.productCode}>
+                            {item.inventoryLocation.productCode}
+                            {/* Site/Shop off the PO line, else the schedule's dominant value
+                                (migrated stock has no PO line). Inline with the code rather
+                                than a column: most rows have one, and a dedicated column would
+                                spread a small chip across empty width. */}
+                            {item.classification && (
+                              <Chip
+                                size="small"
+                                variant="outlined"
+                                color={item.classification === 'SITE_HARDWARE' ? 'success' : 'info'}
+                                label={item.classification === 'SITE_HARDWARE' ? 'Site' : 'Shop'}
+                                sx={{ ml: 1 }}
+                              />
+                            )}
+                          </TableCell>
+                          {showWarehouse && (
+                            <TableCell>
+                              {item.inventoryLocation.warehouseId ? (
+                                <Chip
+                                  label={warehouseCode.get(item.inventoryLocation.warehouseId) ?? '—'}
                                   size="small"
-                                  disabled={!valid || isAssigning || !splitIsValid(id, item.inventoryLocation.quantity)}
-                                  onClick={() =>
-                                    handleAssign(
-                                      id,
-                                      item.inventoryLocation.productCode,
-                                      item.inventoryLocation.quantity,
-                                    )
-                                  }
-                                >
-                                  {isAssigning ? <CircularProgress size={20} /> : 'Assign'}
-                                </Button>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
+                                  variant="outlined"
+                                />
+                              ) : (
+                                '—'
+                              )}
+                            </TableCell>
+                          )}
+                          <TableCell align="right">
+                            {item.inventoryLocation.quantity}
+                          </TableCell>
+                          <TableCell sx={monoSx} title={item.poNumber ?? undefined}>
+                            {item.poNumber ?? '\u2014'}
+                          </TableCell>
+                          <TableCell sx={tabularSx}>
+                            {formatDate(item.inventoryLocation.receivedAt)}
+                          </TableCell>
+                          <TableCell sx={{ px: 1 }}>
+                            {/* #632: strict picks from the defined-locations registry, scoped
+                                to the item's warehouse. Aisle narrows rows, aisle+row narrow
+                                bays; Assign stays grey until the triple matches a defined
+                                location exactly. */}
+                            <Box sx={DESTINATION_FIELDS_SX}>
+                              <LocationAutocomplete
+                                label="Aisle"
+                                value={loc.aisle}
+                                onChange={(v) => updateLocationInput(id, 'aisle', v)}
+                                options={rowOptions.aisles}
+                                freeSolo={false}
+                              />
+                              <LocationAutocomplete
+                                label="Row"
+                                value={loc.row}
+                                onChange={(v) => updateLocationInput(id, 'row', v)}
+                                options={rowOptions.rows}
+                                freeSolo={false}
+                              />
+                              <LocationAutocomplete
+                                label="Bay"
+                                value={loc.bay}
+                                onChange={(v) => updateLocationInput(id, 'bay', v)}
+                                options={rowOptions.bays}
+                                freeSolo={false}
+                              />
+                            </Box>
+                          </TableCell>
+                          <TableCell align="right" sx={{ px: 1 }}>
+                            {/* Blank means the whole row. A number under the row quantity
+                                splits it: that many go to this bin, the remainder comes back
+                                to the queue for a shelf of its own. */}
+                            <Tooltip title="Leave blank to put the whole row away here.">
+                              <TextField
+                                size="small"
+                                type="number"
+                                placeholder={String(item.inventoryLocation.quantity)}
+                                value={splitQty[id] ?? ''}
+                                onChange={(e) =>
+                                  setSplitQty((prev) => ({ ...prev, [id]: e.target.value }))
+                                }
+                                inputProps={{
+                                  min: 1,
+                                  max: item.inventoryLocation.quantity,
+                                  'aria-label': `Quantity of ${item.inventoryLocation.productCode} to put away`,
+                                }}
+                                sx={{ width: '100%' }}
+                              />
+                            </Tooltip>
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              variant="contained"
+                              size="small"
+                              disabled={!valid || isAssigning || !splitIsValid(id, item.inventoryLocation.quantity)}
+                              onClick={() =>
+                                handleAssign(
+                                  id,
+                                  item.inventoryLocation.productCode,
+                                  item.inventoryLocation.quantity,
+                                )
+                              }
+                            >
+                              {isAssigning ? <CircularProgress size={20} /> : 'Assign'}
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </FitTable>
                 </AccordionDetails>
               </Accordion>
             </StaggerItem>
@@ -650,86 +646,73 @@ export default function PutAwayTab() {
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
             Unlocated fungible stock with no project claim. Give each a rack location.
           </Typography>
-          <TableContainer component={Paper} variant="outlined">
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Description</TableCell>
-                  <TableCell>Item Number</TableCell>
-                  {showStockWarehouse && <TableCell>Warehouse</TableCell>}
-                  <TableCell align="right">Qty</TableCell>
-                  <TableCell>Received</TableCell>
-                  <TableCell sx={{ minWidth: 300 }}>Destination</TableCell>
-                  <TableCell sx={pinnedActionCellSx} />
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {stockRows.map((si) => {
-                  const id = si.id;
-                  const loc = getLocationInput(id);
-                  const rowOptions = optionsFor(si.warehouseId, loc);
-                  const valid = isDefinedLocation(si.warehouseId, loc);
-                  const isAssigning = assigningId === id;
-                  return (
-                    <TableRow key={id} hover>
-                      <TableCell sx={monoSx}>{si.productCode}</TableCell>
-                      <TableCell>{si.hardwareCategory}</TableCell>
-                      {showStockWarehouse && (
-                        <TableCell>
-                          {si.warehouseId ? (
-                            <Chip
-                              label={warehouseCode.get(si.warehouseId) ?? '—'}
-                              size="small"
-                              variant="outlined"
-                            />
-                          ) : (
-                            '—'
-                          )}
-                        </TableCell>
-                      )}
-                      <TableCell align="right">{si.quantity}</TableCell>
-                      <TableCell sx={tabularSx}>{formatDate(si.receivedAt)}</TableCell>
-                      <TableCell>
-                        <Box sx={{ display: 'flex', gap: 1, minWidth: 300 }}>
-                          <LocationAutocomplete
-                            label="Aisle"
-                            value={loc.aisle}
-                            onChange={(v) => updateLocationInput(id, 'aisle', v)}
-                            options={rowOptions.aisles}
-                            freeSolo={false}
-                          />
-                          <LocationAutocomplete
-                            label="Row"
-                            value={loc.row}
-                            onChange={(v) => updateLocationInput(id, 'row', v)}
-                            options={rowOptions.rows}
-                            freeSolo={false}
-                          />
-                          <LocationAutocomplete
-                            label="Bay"
-                            value={loc.bay}
-                            onChange={(v) => updateLocationInput(id, 'bay', v)}
-                            options={rowOptions.bays}
-                            freeSolo={false}
-                          />
-                        </Box>
-                      </TableCell>
-                      <TableCell sx={pinnedActionCellSx}>
-                        <Button
-                          variant="contained"
+          <FitTable storageKey="put-away-stock-pool" columns={stockColumns(showStockWarehouse)}>
+            {stockRows.map((si) => {
+              const id = si.id;
+              const loc = getLocationInput(id);
+              const rowOptions = optionsFor(si.warehouseId, loc);
+              const valid = isDefinedLocation(si.warehouseId, loc);
+              const isAssigning = assigningId === id;
+              return (
+                <TableRow key={id} hover>
+                  <TableCell sx={monoSx} title={si.productCode}>
+                    {si.productCode}
+                  </TableCell>
+                  <TableCell title={si.hardwareCategory}>{si.hardwareCategory}</TableCell>
+                  {showStockWarehouse && (
+                    <TableCell>
+                      {si.warehouseId ? (
+                        <Chip
+                          label={warehouseCode.get(si.warehouseId) ?? '—'}
                           size="small"
-                          disabled={!valid || isAssigning}
-                          onClick={() => handleAssignStock(id, si.productCode)}
-                        >
-                          {isAssigning ? <CircularProgress size={20} /> : 'Assign'}
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </TableContainer>
+                          variant="outlined"
+                        />
+                      ) : (
+                        '—'
+                      )}
+                    </TableCell>
+                  )}
+                  <TableCell align="right">{si.quantity}</TableCell>
+                  <TableCell sx={tabularSx}>{formatDate(si.receivedAt)}</TableCell>
+                  <TableCell sx={{ px: 1 }}>
+                    <Box sx={DESTINATION_FIELDS_SX}>
+                      <LocationAutocomplete
+                        label="Aisle"
+                        value={loc.aisle}
+                        onChange={(v) => updateLocationInput(id, 'aisle', v)}
+                        options={rowOptions.aisles}
+                        freeSolo={false}
+                      />
+                      <LocationAutocomplete
+                        label="Row"
+                        value={loc.row}
+                        onChange={(v) => updateLocationInput(id, 'row', v)}
+                        options={rowOptions.rows}
+                        freeSolo={false}
+                      />
+                      <LocationAutocomplete
+                        label="Bay"
+                        value={loc.bay}
+                        onChange={(v) => updateLocationInput(id, 'bay', v)}
+                        options={rowOptions.bays}
+                        freeSolo={false}
+                      />
+                    </Box>
+                  </TableCell>
+                  <TableCell>
+                    <Button
+                      variant="contained"
+                      size="small"
+                      disabled={!valid || isAssigning}
+                      onClick={() => handleAssignStock(id, si.productCode)}
+                    >
+                      {isAssigning ? <CircularProgress size={20} /> : 'Assign'}
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </FitTable>
         </Box>
       )}
     </Box>

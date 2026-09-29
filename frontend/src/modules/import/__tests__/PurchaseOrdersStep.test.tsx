@@ -458,7 +458,7 @@ describe('PurchaseOrdersStep ledger at a narrow width (#856)', () => {
     return (screen.getByText('HG-100').closest('.po-cell') as HTMLElement).parentElement as HTMLElement;
   }
 
-  it('folds the six project numbers into one Sel / Need column below the breakpoint', () => {
+  it('folds the six project numbers into one Selected / Needed column below the breakpoint', () => {
     stubLedgerWidth(700);
     const { container } = render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
 
@@ -466,15 +466,15 @@ describe('PurchaseOrdersStep ledger at a narrow width (#856)', () => {
     for (const head of ['Selected Qty', 'Needed', 'On Order', 'Rcvd', 'Avail']) {
       expect(screen.queryByText(head)).not.toBeInTheDocument();
     }
-    expect(screen.getByText('Sel / Need')).toBeInTheDocument();
-    // Eight cells: Order As, part, category, Qty, Unit Cost, Total Cost, Sel / Need, the row menu.
+    expect(screen.getByText('Selected / Needed')).toBeInTheDocument();
+    // Eight cells: Order As, part, category, Qty, Unit Cost, Total Cost, Selected / Needed, the row menu.
     expect(Array.from(ledgerRow().children)).toHaveLength(8);
     expect(screen.getByLabelText('Quantities for HG-100')).toHaveTextContent('4 / 12');
     // The POs behind the Ordered figure stay one click away.
     expect(screen.getByRole('button', { name: 'View POs behind ordered HG-100' })).toBeInTheDocument();
   });
 
-  it('marks the Sel / Need header as hoverable with the (i)', () => {
+  it('marks the Selected / Needed header as hoverable with the (i)', () => {
     stubLedgerWidth(700);
     render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
 
@@ -506,25 +506,77 @@ describe('PurchaseOrdersStep ledger at a narrow width (#856)', () => {
     const { container } = render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
 
     expect(container.querySelector('[data-ledger-layout="full"]')).not.toBeNull();
-    expect(screen.queryByText('Sel / Need')).not.toBeInTheDocument();
+    expect(screen.queryByText('Selected / Needed')).not.toBeInTheDocument();
     expect(Array.from(ledgerRow().children)).toHaveLength(13);
   });
 
-  it('sizes Unit Cost and Order As to their longest value so neither clips', () => {
-    stubLedgerWidth(700);
-    const { container } = render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
-
-    // The catalog's $5 prints as 5.00 at most: four characters at 8 px plus the input chrome. Order As
-    // is empty, so its floor is the placeholder's eight characters.
-    // jsdom does not compute grid tracks, so read the rule the grid's own class carries.
+  /** The ledger grid's column widths, read off the rule its own class carries (jsdom computes no
+   *  grid tracks). */
+  function ledgerTracks(container: HTMLElement): number[] {
     const grid = container.querySelector('[data-ledger-layout]') as HTMLElement;
     const css = Array.from(document.querySelectorAll('style'))
       .map((s) => s.textContent ?? '')
       .join('\n');
     const gridClass = Array.from(grid.classList).find((c) => c.startsWith('css-')) as string;
-    const rule = css.slice(css.indexOf(`.${gridClass}{`));
+    const rule = css.slice(css.lastIndexOf(`.${gridClass}{`));
     const tracks = /grid-template-columns:([^;]+);/.exec(rule)?.[1] ?? '';
-    expect(tracks).toContain('minmax(112px, 1.15fr)');
-    expect(tracks).toMatch(/ 104px /);
+    return tracks.trim().split(/\s+/).map((t) => parseFloat(t));
+  }
+
+  function width(name: string): number {
+    return Number(screen.getByRole('separator', { name: `Resize ${name} column` }).getAttribute('aria-valuenow'));
+  }
+
+  it('fits the card exactly and never scrolls sideways', () => {
+    stubLedgerWidth(700);
+    const { container } = render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
+
+    const tracks = ledgerTracks(container);
+    expect(tracks).toHaveLength(8);
+    expect(tracks.reduce((a, b) => a + b, 0)).toBeCloseTo(700, 0);
+    const grid = container.querySelector('[data-ledger-layout]') as HTMLElement;
+    for (const el of [grid, grid.parentElement as HTMLElement]) {
+      expect(['auto', 'scroll']).not.toContain(getComputedStyle(el).overflowX);
+    }
+  });
+
+  it('widens a column from the keyboard, the others giving way no further than their minimums', () => {
+    stubLedgerWidth(900);
+    render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
+
+    const handle = screen.getByRole('separator', { name: 'Resize Hardware Category column' });
+    const before = width('Hardware Category');
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(width('Hardware Category')).toBe(before + 16);
+
+    // Far past what the others can give: each stops at its minimum. The catalog's $5 prints as 5.00,
+    // four characters at 8 px plus the input chrome; Order As is empty, so its floor is the
+    // placeholder's eight characters.
+    for (let k = 0; k < 40; k++) fireEvent.keyDown(handle, { key: 'ArrowRight', shiftKey: true });
+    expect(width('Order As')).toBe(112);
+    expect(width('Unit Cost')).toBe(104);
+    expect(width('Scheduled Part Number')).toBe(72);
+    expect(width('Selected / Needed')).toBe(170);
+  });
+
+  it('remembers a resized column for the next visit', () => {
+    stubLedgerWidth(700);
+    // This runner exposes no Storage, so hand the page a plain in-memory one.
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+      clear: () => store.clear(),
+    });
+    const first = render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
+    const handle = screen.getByRole('separator', { name: 'Resize Order As column' });
+    fireEvent.keyDown(handle, { key: 'ArrowRight', shiftKey: true });
+    const widened = width('Order As');
+    expect(localStorage.getItem('uc-nexus:column-widths:po-draft-ledger')).toContain('orderAs');
+    first.unmount();
+
+    render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
+    expect(width('Order As')).toBe(widened);
   });
 });

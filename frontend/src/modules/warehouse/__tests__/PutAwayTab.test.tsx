@@ -52,24 +52,74 @@ vi.mock('@apollo/client/react', () => ({
 
 vi.mock('../../../components/Toast', () => ({ useToast: () => ({ showToast: vi.fn() }) }));
 
+// jsdom has no layout: every table reports the ~770 px a Put Away table gets in an 850 px window.
+beforeEach(() => {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      private cb: ResizeObserverCallback;
+      constructor(cb: ResizeObserverCallback) {
+        this.cb = cb;
+      }
+      observe() {
+        this.cb([{ contentRect: { width: 770 } } as ResizeObserverEntry], this as unknown as ResizeObserver);
+      }
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+function renderTab() {
+  return render(
+    <MemoryRouter>
+      <PutAwayTab />
+    </MemoryRouter>,
+  );
+}
+
 describe('PutAwayTab at a narrow width (#856)', () => {
-  it('pins the Assign cell to the right edge of both tables so it never scrolls out of view', () => {
-    render(
-      <MemoryRouter>
-        <PutAwayTab />
-      </MemoryRouter>,
-    );
+  it('fits both tables to their width, so Assign is in view without any sideways scroll', () => {
+    const { container } = renderTab();
+
+    const tables = Array.from(container.querySelectorAll('[data-fit-table]')) as HTMLElement[];
+    expect(tables.map((t) => t.getAttribute('data-fit-table'))).toEqual(['put-away-project', 'put-away-stock-pool']);
+    for (const box of tables) {
+      expect(['auto', 'scroll']).not.toContain(getComputedStyle(box).overflowX);
+      const cols = Array.from(box.querySelectorAll('col')).map((c) => parseFloat(c.style.width));
+      expect(cols.reduce((a, b) => a + b, 0)).toBeCloseTo(770, 0);
+      // Assign's column is last and keeps its full width.
+      expect(cols[cols.length - 1]).toBe(96);
+    }
 
     const assigns = screen.getAllByRole('button', { name: 'Assign' });
-    // One project row, one stock pool row.
     expect(assigns).toHaveLength(2);
     for (const button of assigns) {
       const cell = button.closest('td') as HTMLElement;
-      const style = getComputedStyle(cell);
-      expect(style.position).toBe('sticky');
-      expect(style.right).toBe('0px');
-      // It stays the last cell, so keyboard order through the row is unchanged.
+      // No pinning: it is an ordinary last cell, so keyboard order through the row is unchanged.
+      expect(getComputedStyle(cell).position).not.toBe('sticky');
       expect(cell.nextElementSibling).toBeNull();
     }
+  });
+
+  it('lets each table column be resized from the keyboard, with the column named', () => {
+    renderTab();
+
+    for (const name of ['Description', 'PO#', 'Received', 'Destination', 'Qty to put away', 'Item Number']) {
+      expect(screen.getAllByRole('separator', { name: `Resize ${name} column` }).length).toBeGreaterThan(0);
+    }
+    // Assign is a fixed column: no handle.
+    expect(screen.queryByRole('separator', { name: 'Resize Assign column' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the destination pickers whole at their minimum', () => {
+    renderTab();
+
+    const destination = screen.getAllByRole('separator', { name: 'Resize Destination column' })[0];
+    expect(Number(destination.getAttribute('aria-valuenow'))).toBeGreaterThanOrEqual(248);
   });
 });
