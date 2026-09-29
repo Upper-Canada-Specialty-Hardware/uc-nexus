@@ -44,6 +44,7 @@ import GpCompanyLabel from '../../relay/GpCompanyLabel';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import { FONT_MONO, microLabelSx, monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 import { fmtDate, fmtRelative, parseServerDate } from '../../utils/serverDate';
 
 interface RelayInstall {
@@ -304,6 +305,8 @@ export default function RelayInstallsPage() {
         field: 'enrolled',
         headerName: 'Status',
         width: 170,
+        // Both chips side by side.
+        minWidth: 170,
         renderCell: (p) => {
           const isLive = liveInstallId != null && p.row.id === liveInstallId;
           return (
@@ -365,6 +368,7 @@ export default function RelayInstallsPage() {
         field: 'secretHash',
         headerName: 'Secret hash',
         width: 150,
+        minWidth: 140,
         sortable: false,
         filterable: false,
         renderCell: (p) => {
@@ -392,6 +396,7 @@ export default function RelayInstallsPage() {
         field: 'adopt',
         headerName: 'Recovery',
         width: 300,
+        resizable: false,
         sortable: false,
         filterable: false,
         renderCell: (p) => {
@@ -424,6 +429,8 @@ export default function RelayInstallsPage() {
     ],
     [liveInstallId, copy],
   );
+  // #909: the grid fits its width and remembers resized columns.
+  const { setContainer, gridProps } = useGridColumnFit('nexus-admin.relay-installs', columns);
 
   if (!isNexusAdmin) {
     return (
@@ -583,8 +590,9 @@ export default function RelayInstallsPage() {
         Installs
       </Typography>
       <DataGrid
+        ref={setContainer}
+        {...gridProps}
         rows={installs}
-        columns={columns}
         loading={loading}
         autoHeight
         // A handful of rows, ever - one per relay workstation. Virtualization buys nothing here and
@@ -594,7 +602,7 @@ export default function RelayInstallsPage() {
         disableRowSelectionOnClick
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-        sx={{ '& .ts-cell': { ...monoSx, ...tabularSx, color: 'text.secondary' } }}
+        sx={[gridProps.sx, { '& .ts-cell': { ...monoSx, ...tabularSx, color: 'text.secondary' } }]}
       />
 
       {/* A refused or flapping relay leaves no trace on the grid above - the install row just never

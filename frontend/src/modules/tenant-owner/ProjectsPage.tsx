@@ -14,6 +14,7 @@ import { GpJobStateTag } from '../../components/GpJobStateTag';
 import { isGpJobNotOpen, isGpSetupBroken } from '../../types/project';
 import { monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 import CreateGpJobDialog from './CreateGpJobDialog';
 import { type ProjectFormValue } from './ProjectEditDialog';
 
@@ -113,6 +114,7 @@ export default function ProjectsPage() {
         field: 'offSiteStorageAgreement',
         headerName: 'OSSA',
         width: 90,
+        minWidth: 90,
         sortable: true,
         renderCell: (params) =>
           params.row.offSiteStorageAgreement ? (
@@ -125,6 +127,7 @@ export default function ProjectsPage() {
         field: 'openingCount',
         headerName: 'Openings',
         width: 100,
+        minWidth: 100,
         type: 'number',
         headerAlign: 'right',
         align: 'right',
@@ -136,6 +139,7 @@ export default function ProjectsPage() {
         field: 'archived',
         headerName: 'State',
         width: 190,
+        minWidth: 190,
         sortable: true,
         renderCell: (params) =>
           params.row.archived || isGpJobNotOpen(params.row) ? (
@@ -153,6 +157,7 @@ export default function ProjectsPage() {
         field: 'gpSetupOk',
         headerName: 'GP Setup',
         width: 150,
+        minWidth: 150,
         sortable: true,
         renderCell: (params) =>
           isGpSetupBroken(params.row) ? <GpSetupBadge project={params.row} /> : <span>—</span>,
@@ -160,6 +165,8 @@ export default function ProjectsPage() {
     ],
     [],
   );
+  // #909: the grid fits its width and remembers resized columns.
+  const { setContainer, gridProps } = useGridColumnFit('tenant-owner.projects', columns);
 
   if (!ownsTenant) {
     return (
@@ -214,19 +221,23 @@ export default function ProjectsPage() {
       </FadeIn>
 
       <DataGrid
+        ref={setContainer}
+        {...gridProps}
         rows={projects}
-        columns={columns}
         loading={loading}
         onRowClick={handleRowClick}
         autoHeight
         disableRowSelectionOnClick
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-        sx={{
-          '& .MuiDataGrid-row': { cursor: 'pointer' },
-          // An archived row is still legible, just visibly out of play.
-          '& .archived-row': { opacity: 0.62 },
-        }}
+        sx={[
+          gridProps.sx,
+          {
+            '& .MuiDataGrid-row': { cursor: 'pointer' },
+            // An archived row is still legible, just visibly out of play.
+            '& .archived-row': { opacity: 0.62 },
+          },
+        ]}
         getRowClassName={(params) => (params.row.archived ? 'archived-row' : '')}
       />
 

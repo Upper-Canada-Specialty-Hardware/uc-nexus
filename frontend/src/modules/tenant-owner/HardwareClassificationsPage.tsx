@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
@@ -29,6 +29,7 @@ import { PO_OPTIONS } from '../import/types';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
 import { FadeIn } from '../../motion';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 
 /**
  * #735: correct a project's hardware classifications after import, one product at a time or in bulk.
@@ -110,7 +111,7 @@ export default function HardwareClassificationsPage() {
     return list.map((r) => ({ id: rowId(r), ...r }));
   }, [all, search]);
 
-  const apply = async (targets: ClassificationRow[], choice: Choice) => {
+  const apply = useCallback(async (targets: ClassificationRow[], choice: Choice) => {
     const changes = targets
       .filter((r) => r.choice !== choice)
       .map((r) => ({ hardwareCategory: r.hardwareCategory, productCode: r.productCode, choice }));
@@ -123,11 +124,11 @@ export default function HardwareClassificationsPage() {
     } catch (e) {
       setRefusal(e instanceof Error ? e.message : String(e));
     }
-  };
+  }, [id, setClassifications, showToast]);
 
   const selectedRows = all.filter((r) => selection.ids.has(rowId(r)));
 
-  const columns: GridColDef[] = [
+  const columns: GridColDef[] = useMemo(() => [
     {
       field: 'productCode',
       headerName: 'Product Code',
@@ -140,12 +141,14 @@ export default function HardwareClassificationsPage() {
       ),
     },
     { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 130 },
-    { field: 'quantity', headerName: 'Qty', type: 'number', width: 70 },
-    { field: 'openingCount', headerName: 'Openings', type: 'number', width: 90 },
+    { field: 'quantity', headerName: 'Qty', type: 'number', width: 70, minWidth: 70 },
+    { field: 'openingCount', headerName: 'Openings', type: 'number', width: 90, minWidth: 90 },
     {
       field: 'choice',
       headerName: 'Classification',
       width: 320,
+      // The three toggles side by side, plus the Mixed / Unclassified chip.
+      minWidth: 320,
       sortable: true,
       renderCell: (p) => {
         const row = p.row as ClassificationRow;
@@ -172,7 +175,11 @@ export default function HardwareClassificationsPage() {
         );
       },
     },
-  ];
+  ], [saving, apply]);
+  // #909: the grid fits its width and remembers resized columns.
+  const { setContainer, gridProps } = useGridColumnFit('tenant-owner.hardware-classifications', columns, {
+    checkboxSelection: true,
+  });
 
   const project = projectData?.adminProjectDetail.project;
   const changes = changesData?.hardwareClassificationChanges ?? [];
@@ -247,8 +254,9 @@ export default function HardwareClassificationsPage() {
         !error && (
           <Box sx={{ height: 'calc(100vh - 420px)', minHeight: 320, width: '100%' }}>
             <DataGrid
+              ref={setContainer}
+              {...gridProps}
               rows={rows}
-              columns={columns}
               density="compact"
               checkboxSelection
               disableRowSelectionOnClick

@@ -14,6 +14,7 @@ import { infoHeader } from '../../components/InfoColumnHeader';
 import PageHeader from '../../components/PageHeader';
 import { monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 import type { Project } from '../../types/project';
 
 interface ProgressRow {
@@ -45,6 +46,7 @@ const columns: GridColDef[] = [
     headerName: 'Required',
     type: 'number',
     width: 110,
+    minWidth: 110,
     headerAlign: 'right',
     align: 'right',
     renderHeader: infoHeader(
@@ -57,6 +59,7 @@ const columns: GridColDef[] = [
     headerName: 'PO Drafted',
     type: 'number',
     width: 120,
+    minWidth: 120,
     headerAlign: 'right',
     align: 'right',
     renderHeader: infoHeader('PO Drafted', 'Ordered quantity on DRAFT purchase orders for this project.'),
@@ -66,6 +69,7 @@ const columns: GridColDef[] = [
     headerName: 'Ordered',
     type: 'number',
     width: 110,
+    minWidth: 110,
     headerAlign: 'right',
     align: 'right',
     renderHeader: infoHeader(
@@ -78,6 +82,7 @@ const columns: GridColDef[] = [
     headerName: 'Received',
     type: 'number',
     width: 110,
+    minWidth: 110,
     headerAlign: 'right',
     align: 'right',
     renderHeader: infoHeader(
@@ -90,6 +95,7 @@ const columns: GridColDef[] = [
     headerName: 'Back-Ordered',
     type: 'number',
     width: 130,
+    minWidth: 130,
     headerAlign: 'right',
     align: 'right',
     renderHeader: infoHeader(
@@ -102,6 +108,7 @@ const columns: GridColDef[] = [
     headerName: 'Shipped Out',
     type: 'number',
     width: 120,
+    minWidth: 120,
     headerAlign: 'right',
     align: 'right',
     renderHeader: infoHeader('Shipped Out', 'Total quantity shipped out for this project across all packing slips.'),
@@ -150,6 +157,8 @@ export default function ProjectPurchasingProgressPage() {
     const list = progressData?.projectProgressByProduct ?? [];
     return list.map((r) => ({ id: `${r.hardwareCategory}::${r.productCode}`, ...r }));
   }, [progressData]);
+  // #909: the grid fits its width and remembers resized columns.
+  const { setContainer, gridProps } = useGridColumnFit('tenant-owner.project-purchasing-progress', columns);
 
   return (
     <Box>
@@ -213,8 +222,9 @@ export default function ProjectPurchasingProgressPage() {
       {selected && rows.length > 0 && (
         <Box sx={{ height: 'calc(100vh - 280px)', width: '100%' }}>
           <DataGrid
+            ref={setContainer}
+            {...gridProps}
             rows={rows}
-            columns={columns}
             density="compact"
             pageSizeOptions={[10, 25, 50, 100]}
             initialState={{ pagination: { paginationModel: { pageSize: 25 } } }}
