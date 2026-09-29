@@ -414,7 +414,10 @@ it('shows the held PO registrations on the PO table', async () => {
   ]);
 
   expect(await screen.findByText('Held PO registrations')).toBeInTheDocument();
-  await waitFor(() => expect(outboxAsked).toContainEqual({ ops: ['create_po'] }));
+  // #854: only what still needs someone - finished registrations never pile up above the table.
+  await waitFor(() =>
+    expect(outboxAsked).toContainEqual({ ops: ['create_po'], statuses: ['PENDING', 'IN_FLIGHT', 'FAILED'] }),
+  );
 });
 
 // The normal state: nothing is held, and the table looks exactly as it did.

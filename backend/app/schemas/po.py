@@ -131,16 +131,29 @@ def _po_outbox_identity(po_id: uuid.UUID) -> tuple[uuid.UUID | None, str]:
     project_id routes a terminal failure to a notification; a PO with no project yields None and the
     worker falls back to the queue UI rather than inventing a placeholder project. The label is the
     human line in that queue - a DRAFT being registered has no GP number yet (GP assigns it), so the
-    PO's own number, or its id, is the only stable handle. One row, two scalars, one round trip."""
+    PO's own number, or its id, is the only stable handle. One row, one round trip.
+
+    #854: named the way a buyer knows the draft - its request number and its job - rather than by the
+    PO's internal id, which is what the queue showed before."""
     from sqlalchemy import select
 
+    from app.models.project import Project as ProjectModel
     from app.models.purchase_order import PurchaseOrder as POModel
 
     with SessionLocal() as session:
-        row = session.execute(select(POModel.project_id, POModel.po_number).where(POModel.id == po_id)).first()
-    project_id = row.project_id if row is not None else None
-    number = row.po_number if row is not None else None
-    return project_id, f"Register PO {number or po_id} in GP"
+        row = session.execute(
+            select(POModel.project_id, POModel.po_number, POModel.request_number, ProjectModel.project_id.label("job"))
+            .outerjoin(ProjectModel, POModel.project_id == ProjectModel.id)
+            .where(POModel.id == po_id)
+        ).first()
+    if row is None:
+        return None, f"Register PO {po_id} in GP"
+    return row.project_id, register_po_label(row.request_number or row.po_number or str(po_id), row.job)
+
+
+def register_po_label(name: str, job: str | None) -> str:
+    """'Register PO-REQ-097 (job 80001) in GP', or without the job for a stock PO (#854)."""
+    return f"Register {name} (job {job}) in GP" if job else f"Register {name} in GP"
 
 
 def _resolve_line_manufacturers(session, project_id, line_items_data) -> list[str | None]:

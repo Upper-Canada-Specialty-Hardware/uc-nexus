@@ -30,6 +30,12 @@ interface GpWriteQueuePanelProps {
    * compared by value by Apollo, but a stable one keeps the query identity obvious.
    */
   ops?: string[];
+  /**
+   * #854: only writes in these states. The PO table passes the ones that still need someone -
+   * waiting, in flight, failed - so succeeded history never piles up above its rows. Left out, every
+   * state is listed, which is what the admin queue wants. Pass a module-level constant, like `ops`.
+   */
+  statuses?: string[];
   heading?: string;
   /**
    * The mounting inside a module (#754): the columns that only an admin reads are dropped, and the
@@ -63,12 +69,12 @@ const NORMAL_RETRY_WARNING =
 // time is an admin's forensic detail, so neither earns its width inside a module.
 const COMPACT_FIELDS = ['label', 'status', 'attempts', 'nextAttemptAt', 'lastError', 'actions'];
 
-export default function GpWriteQueuePanel({ ops, heading, compact }: GpWriteQueuePanelProps) {
+export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: GpWriteQueuePanelProps) {
   const { showToast } = useToast();
   const [retryTarget, setRetryTarget] = useState<OutboxEntry | null>(null);
   const [cancelTarget, setCancelTarget] = useState<OutboxEntry | null>(null);
 
-  const variables = useMemo(() => (ops ? { ops } : {}), [ops]);
+  const variables = useMemo(() => ({ ...(ops ? { ops } : {}), ...(statuses ? { statuses } : {}) }), [ops, statuses]);
 
   const { data, loading } = useQuery<{ gpOutbox: OutboxEntry[] }>(GET_GP_OUTBOX, {
     variables,

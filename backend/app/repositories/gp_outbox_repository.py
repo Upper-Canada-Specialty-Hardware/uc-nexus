@@ -160,6 +160,7 @@ def list_entries(
     limit: int = 100,
     ops: list[str] | None = None,
     company: str | None = None,
+    statuses: list[str] | None = None,
 ) -> list[GpWriteOutbox]:
     """The queue, newest first.
 
@@ -173,6 +174,10 @@ def list_entries(
     stmt = select(GpWriteOutbox).order_by(GpWriteOutbox.created_at.desc()).limit(limit)
     if status:
         stmt = stmt.where(GpWriteOutbox.status == status)
+    if statuses:
+        # #854: a module's held-writes panel asks only for what still needs someone - waiting, in
+        # flight, failed - so the finished history never piles up above its table.
+        stmt = stmt.where(GpWriteOutbox.status.in_(statuses))
     if ops:
         stmt = stmt.where(GpWriteOutbox.relay_op.in_(ops))
     if company is not None:
