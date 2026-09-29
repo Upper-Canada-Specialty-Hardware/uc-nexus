@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import strawberry
 
-from app.auth import current_user, tenant_scope
+from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
 from app.errors import InventoryShortfallError
 from app.repositories import (
@@ -263,7 +263,10 @@ def finalize_payload(input: FinalizeImportSessionInput, *, created_by_user_id: s
 class ImportMutations:
     @strawberry.mutation
     def finalize_import_session(self, info: strawberry.Info, input: FinalizeImportSessionInput) -> FinalizeImportResult:
-        input_data = finalize_payload(input, created_by_user_id=current_user(info)["user_id"])
+        auth = current_user(info)
+        input_data = finalize_payload(input, created_by_user_id=auth["user_id"])
+        # #859: the requests a finalize raises name the person who raised them, not the import.
+        requester = resolve_display_name(auth["user_id"])
 
         with SessionLocal() as session:
             tenancy.require_project_in_scope(session, uuid.UUID(str(input.project_id)), tenant_scope(info))
@@ -272,7 +275,7 @@ class ImportMutations:
             # short selection raises InventoryShortfallError and nothing is written, so the creator
             # refines the selection here rather than the acceptor discovering it later.
             try:
-                result = import_repository.finalize_import_session(session, input_data)
+                result = import_repository.finalize_import_session(session, input_data, created_by=requester)
             except InventoryShortfallError as e:
                 # Notify the PO only for combos that are genuinely *not in the building* - a combo
                 # short only because another request has claimed it is not a purchasing problem, and

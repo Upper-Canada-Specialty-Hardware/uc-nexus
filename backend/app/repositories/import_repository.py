@@ -373,6 +373,12 @@ def reconcile_schedule(
     return results
 
 
+# The actor stamped when the schedule itself, not a person, makes the change: the re-upload closing
+# out or rejecting requests whose openings it removed. #859: it is no longer the requester of what a
+# finalize raises - that is the signed-in person, passed in as `created_by`. It stays the default
+# only for direct repository callers (the tests), which have no signed-in person.
+SCHEDULE_IMPORT_ACTOR = "Hardware Schedule Import"
+
 # The note stamped on a live in-flight request when a full-schedule re-upload lands underneath it.
 SCHEDULE_CHANGED_NOTE = (
     "The hardware schedule was re-uploaded after this request was created, so its bill of hardware "
@@ -550,13 +556,13 @@ def _handle_schedule_replacement(
                 # Part-worked: the batches that already went out are the record of what happened, so
                 # the request closes out rather than being rejected as though nothing had.
                 sar.status = ShopAssemblyRequestStatus.APPROVED
-                sar.approved_by = "Hardware Schedule Import"
+                sar.approved_by = SCHEDULE_IMPORT_ACTOR
                 sar.approved_at = datetime.utcnow()
             else:
                 # Nothing left to assemble and nothing ever dispatched: reject it rather than leave an
                 # empty request on the manager's board.
                 sar.status = ShopAssemblyRequestStatus.REJECTED
-                sar.rejected_by = "Hardware Schedule Import"
+                sar.rejected_by = SCHEDULE_IMPORT_ACTOR
                 sar.rejection_reason = "All of this request's openings were removed by a hardware schedule re-upload."
                 sar.rejected_at = datetime.utcnow()
             continue
@@ -575,7 +581,7 @@ def _handle_schedule_replacement(
 
         if pending and not req.items:
             req.status = ShippingOutRequestStatus.REJECTED
-            req.rejected_by = "Hardware Schedule Import"
+            req.rejected_by = SCHEDULE_IMPORT_ACTOR
             req.rejection_reason = "All of this request's lines were removed by a hardware schedule re-upload."
             req.rejected_at = datetime.utcnow()
             warehouse_repository.release_reservations(session, ReservationSource.SHIPPING_OUT_REQUEST, req.id)
@@ -703,8 +709,13 @@ def plan_po_claims(
 def finalize_import_session(
     session: Session,
     input_data: dict,
+    *,
+    created_by: str = SCHEDULE_IMPORT_ACTOR,
 ) -> dict:
     """Finalize an import session: attach openings/POs/PRs/SAR to an existing project atomically.
+
+    `created_by` is the display name of whoever finalized (#859), stamped as the requester on the
+    shipping-out and shop-assembly requests this raises.
 
     Since #342 this is also where inventory is **reserved**: creating a shop-assembly or
     shipping-out request gates on `available = on-hand - deficient - active reservations` and, if it
@@ -1087,7 +1098,7 @@ def finalize_import_session(
         session,
         project.id,
         shipping_pr_drafts or [],
-        created_by="Hardware Schedule Import",
+        created_by=created_by,
     )
 
     # 7. Shop-assembly request (#646)
@@ -1130,7 +1141,7 @@ def finalize_import_session(
                 }
                 for item_input in sar_items_input
             ],
-            created_by="Hardware Schedule Import",
+            created_by=created_by,
         )
 
     session.flush()

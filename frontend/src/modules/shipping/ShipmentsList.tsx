@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Alert,
   Box,
@@ -53,6 +54,7 @@ import EditShipmentDialog from './EditShipmentDialog';
 import DeliveryRequestDocument from './DeliveryRequestDocument';
 import {
   primaryWarehouse,
+  SHIPMENT_SLIP_PARAM,
   shipmentStatusDisplay,
   slipMaterialLines,
   slipOpeningSummary,
@@ -121,7 +123,11 @@ const LIFECYCLE_PROMPT: Record<LifecycleAction, { title: string; body: string; c
 export default function ShipmentsList({ projectId, heading }: Props) {
   const isGlobal = !projectId;
   const { showToast } = useToast();
-  const [search, setSearch] = useState('');
+  // #859: "View shipment" off the confirm toast lands here naming the new slip. The page opens
+  // searched to it and, once the list has it, with its row expanded - the slip is what was asked for.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const linkedSlip = searchParams.get(SHIPMENT_SLIP_PARAM);
+  const [search, setSearch] = useState(() => linkedSlip ?? '');
   const [projectFilter, setProjectFilter] = useState('');
   const [shown, setShown] = useState(PAGE);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -182,14 +188,39 @@ export default function ShipmentsList({ projectId, heading }: Props) {
 
   const visible = useMemo(() => slips.slice(0, shown), [slips, shown]);
 
-  const toggle = useCallback((id: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  // The linked slip reads as expanded while the parameter stands, rather than being copied into
+  // `expanded` by an effect; collapsing it by hand drops the parameter (see `toggle`).
+  const linkedSlipId = linkedSlip
+    ? data?.packingSlips.find((s) => s.packingSlipNumber === linkedSlip)?.id
+    : undefined;
+
+  const toggle = useCallback(
+    (id: string) => {
+      if (id === linkedSlipId) {
+        setSearchParams(
+          (prev) => {
+            const next = new URLSearchParams(prev);
+            next.delete(SHIPMENT_SLIP_PARAM);
+            return next;
+          },
+          { replace: true },
+        );
+        setExpanded((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        return;
+      }
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    },
+    [linkedSlipId, setSearchParams],
+  );
 
   const handleViewPdf = useCallback(
     async (slip: PackingSlip) => {
@@ -325,7 +356,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                 </TableRow>
               )}
               {visible.map((slip) => {
-                const isOpen = expanded.has(slip.id);
+                const isOpen = expanded.has(slip.id) || slip.id === linkedSlipId;
                 const status = shipmentStatusDisplay(slip.status);
                 const returnable = shippedUnits(slip);
                 return (

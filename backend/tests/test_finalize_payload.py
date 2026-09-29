@@ -11,6 +11,8 @@ wizard on a preview environment.
 No database: constructing the input and reading the dict is the whole test, which is the point.
 """
 
+import contextlib
+
 import pytest
 
 from app.schemas.imports import finalize_payload
@@ -208,3 +210,35 @@ def test_empty_collections_send_none_rather_than_an_empty_list(field):
         created_by_user_id="u",
     )
     assert payload[field] is None
+
+
+class _StopAfterFinalize(Exception):
+    pass
+
+
+def test_the_resolver_names_the_signed_in_person_as_the_requester(monkeypatch):
+    # #859: a shop-assembly request raised from the wizard read "by Hardware Schedule Import". The
+    # resolver resolves the caller's display name and hands it to finalize as `created_by`.
+    from app.schemas import imports as imports_schema
+
+    captured = {}
+
+    def fake_finalize(session, input_data, *, created_by):
+        captured["created_by"] = created_by
+        captured["created_by_user_id"] = input_data["created_by_user_id"]
+        raise _StopAfterFinalize
+
+    monkeypatch.setattr(imports_schema, "current_user", lambda info: {"user_id": "user_1"})
+    monkeypatch.setattr(imports_schema, "resolve_display_name", lambda user_id: "Dana Planner")
+    monkeypatch.setattr(imports_schema, "tenant_scope", lambda info: None)
+    monkeypatch.setattr(imports_schema.tenancy, "require_project_in_scope", lambda *a, **k: None)
+    monkeypatch.setattr(imports_schema, "SessionLocal", lambda: contextlib.nullcontext(object()))
+    monkeypatch.setattr(imports_schema.import_repository, "finalize_import_session", fake_finalize)
+
+    with pytest.raises(_StopAfterFinalize):
+        imports_schema.ImportMutations().finalize_import_session(
+            None,
+            FinalizeImportSessionInput(project_id="00000000-0000-0000-0000-000000000001", openings=[_opening()]),
+        )
+
+    assert captured == {"created_by": "Dana Planner", "created_by_user_id": "user_1"}

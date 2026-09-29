@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, within } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import { WizardProvider } from '../../../contexts/WizardContext';
@@ -490,6 +490,15 @@ describe('ImportWizard step transitions', () => {
 // Classification and then straight to Finalize.
 describe('ImportWizard schedule purpose', () => {
   const SCHEDULE_STEPS = ['Upload File', 'Classification', 'Finalize'];
+
+  it('names the project in the header (#859)', () => {
+    renderWizard({ purpose: 'schedule' });
+
+    const title = screen.getByTestId('wizard-title');
+    expect(title).toHaveTextContent('Import Hardware Schedule·P-100Test Project');
+    // The name is the part that gives way on a narrow bar, and says itself in full on hover.
+    expect(within(title).getByText('Test Project')).toHaveAttribute('title', 'Test Project');
+  });
 
   it('has no selection step on a project with nothing persisted yet', () => {
     renderWizard({ purpose: 'schedule' });

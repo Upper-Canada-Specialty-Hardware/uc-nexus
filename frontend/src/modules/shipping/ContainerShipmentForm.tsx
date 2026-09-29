@@ -12,6 +12,7 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
+import { useNavigate } from 'react-router-dom';
 import { CONFIRM_SHIPMENT_FROM_CONTAINERS } from '../../graphql/shipping';
 import { SHIPPING_REFETCH_QUERIES, SHIPPING_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import { useToast } from '../../components/Toast';
@@ -22,6 +23,7 @@ import {
   deliveryDetailsInput,
   EMPTY_DELIVERY_DETAILS,
   isWeightInvalid,
+  SHIPMENT_SLIP_PARAM,
   WEIGHT_ERROR,
   type DeliveryDetails,
 } from './deliveryRequest';
@@ -52,6 +54,7 @@ export default function ContainerShipmentForm({
   onShipped,
 }: Props) {
   const { showToast } = useToast();
+  const navigate = useNavigate();
   const { displayName } = useIdentity();
   const shipmentMethods = useShipmentMethods(!open);
   const [details, setDetails] = useState<DeliveryDetails>(EMPTY_DELIVERY_DETAILS);
@@ -70,12 +73,27 @@ export default function ContainerShipmentForm({
       }
       cache.gc();
     },
-    // The number is minted server-side now, so the toast reads it off the confirmed slip.
+    // The number is minted server-side now, so the toast reads it off the confirmed slip. #859: the
+    // dialog closes the moment this runs, so the toast is the only place the new slip is named - it
+    // stays until dismissed and carries the way to the shipment, which otherwise meant finding the
+    // Shipments page and searching for a number nobody had been shown.
     onCompleted: (data) => {
       const slipNumber = (
         data as { confirmShipmentFromContainers?: { packingSlipNumber?: string } } | undefined
       )?.confirmShipmentFromContainers?.packingSlipNumber;
-      showToast(slipNumber ? `Shipment ${slipNumber} confirmed` : 'Shipment confirmed', 'success');
+      showToast(
+        slipNumber ? `Shipment ${slipNumber} confirmed` : 'Shipment confirmed',
+        'success',
+        {
+          label: 'View shipment',
+          onClick: () =>
+            navigate(
+              slipNumber
+                ? `/app/shipping/shipments?${SHIPMENT_SLIP_PARAM}=${encodeURIComponent(slipNumber)}`
+                : '/app/shipping/shipments',
+            ),
+        },
+      );
       onShipped();
     },
     onError: (e) => setError(e.message),

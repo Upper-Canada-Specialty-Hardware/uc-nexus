@@ -69,7 +69,7 @@ import { mergeAddedProducts } from './draftOps';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { plural } from '../../utils/plural';
-import { FadeIn, StaggerItem, StaggerList } from '../../motion';
+import { FadeIn } from '../../motion';
 import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
 import { isDoorFrameItem } from '../../types/hardwareSchedule';
@@ -80,6 +80,7 @@ import PurchaseOrdersStep from './PurchaseOrdersStep';
 import type { GpCostCode } from './DraftOrganizer';
 import WizardNav from './WizardNav';
 import OverBuyConfirmModal from './OverBuyConfirmModal';
+import ImportSuccessDialog, { type ImportNextStep } from './ImportSuccessDialog';
 import { overBuyRisks } from './overBuy';
 import { buildProductReconRows, type ProductReconRow } from './reconciliation';
 import type { LineContext } from './DraftOrganizer';
@@ -1299,18 +1300,19 @@ export default function ImportWizard({
   }, [buildFinalizeInput, finalizeImport, showToast, poDraftBuild, draftGroups, uploadPoDocument, returnTo, onClose, navigate]);
 
   const handlePostAction = useCallback(
-    (action: 'po' | 'inventory' | 'home') => {
+    (action: ImportNextStep) => {
       setPostSuccessOpen(false);
+      onClose();
       if (action === 'po') {
-        onClose();
         // #851: the PO table opens on its default view (everything, newest first), so the drafts just
         // created are at the top; their ids ride along so the table tints them and scrolls to them.
         navigate(poTableHighlightHref(finalizeResult?.purchaseOrders.map((po) => po.id) ?? []));
-      } else if (action === 'inventory') {
-        onClose();
-        navigate('/app/warehouse');
+      } else if (action === 'shop-assembly') {
+        // #859: a shop assembly request's next step is its own requests page, not the PO table.
+        navigate('/app/shop-assembly/requests');
+      } else if (action === 'shipping') {
+        navigate('/app/shipping/requests');
       } else {
-        onClose();
         navigate('/app');
       }
     },
@@ -1430,9 +1432,34 @@ export default function ImportWizard({
             <IconButton edge="start" color="inherit" onClick={handleClose} aria-label="close">
               <X size={20} strokeWidth={1.75} />
             </IconButton>
-            <Typography noWrap sx={{ flex: 1, minWidth: 0 }} variant="h6" component="div">
-              {WIZARD_TITLES[purpose]}
-            </Typography>
+            {/* #859: the header names the job the wizard was opened for - step 1 on a project with no
+                schedule on file is just an upload box, and nothing else on it says which job. The name
+                gives way first (ellipsis) so it never widens the bar; the number stays whole. */}
+            <Box
+              data-testid="wizard-title"
+              sx={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 1 }}
+            >
+              <Typography noWrap variant="h6" component="span" sx={{ minWidth: 0, flexShrink: 1 }}>
+                {WIZARD_TITLES[purpose]}
+              </Typography>
+              <Typography variant="h6" component="span" aria-hidden sx={{ flexShrink: 0, opacity: 0.6 }}>
+                ·
+              </Typography>
+              <Typography variant="h6" component="span" noWrap sx={{ ...monoSx, flexShrink: 0 }}>
+                {project.projectId}
+              </Typography>
+              {project.description && (
+                <Typography
+                  variant="h6"
+                  component="span"
+                  noWrap
+                  title={project.description}
+                  sx={{ minWidth: 0, flexShrink: 10, fontWeight: 400 }}
+                >
+                  {project.description}
+                </Typography>
+              )}
+            </Box>
             <WizardNav
               currentStep={activeStepIndex + 1}
               totalSteps={steps.length}
@@ -1952,60 +1979,7 @@ export default function ImportWizard({
       />
 
       {/* Post-Success Dialog */}
-      <Dialog open={postSuccessOpen} maxWidth="sm" fullWidth>
-        <Box sx={{ p: 3 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
-            <Box sx={{ color: 'success.main', display: 'flex' }}>
-              <CheckCircle2 size={20} strokeWidth={1.75} />
-            </Box>
-            <Typography variant="h6">Import session completed successfully!</Typography>
-          </Box>
-
-          {finalizeResult && (
-            <Box sx={{ mb: 3 }}>
-              <StaggerList count={4}>
-                <StaggerItem>
-                  <Box sx={{ mb: 1 }}>
-                    <Typography sx={microLabelSx}>Project</Typography>
-                    <Typography variant="body2" sx={monoSx}>
-                      {finalizeResult.project.description || finalizeResult.project.projectId}
-                    </Typography>
-                  </Box>
-                </StaggerItem>
-                {finalizeResult.purchaseOrders.length > 0 && (
-                  <StaggerItem>
-                    <Typography variant="body2" sx={tabularSx}>
-                      {finalizeResult.purchaseOrders.length} PO(s) created
-                    </Typography>
-                  </StaggerItem>
-                )}
-                {finalizeResult.shopAssemblyRequest && (
-                  <StaggerItem>
-                    <Typography variant="body2">
-                      Shop Assembly request #{finalizeResult.shopAssemblyRequest.requestNumber} created
-                    </Typography>
-                  </StaggerItem>
-                )}
-              </StaggerList>
-            </Box>
-          )}
-
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-            What would you like to do next?
-          </Typography>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            <Button variant="outlined" onClick={() => handlePostAction('po')}>
-              View Purchase Orders
-            </Button>
-            <Button variant="outlined" onClick={() => handlePostAction('inventory')}>
-              View Warehouse
-            </Button>
-            <Button variant="contained" onClick={() => handlePostAction('home')}>
-              Return to Home
-            </Button>
-          </Box>
-        </Box>
-      </Dialog>
+      <ImportSuccessDialog open={postSuccessOpen} result={finalizeResult} onAction={handlePostAction} />
     </>
   );
 }

@@ -15,6 +15,12 @@ import {
 } from '../../types/deliveryRequestFields';
 import { CONTAINER_TYPE_LABEL, isStacked, type ContainerType } from './staging';
 
+/**
+ * The Shipments page query parameter naming one packing slip (#859): the page opens searched to it
+ * with its row expanded. The confirm toast's "View shipment" link is the one writer.
+ */
+export const SHIPMENT_SLIP_PARAM = 'slip';
+
 export type ShipmentStatus = 'SCHEDULED' | 'PICKED_UP' | 'DELIVERED';
 
 type ChipColor = 'default' | 'info' | 'warning' | 'success';
