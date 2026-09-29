@@ -15,6 +15,7 @@ import {
   Typography,
 } from '@mui/material';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 import { Plus, RotateCcw, Tag, X } from 'lucide-react';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
@@ -290,6 +291,9 @@ function TypePanel({
     ];
   }, [activeAttributes]);
 
+  // #909: the columns fit the grid's width and never scroll sideways; resized widths are remembered.
+  const { setContainer, gridProps } = useGridColumnFit('warehouse.custom-items.items', columns);
+
   return (
     <Box>
       <Stack direction="row" justifyContent="space-between" alignItems="center" gap={2} flexWrap="wrap">
@@ -403,8 +407,9 @@ function TypePanel({
       </Stack>
 
       <DataGrid
+        ref={setContainer}
+        {...gridProps}
         rows={items}
-        columns={columns}
         loading={itemsLoading}
         autoHeight
         density="compact"
@@ -412,7 +417,7 @@ function TypePanel({
         onRowClick={(params: GridRowParams) => onEditItem(params.row as CustomInventoryItem)}
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-        sx={{ '& .MuiDataGrid-row': { cursor: 'pointer' } }}
+        sx={[gridProps.sx, { '& .MuiDataGrid-row': { cursor: 'pointer' } }]}
       />
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>
         Click a row to edit its description and attribute values. Product codes are fixed once

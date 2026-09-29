@@ -11,6 +11,7 @@ import {
   ToggleButton,
 } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
+import { useGridColumnFit } from '../../components/useGridColumnFit';
 import { useQuery } from '@apollo/client/react';
 import { Gavel } from 'lucide-react';
 import { GET_DEFICIENT_ITEMS } from '../../graphql/warehouse';
@@ -38,11 +39,12 @@ export default function DeficientItemsReview() {
 
   const rows = useMemo(() => data?.deficientItems ?? [], [data]);
 
-  const columns: GridColDef[] = [
+  const columns = useMemo<GridColDef[]>(() => [
     {
       field: 'source',
       headerName: 'Source',
       width: 160,
+      minWidth: 120,
       renderCell: ({ row }) => (
         <Chip
           size="small"
@@ -67,6 +69,7 @@ export default function DeficientItemsReview() {
       field: 'deficientQuantity',
       headerName: 'Deficient',
       width: 110,
+      minWidth: 100,
       type: 'number',
       renderCell: ({ row }) => <Chip label={row.deficientQuantity} color="warning" size="small" />,
     },
@@ -87,6 +90,7 @@ export default function DeficientItemsReview() {
       field: 'actions',
       headerName: 'Resolve',
       width: 130,
+      resizable: false,
       sortable: false,
       filterable: false,
       renderCell: ({ row }) => (
@@ -100,7 +104,10 @@ export default function DeficientItemsReview() {
         </Button>
       ),
     },
-  ];
+  ], []);
+
+  // #909: the columns fit the grid's width and never scroll sideways; resized widths are remembered.
+  const { setContainer, gridProps } = useGridColumnFit('warehouse.deficient-items', columns);
 
   return (
     <Box>
@@ -142,8 +149,9 @@ export default function DeficientItemsReview() {
       ) : (
         <Box sx={{ height: 'calc(100vh - 320px)' }}>
           <DataGrid
+            ref={setContainer}
+            {...gridProps}
             rows={rows.map((r, i) => ({ ...r, id: `${r.inventoryLocationId ?? r.stockItemId ?? i}` }))}
-            columns={columns}
             loading={loading}
             disableRowSelectionOnClick
             pageSizeOptions={[25, 50, 100]}
