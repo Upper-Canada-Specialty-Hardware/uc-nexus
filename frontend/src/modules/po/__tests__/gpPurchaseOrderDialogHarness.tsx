@@ -415,7 +415,7 @@ export async function closeSelect() {
 
 export async function waitForVendorPreselect() {
   await waitFor(() =>
-    expect(screen.getByLabelText('GP Vendor')).toHaveTextContent('Ace Hardware Co'),
+    expect(screen.getByLabelText('GP Vendor')).toHaveValue('Ace Hardware Co'),
   );
 }
 

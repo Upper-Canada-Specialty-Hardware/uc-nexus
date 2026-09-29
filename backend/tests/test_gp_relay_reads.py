@@ -605,3 +605,39 @@ def test_relay_events_is_gated_like_relay_installs():
     """These rows name installs, builds and refused credentials - relay-credential territory, not
     working data, so they sit at the same bar as the install list itself."""
     assert ROOT_FIELD_POLICY["relayEvents"] == ROOT_FIELD_POLICY["relayInstalls"] == NEXUS_ADMIN_ROLE
+
+
+# --- #858: the PO header the generated document is prefilled from ------------------------------
+
+_TOTALS = {"po_number": "PO1", "subtotal": 100, "freight": 5, "miscellaneous": 0, "tax_amount": 13.65}
+
+
+def test_gp_po_totals_carries_the_po_header(monkeypatch):
+    fake = _install_fake_gateway(
+        monkeypatch,
+        {
+            "totals": _TOTALS,
+            "header": {
+                "shipping_method": "UPS GROUND",
+                "vendor_address_code": "PRIMARY",
+                "buyer_id": "JAYP",
+                "currency": None,
+                "vendor_address": {"name": "Ace", "address1": "1 Main St", "city": "Toronto"},
+                "ship_to_code": "WAREHOUSE",
+                "ship_to": None,
+            },
+        },
+    )
+
+    totals = asyncio.run(Query().gp_po_totals(FakeInfo(), company="TUBC", po_number="PO1"))
+    assert totals.tax_amount == 13.65
+    assert totals.header.shipping_method == "UPS GROUND"
+    assert totals.header.vendor_address.address1 == "1 Main St" and totals.header.vendor_address.state is None
+    assert totals.header.ship_to is None
+    assert fake.calls == [("TUBC", "read_po_totals", {"po_number": "PO1"})]
+
+
+def test_gp_po_totals_without_a_header_from_an_older_relay(monkeypatch):
+    _install_fake_gateway(monkeypatch, {"totals": _TOTALS})
+    totals = asyncio.run(Query().gp_po_totals(FakeInfo(), company="TUBC", po_number="PO1"))
+    assert totals.subtotal == 100.0 and totals.header is None

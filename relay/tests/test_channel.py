@@ -173,6 +173,25 @@ def test_read_po_totals_routes_to_econnect_and_strips_number(monkeypatch):
     assert reply["result"]["totals"]["subtotal"] == 20.0
 
 
+def test_read_po_totals_carries_the_po_header_for_the_document(monkeypatch):
+    # #858: the header rides along as an extra key next to the totals.
+    monkeypatch.setattr(econnect, "read_po_totals", lambda conn, po_number: {"po_number": po_number})
+    monkeypatch.setattr(econnect, "read_po_header", lambda conn, po_number: {"shipping_method": "UPS"})
+    reply = channel._dispatch("read_po_totals", "TUBC", {"po_number": "PO1"})
+    assert reply["result"]["header"] == {"shipping_method": "UPS"}
+
+
+def test_read_po_totals_keeps_the_totals_when_the_header_read_fails(monkeypatch):
+    def _boom(conn, po_number):
+        raise RuntimeError("Invalid column name 'PURCHCITY'")
+
+    monkeypatch.setattr(econnect, "read_po_totals", lambda conn, po_number: {"po_number": po_number})
+    monkeypatch.setattr(econnect, "read_po_header", _boom)
+    reply = channel._dispatch("read_po_totals", "TUBC", {"po_number": "PO1"})
+    assert reply["ok"] is True
+    assert reply["result"]["totals"] == {"po_number": "PO1"} and reply["result"]["header"] is None
+
+
 def test_read_po_totals_passes_through_none_when_not_found(monkeypatch):
     monkeypatch.setattr(econnect, "read_po_totals", lambda conn, po_number: None)
     reply = channel._dispatch("read_po_totals", "TUBC", {"po_number": "PO-NOPE"})

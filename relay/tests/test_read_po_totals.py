@@ -66,3 +66,62 @@ def test_falls_back_to_history_table():
 def test_returns_none_when_not_in_either_table():
     conn = _Conn(_Cursor({"POP10100": None, "POP30100": None}))
     assert econnect.read_po_totals(conn, "PO-NOPE") is None
+
+
+# --- #858: the header fields the generated PO document prints ------------------------------------
+
+
+class _HeaderRow:
+    def __init__(self, **overrides):
+        values = {
+            "shipping_method": "UPS GROUND     ",
+            "vendor_address_code": "PRIMARY",
+            "buyer_id": "JAYP",
+            "currency": "",
+            "v_name": "Ace Hardware Co",
+            "v_contact": "",
+            "v_addr1": "1 Main St",
+            "v_addr2": "",
+            "v_addr3": None,
+            "v_city": "Toronto",
+            "v_state": "ON",
+            "v_zip": "M1M 1M1",
+            "v_country": "Canada",
+            "ship_to_code": "WAREHOUSE",
+            "s_name": "Upper Canada",
+            "s_contact": "Receiving",
+            "s_addr1": "2 Dock Rd",
+            "s_addr2": "",
+            "s_addr3": "",
+            "s_city": "Vancouver",
+            "s_state": "BC",
+            "s_zip": "V5V 5V5",
+            "s_country": "",
+        }
+        values.update(overrides)
+        self.__dict__.update(values)
+
+
+def test_read_po_header_trims_and_blanks_to_none():
+    out = econnect.read_po_header(_Conn(_Cursor({"POP10100": _HeaderRow()})), "PO1")
+    assert out["shipping_method"] == "UPS GROUND"
+    assert out["currency"] is None
+    assert out["vendor_address"] == {
+        "name": "Ace Hardware Co",
+        "contact": None,
+        "address1": "1 Main St",
+        "address2": None,
+        "address3": None,
+        "city": "Toronto",
+        "state": "ON",
+        "postal_code": "M1M 1M1",
+        "country": "Canada",
+    }
+    assert out["ship_to_code"] == "WAREHOUSE"
+    assert out["ship_to"]["name"] == "Upper Canada" and out["ship_to"]["country"] is None
+
+
+def test_read_po_header_falls_back_to_history_and_none_when_missing():
+    conn = _Conn(_Cursor({"POP10100": None, "POP30100": _HeaderRow(buyer_id="SAM")}))
+    assert econnect.read_po_header(conn, "PO-HIST")["buyer_id"] == "SAM"
+    assert econnect.read_po_header(_Conn(_Cursor({})), "PO-NOPE") is None

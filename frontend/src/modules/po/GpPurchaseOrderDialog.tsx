@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Checkbox,
@@ -11,6 +12,7 @@ import {
   Stack,
   TextField,
   Typography,
+  createFilterOptions,
 } from '@mui/material';
 import { alpha, keyframes } from '@mui/material/styles';
 import { Trash2, Plus, RefreshCw, Tag, ClipboardPaste } from 'lucide-react';
@@ -48,6 +50,7 @@ import { landPastedRows, parseSpreadsheetPaste } from './spreadsheetPaste';
 import { PasteSummaryBanner, SpreadsheetPastePanel, type PasteSummary } from './SpreadsheetPastePanel';
 import ProjectPicker from '../../components/ProjectPicker';
 import ProcessingStep from '../../components/ProcessingStep';
+import { computeRegisterTotals, formatMoney } from './registerTotals';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
@@ -250,6 +253,11 @@ function GpPickField({
     </TextField>
   );
 }
+
+// #858: a vendor is known by its GP id as often as by its name, so typing either one matches.
+const gpVendorFilterOptions = createFilterOptions<GpVendorOption>({
+  stringify: (v) => `${v.vendorId} ${v.vendorName}`,
+});
 
 // Pick the live GP vendor that best matches an imported draft's vendor name (issue #175, reworked for
 // #200 now that the picker reads gpVendors live instead of a locally-synced mirror). Returns the match
@@ -536,6 +544,26 @@ export default function GpPurchaseOrderDialog({
     return (useManualTaxEntry ? taxScheduleManual : taxScheduleId).trim() || null;
   }, [isForeignCurrency, useManualTaxEntry, taxScheduleManual, taxScheduleId]);
   const pickedTaxSchedule = gpTaxSchedules.find((t) => t.taxScheduleId === pickedTaxScheduleId) ?? null;
+
+  // #858: the totals shown before Register. The tax is an estimate off the picked schedule's own
+  // detail rates (see registerTotals for how it is worked); a foreign-currency PO carries no tax, and
+  // a schedule typed by hand has no rates to estimate from, so its tax is left unknown.
+  const registerTotals = useMemo(() => {
+    const taxPercents = isForeignCurrency
+      ? []
+      : pickedTaxSchedule
+        ? pickedTaxSchedule.details.length > 0
+          ? pickedTaxSchedule.details.map((d) => d.percent)
+          : [pickedTaxSchedule.percent]
+        : null;
+    return computeRegisterTotals({
+      lines: lineItems,
+      freight: shippingCost,
+      miscellaneous,
+      tradeDiscount,
+      taxPercents,
+    });
+  }, [isForeignCurrency, pickedTaxSchedule, lineItems, shippingCost, miscellaneous, tradeDiscount]);
 
   // Issue #232: suggest the ordering vendor from each line's TITAN manufacturer. The manufacturer is
   // the derived POLineItem.manufacturer (resolved server-side from the line's linked HardwareItem),
@@ -1284,9 +1312,12 @@ export default function GpPurchaseOrderDialog({
 
   // Issue #232: the manufacturer-driven vendor suggestion, shown under the vendor picker once every
   // line manufacturer's suggestion has resolved. Nothing renders until then, or when the lines carry
-  // no known manufacturer ('none').
+  // no known manufacturer ('none'). #858: the "pick a vendor manually" note ('empty') goes as soon as
+  // a vendor is picked - it asks for exactly that, and left up it reads as if the pick did not take.
   const manufacturerHintNode =
-    suggestionsLoaded && manufacturerHint.kind !== 'none' ? (
+    suggestionsLoaded &&
+    manufacturerHint.kind !== 'none' &&
+    !(manufacturerHint.kind === 'empty' && gpVendorId) ? (
       manufacturerHint.kind === 'single' ? (
         <Alert severity="info" sx={{ mt: 1 }}>
           Suggested from manufacturer <strong>{manufacturerHint.label}</strong>:{' '}
@@ -1339,6 +1370,31 @@ export default function GpPurchaseOrderDialog({
     );
   }, [lastPaste, lineItems, lineErrors]);
   const lastPasteKeys = useMemo(() => new Set(lastPaste?.keys ?? []), [lastPaste]);
+
+  // #858: the figures in the totals row under the lines. The trade discount only shows once there is
+  // one, and a tax still unknown says what it is waiting on instead of reading as zero.
+  const totalsFigures: { label: string; value: string; strong?: boolean }[] = [
+    { label: 'Subtotal', value: formatMoney(registerTotals.subtotal) },
+    ...(registerTotals.tradeDiscount
+      ? [{ label: 'Trade discount', value: `-${formatMoney(registerTotals.tradeDiscount)}` }]
+      : []),
+    { label: 'Freight', value: formatMoney(registerTotals.freight) },
+    { label: 'Miscellaneous', value: formatMoney(registerTotals.miscellaneous) },
+    {
+      label: 'Tax (estimate)',
+      value:
+        registerTotals.tax !== null
+          ? formatMoney(registerTotals.tax)
+          : useManualTaxEntry
+            ? 'Set by GP'
+            : 'Pick a tax schedule',
+    },
+    {
+      label: registerTotals.tax === null ? 'Total before tax' : 'Total',
+      value: `${formatMoney(registerTotals.total)}${gpVendorId ? ` ${gpVendorCurrency}` : ''}`,
+      strong: true,
+    },
+  ];
 
   const actions = (
     <Stack direction="row" spacing={1}>
@@ -1470,23 +1526,50 @@ export default function GpPurchaseOrderDialog({
         {isRegister ? (
           <Box>
             <Stack direction="row" spacing={0.5} alignItems="flex-start">
-              <TextField
-                select
-                label="GP Vendor"
-                value={gpVendorId ?? ''}
-                onChange={(e) => handleGpVendorChange(e.target.value)}
+              {/* #858: a company holds hundreds of GP vendors (UBC has 344), so the pick is typed
+                  rather than scrolled - by the vendor's GP id or by any part of its name. */}
+              <Autocomplete<GpVendorOption>
+                options={gpVendors}
+                value={selectedVendor}
+                onChange={(_, v) => handleGpVendorChange(v?.vendorId ?? '')}
+                isOptionEqualToValue={(opt, val) => opt.vendorId === val.vendorId}
+                getOptionLabel={(v) => v.vendorName}
+                getOptionKey={(v) => v.vendorId}
+                filterOptions={gpVendorFilterOptions}
                 size="small"
-                sx={{ flex: 1 }}
+                sx={{ flex: 1, minWidth: 0 }}
                 disabled={!relayConnected || gpVendors.length === 0}
-                error={!!errors.vendor}
-                helperText={vendorHelper}
-              >
-                {gpVendors.map((v) => (
-                  <MenuItem key={v.vendorId} value={v.vendorId}>
-                    {v.vendorName}
-                  </MenuItem>
-                ))}
-              </TextField>
+                renderOption={(props, v) => {
+                  const { key, ...optionProps } = props;
+                  return (
+                    <Box
+                      component="li"
+                      key={key}
+                      {...optionProps}
+                      sx={{ display: 'flex', gap: 1, alignItems: 'baseline', minWidth: 0 }}
+                    >
+                      <Typography
+                        variant="body2"
+                        sx={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      >
+                        {v.vendorName}
+                      </Typography>
+                      <Typography component="span" sx={{ ...monoSx, color: 'text.secondary', fontSize: '0.75rem' }}>
+                        {v.vendorId}
+                      </Typography>
+                    </Box>
+                  );
+                }}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    label="GP Vendor"
+                    placeholder="Type a GP vendor id or name"
+                    error={!!errors.vendor}
+                    helperText={vendorHelper}
+                  />
+                )}
+              />
               <IconButton
                 size="small"
                 aria-label="Refresh GP vendors"
@@ -2098,6 +2181,40 @@ export default function GpPurchaseOrderDialog({
           ))}
         </Box>
       </Box>
+      {/* #858: what the PO comes to before it is registered, updating as the lines and charges
+          change. One compact row under the lines, which is where a buyer reads a total. */}
+      {isRegister && (
+        <Box
+          component="section"
+          aria-label="PO totals"
+          sx={{ mt: 2, pt: 1.5, borderTop: '1px solid', borderColor: 'divider' }}
+        >
+          <Stack
+            direction="row"
+            flexWrap="wrap"
+            useFlexGap
+            justifyContent="flex-end"
+            columnGap={3}
+            rowGap={1}
+            component="dl"
+            sx={{ m: 0 }}
+          >
+            {totalsFigures.map((t) => (
+              <Box key={t.label} sx={{ minWidth: 0, textAlign: 'right' }}>
+                <Typography component="dt" sx={microLabelSx}>
+                  {t.label}
+                </Typography>
+                <Typography component="dd" sx={{ m: 0, ...tabularSx, fontWeight: t.strong ? 700 : 400 }}>
+                  {t.value}
+                </Typography>
+              </Box>
+            ))}
+          </Stack>
+          <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 0.5, textAlign: 'right' }}>
+            Tax is an estimate; GP calculates the final amount
+          </Typography>
+        </Box>
+      )}
     </Modal>
   );
 }

@@ -49,7 +49,9 @@ from .types import (
     GpCustomerAddress,
     GpEmployee,
     GpJob,
+    GpPoAddress,
     GpPoEntryOptions,
+    GpPoHeader,
     GpPoTotals,
     GpPurchaseTaxSchedule,
     GpTaxDetail,
@@ -140,6 +142,38 @@ def resolve_gp_company(info: strawberry.Info, company: str) -> str:
     if scope is not None and requested != scope:
         raise ValidationError(f"Your account can only read GP company {scope}.", field="company")
     return requested
+
+
+def _gp_po_address(a: dict | None) -> GpPoAddress | None:
+    if not a:
+        return None
+    return GpPoAddress(
+        name=a.get("name"),
+        contact=a.get("contact"),
+        address1=a.get("address1"),
+        address2=a.get("address2"),
+        address3=a.get("address3"),
+        city=a.get("city"),
+        state=a.get("state"),
+        postal_code=a.get("postal_code"),
+        country=a.get("country"),
+    )
+
+
+def _gp_po_header(h: dict | None) -> GpPoHeader | None:
+    """The PO header the relay reads alongside the totals (#858). A relay build older than that read
+    sends no `header` key at all, and the document then just goes without the prefill."""
+    if not h:
+        return None
+    return GpPoHeader(
+        shipping_method=h.get("shipping_method"),
+        vendor_address_code=h.get("vendor_address_code"),
+        buyer_id=h.get("buyer_id"),
+        currency=h.get("currency"),
+        vendor_address=_gp_po_address(h.get("vendor_address")),
+        ship_to_code=h.get("ship_to_code"),
+        ship_to=_gp_po_address(h.get("ship_to")),
+    )
 
 
 @strawberry.type
@@ -360,6 +394,7 @@ class RelayQueries:
             freight=float(t["freight"]),
             miscellaneous=float(t["miscellaneous"]),
             tax_amount=float(t["tax_amount"]),
+            header=_gp_po_header(result.get("header")),
         )
 
     @strawberry.field

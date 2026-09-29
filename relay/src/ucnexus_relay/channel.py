@@ -520,7 +520,17 @@ def _run_read_po_totals(company: str, payload: dict) -> dict:
         raise ops.RelayOpError("missing_po_number", "po_number is required")
     with db.get_read_connection(company) as conn:
         totals = econnect.read_po_totals(conn, po_number)
-    return {"company": company, "totals": totals}
+        if totals is None:
+            return {"company": company, "totals": None}
+        # #858: the document's header fields ride along as an extra key, which a backend that does
+        # not know it ignores. Read on its own so a GP build that lacks one of those columns costs
+        # the document its prefill, never its totals.
+        try:
+            header = econnect.read_po_header(conn, po_number)
+        except Exception as exc:  # noqa: BLE001 - any failure here only loses the prefill
+            logger.warning("read_po_totals: header read for %s failed: %s", po_number, exc)
+            header = None
+    return {"company": company, "totals": totals, "header": header}
 
 
 def _run_sync_pos(company: str, payload: dict) -> dict:

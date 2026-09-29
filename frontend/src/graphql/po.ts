@@ -255,7 +255,32 @@ export const GET_GP_PO_TOTALS = gql`
       freight
       miscellaneous
       taxAmount
+      # #858: what GP holds on the PO's header, which the document prefills its empty fields from.
+      header {
+        shippingMethod
+        vendorAddressCode
+        buyerId
+        currency
+        vendorAddress {
+          ...GpPoAddressFields
+        }
+        shipToCode
+        shipTo {
+          ...GpPoAddressFields
+        }
+      }
     }
+  }
+  fragment GpPoAddressFields on GpPoAddress {
+    name
+    contact
+    address1
+    address2
+    address3
+    city
+    state
+    postalCode
+    country
   }
 `;
 

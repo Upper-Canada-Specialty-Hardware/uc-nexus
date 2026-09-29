@@ -425,7 +425,7 @@ describe('GpPurchaseOrderDialog', () => {
     // A draft whose vendor name exact-matches the USD vendor auto-preselects it (confident).
     const usdDraft = { ...stockDraft, vendorNameSnapshot: 'US Supplier Co' };
     const { onRegistered } = renderDialog({ registerPo: usdDraft }, [...baseMocks(), registerMock]);
-    await waitFor(() => expect(screen.getByLabelText('GP Vendor')).toHaveTextContent('US Supplier Co'));
+    await waitFor(() => expect(screen.getByLabelText('GP Vendor')).toHaveValue('US Supplier Co'));
 
     // Foreign currency: the tax detail is not applicable and not required to register.
     expect(screen.getByLabelText('Currency')).toHaveValue('USD');

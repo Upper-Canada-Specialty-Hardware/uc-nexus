@@ -344,9 +344,8 @@ it("follows the picked vendor's own shipping method, address and contact", async
   renderDialog({ registerPo: stockDraft }, baseMocks());
   await waitForVendorPreselect();
 
-  const vendors = await openSelect('GP Vendor');
-  fireEvent.click(within(vendors).getByText('Allegion Hardware'));
-  await closeSelect();
+  typeInto(screen.getByLabelText('GP Vendor'), 'Allegion');
+  fireEvent.click(await screen.findByText('Allegion Hardware'));
 
   await waitFor(() => expect(screen.getByLabelText('Shipping method')).toHaveTextContent('PICKUP'));
   expect(screen.getByLabelText('Vendor address')).toHaveTextContent('REMIT');

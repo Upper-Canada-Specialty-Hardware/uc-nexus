@@ -656,6 +656,35 @@ class PODocumentSettings:
 
 
 @strawberry.type
+class GpPoAddress:
+    """One address block as GP holds it on a PO header (#858). Every part may be blank in GP."""
+
+    name: str | None
+    contact: str | None
+    address1: str | None
+    address2: str | None
+    address3: str | None
+    city: str | None
+    state: str | None
+    postal_code: str | None
+    country: str | None
+
+
+@strawberry.type
+class GpPoHeader:
+    """What GP holds on a PO's header for the generated PO document (#858): the vendor's purchase
+    address GP copied onto the PO, the ship-to, the shipping method, the buyer and the currency."""
+
+    shipping_method: str | None
+    vendor_address_code: str | None
+    buyer_id: str | None
+    currency: str | None
+    vendor_address: GpPoAddress | None
+    ship_to_code: str | None
+    ship_to: GpPoAddress | None
+
+
+@strawberry.type
 class GpPoTotals:
     """GP-computed PO header totals (POP10100) read live via the relay, to auto-fill the generated
     supplier PO document (issue #230). Only available for a PO that exists in GP."""
@@ -665,6 +694,9 @@ class GpPoTotals:
     freight: float
     miscellaneous: float
     tax_amount: float
+    # #858: the header fields the document prints, as GP holds them on the PO. Null when the relay
+    # build predates the read or the read failed - the totals still come back either way.
+    header: GpPoHeader | None = None
 
 
 @strawberry.type

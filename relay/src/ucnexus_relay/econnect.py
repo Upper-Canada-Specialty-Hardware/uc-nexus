@@ -1342,6 +1342,59 @@ def read_po_totals(conn, po_number: str) -> dict | None:
     return None
 
 
+# #858: the header fields the generated PO document prints, as GP holds them on the PO itself - the
+# vendor's purchase address GP copied onto the PO (PURCH*), the ship-to (PRSTADCD and its address),
+# the shipping method, the buyer and the currency. Read off the PO rather than the vendor card, so a
+# buyer who picked a different address or method at PO REGISTRATION sees the one GP actually has.
+_PO_HEADER_DOC_COLS = (
+    "RTRIM(SHIPMTHD) AS shipping_method, RTRIM(VADCDPAD) AS vendor_address_code, "
+    "RTRIM(BUYERID) AS buyer_id, RTRIM(CURNCYID) AS currency, "
+    "RTRIM(PURCHCMPNYNAM) AS v_name, RTRIM(PURCHCONTACT) AS v_contact, RTRIM(PURCHADDRESS1) AS v_addr1, "
+    "RTRIM(PURCHADDRESS2) AS v_addr2, RTRIM(PURCHADDRESS3) AS v_addr3, RTRIM(PURCHCITY) AS v_city, "
+    "RTRIM(PURCHSTATE) AS v_state, RTRIM(PURCHZIPCODE) AS v_zip, RTRIM(PURCHCOUNTRY) AS v_country, "
+    "RTRIM(PRSTADCD) AS ship_to_code, RTRIM(CMPNYNAM) AS s_name, RTRIM(CONTACT) AS s_contact, "
+    "RTRIM(ADDRESS1) AS s_addr1, RTRIM(ADDRESS2) AS s_addr2, RTRIM(ADDRESS3) AS s_addr3, "
+    "RTRIM(CITY) AS s_city, RTRIM(STATE) AS s_state, RTRIM(ZIPCODE) AS s_zip, RTRIM(COUNTRY) AS s_country"
+)
+
+
+def _po_address(row, prefix: str) -> dict:
+    def _v(name: str) -> str | None:
+        value = getattr(row, f"{prefix}_{name}", None)
+        return (value or "").strip() or None
+
+    return {
+        "name": _v("name"),
+        "contact": _v("contact"),
+        "address1": _v("addr1"),
+        "address2": _v("addr2"),
+        "address3": _v("addr3"),
+        "city": _v("city"),
+        "state": _v("state"),
+        "postal_code": _v("zip"),
+        "country": _v("country"),
+    }
+
+
+def read_po_header(conn, po_number: str) -> dict | None:
+    """Read-only: the header fields the generated PO document prints (#858), work table first, then
+    history, the same way read_po_totals does. Returns None if the PO isn't in GP."""
+    cur = conn.cursor()
+    for table in ("POP10100", "POP30100"):
+        row = cur.execute(f"SELECT {_PO_HEADER_DOC_COLS} FROM dbo.{table} WHERE PONUMBER = ?", po_number).fetchone()
+        if row is not None:
+            return {
+                "shipping_method": (row.shipping_method or "").strip() or None,
+                "vendor_address_code": (row.vendor_address_code or "").strip() or None,
+                "buyer_id": (row.buyer_id or "").strip() or None,
+                "currency": (row.currency or "").strip() or None,
+                "vendor_address": _po_address(row, "v"),
+                "ship_to_code": (row.ship_to_code or "").strip() or None,
+                "ship_to": _po_address(row, "s"),
+            }
+    return None
+
+
 def list_cost_codes(conn, job_number: str) -> list[dict]:
     """Read-only: the active, account-usable cost codes defined for ONE job in JC00701 (WennSoft
     Job Cost). Cost codes are per-job, and the real Cost_Element varies by code (210-200 is
