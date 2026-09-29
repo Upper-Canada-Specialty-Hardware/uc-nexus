@@ -10,6 +10,7 @@ import {
   TextField,
   InputAdornment,
   ButtonBase,
+  Button,
 } from '@mui/material';
 import { Folder, LayoutGrid, Search, History } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
@@ -48,6 +49,9 @@ function haystack(p: Project): string {
     .toLowerCase();
 }
 
+// #852: the most cards a search draws at once.
+const SEARCH_CAP = 100;
+
 export default function ProjectLandingPage({
   title,
   onSelect,
@@ -79,6 +83,20 @@ export default function ProjectLandingPage({
       return terms.every((t) => hay.includes(t));
     });
   }, [projects, normalizedQuery]);
+
+  // #852: a company can hold thousands of jobs - UCSH has 2,169, of which 233 are active in GP - and
+  // a card per job froze the tab. The grid shows the active ones; the jobs GP holds as inactive or
+  // closed, which nobody starts work on, sit behind a toggle. A search reaches every job but draws at
+  // most SEARCH_CAP cards, with a note to keep typing, so no query can ask for thousands at once.
+  const [showInactive, setShowInactive] = useState(false);
+  const inactiveCount = useMemo(
+    () => (searching ? 0 : filtered.filter(isGpJobNotOpen).length),
+    [filtered, searching],
+  );
+  const shown = useMemo(() => {
+    if (searching) return filtered.slice(0, SEARCH_CAP);
+    return showInactive ? filtered : filtered.filter((p) => !isGpJobNotOpen(p));
+  }, [filtered, searching, showInactive]);
 
   // Recent jobs, resolved against the live list so a deleted one drops out. Hidden while searching -
   // the query IS the shortcut then.
@@ -132,25 +150,34 @@ export default function ProjectLandingPage({
 
       {/* One box turns a 22-card scroll into a keystroke. Only earns its space once there is enough
           to hunt through - a handful of jobs is faster to eyeball than to filter. */}
-      {projects.length > 8 && (
-        <TextField
-          size="small"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search projects by name, number, client or job site"
-          autoComplete="off"
-          sx={{ mb: 2.5, width: '100%', maxWidth: 460 }}
-          slotProps={{
-            input: {
-              'aria-label': 'Search projects',
-              startAdornment: (
-                <InputAdornment position="start">
-                  <Search size={16} strokeWidth={1.75} />
-                </InputAdornment>
-              ),
-            },
-          }}
-        />
+      {(projects.length > 8 || inactiveCount > 0) && (
+        <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1.5, mb: 2.5, minWidth: 0 }}>
+          {projects.length > 8 && (
+            <TextField
+              size="small"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search projects by name, number, client or job site"
+              autoComplete="off"
+              sx={{ width: '100%', maxWidth: 460 }}
+              slotProps={{
+                input: {
+                  'aria-label': 'Search projects',
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <Search size={16} strokeWidth={1.75} />
+                    </InputAdornment>
+                  ),
+                },
+              }}
+            />
+          )}
+          {inactiveCount > 0 && (
+            <Button size="small" onClick={() => setShowInactive((v) => !v)} sx={{ flexShrink: 0 }}>
+              {showInactive ? 'Hide inactive jobs' : `Show inactive jobs (${inactiveCount.toLocaleString()})`}
+            </Button>
+          )}
+        </Box>
       )}
 
       {/* Recent jobs, for the common case of working the same project across visits. */}
@@ -208,7 +235,7 @@ export default function ProjectLandingPage({
         </Box>
       )}
 
-      <StaggerList count={filtered.length + (showAllProjects && !searching ? 1 : 0)}>
+      <StaggerList count={shown.length + (showAllProjects && !searching ? 1 : 0)}>
         <Grid container spacing={1.5}>
           {showAllProjects && !searching && (
             <Grid size={CELL}>
@@ -242,7 +269,7 @@ export default function ProjectLandingPage({
             </Grid>
           )}
 
-          {filtered.map((p) => (
+          {shown.map((p) => (
             <Grid key={p.id} size={CELL}>
               <StaggerItem style={{ height: '100%' }}>
                 {/* #425: a quarantined project is still selectable - the module screen explains why
@@ -331,6 +358,18 @@ export default function ProjectLandingPage({
           ))}
         </Grid>
       </StaggerList>
+
+      {searching && filtered.length > SEARCH_CAP && (
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+          Showing {SEARCH_CAP} of {filtered.length.toLocaleString()} matches. Keep typing to narrow.
+        </Typography>
+      )}
+
+      {!searching && shown.length === 0 && inactiveCount > 0 && (
+        <Alert severity="info" sx={{ mt: 2 }}>
+          No job here is active in GP. Show inactive jobs to see the {inactiveCount.toLocaleString()} that are not.
+        </Alert>
+      )}
 
       {projects.length === 0 && (
         <Alert severity="info" sx={{ mt: 2 }}>
