@@ -136,3 +136,28 @@ def test_cancel_entry_abandons_a_pending_row(db_session):
     cancelled = gp_outbox_repository.cancel_entry(db_session, row.id)
     assert cancelled is not None and cancelled.status == "CANCELLED"
     assert gp_outbox_repository.claim_next(db_session, "TUBC") is None
+
+
+def test_list_entries_can_narrow_to_several_statuses(db_session):
+    """#854: the PO table's held-registrations panel asks only for what still needs someone, so a
+    succeeded or cancelled write never piles up above the table."""
+    waiting = _enqueue(db_session, entity_key="po:waiting")
+    failed = _enqueue(db_session, entity_key="po:failed")
+    done = _enqueue(db_session, entity_key="po:done")
+    failed.status = "FAILED"
+    done.status = "SUCCEEDED"
+    db_session.flush()
+
+    rows = gp_outbox_repository.list_entries(db_session, statuses=["PENDING", "IN_FLIGHT", "FAILED"])
+
+    ids = {r.id for r in rows}
+    assert {waiting.id, failed.id} <= ids
+    assert done.id not in ids
+
+
+def test_register_po_label_names_the_request_and_its_job():
+    """#854: a queued registration reads the way a buyer knows the draft, not by the PO's internal id."""
+    from app.schemas.po import register_po_label
+
+    assert register_po_label("PO-REQ-097", "80001") == "Register PO-REQ-097 (job 80001) in GP"
+    assert register_po_label("PO-REQ-098", None) == "Register PO-REQ-098 in GP"

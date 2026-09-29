@@ -74,6 +74,7 @@ class GpOutboxQueries:
         status: GpOutboxStatus | None = None,
         limit: int = 100,
         ops: list[str] | None = None,
+        statuses: list[GpOutboxStatus] | None = None,
     ) -> list[GpOutboxEntry]:
         """The queue itself. Readable by any signed-in user because the PO and receiving lists join
         pending entries onto their rows client-side; retry and cancel are decided per entry.
@@ -92,6 +93,7 @@ class GpOutboxQueries:
                 limit=max(1, min(limit, 500)),
                 ops=ops or None,
                 company=tenant_scope(info),
+                statuses=[s.value for s in statuses] if statuses else None,
             )
             return [gp_outbox_entry_to_type(r) for r in rows]
 

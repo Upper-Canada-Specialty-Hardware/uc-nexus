@@ -268,6 +268,8 @@ const HIGHLIGHT_MS = 4000;
 // The one write this module is answerable for: a PO REGISTRATION that has not reached GP yet. A
 // constant rather than an inline array so the panel's query keeps one identity across renders.
 const HELD_PO_REGISTRATION_OPS = ['create_po'];
+// #854: the panel lists only registrations that still need someone; finished ones drop off.
+const HELD_PO_REGISTRATION_STATUSES = ['PENDING', 'IN_FLIGHT', 'FAILED'];
 
 // --- Server-driven sort ---
 
@@ -848,7 +850,12 @@ function POListPage() {
 
       {/* #754: the PO registrations GP has not taken yet, on the table they belong to rather than
           only on the admin queue. It renders nothing while there are none. */}
-      <GpWriteQueuePanel ops={HELD_PO_REGISTRATION_OPS} compact heading="Held PO registrations" />
+      <GpWriteQueuePanel
+        ops={HELD_PO_REGISTRATION_OPS}
+        statuses={HELD_PO_REGISTRATION_STATUSES}
+        compact
+        heading="Held PO registrations"
+      />
 
       {/* Filter bar: search reaches full history, projects included (#851); origin narrows it, and a
           link's project scope shows as a chip. Server-driven. */}
