@@ -594,6 +594,7 @@ export default function ReceivingPage() {
         <Box sx={{ mb: 4, position: 'relative' }}>
           <DataTable
             columns={poColumns}
+            storageKey="warehouse.receiving.pos"
             rows={filteredPoRows}
             // #857: 25 a page rather than the table default of 10 - the list is long and is scanned.
             initialState={{ pagination: { paginationModel: { pageSize: 25 } } }}
@@ -648,7 +649,7 @@ export default function ReceivingPage() {
       )}
       {!backOrderLoading && !backOrderError && backOrderRows.length > 0 && (
         <Box sx={{ mb: 4 }}>
-          <DataTable columns={backOrderColumns} rows={backOrderRows} getRowId={(row) => row.id} />
+          <DataTable columns={backOrderColumns} storageKey="warehouse.receiving.back-orders" rows={backOrderRows} getRowId={(row) => row.id} />
         </Box>
       )}
 
