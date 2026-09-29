@@ -428,3 +428,103 @@ describe('PurchaseOrdersStep over-buying', () => {
     expect(container.querySelector('[data-over-buy="true"]')).toBeNull();
   });
 });
+
+// ---- Narrow ledger (#856) ----
+
+/** jsdom has no layout, so the ledger's width comes from a ResizeObserver stub that reports it. */
+function stubLedgerWidth(width: number) {
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      private cb: ResizeObserverCallback;
+      constructor(cb: ResizeObserverCallback) {
+        this.cb = cb;
+      }
+      observe() {
+        this.cb([{ contentRect: { width } } as ResizeObserverEntry], this as unknown as ResizeObserver);
+      }
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+}
+
+describe('PurchaseOrdersStep ledger at a narrow width (#856)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function ledgerRow() {
+    return (screen.getByText('HG-100').closest('.po-cell') as HTMLElement).parentElement as HTMLElement;
+  }
+
+  it('folds the six project numbers into one Sel / Need column below the breakpoint', () => {
+    stubLedgerWidth(700);
+    const { container } = render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
+
+    expect(container.querySelector('[data-ledger-layout="compact"]')).not.toBeNull();
+    for (const head of ['Selected Qty', 'Needed', 'On Order', 'Rcvd', 'Avail']) {
+      expect(screen.queryByText(head)).not.toBeInTheDocument();
+    }
+    expect(screen.getByText('Sel / Need')).toBeInTheDocument();
+    // Eight cells: Order As, part, category, Qty, Unit Cost, Total Cost, Sel / Need, the row menu.
+    expect(Array.from(ledgerRow().children)).toHaveLength(8);
+    expect(screen.getByLabelText('Quantities for HG-100')).toHaveTextContent('4 / 12');
+    // The POs behind the Ordered figure stay one click away.
+    expect(screen.getByRole('button', { name: 'View POs behind ordered HG-100' })).toBeInTheDocument();
+  });
+
+  it('marks the Sel / Need header as hoverable with the (i)', () => {
+    stubLedgerWidth(700);
+    render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
+
+    // The (i) carries its explanation as its accessible name until hovered.
+    expect(screen.getByLabelText(/Hover a value for the full split/)).toBeInTheDocument();
+  });
+
+  it('gives the full split, one per line, on hover of the value', async () => {
+    stubLedgerWidth(700);
+    render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
+
+    fireEvent.mouseOver(screen.getByLabelText('Quantities for HG-100'));
+    const tip = await screen.findByRole('tooltip');
+    // LINE_CONTEXT: selected 4, needed 12, ordered 8, on order 6, received 2, available 1.
+    for (const [label, value] of [
+      ['Selected Qty', '4'],
+      ['Needed', '12'],
+      ['Ordered', '8'],
+      ['On Order', '6'],
+      ['Received', '2'],
+      ['Available', '1'],
+    ]) {
+      expect(within(tip).getByText(label).nextElementSibling).toHaveTextContent(value);
+    }
+  });
+
+  it('keeps the six separate columns at full width', () => {
+    stubLedgerWidth(1200);
+    const { container } = render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
+
+    expect(container.querySelector('[data-ledger-layout="full"]')).not.toBeNull();
+    expect(screen.queryByText('Sel / Need')).not.toBeInTheDocument();
+    expect(Array.from(ledgerRow().children)).toHaveLength(13);
+  });
+
+  it('sizes Unit Cost and Order As to their longest value so neither clips', () => {
+    stubLedgerWidth(700);
+    const { container } = render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
+
+    // The catalog's $5 prints as 5.00 at most: four characters at 8 px plus the input chrome. Order As
+    // is empty, so its floor is the placeholder's eight characters.
+    // jsdom does not compute grid tracks, so read the rule the grid's own class carries.
+    const grid = container.querySelector('[data-ledger-layout]') as HTMLElement;
+    const css = Array.from(document.querySelectorAll('style'))
+      .map((s) => s.textContent ?? '')
+      .join('\n');
+    const gridClass = Array.from(grid.classList).find((c) => c.startsWith('css-')) as string;
+    const rule = css.slice(css.indexOf(`.${gridClass}{`));
+    const tracks = /grid-template-columns:([^;]+);/.exec(rule)?.[1] ?? '';
+    expect(tracks).toContain('minmax(112px, 1.15fr)');
+    expect(tracks).toMatch(/ 104px /);
+  });
+});

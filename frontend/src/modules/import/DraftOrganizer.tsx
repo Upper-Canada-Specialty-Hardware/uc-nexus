@@ -7,7 +7,7 @@
  * so that step stays the orchestrator (cost-code fetch, layout, dialog state) and the per-card query
  * for prior order-as values stays hook-safe inside a component.
  */
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
@@ -31,6 +31,7 @@ import {
 import { AlertTriangle, FileText, MoreVertical, Paperclip, X } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
+import InfoHeaderLabel from '../../components/InfoHeaderLabel';
 import ViewPOsButton from './ViewPOsButton';
 import LifecycleChips from './LifecycleChips';
 import type { OverBuyRisk } from './overBuy';
@@ -214,6 +215,66 @@ const FS_CELL = 'clamp(0.7rem, 1.5cqw, 0.875rem)';
 const FS_MONO = 'clamp(0.66rem, 1.4cqw, 0.8125rem)';
 const FS_HEAD = 'clamp(0.5625rem, 1.1cqw, 0.6875rem)';
 
+// #856: below this ledger width (a ~850 px window, or a laptop with a side panel open) the six
+// read-only project numbers took ~40% of the row and starved Order As and Unit Cost until their values
+// clipped. There they fold into one Sel / Need column whose hover gives the full split. 1000 px is
+// about where all thirteen tracks still fit with Order As and Unit Cost at full value.
+const LEDGER_COMPACT_BELOW_PX = 1000;
+
+/** #856: whether the ledger's own box is narrower than the compact breakpoint. Measured on the box,
+ *  not the viewport, because the navigation rail and the wizard's padding decide how much of the
+ *  window the ledger actually gets. Without ResizeObserver (or before the first measure) it stays
+ *  wide, which is today's layout. */
+function useNarrowLedger(): [(el: HTMLElement | null) => void, boolean] {
+  const [el, setEl] = useState<HTMLElement | null>(null);
+  const [narrow, setNarrow] = useState(false);
+  useLayoutEffect(() => {
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    // The observer reports once on observe, after layout and before paint, so a narrow window never
+    // flashes the six-column layout.
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      if (width > 0) setNarrow(width < LEDGER_COMPACT_BELOW_PX);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [el]);
+  return [setEl, narrow];
+}
+
+// #856: Order As and Unit Cost are sized to the longest value on the card so neither ever clips
+// (`EGT...` and `$ 10` for 1006.00 at a narrow width). The mono type tops out near 8 px a character;
+// the constants cover the input chrome - the clear button on Order As, and the $ adornment, spinner
+// and outline padding on Unit Cost - plus the cell padding.
+/** #856: the compact ledger's hover - the six numbers the wide ledger shows as columns, one per line,
+ *  under the reconciliation step's names. */
+function LedgerSplit({ ctx }: { ctx: LineContext | undefined }) {
+  const rows: Array<[string, number]> = [
+    ['Selected Qty', ctx?.needed ?? 0],
+    ['Needed', ctx?.projectNeeded ?? 0],
+    ['Ordered', ctx?.ordered ?? 0],
+    ['On Order', ctx?.onOrder ?? 0],
+    ['Received', ctx?.received ?? 0],
+    ['Available', ctx?.available ?? 0],
+  ];
+  return (
+    <Box sx={{ display: 'grid', gridTemplateColumns: 'auto auto', columnGap: 1.5 }}>
+      {rows.map(([label, value]) => (
+        <Box key={label} sx={{ display: 'contents' }}>
+          <span>{label}</span>
+          <Box component="span" sx={{ ...tabularSx, textAlign: 'right' }}>
+            {value}
+          </Box>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+const CHAR_PX = 8;
+const ORDER_AS_CHROME_PX = 48;
+const UNIT_COST_CHROME_PX = 72;
+
 export interface DraftCardProps {
   projectId: string;
   draft: DraftGroup;
@@ -299,6 +360,29 @@ export function DraftCard({
   // a single anchored Menu; the row menu remembers which line it was opened for.
   const [cardMenuAnchor, setCardMenuAnchor] = useState<HTMLElement | null>(null);
   const [rowMenu, setRowMenu] = useState<{ anchor: HTMLElement; line: DraftLine } | null>(null);
+
+  // #856: the compact ledger and the content-sized Order As / Unit Cost tracks.
+  const [ledgerRef, compact] = useNarrowLedger();
+  const orderAsPx = useMemo(() => {
+    // The placeholder ("Order as") is the floor, so an empty field still reads.
+    const longest = lines.reduce((max, l) => Math.max(max, (orderAsValues.get(l.pk) ?? '').length), 8);
+    return longest * CHAR_PX + ORDER_AS_CHROME_PX;
+  }, [lines, orderAsValues]);
+  const unitCostPx = useMemo(() => {
+    // The field shows the typed number; a two-decimal rendering is the longest a price usually runs.
+    const longest = lines.reduce((max, l) => Math.max(max, String(l.unitCost).length, l.unitCost.toFixed(2).length), 4);
+    return longest * CHAR_PX + UNIT_COST_CHROME_PX;
+  }, [lines]);
+  const ledgerColumns = [
+    `minmax(${orderAsPx}px, 1.15fr)`,
+    'minmax(0, 1.25fr)',
+    'minmax(0, 1.05fr)',
+    'clamp(54px, 7cqw, 86px)',
+    `${unitCostPx}px`,
+    'auto',
+    compact ? 'auto' : 'auto auto auto auto auto auto',
+    '36px',
+  ].join(' ');
 
   return (
     <Box
@@ -513,17 +597,19 @@ export function DraftCard({
       ) : (
         // Below the grid's workable minimum the ledger scrolls inside its own bounds - the sanctioned
         // wide-data-grid affordance; the page itself never widens.
-        <Box sx={{ overflowX: 'auto' }}>
+        <Box ref={ledgerRef} sx={{ overflowX: 'auto' }}>
           <Box
+            data-ledger-layout={compact ? 'compact' : 'full'}
             sx={{
               display: 'grid',
-              minWidth: 760,
+              // #856: the compact ledger drops five tracks, so its floor drops with them.
+              minWidth: compact ? 560 : 760,
               // #639: a size container, so the cqw type ramp above resolves against the card's width.
               containerType: 'inline-size',
-              // The three text columns absorb the slack; every numeric track is content-sized, so the
-              // 1-4 digit recon columns spend only the width their header needs.
-              gridTemplateColumns:
-                'minmax(0, 1.15fr) minmax(0, 1.25fr) minmax(0, 1.05fr) clamp(54px, 7cqw, 86px) clamp(76px, 9.5cqw, 116px) auto auto auto auto auto auto auto 36px',
+              // Part number and category absorb the slack; Order As and Unit Cost never shrink below
+              // their longest value (#856), and every numeric track is content-sized, so the 1-4 digit
+              // recon columns spend only the width their header needs.
+              gridTemplateColumns: ledgerColumns,
               '& .po-head': {
                 ...microLabelSx,
                 fontSize: FS_HEAD,
@@ -572,26 +658,40 @@ export function DraftCard({
             <Box className="po-head po-num">Qty</Box>
             <Box className="po-head po-num">Unit Cost</Box>
             <Box className="po-head po-num">Total Cost</Box>
-            {/* #738: the reconciliation step's columns, under its names. Selected Qty is what this
-                wizard pass picked; Needed and Ordered are the project's whole-schedule totals. */}
-            <Box className="po-head po-num po-sep" title="Selected Qty: what this product needs across the openings selected for this pass">
-              Selected Qty
-            </Box>
-            <Box className="po-head po-num" title="Needed: the project's total for this product across its whole hardware schedule">
-              Needed
-            </Box>
-            <Box className="po-head po-num" title="Ordered: placed on a GP PO project-wide, everything received since included">
-              Ordered
-            </Box>
-            <Box className="po-head po-num" title="Already on order project-wide">
-              On Order
-            </Box>
-            <Box className="po-head po-num" title="Received project-wide">
-              Rcvd
-            </Box>
-            <Box className="po-head po-num" title="Available in inventory">
-              Avail
-            </Box>
+            {compact ? (
+              // #856: the narrow ledger folds the six project numbers into one column; hovering a value
+              // gives the full split, and the (i) says so.
+              <Box className="po-head po-num po-sep">
+                <InfoHeaderLabel
+                  label="Sel / Need"
+                  tooltip="Selected Qty / Needed. Hover a value for the full split: Selected Qty, Needed, Ordered, On Order, Received and Available."
+                  labelSx={{ fontSize: FS_HEAD }}
+                />
+              </Box>
+            ) : (
+              <>
+                {/* #738: the reconciliation step's columns, under its names. Selected Qty is what this
+                    wizard pass picked; Needed and Ordered are the project's whole-schedule totals. */}
+                <Box className="po-head po-num po-sep" title="Selected Qty: what this product needs across the openings selected for this pass">
+                  Selected Qty
+                </Box>
+                <Box className="po-head po-num" title="Needed: the project's total for this product across its whole hardware schedule">
+                  Needed
+                </Box>
+                <Box className="po-head po-num" title="Ordered: placed on a GP PO project-wide, everything received since included">
+                  Ordered
+                </Box>
+                <Box className="po-head po-num" title="Already on order project-wide">
+                  On Order
+                </Box>
+                <Box className="po-head po-num" title="Received project-wide">
+                  Rcvd
+                </Box>
+                <Box className="po-head po-num" title="Available in inventory">
+                  Avail
+                </Box>
+              </>
+            )}
             <Box className="po-head" />
 
             {lines.map((line) => {
@@ -672,51 +772,79 @@ export function DraftCard({
                         ${line.totalCost.toFixed(2)}
                       </Typography>
                     </Box>
-                    <Box className="po-cell po-cell-right po-num po-sep">
-                      <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                        {ctx?.needed ?? 0}
-                      </Typography>
-                    </Box>
-                    <Box className="po-cell po-cell-right po-num">
-                      <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                        {ctx?.projectNeeded ?? 0}
-                      </Typography>
-                    </Box>
-                    <Box className="po-cell po-cell-right po-num">
-                      <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                        {ctx?.ordered ?? 0}
-                      </Typography>
-                      <ViewPOsButton
-                        projectId={projectId}
-                        hardwareCategory={line.hardwareCategory}
-                        productCode={line.productCode}
-                        figure="ordered"
-                        count={ctx?.ordered ?? 0}
-                      />
-                    </Box>
-                    <Box className="po-cell po-cell-right po-num">
-                      <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                        {ctx?.onOrder ?? 0}
-                      </Typography>
-                      {/* #732: the POs behind the figure, each linked into the PO table. */}
-                      <ViewPOsButton
-                        projectId={projectId}
-                        hardwareCategory={line.hardwareCategory}
-                        productCode={line.productCode}
-                        figure="onOrder"
-                        count={ctx?.onOrder ?? 0}
-                      />
-                    </Box>
-                    <Box className="po-cell po-cell-right po-num">
-                      <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                        {ctx?.received ?? 0}
-                      </Typography>
-                    </Box>
-                    <Box className="po-cell po-cell-right po-num">
-                      <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
-                        {ctx?.available ?? 0}
-                      </Typography>
-                    </Box>
+                    {compact ? (
+                      <Box className="po-cell po-cell-right po-num po-sep">
+                        {/* #856: the six project numbers as Selected / Needed, the full split on hover
+                            or keyboard focus. The Ordered list button stays, so the POs behind the
+                            figures are still one click away. */}
+                        <Tooltip arrow enterTouchDelay={0} title={<LedgerSplit ctx={ctx} />}>
+                          <Typography
+                            variant="body2"
+                            color="text.secondary"
+                            tabIndex={0}
+                            aria-label={`Quantities for ${line.productCode}`}
+                            sx={{ ...tabularSx, fontSize: FS_CELL, cursor: 'help' }}
+                          >
+                            {ctx?.needed ?? 0} / {ctx?.projectNeeded ?? 0}
+                          </Typography>
+                        </Tooltip>
+                        <ViewPOsButton
+                          projectId={projectId}
+                          hardwareCategory={line.hardwareCategory}
+                          productCode={line.productCode}
+                          figure="ordered"
+                          count={ctx?.ordered ?? 0}
+                        />
+                      </Box>
+                    ) : (
+                      <>
+                        <Box className="po-cell po-cell-right po-num po-sep">
+                          <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                            {ctx?.needed ?? 0}
+                          </Typography>
+                        </Box>
+                        <Box className="po-cell po-cell-right po-num">
+                          <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                            {ctx?.projectNeeded ?? 0}
+                          </Typography>
+                        </Box>
+                        <Box className="po-cell po-cell-right po-num">
+                          <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                            {ctx?.ordered ?? 0}
+                          </Typography>
+                          <ViewPOsButton
+                            projectId={projectId}
+                            hardwareCategory={line.hardwareCategory}
+                            productCode={line.productCode}
+                            figure="ordered"
+                            count={ctx?.ordered ?? 0}
+                          />
+                        </Box>
+                        <Box className="po-cell po-cell-right po-num">
+                          <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                            {ctx?.onOrder ?? 0}
+                          </Typography>
+                          {/* #732: the POs behind the figure, each linked into the PO table. */}
+                          <ViewPOsButton
+                            projectId={projectId}
+                            hardwareCategory={line.hardwareCategory}
+                            productCode={line.productCode}
+                            figure="onOrder"
+                            count={ctx?.onOrder ?? 0}
+                          />
+                        </Box>
+                        <Box className="po-cell po-cell-right po-num">
+                          <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                            {ctx?.received ?? 0}
+                          </Typography>
+                        </Box>
+                        <Box className="po-cell po-cell-right po-num">
+                          <Typography variant="body2" color="text.secondary" sx={{ ...tabularSx, fontSize: FS_CELL }}>
+                            {ctx?.available ?? 0}
+                          </Typography>
+                        </Box>
+                      </>
+                    )}
                     <Box className="po-cell po-cell-right" sx={{ px: 0 }}>
                       <IconButton
                         size="small"

@@ -44,6 +44,25 @@ import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
 import { type WarehouseLocationDef, normalizeLocationValue } from './receiveDraftTypes';
+import type { SxProps, Theme } from '@mui/material';
+
+// #856: Assign is the row's only action, and at a narrow width (~850 px) it sat past the right edge of
+// the table's own scroll area. The last cell is pinned to that edge so it is always in view; the
+// other columns scroll under it. It needs its own background to cover them, a hairline to show where
+// the scroll passes beneath, and the row's hover tint layered on so a hovered row still reads as one.
+const pinnedActionCellSx: SxProps<Theme> = {
+  position: 'sticky',
+  right: 0,
+  zIndex: 1,
+  bgcolor: 'background.paper',
+  boxShadow: (t) => `inset 1px 0 0 ${(t.vars ?? t).palette.divider}`,
+  'tr:hover > &': {
+    backgroundImage: (t) => {
+      const tint = (t.vars ?? t).palette.action.hover;
+      return `linear-gradient(${tint}, ${tint})`;
+    },
+  },
+};
 
 // ---- Types ----
 
@@ -491,7 +510,7 @@ export default function PutAwayTab() {
                           <TableCell align="right" sx={{ minWidth: 110 }}>
                             Qty to put away
                           </TableCell>
-                          <TableCell />
+                          <TableCell sx={pinnedActionCellSx} />
                         </TableRow>
                       </TableHead>
                       <TableBody>
@@ -591,7 +610,7 @@ export default function PutAwayTab() {
                                   />
                                 </Tooltip>
                               </TableCell>
-                              <TableCell>
+                              <TableCell sx={pinnedActionCellSx}>
                                 <Button
                                   variant="contained"
                                   size="small"
@@ -641,7 +660,7 @@ export default function PutAwayTab() {
                   <TableCell align="right">Qty</TableCell>
                   <TableCell>Received</TableCell>
                   <TableCell sx={{ minWidth: 300 }}>Destination</TableCell>
-                  <TableCell />
+                  <TableCell sx={pinnedActionCellSx} />
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -695,7 +714,7 @@ export default function PutAwayTab() {
                           />
                         </Box>
                       </TableCell>
-                      <TableCell>
+                      <TableCell sx={pinnedActionCellSx}>
                         <Button
                           variant="contained"
                           size="small"
