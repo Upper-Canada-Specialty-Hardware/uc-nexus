@@ -321,6 +321,18 @@ class DestockSource(str, enum.Enum):
     OTHER = "OTHER"
 
 
+class DestockCost(str, enum.Enum):
+    """What project units are worth once they land in the no-project pool (#942).
+
+    The person moving them chooses, with no default: left behind on a job is ZERO, and KEEP carries
+    the units' own price (their PO line's unit cost, else the row's own, else zero). Not stored in a
+    column - it rides on the destock and the deficiency send-to-stock inputs and into the audit detail.
+    """
+
+    ZERO = "ZERO"
+    KEEP = "KEEP"
+
+
 class DeficiencyResolution(str, enum.Enum):
     SEND_TO_STOCK = "SEND_TO_STOCK"
     SCRAP = "SCRAP"

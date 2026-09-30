@@ -147,6 +147,7 @@ class StockMutations:
                 target_row=input.target_row,
                 target_bay=input.target_bay,
                 performed_by=actor,
+                destock_cost=input.destock_cost,
             )
             session.commit()
             session.refresh(result)
@@ -396,6 +397,7 @@ class StockMutations:
                 rma_reference=input.rma_reference,
                 destock_source=input.destock_source,
                 reviewed_by=actor,
+                destock_cost=input.destock_cost,
             )
             session.commit()
             session.refresh(review)

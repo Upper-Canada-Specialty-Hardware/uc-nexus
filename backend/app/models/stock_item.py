@@ -45,10 +45,11 @@ class StockItem(Base):
     aisle: Mapped[str | None] = mapped_column(String(20), nullable=True)
     row: Mapped[str | None] = mapped_column(String(20), nullable=True)
     bay: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    # Cost per unit for rows that entered off-PO (the SharePoint migration). Null on rows whose cost
-    # lives on a PO line; valuation reads coalesce(po_line.unit_cost, row.unit_cost, 0).
-    # Numeric(19,5) for the same reason as inventory_locations.unit_cost: a destock or a transfer
-    # copies that column onto this one, so a GP-fed cost ends up here as well.
+    # Cost per unit of every unit on the row: a receipt off a no-project PO carries its line's price,
+    # a destock the price the person chose, a migration its entry's. It is part of the row's merge key
+    # (#942), so a row never holds units at two prices; null and zero both mean $0 and valuation reads
+    # coalesce(unit_cost, 0). Numeric(19,5) for the same reason as inventory_locations.unit_cost: a
+    # destock or a transfer copies that column onto this one, so a GP-fed cost ends up here as well.
     unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(19, 5), nullable=True)
     received_at: Mapped[datetime] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)

@@ -681,7 +681,8 @@ def create_shipment_return(
                 detail=detail,
             )
         else:
-            # NON_STOCK or RMA_DEFECTIVE — merge into the stock pool.
+            # NON_STOCK or RMA_DEFECTIVE — merge into the stock pool, onto a row at the returned
+            # units' own price (#942): a return keeps its value wherever it goes.
             stock_row = _find_or_create_stock_row(
                 session,
                 warehouse_id=warehouse_id,
@@ -691,13 +692,11 @@ def create_shipment_return(
                 row=None,
                 bay=None,
                 received_at=now,
+                unit_cost=returned_cost,
             )
             stock_row.quantity += qty
             if disposition == ReturnDisposition.RMA_DEFECTIVE:
                 stock_row.deficient_quantity += qty
-            # Same cost carry as the project branch, pool-row rules: fills a null only.
-            if returned_cost is not None and stock_row.unit_cost is None:
-                stock_row.unit_cost = returned_cost
             session.flush()
             return_item.resulting_stock_item_id = stock_row.id
             _log_audit_event(

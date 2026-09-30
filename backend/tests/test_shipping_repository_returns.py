@@ -234,13 +234,17 @@ def test_return_to_project_carries_the_combo_cost(db_session):
     assert returned.unit_cost == Decimal("6")
 
 
-def test_stock_branch_return_fills_the_pool_cost(db_session):
+def test_stock_branch_return_keeps_its_cost_and_never_merges_into_a_zero_row(db_session):
+    """A return keeps its value wherever it goes (#942). make_il leaves a $0 pool row for the same
+    product on the unlocated shelf the return lands on; the priced return must not stack onto it."""
     from decimal import Decimal
 
     from .inventory_fixtures import make_il
 
     project = _make_project(db_session)
-    make_il(db_session, project, quantity=10, code="NS-9", category="STRIKE", unit_cost=Decimal("2.5"))
+    il = make_il(db_session, project, quantity=10, code="NS-9", category="STRIKE", unit_cost=Decimal("2.5"))
+    zero_row = db_session.get(StockItem, il.stock_item_id)
+    assert zero_row.unit_cost is None and (zero_row.aisle, zero_row.row, zero_row.bay) == (None, None, None)
     slip = _make_slip(db_session, project.id)
     item = _make_loose_item(db_session, slip.id, qty=4, code="NS-9", cat="STRIKE")
     wh_id = _wh(db_session)
@@ -252,8 +256,12 @@ def test_stock_branch_return_fills_the_pool_cost(db_session):
         [{"packing_slip_item_id": item.id, "quantity": 4, "disposition": ReturnDisposition.NON_STOCK}],
     )
 
-    stock = db_session.scalars(select(StockItem).where(StockItem.product_code == "NS-9", StockItem.quantity > 0)).one()
-    assert stock.unit_cost == Decimal("2.5")
+    rows = list(db_session.scalars(select(StockItem).where(StockItem.product_code == "NS-9", StockItem.quantity > 0)))
+    assert len(rows) == 2
+    returned = next(r for r in rows if r.id != zero_row.id)
+    assert returned.unit_cost == Decimal("2.5")
+    assert returned.quantity == 4
+    assert zero_row.quantity == 10
 
 
 def test_return_cost_falls_back_to_the_schedule(db_session):
