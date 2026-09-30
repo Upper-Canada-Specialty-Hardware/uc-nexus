@@ -1,5 +1,6 @@
-import { render, screen, fireEvent, within, configure } from '@testing-library/react';
-import { MockedProvider } from '@apollo/client/testing/react';
+import { render, screen, fireEvent, within, configure, waitFor } from '@testing-library/react';
+import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import { DESTOCK_INVENTORY } from '../../../graphql/warehouse';
 import { ToastProvider } from '../../../components/Toast';
 import DestockInventoryModal, { type DestockSource } from '../stock/DestockInventoryModal';
 
@@ -19,9 +20,9 @@ const baseSource: DestockSource = {
   bay: 'B1',
 };
 
-function renderModal(source: Partial<DestockSource> = {}) {
+function renderModal(source: Partial<DestockSource> = {}, mocks: MockedResponse[] = []) {
   render(
-    <MockedProvider mocks={[]}>
+    <MockedProvider mocks={mocks}>
       <ToastProvider>
         <DestockInventoryModal
           inventoryLocation={{ ...baseSource, ...source }}
@@ -41,6 +42,10 @@ function quantityInput() {
   return screen.getByLabelText(/Quantity/) as HTMLInputElement;
 }
 
+function pickCost(name: RegExp) {
+  fireEvent.click(screen.getByRole('button', { name }));
+}
+
 async function openSourceSelect() {
   // The modal's only combobox is the Source select.
   fireEvent.mouseDown(screen.getByRole('combobox'));
@@ -50,6 +55,7 @@ async function openSourceSelect() {
 describe('DestockInventoryModal', () => {
   it('caps a non-deficient-swap at quantity minus deficient units', () => {
     renderModal(); // qty 10, deficient 2 -> max 8, source defaults to OVERAGE
+    pickCost(/Keeps its cost/);
     expect(screen.getByLabelText(/Quantity \(max 8\)/)).toBeInTheDocument();
 
     fireEvent.change(quantityInput(), { target: { value: '9' } });
@@ -63,6 +69,7 @@ describe('DestockInventoryModal', () => {
     renderModal(); // qty 10, deficient 2
     const listbox = await openSourceSelect();
     fireEvent.click(within(listbox).getByText('Deficient swap'));
+    pickCost(/Left behind/);
 
     expect(screen.getByLabelText(/Quantity \(max 2\)/)).toBeInTheDocument();
 
@@ -75,6 +82,7 @@ describe('DestockInventoryModal', () => {
 
   it('requires all three of aisle/row/bay once the target override is on', () => {
     renderModal();
+    pickCost(/Keeps its cost/);
     expect(destockButton()).toBeEnabled(); // qty 1 within cap, no override
 
     fireEvent.click(screen.getByRole('button', { name: 'Override target location' }));
@@ -88,5 +96,64 @@ describe('DestockInventoryModal', () => {
 
     fireEvent.change(screen.getByLabelText(/Bay/), { target: { value: '2' } });
     expect(destockButton()).toBeEnabled(); // all three present
+  });
+
+  it('requires the cost choice, with neither option picked to start', () => {
+    renderModal();
+    const zero = screen.getByRole('button', { name: 'Left behind - $0 cost' });
+    const keep = screen.getByRole('button', { name: 'Keeps its cost' });
+    expect(screen.getByText('Cost in the pool')).toBeInTheDocument();
+    expect(zero).toHaveAttribute('aria-pressed', 'false');
+    expect(keep).toHaveAttribute('aria-pressed', 'false');
+    expect(destockButton()).toBeDisabled(); // qty 1 is fine; only the cost is missing
+
+    fireEvent.click(zero);
+    expect(zero).toHaveAttribute('aria-pressed', 'true');
+    expect(destockButton()).toBeEnabled();
+  });
+
+  it('sends the chosen cost with the destock', async () => {
+    const onSuccess = vi.fn();
+    const variables = {
+      input: {
+        inventoryLocationId: 'inv-1',
+        quantity: 1,
+        source: 'OVERAGE',
+        destockCost: 'ZERO',
+        reasonText: null,
+        targetAisle: null,
+        targetRow: null,
+        targetBay: null,
+      },
+    };
+    const result = vi.fn(() => ({
+      data: {
+        destockInventory: {
+          __typename: 'StockItem',
+          id: 'si-1',
+          hardwareCategory: 'Hinges',
+          productCode: 'HG-100',
+          quantity: 1,
+          deficientQuantity: 0,
+          available: 1,
+          aisle: 'A1',
+          row: 'R1',
+          bay: 'B1',
+          receivedAt: '2026-09-30T00:00:00',
+        },
+      },
+    }));
+    render(
+      <MockedProvider mocks={[{ request: { query: DESTOCK_INVENTORY, variables }, result }]}>
+        <ToastProvider>
+          <DestockInventoryModal inventoryLocation={baseSource} onClose={vi.fn()} onSuccess={onSuccess} />
+        </ToastProvider>
+      </MockedProvider>,
+    );
+
+    pickCost(/Left behind/);
+    fireEvent.click(destockButton());
+
+    await waitFor(() => expect(result).toHaveBeenCalled());
   });
 });

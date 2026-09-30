@@ -18,6 +18,7 @@ import { DESTOCK_INVENTORY } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import { microLabelSx, monoSx } from '../../../theme';
 import { ReservationNotice, useComboReservation } from '../reservationNotice';
+import DestockCostChoice, { type DestockCost } from './DestockCostChoice';
 
 export interface DestockSource {
   id: string;
@@ -47,6 +48,8 @@ const SOURCES = [
 export default function DestockInventoryModal({ inventoryLocation, onClose, onSuccess }: Props) {
   const [quantity, setQuantity] = useState<string>('1');
   const [source, setSource] = useState<string>('OVERAGE');
+  // Required, no default (#942): left behind on a job lands at $0, otherwise it keeps its cost.
+  const [destockCost, setDestockCost] = useState<DestockCost | null>(null);
   const [reason, setReason] = useState('');
   const [overrideLoc, setOverrideLoc] = useState(false);
   const [aisle, setAisle] = useState('');
@@ -75,7 +78,11 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
   // together once the override is on.
   const overrideComplete = !!aisle.trim() && !!row.trim() && !!bay.trim();
   const valid =
-    Number.isInteger(q) && q >= 1 && q <= maxQty && (!overrideLoc || overrideComplete);
+    Number.isInteger(q) &&
+    q >= 1 &&
+    q <= maxQty &&
+    destockCost !== null &&
+    (!overrideLoc || overrideComplete);
 
   // A sound-unit destock shrinks the combo's sound on-hand (a DEFICIENT_SWAP nets to zero: it pulls
   // only already-condemned units). Surface what active requests have reserved, and warn when the
@@ -101,6 +108,7 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
           inventoryLocationId: inventoryLocation.id,
           quantity: q,
           source,
+          destockCost,
           reasonText: reason.trim() || null,
           targetAisle: overrideLoc ? aisle.trim() : null,
           targetRow: overrideLoc ? row.trim() : null,
@@ -162,6 +170,7 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
             ))}
           </Select>
         </FormControl>
+        <DestockCostChoice value={destockCost} onChange={setDestockCost} />
         {reservation != null && resultingSound != null && (
           <ReservationNotice reserved={reservation.reserved} resulting={resultingSound} />
         )}
