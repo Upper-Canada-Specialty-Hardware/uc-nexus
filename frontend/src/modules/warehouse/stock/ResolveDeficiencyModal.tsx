@@ -17,6 +17,7 @@ import { useToast } from '../../../components/Toast';
 import { RESOLVE_DEFICIENCY } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import { microLabelSx, monoSx } from '../../../theme';
+import DestockCostChoice, { type DestockCost } from './DestockCostChoice';
 
 export interface DeficientRow {
   source: 'PROJECT_INVENTORY' | 'STOCK_POOL';
@@ -46,6 +47,9 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
   const [quantity, setQuantity] = useState<string>(String(row.deficientQuantity));
   const [reason, setReason] = useState('');
   const [rma, setRma] = useState('');
+  // Sending a project row's units to the pool needs the cost choice, with no default (#942). A
+  // pool row's units are already in the pool at their own price, so it never asks.
+  const [destockCost, setDestockCost] = useState<DestockCost | null>(null);
   const { showToast } = useToast();
 
   const [mutate, { loading, error }] = useMutation(RESOLVE_DEFICIENCY, {
@@ -60,11 +64,13 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
 
   const q = Number(quantity);
   const needsRma = resolution === 'RETURN_TO_VENDOR';
+  const needsCost = resolution === 'SEND_TO_STOCK' && row.source === 'PROJECT_INVENTORY';
   const valid =
     Number.isInteger(q) &&
     q >= 1 &&
     q <= row.deficientQuantity &&
-    (!needsRma || rma.trim().length > 0);
+    (!needsRma || rma.trim().length > 0) &&
+    (!needsCost || destockCost !== null);
 
   const handleSubmit = () => {
     if (!valid) return;
@@ -78,6 +84,7 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
           reasonText: reason.trim() || null,
           rmaReference: needsRma ? rma.trim() : null,
           destockSource: resolution === 'SEND_TO_STOCK' ? 'DEFICIENT_SWAP' : null,
+          destockCost: needsCost ? destockCost : null,
         },
       },
     });
@@ -122,6 +129,7 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
             ))}
           </Select>
         </FormControl>
+        {needsCost && <DestockCostChoice value={destockCost} onChange={setDestockCost} />}
         <TextField
           label={`Quantity (max ${row.deficientQuantity})`}
           type="number"
