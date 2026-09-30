@@ -15,7 +15,7 @@ transaction.
 import pytest
 
 from app.errors import ValidationError
-from app.models.enums import DestockSource
+from app.models.enums import DestockCost, DestockSource
 from app.repositories import stock as stock_repository
 from app.repositories import warehouse as warehouse_repository
 
@@ -42,6 +42,7 @@ def test_destock_that_would_strand_a_reservation_is_refused(db_session):
             target_row=None,
             target_bay=None,
             performed_by="warehouse",
+            destock_cost=DestockCost.ZERO,
         )
 
     assert excinfo.value.field == "quantity"
@@ -66,6 +67,7 @@ def test_destock_of_true_overage_above_the_claim_is_allowed(db_session):
         target_row=None,
         target_bay=None,
         performed_by="warehouse",
+        destock_cost=DestockCost.ZERO,
     )
 
     assert il.quantity == 4  # exactly the reserved count remains
@@ -91,6 +93,7 @@ def test_deficient_swap_is_never_blocked_by_the_gate(db_session):
         target_row=None,
         target_bay=None,
         performed_by="warehouse",
+        destock_cost=DestockCost.ZERO,
     )
 
     assert il.quantity == 7
@@ -126,6 +129,7 @@ def test_the_gate_reads_availability_under_lock(db_session, monkeypatch):
         target_row=None,
         target_bay=None,
         performed_by="warehouse",
+        destock_cost=DestockCost.ZERO,
     )
 
     assert locks_seen == [True]

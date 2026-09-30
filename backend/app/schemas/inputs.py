@@ -5,6 +5,7 @@ import strawberry
 from .enums import (
     Classification,
     DeficiencyResolution,
+    DestockCost,
     DestockSource,
     MigrationDestination,
     PoolKind,
@@ -860,6 +861,8 @@ class DestockInventoryInput:
     inventory_location_id: strawberry.ID
     quantity: int
     source: DestockSource
+    # What the units cost in the pool (#942): left behind ($0) or keeps its cost. Required, no default.
+    destock_cost: DestockCost
     reason_text: str | None = None
     target_aisle: str | None = None
     target_row: str | None = None
@@ -954,6 +957,9 @@ class ResolveDeficiencyInput:
     reason_text: str | None = None
     rma_reference: str | None = None
     destock_source: DestockSource | None = None
+    # Required when a project row's units are sent to stock (#942), validated server-side; ignored
+    # by every other resolution.
+    destock_cost: DestockCost | None = None
 
 
 @strawberry.input

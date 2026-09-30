@@ -1316,6 +1316,10 @@ def _return_units_to_project_inventory(
 
         now = datetime.utcnow()
         warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
+        # Every prior row for the combo is gone (that is why this one exists), so the cost is
+        # re-resolved from the schedule. It is also the anchor stock row's price key (#942), so the
+        # anchor is a pool row at the restored units' own price, never one at some other price.
+        restored_cost = resolve_project_combo_cost(session, project_id, hardware_category, product_code)
         stock_row = _find_or_create_stock_row(
             session,
             warehouse_id=warehouse_id,
@@ -1325,6 +1329,7 @@ def _return_units_to_project_inventory(
             row=None,
             bay=None,
             received_at=now,
+            unit_cost=restored_cost,
         )
         il = InventoryLocationModel(
             project_id=project_id,
@@ -1334,11 +1339,8 @@ def _return_units_to_project_inventory(
             product_code=product_code,
             quantity=0,
             deficient_quantity=0,
-            # Every prior row for the combo is gone (that is why this one exists), so the cost is
-            # re-resolved from the schedule, else the anchor stock row - the same rule allocate
-            # applies. Leaving it null valued the restored units at zero.
-            unit_cost=resolve_project_combo_cost(session, project_id, hardware_category, product_code)
-            or stock_row.unit_cost,
+            # Leaving it null valued the restored units at zero.
+            unit_cost=restored_cost,
             received_at=now,
         )
         session.add(il)

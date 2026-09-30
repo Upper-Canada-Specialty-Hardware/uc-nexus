@@ -12,7 +12,7 @@ import pytest
 
 from app.auth import NEXUS_ADMIN_ROLE
 from app.errors import ValidationError
-from app.models.enums import Classification, DestockSource, HardwareItemState, POOrigin, POStatus
+from app.models.enums import Classification, DestockCost, DestockSource, HardwareItemState, POOrigin, POStatus
 from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
 from app.models.project import Opening, Project
@@ -276,7 +276,8 @@ def test_identity_fields_are_written_stripped(db_session):
 
 
 def test_stock_items_counts_rows_not_entries(db_session):
-    """Two entries for one part on one shelf merge into a single StockItem, and must report as one."""
+    """Two entries for one part on one shelf at one price merge into a single StockItem, and must
+    report as one."""
     wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
     result = migration_repo.migrate_inventory(
         db_session,
@@ -286,6 +287,27 @@ def test_stock_items_counts_rows_not_entries(db_session):
     assert result["stock_items"] == 1
     assert result["total_units"] == 7
     assert db_session.query(StockItem).filter_by(product_code="SAME-1").one().quantity == 7
+
+
+def test_entries_at_two_prices_on_one_shelf_are_two_stock_rows(db_session):
+    """A pool row holds one price (#942), so same-shelf entries at different costs never merge."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    result = migration_repo.migrate_inventory(
+        db_session,
+        [
+            _entry(wh, product_code="TWO-PRICE", quantity=3, unit_cost=4),
+            _entry(wh, product_code="TWO-PRICE", quantity=4, unit_cost=9),
+            _entry(wh, product_code="TWO-PRICE", quantity=1),
+        ],
+        ACTOR,
+    )
+    assert result["stock_items"] == 3
+    rows = db_session.query(StockItem).filter_by(product_code="TWO-PRICE").all()
+    assert sorted((r.unit_cost or Decimal("0"), r.quantity) for r in rows) == [
+        (Decimal("0"), 1),
+        (Decimal("4"), 3),
+        (Decimal("9"), 4),
+    ]
 
 
 def test_both_migration_fields_are_admin_only():
@@ -421,9 +443,9 @@ def test_unit_cost_travels_onto_the_project_row(db_session):
     assert il.unit_cost == Decimal("6")
 
 
-def test_project_entries_price_by_their_own_cost_not_the_pool_first_cost(db_session):
-    """Two same-shelf entries merge into ONE pool row that keeps the first cost; each project's
-    units must still carry their own entry's cost, whichever landed first."""
+def test_project_entries_price_by_their_own_cost(db_session):
+    """Two same-shelf entries at different costs route through two pool rows (#942), so each
+    project's units carry their own entry's cost, whichever landed first."""
     wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
     p1 = _make_project(db_session)
     p2 = _make_project(db_session)
@@ -439,11 +461,12 @@ def test_project_entries_price_by_their_own_cost_not_the_pool_first_cost(db_sess
     il2 = db_session.query(InventoryLocation).filter_by(project_id=p2.id).one()
     assert il1.unit_cost == Decimal("4")
     assert il2.unit_cost == Decimal("9")
+    assert il1.stock_item_id != il2.stock_item_id
 
 
-def test_an_empty_pool_row_forgets_its_migration_cost(db_session):
-    """A drained pool row's cost describes units that are gone. The next receipt into that shelf
-    (a stock PO passes no cost) must not inherit the stale migration price."""
+def test_a_zero_receipt_never_lands_on_a_drained_priced_row(db_session):
+    """A drained pool row's cost describes units that are gone. A $0 receipt into that shelf lands
+    on a $0 row of its own (#942) rather than inheriting the stale migration price."""
     from datetime import datetime
 
     wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
@@ -471,8 +494,9 @@ def test_an_empty_pool_row_forgets_its_migration_cost(db_session):
         received_by=ACTOR,
         po_number="PO-1",
     )
-    assert refilled.id == drained.id
+    assert refilled.id != drained.id
     assert refilled.unit_cost is None
+    assert drained.unit_cost == Decimal("4")
 
 
 def test_an_over_large_unit_cost_is_a_named_validation_error(db_session):
@@ -490,7 +514,7 @@ def test_clean_unit_cost_rejects_non_finite_values():
 
 
 def test_cost_carries_back_through_destock(db_session):
-    """A destocked migrated unit keeps its value: the pool row it lands on picks up the row's cost."""
+    """A migrated unit destocked as keeping its cost lands on a pool row at the row's own cost."""
     wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
     project = _make_project(db_session)
     migration_repo.migrate_inventory(
@@ -509,6 +533,7 @@ def test_cost_carries_back_through_destock(db_session):
         target_row=None,
         target_bay=None,
         performed_by=ACTOR,
+        destock_cost=DestockCost.KEEP,
     )
     assert stock.unit_cost == Decimal("6")
 

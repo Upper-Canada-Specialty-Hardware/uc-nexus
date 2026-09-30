@@ -173,8 +173,9 @@ def migrate_inventory(
 
     now = datetime.utcnow()
     # Stock rows, not stock ENTRIES: receive_into_stock merges into an existing row for the same
-    # (warehouse, category, code, aisle, row, bay), so two SharePoint rows for one part on one shelf
-    # are one StockItem. Counting entries would report a number the warehouse view cannot reproduce.
+    # (warehouse, category, code, aisle, row, bay, kind, unit cost), so two SharePoint rows for one part
+    # on one shelf at one price are one StockItem, and at two prices two (#942). Counting entries would
+    # report a number the warehouse view cannot reproduce.
     stock_row_ids: set[uuid.UUID] = set()
     project_locations = 0
     total_units = 0
@@ -264,10 +265,6 @@ def migrate_inventory(
                     target_row=row,
                     target_bay=bay,
                     performed_by=performed_by,
-                    # The ENTRY's own cost, not the pool row's. receive_into_stock merges same-shelf
-                    # entries into one row and keeps the first cost it saw, so reading the pool back
-                    # here would price this project's units at whichever entry happened to land first.
-                    unit_cost_override=unit_cost,
                 )
                 project_locations += 1
                 key = (entry["project_id"], category, code, None)

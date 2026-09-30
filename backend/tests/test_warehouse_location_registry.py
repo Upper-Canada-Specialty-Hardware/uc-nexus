@@ -20,7 +20,7 @@ import uuid
 import pytest
 
 from app.errors import ConflictError, NotFoundError, ValidationError
-from app.models.enums import DestockSource
+from app.models.enums import DestockCost, DestockSource
 from app.repositories import stock as stock_repository
 from app.repositories import warehouse as warehouse_repository
 from app.repositories import warehouse_admin_repository
@@ -329,6 +329,7 @@ def test_a_destock_override_must_be_a_defined_location(db_session):
             target_row="R9",
             target_bay="B9",
             performed_by="wh",
+            destock_cost=DestockCost.ZERO,
         )
 
     assert excinfo.value.field == "location"
@@ -345,6 +346,7 @@ def test_a_destock_override_must_be_a_defined_location(db_session):
         target_row="r9",
         target_bay="b9",
         performed_by="wh",
+        destock_cost=DestockCost.ZERO,
     )
     assert (stock_row.aisle, stock_row.row, stock_row.bay) == (target, "R9", "B9")
 
@@ -367,6 +369,7 @@ def test_a_destock_inheriting_the_source_shelf_is_not_checked(db_session):
         target_row=None,
         target_bay=None,
         performed_by="wh",
+        destock_cost=DestockCost.ZERO,
     )
 
     assert il.quantity == 6
@@ -390,6 +393,7 @@ def test_a_destock_override_onto_a_retired_location_is_refused(db_session):
             target_row="R9",
             target_bay="B9",
             performed_by="wh",
+            destock_cost=DestockCost.ZERO,
         )
 
 

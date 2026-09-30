@@ -18,6 +18,9 @@ from app.models.enums import (
     DeficientItemSource as DeficientItemSourceDB,
 )
 from app.models.enums import (
+    DestockCost as DestockCostDB,
+)
+from app.models.enums import (
     DestockSource as DestockSourceDB,
 )
 from app.models.enums import (
@@ -102,6 +105,7 @@ ShipmentContainerType = strawberry.enum(ShipmentContainerTypeDB)
 NotificationType = strawberry.enum(NotificationTypeDB)
 PODocumentType = strawberry.enum(PODocumentTypeDB)
 DestockSource = strawberry.enum(DestockSourceDB)
+DestockCost = strawberry.enum(DestockCostDB)
 DeficiencyResolution = strawberry.enum(DeficiencyResolutionDB)
 DeficientItemSource = strawberry.enum(DeficientItemSourceDB)
 ReturnDisposition = strawberry.enum(ReturnDispositionDB)

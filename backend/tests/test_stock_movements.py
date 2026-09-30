@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import select
 
 from app.errors import NotFoundError, ValidationError
-from app.models.enums import DestockSource
+from app.models.enums import DestockCost, DestockSource
 from app.models.inventory import InventoryLocation
 from app.models.stock_item import StockItem
 from app.repositories import stock as stock_repository
@@ -35,6 +35,7 @@ def test_destock_moves_sound_units_to_the_stock_pool(db_session):
         target_row=None,
         target_bay=None,
         performed_by="warehouse",
+        destock_cost=DestockCost.ZERO,
     )
 
     assert il.quantity == 6
@@ -59,6 +60,7 @@ def test_destock_below_the_deficient_floor_is_refused(db_session):
             target_row=None,
             target_bay=None,
             performed_by="warehouse",
+            destock_cost=DestockCost.ZERO,
         )
 
 
@@ -76,6 +78,7 @@ def test_destock_down_to_exactly_the_deficient_floor_is_allowed(db_session):
         target_row=None,
         target_bay=None,
         performed_by="warehouse",
+        destock_cost=DestockCost.ZERO,
     )
 
     assert il.quantity == 4
@@ -96,6 +99,7 @@ def test_deficient_swap_may_take_up_to_the_deficient_count(db_session):
         target_row=None,
         target_bay=None,
         performed_by="warehouse",
+        destock_cost=DestockCost.ZERO,
     )
 
     assert il.quantity == 7
@@ -117,6 +121,7 @@ def test_deficient_swap_beyond_the_deficient_count_is_refused(db_session):
             target_row=None,
             target_bay=None,
             performed_by="warehouse",
+            destock_cost=DestockCost.ZERO,
         )
 
 
@@ -136,6 +141,7 @@ def test_full_target_override_lands_stock_at_the_chosen_location(db_session):
         target_row="9",
         target_bay="9",
         performed_by="warehouse",
+        destock_cost=DestockCost.ZERO,
     )
 
     assert (stock_row.aisle, stock_row.row, stock_row.bay) == ("Z", "9", "9")
@@ -162,6 +168,7 @@ def test_partial_target_override_is_refused(db_session, aisle, row, bay):
             target_row=row,
             target_bay=bay,
             performed_by="warehouse",
+            destock_cost=DestockCost.ZERO,
         )
 
 
@@ -180,6 +187,7 @@ def test_destock_of_a_return_origin_row_does_not_crash(db_session):
         target_row=None,
         target_bay=None,
         performed_by="warehouse",
+        destock_cost=DestockCost.ZERO,
     )
 
     assert il.quantity == 3
@@ -198,6 +206,7 @@ def test_destock_missing_row_raises_not_found(db_session):
             target_row=None,
             target_bay=None,
             performed_by="warehouse",
+            destock_cost=DestockCost.ZERO,
         )
 
 

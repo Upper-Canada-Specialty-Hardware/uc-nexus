@@ -274,14 +274,12 @@ def reclassify_stock_item(
         row=si.row,
         bay=si.bay,
         received_at=now,
-        # A reclassify changes what the units are, not which half of the pool they sit in (#832).
+        # A reclassify changes what the units are, not which half of the pool they sit in (#832),
+        # nor what they cost (#942) - the same as a full in-place reclassify keeps the row's price.
         kind=si.kind,
+        unit_cost=si.unit_cost,
     )
     new_row.quantity += quantity
-    # The units keep their off-PO cost across the split, the same as a full in-place reclassify
-    # keeps the row's. Fills a null only - a destination row with its own cost keeps it.
-    if si.unit_cost is not None and new_row.unit_cost is None:
-        new_row.unit_cost = si.unit_cost
 
     session.flush()
 
@@ -324,7 +322,8 @@ def set_stock_item_kind(
 ) -> tuple[StockItem, StockItem | None]:
     """Re-flag `quantity` units of a pool row as Stock or Overhead (#832).
 
-    The units move to the row of the other kind on the same shelf, which is created or merged into.
+    The units move to the row of the other kind on the same shelf and at the same price (#942), which
+    is created or merged into.
     When every unit of the row moves and there is no such row yet, the row's own flag flips in place
     instead, so it keeps its id.
 
@@ -359,6 +358,7 @@ def set_stock_item_kind(
         row=si.row,
         bay=si.bay,
         kind=kind,
+        unit_cost=si.unit_cost,
     )
 
     if target is None and quantity == si.quantity:
@@ -393,17 +393,10 @@ def set_stock_item_kind(
             bay=si.bay,
             received_at=si.received_at,
             kind=kind,
+            unit_cost=si.unit_cost,
         )
-    target_was_empty = target.quantity == 0 and (target.deficient_quantity or 0) == 0
     si.quantity -= quantity
     target.quantity += quantity
-    # The units keep their off-PO cost. An empty destination takes it outright (its own cost describes
-    # units that are gone, the rule receive_into_stock applies); one still holding units only has a
-    # null filled.
-    if target_was_empty:
-        target.unit_cost = si.unit_cost
-    elif si.unit_cost is not None and target.unit_cost is None:
-        target.unit_cost = si.unit_cost
     session.flush()
 
     detail = {

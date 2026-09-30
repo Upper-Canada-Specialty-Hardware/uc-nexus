@@ -261,6 +261,8 @@ def create_receive(
                         received_by=received_by,
                         po_number=po.po_number,
                         kind=po.pool_kind,
+                        # Bought into stock: the pool row carries the PO line's price (#942).
+                        unit_cost=poli.unit_cost,
                     )
             else:
                 stock_repository.receive_into_stock(
@@ -277,6 +279,7 @@ def create_receive(
                     received_by=received_by,
                     po_number=po.po_number,
                     kind=po.pool_kind,
+                    unit_cost=poli.unit_cost,
                 )
         elif locations:
             for loc in locations:

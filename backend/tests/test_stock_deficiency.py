@@ -10,7 +10,7 @@ import uuid
 import pytest
 
 from app.errors import NotFoundError, ValidationError
-from app.models.enums import DeficiencyResolution, DestockSource
+from app.models.enums import DeficiencyResolution, DestockCost, DestockSource
 from app.models.stock_item import StockItem
 from app.repositories import stock as stock_repository
 
@@ -84,6 +84,7 @@ def test_resolve_project_send_to_stock_moves_the_units_onto_a_stock_row(db_sessi
         rma_reference=None,
         destock_source=None,
         reviewed_by="manager",
+        destock_cost=DestockCost.KEEP,
     )
 
     assert il.quantity == 6
@@ -207,6 +208,7 @@ def test_resolve_project_send_to_stock_accepts_an_explicit_destock_source(db_ses
         rma_reference=None,
         destock_source=DestockSource.OVERAGE,
         reviewed_by="manager",
+        destock_cost=DestockCost.KEEP,
     )
 
     assert review.resulting_stock_item_id is not None
@@ -382,6 +384,7 @@ def test_resolve_project_send_to_stock_carries_the_unit_cost(db_session):
         rma_reference=None,
         destock_source=None,
         reviewed_by="manager",
+        destock_cost=DestockCost.KEEP,
     )
 
     stock_row = db_session.get(StockItem, review.resulting_stock_item_id)

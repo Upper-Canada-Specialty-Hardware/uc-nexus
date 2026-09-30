@@ -12,12 +12,13 @@ from app.models.enums import (
     AuditEntityType,
     DeficiencyResolution,
     DeficientItemSource,
+    DestockCost,
     DestockSource,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.stock_item import StockItem
 
-from .common import _find_or_create_stock_row, _log_audit_event
+from .common import _find_or_create_stock_row, _log_audit_event, destock_unit_cost
 from .items import get_stock_item
 
 
@@ -111,8 +112,13 @@ def resolve_deficiency(
     rma_reference: str | None,
     destock_source: DestockSource | None,
     reviewed_by: str,
+    destock_cost: DestockCost | None = None,
 ):
-    """Resolve a deficient batch. Exactly one of inventory_location_id / stock_item_id is set."""
+    """Resolve a deficient batch. Exactly one of inventory_location_id / stock_item_id is set.
+
+    `destock_cost` is required when a project row's units are sent to stock (#942): ZERO lands them at
+    $0, KEEP at their own effective price. Every other resolution, and a pool row's, ignores it.
+    """
     from app.models.deficiency_review import DeficiencyReview
 
     if (inventory_location_id is None) == (stock_item_id is None):
@@ -134,6 +140,7 @@ def resolve_deficiency(
         destock_source = DestockSource.DEFICIENT_SWAP
 
     resulting_stock_item_id: uuid.UUID | None = None
+    pool_cost = None
     project_for_audit: uuid.UUID | None = None
     hardware_category: str
     product_code: str
@@ -152,6 +159,7 @@ def resolve_deficiency(
         product_code = il.product_code
 
         if resolution == DeficiencyResolution.SEND_TO_STOCK:
+            pool_cost = destock_unit_cost(session, il, destock_cost)
             il.quantity -= quantity
             il.deficient_quantity -= quantity
             stock_row = _find_or_create_stock_row(
@@ -163,13 +171,10 @@ def resolve_deficiency(
                 row=il.row,
                 bay=il.bay,
                 received_at=datetime.utcnow(),
+                unit_cost=pool_cost,
             )
             stock_row.quantity += quantity
             stock_row.deficient_quantity += quantity
-            # Carry an off-PO cost back to the pool row, exactly as destock_inventory does - without
-            # it a migrated unit resolved through here values at zero forever. Fills a null only.
-            if il.unit_cost is not None and stock_row.unit_cost is None:
-                stock_row.unit_cost = il.unit_cost
             resulting_stock_item_id = stock_row.id
         elif resolution == DeficiencyResolution.SCRAP:
             il.quantity -= quantity
@@ -229,6 +234,10 @@ def resolve_deficiency(
         "reasonText": reason_text,
         "rmaReference": rma_reference,
         "destockSource": destock_source.value if destock_source else None,
+        "destockCost": (
+            destock_cost.value if destock_cost and resulting_stock_item_id and inventory_location_id else None
+        ),
+        "unitCost": str(pool_cost) if pool_cost is not None else None,
         "resultingStockItemId": str(resulting_stock_item_id) if resulting_stock_item_id else None,
         "hardwareCategory": hardware_category,
         "productCode": product_code,

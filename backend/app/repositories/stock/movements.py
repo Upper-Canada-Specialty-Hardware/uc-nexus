@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
-from app.models.enums import AuditAction, AuditEntityType, DestockSource, PoolKind
+from app.models.enums import AuditAction, AuditEntityType, DestockCost, DestockSource, PoolKind
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.stock_item import StockItem
 from app.repositories.warehouse import (
@@ -24,6 +24,7 @@ from .common import (
     _log_audit_event,
     _normalize_optional_location_fields,
     _validate_location_fields,
+    destock_unit_cost,
 )
 from .items import get_stock_item
 
@@ -39,8 +40,14 @@ def destock_inventory(
     target_row: str | None,
     target_bay: str | None,
     performed_by: str,
+    destock_cost: DestockCost | None = None,
 ) -> StockItem:
-    """Move quantity units from a project's InventoryLocation row into the stock pool."""
+    """Move quantity units from a project's InventoryLocation row into the stock pool.
+
+    `destock_cost` is required (#942): ZERO lands the units at $0 (left behind on a job), KEEP at
+    their own effective price. It defaults to None only so a missing choice reaches the caller as a
+    ValidationError rather than a TypeError.
+    """
     if quantity < 1:
         raise ValidationError("quantity must be >= 1", field="quantity")
     if not performed_by:
@@ -50,6 +57,7 @@ def destock_inventory(
     il = session.get(InventoryLocationModel, inventory_location_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inventory_location_id} not found")
+    pool_cost = destock_unit_cost(session, il, destock_cost)
 
     # DEFICIENT_SWAP destocks the deficient units themselves and tightens that flag; every other
     # source moves sound units only. Either way the deficient claim must stay on the row, so the row
@@ -113,6 +121,7 @@ def destock_inventory(
         row=final_row,
         bay=final_bay,
         received_at=now,
+        unit_cost=pool_cost,
     )
 
     # Apply the move
@@ -120,10 +129,6 @@ def destock_inventory(
     if is_deficient_swap:
         il.deficient_quantity = max(0, (il.deficient_quantity or 0) - quantity)
     stock_row.quantity += quantity
-    # Carry an off-PO cost back to the pool row so a destocked migrated unit keeps its value. Only
-    # fills a null cost - never clobbers one the pool row already holds.
-    if il.unit_cost is not None and stock_row.unit_cost is None:
-        stock_row.unit_cost = il.unit_cost
 
     session.flush()
 
@@ -134,6 +139,8 @@ def destock_inventory(
         "productCode": il.product_code,
         "quantity": quantity,
         "source": source.value,
+        "destockCost": destock_cost.value,
+        "unitCost": str(pool_cost) if pool_cost is not None else None,
         "reasonText": reason_text,
         "targetLocation": location_detail(final_aisle, final_row, final_bay, stock_row.warehouse_id),
         "stockItemId": str(stock_row.id),
@@ -171,7 +178,6 @@ def allocate_stock_to_project(
     target_row: str | None,
     target_bay: str | None,
     performed_by: str,
-    unit_cost_override: Decimal | None = None,
 ) -> InventoryLocationModel:
     """Transfer `quantity` units from a stock row into a project's inventory.
 
@@ -179,10 +185,6 @@ def allocate_stock_to_project(
     po_line_item_id / receive_line_item_id NULL). The CHECK constraint ck_inventory_locations_has_origin
     enforces that every row has either a PO origin or a stock origin.
 
-    `unit_cost_override` prices the allocated units directly, for callers that know the units' own
-    cost better than the pool row does - the SharePoint migration, whose same-shelf entries merge
-    into one pool row that keeps only the first cost it saw. Warehouse allocations leave it unset
-    and inherit the pool row's cost as before.
     """
     from app.models.project import Project as ProjectModel
 
@@ -225,10 +227,9 @@ def allocate_stock_to_project(
         aisle=target_aisle,
         row=target_row,
         bay=target_bay,
-        # A stock-origin project row has no PO line, so it carries the caller's own cost when given,
-        # else the stock row's off-PO cost; null when the stock came from a PO (the cost stays on
-        # that line).
-        unit_cost=unit_cost_override if unit_cost_override is not None else si.unit_cost,
+        # A stock-origin project row has no PO line, so it carries the pool row's cost - the one price
+        # every unit on that row shares (#942).
+        unit_cost=si.unit_cost,
         received_at=now,
     )
     session.add(new_il)
@@ -294,12 +295,9 @@ def receive_into_stock(
     `kind` is the PO's own Stock / Overhead choice (#832); every off-PO caller (the SharePoint
     migration) takes the STOCK default.
 
-    `unit_cost` is the off-PO cost for units with no PO line to hang it on (the SharePoint migration).
-    A receipt into an EMPTY row (fresh, or drained by allocation) replaces the row's cost outright -
-    an empty row's cost describes units that are gone, and letting it linger stamps a stale price
-    onto whatever arrives next. A receipt merging into a row that still holds units only fills a
-    null, so a later off-PO receipt never clobbers an established cost and a PO-origin receipt
-    (which passes None) never blanks one.
+    `unit_cost` is the units' price: the PO line's unit cost on a receipt off a no-project PO (#942),
+    the entry's own cost from the SharePoint migration. It is part of the row's merge key, so the
+    units only ever stack onto a row at the same price.
     """
     if quantity < 1:
         raise ValidationError("quantity must be >= 1", field="quantity")
@@ -324,14 +322,10 @@ def receive_into_stock(
         bay=bay,
         received_at=received_at,
         kind=kind,
+        unit_cost=unit_cost,
     )
-    was_empty = stock_row.quantity == 0 and (stock_row.deficient_quantity or 0) == 0
     stock_row.quantity += quantity
     stock_row.deficient_quantity += deficient_quantity
-    if was_empty:
-        stock_row.unit_cost = unit_cost
-    elif unit_cost is not None and stock_row.unit_cost is None:
-        stock_row.unit_cost = unit_cost
 
     _log_audit_event(
         session,
@@ -347,6 +341,7 @@ def receive_into_stock(
             "productCode": product_code,
             "poNumber": po_number,
             "kind": kind.value,
+            "unitCost": str(unit_cost) if unit_cost is not None else None,
             "location": location_detail(aisle, row, bay, warehouse_id),
         },
     )
@@ -498,13 +493,11 @@ def transfer_inventory(
             row=dest_row,
             bay=dest_bay,
             received_at=now,
-            # The units keep their Stock / Overhead flag wherever they go (#832).
+            # The units keep their Stock / Overhead flag and their price wherever they go (#832, #942).
             kind=si.kind,
+            unit_cost=si.unit_cost,
         )
         target.quantity += quantity
-        # Carry an off-PO cost onto the destination pool row (fills a null only).
-        if si.unit_cost is not None and target.unit_cost is None:
-            target.unit_cost = si.unit_cost
         session.flush()
         _log_audit_event(
             session,
