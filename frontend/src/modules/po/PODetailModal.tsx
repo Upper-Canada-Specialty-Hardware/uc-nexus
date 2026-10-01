@@ -472,6 +472,7 @@ export default function PODetailModal({
   // --- Edit-mode line item columns (with editable Order As + unit cost) ---
 
   const canEditItems = po.status === 'DRAFT';
+  const poNumberLocked = po.origin === 'GP' || po.status !== 'DRAFT';
 
   const distinctProductCodes = useMemo(
     () => Array.from(new Set(po.lineItems.map((li) => li.productCode))),
@@ -719,6 +720,8 @@ export default function PODetailModal({
         {/* Info Fields */}
         {editing ? (
           <Stack spacing={2} sx={{ mb: 3 }}>
+            {/* #979: GP's number is the PO's identity once registered - the server refuses a change on
+                a GP-origin PO or one past Nexus Draft, so the field is read-only there too. */}
             <TextField
               label="PO Number"
               value={poNumber}
@@ -727,7 +730,13 @@ export default function PODetailModal({
                 if (poNumberError) setPoNumberError('');
               }}
               error={!!poNumberError}
-              helperText={poNumberError || 'From Microsoft GP (optional until ordering)'}
+              helperText={
+                poNumberError ||
+                (poNumberLocked
+                  ? 'Fixed once the PO is registered in GP'
+                  : 'From Microsoft GP (optional until ordering)')
+              }
+              disabled={poNumberLocked}
               fullWidth
               size="small"
             />

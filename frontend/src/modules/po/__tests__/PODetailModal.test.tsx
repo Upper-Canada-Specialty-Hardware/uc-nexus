@@ -456,6 +456,19 @@ describe('PODetailModal', () => {
     await waitFor(() => expect(deleted).toEqual([{ documentId: 'doc-ack' }]));
   });
 
+  it('keeps the PO number editable on a draft and read-only once registered (#979)', () => {
+    renderModal(draftPo);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(screen.getByLabelText('PO Number')).toBeEnabled();
+  });
+
+  it('locks the PO number on a registered PO, saying why (#979)', () => {
+    renderModal(registeredPo);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(screen.getByLabelText('PO Number')).toBeDisabled();
+    expect(screen.getByText('Fixed once the PO is registered in GP')).toBeInTheDocument();
+  });
+
   it('offers no Stock or Overhead choice on a PO with a project (#832)', () => {
     renderModal(draftPo);
     expect(screen.queryByText('Stock or Overhead')).toBeNull();
