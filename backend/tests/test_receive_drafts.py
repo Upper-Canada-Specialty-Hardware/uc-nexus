@@ -228,6 +228,23 @@ def _open_po_ids(session) -> set:
     return {r.id for r in rows}
 
 
+def test_a_po_with_nothing_left_to_receive_is_not_awaiting_receipt(db_session):
+    """#1049: a GP PO with no lines, or one whose every line is fully received, stays off the list."""
+    project = _make_project(db_session)
+    open_po, _ = _make_po(db_session, project.id)
+    received_po, received_li = _make_po(db_session, project.id, status=POStatus.PARTIALLY_RECEIVED)
+    received_li.received_quantity = received_li.ordered_quantity
+    lineless_po, lineless_li = _make_po(db_session, project.id)
+    db_session.delete(lineless_li)
+    db_session.flush()
+
+    ids = _open_po_ids(db_session)
+
+    assert open_po.id in ids
+    assert received_po.id not in ids
+    assert lineless_po.id not in ids
+
+
 def test_a_pending_count_takes_the_po_off_the_receiving_queue(db_session):
     project = _make_project(db_session)
     po, li = _make_po(db_session, project.id)
