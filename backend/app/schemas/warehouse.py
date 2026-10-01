@@ -1,6 +1,7 @@
 """Warehouse queries + mutations: receiving, inventory, locations, pull requests, warehouse admin."""
 
 import asyncio
+import logging
 import uuid
 
 import strawberry
@@ -83,6 +84,8 @@ from .types import (
     WarehouseDashboard,
     WarehouseLocation,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _pick_lines_from_input(lines: list[PickLineInput]) -> list[warehouse_repository.PickLine]:
@@ -1073,10 +1076,21 @@ class WarehouseMutations:
         user = current_user(info)
         with SessionLocal() as session:
             tenancy.require_receive_draft_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
-            warehouse_repository.delete_receive_draft(
+            slip_key = warehouse_repository.delete_receive_draft(
                 session, uuid.UUID(str(id)), user["user_id"], _is_warehouse_manager(info)
             )
             session.commit()
+        # #1048: the slip's row went with the draft; its stored file goes only once that committed. A
+        # file left behind is invisible clutter, so a storage failure never fails the delete.
+        if slip_key:
+            from app.services import storage
+
+            try:
+                storage.delete_file(slip_key)
+            except Exception:
+                logger.warning(
+                    "could not remove packing slip file %s after deleting its draft", slip_key, exc_info=True
+                )
         return True
 
     @strawberry.mutation

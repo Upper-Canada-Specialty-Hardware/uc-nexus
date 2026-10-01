@@ -119,6 +119,8 @@ describe('MyReceiveDraftsView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     // The count is the only record of what arrived, so the confirmation says so.
     expect(await screen.findByText(/The count of 4 units against PO-123 is lost/, undefined, SLOW)).toBeInTheDocument();
+    // #1048: and that the slip it was counted against goes with it.
+    expect(screen.getByText(/its packing slip comes off the PO unless another count uses it/)).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole('button', { name: 'Delete' }).at(-1)!);
 
     await vi.waitFor(() => expect(deleted).toEqual({ id: 'draft-1' }), SLOW);
