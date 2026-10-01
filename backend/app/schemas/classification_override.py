@@ -34,6 +34,26 @@ class HardwareClassificationChange:
     to_choice: str
     changed_by: str
     changed_at: datetime
+    # #1050: what had already gone out under the old classification and what saving changed.
+    note: str | None
+
+
+@strawberry.type
+class HardwareClassificationImpact:
+    """What one change would do, shown before it is saved (#1050). Each list is plain sentences."""
+
+    hardware_category: str
+    product_code: str
+    from_choice: HardwareClassificationChoice
+    to_choice: HardwareClassificationChoice
+    # Hardware already sent under the current classification - history, it stays as it went.
+    went_out: list[str]
+    # In-flight work that saving changes.
+    adjusts: list[str]
+    # Work that touches the product but that the change leaves alone.
+    unaffected: list[str]
+    # What refuses the change. Saving with any of these changes nothing.
+    blocks: list[str]
 
 
 @strawberry.input
@@ -58,6 +78,7 @@ def _change_to_type(c) -> HardwareClassificationChange:
         to_choice=c.to_choice,
         changed_by=c.changed_by,
         changed_at=c.changed_at,
+        note=c.note,
     )
 
 
@@ -93,6 +114,31 @@ class ClassificationOverrideQueries:
             pid = uuid.UUID(str(project_id))
             tenancy.require_project_in_scope(session, pid, tenant_scope(info))
             return [_change_to_type(c) for c in repo.list_changes(session, pid)]
+
+    @strawberry.field
+    def hardware_classification_impact(
+        self, info: strawberry.Info, input: SetHardwareClassificationsInput
+    ) -> list[HardwareClassificationImpact]:
+        """What saving these changes would do, product by product - the preview the page confirms (#1050).
+        Writes nothing; setHardwareClassifications applies exactly this."""
+        with SessionLocal() as session:
+            pid = uuid.UUID(str(input.project_id))
+            tenancy.require_project_in_scope(session, pid, tenant_scope(info))
+            return [
+                HardwareClassificationImpact(
+                    hardware_category=p["hardware_category"],
+                    product_code=p["product_code"],
+                    from_choice=p["from_choice"],
+                    to_choice=p["to_choice"],
+                    went_out=p["went_out"],
+                    adjusts=p["adjusts"],
+                    unaffected=p["unaffected"],
+                    blocks=p["blocks"],
+                )
+                for p in repo.plan_product_classifications(
+                    session, pid, [(c.hardware_category, c.product_code, c.choice) for c in input.changes]
+                )
+            ]
 
 
 @strawberry.type

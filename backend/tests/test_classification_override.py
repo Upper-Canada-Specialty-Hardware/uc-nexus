@@ -241,60 +241,98 @@ def _shipment(session, project, code, status):
     return slip
 
 
-def test_hardware_that_went_to_the_shop_locks_the_classification(db_session):
-    """#977: a completed shop pull is history - the product's classification can no longer change."""
+def test_hardware_that_went_to_the_shop_no_longer_locks_and_the_log_keeps_where_it_went(db_session):
+    """#1050: the #977 lock is gone - the change applies to what is still owed, and the log row records
+    that some of the hardware had already gone to the shop under the old classification."""
     project = _project(db_session)
     _item(db_session, project, _opening(db_session, project), "HG-1", cls=Classification.SHOP_HARDWARE)
     batch = _batch(db_session, project, "HG-1", PullRequestStatus.COMPLETED)
 
-    for to in (C.UCH_SITE, C.BY_OTHERS):
-        with pytest.raises(ConflictError) as err:
-            repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", to)], changed_by="Greg")
-        assert f"went to the shop on {batch.batch_number}" in err.value.message
+    written = repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.UCH_SITE)], changed_by="Greg")
+
+    assert _choices(db_session, project)["HG-1"] == C.UCH_SITE
+    assert f"went to the shop on {batch.batch_number}" in written[0].note
+    # And back again - the 80001 case: put it back to the classification it went to the shop under.
+    repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.UCH_SHOP)], changed_by="Greg")
     assert _choices(db_session, project)["HG-1"] == C.UCH_SHOP
 
 
-def test_hardware_that_shipped_locks_the_classification(db_session):
-    """#977: hardware out on a shipment was shipped as what it is, so that sticks too."""
+def test_hardware_that_shipped_no_longer_locks(db_session):
     from app.models.enums import ShipmentStatus
 
     project = _project(db_session)
     _item(db_session, project, _opening(db_session, project), "HG-1", cls=Classification.SITE_HARDWARE)
     slip = _shipment(db_session, project, "HG-1", ShipmentStatus.DELIVERED)
 
-    with pytest.raises(ConflictError) as err:
-        repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.UCH_SHOP)], changed_by="Greg")
+    written = repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.UCH_SHOP)], changed_by="Greg")
 
-    assert f"shipped on {slip.packing_slip_number}" in err.value.message
-    assert _choices(db_session, project)["HG-1"] == C.UCH_SITE
+    assert _choices(db_session, project)["HG-1"] == C.UCH_SHOP
+    assert f"shipped on {slip.packing_slip_number}" in written[0].note
 
 
-def test_a_cancelled_shipment_does_not_lock_the_classification(db_session):
-    """A cancelled shipment never left (#973), so nothing went anywhere under the classification."""
+def test_a_cancelled_shipment_is_not_history(db_session):
+    """A cancelled shipment never left (#973), so the log does not say the hardware went anywhere."""
     from app.models.enums import ShipmentStatus
 
     project = _project(db_session)
     _item(db_session, project, _opening(db_session, project), "HG-1", cls=Classification.SITE_HARDWARE)
     _shipment(db_session, project, "HG-1", ShipmentStatus.CANCELLED)
 
-    repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.UCH_SHOP)], changed_by="Greg")
+    written = repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.UCH_SHOP)], changed_by="Greg")
 
     assert _choices(db_session, project)["HG-1"] == C.UCH_SHOP
+    assert written[0].note is None
 
 
 # --- refusals -----------------------------------------------------------------------------------
 
 
-def test_shop_to_site_is_refused_while_a_waiting_shop_request_holds_it(db_session):
+def test_shop_to_site_takes_the_product_off_a_waiting_shop_request_and_tells_the_manager(db_session):
+    """#1050: a waiting opening holds nothing yet, so the product comes off it. The opening, left with
+    nothing, is dismissed; the request, left with nothing waiting, closes out; the manager is told."""
+    from app.models.notification import Notification
+
     project = _project(db_session)
     _item(db_session, project, _opening(db_session, project), "HG-1", cls=Classification.SHOP_HARDWARE)
     req = _shop_request(db_session, project, "HG-1")
 
-    with pytest.raises(ConflictError) as err:
-        repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.UCH_SITE)], changed_by="Greg")
+    written = repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.UCH_SITE)], changed_by="Greg")
+    db_session.refresh(req)
 
-    assert req.request_number in err.value.message
-    assert _choices(db_session, project)["HG-1"] == C.UCH_SHOP
+    assert _choices(db_session, project)["HG-1"] == C.UCH_SITE
+    assert req.items == []
+    assert [o.status for o in req.openings] == [ShopAssemblyOpeningStatus.DISMISSED]
+    assert req.status == ShopAssemblyRequestStatus.APPROVED
+    assert req.request_number in written[0].note
+    notices = db_session.scalars(select(Notification).where(Notification.project_id == project.id)).all()
+    assert [n.type.value for n in notices] == ["CLASSIFICATION_CHANGED"]
+    assert req.request_number in notices[0].message
+
+
+def test_an_opening_keeping_other_hardware_stays_waiting(db_session):
+    project = _project(db_session)
+    a01 = _opening(db_session, project)
+    _item(db_session, project, a01, "HG-1", cls=Classification.SHOP_HARDWARE)
+    _item(db_session, project, a01, "HG-2", cls=Classification.SHOP_HARDWARE)
+    req = _shop_request(db_session, project, "HG-1")
+    db_session.add(
+        ShopAssemblyRequestItem(
+            id=uuid.uuid4(),
+            shop_assembly_request_id=req.id,
+            opening_number="A01",
+            hardware_category=CAT,
+            product_code="HG-2",
+            requested_quantity=1,
+        )
+    )
+    db_session.flush()
+
+    repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.UCH_SITE)], changed_by="Greg")
+    db_session.refresh(req)
+
+    assert [i.product_code for i in req.items] == ["HG-2"]
+    assert [o.status for o in req.openings] == [ShopAssemblyOpeningStatus.PENDING]
+    assert req.status == ShopAssemblyRequestStatus.PENDING
 
 
 def test_shop_to_site_is_refused_while_an_active_batch_pull_is_unfinished(db_session):
@@ -308,7 +346,9 @@ def test_shop_to_site_is_refused_while_an_active_batch_pull_is_unfinished(db_ses
     assert batch.batch_number in err.value.message
 
 
-def test_by_others_is_refused_while_the_product_is_on_a_po(db_session):
+def test_by_others_on_a_po_is_allowed_and_the_rows_stop_counting_as_ordered(db_session):
+    """#1050 ruling: the PO does not depend on the classification - it is shown as unaffected, and the
+    schedule rows lose their ordered link."""
     project = _project(db_session)
     _item(
         db_session,
@@ -319,11 +359,18 @@ def test_by_others_is_refused_while_the_product_is_on_a_po(db_session):
         state=HardwareItemState.IN_PO,
     )
 
-    with pytest.raises(ConflictError, match="on a PO"):
-        repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.BY_OTHERS)], changed_by="Greg")
+    plan = repo.plan_product_classifications(db_session, project.id, [(CAT, "HG-1", C.BY_OTHERS)])
+    assert plan[0]["blocks"] == []
+    assert any("unaffected" in u for u in plan[0]["unaffected"])
+
+    repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.BY_OTHERS)], changed_by="Greg")
+
+    assert _choices(db_session, project)["HG-1"] == C.BY_OTHERS
+    states = set(db_session.scalars(select(HardwareItem.state).where(HardwareItem.project_id == project.id)))
+    assert states == {HardwareItemState.AVAILABLE}
 
 
-def test_by_others_is_refused_while_a_pending_shipping_request_asks_for_it(db_session):
+def test_by_others_with_a_pending_shipping_request_is_allowed_and_leaves_the_request(db_session):
     project = _project(db_session)
     _item(db_session, project, _opening(db_session, project), "HG-1", cls=Classification.SITE_HARDWARE)
     req = ShippingOutRequest(
@@ -347,10 +394,26 @@ def test_by_others_is_refused_while_a_pending_shipping_request_asks_for_it(db_se
     )
     db_session.flush()
 
-    with pytest.raises(ConflictError) as err:
-        repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.BY_OTHERS)], changed_by="Greg")
+    plan = repo.plan_product_classifications(db_session, project.id, [(CAT, "HG-1", C.BY_OTHERS)])
+    assert any(req.request_number in u for u in plan[0]["unaffected"])
 
-    assert req.request_number in err.value.message
+    repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.BY_OTHERS)], changed_by="Greg")
+
+    assert _choices(db_session, project)["HG-1"] == C.BY_OTHERS
+    assert db_session.scalars(
+        select(ShippingOutRequestItem).where(ShippingOutRequestItem.shipping_out_request_id == req.id)
+    ).all()
+
+
+def test_the_plan_writes_nothing(db_session):
+    project = _project(db_session)
+    _item(db_session, project, _opening(db_session, project), "HG-1", cls=Classification.SHOP_HARDWARE)
+    _shop_request(db_session, project, "HG-1")
+
+    plan = repo.plan_product_classifications(db_session, project.id, [(CAT, "HG-1", C.UCH_SITE)])
+
+    assert plan[0]["adjusts"] and plan[0]["blocks"] == []
+    assert _choices(db_session, project)["HG-1"] == C.UCH_SHOP
 
 
 def test_a_bulk_change_with_one_blocked_product_changes_nothing(db_session):
@@ -358,7 +421,7 @@ def test_a_bulk_change_with_one_blocked_product_changes_nothing(db_session):
     a01 = _opening(db_session, project)
     _item(db_session, project, a01, "HG-1", cls=Classification.SHOP_HARDWARE)
     _item(db_session, project, a01, "HG-2", cls=Classification.SHOP_HARDWARE)
-    _shop_request(db_session, project, "HG-2")
+    _batch(db_session, project, "HG-2", PullRequestStatus.IN_PROGRESS)
 
     with pytest.raises(ConflictError) as err:
         repo.set_product_classifications(

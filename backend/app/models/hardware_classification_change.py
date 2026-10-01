@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, String
+from sqlalchemy import ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
@@ -25,3 +25,6 @@ class HardwareClassificationChange(Base):
     to_choice: Mapped[str] = mapped_column(String(20), nullable=False)
     changed_by: Mapped[str] = mapped_column(String, nullable=False)
     changed_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
+    # #1050: what had already gone out under the old classification and what saving changed, in plain
+    # sentences. Null when the change touched nothing but the classification itself.
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
