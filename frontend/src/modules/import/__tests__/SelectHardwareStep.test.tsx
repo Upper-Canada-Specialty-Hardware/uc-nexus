@@ -279,6 +279,18 @@ describe('SelectHardwareStep - Order Qty', () => {
     expect(onOrderQty).toHaveBeenLastCalledWith('Hinges|HNG-100', 2);
     expect(orderQtyInput('Hinges|HNG-100').value).toBe('2');
   });
+
+  it('prices the extended cost at the order qty, not the schedule total (#984)', () => {
+    render(<Harness />);
+
+    // HNG-100: $10 a unit, 5 on the schedule.
+    expect(screen.getByText('$50.00')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    fireEvent.change(orderQtyInput('Hinges|HNG-100'), { target: { value: '2' } });
+
+    expect(screen.getByText('$20.00')).toBeInTheDocument();
+    expect(screen.queryByText('$50.00')).not.toBeInTheDocument();
+  });
 });
 
 /** An in-memory Storage: the runner may expose none, and each test wants its own. */
