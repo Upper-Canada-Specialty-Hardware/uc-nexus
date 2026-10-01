@@ -8,6 +8,7 @@ import {
   CANCEL_PO,
   UPDATE_PO_LINE_ITEM_ORDER_AS,
   UPDATE_PO_LINE_ITEM_UNIT_COST,
+  DELETE_PO_DOCUMENT,
 } from '../../../graphql/po';
 import { GET_PROJECTS } from '../../../graphql/shared';
 
@@ -416,6 +417,43 @@ describe('PODetailModal', () => {
     renderModal(draftPo);
     expect(await screen.findByText('Cowichan Dist Hospital #80001')).toBeInTheDocument();
     expect(screen.queryByText('No Project')).toBeNull();
+  });
+
+  it('confirms before deleting a document, and says when it undoes Vendor Confirmed (#978)', async () => {
+    const deleted: unknown[] = [];
+    const deleteMock: MockedResponse = {
+      request: { query: DELETE_PO_DOCUMENT, variables: () => true },
+      result: (vars) => {
+        deleted.push(vars);
+        return { data: { deletePoDocument: true } };
+      },
+    };
+    const confirmedPo: PurchaseOrder = {
+      ...registeredPo,
+      status: 'VENDOR_CONFIRMED',
+      documents: [
+        {
+          id: 'doc-ack',
+          poId: 'po-1',
+          fileName: 'ack.pdf',
+          contentType: 'application/pdf',
+          fileSize: 12,
+          documentType: 'VENDOR_ACKNOWLEDGEMENT',
+          uploadedAt: '2026-10-01T00:00:00Z',
+          downloadUrl: 'https://example.test/ack.pdf',
+        },
+      ],
+    };
+    renderModal(confirmedPo, [deleteMock]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete ack.pdf' }));
+    // Nothing goes until it is confirmed, and the confirm says what the delete does to the status.
+    expect(await screen.findByText(/Delete ack\.pdf\? This cannot be undone/)).toBeInTheDocument();
+    expect(screen.getByText(/goes back from Vendor Confirmed to GP-Registered/)).toBeInTheDocument();
+    expect(deleted).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(deleted).toEqual([{ documentId: 'doc-ack' }]));
   });
 
   it('offers no Stock or Overhead choice on a PO with a project (#832)', () => {

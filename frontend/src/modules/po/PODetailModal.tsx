@@ -129,6 +129,11 @@ export default function PODetailModal({
   // Confirm dialog state
   const [registerOpen, setRegisterOpen] = useState(false);
   const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
+  // #978: a document delete waits on a confirm, which names the file and says when it undoes Vendor
+  // Confirmed. Holds the document awaiting it.
+  const [confirmDeleteDoc, setConfirmDeleteDoc] = useState<{ id: string; fileName: string; documentType: string } | null>(
+    null,
+  );
 
   // Upload dialog state
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
@@ -354,6 +359,14 @@ export default function PODetailModal({
   const handleDeleteDocument = (documentId: string) => {
     deleteDocument({ variables: { documentId } });
   };
+
+  // Vendor Confirmed rests on a quote # and a vendor acknowledgement; deleting the last acknowledgement
+  // takes the PO back (the server's auto-revert), so the confirm says so before it happens.
+  const deleteUndoesVendorConfirmed =
+    !!confirmDeleteDoc &&
+    po.status === 'VENDOR_CONFIRMED' &&
+    confirmDeleteDoc.documentType === 'VENDOR_ACKNOWLEDGEMENT' &&
+    po.documents.filter((d) => d.documentType === 'VENDOR_ACKNOWLEDGEMENT').length === 1;
 
   // --- Line item columns ---
 
@@ -979,7 +992,7 @@ export default function PODetailModal({
                         size="small"
                         color="error"
                         aria-label={`Delete ${doc.fileName}`}
-                        onClick={() => handleDeleteDocument(doc.id)}
+                        onClick={() => setConfirmDeleteDoc(doc)}
                       >
                         <Trash2 {...ICON} />
                       </IconButton>
@@ -1115,6 +1128,27 @@ export default function PODetailModal({
           setRegisterOpen(false);
           onRefetch();
         }}
+      />
+
+      {/* Confirm: delete a document (#978) */}
+      <ConfirmDialog
+        open={confirmDeleteDoc !== null}
+        title="Delete document"
+        message={
+          `Delete ${confirmDeleteDoc?.fileName ?? 'this document'}? This cannot be undone.` +
+          (deleteUndoesVendorConfirmed
+            ? ` It is this PO's only vendor acknowledgement, so the PO goes back from ${formatPoStatus('VENDOR_CONFIRMED')} to ${formatPoStatus('GP_REGISTERED')}.`
+            : '')
+        }
+        confirmLabel="Delete"
+        confirmColor="error"
+        cancelLabel="Keep"
+        onConfirm={() => {
+          const doc = confirmDeleteDoc;
+          setConfirmDeleteDoc(null);
+          if (doc) handleDeleteDocument(doc.id);
+        }}
+        onCancel={() => setConfirmDeleteDoc(null)}
       />
 
       {/* Confirm: Cancel PO */}
