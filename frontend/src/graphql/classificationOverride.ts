@@ -24,6 +24,23 @@ export const GET_HARDWARE_CLASSIFICATION_CHANGES = gql`
       toChoice
       changedBy
       changedAt
+      note
+    }
+  }
+`;
+
+// #1050: what saving these changes would do, product by product. Writes nothing.
+export const GET_HARDWARE_CLASSIFICATION_IMPACT = gql`
+  query GetHardwareClassificationImpact($input: SetHardwareClassificationsInput!) {
+    hardwareClassificationImpact(input: $input) {
+      hardwareCategory
+      productCode
+      fromChoice
+      toChoice
+      wentOut
+      adjusts
+      unaffected
+      blocks
     }
   }
 `;
