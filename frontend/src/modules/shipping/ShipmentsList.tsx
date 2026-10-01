@@ -96,6 +96,44 @@ function formatDay(value: string | null | undefined): string {
   return value ? parseServerDay(value).toLocaleDateString() : '-';
 }
 
+const MOMENT: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+
+/**
+ * #961: a pick-up or delivery cell. Once it happened it reads the actual moment with who marked it
+ * underneath; until then the date planned on the confirm form, marked as planned, or a dash.
+ */
+function ShipmentMoment({
+  at,
+  by,
+  planned,
+}: {
+  at: string | null;
+  by: string | null;
+  planned: string | null | undefined;
+}) {
+  if (at) {
+    const when = parseServerDate(at).toLocaleString(undefined, MOMENT);
+    return (
+      <Box sx={{ minWidth: 0 }} title={by ? `${when} by ${by}` : when}>
+        <Typography variant="body2" noWrap sx={tabularSx}>
+          {when}
+        </Typography>
+        {by && (
+          <Typography variant="caption" color="text.secondary" noWrap component="div">
+            by {by}
+          </Typography>
+        )}
+      </Box>
+    );
+  }
+  if (!planned) return <>-</>;
+  return (
+    <Typography variant="body2" color="text.secondary" noWrap sx={tabularSx}>
+      planned {formatDay(planned)}
+    </Typography>
+  );
+}
+
 /**
  * #909: the shipments table fits its width and never scrolls sideways; columns are resizable and
  * remembered per person. Minimums hold a packing slip number, the widest status chip and a local date
@@ -110,8 +148,9 @@ function shipmentColumns(isGlobal: boolean): FitTableColumn[] {
     { id: 'status', label: 'Status', min: 112, weight: 0.8 },
     { id: 'shippedBy', label: 'Shipped by', min: 96, weight: 1 },
     { id: 'created', label: 'Created', min: 96, weight: 0.7 },
-    { id: 'pickup', label: 'Pick-up', min: 96, weight: 0.7 },
-    { id: 'delivery', label: 'Delivery', min: 96, weight: 0.7 },
+    // #961: wide enough for an actual date and time ("Oct 12, 10:45 AM") or "planned 10/12/2026".
+    { id: 'pickup', label: 'Pick-up', min: 120, weight: 0.8 },
+    { id: 'delivery', label: 'Delivery', min: 120, weight: 0.8 },
     { id: 'method', label: 'Method', min: 88, weight: 0.8 },
     { id: 'carrier', label: 'Carrier / Tag / BOL', min: 120, weight: 1.3 },
   ];
@@ -395,8 +434,12 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                   <TableCell sx={tabularSx}>
                     {parseServerDate(slip.createdAt).toLocaleDateString()}
                   </TableCell>
-                  <TableCell sx={tabularSx}>{formatDay(slip.pickupDate)}</TableCell>
-                  <TableCell sx={tabularSx}>{formatDay(slip.deliveryDate)}</TableCell>
+                  <TableCell>
+                    <ShipmentMoment at={slip.pickedUpAt} by={slip.pickedUpBy} planned={slip.pickupDate} />
+                  </TableCell>
+                  <TableCell>
+                    <ShipmentMoment at={slip.deliveredAt} by={slip.deliveredBy} planned={slip.deliveryDate} />
+                  </TableCell>
                   <TableCell title={slip.shipmentMethod || undefined}>{slip.shipmentMethod || '-'}</TableCell>
                   <TableCell title={slip.carrierTagBol || undefined}>{slip.carrierTagBol || '-'}</TableCell>
                 </TableRow>

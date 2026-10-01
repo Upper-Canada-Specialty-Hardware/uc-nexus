@@ -217,6 +217,35 @@ describe('ShipmentsList', () => {
     expect(screen.getAllByText('Cowichan District Hospital')).toHaveLength(3);
   });
 
+  it('shows when a shipment was picked up and delivered and who marked it, else the plan (#961)', async () => {
+    renderList([
+      packingSlipsMock([
+        slip(),
+        slip({
+          id: 'ps-3',
+          packingSlipNumber: 'PS-0021',
+          status: 'DELIVERED',
+          pickedUpAt: '2026-07-20T16:14:00Z',
+          pickedUpBy: 'Jordan Driver',
+          deliveredAt: '2026-07-21T21:05:00Z',
+          deliveredBy: 'Alex Site',
+        }),
+      ]),
+    ]);
+
+    expect(await screen.findByText('PS-0019')).toBeInTheDocument();
+    // Scheduled: the planned dates, marked as planned.
+    expect(screen.getByText(`planned ${new Date(2026, 6, 20).toLocaleDateString()}`)).toBeInTheDocument();
+    expect(screen.getByText(`planned ${new Date(2026, 6, 21).toLocaleDateString()}`)).toBeInTheDocument();
+    // Delivered: the actual moments and who marked each.
+    expect(screen.getByText('by Jordan Driver')).toBeInTheDocument();
+    expect(screen.getByText('by Alex Site')).toBeInTheDocument();
+    const moment = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' } as const;
+    expect(
+      screen.getByText(new Date('2026-07-21T21:05:00Z').toLocaleString(undefined, moment)),
+    ).toBeInTheDocument();
+  });
+
   it('hides the item lines and the actions until the row is expanded', async () => {
     renderList([packingSlipsMock([slip()])]);
     await screen.findByText('PS-0019');
