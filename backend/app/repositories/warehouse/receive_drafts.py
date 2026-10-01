@@ -459,15 +459,36 @@ def delete_receive_draft(
     draft_id: uuid.UUID,
     actor_user_id: str,
     actor_is_manager: bool,
-) -> None:
+) -> str | None:
     """Throw away a count. Refused once approval has started, because from APPROVING onwards the
-    draft is the only record of what a GP receipt is being posted for."""
+    draft is the only record of what a GP receipt is being posted for.
+
+    #1048: the packing slip pinned to the count goes with it, unless another draft - pending, sent
+    back or approved, so a posted receipt too - names the same slip; otherwise a PO collects slips for
+    counts that never happened. Returns the slip's storage key for the caller to remove once the
+    delete has committed, or None when no slip was removed.
+    """
+    from app.models.purchase_order import PODocument
+
     draft = _get_draft(session, draft_id)
     if draft.status in _IN_FLIGHT_STATUSES:
         raise InvalidStateTransitionError(f"A draft that has been approved cannot be deleted, got {draft.status.value}")
     if draft.created_by_user_id != actor_user_id and not actor_is_manager:
         raise ConflictError("Only the person who submitted this draft, or a Warehouse Manager, can delete it")
+    slip_id = draft.packing_slip_document_id
     session.delete(draft)
+    session.flush()
+    if slip_id is None:
+        return None
+    shared = session.scalar(
+        select(ReceiveDraftModel.id).where(ReceiveDraftModel.packing_slip_document_id == slip_id).limit(1)
+    )
+    slip = session.get(PODocument, slip_id) if shared is None else None
+    if slip is None:
+        return None
+    s3_key = slip.s3_key
+    session.delete(slip)
+    return s3_key
 
 
 def _assert_no_conflicting_claim(session: Session, draft: ReceiveDraftModel) -> None:

@@ -425,6 +425,52 @@ def test_deleting_is_open_to_the_author_and_a_manager_but_not_after_approval(db_
     assert excinfo.value.code == "INVALID_STATE_TRANSITION"
 
 
+def test_deleting_a_draft_takes_its_unshared_packing_slip_off_the_po(db_session):
+    """#1048: a deleted count's slip goes with it, and the stored file's key is handed back for removal
+    once the delete commits."""
+    from app.models.purchase_order import PODocument
+
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li, 1)
+    slip = db_session.get(PODocument, draft.packing_slip_document_id)
+    slip_id, slip_key = slip.id, slip.s3_key
+
+    key = warehouse_repository.delete_receive_draft(db_session, draft.id, AUTHOR, actor_is_manager=False)
+    db_session.flush()
+    db_session.expire_all()
+
+    assert key == slip_key
+    assert db_session.get(PODocument, slip_id) is None
+
+
+def test_deleting_a_draft_keeps_a_slip_another_count_uses(db_session):
+    """#1048: a slip a posted receipt (an approved draft) still names stays on the PO."""
+    from app.models.purchase_order import PODocument
+
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    approved = _draft(db_session, po, li, 1)
+    warehouse_repository.mark_approved(db_session, approved.id, receive_record_id=None)
+    db_session.flush()
+    second = warehouse_repository.create_receive_draft(
+        db_session,
+        po.id,
+        _lines(li, 1),
+        AUTHOR,
+        AUTHOR_NAME,
+        packing_slip_document_id=approved.packing_slip_document_id,
+    )
+    db_session.flush()
+
+    key = warehouse_repository.delete_receive_draft(db_session, second.id, AUTHOR, actor_is_manager=False)
+    db_session.flush()
+    db_session.expire_all()
+
+    assert key is None
+    assert db_session.get(PODocument, approved.packing_slip_document_id) is not None
+
+
 # --- the approval claim ----------------------------------------------------------------------------
 
 

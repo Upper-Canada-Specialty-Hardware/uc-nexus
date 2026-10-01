@@ -170,7 +170,7 @@ export default function MyReceiveDraftsView() {
       <ConfirmDialog
         open={deleting !== null}
         title="Delete this draft?"
-        message={`The count of ${deleting?.totalQuantity ?? 0} units against ${deleting?.poNumber ?? 'this PO'} is lost. Nothing has been posted to GP, so you can re-enter it from Receiving.`}
+        message={`The count of ${deleting?.totalQuantity ?? 0} units against ${deleting?.poNumber ?? 'this PO'} is lost, and its packing slip comes off the PO unless another count uses it. Nothing has been posted to GP, so you can re-enter it from Receiving.`}
         confirmLabel="Delete"
         onConfirm={handleDelete}
         onCancel={() => setDeleting(null)}
