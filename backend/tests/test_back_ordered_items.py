@@ -9,7 +9,7 @@ blank vendor for the very PO that POs Awaiting Receipt named correctly on the sa
 import uuid
 from decimal import Decimal
 
-from app.models.enums import POStatus
+from app.models.enums import PoolKind, POStatus
 from app.models.project import Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.repositories import warehouse as warehouse_repository
@@ -22,7 +22,7 @@ def _make_project(session) -> Project:
     return p
 
 
-def _make_back_ordered_po(session, project_id, *, vendor_name_snapshot=None):
+def _make_back_ordered_po(session, project_id, *, vendor_name_snapshot=None, pool_kind=PoolKind.STOCK):
     po = PurchaseOrder(
         id=uuid.uuid4(),
         request_number=f"REQ-{uuid.uuid4().hex[:8]}",
@@ -31,6 +31,7 @@ def _make_back_ordered_po(session, project_id, *, vendor_name_snapshot=None):
         po_number=f"PO{uuid.uuid4().hex[:6]}",
         gp_company="TEST",
         vendor_name_snapshot=vendor_name_snapshot,
+        pool_kind=pool_kind,
         company="TUBC",
     )
     session.add(po)
@@ -73,3 +74,16 @@ def test_a_po_with_no_snapshot_names_no_vendor(db_session):
     po = _make_back_ordered_po(db_session, project.id)
 
     assert _vendor_shown_for(db_session, po, project.id) is None
+
+
+def test_a_po_with_no_project_carries_its_kind(db_session):
+    """#958: an overhead PO has no project to name, so the row says which kind it is and the page
+    labels it "Overhead PO" rather than "Stock PO"."""
+    overhead = _make_back_ordered_po(db_session, None, pool_kind=PoolKind.OVERHEAD)
+    stock = _make_back_ordered_po(db_session, None)
+
+    rows = {r["po_line_item"].po_id: r for r in warehouse_repository.get_back_ordered_items(db_session, None)}
+
+    assert rows[overhead.id]["project_name"] is None
+    assert rows[overhead.id]["pool_kind"] == PoolKind.OVERHEAD
+    assert rows[stock.id]["pool_kind"] == PoolKind.STOCK

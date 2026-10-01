@@ -17,6 +17,7 @@ import { useIdentity } from '../../hooks/useIdentity';
 import { GET_RECEIVE_DRAFTS } from '../../graphql/warehouse';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { monoSx, tabularSx } from '../../theme';
+import { noProjectPoLabel } from '../../types/poolKind';
 import { parseServerDate } from '../../utils/serverDate';
 import PageHeader from '../../components/PageHeader';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
@@ -162,7 +163,7 @@ export default function ReceiveApprovalsPage() {
             >
               <TableCell sx={monoSx}>{draft.poNumber ?? DASH}</TableCell>
               <TableCell title={draft.projectId ? projectMap.get(draft.projectId) : undefined}>
-                {draft.projectId ? (projectMap.get(draft.projectId) ?? DASH) : 'Stock PO'}
+                {draft.projectId ? (projectMap.get(draft.projectId) ?? DASH) : noProjectPoLabel(draft.poolKind)}
               </TableCell>
               <TableCell title={draft.createdBy}>{draft.createdBy}</TableCell>
               <TableCell sx={tabularSx}>{formatDateTime(draft.createdAt)}</TableCell>

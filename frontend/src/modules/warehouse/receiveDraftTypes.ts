@@ -1,3 +1,4 @@
+import type { PoolKind } from '../../types/poolKind';
 import type { ReceiveDraftLineItem } from './receiveLines';
 
 /** One defined put-away location (#632) - the registry every location write validates against. */
@@ -31,6 +32,8 @@ export interface ReceiveDraft {
   poId: string;
   poNumber: string | null;
   projectId: string | null;
+  /** #958: Stock or Overhead - what a draft against a PO with no project is labelled. */
+  poolKind: PoolKind;
   warehouseId: string | null;
   /** Clerk id of whoever counted the hardware - what the author-only actions key on. */
   createdByUserId: string;

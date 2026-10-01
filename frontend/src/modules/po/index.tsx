@@ -55,6 +55,7 @@ import { parseServerDate } from '../../utils/serverDate';
 import { formatPoOrderDate, isGpEmptyDate, NO_GP_DATE_HINT } from './poOrderDate';
 import { poVendorLabel, NO_GP_VENDOR, NO_GP_VENDOR_HINT } from './poVendorName';
 import type { PoolKind } from '../../types/poolKind';
+import { PoolKindChip } from '../../components/PoolKind';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
 
@@ -186,6 +187,8 @@ interface POListRow {
   poNumber: string | null;
   requestNumber: string | null;
   projectId: string | null;
+  // #958: Stock or Overhead, shown as a chip where a PO with no project has no job.
+  poolKind: PoolKind;
   status: string;
   origin: string;
   // #637: the tenant that owns the PO. Present on a draft, which gpCompany is not.
@@ -374,9 +377,13 @@ function POTableRow({ po, projectNumber, projectName, onOpen, gpWriteQueued, hig
       {/* #632: one Project column - mono number over the truncated name - so the register fits
           1366px without the container growing an x-scroll. */}
       <TableCell sx={hugSx} title={projectNumber || undefined}>
-        <Box component="span" sx={{ ...monoSx, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {projectNumber || '-'}
-        </Box>
+        {po.projectId ? (
+          <Box component="span" sx={{ ...monoSx, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {projectNumber || '-'}
+          </Box>
+        ) : (
+          <PoolKindChip kind={po.poolKind ?? 'STOCK'} />
+        )}
         {projectName && (
           <Typography
             variant="caption"

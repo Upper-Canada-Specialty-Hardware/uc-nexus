@@ -22,6 +22,7 @@ import { useQuery } from '@apollo/client/react';
 import { formatPoStatus, poStatusChipColor } from '../po/poStatus';
 import { GET_PO_RECEIVING_DETAILS, GET_RECEIVING_HISTORY_POS } from '../../graphql/warehouse';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { noProjectPoLabel, type PoolKind } from '../../types/poolKind';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { FIT_CELL_WRAP_SX } from '../../components/fitColumns';
 import { springs } from '../../motion';
@@ -67,6 +68,7 @@ export interface ReceivingHistoryPO {
   status: string;
   vendorName: string | null;
   projectId: string | null;
+  poolKind: PoolKind;
   orderedTotal: number;
   receivedTotal: number;
   receiveCount: number;
@@ -407,7 +409,7 @@ export default function ReceivingHistory({ projects, projectMap }: ReceivingHist
             <HistoryRow
               key={po.id}
               po={po}
-              projectName={po.projectId ? (projectMap.get(po.projectId) ?? DASH) : 'Stock PO'}
+              projectName={po.projectId ? (projectMap.get(po.projectId) ?? DASH) : noProjectPoLabel(po.poolKind)}
               expanded={expandedIds.has(po.id)}
               onToggle={() => toggle(po.id)}
             />

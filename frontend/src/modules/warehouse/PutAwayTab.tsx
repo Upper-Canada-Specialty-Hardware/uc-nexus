@@ -36,6 +36,8 @@ import {
   ASSIGN_STOCK_ITEM_LOCATION,
 } from '../../graphql/warehouse';
 import PageHeader from '../../components/PageHeader';
+import { PoolKindChip } from '../../components/PoolKind';
+import type { PoolKind } from '../../types/poolKind';
 import SelectionActionBar, { BarButton } from '../../components/SelectionActionBar';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { StaggerItem, StaggerList } from '../../motion';
@@ -82,6 +84,8 @@ function stockColumns(showWarehouse: boolean, selectHeader: ReactNode): FitTable
     selectColumn(selectHeader),
     { id: 'description', label: 'Description', min: 96, weight: 1.2 },
     { id: 'itemNumber', label: 'Item Number', min: 88, weight: 1 },
+    // #958: Stock or Overhead, so two rows of one product on the pool are told apart while shelving.
+    { id: 'kind', label: 'Kind', min: 88, weight: 0.4 },
     ...(showWarehouse ? [WAREHOUSE_COL] : []),
     { id: 'qty', label: 'Qty', min: 56, weight: 0.35, align: 'right' },
     { id: 'received', label: 'Received', min: 88, weight: 0.7 },
@@ -116,6 +120,7 @@ interface StockRow {
   hardwareCategory: string;
   productCode: string;
   quantity: number;
+  kind: PoolKind;
   receivedAt: string;
 }
 
@@ -917,6 +922,9 @@ export default function PutAwayTab() {
                     {si.productCode}
                   </TableCell>
                   <TableCell title={si.hardwareCategory}>{si.hardwareCategory}</TableCell>
+                  <TableCell>
+                    <PoolKindChip kind={si.kind ?? 'STOCK'} />
+                  </TableCell>
                   {showStockWarehouse && (
                     <TableCell>
                       {si.warehouseId ? (
