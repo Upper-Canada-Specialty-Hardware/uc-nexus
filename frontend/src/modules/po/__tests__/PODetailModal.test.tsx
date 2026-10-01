@@ -114,7 +114,23 @@ const registeredPo: PurchaseOrder = {
 function projectsMock(): MockedResponse {
   return {
     request: { query: GET_PROJECTS },
-    result: { data: { projects: [] } },
+    // p1 is the project draftPo belongs to (#960).
+    result: {
+      data: {
+        projects: [
+          {
+            id: 'p1',
+            projectId: '80001',
+            description: 'Cowichan Dist Hospital',
+            client: null,
+            jobSiteName: null,
+            company: 'TUBC',
+            openingCount: 0,
+            __typename: 'Project',
+          },
+        ],
+      },
+    },
     maxUsageCount: INFINITE,
   };
 }
@@ -372,6 +388,12 @@ describe('PODetailModal', () => {
 
     await screen.findByText('PO updated successfully');
     expect(calls[0]).toMatchObject({ id: 'po-1', poolKind: 'OVERHEAD' });
+  });
+
+  it('names the job of a project PO by name and number (#960)', async () => {
+    renderModal(draftPo);
+    expect(await screen.findByText('Cowichan Dist Hospital #80001')).toBeInTheDocument();
+    expect(screen.queryByText('No Project')).toBeNull();
   });
 
   it('offers no Stock or Overhead choice on a PO with a project (#832)', () => {
