@@ -878,13 +878,20 @@ def get_open_pos_summary(
     loaded (the old query materialized every line for that math). Detail loads through poReceivingDetails.
 
     A PO whose count is already sitting in the approvals queue is not on this list (#641) - see
-    `_pending_receive_draft_exists`."""
+    `_pending_receive_draft_exists`. Nor is one with nothing left to receive (#1049): a GP PO with no
+    lines, or one whose every line is fully received, is not awaiting anything."""
+    has_outstanding_line = (
+        select(POLineItem.id)
+        .where(POLineItem.po_id == PurchaseOrder.id, POLineItem.ordered_quantity > POLineItem.received_quantity)
+        .exists()
+    )
     stmt = (
         select(PurchaseOrder)
         .where(
             PurchaseOrder.deleted_at.is_(None),
             PurchaseOrder.status.in_([POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED]),
             ~_pending_receive_draft_exists(),
+            has_outstanding_line,
         )
         .order_by(PurchaseOrder.ordered_at.asc(), PurchaseOrder.id)
     )
