@@ -143,7 +143,7 @@ def _destock(session, il, quantity, destock_cost):
 # --- the merge key -------------------------------------------------------------------------------
 
 
-def test_price_is_part_of_the_merge_key_and_null_matches_zero(db_session):
+def test_price_is_part_of_the_merge_key_and_null_is_not_zero(db_session):
     code = _code()
     kwargs = dict(
         warehouse_id=wh_id(db_session),
@@ -154,12 +154,15 @@ def test_price_is_part_of_the_merge_key_and_null_matches_zero(db_session):
         bay="1",
         received_at=datetime.utcnow(),
     )
-    free = _find_or_create_stock_row(db_session, **kwargs)
+    unknown = _find_or_create_stock_row(db_session, **kwargs)
     priced = _find_or_create_stock_row(db_session, **kwargs, unit_cost=Decimal("4.25"))
+    free = _find_or_create_stock_row(db_session, **kwargs, unit_cost=Decimal("0"))
 
-    assert free.id != priced.id
+    assert len({unknown.id, priced.id, free.id}) == 3
     assert priced.unit_cost == Decimal("4.25")
-    assert _find_or_create_stock_row(db_session, **kwargs, unit_cost=Decimal("0")).id == free.id
+    # $0 and an unknown cost are two prices (#957); each finds only its own row again.
+    assert _find_or_create_stock_row(db_session, **kwargs).id == unknown.id
+    assert _find_or_create_stock_row(db_session, **kwargs, unit_cost=Decimal("0.00")).id == free.id
     assert _find_or_create_stock_row(db_session, **kwargs, unit_cost=Decimal("4.2500")).id == priced.id
 
 
@@ -254,11 +257,28 @@ def test_destock_zero_and_keep_land_in_separate_rows(db_session):
     kept = _destock(db_session, il, 3, DestockCost.KEEP)
 
     assert left_behind.id != kept.id
-    assert left_behind.unit_cost is None and left_behind.quantity == 2
+    # Left behind is a real $0, not an unknown cost (#957).
+    assert left_behind.unit_cost == Decimal("0") and left_behind.quantity == 2
     # A PO-origin row's price is its PO line's.
     assert kept.unit_cost == Decimal("9.50") and kept.quantity == 3
     assert (kept.aisle, kept.row, kept.bay) == (left_behind.aisle, left_behind.row, left_behind.bay)
     assert il.quantity == 5
+
+
+def test_left_behind_never_merges_into_an_unknown_cost_row(db_session):
+    """$0 and unknown are two prices (#957): a left-behind destock onto a shelf that already holds an
+    unknown-cost row of the same product gets its own $0 row, and the unknown row stays unknown."""
+    code = _code()
+    project = make_project(db_session)
+    il = make_il(db_session, project, quantity=10, code=code)
+    unknown = _destock(db_session, il, 1, DestockCost.KEEP)
+    assert unknown.unit_cost is None
+
+    left_behind = _destock(db_session, il, 2, DestockCost.ZERO)
+
+    assert left_behind.id != unknown.id
+    assert left_behind.unit_cost == Decimal("0") and left_behind.quantity == 2
+    assert unknown.unit_cost is None
 
 
 def test_destock_keep_falls_back_to_the_rows_own_cost(db_session):
@@ -292,7 +312,7 @@ def test_deficiency_send_to_stock_from_a_project_row_requires_the_choice(db_sess
     zero_row = db_session.get(StockItem, zero.resulting_stock_item_id)
     keep_row = db_session.get(StockItem, keep.resulting_stock_item_id)
     assert zero_row.id != keep_row.id
-    assert zero_row.unit_cost is None
+    assert zero_row.unit_cost == Decimal("0")
     assert keep_row.unit_cost == Decimal("6.00")
 
 
