@@ -25,11 +25,16 @@ export const RECEIVE_REFETCH_QUERIES = [
 ];
 
 // What a draft-lifecycle write invalidates: create, edit, resubmit, reject, delete. Nothing in
-// inventory moves at any of them - a draft is a count somebody wrote down - so the only stale read is
-// the draft lists themselves, and every call site has one mounted (the approvals queue, or the
-// author's My Drafts view). Refetching by name is self-scoping, so naming both surfaces costs
-// nothing for whichever one is not live.
-export const RECEIVE_DRAFT_REFETCH_QUERIES = ['GetReceiveDrafts', 'GetWarehouseDashboard'];
+// inventory moves at any of them - a draft is a count somebody wrote down - so the stale reads are the
+// draft lists themselves and the Receiving page's own lists: a PO with a pending draft leaves POs
+// Awaiting Receipt, and comes back when its draft is rejected or deleted (#971). Refetching by name
+// is self-scoping, so naming every surface costs nothing for whichever one is not live.
+export const RECEIVE_DRAFT_REFETCH_QUERIES = [
+  'GetReceiveDrafts',
+  'GetWarehouseDashboard',
+  'GetOpenPosSummary',
+  'GetBackOrderedItems',
+];
 
 // What APPROVING a draft invalidates. Approval is where the posting moment went, so it inherits the
 // whole meaning of RECEIVE_REFETCH_QUERIES - inventory summaries, the Receiving page's own lists -

@@ -1,10 +1,10 @@
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import ReceiveModal from '../ReceiveModal';
 import { GET_PO_RECEIVING_DETAILS, CREATE_RECEIVE_DRAFT } from '../../../graphql/warehouse';
-import { UPLOAD_PO_DOCUMENT } from '../../../graphql/po';
+import { DELETE_PO_DOCUMENT, UPLOAD_PO_DOCUMENT } from '../../../graphql/po';
 import { GET_PROJECTS, GET_WAREHOUSES } from '../../../graphql/shared';
 import { GraphQLError } from 'graphql';
 
@@ -179,11 +179,19 @@ function secondPoDetailsMock(): MockedResponse {
 // #504: every draft is created against a packing slip, so the upload runs first and its id is
 // pinned to the draft. One mock serves every PO - the tests care that a slip was attached and its
 // id reached the input, not which document it was.
+// Every slip upload the modal makes, so a test can count them (#971). Cleared before each test.
+const uploadCalls: unknown[] = [];
+beforeEach(() => {
+  uploadCalls.length = 0;
+});
+
 function uploadMock(): MockedResponse {
   return {
     request: { query: UPLOAD_PO_DOCUMENT, variables: () => true },
     maxUsageCount: Number.POSITIVE_INFINITY,
-    result: {
+    result: (vars) => {
+      uploadCalls.push(vars);
+      return {
       data: {
         uploadPoDocument: {
           __typename: 'PODocument',
@@ -197,6 +205,7 @@ function uploadMock(): MockedResponse {
           downloadUrl: 'https://example.test/slip.pdf',
         },
       },
+      };
     },
   };
 }
@@ -450,6 +459,51 @@ describe('ReceiveModal', () => {
     expect(keys).toHaveLength(2);
     expect(keys[0]).toMatch(UUID_RE);
     expect(keys[1]).toBe(keys[0]);
+  });
+
+  it('reuses the uploaded slip when retrying after a failure with no answer (#971)', async () => {
+    const failMock: MockedResponse = {
+      request: { query: CREATE_RECEIVE_DRAFT, variables: () => true },
+      error: new Error('network blip'),
+    };
+    const successMock: MockedResponse = {
+      request: { query: CREATE_RECEIVE_DRAFT, variables: () => true },
+      result: { data: draftResultData() },
+    };
+    await openModal([poDetailsMock(), failMock, successMock]);
+
+    setReceiveQty('3');
+    await submitViaConfirm();
+    await screen.findByText(/Submitting PO-123 failed/, undefined, SLOW);
+
+    // Retry with the same slip still attached: no second copy goes up.
+    fireEvent.click(await screen.findByRole('button', { name: 'Submit for Approval' }, SLOW));
+    fireEvent.click(await screen.findByRole('button', { name: 'Submit' }, SLOW));
+    await screen.findByText(/Submitted for approval\. 3 items/, undefined, SLOW);
+
+    expect(uploadCalls).toHaveLength(1);
+  });
+
+  it('takes the slip back off the PO when the server refuses the count (#971)', async () => {
+    const deleted: unknown[] = [];
+    const refusedMock: MockedResponse = {
+      request: { query: CREATE_RECEIVE_DRAFT, variables: () => true },
+      result: { errors: [{ message: 'A receive for this PO is already pending approval' }] },
+    };
+    const deleteMock: MockedResponse = {
+      request: { query: DELETE_PO_DOCUMENT, variables: () => true },
+      result: (vars) => {
+        deleted.push(vars);
+        return { data: { deletePoDocument: true } };
+      },
+    };
+    await openModal([poDetailsMock(), refusedMock, deleteMock]);
+
+    setReceiveQty('3');
+    await submitViaConfirm();
+
+    await screen.findByText(/already pending approval/, undefined, SLOW);
+    await waitFor(() => expect(deleted).toEqual([{ documentId: 'doc-slip-1' }]));
   });
 
   it('holds a PO that already has a draft awaiting approval out of the count', async () => {

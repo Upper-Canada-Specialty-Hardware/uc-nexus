@@ -13,13 +13,14 @@ import {
 } from '@mui/material';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { useApolloClient } from '@apollo/client/react';
+import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import { useToast } from '../../components/Toast';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useNavigate } from 'react-router-dom';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { GET_PO_RECEIVING_DETAILS, CREATE_RECEIVE_DRAFT } from '../../graphql/warehouse';
-import { UPLOAD_PO_DOCUMENT } from '../../graphql/po';
+import { DELETE_PO_DOCUMENT, UPLOAD_PO_DOCUMENT } from '../../graphql/po';
 import { RECEIVE_DRAFT_REFETCH_QUERIES } from '../../graphql/refetch';
 import { GET_PROJECTS } from '../../graphql/shared';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
@@ -105,10 +106,14 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
 
   const [createReceiveDraft] = useMutation<{ createReceiveDraft: { id: string } }>(CREATE_RECEIVE_DRAFT);
   const [uploadPoDocument] = useMutation<{ uploadPoDocument: { id: string } }>(UPLOAD_PO_DOCUMENT);
+  const [deletePoDocument] = useMutation(DELETE_PO_DOCUMENT);
 
   // One idempotency key per PO, reused across retries so a network failure that actually committed
   // cannot leave two counts of one delivery in the queue. Cleared per-PO on success.
   const idempotencyKeysRef = useRef<Record<string, string>>({});
+  // #971: the packing slip already uploaded for a PO, and the file it came from. A retry of the same
+  // PO with the same file reuses it rather than leaving a second copy on the PO.
+  const uploadedSlipsRef = useRef<Record<string, { file: File; id: string }>>({});
 
   // Warehouse the received goods land in (active warehouses only). Defaults to the primary.
   const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
@@ -173,6 +178,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
       setSucceeded(false);
       // Fresh open = fresh action set; drop any keys held from a prior batch.
       idempotencyKeysRef.current = {};
+      uploadedSlipsRef.current = {};
       fetchPODetails(poIds);
     }
   }, [open, poIds, fetchPODetails]);
@@ -396,21 +402,28 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
         // a second draft of the same delivery.
         const idempotencyKey = (idempotencyKeysRef.current[poId] ??= crypto.randomUUID());
 
-        // #504: upload the slip first, then pin it to the draft. If the draft create fails the
-        // document is left on the PO - an orphan is cheap, a count with no paper behind it is not.
+        // #504: upload the slip first, then pin it to the draft. #971: a retry with the same file
+        // reuses the slip already uploaded, and a count the server refuses takes its slip back off
+        // the PO (below), so a refused or retried count leaves no orphan slip behind.
         let packingSlipDocumentId: string;
         try {
           const file = packingSlips[poId];
-          const uploaded = await uploadPoDocument({
-            variables: {
-              poId,
-              fileName: file.name,
-              contentType: file.type || 'application/octet-stream',
-              documentType: 'PACKING_SLIP',
-              fileDataBase64: await fileToBase64(file),
-            },
-          });
-          packingSlipDocumentId = uploaded.data!.uploadPoDocument.id;
+          const held = uploadedSlipsRef.current[poId];
+          if (held && held.file === file) {
+            packingSlipDocumentId = held.id;
+          } else {
+            const uploaded = await uploadPoDocument({
+              variables: {
+                poId,
+                fileName: file.name,
+                contentType: file.type || 'application/octet-stream',
+                documentType: 'PACKING_SLIP',
+                fileDataBase64: await fileToBase64(file),
+              },
+            });
+            packingSlipDocumentId = uploaded.data!.uploadPoDocument.id;
+            uploadedSlipsRef.current[poId] = { file, id: packingSlipDocumentId };
+          }
         } catch (err: unknown) {
           failureMessage = `Uploading the packing slip for ${poLabel} failed: ${err instanceof Error ? err.message : 'An unknown error occurred'}`;
           break;
@@ -428,6 +441,18 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
         try {
           await createReceiveDraft({ variables: { input } });
         } catch (err: unknown) {
+          // #971: the server answered and refused the count (a draft already pending, a job GP will
+          // not take): nothing was created, so the slip uploaded for it is removed. A failure with no
+          // answer (network, timeout) may have committed with the slip pinned, so it stays for the
+          // retry to reuse.
+          if (CombinedGraphQLErrors.is(err)) {
+            delete uploadedSlipsRef.current[poId];
+            try {
+              await deletePoDocument({ variables: { documentId: packingSlipDocumentId } });
+            } catch {
+              // the refusal is what the user needs to see; a slip left behind is only clutter
+            }
+          }
           // #730: the server's own refusal for a job GP will not take writes on. Its message names the
           // job and the state, and retrying cannot help, so it is shown as it comes.
           const refusal = extractGpError(err);
@@ -441,6 +466,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
         }
 
         delete idempotencyKeysRef.current[poId];
+        delete uploadedSlipsRef.current[poId];
         completed.push(poId);
       }
     } finally {
@@ -480,6 +506,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     packingSlips,
     draftNotes,
     uploadPoDocument,
+    deletePoDocument,
     lineItemsToReceive,
     receiveQuantities,
     createReceiveDraft,

@@ -37,6 +37,12 @@ it('refetches a draft list after a draft write and never evicts it in the same b
   expect(refetch.RECEIVE_APPROVE_REFETCH_QUERIES).toContain('GetReceiveDrafts');
 });
 
+it('takes a PO with a pending draft off the awaiting list, and puts it back (#971)', () => {
+  // A submitted count hides its PO from POs Awaiting Receipt; a rejected or deleted one returns it.
+  expect(refetch.RECEIVE_DRAFT_REFETCH_QUERIES).toContain('GetOpenPosSummary');
+  expect(refetch.RECEIVE_DRAFT_REFETCH_QUERIES).toContain('GetBackOrderedItems');
+});
+
 it('makes approval inherit the whole meaning of a receive, without refetching anything twice', () => {
   // Approval is where the posting moment went, so everything a receive used to invalidate it now
   // invalidates. The two source lists overlap on the dashboard, and a name listed twice is a query
