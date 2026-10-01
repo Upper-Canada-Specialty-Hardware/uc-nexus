@@ -696,6 +696,50 @@ describe('ImportWizard reconciliation failure', () => {
   });
 });
 
+// #976: Back off Classification, then Next again with nothing changed, used to clear the selection
+// and never re-seed it - the reconcile came back identical from the cache, so the seed never fired and
+// every product read as "already covered". Each run re-seeds now.
+describe('ImportWizard back and forth', () => {
+  const reconcileMock: MockedResponse = {
+    request: {
+      query: RECONCILE_SCHEDULE,
+      variables: {
+        projectId: 'proj-1',
+        items: [
+          { openingNumber: 'O-1', hardwareCategory: 'Hinges', productCode: 'HNG-100', quantityNeeded: 3 },
+          { openingNumber: 'O-2', hardwareCategory: 'Locks', productCode: 'LCK-200', quantityNeeded: 1 },
+        ],
+      },
+    },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+    result: {
+      data: {
+        reconcileSchedule: [
+          { __typename: 'ReconciliationResult', openingNumber: 'O-1', hardwareCategory: 'Hinges', productCode: 'HNG-100', quantity: 3, status: 'NOT_COVERED' },
+          { __typename: 'ReconciliationResult', openingNumber: 'O-2', hardwareCategory: 'Locks', productCode: 'LCK-200', quantity: 1, status: 'NOT_COVERED' },
+        ],
+      },
+    },
+  };
+
+  it('keeps the not-covered selection after Back then Next', async () => {
+    renderWizard({ project: reimportProject, mocks: [...reimportBaseMocks, reconcileMock] });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+    expect(screen.getByText(/0 of 2 classified/)).toBeInTheDocument();
+
+    clickBack();
+    clickNext();
+    await flushApollo();
+
+    expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
+    expect(screen.getByText(/0 of 2 classified/)).toBeInTheDocument();
+  });
+});
+
 // #814: the Next-time over-order modal went with the Reconciliation step. Over-buying is flagged on
 // the step 5 draft cards and confirmed at Finalize (#736, covered in PurchaseOrdersStep and
 // OverBuyConfirmModal tests), so a selection that would over-order walks on to Classification.

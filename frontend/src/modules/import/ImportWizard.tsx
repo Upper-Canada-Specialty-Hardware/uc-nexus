@@ -216,6 +216,10 @@ export default function ImportWizard({
   const [siteShopClassifications, setSiteShopClassifications] = useState<Map<string, string>>(new Map());
   const [orderAsValues, setOrderAsValues] = useState<Map<string, string>>(new Map());
   const [selectedReconItems, setSelectedReconItems] = useState<Set<string>>(new Set());
+  // #976: bumped every time leaving the selection step re-runs reconcile, so the not-covered default
+  // is re-seeded for that run even when the result comes back identical (Apollo hands back the same
+  // cached object, which on its own would never re-trigger the seed).
+  const [reconcileRun, setReconcileRun] = useState(0);
   // #567: over-ordering past the project need no longer blocks Next; it opens a confirm modal when
   // the user leaves the reconciliation step with a selection that pushes a product past its total.
 
@@ -910,11 +914,13 @@ export default function ImportWizard({
   );
 
   // #814: the default the retired Reconciliation step applied on arrival - every (opening, product,
-  // category) still not covered by a PO - applied here once per reconcile result.
-  const autoSelectedFor = useRef<unknown>(null);
+  // category) still not covered by a PO - applied here once per reconcile run (#976: per run, not per
+  // result object, so Back then Next re-seeds what Next just cleared), once its result is in.
+  const autoSelectedFor = useRef<{ data: unknown; run: number } | null>(null);
   useEffect(() => {
-    if (purpose !== 'po' || !isReimport || !reconcileData || autoSelectedFor.current === reconcileData) return;
-    autoSelectedFor.current = reconcileData;
+    if (purpose !== 'po' || !isReimport || !reconcileData || reconcileLoading) return;
+    if (autoSelectedFor.current?.data === reconcileData && autoSelectedFor.current.run === reconcileRun) return;
+    autoSelectedFor.current = { data: reconcileData, run: reconcileRun };
     const notCovered = new Set<string>();
     for (const row of reconciliationRows) {
       if (row.status === 'NOT_COVERED' && row.quantity > 0) {
@@ -922,7 +928,7 @@ export default function ImportWizard({
       }
     }
     setSelectedReconItems(notCovered);
-  }, [purpose, isReimport, reconcileData, reconciliationRows]);
+  }, [purpose, isReimport, reconcileData, reconcileLoading, reconcileRun, reconciliationRows]);
 
   // #632: step 6's per-line recon context - needed / already ordered / received / available per
   // productKey, from state the wizard already holds (no new query). Zeros are truthful on a fresh
@@ -973,6 +979,7 @@ export default function ImportWizard({
     // #565: leaving the pathway's step-2 (openings, or hardware) is what kicks off reconciliation.
     if (effectiveStepId === 'openings' || effectiveStepId === 'hardware') {
       setSelectedReconItems(new Set());
+      setReconcileRun((n) => n + 1);
       runReconcile();
     }
 
