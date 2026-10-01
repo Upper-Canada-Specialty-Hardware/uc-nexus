@@ -291,6 +291,7 @@ class ShippingMutations:
                 uuid.UUID(str(input.project_id)),
                 [{"request_number": input.request_number, "items": _request_items(input.items)}],
                 created_by=actor,
+                created_by_user_id=auth["user_id"],
             )
             session.commit()
             refreshed = shipping_repository.get_shipping_out_request(session, created[0].id)
@@ -482,8 +483,8 @@ class ShippingMutations:
     def reject_shipping_out_request(
         self, info: strawberry.Info, id: strawberry.ID, reason: str | None = None
     ) -> ShippingOutRequest:
-        """Reject a PENDING shipping-out request (#293). Open to any signed-in user. Recorded against
-        the Clerk-authenticated caller (#427)."""
+        """Reject a PENDING shipping-out request (#293). Recorded against the Clerk-authenticated
+        caller (#427). The reason is required and goes to the requester (#972)."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         request_id = uuid.UUID(str(id))

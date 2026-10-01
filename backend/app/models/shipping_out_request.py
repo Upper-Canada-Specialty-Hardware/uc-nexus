@@ -29,6 +29,9 @@ class ShippingOutRequest(Base):
         nullable=False,
     )
     created_by: Mapped[str] = mapped_column(String, nullable=False)
+    # #972: the requester's Clerk user id, so a rejection is owed to them by name. Null on requests
+    # raised before it was recorded.
+    created_by_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
     approved_by: Mapped[str | None] = mapped_column(String, nullable=True)
     rejected_by: Mapped[str | None] = mapped_column(String, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)

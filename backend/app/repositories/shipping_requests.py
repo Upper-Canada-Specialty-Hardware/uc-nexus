@@ -31,6 +31,7 @@ def create_shipping_out_requests(
     drafts: list[dict],
     *,
     created_by: str,
+    created_by_user_id: str | None = None,
 ) -> list[ShippingOutRequest]:
     """Mint PENDING shipping-out requests and the reservations that back their lines.
 
@@ -81,6 +82,7 @@ def create_shipping_out_requests(
             project_id=project_id,
             status=ShippingOutRequestStatus.PENDING,
             created_by=created_by,
+            created_by_user_id=created_by_user_id,
         )
         session.add(req)
         session.flush()

@@ -16,7 +16,7 @@ import {
   Typography,
 } from '@mui/material';
 import { Pencil, Plus } from 'lucide-react';
-import { Link as RouterLink, useNavigate } from 'react-router-dom';
+import { Link as RouterLink, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import {
   GET_SHIPPING_OUT_REQUESTS,
@@ -58,6 +58,9 @@ interface ShippingOutRequest {
   stage: RequestStage;
   createdBy: string;
   createdAt: string;
+  rejectedBy: string | null;
+  rejectedAt: string | null;
+  rejectionReason: string | null;
   /** Set when a schedule re-upload landed under this request, or it holds no reservation (#342). */
   integrityNote: string | null;
   /** Set when a warehouse cancel returned this request to Pending (#613). */
@@ -92,7 +95,9 @@ const VIEW_COPY: Record<View, { description: string; empty: string }> = {
  */
 export default function ShippingRequestsPage() {
   const navigate = useNavigate();
-  const [view, setView] = useState<View>('PENDING');
+  // A notice about a rejected request links straight to that tab (#972).
+  const [searchParams] = useSearchParams();
+  const [view, setView] = useState<View>(searchParams.get('view') === 'REJECTED' ? 'REJECTED' : 'PENDING');
   const [project, setProject] = useState<Project | null>(null);
   const projectId = project?.id;
   const { ownsTenant, hasRole } = useIdentity();
@@ -198,12 +203,10 @@ export default function ShippingRequestsPage() {
         acceptMutation={ACCEPT_SHIPPING_OUT_REQUEST}
         rejectMutation={REJECT_SHIPPING_OUT_REQUEST}
         reopenMutation={REOPEN_SHIPPING_OUT_REQUEST}
-        mode={view === 'PENDING' ? 'pending' : 'approved'}
+        mode={view === 'PENDING' ? 'pending' : view === 'APPROVED' ? 'approved' : 'rejected'}
         canReview={canManage}
         reviewDisabledReason="Requires the Shipping Manager role"
-        reopenDisabledReason={(req) =>
-          view === 'REJECTED' ? 'This request was rejected.' : reopenBlockedReason(req.stage)
-        }
+        reopenDisabledReason={(req) => reopenBlockedReason(req.stage)}
         onChanged={refetch}
         renderExtraActions={(req) =>
           // Editing is only meaningful while the request is still pending; the workspace itself refuses

@@ -31,6 +31,7 @@ import { parseServerDate } from '../utils/serverDate';
 const NOTIFICATION_LINKS: Record<string, string> = {
   RECEIVE_DRAFT_REJECTED: '/app/warehouse/receiving?view=drafts',
   RECEIVE_DRAFT_SUBMITTED: '/app/warehouse/receive-approvals',
+  SHIPPING_REQUEST_REJECTED: '/app/shipping/requests?view=REJECTED',
 };
 
 interface Notification {
