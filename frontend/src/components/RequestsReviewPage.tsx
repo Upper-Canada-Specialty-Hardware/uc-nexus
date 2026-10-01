@@ -9,6 +9,7 @@ import {
   Stack,
   Button,
   CircularProgress,
+  TextField,
   Tooltip,
 } from '@mui/material';
 import { ChevronDown, Check, X, Undo2 } from 'lucide-react';
@@ -16,6 +17,8 @@ import { useMutation } from '@apollo/client/react';
 import type { DocumentNode } from 'graphql';
 import { useToast } from './Toast';
 import ConfirmDialog from './ConfirmDialog';
+import Modal from './Modal';
+import { parseServerDate } from '../utils/serverDate';
 import { RESERVATION_STALE_ROOT_FIELDS } from '../graphql/refetch';
 import { monoSx } from '../theme';
 import { FadeIn, StaggerList, StaggerItem } from '../motion';
@@ -24,6 +27,10 @@ interface ReviewableRequest {
   id: string;
   requestNumber: string;
   createdBy: string;
+  /** Who turned it down, when and why (#972). Read in rejected mode only. */
+  rejectedBy?: string | null;
+  rejectedAt?: string | null;
+  rejectionReason?: string | null;
   /**
    * Something happened to this request after it was created that the reviewer has to know about
    * (#342) - a schedule re-upload landed under it, or it holds no inventory reservation. Null on a
@@ -50,9 +57,10 @@ interface RequestsReviewPageProps<TRequest extends ReviewableRequest> {
   reopenMutation?: DocumentNode;
   /**
    * `pending` (default) shows Accept/Reject on each request. `approved` shows a single Reopen action
-   * that undoes the accept and sends the request back to Pending.
+   * that undoes the accept and sends the request back to Pending. `rejected` shows who turned the
+   * request down, when and why, and no actions: a rejection is final (#972).
    */
-  mode?: 'pending' | 'approved';
+  mode?: 'pending' | 'approved' | 'rejected';
   /** Re-run the list query after an accept/reject/reopen settles. */
   onChanged: () => void;
   /** Rendered right of the request number: the count chip (item(s) / opening(s)). */
@@ -116,6 +124,10 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   const [pending, setPending] = useState<{ id: string; action: 'accept' | 'reject' | 'reopen' } | null>(null);
   // Reopen undoes an accept, so it goes through a confirmation step. Holds the request id awaiting it.
   const [confirmReopenId, setConfirmReopenId] = useState<string | null>(null);
+  // #972: Reject goes through a dialog that asks why - the reason goes to the requester, and a
+  // rejection is final. Holds the request awaiting it.
+  const [rejectTarget, setRejectTarget] = useState<TRequest | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
 
   const settle = (message: string, severity: 'success' | 'error') => {
     showToast(message, severity);
@@ -154,9 +166,14 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
     acceptRequest({ variables: { id } });
   };
 
-  const handleReject = (id: string) => {
+  const handleReject = (id: string, reason: string) => {
     setPending({ id, action: 'reject' });
-    rejectRequest({ variables: { id, reason: null } });
+    rejectRequest({ variables: { id, reason } });
+  };
+
+  const closeReject = () => {
+    setRejectTarget(null);
+    setRejectReason('');
   };
 
   const handleReopen = (id: string) => {
@@ -240,7 +257,14 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
                       {req.returnNote && <Alert severity="warning">{req.returnNote}</Alert>}
                       {renderDetails(req)}
 
-                      {mode === 'approved' ? (
+                      {mode === 'rejected' ? (
+                        <Alert severity="error">
+                          Rejected
+                          {req.rejectedBy ? ` by ${req.rejectedBy}` : ''}
+                          {req.rejectedAt ? ` on ${parseServerDate(req.rejectedAt).toLocaleString()}` : ''}
+                          {req.rejectionReason ? `: ${req.rejectionReason}` : '.'}
+                        </Alert>
+                      ) : mode === 'approved' ? (
                         <Stack direction="row" spacing={1.5} alignItems="center">
                           {gateReview(
                             <Button
@@ -300,7 +324,7 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
                                 )
                               }
                               disabled={pending?.id === req.id || !canReview}
-                              onClick={() => handleReject(req.id)}
+                              onClick={() => setRejectTarget(req)}
                             >
                               Reject
                             </Button>,
@@ -318,6 +342,49 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
           ))}
         </Stack>
       </StaggerList>
+
+      <Modal
+        open={rejectTarget !== null}
+        title={`Reject ${rejectTarget?.requestNumber ?? ''}?`}
+        onClose={closeReject}
+        maxWidth="sm"
+        actions={
+          <>
+            <Button onClick={closeReject}>Keep request</Button>
+            <Button
+              variant="contained"
+              color="error"
+              disabled={!rejectReason.trim()}
+              onClick={() => {
+                const target = rejectTarget;
+                const reason = rejectReason.trim();
+                closeReject();
+                if (target) handleReject(target.id, reason);
+              }}
+            >
+              Reject
+            </Button>
+          </>
+        }
+      >
+        <Stack spacing={2}>
+          <Typography variant="body2">
+            Rejecting is final: the request cannot be reopened, and its hold on the hardware is released.
+            {rejectTarget ? ` ${rejectTarget.createdBy} is told, with your reason.` : ''}
+          </Typography>
+          <TextField
+            label="Reason"
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            required
+            fullWidth
+            multiline
+            minRows={2}
+            autoFocus
+            slotProps={{ htmlInput: { maxLength: 500 } }}
+          />
+        </Stack>
+      </Modal>
 
       <ConfirmDialog
         open={confirmReopenId !== null}

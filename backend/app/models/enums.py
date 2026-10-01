@@ -236,6 +236,9 @@ class NotificationType(str, enum.Enum):
     # A manager sent a draft back. Person-targeted (the author's Clerk user id in recipient_role),
     # because a rejection is owed to exactly the person who has to act on it.
     RECEIVE_DRAFT_REJECTED = "RECEIVE_DRAFT_REJECTED"
+    # A shipping-out request was rejected (#972). Person-targeted like the one above: the requester's
+    # Clerk user id, or the shipping audience on a request raised before the id was recorded.
+    SHIPPING_REQUEST_REJECTED = "SHIPPING_REQUEST_REJECTED"
 
 
 class AuditEntityType(str, enum.Enum):

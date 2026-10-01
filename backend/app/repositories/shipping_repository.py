@@ -897,8 +897,16 @@ def reject_shipping_out_request(
     request's inventory reservations** (#342): it has been holding a claim on stock since creation,
     and a dead request must not keep it. There is nothing of an accepted request's
     to release. Also the recovery path after a reopen - a reopened request is PENDING and still
-    holding, and this is what finally lets go."""
+    holding, and this is what finally lets go.
+
+    #972: a reason is required, and the requester is told - by their Clerk user id where the request
+    recorded it, else the shipping audience."""
     from app.repositories import warehouse as warehouse_repository
+    from app.services import notification_service
+
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValidationError("Say why the request is rejected - the requester is told.", field="reason")
 
     stmt = (
         select(ShippingOutRequest)
@@ -913,9 +921,16 @@ def reject_shipping_out_request(
 
     req.status = ShippingOutRequestStatus.REJECTED
     req.rejected_by = rejected_by
-    req.rejection_reason = (reason or "").strip() or None
+    req.rejection_reason = reason[:500]
     req.rejected_at = datetime.utcnow()
     warehouse_repository.release_reservations(session, ReservationSource.SHIPPING_OUT_REQUEST, req.id)
+    notification_service.create_notification(
+        session,
+        project_id=req.project_id,
+        recipient_role=req.created_by_user_id or notification_service.SHIPPING_RECIPIENT_ROLE,
+        notification_type=NotificationType.SHIPPING_REQUEST_REJECTED,
+        message=f"For {req.created_by}: {rejected_by} rejected shipping request {req.request_number} - {reason}",
+    )
     return req
 
 

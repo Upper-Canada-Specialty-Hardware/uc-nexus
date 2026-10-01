@@ -1099,6 +1099,7 @@ def finalize_import_session(
         project.id,
         shipping_pr_drafts or [],
         created_by=created_by,
+        created_by_user_id=input_data.get("created_by_user_id"),
     )
 
     # 7. Shop-assembly request (#646)

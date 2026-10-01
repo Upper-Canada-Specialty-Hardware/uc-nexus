@@ -306,7 +306,7 @@ def test_reopen_keeps_a_shipping_out_claim_too(db_session):
     assert db_session.get(ShippingOutRequest, req.id).status == ShippingOutRequestStatus.PENDING
     assert _reserved_total(db_session, project.id) == 2
 
-    shipping_repository.reject_shipping_out_request(db_session, req.id, "rejector", None)
+    shipping_repository.reject_shipping_out_request(db_session, req.id, "rejector", "not needed")
     db_session.flush()
     assert _reserved_total(db_session, project.id) == 0
 

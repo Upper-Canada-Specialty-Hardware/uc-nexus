@@ -537,6 +537,47 @@ def test_reject_shipping_out_request(db_session):
     assert db_session.scalar(select(PullRequest).where(PullRequest.request_number == req_number)) is None
 
 
+def test_reject_shipping_out_request_needs_a_reason(db_session):
+    """#972: the requester is told why, so a blank reason is refused and nothing changes."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=5)
+    req = _finalize_shipping(db_session, project, qty=2)["shipping_out_requests"][0]
+    db_session.flush()
+
+    for blank in (None, "", "   "):
+        with pytest.raises(ValidationError) as exc:
+            shipping_repository.reject_shipping_out_request(db_session, req.id, "rejector", blank)
+        assert exc.value.field == "reason"
+    assert req.status == ShippingOutRequestStatus.PENDING
+    assert _reservations(db_session, project.id)
+
+
+def test_reject_shipping_out_request_tells_the_requester(db_session):
+    """#972: the notice goes to the requester's Clerk user id, and names who rejected it and why."""
+    from app.models.enums import NotificationType
+    from app.models.notification import Notification
+
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=5)
+    req = _finalize_shipping(db_session, project, qty=2)["shipping_out_requests"][0]
+    req.created_by_user_id = "user_requester"
+    db_session.flush()
+
+    shipping_repository.reject_shipping_out_request(db_session, req.id, "Rita Rejector", "wrong job")
+    db_session.flush()
+
+    notice = db_session.scalars(
+        select(Notification).where(
+            Notification.project_id == project.id,
+            Notification.type == NotificationType.SHIPPING_REQUEST_REJECTED,
+        )
+    ).one()
+    assert notice.recipient_role == "user_requester"
+    assert "Rita Rejector" in notice.message
+    assert req.request_number in notice.message
+    assert "wrong job" in notice.message
+
+
 # --- shipping-out reopen (#325) --------------------------------------------------------------
 
 
