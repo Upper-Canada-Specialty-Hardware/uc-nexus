@@ -215,6 +215,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # Shop / Site / By Others after import decides what the shop and shipping may pull, for one
     # company's own jobs, so the same bar as the rest of that module's project pages.
     "hardwareClassificationChanges": TENANT_OWNERS,
+    "hardwareClassificationImpact": TENANT_OWNERS,
     "projectHardwareClassifications": TENANT_OWNERS,
     "setHardwareClassifications": TENANT_OWNERS,
     # --- relay.py -------------------------------------------------------------------------

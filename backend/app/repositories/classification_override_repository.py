@@ -5,20 +5,19 @@ on two axes: hardware_items.classification (SHOP_HARDWARE / SITE_HARDWARE) for e
 the product, and a project_excluded_items row for By Others. The override writes both the same way
 the import's finalize does, so nothing downstream can tell an overridden product from an imported one.
 
-Two rules decide whether a change may happen, both from the import step (#734):
+What a change does is planned before it is written (#1050), and the page shows that plan first:
 
-- Site hardware cannot be pulled into the shop. So a product may not LEAVE shop while a live shop
-  assembly request holds it - a waiting opening on a pending request, or an active batch whose pull
-  has not finished - or that request would be left holding site hardware.
-- By Others is not UC Hardware's to order or ship. So a product may not BECOME By Others while any of
-  its schedule rows is on a PO, or while a pending shipping request asks for it.
+- Hardware that already went somewhere - to the shop on a completed shop assembly pull, or out on a
+  shipment that was not cancelled - stays as it went. A change applies to what is still owed, and its
+  log row records what had already gone out. (#977 used to lock the product instead.)
+- Site hardware cannot be pulled into the shop. A product leaving shop comes off every opening still
+  waiting on a pending shop assembly request (the manager is told); an active batch whose pull has not
+  finished still refuses it, because that hardware is reserved and on the floor for the shop.
+- By Others is not UCH's to order or ship. The product's schedule rows stop counting as ordered; a PO
+  for it, or a pending shipping request asking for it, is left alone and said so, because neither
+  depends on the classification - what arrives lands in the job's inventory like any extra.
 
-Shop hardware can still ship out directly, so Site to Shop and By Others back into scope are allowed
-while nothing has happened to the hardware yet. Every change is logged in hardware_classification_changes.
-
-#977: once any of a product's hardware has gone somewhere under its classification - to the shop on a
-completed shop assembly pull, or out on a shipment that was not cancelled - the classification is part
-of that record and locks. Any change to the product is refused, naming where the hardware went.
+Every change is logged in hardware_classification_changes.
 """
 
 import uuid
@@ -33,6 +32,7 @@ from app.models.enums import (
     Classification,
     HardwareClassificationChoice,
     HardwareItemState,
+    NotificationType,
     PullRequestStatus,
     ShipmentStatus,
     ShippingOutRequestStatus,
@@ -137,14 +137,27 @@ def _excluded(session: Session, project_id: uuid.UUID) -> set[Product]:
     }
 
 
-def _live_shop_holds(session: Session, project_id: uuid.UUID) -> dict[Product, set[str]]:
-    """Products a live shop assembly request holds, with the request or batch numbers holding them."""
-    holds: dict[Product, set[str]] = defaultdict(set)
-    waiting = session.execute(
+LABEL = {
+    HardwareClassificationChoice.UCH_SHOP: "UCH Shop",
+    HardwareClassificationChoice.UCH_SITE: "UCH Site",
+    HardwareClassificationChoice.BY_OTHERS: "By Others",
+    HardwareClassificationChoice.UNCLASSIFIED: "Unclassified",
+    HardwareClassificationChoice.MIXED: "Mixed",
+}
+
+
+def _waiting_shop_lines(session: Session, project_id: uuid.UUID) -> dict[Product, dict[str, set[str]]]:
+    """Products on openings still waiting on a pending shop assembly request: {product: {request: openings}}.
+
+    Nothing is held for these yet - a waiting opening has never been batched - so a change that takes
+    the product out of the shop takes it off these openings (#1050)."""
+    waiting: dict[Product, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    for category, code, number, opening in session.execute(
         select(
             ShopAssemblyRequestItem.hardware_category,
             ShopAssemblyRequestItem.product_code,
             ShopAssemblyRequest.request_number,
+            ShopAssemblyRequestItem.opening_number,
         )
         .join(ShopAssemblyRequest, ShopAssemblyRequestItem.shop_assembly_request_id == ShopAssemblyRequest.id)
         .join(
@@ -157,10 +170,16 @@ def _live_shop_holds(session: Session, project_id: uuid.UUID) -> dict[Product, s
             ShopAssemblyRequest.status == ShopAssemblyRequestStatus.PENDING,
             ShopAssemblyRequestOpening.status == ShopAssemblyOpeningStatus.PENDING,
         )
-    )
-    for category, code, number in waiting:
-        holds[(category, code)].add(number)
-    batched = session.execute(
+    ):
+        waiting[(category, code)][number].add(opening)
+    return waiting
+
+
+def _batches_being_pulled(session: Session, project_id: uuid.UUID) -> dict[Product, set[str]]:
+    """Products on an active shop assembly batch whose pull has not finished: hardware is reserved and
+    on the floor for the shop, so a change that takes the product out of the shop waits for it."""
+    holds: dict[Product, set[str]] = defaultdict(set)
+    for category, code, number in session.execute(
         select(
             ShopAssemblyBatchItem.hardware_category, ShopAssemblyBatchItem.product_code, ShopAssemblyBatch.batch_number
         )
@@ -172,16 +191,17 @@ def _live_shop_holds(session: Session, project_id: uuid.UUID) -> dict[Product, s
             ShopAssemblyBatch.status == ShopAssemblyBatchStatus.ACTIVE,
             PullRequest.status.in_([PullRequestStatus.PENDING, PullRequestStatus.IN_PROGRESS]),
         )
-    )
-    for category, code, number in batched:
+    ):
         holds[(category, code)].add(number)
     return holds
 
 
-def _already_gone(session: Session, project_id: uuid.UUID) -> dict[Product, set[str]]:
-    """#977: products whose hardware already went somewhere under its classification, with where -
-    "went to the shop on <batch>" for a completed shop assembly pull, "shipped on <slip>" for a line on
-    a shipment that was not cancelled. Either locks the product's classification."""
+def _went_out(session: Session, project_id: uuid.UUID) -> dict[Product, set[str]]:
+    """Where a product's hardware already went: "went to the shop on <batch>" for a completed shop
+    assembly pull, "shipped on <slip>" for a line on a shipment that was not cancelled.
+
+    #1050 lifted the #977 lock: this is history, shown before a change and written into its log row,
+    and a change applies to what is still owed. The batch and the shipment stay what they were."""
     gone: dict[Product, set[str]] = defaultdict(set)
     to_shop = session.execute(
         select(
@@ -211,15 +231,26 @@ def _already_gone(session: Session, project_id: uuid.UUID) -> dict[Product, set[
     return gone
 
 
-def _on_po(session: Session, project_id: uuid.UUID) -> set[Product]:
-    return {
-        (category, code)
-        for category, code in session.execute(
-            select(HardwareItem.hardware_category, HardwareItem.product_code)
-            .where(HardwareItem.project_id == project_id, HardwareItem.state == HardwareItemState.IN_PO)
-            .distinct()
+def _on_po(session: Session, project_id: uuid.UUID) -> dict[Product, dict[str, int]]:
+    """Schedule rows ordered on a PO: {product: {po number: rows}}. The link is bookkeeping for the
+    import screen's Ordered / On Order figures; the PO itself does not depend on the classification."""
+    from app.models.purchase_order import POLineItem, PurchaseOrder
+
+    linked: dict[Product, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for category, code, po_number, rows in session.execute(
+        select(
+            HardwareItem.hardware_category,
+            HardwareItem.product_code,
+            PurchaseOrder.po_number,
+            func.count(HardwareItem.id),
         )
-    }
+        .outerjoin(POLineItem, HardwareItem.po_line_item_id == POLineItem.id)
+        .outerjoin(PurchaseOrder, POLineItem.po_id == PurchaseOrder.id)
+        .where(HardwareItem.project_id == project_id, HardwareItem.state == HardwareItemState.IN_PO)
+        .group_by(HardwareItem.hardware_category, HardwareItem.product_code, PurchaseOrder.po_number)
+    ):
+        linked[(category, code)][po_number or "a PO"] += int(rows)
+    return linked
 
 
 def _pending_shipping(session: Session, project_id: uuid.UUID) -> dict[Product, set[str]]:
@@ -240,16 +271,19 @@ def _pending_shipping(session: Session, project_id: uuid.UUID) -> dict[Product, 
     return holds
 
 
-def set_product_classifications(
+def plan_product_classifications(
     session: Session,
     project_id: uuid.UUID,
     changes: list[tuple[str, str, HardwareClassificationChoice]],
-    *,
-    changed_by: str,
-) -> list[HardwareClassificationChange]:
-    """Apply every change or none. A refusal names each blocked product and what holds it.
+) -> list[dict]:
+    """What each change would do, before anything is written (#1050). One entry per product that would
+    actually change, each with four lists of plain sentences:
 
-    Returns the log rows written; a change to the value a product already has writes nothing."""
+    - went_out: hardware already sent under the current classification. History - it stays as it went.
+    - adjusts: in-flight work that saving changes (a shop request losing the product, PO links cleared).
+    - unaffected: work that touches the product but that the change leaves alone, said so on purpose.
+    - blocks: what refuses the change. Only a shop batch still being pulled does.
+    """
     if not changes:
         raise ValidationError("Pick at least one product to change.", field="changes")
     for _category, _code, to in changes:
@@ -268,13 +302,13 @@ def set_product_classifications(
             .distinct()
         )
     }
-    shop_holds = _live_shop_holds(session, project_id)
+    waiting = _waiting_shop_lines(session, project_id)
+    being_pulled = _batches_being_pulled(session, project_id)
     on_po = _on_po(session, project_id)
-    shipping_holds = _pending_shipping(session, project_id)
-    already_gone = _already_gone(session, project_id)
+    shipping = _pending_shipping(session, project_id)
+    went_out = _went_out(session, project_id)
 
-    blocked: list[str] = []
-    todo: list[tuple[Product, HardwareClassificationChoice, HardwareClassificationChoice]] = []
+    plans: list[dict] = []
     for category, code, to in changes:
         product = (category, code)
         if product not in current:
@@ -282,26 +316,113 @@ def set_product_classifications(
         was = current[product]
         if was == to:
             continue
-        reasons: list[str] = []
-        if already_gone.get(product):
-            reasons.append("; ".join(sorted(already_gone[product])))
+        adjusts: list[str] = []
+        unaffected: list[str] = []
+        blocks: list[str] = []
         leaving_shop = (
             product in shop_rows
             and was != HardwareClassificationChoice.BY_OTHERS
             and to != HardwareClassificationChoice.UCH_SHOP
         )
-        if leaving_shop and shop_holds.get(product):
-            reasons.append(f"on shop assembly {', '.join(sorted(shop_holds[product]))}")
+        if leaving_shop:
+            for number in sorted(being_pulled.get(product, ())):
+                blocks.append(f"on shop assembly batch {number}, still being pulled - finish or cancel the pull first")
+            for number, openings in sorted(waiting.get(product, {}).items()):
+                adjusts.append(
+                    f"comes off shop assembly request {number} (opening {', '.join(sorted(openings))}); "
+                    "the Shop Assembly Manager is told"
+                )
         if to == HardwareClassificationChoice.BY_OTHERS:
-            if product in on_po:
-                reasons.append("on a PO")
-            if shipping_holds.get(product):
-                reasons.append(f"on shipping request {', '.join(sorted(shipping_holds[product]))}")
-        if reasons:
-            blocked.append(f"{code} ({category}): {'; '.join(reasons)}")
-        else:
-            todo.append((product, was, to))
+            for po_number, rows in sorted(on_po.get(product, {}).items()):
+                plural = "s" if rows != 1 else ""
+                adjusts.append(f"{rows} schedule row{plural} no longer count as ordered on {po_number}")
+                unaffected.append(
+                    f"{po_number} itself is unaffected - what arrives lands in the job's inventory like any extra"
+                )
+            for number in sorted(shipping.get(product, ())):
+                unaffected.append(f"shipping request {number} asks for it and is left as it is")
+        plans.append(
+            {
+                "hardware_category": category,
+                "product_code": code,
+                "from_choice": was,
+                "to_choice": to,
+                "went_out": sorted(went_out.get(product, ())),
+                "adjusts": adjusts,
+                "unaffected": unaffected,
+                "blocks": blocks,
+                "leaves_shop_requests": leaving_shop and bool(waiting.get(product)),
+            }
+        )
+    return plans
 
+
+def _take_off_waiting_shop_openings(
+    session: Session, project_id: uuid.UUID, product: Product, to: HardwareClassificationChoice, *, changed_by: str
+) -> None:
+    """Remove a product leaving the shop from every opening still waiting on a pending shop request.
+
+    An opening left with nothing on it is dismissed - the same write-off the manager makes by hand -
+    and a request left with nothing waiting closes out. One notice per request tells the manager."""
+    from app.repositories.shop_assembly_repository import _close_if_nothing_pending
+    from app.services.notification_service import SHOP_ASSEMBLY_MANAGER_RECIPIENT_ROLE, create_notification
+
+    category, code = product
+    requests = session.scalars(
+        select(ShopAssemblyRequest).where(
+            ShopAssemblyRequest.project_id == project_id,
+            ShopAssemblyRequest.status == ShopAssemblyRequestStatus.PENDING,
+        )
+    ).all()
+    now = datetime.utcnow()
+    for request in requests:
+        waiting = {o.opening_number: o for o in request.openings if o.status == ShopAssemblyOpeningStatus.PENDING}
+        lines = [
+            i
+            for i in request.items
+            if i.hardware_category == category and i.product_code == code and i.opening_number in waiting
+        ]
+        if not lines:
+            continue
+        touched = sorted({i.opening_number for i in lines})
+        for line in lines:
+            session.delete(line)
+        session.flush()
+        session.refresh(request)
+        left = {i.opening_number for i in request.items}
+        for number in touched:
+            if number not in left:
+                opening = waiting[number]
+                opening.status = ShopAssemblyOpeningStatus.DISMISSED
+                opening.dismissed_by = changed_by
+                opening.dismissed_at = now
+                opening.dismissal_reason = f"Nothing left for the shop: {code} changed to {LABEL[to]}"
+        _close_if_nothing_pending(session, request, closed_by=changed_by)
+        create_notification(
+            session,
+            project_id,
+            SHOP_ASSEMBLY_MANAGER_RECIPIENT_ROLE,
+            NotificationType.CLASSIFICATION_CHANGED,
+            f"{code} ({category}) changed to {LABEL[to]} by {changed_by}, so it came off shop assembly request "
+            f"{request.request_number} (opening {', '.join(touched)}).",
+        )
+
+
+def set_product_classifications(
+    session: Session,
+    project_id: uuid.UUID,
+    changes: list[tuple[str, str, HardwareClassificationChoice]],
+    *,
+    changed_by: str,
+) -> list[HardwareClassificationChange]:
+    """Apply every change or none - exactly what plan_product_classifications showed. A refusal names
+    each blocked product and what holds it.
+
+    Returns the log rows written; a change to the value a product already has writes nothing."""
+    plans = plan_product_classifications(session, project_id, changes)
+    blocked = [
+        f"{p['product_code']} ({p['hardware_category']}): {'; '.join(p['blocks'])}" for p in plans if p["blocks"]
+    ]
     if blocked:
         raise ConflictError(
             "Nothing was changed. These products cannot take that classification while something depends on it: "
@@ -311,38 +432,47 @@ def set_product_classifications(
 
     now = datetime.utcnow()
     written: list[HardwareClassificationChange] = []
-    for (category, code), was, to in todo:
+    for plan in plans:
+        category, code = plan["hardware_category"], plan["product_code"]
+        to = plan["to_choice"]
+        product_rows = (
+            (HardwareItem.project_id == project_id)
+            & (HardwareItem.hardware_category == category)
+            & (HardwareItem.product_code == code)
+        )
         match = (
             (ProjectExcludedItem.project_id == project_id)
             & (ProjectExcludedItem.hardware_category == category)
             & (ProjectExcludedItem.product_code == code)
         )
+        if plan["leaves_shop_requests"]:
+            _take_off_waiting_shop_openings(session, project_id, (category, code), to, changed_by=changed_by)
         if to == HardwareClassificationChoice.BY_OTHERS:
             session.add(
                 ProjectExcludedItem(
                     id=uuid.uuid4(), project_id=project_id, hardware_category=category, product_code=code
                 )
             )
-        else:
-            session.execute(delete(ProjectExcludedItem).where(match))
+            # The ordered link is the import screen's bookkeeping; By Others is not UCH's to order.
             session.execute(
                 update(HardwareItem)
-                .where(
-                    HardwareItem.project_id == project_id,
-                    HardwareItem.hardware_category == category,
-                    HardwareItem.product_code == code,
-                )
-                .values(classification=_STORED[to], updated_at=now)
+                .where(product_rows, HardwareItem.state == HardwareItemState.IN_PO)
+                .values(state=HardwareItemState.AVAILABLE, po_line_item_id=None, updated_at=now)
             )
+        else:
+            session.execute(delete(ProjectExcludedItem).where(match))
+            session.execute(update(HardwareItem).where(product_rows).values(classification=_STORED[to], updated_at=now))
         change = HardwareClassificationChange(
             id=uuid.uuid4(),
             project_id=project_id,
             hardware_category=category,
             product_code=code,
-            from_choice=was.value,
+            from_choice=plan["from_choice"].value,
             to_choice=to.value,
             changed_by=changed_by,
             changed_at=now,
+            # What had already gone out, and what saving changed - so the log reads the change in full.
+            note="; ".join(plan["went_out"] + plan["adjusts"]) or None,
         )
         session.add(change)
         written.append(change)

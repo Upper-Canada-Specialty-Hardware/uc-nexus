@@ -244,6 +244,9 @@ class NotificationType(str, enum.Enum):
     # A shipping-out request was rejected (#972). Person-targeted like the one above: the requester's
     # Clerk user id, or the shipping audience on a request raised before the id was recorded.
     SHIPPING_REQUEST_REJECTED = "SHIPPING_REQUEST_REJECTED"
+    # A classification change took a product off openings waiting on a shop assembly request (#1050).
+    # For the Shop Assembly Manager, whose board just lost those lines.
+    CLASSIFICATION_CHANGED = "CLASSIFICATION_CHANGED"
 
 
 class AuditEntityType(str, enum.Enum):
