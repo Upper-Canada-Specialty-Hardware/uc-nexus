@@ -12,9 +12,10 @@ import Modal from '../../components/Modal';
 import LocationAutocomplete from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
 import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED } from '../../graphql/shared';
-import { ADJUST_INVENTORY_QUANTITY, GET_LOCATION_DISTINCT_VALUES, MOVE_STOCK_LOCATION, MARK_STOCK_ITEM_UNLOCATED, ADJUST_STOCK_QUANTITY } from '../../graphql/warehouse';
+import { ADJUST_INVENTORY_QUANTITY, GET_WAREHOUSE_LOCATIONS, MOVE_STOCK_LOCATION, MARK_STOCK_ITEM_UNLOCATED, ADJUST_STOCK_QUANTITY } from '../../graphql/warehouse';
 import { microLabelSx, monoSx } from '../../theme';
 import { ReservationNotice, useComboReservation } from './reservationNotice';
+import { type WarehouseLocationDef, normalizeLocationValue } from './receiveDraftTypes';
 
 export type LocationActionTarget = {
   id: string;
@@ -58,19 +59,51 @@ export default function LocationActionDialog({
   const { showToast } = useToast();
   const single = targets.length === 1 ? targets[0] : null;
 
-  // Location suggestions are the same distinct-values read TransferDialog does; owning it here lets
-  // every call site drop the aisle/row/bay option props. Skipped unless a move is being composed.
-  const { data: distinctData } = useQuery<{
-    locationDistinctValues: { aisles: string[]; rows: string[]; bays: string[] };
-  }>(GET_LOCATION_DISTINCT_VALUES, { fetchPolicy: 'cache-and-network', skip: mode !== 'move' });
-  const aisleOptions = distinctData?.locationDistinctValues.aisles ?? [];
-  const rowOptions = distinctData?.locationDistinctValues.rows ?? [];
-  const bayOptions = distinctData?.locationDistinctValues.bays ?? [];
-
   // Move state
   const [aisle, setAisle] = useState('');
   const [row, setRow] = useState('');
   const [bay, setBay] = useState('');
+
+  // #975: a move lands only on a defined location, so the pickers offer only those - the same strict,
+  // cascading picks put away makes (#632). A location is offered when it is defined in every selected
+  // item's warehouse, since each item moves within its own building. Skipped unless a move is composed.
+  const { data: registryData } = useQuery<{ warehouseLocations: WarehouseLocationDef[] }>(
+    GET_WAREHOUSE_LOCATIONS,
+    { variables: { activeOnly: true }, fetchPolicy: 'cache-and-network', skip: mode !== 'move' },
+  );
+  const definedHere = useMemo(() => {
+    const warehouses = new Set(targets.map((t) => t.warehouseId).filter((w): w is string => !!w));
+    const byKey = new Map<string, { def: WarehouseLocationDef; in: Set<string> }>();
+    for (const d of registryData?.warehouseLocations ?? []) {
+      const key = `${d.aisle}|${d.row}|${d.bay}`;
+      const entry = byKey.get(key) ?? { def: d, in: new Set<string>() };
+      entry.in.add(d.warehouseId);
+      byKey.set(key, entry);
+    }
+    return Array.from(byKey.values())
+      .filter((e) => Array.from(warehouses).every((w) => e.in.has(w)))
+      .map((e) => e.def);
+  }, [registryData, targets]);
+  const { aisleOptions, rowOptions, bayOptions } = useMemo(() => {
+    const a = normalizeLocationValue(aisle);
+    const r = normalizeLocationValue(row);
+    const aisles = new Set<string>();
+    const rows = new Set<string>();
+    const bays = new Set<string>();
+    for (const d of definedHere) {
+      aisles.add(d.aisle);
+      if (!a || d.aisle === a) rows.add(d.row);
+      if ((!a || d.aisle === a) && (!r || d.row === r)) bays.add(d.bay);
+    }
+    const sort = (set: Set<string>) => Array.from(set).sort((x, y) => x.localeCompare(y));
+    return { aisleOptions: sort(aisles), rowOptions: sort(rows), bayOptions: sort(bays) };
+  }, [definedHere, aisle, row]);
+  const isDefinedPick = useMemo(() => {
+    const a = normalizeLocationValue(aisle);
+    const r = normalizeLocationValue(row);
+    const b = normalizeLocationValue(bay);
+    return !!a && !!r && !!b && definedHere.some((d) => d.aisle === a && d.row === r && d.bay === b);
+  }, [definedHere, aisle, row, bay]);
 
   // Adjust state
   const [adjustment, setAdjustment] = useState('');
@@ -127,16 +160,14 @@ export default function LocationActionDialog({
 
   const isValid = useMemo(() => {
     if (mode === 'unlocate') return true;
-    if (mode === 'move') {
-      return aisle.trim().length > 0 && row.trim().length > 0 && bay.trim().length > 0;
-    }
+    if (mode === 'move') return isDefinedPick;
     // adjust
     if (!single) return false;
     if (isNaN(adjustmentNum) || adjustmentNum === 0) return false;
     if (newQuantity < 0) return false;
     if (!reason.trim() || reason.length > REASON_MAX_LENGTH) return false;
     return true;
-  }, [mode, aisle, row, bay, adjustmentNum, newQuantity, reason, single]);
+  }, [mode, isDefinedPick, adjustmentNum, newQuantity, reason, single]);
 
   const title = useMemo(() => {
     const noun = targets.length > 1 ? `${targets.length} items` : 'item';
@@ -263,12 +294,13 @@ export default function LocationActionDialog({
             value={aisle}
             onChange={setAisle}
             options={aisleOptions}
+            freeSolo={false}
             autoFocus
           />
-          <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} />
-          <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} />
+          <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} />
+          <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} />
           <Typography variant="caption" color="text.secondary">
-            Suggestions come from locations already in use. Free-form values are accepted.
+            Pick a location defined for this warehouse on the Locations tab.
           </Typography>
         </Stack>
       )}

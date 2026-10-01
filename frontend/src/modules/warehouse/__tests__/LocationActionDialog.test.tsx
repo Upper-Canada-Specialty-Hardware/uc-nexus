@@ -8,22 +8,29 @@ import {
 } from '../../../graphql/shared';
 import {
   ADJUST_INVENTORY_QUANTITY,
-  GET_LOCATION_DISTINCT_VALUES,
+  GET_WAREHOUSE_LOCATIONS,
   MOVE_STOCK_LOCATION,
 } from '../../../graphql/warehouse';
 
-// Move mode now owns the distinct-values read (the aisle/row/bay option props are gone). Supplied to
-// every render; adjust/unlocate skip the query so the mock simply goes unused there.
+// #975: move mode picks only from the defined-locations registry. Supplied to every render;
+// adjust/unlocate skip the query so the mock simply goes unused there. A3-C1-B1 is defined in a
+// different warehouse, so it is never offered for a w1 item.
+const defined = (id: string, warehouseId: string, aisle: string) => ({
+  id,
+  warehouseId,
+  aisle,
+  row: 'C1',
+  bay: 'B1',
+  active: true,
+  createdAt: '2026-01-01T00:00:00Z',
+  __typename: 'WarehouseLocation',
+});
 const distinctMock: MockedResponse = {
-  request: { query: GET_LOCATION_DISTINCT_VALUES },
+  request: { query: GET_WAREHOUSE_LOCATIONS, variables: { activeOnly: true } },
+  maxUsageCount: Number.POSITIVE_INFINITY,
   result: {
     data: {
-      locationDistinctValues: {
-        aisles: ['A1', 'A2'],
-        rows: ['C1'],
-        bays: ['B1'],
-        __typename: 'LocationDistinctValues',
-      },
+      warehouseLocations: [defined('l1', 'w1', 'A1'), defined('l2', 'w1', 'A2'), defined('l3', 'w2', 'A3')],
     },
   },
 };
@@ -39,6 +46,7 @@ const invTarget: LocationActionTarget = {
   kind: 'inventory',
   productCode: 'HG-100',
   quantity: 10,
+  warehouseId: 'w1',
   aisle: 'A1',
   row: 'C1',
   bay: 'B1',
@@ -49,6 +57,7 @@ const stockTarget: LocationActionTarget = {
   kind: 'stock',
   productCode: 'LK-200',
   quantity: 4,
+  warehouseId: 'w1',
   aisle: null,
   row: null,
   bay: null,
@@ -82,12 +91,25 @@ function confirmButton() {
 }
 
 describe('LocationActionDialog', () => {
-  it('move mode pre-fills the single target location and enables confirm', () => {
+  it('move mode pre-fills the single target location and enables confirm', async () => {
     renderDialog();
     expect(screen.getByLabelText('Aisle')).toHaveValue('A1');
     expect(screen.getByLabelText('Row')).toHaveValue('C1');
     expect(screen.getByLabelText('Bay')).toHaveValue('B1');
-    expect(confirmButton()).toBeEnabled();
+    await waitFor(() => expect(confirmButton()).toBeEnabled());
+  });
+
+  it('move mode refuses a location not defined for the item warehouse (#975)', async () => {
+    renderDialog();
+    await waitFor(() => expect(confirmButton()).toBeEnabled());
+
+    // Never defined anywhere.
+    fireEvent.change(screen.getByLabelText('Aisle'), { target: { value: 'Z' } });
+    expect(confirmButton()).toBeDisabled();
+    // Defined, but in another warehouse.
+    fireEvent.change(screen.getByLabelText('Aisle'), { target: { value: 'A3' } });
+    expect(confirmButton()).toBeDisabled();
+    expect(screen.getByText(/Pick a location defined for this warehouse/)).toBeInTheDocument();
   });
 
   it('move mode disables confirm when a location field is cleared', () => {
@@ -117,6 +139,7 @@ describe('LocationActionDialog', () => {
     const { onClose, onSuccess } = renderDialog({}, mocks);
 
     fireEvent.change(screen.getByLabelText('Aisle'), { target: { value: 'A2' } });
+    await waitFor(() => expect(confirmButton()).toBeEnabled());
     fireEvent.click(confirmButton());
 
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
@@ -150,6 +173,7 @@ describe('LocationActionDialog', () => {
     fireEvent.change(screen.getByLabelText('Aisle'), { target: { value: 'A1' } });
     fireEvent.change(screen.getByLabelText('Row'), { target: { value: 'C1' } });
     fireEvent.change(screen.getByLabelText('Bay'), { target: { value: 'B1' } });
+    await waitFor(() => expect(confirmButton()).toBeEnabled());
     fireEvent.click(confirmButton());
 
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());

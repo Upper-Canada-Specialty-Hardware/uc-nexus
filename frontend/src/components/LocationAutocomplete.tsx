@@ -38,7 +38,14 @@ export default function LocationAutocomplete({
       // typed-but-unlisted string (the input text still shows through inputValue).
       value={freeSolo ? value || null : options.includes(value) ? value : null}
       inputValue={value}
-      onInputChange={(_, newInput) => onChange(newInput.slice(0, 20))}
+      onInputChange={(_, newInput, reason) => {
+        // Strict mode: MUI "resets" the text to the selected option's label, and with no listed
+        // value (a pre-filled bin whose registry has not loaded yet, or text still being typed) that
+        // label is empty - which would wipe what the field holds (#975). Only typing and picking
+        // change it; the caller's exact-match gate decides whether it is usable.
+        if (!freeSolo && reason === 'reset') return;
+        onChange(newInput.slice(0, 20));
+      }}
       onChange={(_, newValue) => {
         if (typeof newValue === 'string') onChange(newValue.slice(0, 20));
         else if (newValue == null) onChange('');
