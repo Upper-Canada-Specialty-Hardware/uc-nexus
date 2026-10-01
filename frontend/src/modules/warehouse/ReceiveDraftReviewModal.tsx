@@ -357,6 +357,14 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
     </>
   );
 
+  // While a draft waits for approval its updated_at is the last edit or resubmit; shown only when it is
+  // a real change after the first count, not the create itself.
+  const lastChangedMs = parseServerDate(draft.updatedAt).getTime();
+  const lastChanged =
+    draft.status === 'PENDING_APPROVAL' && lastChangedMs - parseServerDate(draft.createdAt).getTime() > 60_000
+      ? parseServerDate(draft.updatedAt).toLocaleString()
+      : null;
+
   return (
     <>
       <Modal
@@ -369,6 +377,8 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
       >
         <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
           Counted by <strong>{draft.createdBy}</strong> on {parseServerDate(draft.createdAt).toLocaleString()}
+          {/* #982: a draft sent back and edited or resubmitted says when the count last changed. */}
+          {lastChanged && ` · last changed ${lastChanged}`}
           {draft.totalQuantity > 0 && ` · ${draft.totalQuantity} units submitted`}
         </Typography>
 
