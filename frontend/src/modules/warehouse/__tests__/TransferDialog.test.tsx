@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { ToastProvider } from '../../../components/Toast';
 import TransferDialog, { type TransferSource } from '../TransferDialog';
 import { GET_WAREHOUSES } from '../../../graphql/shared';
-import { GET_LOCATION_DISTINCT_VALUES, TRANSFER_INVENTORY } from '../../../graphql/warehouse';
+import { GET_WAREHOUSE_LOCATIONS, TRANSFER_INVENTORY } from '../../../graphql/warehouse';
 
 vi.setConfig({ testTimeout: 60_000 });
 configure({ asyncUtilTimeout: 15_000 });
@@ -33,10 +33,29 @@ const warehousesMock: MockedResponse = {
   },
 };
 
-const distinctMock: MockedResponse = {
-  request: { query: GET_LOCATION_DISTINCT_VALUES },
+// #1046: the destination is a strict pick from the destination warehouse's defined locations.
+// C1-R1-B1 is defined only in another warehouse, so it never counts for wh-1.
+const defined = (id: string, warehouseId: string, aisle: string, row: string, bay: string) => ({
+  id,
+  warehouseId,
+  aisle,
+  row,
+  bay,
+  active: true,
+  createdAt: '2026-01-01T00:00:00Z',
+  __typename: 'WarehouseLocation',
+});
+const registryMock: MockedResponse = {
+  request: { query: GET_WAREHOUSE_LOCATIONS, variables: { activeOnly: true } },
+  maxUsageCount: Number.POSITIVE_INFINITY,
   result: {
-    data: { locationDistinctValues: { aisles: ['A1'], rows: ['R1'], bays: ['B1'], __typename: 'LocationDistinctValues' } },
+    data: {
+      warehouseLocations: [
+        defined('l1', 'wh-1', 'A1', 'R1', 'B1'),
+        defined('l2', 'wh-1', 'A9', 'R9', 'B9'),
+        defined('l3', 'wh-2', 'C1', 'R1', 'B1'),
+      ],
+    },
   },
 };
 
@@ -63,7 +82,7 @@ function renderDialog(sources: TransferSource[], mocks: MockedResponse[]) {
   const onClose = vi.fn();
   const onSuccess = vi.fn();
   render(
-    <MockedProvider mocks={[warehousesMock, distinctMock, ...mocks]}>
+    <MockedProvider mocks={[warehousesMock, registryMock, ...mocks]}>
       <ToastProvider>
         <TransferDialog sources={sources} onClose={onClose} onSuccess={onSuccess} />
       </ToastProvider>
@@ -73,9 +92,9 @@ function renderDialog(sources: TransferSource[], mocks: MockedResponse[]) {
 }
 
 function setLocation(aisle: string, row: string, bay: string) {
-  fireEvent.change(screen.getByLabelText('Aisle'), { target: { value: aisle } });
-  fireEvent.change(screen.getByLabelText('Row'), { target: { value: row } });
-  fireEvent.change(screen.getByLabelText('Bay'), { target: { value: bay } });
+  fireEvent.change(screen.getByRole('combobox', { name: 'Aisle' }), { target: { value: aisle } });
+  fireEvent.change(screen.getByRole('combobox', { name: 'Row' }), { target: { value: row } });
+  fireEvent.change(screen.getByRole('combobox', { name: 'Bay' }), { target: { value: bay } });
 }
 
 describe('TransferDialog', () => {
@@ -112,6 +131,7 @@ describe('TransferDialog', () => {
     // Quantity defaults to full available and is present only in single-source mode.
     expect(screen.getByLabelText('Quantity')).toHaveValue(6);
     setLocation('A1', 'R1', 'B1');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^transfer$/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /^transfer$/i }));
 
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
@@ -138,9 +158,33 @@ describe('TransferDialog', () => {
     expect(screen.queryByLabelText('Quantity')).not.toBeInTheDocument();
 
     setLocation('A9', 'R9', 'B9');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^transfer$/i })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /^transfer$/i }));
 
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(calls).toBe(2);
+  });
+
+  it('keeps Transfer off for a bin not defined in the destination warehouse', async () => {
+    const source: TransferSource = {
+      type: 'INVENTORY_LOCATION',
+      id: 'inv-1',
+      productCode: 'HG-100',
+      available: 6,
+      warehouseId: 'wh-1',
+    };
+    renderDialog([source], []);
+
+    // Defined, but only in another warehouse.
+    setLocation('C1', 'R1', 'B1');
+    expect(await screen.findByText(/defined in the destination warehouse/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^transfer$/i })).toBeDisabled();
+
+    // Never defined anywhere.
+    setLocation('ZZ', 'R1', 'B1');
+    expect(screen.getByRole('button', { name: /^transfer$/i })).toBeDisabled();
+
+    setLocation('A1', 'R1', 'B1');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^transfer$/i })).toBeEnabled());
   });
 });

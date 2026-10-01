@@ -1,9 +1,15 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, configure } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import AllocateStockModal from '../stock/AllocateStockModal';
 import { ToastProvider } from '../../../components/Toast';
 import { GET_PROJECTS } from '../../../graphql/shared';
+import { GET_WAREHOUSE_LOCATIONS } from '../../../graphql/warehouse';
 import type { StockItem } from '../StockPoolView';
+
+// A MUI Dialog with three Autocompletes is slow to render under the full parallel suite, so lift the
+// per-test budget and the async-util default (mirrors DestockInventoryModal).
+vi.setConfig({ testTimeout: 60_000 });
+configure({ asyncUtilTimeout: 15_000 });
 
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
@@ -42,6 +48,28 @@ const projectsMock: MockedResponse = {
   },
 };
 
+// #1046: a target bin is a strict pick from the stock item's warehouse. C3-4-2 is defined in w1; D1-1-1 is
+// defined only in w2, so it never counts here.
+const defined = (id: string, warehouseId: string, aisle: string, row: string, bay: string) => ({
+  id,
+  warehouseId,
+  aisle,
+  row,
+  bay,
+  active: true,
+  createdAt: '2026-01-01T00:00:00Z',
+  __typename: 'WarehouseLocation',
+});
+const registryMock: MockedResponse = {
+  request: { query: GET_WAREHOUSE_LOCATIONS, variables: { activeOnly: true } },
+  maxUsageCount: Number.POSITIVE_INFINITY,
+  result: {
+    data: {
+      warehouseLocations: [defined('l1', 'w1', 'C3', '4', '2'), defined('l2', 'w2', 'D1', '1', '1')],
+    },
+  },
+};
+
 const item: StockItem = {
   id: 's1',
   warehouseId: 'w1',
@@ -62,7 +90,7 @@ const item: StockItem = {
 
 function renderModal(prefillProjectId?: string) {
   render(
-    <MockedProvider mocks={[projectsMock]}>
+    <MockedProvider mocks={[projectsMock, registryMock]}>
       <ToastProvider>
         <AllocateStockModal item={item} onClose={vi.fn()} onSuccess={vi.fn()} prefillProjectId={prefillProjectId} />
       </ToastProvider>
@@ -88,5 +116,32 @@ describe('AllocateStockModal target project (#959)', () => {
   it('preselects a prefilled project', async () => {
     renderModal('p1');
     await waitFor(() => expect(screen.getByLabelText('Target project')).toHaveValue('Royal Inland Hospital'));
+  });
+});
+
+describe('AllocateStockModal pre-locate bin (#1046)', () => {
+  it('takes no bin or a defined one, never a free-form one', async () => {
+    renderModal('p1');
+    const allocate = screen.getByRole('button', { name: 'Allocate' });
+    await waitFor(() => expect(allocate).toBeEnabled()); // blank bin: unlocated
+
+    const setBin = (a: string, r: string, b: string) => {
+      fireEvent.change(screen.getByRole('combobox', { name: 'Aisle' }), { target: { value: a } });
+      fireEvent.change(screen.getByRole('combobox', { name: 'Row' }), { target: { value: r } });
+      fireEvent.change(screen.getByRole('combobox', { name: 'Bay' }), { target: { value: b } });
+    };
+
+    setBin('C3', '', '');
+    expect(allocate).toBeDisabled(); // partial
+    expect(screen.getByText(/defined on the Locations tab/)).toBeInTheDocument();
+
+    setBin('D1', '1', '1');
+    expect(allocate).toBeDisabled(); // defined only in another warehouse
+
+    setBin('C3', '4', '2');
+    await waitFor(() => expect(allocate).toBeEnabled());
+
+    setBin('', '', '');
+    expect(allocate).toBeEnabled();
   });
 });

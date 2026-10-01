@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, within, configure, waitFor } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
-import { DESTOCK_INVENTORY } from '../../../graphql/warehouse';
+import { DESTOCK_INVENTORY, GET_WAREHOUSE_LOCATIONS } from '../../../graphql/warehouse';
 import { ToastProvider } from '../../../components/Toast';
 import DestockInventoryModal, { type DestockSource } from '../stock/DestockInventoryModal';
 
@@ -11,6 +11,7 @@ configure({ asyncUtilTimeout: 15_000 });
 
 const baseSource: DestockSource = {
   id: 'inv-1',
+  warehouseId: 'w1',
   hardwareCategory: 'Hinges',
   productCode: 'HG-100',
   quantity: 10,
@@ -20,9 +21,31 @@ const baseSource: DestockSource = {
   bay: 'B1',
 };
 
+// #1046: a target bin is a strict pick from the row's warehouse. C3-4-2 is defined in w1; D1-1-1 is
+// defined only in w2, so it never counts here.
+const defined = (id: string, warehouseId: string, aisle: string, row: string, bay: string) => ({
+  id,
+  warehouseId,
+  aisle,
+  row,
+  bay,
+  active: true,
+  createdAt: '2026-01-01T00:00:00Z',
+  __typename: 'WarehouseLocation',
+});
+const registryMock: MockedResponse = {
+  request: { query: GET_WAREHOUSE_LOCATIONS, variables: { activeOnly: true } },
+  maxUsageCount: Number.POSITIVE_INFINITY,
+  result: {
+    data: {
+      warehouseLocations: [defined('l1', 'w1', 'C3', '4', '2'), defined('l2', 'w2', 'D1', '1', '1')],
+    },
+  },
+};
+
 function renderModal(source: Partial<DestockSource> = {}, mocks: MockedResponse[] = []) {
   render(
-    <MockedProvider mocks={mocks}>
+    <MockedProvider mocks={[registryMock, ...mocks]}>
       <ToastProvider>
         <DestockInventoryModal
           inventoryLocation={{ ...baseSource, ...source }}
@@ -80,7 +103,7 @@ describe('DestockInventoryModal', () => {
     expect(destockButton()).toBeEnabled();
   });
 
-  it('requires all three of aisle/row/bay once the target override is on', () => {
+  it('requires a defined aisle/row/bay once the target override is on', async () => {
     renderModal();
     pickCost(/Keeps its cost/);
     expect(destockButton()).toBeEnabled(); // qty 1 within cap, no override
@@ -88,14 +111,21 @@ describe('DestockInventoryModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Override target location' }));
     expect(destockButton()).toBeDisabled(); // override on, fields blank
 
-    fireEvent.change(screen.getByLabelText(/Aisle/), { target: { value: 'C3' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Aisle' }), { target: { value: 'C3' } });
     expect(destockButton()).toBeDisabled(); // partial override still blocked
 
-    fireEvent.change(screen.getByLabelText(/Row/), { target: { value: '4' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Row' }), { target: { value: '4' } });
     expect(destockButton()).toBeDisabled();
 
-    fireEvent.change(screen.getByLabelText(/Bay/), { target: { value: '2' } });
-    expect(destockButton()).toBeEnabled(); // all three present
+    fireEvent.change(screen.getByRole('combobox', { name: 'Bay' }), { target: { value: '2' } });
+    await waitFor(() => expect(destockButton()).toBeEnabled()); // a defined location in w1
+
+    // Defined, but only in another warehouse - the server would refuse it, so the dialog does too.
+    fireEvent.change(screen.getByRole('combobox', { name: 'Aisle' }), { target: { value: 'D1' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Row' }), { target: { value: '1' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Bay' }), { target: { value: '1' } });
+    expect(destockButton()).toBeDisabled();
+    expect(screen.getByText(/defined on the Locations tab/)).toBeInTheDocument();
   });
 
   it('requires the cost choice, with neither option picked to start', () => {

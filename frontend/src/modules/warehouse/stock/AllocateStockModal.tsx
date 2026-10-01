@@ -9,6 +9,7 @@ import {
 } from '@mui/material';
 import { useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
+import LocationAutocomplete from '../../../components/LocationAutocomplete';
 import ProjectPicker from '../../../components/ProjectPicker';
 import { useToast } from '../../../components/Toast';
 import { GET_PROJECTS } from '../../../graphql/shared';
@@ -17,6 +18,7 @@ import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import { microLabelSx, monoSx } from '../../../theme';
 import type { Project } from '../../../types/project';
 import type { StockItem } from '../StockPoolView';
+import { useDefinedLocationPick } from '../useDefinedLocationPick';
 
 interface Props {
   item: StockItem;
@@ -62,6 +64,17 @@ export default function AllocateStockModal({
     onError: (err) => showToast(err.message, 'error'),
   });
 
+  // #1046: the pre-locate bin is optional, but when given it is a strict pick from the stock item's
+  // warehouse - the server refuses any bin not on the Locations tab. All three or none.
+  const { aisleOptions, rowOptions, bayOptions, isDefinedPick } = useDefinedLocationPick(
+    [item.warehouseId],
+    aisle,
+    row,
+    bay,
+  );
+  const binBlank = !aisle.trim() && !row.trim() && !bay.trim();
+  const binOk = binBlank || isDefinedPick;
+
   const q = Number(quantity);
   const valid =
     projectId &&
@@ -69,7 +82,8 @@ export default function AllocateStockModal({
     productCode.trim() &&
     Number.isInteger(q) &&
     q >= 1 &&
-    q <= item.available;
+    q <= item.available &&
+    binOk;
 
   const handleSubmit = () => {
     if (!valid) return;
@@ -141,13 +155,18 @@ export default function AllocateStockModal({
           inputProps={{ min: 1, max: item.available }}
         />
         <Typography variant="body2" color="text.secondary">
-          Optional: pre-locate the new inventory row at a specific location (leave blank for unlocated).
+          Optional: pre-locate the new inventory row at a defined location (leave blank for unlocated).
         </Typography>
         <Stack direction="row" spacing={2}>
-          <TextField label="Aisle" value={aisle} onChange={(e) => setAisle(e.target.value)} />
-          <TextField label="Row" value={row} onChange={(e) => setRow(e.target.value)} />
-          <TextField label="Bay" value={bay} onChange={(e) => setBay(e.target.value)} />
+          <LocationAutocomplete label="Aisle" value={aisle} onChange={setAisle} options={aisleOptions} freeSolo={false} />
+          <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} />
+          <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} />
         </Stack>
+        {!binOk && (
+          <Typography variant="caption" color="text.secondary">
+            Pick an aisle, row and bay defined on the Locations tab, or clear all three to leave it unlocated.
+          </Typography>
+        )}
       </Stack>
     </Modal>
   );

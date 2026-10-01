@@ -16,9 +16,10 @@ import Modal from '../../components/Modal';
 import LocationAutocomplete from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
 import { GET_WAREHOUSES } from '../../graphql/shared';
-import { GET_LOCATION_DISTINCT_VALUES, TRANSFER_INVENTORY } from '../../graphql/warehouse';
+import { TRANSFER_INVENTORY } from '../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { useDefinedLocationPick } from './useDefinedLocationPick';
 
 export interface TransferSource {
   type: 'INVENTORY_LOCATION' | 'STOCK_ITEM';
@@ -63,13 +64,6 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
   });
   const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
 
-  const { data: distinctData } = useQuery<{
-    locationDistinctValues: { aisles: string[]; rows: string[]; bays: string[] };
-  }>(GET_LOCATION_DISTINCT_VALUES, { fetchPolicy: 'cache-and-network' });
-  const aisleOptions = distinctData?.locationDistinctValues.aisles ?? [];
-  const rowOptions = distinctData?.locationDistinctValues.rows ?? [];
-  const bayOptions = distinctData?.locationDistinctValues.bays ?? [];
-
   // Destination warehouse preselects when every source already shares one; otherwise it starts empty
   // and the user has to pick where the consolidation lands.
   const commonWarehouseId = useMemo(() => {
@@ -83,6 +77,14 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
   const [row, setRow] = useState('');
   const [bay, setBay] = useState('');
   const [quantity, setQuantity] = useState<string>(single ? String(single.available) : '');
+  // #1046: the destination is a strict pick from the destination warehouse's defined locations - the
+  // server refuses any bin not on the Locations tab - with the same cascading picks put away makes.
+  const { aisleOptions, rowOptions, bayOptions, isDefinedPick } = useDefinedLocationPick(
+    [destWarehouseId],
+    aisle,
+    row,
+    bay,
+  );
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -112,7 +114,7 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
     (single.row ?? '') === row.trim() &&
     (single.bay ?? '') === bay.trim();
 
-  const destComplete = !!destWarehouseId && !!aisle.trim() && !!row.trim() && !!bay.trim();
+  const destComplete = !!destWarehouseId && isDefinedPick;
   const singleQtyValid = single
     ? Number.isInteger(q) && q >= 1 && q <= single.available && !sameLocationSingle
     : true;
@@ -251,10 +253,15 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
           </Select>
         </FormControl>
         <Stack direction="row" spacing={2}>
-          <LocationAutocomplete label="Aisle" value={aisle} onChange={setAisle} options={aisleOptions} />
-          <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} />
-          <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} />
+          <LocationAutocomplete label="Aisle" value={aisle} onChange={setAisle} options={aisleOptions} freeSolo={false} />
+          <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} />
+          <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} />
         </Stack>
+        {destWarehouseId && hasTypedDestination && !isDefinedPick && (
+          <Typography variant="caption" color="text.secondary">
+            Pick an aisle, row and bay defined in the destination warehouse on the Locations tab.
+          </Typography>
+        )}
 
         {single && (
           <TextField
