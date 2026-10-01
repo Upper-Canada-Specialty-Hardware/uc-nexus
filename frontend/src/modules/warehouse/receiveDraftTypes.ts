@@ -1,5 +1,6 @@
 import type { PoolKind } from '../../types/poolKind';
 import type { ReceiveDraftLineItem } from './receiveLines';
+import { parseServerDate } from '../../utils/serverDate';
 
 /** One defined put-away location (#632) - the registry every location write validates against. */
 export interface WarehouseLocationDef {
@@ -56,4 +57,15 @@ export interface ReceiveDraft {
   createdAt: string;
   updatedAt: string;
   lineItems: ReceiveDraftLineItem[];
+}
+
+/**
+ * When a count waiting on approval last changed, or null when nobody touched it since it was first
+ * submitted (#982, #1047). While a draft waits its updated_at is the last edit or resubmit; a gap under
+ * a minute is the create itself. Every place that shows a pending count's submit time shows this too.
+ */
+export function draftLastChanged(draft: { status: string; createdAt: string; updatedAt: string }): Date | null {
+  if (draft.status !== 'PENDING_APPROVAL') return null;
+  const changed = parseServerDate(draft.updatedAt);
+  return changed.getTime() - parseServerDate(draft.createdAt).getTime() > 60_000 ? changed : null;
 }

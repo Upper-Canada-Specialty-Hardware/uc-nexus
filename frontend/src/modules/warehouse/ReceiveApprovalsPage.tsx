@@ -22,7 +22,7 @@ import { parseServerDate } from '../../utils/serverDate';
 import PageHeader from '../../components/PageHeader';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import ReceiveDraftReviewModal from './ReceiveDraftReviewModal';
-import type { ReceiveDraft } from './receiveDraftTypes';
+import { type ReceiveDraft, draftLastChanged } from './receiveDraftTypes';
 
 const DASH = '—';
 
@@ -166,7 +166,18 @@ export default function ReceiveApprovalsPage() {
                 {draft.projectId ? (projectMap.get(draft.projectId) ?? DASH) : noProjectPoLabel(draft.poolKind)}
               </TableCell>
               <TableCell title={draft.createdBy}>{draft.createdBy}</TableCell>
-              <TableCell sx={tabularSx}>{formatDateTime(draft.createdAt)}</TableCell>
+              <TableCell sx={tabularSx}>
+                {formatDateTime(draft.createdAt)}
+                {/* #1047: a count corrected and resubmitted says so, so an old time never passes for the count. */}
+                {(() => {
+                  const changed = draftLastChanged(draft);
+                  return changed ? (
+                    <Typography component="div" variant="caption" color="text.secondary" sx={tabularSx}>
+                      last changed {changed.toLocaleString()}
+                    </Typography>
+                  ) : null;
+                })()}
+              </TableCell>
               <TableCell align="right" sx={tabularSx}>
                 {draft.totalQuantity}
               </TableCell>

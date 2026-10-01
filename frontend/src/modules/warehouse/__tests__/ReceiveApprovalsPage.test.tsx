@@ -127,6 +127,20 @@ describe('ReceiveApprovalsPage', () => {
     expect(screen.getByText('Riverside Tower')).toBeInTheDocument();
   });
 
+  it('says when a resubmitted count last changed, and nothing on an untouched one (#1047)', async () => {
+    mockIdentity.roles = ['Warehouse Manager'];
+    renderPage([
+      draftsMock('PENDING_APPROVAL', [
+        draft({ id: 'd1', poNumber: 'PO-1', updatedAt: '2026-08-03T15:30:00Z' }),
+        draft({ id: 'd2', poNumber: 'PO-2' }),
+      ]),
+    ]);
+
+    expect(await screen.findByText('PO-1', undefined, SLOW)).toBeInTheDocument();
+    expect(screen.getAllByText(/last changed/)).toHaveLength(1);
+    expect(screen.getByText(`last changed ${new Date('2026-08-03T15:30:00Z').toLocaleString()}`)).toBeInTheDocument();
+  });
+
   it('admits a Tenant Owner, who holds every manager power inside their company', async () => {
     mockIdentity.roles = ['Tenant Owner'];
     renderPage([draftsMock('PENDING_APPROVAL', [draft()])]);
