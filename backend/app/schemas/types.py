@@ -554,6 +554,8 @@ class ReceiveDraft:
     po_id: strawberry.ID
     po_number: str | None
     project_id: strawberry.ID | None
+    # #958: Stock or Overhead, so a PO with no project is named for its kind, not always "Stock PO".
+    pool_kind: PoolKind
     warehouse_id: strawberry.ID | None
     created_by_user_id: str
     created_by: str
@@ -596,6 +598,8 @@ class ReceivingHistoryPO:
     status: POStatus
     vendor_name: str | None
     project_id: strawberry.ID | None
+    # #958: Stock or Overhead, so a PO with no project is named for its kind, not always "Stock PO".
+    pool_kind: PoolKind
     ordered_total: int
     received_total: int
     receive_count: int
@@ -1314,6 +1318,8 @@ class POListRow:
     po_number: str | None
     request_number: str | None
     project_id: strawberry.ID | None
+    # #958: Stock or Overhead, the chip the register shows where a PO with no project has no job.
+    pool_kind: PoolKind
     status: POStatus
     origin: POOrigin
     # The tenant that owns the PO (#637), distinct from gp_company, which is only stamped at GP
@@ -1346,6 +1352,8 @@ class OpenPOSummary:
     id: strawberry.ID
     po_number: str | None
     project_id: strawberry.ID | None
+    # #958: Stock or Overhead, so a PO with no project is named for its kind, not always "Stock PO".
+    pool_kind: PoolKind
     status: POStatus
     origin: POOrigin
     gp_vendor_id: str | None
@@ -1787,8 +1795,10 @@ class BackOrderedItem:
     po_number: str | None
     vendor_name: str | None
     expected_delivery_date: date | None
-    # None for a stock PO, which has no project to name.
+    # None for a PO with no project, which has no project to name; pool_kind says Stock or Overhead.
     project_name: str | None
+    # #958: Stock or Overhead, so a PO with no project is named for its kind, not always "Stock PO".
+    pool_kind: PoolKind
 
 
 @strawberry.type

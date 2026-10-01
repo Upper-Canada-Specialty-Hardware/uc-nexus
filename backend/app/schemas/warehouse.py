@@ -592,6 +592,7 @@ class WarehouseQueries:
                     status=row["status"],
                     vendor_name=row["vendor_name"],
                     project_id=strawberry.ID(str(row["project_id"])) if row["project_id"] else None,
+                    pool_kind=row["pool_kind"],
                     ordered_total=row["ordered_total"],
                     received_total=row["received_total"],
                     receive_count=row["receive_count"],
@@ -689,6 +690,7 @@ class WarehouseQueries:
                     vendor_name=item["vendor_name"],
                     expected_delivery_date=item["expected_delivery_date"],
                     project_name=item["project_name"],
+                    pool_kind=item["pool_kind"],
                 )
                 for item in items
             ]

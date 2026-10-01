@@ -10,6 +10,7 @@ from app.errors import InvalidStateTransitionError, NotFoundError, ValidationErr
 from app.models.enums import (
     AuditAction,
     AuditEntityType,
+    PoolKind,
     POStatus,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
@@ -408,6 +409,7 @@ def get_back_ordered_items(
             POModel.expected_delivery_date,
             ProjectModel.description,
             ProjectModel.project_id,
+            POModel.pool_kind,
         )
         .join(POModel, POLineItemModel.po_id == POModel.id)
         .outerjoin(ProjectModel, POModel.project_id == ProjectModel.id)
@@ -432,6 +434,7 @@ def get_back_ordered_items(
             # Same fallback the rest of the app shows a project by: the description if it has one,
             # otherwise the TITAN project number.
             "project_name": row[4] or row[5] or None,
+            "pool_kind": row[6] or PoolKind.STOCK,
             "outstanding_quantity": row[0].ordered_quantity - row[0].received_quantity,
         }
         for row in rows
@@ -505,6 +508,7 @@ def get_receiving_history_pos(
             POModel.request_number,
             POModel.status,
             POModel.project_id,
+            POModel.pool_kind,
             # The GP vendor frozen on at push time - the only vendor a PO names (#509).
             POModel.vendor_name_snapshot.label("vendor_name"),
             func.coalesce(line_totals.c.ordered_total, 0).label("ordered_total"),
@@ -545,6 +549,7 @@ def get_receiving_history_pos(
             "status": row.status,
             "vendor_name": row.vendor_name,
             "project_id": row.project_id,
+            "pool_kind": row.pool_kind or PoolKind.STOCK,
             "ordered_total": int(row.ordered_total or 0),
             "received_total": int(row.received_total or 0),
             "receive_count": int(row.receive_count or 0),

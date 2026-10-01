@@ -37,6 +37,7 @@ import {
 } from '../../graphql/warehouse';
 import { poVendorLabel, NO_GP_VENDOR, NO_GP_VENDOR_HINT } from '../po/poVendorName';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { noProjectPoLabel, type PoolKind } from '../../types/poolKind';
 import { FadeIn } from '../../motion';
 import { parseServerDate, parseServerDay } from '../../utils/serverDate';
 
@@ -48,6 +49,7 @@ interface OpenPO {
   id: string;
   poNumber: string | null;
   projectId: string | null;
+  poolKind: PoolKind;
   status: string;
   origin: string;
   vendorNameSnapshot: string | null;
@@ -112,6 +114,7 @@ interface BackOrderedItem {
   vendorName: string | null;
   expectedDeliveryDate: string | null;
   projectName: string | null;
+  poolKind: PoolKind;
 }
 
 // ---- Helpers ----
@@ -425,7 +428,7 @@ export default function ReceivingPage() {
         id: po.id,
         poNumber: po.poNumber ?? '\u2014',
         vendorName: poVendorLabel(po) || '\u2014',
-        projectName: po.projectId ? (projectMap.get(po.projectId) ?? '\u2014') : 'Stock PO',
+        projectName: po.projectId ? (projectMap.get(po.projectId) ?? '\u2014') : noProjectPoLabel(po.poolKind),
         jobNumber: po.projectId ? (jobNumberById.get(po.projectId) ?? '') : '',
         expectedDeliveryDate: po.expectedDeliveryDate,
         pendingLines: po.pendingLineCount,
@@ -460,7 +463,7 @@ export default function ReceivingPage() {
         // this page now performs re-runs the query's ORDER BY - so an index key would hand the grid
         // a fresh id for every unchanged row and make it rebuild instead of diff.
         id: item.poLineItemId,
-        projectName: item.projectName ?? 'Stock PO',
+        projectName: item.projectName ?? noProjectPoLabel(item.poolKind),
         vendorName: item.vendorName ?? '\u2014',
       })),
     [backOrderData],

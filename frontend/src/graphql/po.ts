@@ -172,6 +172,7 @@ export const PURCHASE_ORDERS_PAGE = gql`
         poNumber
         requestNumber
         projectId
+        poolKind
         status
         origin
         # #637: the tenant that owns the PO. A draft has one from the moment it is raised;

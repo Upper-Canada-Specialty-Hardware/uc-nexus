@@ -55,6 +55,7 @@ export const GET_OPEN_POS_SUMMARY = gql`
       id
       poNumber
       projectId
+      poolKind
       status
       origin
       gpVendorId
@@ -128,6 +129,7 @@ export const GET_RECEIVING_HISTORY_POS = gql`
       requestNumber
       status
       vendorName
+      poolKind
       projectId
       orderedTotal
       receivedTotal
@@ -280,6 +282,7 @@ export const GET_BACK_ORDERED_ITEMS = gql`
   query GetBackOrderedItems($projectId: ID) {
     backOrderedItems(projectId: $projectId) {
       poLineItemId
+      poolKind
       hardwareCategory
       productCode
       orderedQuantity
@@ -493,6 +496,7 @@ const RECEIVE_DRAFT_FIELDS = `
   poId
   poNumber
   projectId
+  poolKind
   warehouseId
   # The Clerk id and the display name of whoever counted the hardware. The id is what "my drafts"
   # and the author-only actions key on; the name is what the manager's queue shows.
