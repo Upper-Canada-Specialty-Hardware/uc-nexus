@@ -340,12 +340,18 @@ export default function ShopAssemblyRequestsPage() {
                         color={STAGE_COLOR[req.stage as RequestStage]}
                         label={STAGE_LABEL[req.stage as RequestStage]}
                       />
+                      {/* #983: rejecting a request leaves its openings' own status alone, so on the
+                          rejected tab they are only counted - nothing is waiting on a turned-down request. */}
                       {pendingOpenings.length > 0 && (
                         <Chip
                           size="small"
                           variant="outlined"
-                          color="warning"
-                          label={`${plural(pendingOpenings.length, 'opening')} waiting`}
+                          color={view === 'REJECTED' ? 'default' : 'warning'}
+                          label={
+                            view === 'REJECTED'
+                              ? plural(pendingOpenings.length, 'opening')
+                              : `${plural(pendingOpenings.length, 'opening')} waiting`
+                          }
                           sx={tabularSx}
                         />
                       )}
