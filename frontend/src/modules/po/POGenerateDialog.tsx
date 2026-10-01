@@ -174,7 +174,8 @@ function GenerateForm({
   );
   const [shipTo, setShipTo] = useGpPrefilled(dd?.shipTo, formatGpAddress(gp?.shipTo));
   const [shippingMethod, setShippingMethod] = useGpPrefilled(dd?.shippingMethod, gp?.shippingMethod);
-  const [quotationNumber, setQuotationNumber] = useState(dd?.quotationNumber ?? '');
+  // #970: the saved document's quote #, else the vendor quote # the PO already carries.
+  const [quotationNumber, setQuotationNumber] = useState(dd?.quotationNumber ?? po.vendorQuoteNumber ?? '');
   // Required-by: saved override, else the vendor's expected date, else the PM's preferred date
   // (issue #216 - pre-send, expected doesn't exist yet, so the doc asks for the preferred date).
   const [requiredBy, setRequiredBy] = useState(

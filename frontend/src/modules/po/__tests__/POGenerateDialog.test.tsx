@@ -235,6 +235,13 @@ describe('POGenerateDialog shipping method', () => {
 // #701: 1900-01-01 is GP's empty document date, mirrored exactly as GP holds it. The PO table says
 // so in plain words; a document sent to a vendor must not - it falls back to today, the way a PO
 // carrying no order date at all always has.
+describe('POGenerateDialog quote # (#970)', () => {
+  it('prefills the quote # from the PO when no document was saved', async () => {
+    renderDialog([settingsMock(), buyersMock(), totalsMock()], { vendorQuoteNumber: 'Q-950-TEST' });
+    expect(await screen.findByRole('textbox', { name: 'Quote #' })).toHaveValue('Q-950-TEST');
+  });
+});
+
 describe('POGenerateDialog order date', () => {
   beforeEach(() => {
     printed.props = null;
