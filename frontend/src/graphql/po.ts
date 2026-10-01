@@ -375,7 +375,6 @@ export const PO_DOCUMENT_SETTINGS_FIELDS = `
   customsBrokerBlock
   fscNote
   usaTariffNote
-  usaTariffEffectiveUntil
   companyFromAddress
   paymentTerms
   confirmWith
@@ -697,7 +696,6 @@ export const UPDATE_PO_DOCUMENT_SETTINGS = gql`
       customsBrokerBlock
       fscNote
       usaTariffNote
-      usaTariffEffectiveUntil
       companyFromAddress
       paymentTerms
       confirmWith

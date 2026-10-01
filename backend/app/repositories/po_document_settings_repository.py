@@ -1,7 +1,6 @@
 """Repository for the single-row PO-document boilerplate settings (issue #230)."""
 
 import uuid
-from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -50,8 +49,6 @@ DEFAULT_USA_TARIFF_NOTE = (
     "the product(s), not a replacement."
 )
 
-DEFAULT_USA_TARIFF_EFFECTIVE_UNTIL = date(2025, 10, 12)
-
 DEFAULT_COMPANY_FROM_ADDRESS = "UC Hardware Inc.\nUnit 1 - 7100 Warden Avenue\nMarkham, ON    L3R 8B5"
 
 DEFAULT_PAYMENT_TERMS = "Net 30"
@@ -85,7 +82,6 @@ def get_settings(session: Session) -> PODocumentSettings:
         customs_broker_block=DEFAULT_CUSTOMS_BROKER_BLOCK,
         fsc_note=DEFAULT_FSC_NOTE,
         usa_tariff_note=DEFAULT_USA_TARIFF_NOTE,
-        usa_tariff_effective_until=DEFAULT_USA_TARIFF_EFFECTIVE_UNTIL,
         company_from_address=DEFAULT_COMPANY_FROM_ADDRESS,
         payment_terms=DEFAULT_PAYMENT_TERMS,
         confirm_with=DEFAULT_CONFIRM_WITH,
@@ -109,7 +105,6 @@ def update_settings(
     customs_broker_block=_UNSET,
     fsc_note=_UNSET,
     usa_tariff_note=_UNSET,
-    usa_tariff_effective_until=_UNSET,
     company_from_address=_UNSET,
     payment_terms=_UNSET,
     confirm_with=_UNSET,
@@ -133,8 +128,6 @@ def update_settings(
         settings.fsc_note = fsc_note or ""
     if usa_tariff_note is not _UNSET:
         settings.usa_tariff_note = usa_tariff_note or ""
-    if usa_tariff_effective_until is not _UNSET:
-        settings.usa_tariff_effective_until = usa_tariff_effective_until
     if company_from_address is not _UNSET:
         settings.company_from_address = company_from_address or ""
     if payment_terms is not _UNSET:

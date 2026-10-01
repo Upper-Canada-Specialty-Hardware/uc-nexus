@@ -1,7 +1,7 @@
 import uuid
-from datetime import date, datetime
+from datetime import datetime
 
-from sqlalchemy import JSON, Date, String, Text
+from sqlalchemy import JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
@@ -30,10 +30,9 @@ class PODocumentSettings(Base):
     customs_broker_block: Mapped[str] = mapped_column(Text, nullable=False)
     # Wood-door FSC certification note (conditional, toggled per PO).
     fsc_note: Mapped[str] = mapped_column(Text, nullable=False)
-    # USA health-care tariff SA-code note (conditional, toggled per PO). effective_until is the date the
-    # instruction lapses - shown to the PO user next to the toggle; not auto-enforced.
+    # USA health-care tariff SA-code note (conditional, toggled per PO). A permanent disclaimer the buyer
+    # may add to any PO - it has no effective-until date (#980).
     usa_tariff_note: Mapped[str] = mapped_column(Text, nullable=False)
-    usa_tariff_effective_until: Mapped[date | None] = mapped_column(Date, nullable=True)
     # The company from-address block printed at the top of the document.
     company_from_address: Mapped[str] = mapped_column(Text, nullable=False)
     # Company-standard header-row defaults (rarely change; admin-editable).

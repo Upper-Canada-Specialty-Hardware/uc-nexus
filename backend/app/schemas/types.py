@@ -651,7 +651,6 @@ class PODocumentSettings:
     customs_broker_block: str
     fsc_note: str
     usa_tariff_note: str
-    usa_tariff_effective_until: date | None
     company_from_address: str
     payment_terms: str
     confirm_with: str

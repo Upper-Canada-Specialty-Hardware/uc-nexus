@@ -575,7 +575,6 @@ class UpdatePODocumentSettingsInput:
     customs_broker_block: str | None = strawberry.UNSET
     fsc_note: str | None = strawberry.UNSET
     usa_tariff_note: str | None = strawberry.UNSET
-    usa_tariff_effective_until: date | None = strawberry.UNSET
     company_from_address: str | None = strawberry.UNSET
     payment_terms: str | None = strawberry.UNSET
     confirm_with: str | None = strawberry.UNSET

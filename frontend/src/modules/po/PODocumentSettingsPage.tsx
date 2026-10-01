@@ -28,7 +28,6 @@ interface PODocumentSettings {
   customsBrokerBlock: string;
   fscNote: string;
   usaTariffNote: string;
-  usaTariffEffectiveUntil: string | null;
   companyFromAddress: string;
   paymentTerms: string;
   confirmWith: string;
@@ -81,7 +80,6 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
   const [customsBrokerBlock, setCustomsBrokerBlock] = useState(settings.customsBrokerBlock);
   const [fscNote, setFscNote] = useState(settings.fscNote);
   const [usaTariffNote, setUsaTariffNote] = useState(settings.usaTariffNote);
-  const [usaTariffEffectiveUntil, setUsaTariffEffectiveUntil] = useState(settings.usaTariffEffectiveUntil ?? '');
   const [companyFromAddress, setCompanyFromAddress] = useState(settings.companyFromAddress);
   const [paymentTerms, setPaymentTerms] = useState(settings.paymentTerms);
   const [confirmWith, setConfirmWith] = useState(settings.confirmWith);
@@ -103,7 +101,6 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
           customsBrokerBlock,
           fscNote,
           usaTariffNote,
-          usaTariffEffectiveUntil: usaTariffEffectiveUntil || null,
           companyFromAddress,
           paymentTerms,
           confirmWith,
@@ -155,13 +152,6 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
         <TextField
           label="USA tariff note" value={usaTariffNote} onChange={(e) => setUsaTariffNote(e.target.value)}
           fullWidth multiline minRows={2}
-        />
-        <TextField
-          label="USA tariff note effective until" type="date" value={usaTariffEffectiveUntil}
-          onChange={(e) => setUsaTariffEffectiveUntil(e.target.value)}
-          slotProps={{ inputLabel: { shrink: true } }}
-          helperText="Shown to the PO user next to the tariff toggle. Clear to remove the date."
-          sx={{ maxWidth: 280 }}
         />
 
         <SectionHeading>Customs &amp; shipping accounts</SectionHeading>

@@ -425,7 +425,6 @@ def po_document_settings_to_type(s) -> PODocumentSettings:
         customs_broker_block=s.customs_broker_block,
         fsc_note=s.fsc_note,
         usa_tariff_note=s.usa_tariff_note,
-        usa_tariff_effective_until=s.usa_tariff_effective_until,
         company_from_address=s.company_from_address,
         payment_terms=s.payment_terms,
         confirm_with=s.confirm_with,
