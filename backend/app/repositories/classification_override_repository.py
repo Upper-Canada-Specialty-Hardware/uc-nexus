@@ -13,8 +13,12 @@ Two rules decide whether a change may happen, both from the import step (#734):
 - By Others is not UC Hardware's to order or ship. So a product may not BECOME By Others while any of
   its schedule rows is on a PO, or while a pending shipping request asks for it.
 
-Shop hardware can still ship out directly, so Site to Shop and By Others back into scope are always
-allowed. Every change is logged in hardware_classification_changes.
+Shop hardware can still ship out directly, so Site to Shop and By Others back into scope are allowed
+while nothing has happened to the hardware yet. Every change is logged in hardware_classification_changes.
+
+#977: once any of a product's hardware has gone somewhere under its classification - to the shop on a
+completed shop assembly pull, or out on a shipment that was not cancelled - the classification is part
+of that record and locks. Any change to the product is refused, naming where the hardware went.
 """
 
 import uuid
@@ -30,6 +34,7 @@ from app.models.enums import (
     HardwareClassificationChoice,
     HardwareItemState,
     PullRequestStatus,
+    ShipmentStatus,
     ShippingOutRequestStatus,
     ShopAssemblyBatchStatus,
     ShopAssemblyOpeningStatus,
@@ -39,6 +44,7 @@ from app.models.hardware import HardwareItem
 from app.models.hardware_classification_change import HardwareClassificationChange
 from app.models.project_excluded_item import ProjectExcludedItem
 from app.models.pull_request import PullRequest
+from app.models.shipping import PackingSlip, PackingSlipItem
 from app.models.shipping_out_request import ShippingOutRequest, ShippingOutRequestItem
 from app.models.shop_assembly import (
     ShopAssemblyBatch,
@@ -172,6 +178,39 @@ def _live_shop_holds(session: Session, project_id: uuid.UUID) -> dict[Product, s
     return holds
 
 
+def _already_gone(session: Session, project_id: uuid.UUID) -> dict[Product, set[str]]:
+    """#977: products whose hardware already went somewhere under its classification, with where -
+    "went to the shop on <batch>" for a completed shop assembly pull, "shipped on <slip>" for a line on
+    a shipment that was not cancelled. Either locks the product's classification."""
+    gone: dict[Product, set[str]] = defaultdict(set)
+    to_shop = session.execute(
+        select(
+            ShopAssemblyBatchItem.hardware_category, ShopAssemblyBatchItem.product_code, ShopAssemblyBatch.batch_number
+        )
+        .join(ShopAssemblyBatch, ShopAssemblyBatchItem.shop_assembly_batch_id == ShopAssemblyBatch.id)
+        .join(ShopAssemblyRequest, ShopAssemblyBatch.shop_assembly_request_id == ShopAssemblyRequest.id)
+        .join(PullRequest, ShopAssemblyBatch.pull_request_id == PullRequest.id)
+        .where(
+            ShopAssemblyRequest.project_id == project_id,
+            PullRequest.status == PullRequestStatus.COMPLETED,
+        )
+    )
+    for category, code, number in to_shop:
+        gone[(category, code)].add(f"went to the shop on {number}")
+    shipped = session.execute(
+        select(PackingSlipItem.hardware_category, PackingSlipItem.product_code, PackingSlip.packing_slip_number)
+        .join(PackingSlip, PackingSlipItem.packing_slip_id == PackingSlip.id)
+        .where(
+            PackingSlip.project_id == project_id,
+            PackingSlip.status != ShipmentStatus.CANCELLED,
+            PackingSlipItem.is_manual.is_(False),
+        )
+    )
+    for category, code, number in shipped:
+        gone[(category, code)].add(f"shipped on {number}")
+    return gone
+
+
 def _on_po(session: Session, project_id: uuid.UUID) -> set[Product]:
     return {
         (category, code)
@@ -232,6 +271,7 @@ def set_product_classifications(
     shop_holds = _live_shop_holds(session, project_id)
     on_po = _on_po(session, project_id)
     shipping_holds = _pending_shipping(session, project_id)
+    already_gone = _already_gone(session, project_id)
 
     blocked: list[str] = []
     todo: list[tuple[Product, HardwareClassificationChoice, HardwareClassificationChoice]] = []
@@ -243,6 +283,8 @@ def set_product_classifications(
         if was == to:
             continue
         reasons: list[str] = []
+        if already_gone.get(product):
+            reasons.append("; ".join(sorted(already_gone[product])))
         leaving_shop = (
             product in shop_rows
             and was != HardwareClassificationChoice.BY_OTHERS

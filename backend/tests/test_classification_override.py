@@ -212,14 +212,74 @@ def test_setting_the_value_a_product_already_has_writes_nothing(db_session):
     )
 
 
-def test_a_finished_shop_pull_does_not_hold_the_product(db_session):
+def _shipment(session, project, code, status):
+    from datetime import datetime
+
+    from app.models.shipping import PackingSlip, PackingSlipItem
+
+    slip = PackingSlip(
+        id=uuid.uuid4(),
+        packing_slip_number=f"PS-{uuid.uuid4().hex[:6]}",
+        project_id=project.id,
+        shipped_by="shipper",
+        shipped_at=datetime.utcnow(),
+        status=status,
+    )
+    session.add(slip)
+    session.flush()
+    session.add(
+        PackingSlipItem(
+            id=uuid.uuid4(),
+            packing_slip_id=slip.id,
+            opening_number="A01",
+            product_code=code,
+            hardware_category=CAT,
+            quantity=1,
+        )
+    )
+    session.flush()
+    return slip
+
+
+def test_hardware_that_went_to_the_shop_locks_the_classification(db_session):
+    """#977: a completed shop pull is history - the product's classification can no longer change."""
     project = _project(db_session)
     _item(db_session, project, _opening(db_session, project), "HG-1", cls=Classification.SHOP_HARDWARE)
-    _batch(db_session, project, "HG-1", PullRequestStatus.COMPLETED)
+    batch = _batch(db_session, project, "HG-1", PullRequestStatus.COMPLETED)
 
-    repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.UCH_SITE)], changed_by="Greg")
+    for to in (C.UCH_SITE, C.BY_OTHERS):
+        with pytest.raises(ConflictError) as err:
+            repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", to)], changed_by="Greg")
+        assert f"went to the shop on {batch.batch_number}" in err.value.message
+    assert _choices(db_session, project)["HG-1"] == C.UCH_SHOP
 
+
+def test_hardware_that_shipped_locks_the_classification(db_session):
+    """#977: hardware out on a shipment was shipped as what it is, so that sticks too."""
+    from app.models.enums import ShipmentStatus
+
+    project = _project(db_session)
+    _item(db_session, project, _opening(db_session, project), "HG-1", cls=Classification.SITE_HARDWARE)
+    slip = _shipment(db_session, project, "HG-1", ShipmentStatus.DELIVERED)
+
+    with pytest.raises(ConflictError) as err:
+        repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.UCH_SHOP)], changed_by="Greg")
+
+    assert f"shipped on {slip.packing_slip_number}" in err.value.message
     assert _choices(db_session, project)["HG-1"] == C.UCH_SITE
+
+
+def test_a_cancelled_shipment_does_not_lock_the_classification(db_session):
+    """A cancelled shipment never left (#973), so nothing went anywhere under the classification."""
+    from app.models.enums import ShipmentStatus
+
+    project = _project(db_session)
+    _item(db_session, project, _opening(db_session, project), "HG-1", cls=Classification.SITE_HARDWARE)
+    _shipment(db_session, project, "HG-1", ShipmentStatus.CANCELLED)
+
+    repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.UCH_SHOP)], changed_by="Greg")
+
+    assert _choices(db_session, project)["HG-1"] == C.UCH_SHOP
 
 
 # --- refusals -----------------------------------------------------------------------------------
