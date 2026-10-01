@@ -197,6 +197,22 @@ describe('LocationActionDialog', () => {
     fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'damaged' } });
     expect(screen.getByText(/cannot go below 0/)).toBeInTheDocument();
     expect(confirmButton()).toBeDisabled();
+    // #981: and says so where Confirm is decided, in the row's own numbers.
+    expect(screen.getByTestId('adjust-blocked-reason')).toHaveTextContent(
+      'Only 10 on this row - the most you can take off is 10.',
+    );
+  });
+
+  it('says what a disabled adjust Confirm is waiting for (#981)', () => {
+    renderDialog({ mode: 'adjust' });
+    const why = () => screen.getByTestId('adjust-blocked-reason');
+
+    expect(why()).toHaveTextContent('Enter how many to add (+) or take off (-).');
+    fireEvent.change(screen.getByLabelText('Adjustment (+/-)'), { target: { value: '-3' } });
+    expect(why()).toHaveTextContent('Give a reason for the adjustment.');
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'damaged' } });
+    expect(screen.queryByTestId('adjust-blocked-reason')).not.toBeInTheDocument();
+    expect(confirmButton()).toBeEnabled();
   });
 
   it('adjust fires ADJUST_INVENTORY_QUANTITY with the delta and reason', async () => {

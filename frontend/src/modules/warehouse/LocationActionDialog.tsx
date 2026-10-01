@@ -169,6 +169,19 @@ export default function LocationActionDialog({
     return true;
   }, [mode, isDefinedPick, adjustmentNum, newQuantity, reason, single]);
 
+  // #981: why Confirm is off on an adjust, whichever check is blocking it, so a dead button always
+  // says what it is waiting for.
+  const adjustBlockedReason = (() => {
+    if (mode !== 'adjust' || !single) return null;
+    if (isNaN(adjustmentNum) || adjustmentNum === 0) return 'Enter how many to add (+) or take off (-).';
+    if (newQuantity < 0) {
+      return `Only ${single.quantity} on this row - the most you can take off is ${single.quantity}.`;
+    }
+    if (!reason.trim()) return 'Give a reason for the adjustment.';
+    if (reason.length > REASON_MAX_LENGTH) return `Keep the reason to ${REASON_MAX_LENGTH} characters.`;
+    return null;
+  })();
+
   const title = useMemo(() => {
     const noun = targets.length > 1 ? `${targets.length} items` : 'item';
     if (mode === 'move') return `Move ${noun}`;
@@ -325,7 +338,7 @@ export default function LocationActionDialog({
             helperText={
               !isNaN(adjustmentNum)
                 ? newQuantity < 0
-                  ? `New qty: ${newQuantity} — cannot go below 0`
+                  ? `Only ${single.quantity} on this row - cannot go below 0`
                   : `New qty: ${newQuantity}`
                 : 'Enter a positive or negative number'
             }
@@ -350,6 +363,11 @@ export default function LocationActionDialog({
           />
           {reservation != null && resultingSound != null && (
             <ReservationNotice reserved={reservation.reserved} resulting={resultingSound} />
+          )}
+          {adjustBlockedReason && (
+            <Typography variant="body2" color="text.secondary" data-testid="adjust-blocked-reason">
+              {adjustBlockedReason}
+            </Typography>
           )}
         </Stack>
       )}
