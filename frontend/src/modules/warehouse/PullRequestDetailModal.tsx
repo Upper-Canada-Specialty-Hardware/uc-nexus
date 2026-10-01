@@ -416,7 +416,10 @@ export default function PullRequestDetailModal({
               This Pull Request was cancelled at {formatDateTime(pr.cancelledAt)}
               {pr.cancelledBy ? ` by ${pr.cancelledBy}` : ''}
               {pr.cancellationReason ? `: ${pr.cancellationReason}` : '.'}
-              {' '}Its hardware was returned to inventory and the source request went back to Pending.
+              {' '}Its hardware was returned to inventory and
+              {pr.source === 'SHOP_ASSEMBLY'
+                ? " the batch's openings went back to Pending on its shop assembly request, to be batched again."
+                : ' the source request went back to Pending.'}
             </Alert>
           </Box>
         )}
@@ -519,8 +522,11 @@ export default function PullRequestDetailModal({
         }
       >
         <Alert severity="warning" sx={{ mb: 2 }}>
-          Every unit this pull took goes back to project inventory on the rows it came off, and the
-          source request that raised it returns to Pending for re-acceptance.
+          Every unit this pull took goes back to project inventory on the rows it came off, and{' '}
+          {/* #962: a shop assembly batch is never accepted - its openings are batched again. */}
+          {pr.source === 'SHOP_ASSEMBLY'
+            ? "the batch's openings go back to Pending on the shop assembly request it came from, to be batched again."
+            : 'the source request that raised it returns to Pending for re-acceptance.'}
         </Alert>
         {cancelBlockedMessage && (
           <Alert severity="error" sx={{ mb: 2 }} data-testid="cancel-blocked">

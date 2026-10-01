@@ -154,11 +154,23 @@ it('states what cancelling will do before it happens', async () => {
   fireEvent.click(await screen.findByRole('button', { name: 'Cancel Pull' }));
 
   expect(await screen.findByText(/Cancel PR-SA-0001/)).toBeInTheDocument();
+  // #962: a shop assembly batch is never accepted; its openings are batched again.
   expect(
-    screen.getByText(/goes back to project inventory.*returns to Pending for re-acceptance/s),
+    screen.getByText(/goes back to project inventory.*openings go back to Pending on the shop assembly request it came from, to be batched again/s),
   ).toBeInTheDocument();
+  expect(screen.queryByText(/re-acceptance/)).not.toBeInTheDocument();
   // The door-management blocker copy is gone since #554 - there is no assembly-started refusal.
   expect(screen.queryByText(/assembly has already started/)).not.toBeInTheDocument();
+});
+
+it('words a shipping pull cancel as a return for re-acceptance (#962)', async () => {
+  renderModal([], pullRequest({ source: 'SHIPPING_OUT' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel Pull' }));
+
+  expect(
+    await screen.findByText(/goes back to project inventory.*returns to Pending for re-acceptance/s),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/batched again/)).not.toBeInTheDocument();
 });
 
 it('reports what came back and that the claim was re-created', async () => {
@@ -242,6 +254,6 @@ it('explains a cancelled pull after the fact', async () => {
   const alert = await screen.findByText(/This Pull Request was cancelled/);
   expect(alert).toHaveTextContent('by Picker');
   expect(alert).toHaveTextContent('raised against the wrong project');
-  expect(alert).toHaveTextContent('source request went back to Pending');
+  expect(alert).toHaveTextContent("the batch's openings went back to Pending on its shop assembly request, to be batched again");
   expect(screen.queryByRole('button', { name: 'Cancel Pull' })).not.toBeInTheDocument();
 });
