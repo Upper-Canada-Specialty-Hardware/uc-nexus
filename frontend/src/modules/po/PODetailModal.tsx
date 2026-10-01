@@ -299,8 +299,10 @@ export default function PODetailModal({
         preferredDeliveryDate: isDraft ? preferredDeliveryDate || null : null,
         expectedDeliveryDate: !isDraft ? expectedDeliveryDate || null : null,
         poNumber: poNumber || null,
-        vendorQuoteNumber: vendorQuoteNumber || null,
-        notes: notes || null,
+        // #969: sent as typed. An emptied field is "" and clears it - which is how removing the quote #
+        // takes a PO back from Vendor Confirmed. Null would mean "leave alone" and never clear.
+        vendorQuoteNumber,
+        notes,
         // Issue #156: '' = not entered (null clears); 0 is a valid entered value.
         shippingCost: shippingCost.trim() === '' ? null : parseFloat(shippingCost),
         tariffAmount: tariffAmount.trim() === '' ? null : parseFloat(tariffAmount),

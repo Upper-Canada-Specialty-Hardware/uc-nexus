@@ -251,7 +251,7 @@ describe('PODetailModal', () => {
       expectedDeliveryDate: null,
       poNumber: null,
       vendorQuoteNumber: 'Q-200',
-      notes: null,
+      notes: '',
       shippingCost: 0,
       tariffAmount: null,
       // #832: a PO on a job has no Stock / Overhead choice to send.
@@ -287,11 +287,33 @@ describe('PODetailModal', () => {
       expectedDeliveryDate: '2026-10-01',
       poNumber: 'PO-1001',
       vendorQuoteNumber: 'Q-100',
-      notes: null,
+      notes: '',
       shippingCost: 12.5,
       tariffAmount: null,
       poolKind: null,
     });
+  });
+
+  it('clears an emptied vendor quote # rather than leaving it alone (#969)', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const mocks: MockedResponse[] = [
+      {
+        request: { query: UPDATE_PO, variables: () => true },
+        result: (vars) => {
+          calls.push(vars as Record<string, unknown>);
+          return { data: updatePoData(registeredPo) };
+        },
+      },
+    ];
+    renderModal(registeredPo, mocks);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByLabelText('Vendor Quote Number'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await screen.findByText('PO updated successfully');
+    // "" clears on the server; null would mean "leave alone".
+    expect(calls[0]).toMatchObject({ vendorQuoteNumber: '' });
   });
 
   it('fires the order-as and unit-cost mutations only for changed draft line items on save', async () => {
@@ -356,7 +378,7 @@ describe('PODetailModal', () => {
         expectedDeliveryDate: null,
         poNumber: null,
         vendorQuoteNumber: 'Q-100',
-        notes: null,
+        notes: '',
         shippingCost: 12.5,
         tariffAmount: 3,
         poolKind: null,
