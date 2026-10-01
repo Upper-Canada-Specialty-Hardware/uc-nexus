@@ -13,12 +13,14 @@ import {
 } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
+import LocationAutocomplete from '../../../components/LocationAutocomplete';
 import { useToast } from '../../../components/Toast';
 import { DESTOCK_INVENTORY } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import { microLabelSx, monoSx } from '../../../theme';
 import { ReservationNotice, useComboReservation } from '../reservationNotice';
 import DestockCostChoice, { type DestockCost } from './DestockCostChoice';
+import { useDefinedLocationPick } from '../useDefinedLocationPick';
 
 export interface DestockSource {
   id: string;
@@ -27,6 +29,7 @@ export interface DestockSource {
   productCode: string;
   quantity: number;
   deficientQuantity?: number;
+  warehouseId?: string | null;
   aisle: string | null;
   row: string | null;
   bay: string | null;
@@ -74,15 +77,21 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
   // that can leave is quantity - deficient.
   const maxQty =
     source === 'DEFICIENT_SWAP' ? deficient : inventoryLocation.quantity - deficient;
-  // The server rejects a partial target override, so all three of aisle/row/bay are required
-  // together once the override is on.
-  const overrideComplete = !!aisle.trim() && !!row.trim() && !!bay.trim();
+  // #1046: an override target is a strict pick from the row's warehouse - the server refuses a
+  // partial triple and any bin not on the Locations tab. Skipped until the override is opened.
+  const { aisleOptions, rowOptions, bayOptions, isDefinedPick } = useDefinedLocationPick(
+    [inventoryLocation.warehouseId],
+    aisle,
+    row,
+    bay,
+    !overrideLoc,
+  );
   const valid =
     Number.isInteger(q) &&
     q >= 1 &&
     q <= maxQty &&
     destockCost !== null &&
-    (!overrideLoc || overrideComplete);
+    (!overrideLoc || isDefinedPick);
 
   // A sound-unit destock shrinks the combo's sound on-hand (a DEFICIENT_SWAP nets to zero: it pulls
   // only already-condemned units). Surface what active requests have reserved, and warn when the
@@ -187,13 +196,13 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
         {overrideLoc && (
           <Stack spacing={1}>
             <Stack direction="row" spacing={2}>
-              <TextField label="Aisle" value={aisle} onChange={(e) => setAisle(e.target.value)} required />
-              <TextField label="Row" value={row} onChange={(e) => setRow(e.target.value)} required />
-              <TextField label="Bay" value={bay} onChange={(e) => setBay(e.target.value)} required />
+              <LocationAutocomplete label="Aisle" value={aisle} onChange={setAisle} options={aisleOptions} freeSolo={false} />
+              <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} />
+              <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} />
             </Stack>
-            {!overrideComplete && (
+            {!isDefinedPick && (
               <Typography variant="caption" color="text.secondary">
-                Enter all three of aisle, row and bay to override the target location.
+                Pick an aisle, row and bay defined on the Locations tab to override the target location.
               </Typography>
             )}
           </Stack>

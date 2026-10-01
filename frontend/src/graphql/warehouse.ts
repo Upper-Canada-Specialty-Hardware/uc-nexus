@@ -268,16 +268,6 @@ export const GET_LOCATION_AUDIT_HISTORY = gql`
   }
 `;
 
-export const GET_LOCATION_DISTINCT_VALUES = gql`
-  query GetLocationDistinctValues {
-    locationDistinctValues {
-      aisles
-      rows
-      bays
-    }
-  }
-`;
-
 export const GET_BACK_ORDERED_ITEMS = gql`
   query GetBackOrderedItems($projectId: ID) {
     backOrderedItems(projectId: $projectId) {
