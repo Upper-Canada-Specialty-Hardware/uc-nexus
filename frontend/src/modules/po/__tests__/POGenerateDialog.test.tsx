@@ -94,7 +94,6 @@ function settingsMock(): MockedResponse {
           customsBrokerBlock: 'Broker block',
           fscNote: 'FSC note',
           usaTariffNote: 'Tariff note',
-          usaTariffEffectiveUntil: null,
           companyFromAddress: '1 Main St',
           paymentTerms: 'Net 30',
           confirmWith: 'Purchasing',

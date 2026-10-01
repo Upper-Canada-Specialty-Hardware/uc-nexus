@@ -41,7 +41,6 @@ interface PODocumentSettings {
   customsBrokerBlock: string;
   fscNote: string;
   usaTariffNote: string;
-  usaTariffEffectiveUntil: string | null;
   companyFromAddress: string;
   paymentTerms: string;
   confirmWith: string;
@@ -330,9 +329,8 @@ function GenerateForm({
     }
   }, [persist, buildDocProps, uploadDocument, po, onRefetch, showToast, onClose]);
 
-  const tariffHint = settings.usaTariffEffectiveUntil
-    ? `Health-care tariff SA-code note (effective until ${formatDocDate(settings.usaTariffEffectiveUntil)})`
-    : 'USA health-care tariff SA-code note';
+  // #980: a permanent disclaimer the buyer may add to any PO - it has no effective-until date.
+  const tariffHint = 'USA health-care tariff SA-code note';
 
   // #858: a field GP fills shows it is waiting on GP while the read is in flight - unless the buyer
   // saved a value for it, which GP never replaces. The field stays editable throughout.

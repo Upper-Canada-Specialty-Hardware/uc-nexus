@@ -1133,7 +1133,6 @@ class POMutations:
                 "customs_broker_block",
                 "fsc_note",
                 "usa_tariff_note",
-                "usa_tariff_effective_until",
                 "company_from_address",
                 "payment_terms",
                 "confirm_with",
