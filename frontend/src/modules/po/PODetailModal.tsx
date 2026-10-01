@@ -32,7 +32,8 @@ import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { useToast } from '../../components/Toast';
 import GpCompanyTag from '../../components/GpCompanyTag';
 import { UPDATE_PO, UPDATE_PO_NOTES, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM_UNIT_COST, UPLOAD_PO_DOCUMENT, DELETE_PO_DOCUMENT, EMAIL_PO_TO_VENDOR } from '../../graphql/po';
-import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
+import { GET_PRIOR_ORDER_AS_VALUES, GET_PROJECTS } from '../../graphql/shared';
+import type { Project } from '../../types/project';
 import type { PurchaseOrder } from './index';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import NexusRegistrationPanel from './NexusRegistrationPanel';
@@ -470,6 +471,14 @@ export default function PODetailModal({
     skip: !canEditItems || distinctProductCodes.length === 0,
   });
 
+  // #960: the job a project PO is for, by name and number. The same projects read every picker
+  // makes, so it is normally already cached; skipped on a PO with no project.
+  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !po.projectId });
+  const project = po.projectId ? projectsData?.projects.find((p) => p.id === po.projectId) : undefined;
+  const projectLabel = project
+    ? `${project.description || project.projectId} #${project.projectId}`
+    : null;
+
   const priorMap = useMemo(() => {
     const map = new Map<string, string[]>();
     for (const entry of priorData?.priorOrderAsValues ?? []) {
@@ -815,9 +824,9 @@ export default function PODetailModal({
                   dialog, but the PO the API returns does not carry them back yet, so there is
                   nothing to read: rather than invent fields the query has no answer for, this is
                   the spot they go in when it does. */}
-              {/* A PO with a project shows it in the list; here only its absence is worth a line -
-                  the modal has the project's id, not its human number. */}
-              {!po.projectId && <InfoField label="Project" value="No Project" />}
+              {/* #960: the job is the first thing a buyer checks, and the modal opens from places
+                  other than the PO table, so a project PO names it - name and job number. */}
+              <InfoField label="Project" value={po.projectId ? projectLabel : 'No Project'} />
               {/* #832: where a PO with no project receives into. */}
               {!po.projectId && (
                 <InfoField label="Stock or Overhead" value={POOL_KIND_LABEL[po.poolKind ?? 'STOCK']} />
