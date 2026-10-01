@@ -1,10 +1,15 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, configure } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import AllocateStockModal from '../stock/AllocateStockModal';
 import { ToastProvider } from '../../../components/Toast';
 import { GET_PROJECTS } from '../../../graphql/shared';
 import { GET_WAREHOUSE_LOCATIONS } from '../../../graphql/warehouse';
 import type { StockItem } from '../StockPoolView';
+
+// A MUI Dialog with three Autocompletes is slow to render under the full parallel suite, so lift the
+// per-test budget and the async-util default (mirrors DestockInventoryModal).
+vi.setConfig({ testTimeout: 60_000 });
+configure({ asyncUtilTimeout: 15_000 });
 
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
