@@ -17,7 +17,7 @@ from app.models.stock_item import StockItem as StockItemModel
 from app.models.warehouse_location import WarehouseLocation as WarehouseLocationModel
 from app.repositories import tenancy
 
-from .audit import _log_audit_event
+from .audit import _log_audit_event, audit_scope
 
 
 def normalize_location_value(value: str | None) -> str | None:
@@ -352,10 +352,8 @@ def get_location_audit_history(
         .order_by(InventoryAuditLog.created_at.desc())
     )
     if company is not None:
-        # An audit row carries the project it happened on. A row with no project (a stock movement)
-        # drops out for a scoped caller rather than being shown to everyone: there is nothing on the
-        # row to attribute it with, and showing it would be a read of another company's shelf.
-        stmt = stmt.where(InventoryAuditLog.project_id.in_(tenancy.project_ids_for(company)))
+        # Job rows scope through their project, stock rows through the stock item's warehouse (#1045).
+        stmt = stmt.where(audit_scope(company))
     return list(session.scalars(stmt.limit(limit)).all())
 
 
