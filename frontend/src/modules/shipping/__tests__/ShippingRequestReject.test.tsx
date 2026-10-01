@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, configure } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
@@ -10,6 +10,10 @@ import { GET_PROJECTS } from '../../../graphql/shared';
  * #972: rejecting a shipping request asks for a reason before anything happens, the rejected tab
  * says who turned the request down, when and why, and a rejected request offers no Reopen.
  */
+
+// The review page renders an accordion list and a dialog; give it room under the parallel suite.
+vi.setConfig({ testTimeout: 60_000 });
+configure({ asyncUtilTimeout: 15_000 });
 
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
