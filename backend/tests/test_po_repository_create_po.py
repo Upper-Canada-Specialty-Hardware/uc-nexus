@@ -292,6 +292,39 @@ def test_update_po_preferred_date_only_on_draft(db_session):
         po_repository.update_po(db_session, po.id, preferred_delivery_date=date_cls(2026, 8, 2))
 
 
+def test_an_emptied_quote_number_clears_it_and_undoes_vendor_confirmed(db_session):
+    """#969: the edit form sends an emptied quote # as "", which clears it; null leaves it alone. With
+    the quote gone the PO is no longer vendor confirmed and drops back to GP registered."""
+    from app.models.enums import PODocumentType
+    from app.models.purchase_order import PODocument
+
+    po = po_repository.create_po(db_session, line_items=[_line_item("ML2010")], company="TUBC")
+    po.status = POStatus.GP_REGISTERED
+    db_session.add(
+        PODocument(
+            id=uuid.uuid4(),
+            po_id=po.id,
+            file_name="ack.pdf",
+            content_type="application/pdf",
+            file_size=12,
+            document_type=PODocumentType.VENDOR_ACKNOWLEDGEMENT,
+            s3_key=f"po-documents/{po.id}/ack.pdf",
+        )
+    )
+    db_session.flush()
+    db_session.refresh(po)
+
+    po_repository.update_po(db_session, po.id, vendor_quote_number="Q-950", notes="call first")
+    assert po.status == POStatus.VENDOR_CONFIRMED
+
+    po_repository.update_po(db_session, po.id, vendor_quote_number=None, notes=None)
+    assert (po.vendor_quote_number, po.notes, po.status) == ("Q-950", "call first", POStatus.VENDOR_CONFIRMED)
+
+    po_repository.update_po(db_session, po.id, vendor_quote_number="", notes="")
+    assert (po.vendor_quote_number, po.notes) == (None, None)
+    assert po.status == POStatus.GP_REGISTERED
+
+
 # --- issue #156: optional order-time shipping cost + tariff -------------------------------------
 
 
