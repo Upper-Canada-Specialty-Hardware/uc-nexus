@@ -327,6 +327,24 @@ def test_a_manager_may_correct_a_pending_draft_and_the_author_keeps_the_receive(
     assert draft.created_by_name == AUTHOR_NAME, "correcting a count must not reassign who received it"
 
 
+def test_editing_a_draft_stamps_when_the_count_last_changed(db_session):
+    """#982: an edit rewrites only the line rows, so the draft's own updated_at is stamped by hand -
+    the review reads it as when the count last changed."""
+    from datetime import datetime, timedelta
+
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li, 3)
+    draft.updated_at = datetime.utcnow() - timedelta(hours=2)
+    db_session.flush()
+    before = draft.updated_at
+
+    warehouse_repository.update_receive_draft(db_session, draft.id, _lines(li, 5), AUTHOR, actor_is_manager=False)
+    db_session.refresh(draft)
+
+    assert draft.updated_at > before + timedelta(hours=1)
+
+
 def test_a_stranger_cannot_edit_somebody_elses_draft(db_session):
     project = _make_project(db_session)
     po, li = _make_po(db_session, project.id)

@@ -214,6 +214,18 @@ async function approveViaConfirm() {
 vi.setConfig({ testTimeout: 60_000 });
 
 describe('ReceiveDraftReviewModal', () => {
+  it('says when a resubmitted count last changed (#982)', async () => {
+    await openModal([], draft({ updatedAt: '2026-08-03T15:30:00Z' }));
+    expect(screen.getByText(/Counted by/)).toHaveTextContent(
+      `last changed ${new Date('2026-08-03T15:30:00Z').toLocaleString()}`,
+    );
+  });
+
+  it('says nothing about a change on a count nobody touched since (#982)', async () => {
+    await openModal();
+    expect(screen.queryByText(/last changed/)).not.toBeInTheDocument();
+  });
+
   it('prefills the counted quantities and shows no rack rows to review', async () => {
     // #501: the reviewer is checking a count against a packing slip, not a put-away. Even a draft
     // that still carries rack rows from before the change renders none - they are not the

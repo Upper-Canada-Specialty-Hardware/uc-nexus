@@ -376,6 +376,10 @@ def update_receive_draft(
     if notes is not None:
         draft.notes = _clean_notes(notes)
     _write_lines(session, draft, po, line_items_input)
+    # #982: a rewrite that only touches the line rows leaves the draft row as it was, so its own
+    # updated_at would keep the first count's time; the review reads it as when the count last changed.
+    draft.updated_at = datetime.utcnow()
+    session.flush()
     session.refresh(draft)
     return draft
 
