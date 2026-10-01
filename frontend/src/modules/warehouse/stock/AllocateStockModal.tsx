@@ -6,25 +6,17 @@ import {
   TextField,
   Alert,
   Typography,
-  FormControl,
-  InputLabel,
-  MenuItem,
-  Select,
 } from '@mui/material';
 import { useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
+import ProjectPicker from '../../../components/ProjectPicker';
 import { useToast } from '../../../components/Toast';
 import { GET_PROJECTS } from '../../../graphql/shared';
 import { ALLOCATE_STOCK_TO_PROJECT } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import { microLabelSx, monoSx } from '../../../theme';
+import type { Project } from '../../../types/project';
 import type { StockItem } from '../StockPoolView';
-
-interface Project {
-  id: string;
-  projectId: string;
-  description: string | null;
-}
 
 interface Props {
   item: StockItem;
@@ -43,7 +35,9 @@ export default function AllocateStockModal({
   prefillCategory,
   prefillProductCode,
 }: Props) {
-  const [projectId, setProjectId] = useState(prefillProjectId ?? '');
+  // The picked project, or null. A prefill is an id, resolved against the same projects read the
+  // picker makes until the user picks for themselves.
+  const [picked, setPicked] = useState<Project | null | undefined>(undefined);
   const [category, setCategory] = useState(prefillCategory ?? item.hardwareCategory);
   const [productCode, setProductCode] = useState(prefillProductCode ?? item.productCode);
   const [quantity, setQuantity] = useState<string>('1');
@@ -53,6 +47,11 @@ export default function AllocateStockModal({
   const { showToast } = useToast();
 
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
+  const project =
+    picked !== undefined
+      ? picked
+      : (projectsData?.projects.find((p) => p.id === prefillProjectId) ?? null);
+  const projectId = project?.id ?? '';
   const [mutate, { loading, error }] = useMutation(ALLOCATE_STOCK_TO_PROJECT, {
     refetchQueries: WAREHOUSE_REFETCH_QUERIES,
     awaitRefetchQueries: true,
@@ -114,20 +113,9 @@ export default function AllocateStockModal({
             {item.hardwareCategory} / {item.productCode}
           </Typography>
         </Box>
-        <FormControl size="small" required>
-          <InputLabel>Target project</InputLabel>
-          <Select
-            label="Target project"
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-          >
-            {(projectsData?.projects ?? []).map((p) => (
-              <MenuItem key={p.id} value={p.id}>
-                {p.description || p.projectId}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
+        {/* #959: the shared picker, so the job number shows beside the name and either one searches -
+            near-duplicate job names made the bare name list easy to allocate onto the wrong job. */}
+        <ProjectPicker label="Target project" value={project} onChange={setPicked} />
         <Stack direction="row" spacing={2}>
           <TextField
             label="Target hardware category"
