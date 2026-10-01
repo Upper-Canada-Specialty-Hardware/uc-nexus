@@ -263,8 +263,8 @@ export default function StockPoolView() {
       type: 'number',
     },
     {
-      // Off-PO cost (the SharePoint migration writes it). PO-received pool stock carries none and
-      // reads as a dash rather than a lying zero.
+      // The row's own price. A cost nobody knows (null) reads as a dash rather than a lying zero;
+      // hardware left behind on a job is a real $0 and reads $0.00 (#957).
       field: 'unitCost',
       headerName: 'Unit Cost',
       width: 110,

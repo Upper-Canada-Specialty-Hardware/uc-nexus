@@ -216,8 +216,8 @@ const NOT_COUNTED: Array<[string, string]> = [
     'A shop-assembly pull takes it out of inventory; it is not tracked past that point.',
   ],
   [
-    'Hardware with no recorded cost',
-    'It is counted as units but contributes $0 - typically migrated stock whose cost was never captured.',
+    'Hardware at $0 or with no recorded cost',
+    'It is counted as units but contributes $0 - hardware left behind on a job, which goes into the pool at $0 by design, and migrated stock whose cost was never captured.',
   ],
 ];
 

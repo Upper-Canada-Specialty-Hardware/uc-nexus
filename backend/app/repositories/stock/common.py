@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Numeric, func, literal, select
+from sqlalchemy import Numeric, literal, select
 from sqlalchemy.orm import Session
 
 from app.errors import ValidationError
@@ -56,20 +56,21 @@ def _normalize_optional_location_fields(
     return (a, b, c)
 
 
-def pool_unit_cost(unit_cost: Decimal | float | int | None) -> Decimal:
-    """A price as the pool keys on it: null is $0, and every value is a Decimal at the
-    column's own scale (Numeric(19, 5)), so a price compares equal to the one the row stored."""
+def pool_unit_cost(unit_cost: Decimal | float | int | None) -> Decimal | None:
+    """A price as the pool keys on it: null stays null (a cost nobody knows), and every value is a
+    Decimal at the column's own scale (Numeric(19, 5)), so a price compares equal to the one the row
+    stored."""
     if unit_cost is None:
-        return Decimal("0")
+        return None
     return Decimal(str(unit_cost)).quantize(Decimal("0.00001"))
 
 
 def destock_unit_cost(session: Session, il: InventoryLocationModel, destock_cost: DestockCost | None) -> Decimal | None:
     """The price project units carry into the pool, as the person moving them chose (#942).
 
-    The choice is required and has no default: ZERO is hardware left behind on a job, worth $0 to the
-    pool; KEEP is the units' own effective price - their PO line's unit cost, else the row's own
-    unit_cost, else $0 (None).
+    The choice is required and has no default: ZERO is hardware left behind on a job, stored as a real
+    $0 so the pool reads $0.00 rather than "unknown" (#957); KEEP is the units' own effective price -
+    their PO line's unit cost, else the row's own unit_cost, else None (nobody knows).
     """
     if destock_cost is None:
         raise ValidationError(
@@ -77,7 +78,7 @@ def destock_unit_cost(session: Session, il: InventoryLocationModel, destock_cost
             field="destock_cost",
         )
     if destock_cost == DestockCost.ZERO:
-        return None
+        return Decimal("0")
     if il.po_line_item_id is not None:
         from app.models.purchase_order import POLineItem
 
@@ -103,8 +104,9 @@ def _find_stock_row(
 
     The kind is part of the key (#832): a stock row and an overhead row of the same product on the
     same shelf are two rows and never merge. So is the price (#942): a pool row holds one unit cost,
-    so units at different prices - priced and $0 above all - never stack into one row. Null and zero
-    both mean $0 and match each other. Location fields are normalized here so writes from any entry
+    so units at different prices - priced and $0 above all - never stack into one row. Null (a cost
+    nobody knows) and $0 (left behind on purpose) are two prices too (#957), so a $0 row never hides
+    inside an unknown one. Location fields are normalized here so writes from any entry
     path (destock, allocate, receive) match canonical form.
     """
     aisle = normalize_location_value(aisle)
@@ -116,8 +118,12 @@ def _find_stock_row(
         StockItem.hardware_category == hardware_category,
         StockItem.product_code == product_code,
         StockItem.kind == kind,
-        func.coalesce(StockItem.unit_cost, 0) == literal(pool_unit_cost(unit_cost), Numeric(19, 5)),
     )
+    price = pool_unit_cost(unit_cost)
+    if price is None:
+        stmt = stmt.where(StockItem.unit_cost.is_(None))
+    else:
+        stmt = stmt.where(StockItem.unit_cost == literal(price, Numeric(19, 5)))
     if aisle is None:
         stmt = stmt.where(StockItem.aisle.is_(None))
     else:
