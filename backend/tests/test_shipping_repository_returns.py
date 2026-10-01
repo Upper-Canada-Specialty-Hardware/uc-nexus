@@ -6,7 +6,7 @@ from datetime import datetime
 import pytest
 from sqlalchemy import select
 
-from app.errors import ValidationError
+from app.errors import InvalidStateTransitionError, ValidationError
 from app.models.enums import ReturnDisposition, ShipmentStatus
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
@@ -348,3 +348,42 @@ def test_returning_a_manual_line_is_refused(db_session):
             wh_id,
             [{"packing_slip_item_id": manual.id, "quantity": 1, "disposition": ReturnDisposition.RETURN_TO_PROJECT}],
         )
+
+
+# --- #973: a fully returned scheduled shipment is cancelled ----------------------------------------
+
+
+def _back(item, qty):
+    return {"packing_slip_item_id": item.id, "quantity": qty, "disposition": ReturnDisposition.RETURN_TO_PROJECT}
+
+
+def test_a_scheduled_shipment_returned_in_full_is_cancelled(db_session):
+    project = _make_project(db_session)
+    slip = _make_slip(db_session, project.id)
+    slip.status = ShipmentStatus.SCHEDULED
+    first = _make_loose_item(db_session, slip.id, qty=3, code="HG-1")
+    second = _make_loose_item(db_session, slip.id, qty=2, code="HG-2")
+    # A manual line never entered inventory, so it cannot be returned and does not hold the shipment open.
+    _make_manual_item(db_session, slip.id)
+    wh_id = _wh(db_session)
+
+    _return(db_session, slip.id, wh_id, [_back(first, 3), _back(second, 1)])
+    assert slip.status == ShipmentStatus.SCHEDULED  # one unit still out
+
+    _return(db_session, slip.id, wh_id, [_back(second, 1)])
+    assert slip.status == ShipmentStatus.CANCELLED
+
+    with pytest.raises(InvalidStateTransitionError):
+        shipping_repository.mark_shipment_picked_up(db_session, slip.id, "driver")
+
+
+def test_a_picked_up_shipment_returned_in_full_keeps_its_status(db_session):
+    """It really left, so it stays what it was; the returns say the hardware came back."""
+    project = _make_project(db_session)
+    slip = _make_slip(db_session, project.id)
+    slip.status = ShipmentStatus.PICKED_UP
+    item = _make_loose_item(db_session, slip.id, qty=2)
+
+    _return(db_session, slip.id, _wh(db_session), [_back(item, 2)])
+
+    assert slip.status == ShipmentStatus.PICKED_UP

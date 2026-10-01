@@ -184,11 +184,16 @@ class ShipmentStatus(str, enum.Enum):
 
     SCHEDULED is also the one editable state. Once the Delivery Request has been picked up, a driver
     is carrying a printed copy of it, and the stored record has to keep matching what they hold.
+
+    CANCELLED (#973) is a SCHEDULED shipment whose every returnable line came back before a truck
+    took it. The hardware is back on the shelf, so the shipment can no longer be edited, picked up or
+    printed. A picked-up or delivered shipment that comes back keeps its status: it really left.
     """
 
     SCHEDULED = "SCHEDULED"
     PICKED_UP = "PICKED_UP"
     DELIVERED = "DELIVERED"
+    CANCELLED = "CANCELLED"
 
 
 class ReservationSource(str, enum.Enum):
