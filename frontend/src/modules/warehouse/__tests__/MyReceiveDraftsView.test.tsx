@@ -70,6 +70,20 @@ describe('MyReceiveDraftsView', () => {
     expect(screen.queryByText(/Sent back/)).toBeNull();
   });
 
+  it('says when a resubmitted count last changed (#1047)', async () => {
+    renderView([], [draft({ updatedAt: '2026-08-03T15:30:00Z' })]);
+
+    expect(await screen.findByText(/4 units/, undefined, SLOW)).toHaveTextContent(
+      `last changed ${new Date('2026-08-03T15:30:00Z').toLocaleString()}`,
+    );
+  });
+
+  it('says nothing about a change on a count nobody touched since (#1047)', async () => {
+    renderView();
+
+    expect(await screen.findByText(/4 units/, undefined, SLOW)).not.toHaveTextContent(/last changed/);
+  });
+
   it('leads with a rejected draft and says who sent it back and why', async () => {
     renderView(
       [],

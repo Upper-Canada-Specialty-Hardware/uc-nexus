@@ -44,7 +44,7 @@ import {
   type PODetailLineItem,
   type PODetails,
 } from './receiveLines';
-import type { ReceiveDraft } from './receiveDraftTypes';
+import { type ReceiveDraft, draftLastChanged } from './receiveDraftTypes';
 import { monoSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
 
@@ -357,13 +357,7 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
     </>
   );
 
-  // While a draft waits for approval its updated_at is the last edit or resubmit; shown only when it is
-  // a real change after the first count, not the create itself.
-  const lastChangedMs = parseServerDate(draft.updatedAt).getTime();
-  const lastChanged =
-    draft.status === 'PENDING_APPROVAL' && lastChangedMs - parseServerDate(draft.createdAt).getTime() > 60_000
-      ? parseServerDate(draft.updatedAt).toLocaleString()
-      : null;
+  const lastChanged = draftLastChanged(draft)?.toLocaleString() ?? null;
 
   return (
     <>

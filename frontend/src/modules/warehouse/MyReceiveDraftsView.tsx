@@ -18,7 +18,7 @@ import { RECEIVE_DRAFT_REFETCH_QUERIES } from '../../graphql/refetch';
 import { microLabelSx, monoSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
 import ReceiveDraftEditModal from './ReceiveDraftEditModal';
-import type { ReceiveDraft } from './receiveDraftTypes';
+import { type ReceiveDraft, draftLastChanged } from './receiveDraftTypes';
 
 const DASH = '—';
 
@@ -38,6 +38,8 @@ function DraftCard({
   onDelete: () => void;
 }) {
   const rejected = draft.status === 'REJECTED';
+  // #1047: the same last-changed time the approver sees.
+  const lastChanged = draftLastChanged(draft);
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 2, mb: 1 }}>
@@ -51,6 +53,7 @@ function DraftCard({
       <Typography variant="body2" color="text.secondary">
         {draft.totalQuantity} {draft.totalQuantity === 1 ? 'unit' : 'units'} · submitted{' '}
         {formatDateTime(draft.createdAt)}
+        {lastChanged && ` · last changed ${lastChanged.toLocaleString()}`}
       </Typography>
       {rejected && draft.rejectionReason && (
         <Alert severity="error" sx={{ mt: 1.5 }}>
