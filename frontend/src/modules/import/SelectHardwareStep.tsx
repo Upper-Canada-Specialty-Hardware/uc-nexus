@@ -232,13 +232,14 @@ export default function SelectHardwareStep({
       {
         field: 'extendedCost',
         headerName: 'Ext. Cost',
-        description: 'Unit cost × total quantity',
+        description: 'Unit cost × order qty',
         width: 130,
         minWidth: 110,
         type: 'number',
-        // Derived, not stored on the row: unit cost is a product property and total quantity the
-        // schedule roll-up, so the product of the two is computed here rather than duplicated upstream.
-        valueGetter: (_value, row: HardwareProductRow) => row.unitCost * row.totalQuantity,
+        // Derived, not stored on the row: unit cost is a product property, and the quantity is what will
+        // be ordered - the Order Qty beside it, which defaults to the schedule total (#984).
+        valueGetter: (_value, row: HardwareProductRow) =>
+          row.unitCost * (orderQtyOverrides.get(row.id) ?? row.totalQuantity),
         valueFormatter: (value: number) => formatUsd(value),
       },
       { field: 'openingCount', headerName: 'Openings', width: 100, minWidth: 90, type: 'number' },
