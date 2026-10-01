@@ -15,13 +15,15 @@ import {
 } from '@mui/material';
 import { Search } from 'lucide-react';
 import { DataGrid, type GridColDef, type GridRowSelectionModel } from '@mui/x-data-grid';
-import { useMutation, useQuery } from '@apollo/client/react';
+import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import { useParams } from 'react-router-dom';
+import Modal from '../../components/Modal';
 import PageHeader from '../../components/PageHeader';
 import { useToast } from '../../components/Toast';
 import { GET_ADMIN_PROJECT_DETAIL } from '../../graphql/admin';
 import {
   GET_HARDWARE_CLASSIFICATION_CHANGES,
+  GET_HARDWARE_CLASSIFICATION_IMPACT,
   GET_PROJECT_HARDWARE_CLASSIFICATIONS,
   SET_HARDWARE_CLASSIFICATIONS,
 } from '../../graphql/classificationOverride';
@@ -34,10 +36,10 @@ import { useGridColumnFit } from '../../components/useGridColumnFit';
 /**
  * #735: correct a project's hardware classifications after import, one product at a time or in bulk.
  *
- * The three choices are the import's own (#734): UCH Shop, UCH Site, By Others. A change something
- * depends on is refused by the server with the reason - a product on a live shop assembly request
- * cannot leave shop, and one on a PO or a pending shipping request cannot become By Others - and a
- * bulk change is all or nothing. Every change lands in the log at the foot of the page.
+ * The three choices are the import's own (#734): UCH Shop, UCH Site, By Others. #1050: before a change
+ * that touches anything is saved, the page shows what it does - what already went out (history, it
+ * stays as it went), what saving adjusts, what it leaves alone, and what blocks it - and the rules are
+ * spelled out at the top. A bulk change is all or nothing. Every change lands in the log at the foot.
  */
 
 type Choice = 'UCH_SHOP' | 'UCH_SITE' | 'BY_OTHERS' | 'UNCLASSIFIED' | 'MIXED';
@@ -58,7 +60,40 @@ interface ChangeRow {
   toChoice: Choice;
   changedBy: string;
   changedAt: string;
+  note: string | null;
 }
+
+interface ImpactRow {
+  hardwareCategory: string;
+  productCode: string;
+  fromChoice: Choice;
+  toChoice: Choice;
+  wentOut: string[];
+  adjusts: string[];
+  unaffected: string[];
+  blocks: string[];
+}
+
+interface PendingChange {
+  choice: Choice;
+  changes: { hardwareCategory: string; productCode: string; choice: Choice }[];
+  impact: ImpactRow[];
+}
+
+// #1050: how a change works, said once at the top so nobody has to learn it from a refusal.
+const RULES = [
+  'A change applies to what is still owed. Hardware that already went to the shop or shipped stays as it went, and the log keeps where it went.',
+  'Leaving UCH Shop takes the product off openings still waiting on a shop assembly request, and the Shop Assembly Manager is told. A shop batch still being pulled blocks it until the pull is finished or cancelled.',
+  "By Others stops the product counting as ordered on the schedule. A PO or a shipping request for it is left alone - what arrives lands in the job's inventory like any extra.",
+  'Before anything that touches other work is saved, you see exactly what will happen.',
+];
+
+const IMPACT_SECTIONS: { key: 'blocks' | 'wentOut' | 'adjusts' | 'unaffected'; label: string; color?: string }[] = [
+  { key: 'blocks', label: 'Blocks the change', color: 'error.main' },
+  { key: 'wentOut', label: 'Already went out - stays as it went' },
+  { key: 'adjusts', label: 'Saving will' },
+  { key: 'unaffected', label: 'Left as it is' },
+];
 
 const LABEL: Record<Choice, string> = {
   UCH_SHOP: 'UCH Shop',
@@ -81,6 +116,9 @@ export default function HardwareClassificationsPage() {
   const [search, setSearch] = useState('');
   const [selection, setSelection] = useState<GridRowSelectionModel>({ type: 'include', ids: new Set() });
   const [refusal, setRefusal] = useState<string | null>(null);
+  const [pending, setPending] = useState<PendingChange | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const client = useApolloClient();
 
   const { data: projectData } = useQuery<{ adminProjectDetail: { project: { projectId: string; description: string | null } } }>(
     GET_ADMIN_PROJECT_DETAIL,
@@ -111,11 +149,7 @@ export default function HardwareClassificationsPage() {
     return list.map((r) => ({ id: rowId(r), ...r }));
   }, [all, search]);
 
-  const apply = useCallback(async (targets: ClassificationRow[], choice: Choice) => {
-    const changes = targets
-      .filter((r) => r.choice !== choice)
-      .map((r) => ({ hardwareCategory: r.hardwareCategory, productCode: r.productCode, choice }));
-    if (changes.length === 0) return;
+  const save = useCallback(async (choice: Choice, changes: PendingChange['changes']) => {
     setRefusal(null);
     try {
       await setClassifications({ variables: { input: { projectId: id, changes } } });
@@ -123,8 +157,40 @@ export default function HardwareClassificationsPage() {
       setSelection({ type: 'include', ids: new Set() });
     } catch (e) {
       setRefusal(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPending(null);
     }
   }, [id, setClassifications, showToast]);
+
+  // #1050: ask the server what the change would do first. A change that touches nothing else saves
+  // straight away; anything else is shown for confirmation.
+  const apply = useCallback(async (targets: ClassificationRow[], choice: Choice) => {
+    const changes = targets
+      .filter((r) => r.choice !== choice)
+      .map((r) => ({ hardwareCategory: r.hardwareCategory, productCode: r.productCode, choice }));
+    if (changes.length === 0) return;
+    setRefusal(null);
+    setPlanning(true);
+    try {
+      const { data: impactData } = await client.query<{ hardwareClassificationImpact: ImpactRow[] }>({
+        query: GET_HARDWARE_CLASSIFICATION_IMPACT,
+        variables: { input: { projectId: id, changes } },
+        fetchPolicy: 'no-cache',
+      });
+      const impact = impactData?.hardwareClassificationImpact ?? [];
+      const touches = impact.some(
+        (i) => i.blocks.length + i.wentOut.length + i.adjusts.length + i.unaffected.length > 0,
+      );
+      if (touches) setPending({ choice, changes, impact });
+      else await save(choice, changes);
+    } catch (e) {
+      setRefusal(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPlanning(false);
+    }
+  }, [client, id, save]);
+
+  const busy = saving || planning;
 
   const selectedRows = all.filter((r) => selection.ids.has(rowId(r)));
 
@@ -158,7 +224,7 @@ export default function HardwareClassificationsPage() {
               size="small"
               exclusive
               value={row.choice}
-              disabled={saving}
+              disabled={busy}
               onChange={(_e, value: Choice | null) => value && apply([row], value)}
               aria-label={`Classification of ${row.productCode}`}
             >
@@ -175,7 +241,7 @@ export default function HardwareClassificationsPage() {
         );
       },
     },
-  ], [saving, apply]);
+  ], [busy, apply]);
   // #909: the grid fits its width and remembers resized columns.
   const { setContainer, gridProps } = useGridColumnFit('tenant-owner.hardware-classifications', columns, {
     checkboxSelection: true,
@@ -190,9 +256,22 @@ export default function HardwareClassificationsPage() {
         <PageHeader
           parent={{ label: project?.projectId ?? 'Project', to: `/app/tenant-owner/projects/${id}` }}
           title="Hardware Classifications"
-          description="Correct a product's UCH Shop, UCH Site or By Others after import. A change something already depends on is refused with the reason, and every change is logged below."
+          description="Correct a product's UCH Shop, UCH Site or By Others after import. You see what a change does before it is saved, and every change is logged below."
         />
       </FadeIn>
+
+      <Paper variant="outlined" component="section" aria-label="How a change works" sx={{ px: 1.5, py: 1, mb: 2 }}>
+        <Typography component="h2" sx={{ ...microLabelSx, mb: 0.5 }}>
+          How a change works
+        </Typography>
+        <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+          {RULES.map((rule) => (
+            <Typography key={rule} component="li" variant="body2" color="text.secondary">
+              {rule}
+            </Typography>
+          ))}
+        </Box>
+      </Paper>
 
       <Stack direction="row" spacing={1.5} alignItems="center" useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
         <TextField
@@ -223,7 +302,7 @@ export default function HardwareClassificationsPage() {
                 size="small"
                 variant="outlined"
                 color={o.color}
-                disabled={saving}
+                disabled={busy}
                 onClick={() => apply(selectedRows, o.value as Choice)}
               >
                 {o.label}
@@ -303,9 +382,69 @@ export default function HardwareClassificationsPage() {
               <Typography variant="body2" color="text.secondary">
                 by {c.changedBy}
               </Typography>
+              {c.note && (
+                <Typography variant="body2" color="text.secondary" sx={{ flexBasis: '100%', minWidth: 0 }}>
+                  {c.note}
+                </Typography>
+              )}
             </Box>
           ))}
         </Paper>
+      )}
+
+      {pending && (
+        <Modal
+          open
+          onClose={() => !saving && setPending(null)}
+          title={`Set ${pending.changes.length === 1 ? pending.changes[0].productCode : `${pending.changes.length} products`} to ${LABEL[pending.choice]}?`}
+          maxWidth="sm"
+          fullWidth
+          actions={
+            <>
+              <Button onClick={() => setPending(null)} disabled={saving}>
+                Cancel
+              </Button>
+              <Button
+                variant="contained"
+                onClick={() => save(pending.choice, pending.changes)}
+                disabled={saving || pending.impact.some((i) => i.blocks.length > 0)}
+              >
+                Save
+              </Button>
+            </>
+          }
+        >
+          <Stack spacing={1.5} aria-label="What this change does">
+            {pending.impact.some((i) => i.blocks.length > 0) && (
+              <Alert severity="error">Nothing can be saved while a product below is blocked.</Alert>
+            )}
+            {pending.impact.map((i) => (
+              <Box key={rowId(i)} sx={{ minWidth: 0 }}>
+                <Typography variant="body2" sx={{ mb: 0.5 }}>
+                  <Box component="span" sx={{ ...monoSx, fontWeight: 600 }}>
+                    {i.productCode}
+                  </Box>{' '}
+                  {LABEL[i.fromChoice]} → {LABEL[i.toChoice]}
+                </Typography>
+                {IMPACT_SECTIONS.filter((s) => i[s.key].length > 0).map((s) => (
+                  <Box key={s.key} sx={{ pl: 1.5, mb: 0.5 }}>
+                    <Typography sx={{ ...microLabelSx, color: s.color }}>{s.label}</Typography>
+                    {i[s.key].map((line) => (
+                      <Typography key={line} variant="body2" color={s.color ?? 'text.secondary'}>
+                        {line}
+                      </Typography>
+                    ))}
+                  </Box>
+                ))}
+                {IMPACT_SECTIONS.every((s) => i[s.key].length === 0) && (
+                  <Typography variant="body2" color="text.secondary" sx={{ pl: 1.5 }}>
+                    Nothing else is touched.
+                  </Typography>
+                )}
+              </Box>
+            ))}
+          </Stack>
+        </Modal>
       )}
     </Box>
   );

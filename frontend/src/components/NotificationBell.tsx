@@ -32,6 +32,8 @@ const NOTIFICATION_LINKS: Record<string, string> = {
   RECEIVE_DRAFT_REJECTED: '/app/warehouse/receiving?view=drafts',
   RECEIVE_DRAFT_SUBMITTED: '/app/warehouse/receive-approvals',
   SHIPPING_REQUEST_REJECTED: '/app/shipping/requests?view=REJECTED',
+  // #1050: a classification change took a product off openings waiting on a shop request.
+  CLASSIFICATION_CHANGED: '/app/shop-assembly/requests',
 };
 
 interface Notification {
