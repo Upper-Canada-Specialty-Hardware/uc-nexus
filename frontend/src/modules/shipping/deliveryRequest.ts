@@ -21,7 +21,8 @@ import { CONTAINER_TYPE_LABEL, isStacked, type ContainerType } from './staging';
  */
 export const SHIPMENT_SLIP_PARAM = 'slip';
 
-export type ShipmentStatus = 'SCHEDULED' | 'PICKED_UP' | 'DELIVERED';
+/** #973: CANCELLED is a scheduled shipment whose every line came back before a truck took it. */
+export type ShipmentStatus = 'SCHEDULED' | 'PICKED_UP' | 'DELIVERED' | 'CANCELLED';
 
 type ChipColor = 'default' | 'info' | 'warning' | 'success';
 
@@ -29,6 +30,7 @@ export const SHIPMENT_STATUS_DISPLAY: Record<ShipmentStatus, { label: string; co
   SCHEDULED: { label: 'Scheduled', color: 'warning' },
   PICKED_UP: { label: 'Picked Up', color: 'info' },
   DELIVERED: { label: 'Delivered', color: 'success' },
+  CANCELLED: { label: 'Cancelled', color: 'default' },
 };
 
 export function shipmentStatusDisplay(status: string): { label: string; color: ChipColor } {

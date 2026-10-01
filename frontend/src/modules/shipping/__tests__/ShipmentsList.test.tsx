@@ -262,6 +262,22 @@ describe('ShipmentsList', () => {
     expect(screen.getByRole('button', { name: 'Delivery Request' })).toBeInTheDocument();
   });
 
+  it('withdraws every action from a cancelled shipment and says why (#973)', async () => {
+    renderList([packingSlipsMock([slip({ status: 'CANCELLED' })])]);
+    await screen.findByText('PS-0019');
+
+    expect(screen.getByText('Cancelled')).toBeInTheDocument();
+    // A cancelled shipment has no plan left to show.
+    expect(screen.queryByText(/^planned /)).not.toBeInTheDocument();
+
+    await expandRow('PS-0019');
+
+    expect(await screen.findByText(/this shipment is\s+cancelled/)).toBeInTheDocument();
+    for (const name of ['Delivery Request', 'Edit', 'Mark Picked Up', 'Return']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+    }
+  });
+
   it('offers only the actions the shipment is up to', async () => {
     renderList([
       packingSlipsMock([

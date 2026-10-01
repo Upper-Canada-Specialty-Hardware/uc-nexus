@@ -435,10 +435,18 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                     {parseServerDate(slip.createdAt).toLocaleDateString()}
                   </TableCell>
                   <TableCell>
-                    <ShipmentMoment at={slip.pickedUpAt} by={slip.pickedUpBy} planned={slip.pickupDate} />
+                    <ShipmentMoment
+                      at={slip.pickedUpAt}
+                      by={slip.pickedUpBy}
+                      planned={slip.status === 'CANCELLED' ? null : slip.pickupDate}
+                    />
                   </TableCell>
                   <TableCell>
-                    <ShipmentMoment at={slip.deliveredAt} by={slip.deliveredBy} planned={slip.deliveryDate} />
+                    <ShipmentMoment
+                      at={slip.deliveredAt}
+                      by={slip.deliveredBy}
+                      planned={slip.status === 'CANCELLED' ? null : slip.deliveryDate}
+                    />
                   </TableCell>
                   <TableCell title={slip.shipmentMethod || undefined}>{slip.shipmentMethod || '-'}</TableCell>
                   <TableCell title={slip.carrierTagBol || undefined}>{slip.carrierTagBol || '-'}</TableCell>
@@ -546,6 +554,15 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                           </Box>
                         )}
 
+                        {/* #973: every line came back before a truck took it, so there is nothing
+                            left to print, pick up or return. */}
+                        {slip.status === 'CANCELLED' && (
+                          <Alert severity="info">
+                            Every line came back to inventory before pickup, so this shipment is
+                            cancelled. Its Delivery Request is withdrawn.
+                          </Alert>
+                        )}
+                        {slip.status !== 'CANCELLED' && (
                         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                           <Button
                             size="small"
@@ -602,6 +619,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                             Return
                           </Button>
                         </Stack>
+                        )}
                       </Box>
                     </Collapse>
                   </TableCell>

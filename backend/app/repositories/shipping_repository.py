@@ -709,6 +709,16 @@ def create_shipment_return(
                 detail=detail,
             )
 
+    # #973: a scheduled shipment with nothing left to return never left at all - cancel it, so its
+    # Delivery Request cannot be printed or a truck sent for hardware that is back on the shelf. A
+    # manual line never entered inventory and is not returnable, so it does not hold the shipment open.
+    if ps.status == ShipmentStatus.SCHEDULED:
+        session.flush()
+        returned = _returned_quantities(session, packing_slip_id)
+        returnable = [psi for psi in ps.items if not psi.is_manual]
+        if returnable and all(returned.get(psi.id, 0) >= psi.quantity for psi in returnable):
+            ps.status = ShipmentStatus.CANCELLED
+
     return shipment_return
 
 

@@ -110,7 +110,9 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
     setDrafts((prev) => ({ ...prev, [id]: { ...(prev[id] ?? DEFAULT_DRAFT), ...patch } }));
 
   const [mutate, { loading: submitting }] = useMutation(CREATE_SHIPMENT_RETURN, {
-    refetchQueries: WAREHOUSE_REFETCH_QUERIES,
+    // #973: a return can cancel the shipment it comes off, so the shipments list and the landing's
+    // gauges move too.
+    refetchQueries: [...WAREHOUSE_REFETCH_QUERIES, 'GetPackingSlips', 'GetShippingStats'],
     awaitRefetchQueries: true,
     onCompleted: () => {
       showToast(`Return recorded for ${slip.packingSlipNumber}`, 'success');
