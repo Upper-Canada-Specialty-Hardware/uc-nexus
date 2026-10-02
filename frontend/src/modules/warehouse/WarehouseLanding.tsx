@@ -141,7 +141,6 @@ function DestinationCard({ dest, onClick }: { dest: Destination; onClick: () => 
         ...(attention
           ? { borderLeft: '3px solid', borderLeftColor: 'secondary.main' }
           : { borderLeft: '3px solid transparent' }),
-        '&:hover': { transform: 'translateY(-1px)' },
       }}
     >
       <CardActionArea onClick={onClick} sx={{ height: '100%' }}>

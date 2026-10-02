@@ -38,7 +38,6 @@ const CELL = { xs: 12, sm: 6, md: 4 } as const;
 
 const CARD_SX = {
   height: '100%',
-  '&:hover': { transform: 'translateY(-1px)' },
 } as const;
 
 /** Everything the search box matches on, lower-cased once per project. */

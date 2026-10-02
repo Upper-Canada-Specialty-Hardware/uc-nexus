@@ -63,7 +63,6 @@ export function StatCard({ icon, label, value, color, accent }: StatCardProps) {
           borderLeft: '3px solid',
           borderLeftColor: ACCENT_PALETTE[resolved],
         }),
-        '&:hover': { transform: 'translateY(-1px)' },
       }}
     >
       <Box sx={{ minWidth: 0, flexGrow: 1 }}>
