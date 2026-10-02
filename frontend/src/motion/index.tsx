@@ -3,6 +3,7 @@
    one vocabulary; losing fast-refresh granularity here is acceptable. */
 import { useEffect, useState, type ReactNode } from 'react';
 import {
+  AnimatePresence,
   MotionConfig,
   motion,
   useMotionValue,
@@ -113,6 +114,34 @@ export function Reveal({
     >
       {children}
     </motion.div>
+  );
+}
+
+/** `springs.base` with the overshoot taken out, for height: a block that grows past its content and settles back makes everything below it wobble. */
+const settle = { type: 'spring', visualDuration: springs.base.visualDuration, bounce: 0 } as const;
+
+/**
+ * A block that comes and goes while someone is working (an inline warning that follows what they
+ * type, say) opens its own space and closes it again, so the content below glides instead of
+ * jumping (#1085). Present on first render, it is simply there. Margins belong inside: the clip
+ * contains them, so they open and close with the block.
+ */
+export function Appear({ show, children }: { show: boolean; children: ReactNode }) {
+  return (
+    <AnimatePresence initial={false}>
+      {show && (
+        <motion.div
+          key="appear"
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: 'auto', opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={settle}
+          style={{ overflow: 'hidden', minWidth: 0 }}
+        >
+          {children}
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 

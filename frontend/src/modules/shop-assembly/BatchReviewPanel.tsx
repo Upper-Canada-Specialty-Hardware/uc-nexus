@@ -20,7 +20,7 @@ import {
 import { Check, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
-import { FadeIn } from '../../motion';
+import { Appear, FadeIn } from '../../motion';
 import { plural } from '../../utils/plural';
 import {
   allLines,
@@ -381,18 +381,18 @@ export default function BatchReviewPanel({
                 })}
               </FitTable>
 
-              {!hasAnythingFree(current.lines) && (
+              <Appear show={!hasAnythingFree(current.lines)}>
                 <Alert severity="info" sx={{ mt: 1 }}>
                   Nothing is free for this opening, so it cannot go on a batch. Leave it out and it
                   stays waiting until stock arrives.
                 </Alert>
-              )}
-              {currentCoverage === 'PARTIAL' && (
+              </Appear>
+              <Appear show={currentCoverage === 'PARTIAL'}>
                 <Alert severity="warning" sx={{ mt: 1 }}>
                   Batching this opening sends what is here and forfeits the rest - the batch is the
                   decision for it. Clear its boxes to keep the whole of what it is owed waiting.
                 </Alert>
-              )}
+              </Appear>
             </FadeIn>
           )}
         </Box>
