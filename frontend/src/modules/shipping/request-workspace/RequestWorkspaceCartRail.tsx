@@ -10,6 +10,8 @@ import {
 } from './requestCart';
 import { monoSx, microLabelSx, tabularSx } from '../../../theme';
 import { plural } from '../../../utils/plural';
+import { AnimatePresence } from 'motion/react';
+import { PresenceItem } from '../../../motion';
 
 interface Props {
   cart: CartLine[];
@@ -95,91 +97,100 @@ export default function RequestWorkspaceCartRail({
             </Typography>
           </Box>
         ) : (
-          <Stack divider={<Box sx={{ borderBottom: '1px solid', borderColor: 'divider' }} />}>
-            {groups.map((group) => {
+          // #1088: lines and whole products leave by closing their space, so what is below them glides
+          // up rather than jumping. The rule between products sits on each product (not a Stack
+          // divider) so it leaves with it.
+          <AnimatePresence initial={false}>
+            {groups.map((group, groupIndex) => {
               const pct = group.headroom > 0 ? Math.min(100, (group.total / group.headroom) * 100) : 100;
               return (
-                <Box key={group.key} sx={{ px: 2, py: 1.25 }}>
-                  <Stack direction="row" alignItems="baseline" justifyContent="space-between" gap={1}>
-                    <Typography variant="body2" sx={{ ...monoSx, minWidth: 0, overflowWrap: 'anywhere' }}>
-                      {group.productCode}
-                    </Typography>
-                    <Typography
-                      variant="caption"
-                      sx={{ ...tabularSx, flexShrink: 0, color: group.overCommitted ? 'error.main' : 'text.secondary' }}
-                    >
-                      {group.total}/{group.headroom}
-                    </Typography>
-                  </Stack>
-                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
-                    {group.hardwareCategory}
-                  </Typography>
-                  <LinearProgress
-                    variant="determinate"
-                    value={pct}
-                    color={group.overCommitted ? 'error' : 'primary'}
-                    sx={{ height: 4, borderRadius: 2, mb: 1 }}
-                  />
-                  <Stack spacing={0.5}>
-                    {group.lines.map((line) => (
-                      <Stack
-                        key={`${line.openingNumber ?? ''}`}
-                        direction="row"
-                        alignItems="center"
-                        gap={1}
+                <PresenceItem key={group.key}>
+                  <Box
+                    sx={{
+                      px: 2,
+                      py: 1.25,
+                      borderTop: groupIndex === 0 ? 'none' : '1px solid',
+                      borderColor: 'divider',
+                    }}
+                  >
+                    <Stack direction="row" alignItems="baseline" justifyContent="space-between" gap={1}>
+                      <Typography variant="body2" sx={{ ...monoSx, minWidth: 0, overflowWrap: 'anywhere' }}>
+                        {group.productCode}
+                      </Typography>
+                      <Typography
+                        variant="caption"
+                        sx={{ ...tabularSx, flexShrink: 0, color: group.overCommitted ? 'error.main' : 'text.secondary' }}
                       >
-                        <Box sx={{ flex: 1, minWidth: 0 }}>
-                          {line.openingNumber ? (
-                            <Typography variant="caption" sx={{ ...monoSx, overflowWrap: 'anywhere' }}>
-                              {line.openingNumber}
-                            </Typography>
-                          ) : (
-                            <Chip
-                              label="no opening"
+                        {group.total}/{group.headroom}
+                      </Typography>
+                    </Stack>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                      {group.hardwareCategory}
+                    </Typography>
+                    <LinearProgress
+                      variant="determinate"
+                      value={pct}
+                      color={group.overCommitted ? 'error' : 'primary'}
+                      sx={{ height: 4, borderRadius: 2, mb: 1 }}
+                    />
+                    <AnimatePresence initial={false}>
+                      {group.lines.map((line) => (
+                        <PresenceItem key={`${line.openingNumber ?? ''}`}>
+                          <Stack direction="row" alignItems="center" gap={1} sx={{ py: 0.25 }}>
+                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                              {line.openingNumber ? (
+                                <Typography variant="caption" sx={{ ...monoSx, overflowWrap: 'anywhere' }}>
+                                  {line.openingNumber}
+                                </Typography>
+                              ) : (
+                                <Chip
+                                  label="no opening"
+                                  size="small"
+                                  variant="outlined"
+                                  sx={{ height: 18, fontSize: '0.6875rem' }}
+                                />
+                              )}
+                            </Box>
+                            <TextField
                               size="small"
-                              variant="outlined"
-                              sx={{ height: 18, fontSize: '0.6875rem' }}
+                              type="number"
+                              value={line.quantity}
+                              onChange={(e) =>
+                                onCartChange(
+                                  setLineQuantity(
+                                    cart,
+                                    line,
+                                    Number.parseInt(e.target.value, 10),
+                                    headroom,
+                                  ),
+                                )
+                              }
+                              slotProps={{
+                                htmlInput: {
+                                  min: 0,
+                                  'aria-label': `Cart quantity of ${line.productCode}${line.openingNumber ? ` for ${line.openingNumber}` : ' loose'}`,
+                                },
+                              }}
+                              sx={{ width: 72, '& input': { textAlign: 'right' } }}
                             />
-                          )}
-                        </Box>
-                        <TextField
-                          size="small"
-                          type="number"
-                          value={line.quantity}
-                          onChange={(e) =>
-                            onCartChange(
-                              setLineQuantity(
-                                cart,
-                                line,
-                                Number.parseInt(e.target.value, 10),
-                                headroom,
-                              ),
-                            )
-                          }
-                          slotProps={{
-                            htmlInput: {
-                              min: 0,
-                              'aria-label': `Cart quantity of ${line.productCode}${line.openingNumber ? ` for ${line.openingNumber}` : ' loose'}`,
-                            },
-                          }}
-                          sx={{ width: 72, '& input': { textAlign: 'right' } }}
-                        />
-                        <Tooltip title="Remove" arrow>
-                          <IconButton
-                            size="small"
-                            aria-label={`Remove ${line.productCode}${line.openingNumber ? ` for ${line.openingNumber}` : ' loose'} from the request`}
-                            onClick={() => onCartChange(removeLine(cart, line))}
-                          >
-                            <Trash2 size={16} strokeWidth={1.75} />
-                          </IconButton>
-                        </Tooltip>
-                      </Stack>
-                    ))}
-                  </Stack>
-                </Box>
+                            <Tooltip title="Remove" arrow>
+                              <IconButton
+                                size="small"
+                                aria-label={`Remove ${line.productCode}${line.openingNumber ? ` for ${line.openingNumber}` : ' loose'} from the request`}
+                                onClick={() => onCartChange(removeLine(cart, line))}
+                              >
+                                <Trash2 size={16} strokeWidth={1.75} />
+                              </IconButton>
+                            </Tooltip>
+                          </Stack>
+                        </PresenceItem>
+                      ))}
+                    </AnimatePresence>
+                  </Box>
+                </PresenceItem>
               );
             })}
-          </Stack>
+          </AnimatePresence>
         )}
       </Box>
 
