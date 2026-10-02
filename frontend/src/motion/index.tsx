@@ -36,17 +36,18 @@ export function MotionProvider({ children }: { children: ReactNode }) {
   return <MotionConfig reducedMotion="user">{children}</MotionConfig>;
 }
 
-/** Fade-and-rise entrance for a single block. */
+/** Fade-and-rise entrance for a single block. `x` slides it in sideways instead (or as well). */
 export function FadeIn({
   children,
   delay = 0,
+  x = 0,
   y = 10,
   ...rest
-}: { children: ReactNode; delay?: number; y?: number } & HTMLMotionProps<'div'>) {
+}: { children: ReactNode; delay?: number; x?: number; y?: number } & HTMLMotionProps<'div'>) {
   return (
     <motion.div
-      initial={{ opacity: 0, y }}
-      animate={{ opacity: 1, y: 0 }}
+      initial={{ opacity: 0, x, y }}
+      animate={{ opacity: 1, x: 0, y: 0 }}
       transition={{ ...springs.base, delay }}
       {...rest}
     >
@@ -78,6 +79,20 @@ export function PageTransition({
       {children}
     </motion.div>
   );
+}
+
+/**
+ * Which way an index last moved: 1 forward, -1 back, 0 before it has moved (#1086). For keyed
+ * step and tab panels, so the incoming panel arrives from the side being travelled towards.
+ */
+export function useStepDirection(index: number) {
+  const [prev, setPrev] = useState(index);
+  const [direction, setDirection] = useState(0);
+  if (index !== prev) {
+    setDirection(index > prev ? 1 : -1);
+    setPrev(index);
+  }
+  return direction;
 }
 
 /**
