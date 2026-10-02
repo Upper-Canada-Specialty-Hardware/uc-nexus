@@ -205,7 +205,11 @@ export default function ProjectLandingPage({
                   maxWidth: 260,
                   textAlign: 'left',
                   transition: 'border-color 0.15s ease, transform 0.15s ease',
-                  '&:hover': { borderColor: 'text.primary', transform: 'translateY(-1px)' },
+                  // A broken project's red edge stays red on hover (#1104).
+                  '&:hover': {
+                    borderColor: isGpSetupBroken(p) ? 'error.main' : 'text.primary',
+                    transform: 'translateY(-1px)',
+                  },
                 }}
               >
                 <Folder size={16} strokeWidth={1.75} style={{ flexShrink: 0, opacity: 0.7 }} />
@@ -277,6 +281,8 @@ export default function ProjectLandingPage({
                     picking it by accident. */}
                 <Card
                   variant="outlined"
+                  // The red edge stays red on hover (#1104).
+                  data-status-edge={isGpSetupBroken(p) ? '' : undefined}
                   sx={
                     isGpSetupBroken(p)
                       ? { ...CARD_SX, borderColor: 'error.main' }
