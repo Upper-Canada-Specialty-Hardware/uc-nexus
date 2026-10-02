@@ -2,6 +2,7 @@ import '@testing-library/jest-dom';
 import { afterEach } from 'vitest';
 import { ApolloClient, ApolloLink, InMemoryCache } from '@apollo/client/core';
 import { Transition } from 'react-transition-group';
+import { MotionGlobalConfig } from 'motion/react';
 
 /**
  * Zero-length enter and exit animations under test (#870). MUI's Fade, Grow, Collapse and Slide are
@@ -17,6 +18,15 @@ import { Transition } from 'react-transition-group';
  */
 (Transition.prototype as unknown as { getTimeouts: () => Record<'exit' | 'enter' | 'appear', number> }).getTimeouts =
   () => ({ exit: 0, enter: 0, appear: 0 });
+
+/**
+ * The same for Motion (#1102). jsdom has no layout, so a height animation to `auto` (Appear,
+ * PresenceItem) measures nothing and can leave AnimatePresence holding an exiting child open; under
+ * a loaded run that hung the request cart drawer test past its 30s timeout. With this every Motion
+ * animation lands on its end state on the first frame, and exit callbacks still fire, so presence
+ * and `transitionEnd` behave as they do in the browser, minus the wait.
+ */
+MotionGlobalConfig.skipAnimations = true;
 
 /**
  * Start every test with empty web storage. Components persist small bits of UI state there - the
