@@ -456,7 +456,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                     sx={{ ...FIT_CELL_WRAP_SX, py: 0, borderBottom: isOpen ? undefined : 'none' }}
                     colSpan={columnCount + 1}
                   >
-                    <Collapse in={isOpen} timeout="auto" unmountOnExit>
+                    <Collapse in={isOpen} unmountOnExit>
                       <Box sx={{ py: 2 }}>
                         <Typography
                           sx={{

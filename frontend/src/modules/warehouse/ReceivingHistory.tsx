@@ -273,7 +273,7 @@ function HistoryRow({ po, projectName, expanded, onToggle }: HistoryRowProps) {
           sx={{ ...FIT_CELL_WRAP_SX, p: 0, borderBottom: expanded ? undefined : 'none' }}
           colSpan={HISTORY_COLUMN_COUNT}
         >
-          <Collapse in={expanded} timeout={220} unmountOnExit>
+          <Collapse in={expanded} unmountOnExit>
             <Box sx={{ p: 2, bgcolor: 'action.hover' }}>
               <Typography component="h3" sx={{ ...microLabelSx, mb: 1 }}>
                 Receives

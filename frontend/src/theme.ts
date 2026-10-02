@@ -1,5 +1,12 @@
-import { createTheme, alpha } from '@mui/material/styles';
+import { createTheme, alpha, keyframes } from '@mui/material/styles';
 import type {} from '@mui/x-data-grid/themeAugmentation';
+import { cssSprings, cssSpringTransition } from './motion/css';
+
+/** A dialog's sheet settles into place as the backdrop fades in, instead of only fading. */
+const dialogSettle = keyframes`
+  from { transform: translateY(8px) scale(0.97); }
+  to { transform: none; }
+`;
 
 // Enable CSS variables type support
 declare module '@mui/material/styles' {
@@ -258,12 +265,32 @@ const theme = createTheme({
     },
 
     MuiDialog: {
+      // The fade stays MUI's (Modal learns open/closed from its callbacks); it is only shortened on
+      // the way out so dismissing never feels like waiting.
+      defaultProps: {
+        transitionDuration: { enter: 220, exit: 160 },
+      },
       styleOverrides: {
         paper: ({ theme }) => ({
           borderRadius: 10,
           border: '1px solid',
           borderColor: theme.vars.palette.divider,
+          // The paper mounts on every open, so the keyframe runs each time. The reduced-motion rule
+          // in index.css zeroes it.
+          animation: `${dialogSettle} ${cssSprings.base.duration}ms ${cssSprings.base.easing}`,
         }),
+      },
+    },
+
+    // Every expand and collapse runs on the same spring-sampled curve (#1082), not a per-call
+    // timeout. Accordion passes timeout="auto" to its Collapse itself, so it is set again through
+    // its transition slot, which MUI spreads after that.
+    MuiCollapse: {
+      defaultProps: cssSpringTransition,
+    },
+    MuiAccordion: {
+      defaultProps: {
+        slotProps: { transition: cssSpringTransition },
       },
     },
 
