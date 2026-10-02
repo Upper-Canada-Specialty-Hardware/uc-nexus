@@ -17,7 +17,7 @@ import { useIdentity } from '../../hooks/useIdentity';
 import { GET_WAREHOUSE_DASHBOARD } from '../../graphql/warehouse';
 import DashboardCards, { type WarehouseDashboard } from './DashboardCards';
 import { microLabelSx, tabularSx } from '../../theme';
-import { AnimatedNumber, StaggerItem, StaggerList } from '../../motion';
+import { AnimatedNumber, Reveal, StaggerItem, StaggerList, useHadLoading } from '../../motion';
 
 interface Destination {
   label: string;
@@ -190,6 +190,7 @@ export default function WarehouseLanding() {
   );
   const dashboard = data?.warehouseDashboard;
   const loading = queryLoading && !data;
+  const hadLoading = useHadLoading(loading);
   const destinations = buildDestinations(dashboard, canReview);
 
   return (
@@ -222,7 +223,9 @@ export default function WarehouseLanding() {
                     <Skeleton width="35%" height={16} sx={{ mt: 0.75 }} />
                   </Card>
                 ) : (
-                  <DestinationCard dest={dest} onClick={() => navigate(dest.path)} />
+                  <Reveal when={hadLoading} style={{ height: '100%' }}>
+                    <DestinationCard dest={dest} onClick={() => navigate(dest.path)} />
+                  </Reveal>
                 )}
               </StaggerItem>
             </Grid>

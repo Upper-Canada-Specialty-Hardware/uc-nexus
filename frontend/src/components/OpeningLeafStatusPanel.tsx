@@ -14,6 +14,7 @@ import { Search } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import { GET_OPENING_LEAF_STATUS } from '../graphql/shared';
 import { microLabelSx, monoSx, tabularSx } from '../theme';
+import { Reveal, useHadLoading } from '../motion';
 
 // Per-opening door-leaf rollup (#313). Shared between the shipping (project-scoped) and shop-assembly
 // (global, grouped by project) views; `mode` reframes the N-of-M summary, `grouped` toggles the
@@ -154,6 +155,8 @@ export default function OpeningLeafStatusPanel({
     }));
   }, [filtered, grouped]);
 
+  const hadLoading = useHadLoading(loading && !data);
+
   if (loading && !data) {
     // Skeletons shaped like the rows they become (DESIGN.md: skeletons over spinners).
     return (
@@ -175,78 +178,80 @@ export default function OpeningLeafStatusPanel({
   const verb = mode === 'shipping' ? 'shipped' : 'assembled';
 
   return (
-    <Box sx={{ mb: 2 }}>
-      <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
-        <Typography component="div" sx={microLabelSx}>
-          {title}
-        </Typography>
-        {rows.length > WINDOW_SIZE && (
-          <TextField
-            size="small"
-            placeholder="Search opening #"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            // Same affordance as the shipping browse: search glyph in, mono for the identifier.
-            slotProps={{
-              input: {
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <Search size={16} strokeWidth={1.75} />
-                  </InputAdornment>
-                ),
-                sx: monoSx,
-              },
-              htmlInput: { 'aria-label': 'Search opening number' },
-            }}
-            sx={{ width: { xs: '100%', sm: 200 } }}
-          />
-        )}
-      </Stack>
-      {filtered.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">
-          No openings match &ldquo;{search.trim()}&rdquo;.
-        </Typography>
-      ) : (
-        <Stack spacing={grouped ? 1.5 : 0.5}>
-          {groups.map((group) => {
-            const key = group.projectId || 'all';
-            const isExpanded = expanded[key] || !!search.trim();
-            const visible = isExpanded ? group.rows : group.rows.slice(0, WINDOW_SIZE);
-            const hidden = group.rows.length - visible.length;
-            // The group's own N-of-M, so a windowed group still tells its whole story on one line.
-            const leafTotal = group.rows.reduce((n, r) => n + r.leafCount, 0);
-            const leafDone = group.rows.reduce((n, r) => n + completedCount(r.leaves, mode), 0);
-            return (
-              <Box key={key}>
-                {grouped && group.projectName && (
-                  <Stack direction="row" spacing={1} alignItems="baseline" sx={{ mb: 0.5 }}>
-                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                      {group.projectName}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary" sx={tabularSx}>
-                      {leafDone} of {leafTotal} {leafTotal === 1 ? 'leaf' : 'leaves'} {verb}
-                    </Typography>
-                  </Stack>
-                )}
-                <Stack spacing={0.5}>
-                  {visible.map((r) => (
-                    <OpeningRow key={`${r.projectId}-${r.openingNumber}`} row={r} mode={mode} />
-                  ))}
-                </Stack>
-                {hidden > 0 && (
-                  <Button
-                    size="small"
-                    onClick={() => setExpanded((prev) => ({ ...prev, [key]: true }))}
-                    sx={{ mt: 0.5 }}
-                  >
-                    Show {hidden} more of {group.rows.length}
-                  </Button>
-                )}
-              </Box>
-            );
-          })}
+    <Reveal when={hadLoading}>
+      <Box sx={{ mb: 2 }}>
+        <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+          <Typography component="div" sx={microLabelSx}>
+            {title}
+          </Typography>
+          {rows.length > WINDOW_SIZE && (
+            <TextField
+              size="small"
+              placeholder="Search opening #"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              // Same affordance as the shipping browse: search glyph in, mono for the identifier.
+              slotProps={{
+                input: {
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <Search size={16} strokeWidth={1.75} />
+                    </InputAdornment>
+                  ),
+                  sx: monoSx,
+                },
+                htmlInput: { 'aria-label': 'Search opening number' },
+              }}
+              sx={{ width: { xs: '100%', sm: 200 } }}
+            />
+          )}
         </Stack>
-      )}
-    </Box>
+        {filtered.length === 0 ? (
+          <Typography variant="body2" color="text.secondary">
+            No openings match &ldquo;{search.trim()}&rdquo;.
+          </Typography>
+        ) : (
+          <Stack spacing={grouped ? 1.5 : 0.5}>
+            {groups.map((group) => {
+              const key = group.projectId || 'all';
+              const isExpanded = expanded[key] || !!search.trim();
+              const visible = isExpanded ? group.rows : group.rows.slice(0, WINDOW_SIZE);
+              const hidden = group.rows.length - visible.length;
+              // The group's own N-of-M, so a windowed group still tells its whole story on one line.
+              const leafTotal = group.rows.reduce((n, r) => n + r.leafCount, 0);
+              const leafDone = group.rows.reduce((n, r) => n + completedCount(r.leaves, mode), 0);
+              return (
+                <Box key={key}>
+                  {grouped && group.projectName && (
+                    <Stack direction="row" spacing={1} alignItems="baseline" sx={{ mb: 0.5 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        {group.projectName}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" sx={tabularSx}>
+                        {leafDone} of {leafTotal} {leafTotal === 1 ? 'leaf' : 'leaves'} {verb}
+                      </Typography>
+                    </Stack>
+                  )}
+                  <Stack spacing={0.5}>
+                    {visible.map((r) => (
+                      <OpeningRow key={`${r.projectId}-${r.openingNumber}`} row={r} mode={mode} />
+                    ))}
+                  </Stack>
+                  {hidden > 0 && (
+                    <Button
+                      size="small"
+                      onClick={() => setExpanded((prev) => ({ ...prev, [key]: true }))}
+                      sx={{ mt: 0.5 }}
+                    >
+                      Show {hidden} more of {group.rows.length}
+                    </Button>
+                  )}
+                </Box>
+              );
+            })}
+          </Stack>
+        )}
+      </Box>
+    </Reveal>
   );
 }
