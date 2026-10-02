@@ -172,13 +172,7 @@ export function Appear({ show, children }: { show: boolean; children: ReactNode 
  */
 export function PresenceItem({ children }: { children: ReactNode }) {
   return (
-    <motion.div
-      initial={{ height: 0, opacity: 0 }}
-      animate={{ height: 'auto', opacity: 1 }}
-      exit={{ height: 0, opacity: 0 }}
-      transition={settle}
-      style={{ overflow: 'hidden', minWidth: 0 }}
-    >
+    <motion.div {...openClose} style={{ minWidth: 0 }}>
       {children}
     </motion.div>
   );
