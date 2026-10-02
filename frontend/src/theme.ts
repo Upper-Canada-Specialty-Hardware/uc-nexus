@@ -243,11 +243,15 @@ const theme = createTheme({
           // #1087: only a card that does something answers the pointer. A static card (a stat
           // tile, a section) that lifts on hover promises a click it does not have. Every clickable
           // card here is a Card around a CardActionArea, so that is what marks one.
+          // A card whose border says something (an attention edge, a broken setup) is marked
+          // data-status-edge and keeps that colour on hover (#1104); only the lift and shadow change.
           '&:has(> .MuiCardActionArea-root)': {
             '&:hover': {
-              borderColor: alpha(INK, 0.28),
               boxShadow: '0 4px 14px rgba(29, 27, 23, 0.09)',
               transform: 'translateY(-1px)',
+            },
+            '&:not([data-status-edge]):hover': {
+              borderColor: alpha(INK, 0.28),
             },
             // Pressed: settles back down and in a hair, the shadow tightening with it.
             '&:active': {
@@ -258,8 +262,10 @@ const theme = createTheme({
           ...theme.applyStyles('dark', {
             '&:has(> .MuiCardActionArea-root)': {
               '&:hover': {
-                borderColor: alpha(INK_DARK, 0.32),
                 boxShadow: '0 4px 14px rgba(0, 0, 0, 0.45)',
+              },
+              '&:not([data-status-edge]):hover': {
+                borderColor: alpha(INK_DARK, 0.32),
               },
               '&:active': {
                 boxShadow: '0 1px 4px rgba(0, 0, 0, 0.45)',

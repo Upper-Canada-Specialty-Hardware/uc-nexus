@@ -135,6 +135,8 @@ function DestinationCard({ dest, onClick }: { dest: Destination; onClick: () => 
   return (
     <Card
       variant="outlined"
+      // The amber edge stays amber on hover (#1104).
+      data-status-edge={attention ? '' : undefined}
       sx={{
         height: '100%',
         // The single amber edge on this screen: a queue with work waiting in it.
