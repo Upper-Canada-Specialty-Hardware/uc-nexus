@@ -21,7 +21,17 @@ export const cssSprings = {
     easing:
       'linear(0, 0.0832, 0.2471, 0.4185, 0.5681, 0.6879, 0.7789, 0.8458, 0.8937, 0.9275, 0.9509, 0.967, 0.978, 0.9853, 0.9903, 0.9936, 0.9958, 0.9972, 0.9982, 0.9988, 0.9992, 1)',
   },
+  /** Felt 0.48s. Large surfaces: the nav rail collapsing. */
+  slow: {
+    duration: 850,
+    easing:
+      'linear(0, 0.0471, 0.1512, 0.2754, 0.399, 0.512, 0.6101, 0.6924, 0.7598, 0.814, 0.857, 0.8907, 0.9169, 0.9371, 0.9526, 0.9644, 0.9733, 0.9801, 0.9852, 0.989, 0.9918, 0.9939, 0.9955, 0.9967, 0.9976, 0.9982, 0.9987, 1)',
+  },
 } as const;
+
+/** `<duration> <easing>` for a CSS `transition` shorthand. */
+export const cssSpring = (token: keyof typeof cssSprings) =>
+  `${cssSprings[token].duration}ms ${cssSprings[token].easing}`;
 
 /** Enter on `base`, leave on `fast`: arriving content takes its time, departing content gets out of the way. */
 export const cssSpringTransition = {

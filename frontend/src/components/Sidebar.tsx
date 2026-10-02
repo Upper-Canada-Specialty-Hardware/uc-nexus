@@ -21,6 +21,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { useIdentity } from '../hooks/useIdentity';
+import { cssSpring } from '../motion/css';
 
 interface SidebarItem {
   label: string;
@@ -123,32 +124,41 @@ export function NavContent({ collapsed = false, onNavigate }: NavContentProps) {
             selected={active}
             disabled={!accessible}
             onClick={() => handleItemClick(item)}
+            // #1083: nothing in the row changes geometry with the rail. The icon sits in a fixed 20px
+            // box 12px in, which is dead center of a collapsed row (60 rail - 2x8 list padding = 44),
+            // so it holds still while the rail's width springs; only the label fades.
             sx={{
               minHeight: 40,
-              px: collapsed ? 1.25 : 1.5,
-              justifyContent: collapsed ? 'center' : 'flex-start',
+              px: 1.5,
+              overflow: 'hidden',
             }}
           >
             <ListItemIcon
               sx={{
-                minWidth: collapsed ? 0 : 34,
+                minWidth: 20,
                 color: active ? 'text.primary' : 'text.secondary',
                 justifyContent: 'center',
               }}
             >
               {item.icon}
             </ListItemIcon>
-            {!collapsed && (
-              <ListItemText
-                primary={item.label}
-                slotProps={{
-                  primary: {
-                    fontSize: '0.875rem',
-                    fontWeight: active ? 600 : 500,
-                  },
-                }}
-              />
-            )}
+            <ListItemText
+              primary={item.label}
+              sx={{
+                ml: 1.75,
+                whiteSpace: 'nowrap',
+                opacity: collapsed ? 0 : 1,
+                // Out fast so the label is gone before the rail narrows onto it; back in once the
+                // rail has started opening.
+                transition: collapsed ? `opacity ${cssSpring('fast')}` : `opacity ${cssSpring('base')} 80ms`,
+              }}
+              slotProps={{
+                primary: {
+                  fontSize: '0.875rem',
+                  fontWeight: active ? 600 : 500,
+                },
+              }}
+            />
           </ListItemButton>
         );
 
@@ -198,7 +208,7 @@ export function NavRail({ collapsed }: { collapsed: boolean }) {
         overflowY: 'auto',
         overflowX: 'hidden',
         display: { xs: 'none', md: 'block' },
-        transition: 'width 0.25s cubic-bezier(0.2, 0, 0, 1)',
+        transition: `width ${cssSpring('slow')}`,
       }}
     >
       <NavContent collapsed={collapsed} />
