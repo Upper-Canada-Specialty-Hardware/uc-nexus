@@ -15,7 +15,7 @@ import { GET_PROJECTS } from '../../graphql/shared';
 import { infoHeader } from '../../components/InfoColumnHeader';
 import PageHeader from '../../components/PageHeader';
 import { monoSx } from '../../theme';
-import { FadeIn } from '../../motion';
+import { FadeIn, Reveal, useHadLoading } from '../../motion';
 import { useGridColumnFit } from '../../components/useGridColumnFit';
 import type { Project } from '../../types/project';
 
@@ -197,6 +197,8 @@ export default function HardwareStatusPage() {
   // #909: the grid fits its width and remembers resized columns.
   const { setContainer, gridProps } = useGridColumnFit('tenant-owner.hardware-status', columns);
 
+  const hadLoading = useHadLoading(statusLoading && !statusData);
+
   return (
     <Box>
       <FadeIn>
@@ -294,7 +296,7 @@ export default function HardwareStatusPage() {
       )}
 
       {hasSelection && rows.length > 0 && (
-        <Box sx={{ height: 'calc(100vh - 300px)', width: '100%' }}>
+        <Reveal when={hadLoading} style={{ height: 'calc(100vh - 300px)', width: '100%' }}>
           <DataGrid
             ref={setContainer}
             {...gridProps}
@@ -304,7 +306,7 @@ export default function HardwareStatusPage() {
             initialState={{ pagination: { paginationModel: { pageSize: 50 } } }}
             disableRowSelectionOnClick
           />
-        </Box>
+        </Reveal>
       )}
     </Box>
   );

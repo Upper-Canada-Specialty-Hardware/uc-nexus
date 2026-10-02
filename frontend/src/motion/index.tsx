@@ -1,7 +1,7 @@
 /* eslint-disable react-refresh/only-export-components -- shared motion module:
    the spring tokens must live next to the primitives so every consumer imports
    one vocabulary; losing fast-refresh granularity here is acceptable. */
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   MotionConfig,
   motion,
@@ -73,6 +73,43 @@ export function PageTransition({
       animate={{ opacity: 1, y: 0 }}
       transition={springs.base}
       style={{ minWidth: 0 }}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+/**
+ * Whether this component has shown a loading state at any point in its life (#1084). Content that
+ * arrives in place of a skeleton should reveal; content served straight from cache on a revisit
+ * should just be there, so pass this to <Reveal when>.
+ */
+export function useHadLoading(loading: boolean) {
+  const [had, setHad] = useState(loading);
+  if (loading && !had) setHad(true);
+  return had || loading;
+}
+
+/**
+ * Content taking a skeleton's place fades in rather than cutting over it (#1084). Opacity only: the
+ * data lands where its skeleton stood, so moving it would read as the layout settling. With `when`
+ * false it renders in place with no animation.
+ */
+export function Reveal({
+  when,
+  children,
+  style,
+}: {
+  when: boolean;
+  children: ReactNode;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <motion.div
+      initial={when ? { opacity: 0 } : false}
+      animate={{ opacity: 1 }}
+      transition={springs.base}
+      style={{ minWidth: 0, ...style }}
     >
       {children}
     </motion.div>
