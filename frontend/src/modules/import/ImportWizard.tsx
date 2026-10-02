@@ -69,7 +69,7 @@ import { mergeAddedProducts } from './draftOps';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { plural } from '../../utils/plural';
-import { FadeIn } from '../../motion';
+import { FadeIn, useStepDirection } from '../../motion';
 import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
 import { isDoorFrameItem } from '../../types/hardwareSchedule';
@@ -290,6 +290,7 @@ export default function ImportWizard({
     () => steps.findIndex((s) => s.id === effectiveStepId),
     [steps, effectiveStepId],
   );
+  const stepDirection = useStepDirection(activeStepIndex);
 
   // Signal WizardContext when import wizard is open (for unsaved-state detection in AppLayout)
   useEffect(() => {
@@ -1505,8 +1506,9 @@ export default function ImportWizard({
           </Stepper>
 
           {/* One entrance per step. Keyed by the step id so stepping forward or back re-triggers it;
-              the step's own content and gating are untouched by the wrapper. */}
-          <FadeIn key={effectiveStepId}>
+              the step's own content and gating are untouched by the wrapper. It arrives from the
+              right going forward and from the left going back (#1086). */}
+          <FadeIn key={effectiveStepId} x={stepDirection * 20} y={stepDirection === 0 ? 10 : 0}>
           {/* ============ Step: Upload File ============ */}
           {effectiveStepId === 'upload' && (
             <Box>
