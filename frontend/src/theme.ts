@@ -1,6 +1,6 @@
 import { createTheme, alpha, keyframes } from '@mui/material/styles';
 import type {} from '@mui/x-data-grid/themeAugmentation';
-import { cssSprings, cssSpringTransition } from './motion/css';
+import { cssSpring, cssSprings, cssSpringTransition } from './motion/css';
 
 /** A dialog's sheet settles into place as the backdrop fades in, instead of only fading. */
 const dialogSettle = keyframes`
@@ -239,15 +239,31 @@ const theme = createTheme({
           border: '1px solid',
           borderColor: theme.vars.palette.divider,
           backgroundImage: 'none',
-          transition: 'box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease',
-          '&:hover': {
-            borderColor: alpha(INK, 0.28),
-            boxShadow: '0 4px 14px rgba(29, 27, 23, 0.09)',
+          transition: ['box-shadow', 'border-color', 'transform'].map((p) => `${p} ${cssSpring('fast')}`).join(', '),
+          // #1087: only a card that does something answers the pointer. A static card (a stat
+          // tile, a section) that lifts on hover promises a click it does not have. Every clickable
+          // card here is a Card around a CardActionArea, so that is what marks one.
+          '&:has(> .MuiCardActionArea-root)': {
+            '&:hover': {
+              borderColor: alpha(INK, 0.28),
+              boxShadow: '0 4px 14px rgba(29, 27, 23, 0.09)',
+              transform: 'translateY(-1px)',
+            },
+            // Pressed: settles back down and in a hair, the shadow tightening with it.
+            '&:active': {
+              transform: 'translateY(0) scale(0.99)',
+              boxShadow: '0 1px 4px rgba(29, 27, 23, 0.10)',
+            },
           },
           ...theme.applyStyles('dark', {
-            '&:hover': {
-              borderColor: alpha(INK_DARK, 0.32),
-              boxShadow: '0 4px 14px rgba(0, 0, 0, 0.45)',
+            '&:has(> .MuiCardActionArea-root)': {
+              '&:hover': {
+                borderColor: alpha(INK_DARK, 0.32),
+                boxShadow: '0 4px 14px rgba(0, 0, 0, 0.45)',
+              },
+              '&:active': {
+                boxShadow: '0 1px 4px rgba(0, 0, 0, 0.45)',
+              },
             },
           }),
         }),

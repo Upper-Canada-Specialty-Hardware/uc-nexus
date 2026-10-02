@@ -69,7 +69,7 @@ const COLUMN = 900;
 
 function DestinationCard({ dest, onClick }: { dest: Destination; onClick: () => void }) {
   return (
-    <Card variant="outlined" sx={{ height: '100%', '&:hover': { transform: 'translateY(-1px)' } }}>
+    <Card variant="outlined" sx={{ height: '100%' }}>
       <CardActionArea onClick={onClick} sx={{ height: '100%' }}>
         <Box sx={{ px: 2, py: 1.75, display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
           <Box sx={{ display: 'flex', color: 'text.secondary', mt: 0.25 }}>{dest.icon}</Box>
