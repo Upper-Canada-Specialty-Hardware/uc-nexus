@@ -40,6 +40,7 @@ import type { OverBuyRisk } from './overBuy';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import type { DraftAttachmentType, DraftGroup, DraftInfoField } from './types';
+import { Appear } from '../../motion';
 
 export interface GpCostCode {
   costCode: string;
@@ -413,12 +414,12 @@ export function DraftCard({
         opacity: draft.included ? 1 : 0.6,
       }}
     >
-      {atRiskCount > 0 && (
+      <Appear show={atRiskCount > 0}>
         <Alert severity="warning" icon={<AlertTriangle size={18} strokeWidth={1.75} />} sx={{ mb: 2, py: 0 }}>
           {atRiskCount === 1 ? '1 line' : `${atRiskCount} lines`} on this draft would take the project past what
           its hardware schedule needs. You will be asked to confirm at Finalize.
         </Alert>
-      )}
+      </Appear>
       {/* Header: include toggle + editable label + PO total + card menu */}
       <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 1.5, mb: 2 }}>
         <FormControlLabel

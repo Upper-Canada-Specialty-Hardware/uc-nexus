@@ -8,6 +8,7 @@ import { ADJUST_INVENTORY_QUANTITY } from '../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { ReservationNotice, useComboReservation } from './reservationNotice';
+import { Appear } from '../../motion';
 
 interface SpotCheckItem {
   id: string;
@@ -163,13 +164,15 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
           sx={{ mb: 2 }}
         />
 
-        {hasDiscrepancy && discrepancy !== null && !belowFloor && (
-          <Alert severity={discrepancy > 0 ? 'info' : 'warning'} sx={{ mt: 1 }}>
-            {discrepancy > 0
-              ? `Physical count is ${discrepancy} more than system. Adjustment of +${discrepancy} will be applied.`
-              : `Physical count is ${Math.abs(discrepancy)} less than system. Adjustment of ${discrepancy} will be applied.`}
-          </Alert>
-        )}
+        <Appear show={hasDiscrepancy && discrepancy !== null && !belowFloor}>
+          {discrepancy !== null && (
+            <Alert severity={discrepancy > 0 ? 'info' : 'warning'} sx={{ mt: 1 }}>
+              {discrepancy > 0
+                ? `Physical count is ${discrepancy} more than system. Adjustment of +${discrepancy} will be applied.`
+                : `Physical count is ${Math.abs(discrepancy)} less than system. Adjustment of ${discrepancy} will be applied.`}
+            </Alert>
+          )}
+        </Appear>
 
         {reservation != null && resultingSound != null && !belowFloor && (
           <Box sx={{ mt: 1 }}>
