@@ -164,6 +164,26 @@ export function Appear({ show, children }: { show: boolean; children: ReactNode 
   );
 }
 
+/**
+ * One item of a list whose items come and go in place (#1088): it opens its space on the way in and
+ * closes it on the way out, so the items after it close the gap instead of jumping up. Render the
+ * items inside <AnimatePresence initial={false}>, keyed by identity. Spacing between items belongs
+ * inside each item: a margin set by the list (Stack spacing) stays on an item while it leaves.
+ */
+export function PresenceItem({ children }: { children: ReactNode }) {
+  return (
+    <motion.div
+      initial={{ height: 0, opacity: 0 }}
+      animate={{ height: 'auto', opacity: 1 }}
+      exit={{ height: 0, opacity: 0 }}
+      transition={settle}
+      style={{ overflow: 'hidden', minWidth: 0 }}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
 const staggerContainer = {
   hidden: {},
   show: (staggerChildren: number) => ({
