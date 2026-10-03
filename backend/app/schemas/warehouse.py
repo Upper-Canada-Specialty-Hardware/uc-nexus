@@ -353,12 +353,34 @@ def _release_draft_claim(draft_id, key) -> None:
         session.commit()
 
 
-def _mark_draft_queued(draft_id, outbox_entry_id) -> None:
+def _mark_draft_queued(draft_id, outbox_entry_id, session=None) -> None:
     """The approval reached the outbox rather than GP. The draft is finished from the reviewer's side
     - what it must not be is approvable again, which would enqueue a second receipt."""
-    with SessionLocal() as session:
+    if session is not None:
         warehouse_repository.mark_approved(session, draft_id, outbox_entry_id=uuid.UUID(str(outbox_entry_id)))
+        return
+    with SessionLocal() as own:
+        warehouse_repository.mark_approved(own, draft_id, outbox_entry_id=uuid.UUID(str(outbox_entry_id)))
+        own.commit()
+
+
+def _queue_receipt_for_draft(draft_id, **enqueue_kwargs) -> str:
+    """#1365: queue the receipt and mark its draft APPROVED + linked in ONE transaction. Committed
+    apart, a failure between the two left a queued receipt whose draft was still APPROVING (or a
+    linked draft with no row), and the worker would post a receipt the draft knew nothing about."""
+    with SessionLocal() as session:
+        entry_id = gp_outbox_enqueue.enqueue(session=session, **enqueue_kwargs)
+        _mark_draft_queued(draft_id, entry_id, session=session)
         session.commit()
+    # The relay may have come back between the failure and this commit; a nudge costs nothing.
+    _wake_outbox_worker()
+    return entry_id
+
+
+def _wake_outbox_worker() -> None:
+    from app.services import gp_outbox_worker
+
+    gp_outbox_worker.wake()
 
 
 @strawberry.type
@@ -1196,7 +1218,8 @@ class WarehouseMutations:
                 json_line_items = _json_line_items(ctx.line_items_data)
                 project_id, label = await asyncio.to_thread(_receive_outbox_identity, ctx.po_id)
                 entry_id = await asyncio.to_thread(
-                    gp_outbox_enqueue.enqueue,
+                    _queue_receipt_for_draft,
+                    draft_id,
                     idempotency_key=key,
                     op="create_receive",
                     relay_op="create_receipt",
@@ -1218,7 +1241,6 @@ class WarehouseMutations:
                     project_id=project_id,
                     requested_by=user["user_id"],
                 )
-                await asyncio.to_thread(_mark_draft_queued, draft_id, entry_id)
                 draft = await asyncio.to_thread(_load_draft_type, draft_id)
                 # Nothing is in inventory yet - the persist is deferred with the GP write.
                 return ApproveReceiveDraftResult(

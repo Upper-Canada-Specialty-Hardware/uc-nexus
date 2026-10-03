@@ -7,6 +7,8 @@ lives in exactly one place rather than being restated at each call site."""
 import logging
 import uuid
 
+from sqlalchemy.orm import Session
+
 from app.database import SessionLocal
 from app.errors import RelayUnavailableError
 from app.repositories import gp_outbox_repository
@@ -36,13 +38,18 @@ def enqueue(
     label: str,
     project_id: uuid.UUID | None = None,
     requested_by: str | None = None,
+    session: Session | None = None,
 ) -> str:
-    """Queue the write in its own session and return the outbox entry id (as a string).
+    """Queue the write and return the outbox entry id (as a string).
+
+    With no `session` it runs in its own and commits. Given a caller's `session` it only flushes, so
+    the caller can save its own state in the same transaction and commit once (#1365); the caller
+    then wakes the worker after its commit.
 
     Idempotent by `idempotency_key`: re-submitting the same user action while it is queued returns
     the existing entry, so the user sees one queued item and GP will see one write."""
-    with SessionLocal() as session:
-        row = gp_outbox_repository.enqueue(
+    if session is not None:
+        return _enqueue_in(
             session,
             idempotency_key=idempotency_key,
             op=op,
@@ -55,9 +62,27 @@ def enqueue(
             project_id=project_id,
             requested_by=requested_by,
         )
-        entry_id = str(row.id)
-        session.commit()
+    with SessionLocal() as own:
+        entry_id = _enqueue_in(
+            own,
+            idempotency_key=idempotency_key,
+            op=op,
+            relay_op=relay_op,
+            company=company,
+            payload=payload,
+            persist_context=persist_context,
+            entity_key=entity_key,
+            label=label,
+            project_id=project_id,
+            requested_by=requested_by,
+        )
+        own.commit()
     logger.info("gp outbox: queued", extra={"op": op, "label": label, "entry_id": entry_id})
     # The relay may have come back between the failure and this commit; a nudge costs nothing.
     gp_outbox_worker.wake()
     return entry_id
+
+
+def _enqueue_in(session: Session, **kwargs) -> str:
+    row = gp_outbox_repository.enqueue(session, **kwargs)
+    return str(row.id)
