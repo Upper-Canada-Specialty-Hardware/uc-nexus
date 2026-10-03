@@ -967,14 +967,16 @@ def pick_sheet_to_type(sheet, partially_picked=None) -> PickSheet:
     )
 
 
-def notification_to_type(n) -> Notification:
+def notification_to_type(n, *, is_read: bool | None = None) -> Notification:
+    """`is_read` is the caller's own read state (#1111). Left out, the row's "read by anyone" flag
+    stands in, which is right only for a notification that was just raised."""
     return Notification(
         id=strawberry.ID(str(n.id)),
         project_id=strawberry.ID(str(n.project_id)),
         recipient_role=n.recipient_role,
         type=n.type,
         message=n.message,
-        is_read=n.is_read,
+        is_read=n.is_read if is_read is None else is_read,
         created_at=n.created_at,
     )
 
@@ -991,6 +993,7 @@ def packing_slip_item_to_type(psi) -> PackingSlipItem:
         hardware_category=psi.hardware_category,
         quantity=psi.quantity,
         is_manual=psi.is_manual,
+        returned_quantity=sum(ri.quantity for ri in psi.return_items),
     )
 
 

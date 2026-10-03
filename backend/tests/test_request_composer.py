@@ -806,9 +806,10 @@ def test_availability_is_deliberately_absent(db_session):
 
 
 def test_the_read_is_a_fixed_number_of_statements_however_many_openings(db_session):
-    """The perf contract (CLAUDE.md): eight statements whether the composer is asked about one
-    opening or two hundred. A per-opening query here is the N+1 that turns "fast on dev" into a
-    frozen page."""
+    """The perf contract (CLAUDE.md): nine statements whether the composer is asked about one
+    opening or two hundred. The ninth is the returns sum that lets returned hardware be offered
+    again (#1125) - one grouped query, not one per opening. A per-opening query here is the N+1 that
+    turns "fast on dev" into a frozen page."""
     project = _project(db_session)
     for index in range(40):
         opening = _opening(db_session, project, f"A{index:03d}")
@@ -828,7 +829,7 @@ def test_the_read_is_a_fixed_number_of_statements_however_many_openings(db_sessi
         event.remove(db_session.get_bind(), "before_cursor_execute", record)
 
     assert len(rows) == 40
-    assert len(statements) == 8, statements
+    assert len(statements) == 9, statements
 
 
 def test_openings_asked_for_twice_are_answered_once(db_session):

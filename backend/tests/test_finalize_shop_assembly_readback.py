@@ -14,6 +14,7 @@ where DATABASE_URL is unset, as local dev is.
 
 from app.repositories import import_repository, shop_assembly_repository
 from app.schemas.converters import shop_assembly_request_to_type
+from tests.shop_assembly_helpers import with_schedule
 
 from .inventory_fixtures import make_il, make_project
 
@@ -26,20 +27,22 @@ def test_finalize_shop_assembly_request_reads_back_through_the_resolver_path(db_
 
     result = import_repository.finalize_import_session(
         db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [{"opening_number": "A01"}],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_items": [
-                {
-                    "opening_number": "A01",
-                    "hardware_category": "HINGE",
-                    "product_code": "HG-100",
-                    "quantity": 2,
-                },
-            ],
-        },
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [{"opening_number": "A01"}],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": [
+                    {
+                        "opening_number": "A01",
+                        "hardware_category": "HINGE",
+                        "product_code": "HG-100",
+                        "quantity": 2,
+                    },
+                ],
+            }
+        ),
     )
     sar = result["shop_assembly_request"]
     assert sar is not None

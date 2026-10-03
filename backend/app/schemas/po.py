@@ -68,6 +68,7 @@ from .types import (
     PODocumentInfo,
     PODocumentSettings,
     POLineItem,
+    PoLineTiedQuantity,
     POStatistics,
     PriorOrderAsForProduct,
     PurchaseOrder,
@@ -439,6 +440,22 @@ class POQueries:
             tenancy.require_project_in_scope(session, pid, scope)
             pos = po_repository.get_purchase_orders(session, pid, status, company=scope)
             return [po_to_type(po) for po in pos]
+
+    @strawberry.field
+    def po_line_tied_quantities(self, info: strawberry.Info, po_id: strawberry.ID) -> list[PoLineTiedQuantity]:
+        """Schedule units tied to each line of one PO, from one grouped query (#1128). Lines with
+        nothing tied are absent."""
+        pid = uuid.UUID(str(po_id))
+        with SessionLocal() as session:
+            tenancy.require_po_in_scope(session, pid, tenant_scope(info))
+            po = po_repository.get_purchase_order(session, pid)
+            if po is None:
+                raise NotFoundError(f"Purchase order {po_id} not found")
+            tied = po_repository.tied_units_by_line(session, [li.id for li in po.line_items])
+            return [
+                PoLineTiedQuantity(po_line_item_id=strawberry.ID(str(line_id)), tied_quantity=qty)
+                for line_id, qty in tied.items()
+            ]
 
     @strawberry.field
     def po_document_download_url(self, info: strawberry.Info, document_id: strawberry.ID) -> str:

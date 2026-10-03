@@ -273,6 +273,19 @@ def confirm_shipment(
     if not items:
         raise ValidationError("items must not be empty", field="items")
 
+    # #1107: no line ships fewer than one unit. A negative line paired with a matching positive one
+    # nets to nothing in the aggregate below and passes, then lands on the slip as a negative row that
+    # `staged_shipped_stmt` subtracts - growing the staged pool by hardware that does not exist.
+    for item in items:
+        if item.get("quantity") is None or item["quantity"] < 1:
+            raise ValidationError("Every line needs a quantity of at least 1.", field="items")
+
+    # #1107: serialise on the project's staged pool before reading it, so two confirms cannot both
+    # pass the check below against the same staged hardware.
+    from app.repositories import shipment_containers
+
+    shipment_containers.lock_staging_pool(session, project_id)
+
     # 1. Validate availability against the staged pool. Manual lines never entered inventory, so they
     # are not measured against what is staged - only the real lines are.
     ship_ready = get_ship_ready_items(session, project_id)
@@ -347,7 +360,7 @@ def confirm_shipment(
     notification_service.create_notification(
         session,
         project_id=project_id,
-        recipient_role="Warehouse Staff",
+        recipient_role=notification_service.WAREHOUSE_RECIPIENT_ROLE,
         notification_type=NotificationType.SHIPMENT_COMPLETED,
         message=f"Shipment {packing_slip_number} confirmed. {item_count} items shipped.",
     )
@@ -454,33 +467,76 @@ def mark_shipment_delivered(
 # ---------------------------------------------------------------------------
 
 
-def list_packing_slips(
-    session: Session,
-    project_id: uuid.UUID | None = None,
-    *,
-    company: str | None = None,
-) -> list[PackingSlip]:
-    """List confirmed packing slips (newest first), optionally scoped to one project.
+# One page of the Shipments list (#1107). The list used to send every slip the company had ever cut,
+# with items and containers, and page and search in the browser - a payload that only ever grows.
+PACKING_SLIP_PAGE_DEFAULT = 25
+PACKING_SLIP_PAGE_MAX = 200
 
-    Containers and their items are eagerly loaded because `packing_slip_to_type` walks them to build
-    the per-container sections the Delivery Request prints - lazy loading here is two extra queries
-    per slip on a list view (CLAUDE.md perf rules).
-    """
-    stmt = (
-        select(PackingSlip)
-        .options(
-            selectinload(PackingSlip.items),
-            selectinload(PackingSlip.containers).selectinload(ShipmentContainer.items),
-        )
-        .order_by(PackingSlip.shipped_at.desc())
-    )
+
+def _packing_slip_filter(stmt, project_id: uuid.UUID | None, company: str | None, search: str | None):
     if project_id is not None:
         stmt = stmt.where(PackingSlip.project_id == project_id)
     if company is not None:
         from app.repositories import tenancy
 
         stmt = stmt.where(PackingSlip.project_id.in_(tenancy.project_ids_for(company)))
+    needle = (search or "").strip()
+    if needle:
+        escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        stmt = stmt.where(PackingSlip.packing_slip_number.ilike(f"%{escaped}%", escape="\\"))
+    return stmt
+
+
+def _packing_slip_loads():
+    """What `packing_slip_to_type` walks, loaded up front (CLAUDE.md perf rules): items with what has
+    come back off them, and containers with their items. Lazy here is extra queries per slip on a
+    list, and a DetachedInstanceError on a mutation reload."""
+    return (
+        selectinload(PackingSlip.items).selectinload(PackingSlipItem.return_items),
+        selectinload(PackingSlip.containers).selectinload(ShipmentContainer.items),
+    )
+
+
+def list_packing_slips(
+    session: Session,
+    project_id: uuid.UUID | None = None,
+    *,
+    company: str | None = None,
+    search: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[PackingSlip]:
+    """One page of confirmed packing slips (newest first), optionally scoped to one project and
+    searched by slip number.
+
+    `limit` defaults to a page and is capped, so no caller can ask for the whole history at once.
+    """
+    if limit is None:
+        limit = PACKING_SLIP_PAGE_DEFAULT
+    if limit < 1 or limit > PACKING_SLIP_PAGE_MAX:
+        raise ValidationError(f"limit must be between 1 and {PACKING_SLIP_PAGE_MAX}", field="limit")
+    if offset < 0:
+        raise ValidationError("offset must not be negative", field="offset")
+    stmt = (
+        _packing_slip_filter(select(PackingSlip), project_id, company, search)
+        .options(*_packing_slip_loads())
+        .order_by(PackingSlip.shipped_at.desc(), PackingSlip.id)
+        .offset(offset)
+        .limit(limit)
+    )
     return list(session.scalars(stmt).unique().all())
+
+
+def count_packing_slips(
+    session: Session,
+    project_id: uuid.UUID | None = None,
+    *,
+    company: str | None = None,
+    search: str | None = None,
+) -> int:
+    """How many slips the same filter matches, so the list can say how many more there are."""
+    stmt = _packing_slip_filter(select(func.count(PackingSlip.id)), project_id, company, search)
+    return int(session.scalar(stmt) or 0)
 
 
 def _returned_quantities(session: Session, packing_slip_id: uuid.UUID) -> dict[uuid.UUID, int]:
@@ -544,6 +600,12 @@ def create_shipment_return(
     RETURN_TO_PROJECT re-creates a fresh, unlocated InventoryLocation for the slip's project
     (drops into Put-Away). NON_STOCK / RMA_DEFECTIVE merge into the stock pool at the chosen
     warehouse; RMA also flags the merged units deficient so they surface in Deficient Items review.
+
+    INTENTIONAL BUSINESS LOGIC - DO NOT CHANGE (product owner ruling, #1107 / #1142, 2026-10-03):
+    a return is allowed from any slip status that is not cancelled, PICKED_UP included. A truck
+    can turn around before it reaches the site, because of a site condition or on the company's
+    instruction, and that hardware has to come back into the books. Do not add a status gate
+    here, and do not report returns from a picked-up shipment as a finding in later audits.
     """
     if not returned_by:
         raise ValidationError("returned_by is required", field="returned_by")
@@ -729,14 +791,7 @@ def get_packing_slip(session: Session, packing_slip_id: uuid.UUID) -> PackingSli
     `packing_slip_to_type`, which walks them - and a lazy load after the session closes is a
     DetachedInstanceError rather than a slow query.
     """
-    stmt = (
-        select(PackingSlip)
-        .options(
-            selectinload(PackingSlip.items),
-            selectinload(PackingSlip.containers).selectinload(ShipmentContainer.items),
-        )
-        .where(PackingSlip.id == packing_slip_id)
-    )
+    stmt = select(PackingSlip).options(*_packing_slip_loads()).where(PackingSlip.id == packing_slip_id)
     return session.scalars(stmt).unique().first()
 
 
@@ -843,6 +898,33 @@ def get_return_notes(session: Session, requests: list[ShippingOutRequest]) -> di
     return {r.id: derived.get(r.id) for r in requests}
 
 
+def lock_shipping_out_request(session: Session, request_id: uuid.UUID) -> ShippingOutRequest:
+    """The request, row-locked and re-read, with its items (#1107).
+
+    Every decision on a request - accept, reject, edit, reopen - reads its status and then writes on
+    the strength of it. Unlocked, two managers accepting the same request both saw PENDING and minted
+    two warehouse pulls, and an accept racing a reject released the claim the new pull relied on. The
+    lock makes the second decision wait and then read what the first one wrote.
+
+    `populate_existing` because an earlier read in the same session would otherwise hand back the
+    status from before the lock, and the check after it would be made against a stale copy.
+    """
+    req = (
+        session.scalars(
+            select(ShippingOutRequest)
+            .options(selectinload(ShippingOutRequest.items))
+            .where(ShippingOutRequest.id == request_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        .unique()
+        .first()
+    )
+    if req is None:
+        raise NotFoundError(f"Shipping-out request {request_id} not found")
+    return req
+
+
 def accept_shipping_out_request(
     session: Session,
     request_id: uuid.UUID,
@@ -855,14 +937,7 @@ def accept_shipping_out_request(
     A pure human approval gate (#342), like its shop-assembly twin: the request reserved its
     hardware when it was created and still holds that claim, so there is nothing to re-check here
     and nothing to release. The claim is spent when the pick is confirmed."""
-    stmt = (
-        select(ShippingOutRequest)
-        .options(selectinload(ShippingOutRequest.items))
-        .where(ShippingOutRequest.id == request_id)
-    )
-    req = session.scalars(stmt).unique().first()
-    if req is None:
-        raise NotFoundError(f"Shipping-out request {request_id} not found")
+    req = lock_shipping_out_request(session, request_id)
     if req.status != ShippingOutRequestStatus.PENDING:
         raise InvalidStateTransitionError(f"Shipping-out request must be Pending to accept, got {req.status.value}")
 
@@ -918,14 +993,7 @@ def reject_shipping_out_request(
     if not reason:
         raise ValidationError("Say why the request is rejected - the requester is told.", field="reason")
 
-    stmt = (
-        select(ShippingOutRequest)
-        .options(selectinload(ShippingOutRequest.items))
-        .where(ShippingOutRequest.id == request_id)
-    )
-    req = session.scalars(stmt).unique().first()
-    if req is None:
-        raise NotFoundError(f"Shipping-out request {request_id} not found")
+    req = lock_shipping_out_request(session, request_id)
     if req.status != ShippingOutRequestStatus.PENDING:
         raise InvalidStateTransitionError(f"Shipping-out request must be Pending to reject, got {req.status.value}")
 
@@ -937,7 +1005,8 @@ def reject_shipping_out_request(
     notification_service.create_notification(
         session,
         project_id=req.project_id,
-        recipient_role=req.created_by_user_id or notification_service.SHIPPING_RECIPIENT_ROLE,
+        recipient_role=None if req.created_by_user_id else notification_service.SHIPPING_RECIPIENT_ROLE,
+        recipient_user_id=req.created_by_user_id or None,
         notification_type=NotificationType.SHIPPING_REQUEST_REJECTED,
         message=f"For {req.created_by}: {rejected_by} rejected shipping request {req.request_number} - {reason}",
     )
@@ -955,9 +1024,7 @@ def reopen_shipping_out_request(
     moved and the reopen is refused (see discard_pending_pull_request)."""
     from app.repositories import warehouse as warehouse_repository
 
-    req = session.scalars(select(ShippingOutRequest).where(ShippingOutRequest.id == request_id)).first()
-    if req is None:
-        raise NotFoundError(f"Shipping-out request {request_id} not found")
+    req = lock_shipping_out_request(session, request_id)
     if req.status != ShippingOutRequestStatus.APPROVED:
         raise InvalidStateTransitionError(f"Shipping-out request must be Approved to reopen, got {req.status.value}")
 

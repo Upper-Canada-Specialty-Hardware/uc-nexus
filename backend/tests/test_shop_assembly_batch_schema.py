@@ -27,6 +27,7 @@ from app.models.stock_item import StockItem
 from app.repositories import import_repository, user_repository, warehouse_admin_repository
 from app.schemas import shop_assembly as shop_assembly_module
 from main import schema
+from tests.shop_assembly_helpers import with_schedule
 
 REQUEST_FIELDS = """
   id
@@ -79,16 +80,18 @@ def _seed_inventory(session, project_id, *, category="HINGE", code="HG-100", qua
 def _raise_request(session, project, *, openings=("A01", "A02"), qty=2):
     return import_repository.finalize_import_session(
         session,
-        {
-            "project_id": str(project.id),
-            "openings": [{"opening_number": n} for n in openings],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_items": [
-                {"opening_number": n, "hardware_category": "HINGE", "product_code": "HG-100", "quantity": qty}
-                for n in openings
-            ],
-        },
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [{"opening_number": n} for n in openings],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": [
+                    {"opening_number": n, "hardware_category": "HINGE", "product_code": "HG-100", "quantity": qty}
+                    for n in openings
+                ],
+            }
+        ),
     )["shop_assembly_request"]
 
 
@@ -367,3 +370,48 @@ def test_reading_a_request_stays_open_to_any_signed_in_user(monkeypatch, db_sess
     result = _execute("{ shopAssemblyRequests { id } }")
 
     assert result.errors is None, result.errors
+
+
+# --- the by-id reads answer NOT_FOUND across the company line (#1113) ---------------------------
+
+
+def _foreign_request(db_session):
+    """A request on another company's project. The manager fixture is pinned to TUBC."""
+    project = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Other", company="UCSH")
+    db_session.add(project)
+    db_session.flush()
+    sar = _raise_request(db_session, project)
+    db_session.flush()
+    return sar
+
+
+def test_another_companys_request_is_not_found(as_manager, db_session):
+    sar = _foreign_request(db_session)
+
+    result = _execute("query($id: ID!){ shopAssemblyRequest(id: $id){ id } }", {"id": str(sar.id)})
+
+    assert result.data is None or result.data.get("shopAssemblyRequest") is None
+    assert result.errors[0].extensions["code"] == "NOT_FOUND"
+
+
+def test_another_companys_allocation_review_is_not_found(as_manager, db_session):
+    sar = _foreign_request(db_session)
+
+    result = _execute(
+        "query($rid: ID!){ shopAssemblyAllocationReview(requestId: $rid){ requestNumber } }",
+        {"rid": str(sar.id)},
+    )
+
+    assert result.data is None or result.data.get("shopAssemblyAllocationReview") is None
+    assert result.errors[0].extensions["code"] == "NOT_FOUND"
+
+
+def test_the_callers_own_request_still_reads(as_manager, db_session):
+    project = _make_project(db_session)
+    sar = _raise_request(db_session, project)
+    db_session.flush()
+
+    result = _execute("query($id: ID!){ shopAssemblyRequest(id: $id){ id } }", {"id": str(sar.id)})
+
+    assert result.errors is None, result.errors
+    assert result.data["shopAssemblyRequest"]["id"] == str(sar.id)

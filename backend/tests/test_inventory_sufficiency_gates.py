@@ -36,7 +36,7 @@ from app.models.stock_item import StockItem
 from app.repositories import import_repository, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
 from tests.pick_helpers import pick_pull
-from tests.shop_assembly_helpers import batch_request
+from tests.shop_assembly_helpers import batch_request, with_schedule
 
 
 def _make_project(session) -> Project:
@@ -162,37 +162,39 @@ def test_helper_aggregates_duplicate_combos(db_session):
 def _finalize_shop_assembly(session, project, *, code, qty):
     return import_repository.finalize_import_session(
         session,
-        {
-            "project_id": str(project.id),
-            "openings": [
-                {
-                    "opening_number": "A01",
-                    "building": "B1",
-                    "floor": "F1",
-                    "location": "Lobby",
-                    "location_to": None,
-                    "location_from": None,
-                    "hand": None,
-                    "width": None,
-                    "length": None,
-                    "door_thickness": None,
-                    "jamb_thickness": None,
-                    "door_type": None,
-                    "frame_type": None,
-                    "interior_exterior": None,
-                    "keying": None,
-                    "heading_no": None,
-                    "single_pair": None,
-                    "assignment_multiplier": None,
-                }
-            ],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_request_number": f"SA-{uuid.uuid4().hex[:6]}",
-            "shop_assembly_items": [
-                {"opening_number": "A01", "hardware_category": "HINGE", "product_code": code, "quantity": qty},
-            ],
-        },
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [
+                    {
+                        "opening_number": "A01",
+                        "building": "B1",
+                        "floor": "F1",
+                        "location": "Lobby",
+                        "location_to": None,
+                        "location_from": None,
+                        "hand": None,
+                        "width": None,
+                        "length": None,
+                        "door_thickness": None,
+                        "jamb_thickness": None,
+                        "door_type": None,
+                        "frame_type": None,
+                        "interior_exterior": None,
+                        "keying": None,
+                        "heading_no": None,
+                        "single_pair": None,
+                        "assignment_multiplier": None,
+                    }
+                ],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_request_number": f"SA-{uuid.uuid4().hex[:6]}",
+                "shop_assembly_items": [
+                    {"opening_number": "A01", "hardware_category": "HINGE", "product_code": code, "quantity": qty},
+                ],
+            }
+        ),
     )
 
 

@@ -4,9 +4,13 @@ import {
   EMPTY_DELIVERY_DETAILS,
   isWeightInvalid,
   primaryWarehouse,
+  returnableUnits,
   slipMaterialLines,
+  slipNetOfReturns,
   slipOpeningSummary,
   warehouseAddressLines,
+  type PackingSlipItem,
+  type SlipContainer,
 } from '../deliveryRequest';
 import { DELIVERY_REQUEST_FIELDS } from '../../../types/deliveryRequestFields';
 
@@ -272,5 +276,55 @@ describe('primaryWarehouse', () => {
     expect(primaryWarehouse([a, b])).toBe(b);
     expect(primaryWarehouse([a])).toBe(a);
     expect(primaryWarehouse([])).toBeUndefined();
+  });
+});
+
+describe('returns on a reprint (#1107)', () => {
+  const line = (over: Partial<PackingSlipItem>): PackingSlipItem => ({
+    id: 'psi-1',
+    openingNumber: '101',
+    productCode: 'HG-100',
+    hardwareCategory: 'Hinge',
+    quantity: 10,
+    isManual: false,
+    returnedQuantity: 0,
+    ...over,
+  });
+
+  it('prints a slip line net of what came back, and drops a line that all came back', () => {
+    const net = slipNetOfReturns([
+      line({ returnedQuantity: 4 }),
+      line({ id: 'psi-2', productCode: 'LK-1', quantity: 2, returnedQuantity: 2 }),
+    ]);
+    expect(slipMaterialLines(net.items, net.containers)).toEqual([
+      '(6) Units of HG-100 - Hinge (Opening 101)',
+    ]);
+  });
+
+  it('takes what came back off matching container placements in load order', () => {
+    const containers: SlipContainer[] = [
+      {
+        id: 'c-1',
+        containerType: 'SKID',
+        name: 'Skid 1',
+        items: [
+          { id: 'ci-1', openingNumber: '101', hardwareCategory: 'Hinge', productCode: 'HG-100', quantity: 3, isManual: false, position: 0 },
+          { id: 'ci-2', openingNumber: '101', hardwareCategory: 'Hinge', productCode: 'HG-100', quantity: 7, isManual: false, position: 1 },
+        ],
+      },
+    ];
+    const net = slipNetOfReturns([line({ returnedQuantity: 4 })], containers);
+    expect(net.containers[0].items.map((i) => i.quantity)).toEqual([6]);
+  });
+
+  it('leaves manual lines alone', () => {
+    const net = slipNetOfReturns([line({ isManual: true, returnedQuantity: 0 })]);
+    expect(net.items[0].quantity).toBe(10);
+  });
+
+  it('counts only real lines, net of returns, as returnable', () => {
+    expect(returnableUnits([line({ returnedQuantity: 4 }), line({ id: 'm', isManual: true })])).toBe(6);
+    expect(returnableUnits([line({ returnedQuantity: 10 })])).toBe(0);
+    expect(returnableUnits([line({ isManual: true })])).toBe(0);
   });
 });

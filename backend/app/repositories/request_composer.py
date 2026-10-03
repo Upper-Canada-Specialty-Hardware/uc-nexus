@@ -49,7 +49,7 @@ the on-order aggregate.
 
 import uuid
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.enums import (
@@ -57,6 +57,8 @@ from app.models.enums import (
     POStatus,
     PullRequestSource,
     PullRequestStatus,
+    ReturnDisposition,
+    ShipmentStatus,
     ShippingOutRequestStatus,
     ShopAssemblyOpeningStatus,
     ShopAssemblyRequestStatus,
@@ -67,7 +69,7 @@ from app.models.pull_request import PullRequest as PullRequestModel
 from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as PurchaseOrderModel
-from app.models.shipping import PackingSlip, PackingSlipItem
+from app.models.shipping import PackingSlip, PackingSlipItem, ShipmentReturn, ShipmentReturnItem
 from app.models.shipping_out_request import ShippingOutRequest, ShippingOutRequestItem
 from app.models.shop_assembly import ShopAssemblyRequest, ShopAssemblyRequestItem, ShopAssemblyRequestOpening
 
@@ -262,6 +264,10 @@ def _sent_quantities(
         .where(
             PackingSlip.project_id == project_id,
             PackingSlipItem.opening_number.in_(opening_numbers),
+            # #1107: a manual line is free text that never came off inventory. Counting it here let a
+            # spare that happened to share a product code read as the opening's hardware having
+            # shipped, hiding a real shortfall - the staged pool already leaves it out the same way.
+            PackingSlipItem.is_manual.is_(False),
         )
         .group_by(
             PackingSlipItem.opening_number,
@@ -272,6 +278,38 @@ def _sent_quantities(
         key = (opening_number, category, code)
         shipped[key] = shipped.get(key, 0) + int(quantity or 0)
 
+    # #1107 (ruling: re-offer it): what came back. A return to the project puts the units back in
+    # the project's inventory, and a cancelled slip (#973: everything came back before pickup) never
+    # left at all - in either case the opening is owed them again. A return into stock or RMA off a
+    # slip that did go out is hardware the site no longer has but the project does not hold either,
+    # so it stays counted as sent.
+    came_back: dict[_OpeningComboKey, int] = {}
+    for opening_number, category, code, quantity in session.execute(
+        select(
+            ShipmentReturnItem.opening_number,
+            ShipmentReturnItem.hardware_category,
+            ShipmentReturnItem.product_code,
+            func.sum(ShipmentReturnItem.quantity),
+        )
+        .join(ShipmentReturn, ShipmentReturnItem.shipment_return_id == ShipmentReturn.id)
+        .join(PackingSlip, ShipmentReturn.packing_slip_id == PackingSlip.id)
+        .where(
+            PackingSlip.project_id == project_id,
+            ShipmentReturnItem.opening_number.in_(opening_numbers),
+            or_(
+                ShipmentReturnItem.disposition == ReturnDisposition.RETURN_TO_PROJECT,
+                PackingSlip.status == ShipmentStatus.CANCELLED,
+            ),
+        )
+        .group_by(
+            ShipmentReturnItem.opening_number,
+            ShipmentReturnItem.hardware_category,
+            ShipmentReturnItem.product_code,
+        )
+    ).all():
+        key = (opening_number, category, code)
+        came_back[key] = came_back.get(key, 0) + int(quantity or 0)
+
     assembled = completed_by_source[PullRequestSource.SHOP_ASSEMBLY]
     shipped_out = completed_by_source[PullRequestSource.SHIPPING_OUT]
 
@@ -279,7 +317,7 @@ def _sent_quantities(
     for key in set(assembled) | set(shipped_out) | set(shipped):
         opening_number, category, code = key
         assembled_quantity = assembled.get(key, 0)
-        shipped_quantity = max(shipped_out.get(key, 0), shipped.get(key, 0))
+        shipped_quantity = max(0, max(shipped_out.get(key, 0), shipped.get(key, 0)) - came_back.get(key, 0))
         if assembled_quantity + shipped_quantity > 0:
             out.setdefault(opening_number, {})[(category, code)] = {
                 "assembled": assembled_quantity,

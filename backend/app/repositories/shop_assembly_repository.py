@@ -89,6 +89,7 @@ def create_shop_assembly_request(
         )
 
     lines = [_validated_line(item) for item in items]
+    _check_lines_against_schedule(session, project_id, lines)
 
     # #493: minted from the project's counter, shared with shipping-out requests so one chronological
     # sequence covers every pull on the job.
@@ -164,6 +165,65 @@ def _validated_line(item: dict) -> dict:
         "product_code": code,
         "requested_quantity": quantity,
     }
+
+
+def _check_lines_against_schedule(session: Session, project_id: uuid.UUID, lines: list[dict]) -> None:
+    """Hold every line to the opening's own schedule (#1133).
+
+    The composer only ever offers what an opening is scheduled for, but the server took category,
+    code and quantity as sent, so a stale or hand-built call could owe an opening hardware that is not
+    on it, or any amount of it. Each (opening, category, code) must be on the schedule, owed at most
+    what the schedule gives that opening, and named once: batching keys `owed` by that triple, so a
+    second line for it silently replaced the first.
+
+    The ceiling is the opening's scheduled total, not the composer's net-of-sent-and-claimed figure:
+    it bounds what a request can claim to be owed without re-deriving the composer here, so a line the
+    composer suggested is never refused. One grouped read over the named openings.
+    """
+    from app.models.hardware import HardwareItem
+    from app.models.project import Opening
+
+    seen: set[tuple[str, str, str]] = set()
+    for line in lines:
+        key = (line["opening_number"], line["hardware_category"], line["product_code"])
+        if key in seen:
+            raise ValidationError(
+                f"{key[0]} {key[1]} {key[2]}: this line appears on the request twice.",
+                field="items",
+            )
+        seen.add(key)
+
+    scheduled = {
+        (opening_number, category, code): int(total or 0)
+        for opening_number, category, code, total in session.execute(
+            select(
+                Opening.opening_number,
+                HardwareItem.hardware_category,
+                HardwareItem.product_code,
+                func.sum(HardwareItem.item_quantity),
+            )
+            .join(Opening, HardwareItem.opening_id == Opening.id)
+            .where(
+                HardwareItem.project_id == project_id,
+                Opening.opening_number.in_({line["opening_number"] for line in lines}),
+            )
+            .group_by(Opening.opening_number, HardwareItem.hardware_category, HardwareItem.product_code)
+        ).all()
+    }
+    for line in lines:
+        key = (line["opening_number"], line["hardware_category"], line["product_code"])
+        on_schedule = scheduled.get(key, 0)
+        if on_schedule <= 0:
+            raise ValidationError(
+                f"{key[1]} {key[2]} is not on opening {key[0]}'s schedule.",
+                field="product_code",
+            )
+        if line["requested_quantity"] > on_schedule:
+            raise ValidationError(
+                f"{key[0]} {key[1]} {key[2]}: the schedule gives this opening {on_schedule}, "
+                f"so it cannot be owed {line['requested_quantity']}.",
+                field="requested_quantity",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +311,27 @@ def get_shop_assembly_request(session: Session, request_id: uuid.UUID) -> ShopAs
     if request is None:
         raise NotFoundError(f"Shop-assembly request {request_id} not found")
     return request
+
+
+def _locked_request(session: Session, request_id: uuid.UUID) -> ShopAssemblyRequest:
+    """The request, row-locked and then read fresh, for a decision that changes it (#1121).
+
+    Batch, dismiss, reject and discard each read the request's state and then act on it. Two managers
+    pressing at once used to both pass the state check: two batches computed the same sequence and the
+    second died on the unique index as a raw error, a dismiss racing a batch left an opening DISMISSED
+    under a live batch, and a reject racing a batch left a REJECTED request holding reservations. The
+    lock serialises them; the second one then re-reads (`populate_existing`, see the readers above)
+    and meets the first one's result as an ordinary state error.
+
+    The request row is locked before any inventory row the batch gate locks. The pull-cancel path
+    goes the other way only when it reopens a CLOSED request, and a batch on a CLOSED request is
+    refused anyway, so the one crossing can only cost the losing side a deadlock error Postgres
+    raises on its own - never a hang, never a wrong write.
+    """
+    from app.services.locking import lock_rows
+
+    lock_rows(session, ShopAssemblyRequest, [request_id])
+    return get_shop_assembly_request(session, request_id)
 
 
 def get_pull_statuses(session: Session, requests: list[ShopAssemblyRequest]) -> dict[uuid.UUID, PullRequestStatus]:
@@ -449,7 +530,9 @@ def create_shop_assembly_batch(
     """
     from app.repositories import warehouse as warehouse_repository
 
-    request = get_shop_assembly_request(session, request_id)
+    # Locked before anything is read off it, so the sequence below and the pending-openings set are
+    # this batch's alone (#1121).
+    request = _locked_request(session, request_id)
     if request.status != ShopAssemblyRequestStatus.PENDING:
         raise InvalidStateTransitionError(f"Shop-assembly request must be Pending to batch, got {request.status.value}")
     if not lines:
@@ -614,7 +697,7 @@ def dismiss_shop_assembly_openings(
     action. Dismissing releases nothing, because a pending opening has never held anything: it is a
     statement that the shop is not getting this hardware through this request.
     """
-    request = get_shop_assembly_request(session, request_id)
+    request = _locked_request(session, request_id)
     if request.status != ShopAssemblyRequestStatus.PENDING:
         raise InvalidStateTransitionError(
             f"Shop-assembly request must be Pending to dismiss openings, got {request.status.value}"
@@ -668,7 +751,7 @@ def reject_shop_assembly_request(
     the honest ways to end it are cancelling that pull and dismissing what is left, both of which
     say what actually became of each opening.
     """
-    request = get_shop_assembly_request(session, request_id)
+    request = _locked_request(session, request_id)
     if request.status != ShopAssemblyRequestStatus.PENDING:
         raise InvalidStateTransitionError(
             f"Shop-assembly request must be Pending to reject, got {request.status.value}"
@@ -704,10 +787,16 @@ def discard_shop_assembly_batch(session: Session, batch_id: uuid.UUID) -> ShopAs
     batch = session.get(ShopAssemblyBatch, batch_id)
     if batch is None:
         raise NotFoundError(f"Shop-assembly batch {batch_id} not found")
+    # Locked like batch / dismiss / reject (#1121), then the batch re-checked under it: a discard
+    # racing another discard of the same batch must meet it gone, not delete it twice.
+    request = _locked_request(session, batch.shop_assembly_request_id)
+    batch = session.scalars(
+        select(ShopAssemblyBatch).where(ShopAssemblyBatch.id == batch_id).execution_options(populate_existing=True)
+    ).first()
+    if batch is None:
+        raise NotFoundError(f"Shop-assembly batch {batch_id} not found")
     if batch.status != ShopAssemblyBatchStatus.ACTIVE:
         raise InvalidStateTransitionError("This batch's pull was already cancelled; there is nothing to discard.")
-
-    request = get_shop_assembly_request(session, batch.shop_assembly_request_id)
     pull_id = batch.pull_request_id
 
     # Release before the delete: the reservation rows cascade off the batch, and dropping them

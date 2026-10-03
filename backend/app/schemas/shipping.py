@@ -25,7 +25,6 @@ from .enums import ShipmentContainerType as ShipmentContainerTypeEnum
 from .enums import ShippingOutRequestStatus
 from .inputs import (
     ConfirmShipmentFromContainersInput,
-    ConfirmShipmentInput,
     CreateShipmentReturnInput,
     CreateShippingOutRequestInput,
     EditShippingOutRequestInput,
@@ -115,13 +114,38 @@ class ShippingQueries:
             )
 
     @strawberry.field
-    def packing_slips(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[PackingSlip]:
+    def packing_slips(
+        self,
+        info: strawberry.Info,
+        project_id: strawberry.ID | None = None,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[PackingSlip]:
+        """One page of shipments, newest first (#1107). `search` matches the slip number; `limit`
+        defaults to 25 and is capped at 200. `packingSlipCount` answers how many the filter matches."""
         with SessionLocal() as session:
             scope = tenant_scope(info)
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
-            slips = shipping_repository.list_packing_slips(session, pid, company=scope)
+            slips = shipping_repository.list_packing_slips(
+                session, pid, company=scope, search=search, limit=limit, offset=offset
+            )
             return [packing_slip_to_type(ps) for ps in slips]
+
+    @strawberry.field
+    def packing_slip_count(
+        self,
+        info: strawberry.Info,
+        project_id: strawberry.ID | None = None,
+        search: str | None = None,
+    ) -> int:
+        """How many shipments `packingSlips` would page through for the same filter (#1107)."""
+        with SessionLocal() as session:
+            scope = tenant_scope(info)
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            tenancy.require_project_in_scope(session, pid, scope)
+            return shipping_repository.count_packing_slips(session, pid, company=scope, search=search)
 
     @strawberry.field
     def shipping_out_requests(
@@ -389,9 +413,10 @@ class ShippingMutations:
         """Cut the packing slip for whole containers (#451).
 
         The container flow's confirm. It composes the slip's items out of what was loaded and stamps
-        the slip onto each container, then hands off to the same `confirmShipment` machinery - the
+        the slip onto each container, then hands off to the repository's `confirm_shipment` - the
         quarantine gate, the SHIP_READY transition and the loose arithmetic are not re-implemented
-        here. Recorded against the Clerk-authenticated caller (#427)."""
+        here. The only confirm: the loose `confirmShipment` beside it was removed (#1107). Recorded
+        against the Clerk-authenticated caller (#427)."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
@@ -508,47 +533,6 @@ class ShippingMutations:
             session.commit()
             refreshed = shipping_repository.get_shipping_out_request(session, request_id)
             return shipping_out_request_to_type(refreshed)
-
-    @strawberry.mutation
-    def confirm_shipment(self, info: strawberry.Info, input: ConfirmShipmentInput) -> PackingSlip:
-        """Cut the packing slip for what actually went on the truck, and write its Delivery Request.
-
-        `shippedBy` is printed on the slip and shown in the shipments grid, so it is the record of
-        who released the hardware. It is the Clerk-authenticated caller as of #427; the input field
-        that used to name it was dropped in #438.
-
-        The slip is born SCHEDULED (#447), carrying the header the shipping department filled in.
-        What this does to inventory is unchanged - the states that follow document the truck's
-        journey, not the hardware's."""
-        auth = current_user(info)
-        actor = resolve_display_name(auth["user_id"])
-
-        project_id = uuid.UUID(str(input.project_id))
-        items_data = [
-            {
-                "opening_number": item.opening_number,
-                "hardware_category": item.hardware_category,
-                "product_code": item.product_code,
-                "quantity": item.quantity,
-                "building": item.building,
-                "floor": item.floor,
-                "location": item.location,
-            }
-            for item in input.items
-        ]
-
-        with SessionLocal() as session:
-            tenancy.require_project_in_scope(session, project_id, tenant_scope(info))
-            ps = shipping_repository.confirm_shipment(
-                session,
-                project_id,
-                actor,
-                items_data,
-                _delivery_details(input),
-            )
-            session.commit()
-            refreshed = shipping_repository.get_packing_slip(session, ps.id)
-            return packing_slip_to_type(refreshed)
 
     @strawberry.mutation
     def update_shipment_details(self, info: strawberry.Info, input: UpdateShipmentDetailsInput) -> PackingSlip:

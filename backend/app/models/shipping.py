@@ -141,6 +141,9 @@ class PackingSlipItem(Base):
     is_manual: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
 
     packing_slip: Mapped["PackingSlip"] = relationship(back_populates="items")
+    # What has come back off this line (#1107). Read-only: returns are written through their own
+    # header, and this exists so a slip read can carry its net quantity without a query per line.
+    return_items: Mapped[list["ShipmentReturnItem"]] = relationship(viewonly=True)
 
 
 class ShipmentReturn(Base):

@@ -40,8 +40,8 @@ export const GET_PRIOR_ORDER_AS_VALUES = gql`
 `;
 
 export const GET_NOTIFICATIONS = gql`
-  query GetNotifications($projectId: ID, $recipientRole: String, $unreadOnly: Boolean, $limit: Int) {
-    notifications(projectId: $projectId, recipientRole: $recipientRole, unreadOnly: $unreadOnly, limit: $limit) {
+  query GetNotifications($projectId: ID, $unreadOnly: Boolean, $limit: Int) {
+    notifications(projectId: $projectId, unreadOnly: $unreadOnly, limit: $limit) {
       id
       projectId
       recipientRole
@@ -50,6 +50,13 @@ export const GET_NOTIFICATIONS = gql`
       isRead
       createdAt
     }
+  }
+`;
+
+// #1112: the badge reads a count, not the length of a capped list.
+export const GET_NOTIFICATION_UNREAD_COUNT = gql`
+  query GetNotificationUnreadCount {
+    notificationUnreadCount
   }
 `;
 
@@ -206,6 +213,12 @@ export const MARK_NOTIFICATION_AS_READ = gql`
       id
       isRead
     }
+  }
+`;
+
+export const MARK_ALL_NOTIFICATIONS_AS_READ = gql`
+  mutation MarkAllNotificationsAsRead {
+    markAllNotificationsAsRead
   }
 `;
 

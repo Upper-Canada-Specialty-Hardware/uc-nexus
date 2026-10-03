@@ -231,9 +231,11 @@ const PACKING_SLIP_FIELDS =
   [...SLIP_IDENTITY_FIELDS, ...DELIVERY_REQUEST_FIELDS, ...SLIP_LIFECYCLE_FIELDS].join('\n  ') +
   SLIP_CONTAINER_FIELDS;
 
+// One page of the Shipments list (#1107): paged and searched on the server, with the count of
+// everything the filter matches so the list can say how many more there are.
 export const GET_PACKING_SLIPS = gql`
-  query GetPackingSlips($projectId: ID) {
-    packingSlips(projectId: $projectId) {
+  query GetPackingSlips($projectId: ID, $search: String, $limit: Int) {
+    packingSlips(projectId: $projectId, search: $search, limit: $limit) {
       ${PACKING_SLIP_FIELDS}
       items {
         id
@@ -245,8 +247,10 @@ export const GET_PACKING_SLIPS = gql`
         hardwareCategory
         quantity
         isManual
+        returnedQuantity
       }
     }
+    packingSlipCount(projectId: $projectId, search: $search)
   }
 `;
 
@@ -260,26 +264,6 @@ export const GET_RETURNABLE_LINES = gql`
       shippedQuantity
       returnedQuantity
       returnableQuantity
-    }
-  }
-`;
-
-export const CONFIRM_SHIPMENT = gql`
-  mutation ConfirmShipment($input: ConfirmShipmentInput!) {
-    confirmShipment(input: $input) {
-      ${PACKING_SLIP_FIELDS}
-      items {
-        id
-        packingSlipId
-        openingNumber
-        building
-        floor
-        location
-        productCode
-        hardwareCategory
-        quantity
-        isManual
-      }
     }
   }
 `;
@@ -301,6 +285,7 @@ export const CONFIRM_SHIPMENT_FROM_CONTAINERS = gql`
         hardwareCategory
         quantity
         isManual
+        returnedQuantity
       }
     }
   }
