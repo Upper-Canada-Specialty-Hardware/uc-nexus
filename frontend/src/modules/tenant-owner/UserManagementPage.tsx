@@ -342,7 +342,11 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
     if (!selectedUser) return;
     setSaving(true);
     try {
-      await updateRoles({ variables: { userId: selectedUser.id, roles: editRoles } });
+      // #1321: the roles this dialog loaded, so a save over somebody else's change is refused rather
+      // than replacing their grants with this list.
+      await updateRoles({
+        variables: { userId: selectedUser.id, roles: editRoles, expectedRoles: selectedUser.roles },
+      });
       // Issue #240: only write the name when it actually changed (Clerk PATCH is not a no-op).
       if (
         editFirstName.trim() !== (selectedUser.firstName ?? '') ||

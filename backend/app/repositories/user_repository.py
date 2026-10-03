@@ -3,7 +3,7 @@
 import httpx
 
 from app.config import CLERK_SECRET_KEY
-from app.errors import AppError, ValidationError
+from app.errors import AppError, ConflictError, ValidationError
 
 CLERK_API_BASE = "https://api.clerk.com/v1"
 
@@ -153,10 +153,17 @@ def _merge_public_metadata(user_id: str, patch: dict) -> dict:
     return _user_summary(resp.json())
 
 
-def update_user_roles(user_id: str, roles: list[str]) -> dict:
+def update_user_roles(user_id: str, roles: list[str], expected_roles: list[str] | None = None) -> dict:
     """Update a Clerk user's roles in publicMetadata. An account that no longer holds PO_USER_ROLE
     gives its GP buyer identity back in the same write: a null value removes the key under Clerk's
-    metadata merge, exactly as update_user_gp_buyer_id clears it."""
+    metadata merge, exactly as update_user_gp_buyer_id clears it.
+
+    The list replaces the stored one outright, so `expected_roles` (#1321) is the roles the caller
+    loaded: when Clerk holds something else now, somebody changed them in between, and writing this
+    list would silently drop their grants (and could clear a buyer id they just set). Compared as
+    sets, order not mattering. Left out, the write goes through as before."""
+    if expected_roles is not None and set(get_user_roles(user_id)) != set(expected_roles):
+        raise ConflictError("This user's roles changed since you opened them. Reload and try again.")
     patch: dict = {"roles": roles}
     if PO_USER_ROLE not in roles:
         patch["gpBuyerId"] = None
