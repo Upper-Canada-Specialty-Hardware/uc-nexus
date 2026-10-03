@@ -373,6 +373,8 @@ export default function PutAwayTab() {
       // gets exactly the units the user said and the rest stays in the queue for its own shelf.
       const partial = Number.isFinite(wanted) && wanted > 0 && wanted < rowQuantity;
       setAssigningId(id);
+      // #1378: set once the split has landed, so a refused assign after it is reported for what it is.
+      let splitDone = false;
       try {
         let targetId = id;
         if (partial) {
@@ -383,6 +385,7 @@ export default function PutAwayTab() {
             ?.splitInventoryLocation;
           if (!rows || rows.length < 2) throw new Error('Split did not return the new row');
           targetId = rows[1].id;
+          splitDone = true;
         }
         await assignLocation({
           variables: {
@@ -411,7 +414,22 @@ export default function PutAwayTab() {
         refetch();
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Failed to assign location';
-        showToast(message, 'error');
+        if (splitDone) {
+          // The split committed but the assign was refused: the piece is already its own row, so
+          // redraw the queue and clear the typed quantity, or a retry would split the wrong row.
+          setSplitQty((prev) => {
+            const next = { ...prev };
+            delete next[id];
+            return next;
+          });
+          refetch();
+          showToast(
+            `${wanted} of ${productCode} is now its own row in the queue; assign failed: ${message}`,
+            'error',
+          );
+        } else {
+          showToast(message, 'error');
+        }
       } finally {
         setAssigningId(null);
       }
