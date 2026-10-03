@@ -70,4 +70,42 @@ describe('SpotCheckModal', () => {
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(calledVariables).toMatchObject({ adjustment: -3, spotCheck: true, expectedQuantity: 10 });
   });
+
+  it('closes on a row-changed refusal so the retry starts from the fresh count', async () => {
+    const message = 'This row changed from 10 to 6 since you opened it. Reload and try again.';
+    const mocks: MockedResponse[] = [
+      {
+        request: {
+          query: ADJUST_INVENTORY_QUANTITY,
+          variables: {
+            inventoryLocationId: 'inv-1',
+            adjustment: -3,
+            reason: 'Spot check: system=10, physical=7',
+            spotCheck: true,
+            expectedQuantity: 10,
+          },
+        },
+        result: {
+          errors: [{ message, extensions: { code: 'CONFLICT', field: 'expected_quantity' } }],
+        },
+      },
+    ];
+    const onClose = vi.fn();
+    const onSuccess = vi.fn();
+    render(
+      <MockedProvider mocks={mocks}>
+        <ToastProvider>
+          <SpotCheckModal open onClose={onClose} item={item} onSuccess={onSuccess} />
+        </ToastProvider>
+      </MockedProvider>,
+    );
+
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '7' } });
+    fireEvent.click(screen.getByRole('button', { name: /apply adjustment/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^apply$/i }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(screen.getByText(message)).toBeInTheDocument();
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
 });

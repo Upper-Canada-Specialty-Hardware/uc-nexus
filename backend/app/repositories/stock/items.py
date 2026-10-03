@@ -95,6 +95,7 @@ def adjust_stock_quantity(
     get_stock_item(session, stock_item_id)  # NotFoundError for an unknown id
     si = lock_rows(session, StockItem, [stock_item_id])[0]
     session.refresh(si)
+    # Must follow the lock directly: the count compared is the locked, fresh one.
     check_expected_quantity(si.quantity, expected_quantity)
 
     # Honor the deficient_quantity <= quantity invariant by clamping if needed

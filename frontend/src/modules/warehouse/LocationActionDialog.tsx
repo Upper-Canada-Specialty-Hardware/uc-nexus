@@ -13,6 +13,7 @@ import LocationAutocomplete from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
 import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED } from '../../graphql/shared';
 import { ADJUST_INVENTORY_QUANTITY, MOVE_STOCK_LOCATION, MARK_STOCK_ITEM_UNLOCATED, ADJUST_STOCK_QUANTITY } from '../../graphql/warehouse';
+import { isStaleRowRefusal } from '../../graphql/staleRow';
 import { microLabelSx, monoSx } from '../../theme';
 import { ReservationGateNotice, useComboReservation, useReservationGate } from './reservationNotice';
 import { useDefinedLocationPick } from './useDefinedLocationPick';
@@ -263,9 +264,12 @@ export default function LocationActionDialog({
         void client.refetchQueries({ include: 'active' });
       } else {
         showToast(message, 'error');
-        // A refused adjust is usually a row that changed under the dialog: refresh so the grid shows
-        // the current count before the next try (#1316).
-        if (mode === 'adjust') void client.refetchQueries({ include: 'active' });
+        if (isStaleRowRefusal(err)) {
+          // The row moved since this opened (#1316). The count here is the parent's snapshot, so a
+          // retry would be refused again: refresh the grid and close; reopening reads the fresh row.
+          void client.refetchQueries({ include: 'active' });
+          onClose();
+        }
       }
     } finally {
       setSubmitting(false);

@@ -6,6 +6,7 @@ import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
 import { ADJUST_INVENTORY_QUANTITY } from '../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
+import { isStaleRowRefusal } from '../../graphql/staleRow';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { ReservationGateNotice, useComboReservation, useReservationGate } from './reservationNotice';
 import { Appear } from '../../motion';
@@ -77,9 +78,12 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
     },
     onError: (err) => {
       showToast(err.message, 'error');
-      // A refusal is usually "this row changed since you opened it" (#1315): redraw the counts so the
-      // next try is against what the shelf now holds.
-      void client.refetchQueries({ include: WAREHOUSE_REFETCH_QUERIES });
+      if (isStaleRowRefusal(err)) {
+        // The row moved since this opened (#1315). The count shown here is the parent's snapshot, so
+        // close: the refetch redraws the grid and reopening counts against what the shelf now holds.
+        void client.refetchQueries({ include: WAREHOUSE_REFETCH_QUERIES });
+        onClose();
+      }
     },
   });
 

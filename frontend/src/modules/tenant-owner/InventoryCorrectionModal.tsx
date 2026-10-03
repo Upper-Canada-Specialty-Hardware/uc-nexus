@@ -18,6 +18,7 @@ import { FONT_MONO, microLabelSx, monoSx, tabularSx } from '../../theme';
 import { OVERRIDE_INVENTORY_QUANTITY } from '../../graphql/admin';
 import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED, ASSIGN_INVENTORY_LOCATION } from '../../graphql/shared';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
+import { isStaleRowRefusal } from '../../graphql/staleRow';
 import { ReservationGateNotice, useComboReservation, useReservationGate } from '../warehouse/reservationNotice';
 
 // --- Item types ---
@@ -261,8 +262,12 @@ export default function InventoryCorrectionModal({
     },
     onError: (error) => {
       showToast(error.message, 'error');
-      // Usually "this row changed from X to Y since you opened it" (#1318): redraw the counts.
-      void client.refetchQueries({ include: WAREHOUSE_REFETCH_QUERIES });
+      if (isStaleRowRefusal(error)) {
+        // "This row changed from X to Y" (#1318): the count here is the parent's snapshot, so close;
+        // the refetch redraws the grid and reopening works from the current count.
+        void client.refetchQueries({ include: WAREHOUSE_REFETCH_QUERIES });
+        onClose();
+      }
     },
   });
 

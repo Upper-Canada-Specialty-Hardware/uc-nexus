@@ -306,6 +306,28 @@ describe('LocationActionDialog', () => {
     });
   });
 
+  it('closes on a row-changed refusal instead of retrying from the stale count (#1316)', async () => {
+    const message = 'This row changed from 4 to 1 since you opened it. Reload and try again.';
+    const mocks: MockedResponse[] = [
+      {
+        request: {
+          query: ADJUST_STOCK_QUANTITY,
+          variables: { input: { stockItemId: 'stock-1', newQuantity: 2, reasonText: 'recount', expectedQuantity: 4 } },
+        },
+        result: { errors: [{ message, extensions: { code: 'CONFLICT', field: 'expected_quantity' } }] },
+      },
+    ];
+    const { onSuccess, onClose } = renderDialog({ mode: 'adjust', targets: [stockTarget] }, mocks);
+
+    fireEvent.change(screen.getByLabelText('Adjustment (+/-)'), { target: { value: '-2' } });
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'recount' } });
+    fireEvent.click(confirmButton());
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(screen.getByText(message)).toBeInTheDocument();
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
+
   it('a multi-row unlocate that fails partway says how far it got and retries only the rest (#1317)', async () => {
     const second: LocationActionTarget = { ...invTarget, id: 'inv-2', productCode: 'HG-200' };
     const unlocated = (id: string) => ({
