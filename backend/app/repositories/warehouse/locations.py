@@ -439,6 +439,15 @@ def get_location_duplicates(session: Session, *, company: str | None = None) -> 
     )
 
 
+def _matches_from(column, value: str | None):
+    """A merge's from-field as a filter. The cleanup page sends a variant's missing row or bay as an
+    empty string (#1199), and `column == ''` never matches the NULL the row actually holds, so an empty
+    or missing value matches a NULL (or empty) column instead."""
+    if value is None or value == "":
+        return or_(column.is_(None), column == "")
+    return column == value
+
+
 def merge_locations(
     session: Session,
     *,
@@ -473,9 +482,9 @@ def merge_locations(
         session.scalars(
             select(InventoryLocationModel).where(
                 InventoryLocationModel.warehouse_id == warehouse_id,
-                InventoryLocationModel.aisle == from_aisle,
-                InventoryLocationModel.row == from_row,
-                InventoryLocationModel.bay == from_bay,
+                _matches_from(InventoryLocationModel.aisle, from_aisle),
+                _matches_from(InventoryLocationModel.row, from_row),
+                _matches_from(InventoryLocationModel.bay, from_bay),
             )
         ).all()
     )
@@ -500,9 +509,9 @@ def merge_locations(
         session.scalars(
             select(StockItemModel).where(
                 StockItemModel.warehouse_id == warehouse_id,
-                StockItemModel.aisle == from_aisle,
-                StockItemModel.row == from_row,
-                StockItemModel.bay == from_bay,
+                _matches_from(StockItemModel.aisle, from_aisle),
+                _matches_from(StockItemModel.row, from_row),
+                _matches_from(StockItemModel.bay, from_bay),
             )
         ).all()
     )

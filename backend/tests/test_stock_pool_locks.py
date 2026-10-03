@@ -204,3 +204,27 @@ def test_merge_folds_a_pool_row_into_the_same_key_row_on_the_target_shelf(db_ses
     assert (source.quantity, source.deficient_quantity) == (0, 0)
     # A row with no same-key partner on the target shelf simply moves.
     assert (other.aisle, other.row, other.bay, other.quantity) == ("B", "2", "2", 2)
+
+
+def test_merge_matches_an_empty_row_and_bay_as_null(db_session):
+    """The cleanup page sends a variant's missing row/bay as '' (#1199); the NULL rows must still move."""
+    define_location(db_session, aisle="B", row="2", bay="2")
+    project = make_project(db_session)
+    il = make_il(db_session, project, quantity=3, aisle="A", row=None, bay=None)
+    si = make_stock_item(db_session, quantity=2, code="HG-777", aisle="A", row=None, bay=None)
+
+    counts = warehouse_repository.merge_locations(
+        db_session,
+        warehouse_id=wh_id(db_session),
+        from_aisle="A",
+        from_row="",
+        from_bay="",
+        to_aisle="B",
+        to_row="2",
+        to_bay="2",
+        performed_by="manager",
+    )
+
+    assert counts["inventory_locations"] >= 1 and counts["stock_items"] >= 1
+    assert (il.aisle, il.row, il.bay) == ("B", "2", "2")
+    assert (si.aisle, si.row, si.bay) == ("B", "2", "2")
