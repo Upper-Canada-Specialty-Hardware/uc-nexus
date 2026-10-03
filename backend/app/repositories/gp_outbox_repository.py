@@ -71,6 +71,25 @@ def enqueue(
     return row
 
 
+def queued_po_registration(
+    session: Session, po_id: uuid.UUID, *, exclude_key: str | None = None
+) -> GpWriteOutbox | None:
+    """The PO's registration that is still waiting for GP (PENDING or IN_FLIGHT), if there is one.
+
+    While it waits the PO is still a Draft, so the Draft check alone let a second registration through
+    under a fresh key (a second GP PO on drain) and let a cancel drop a PO the queue then created in GP.
+    `exclude_key` leaves out the caller's own attempt: a resubmit under the same key is the no-op
+    `enqueue` already makes it, not a second registration."""
+    stmt = select(GpWriteOutbox).where(
+        GpWriteOutbox.entity_key == f"po:{po_id}",
+        GpWriteOutbox.op == "register_po_in_gp",
+        GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT")),
+    )
+    if exclude_key is not None:
+        stmt = stmt.where(GpWriteOutbox.idempotency_key != exclude_key)
+    return session.scalars(stmt.limit(1)).first()
+
+
 def claim_next(session: Session, company: str) -> GpWriteOutbox | None:
     """Take the oldest due PENDING row for `company`, marking it IN_FLIGHT.
 
@@ -151,6 +170,15 @@ def mark_failed(session: Session, row: GpWriteOutbox, *, kind: str, error: str, 
     row.failure_kind = kind
     row.last_error = error
     row.last_error_code = error_code
+    session.flush()
+
+
+def mark_skipped(session: Session, row: GpWriteOutbox, *, error: str) -> None:
+    """Close a row the worker refused to send, because what it would write no longer applies. Nothing
+    reached GP, so it is CANCELLED (an admin can still put it back with retry), not FAILED."""
+    row.status = "CANCELLED"
+    row.last_error = error
+    row.last_error_code = None
     session.flush()
 
 

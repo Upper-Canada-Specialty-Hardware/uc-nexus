@@ -1170,6 +1170,17 @@ def update_po(
         project = session.get(ProjectModel, project_id)
         if project is None:
             raise NotFoundError(f"Project {project_id} not found")
+        # #1170: the rule register_po_in_gp applies. A registered PO sits in GP under its job, so moving
+        # it here would leave the two disagreeing, and a project-born PO's lines are tied to that
+        # project's schedule. Only a Draft with no project yet can take one, and only of its own company.
+        if project_id != po.project_id:
+            if po.status != POStatus.DRAFT or po.project_id is not None:
+                raise InvalidStateTransitionError("Only a Draft PO with no project can be given a project")
+            if project.company != po.company:
+                raise ValidationError(
+                    f"Project {project.project_id} belongs to {project.company}, not {po.company}",
+                    field="project_id",
+                )
         po.project_id = project_id
         # A PO moved onto a job no longer receives into the pool, so its pool kind reverts (#832).
         po.pool_kind = PoolKind.STOCK
@@ -1276,6 +1287,15 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
             f"Cannot cancel PO in {po.status.value} status - only a draft can be cancelled. "
             "Once a PO is registered in GP, cancel it there."
         )
+    # #1166: a queued registration is still a Draft here, but the worker will create it in GP when the
+    # relay returns. Cancelling now would drop a PO GP is about to hold, the phantom this guard exists for.
+    from app.repositories import gp_outbox_repository
+
+    if gp_outbox_repository.queued_po_registration(session, po_id) is not None:
+        raise InvalidStateTransitionError(
+            "This PO's registration is queued for GP, so it cannot be cancelled until it posts. "
+            "Once it is in GP, cancel it there."
+        )
 
     po.status = POStatus.CANCELLED
     po.deleted_at = datetime.utcnow()
@@ -1324,8 +1344,9 @@ def update_line_item_unit_cost(
     unit_cost: float,
 ) -> POLineItem:
     """Update unit_cost on a POLineItem. Parent PO must be DRAFT."""
-    if unit_cost <= 0:
-        raise ValidationError("Unit cost must be greater than zero", field="unit_cost")
+    # #1172: zero is a no-charge line, which drafting and registration already accept.
+    if unit_cost < 0:
+        raise ValidationError("Unit cost cannot be negative", field="unit_cost")
 
     stmt = select(POLineItem).where(POLineItem.id == line_item_id)
     poli = session.scalars(stmt).first()
@@ -1452,10 +1473,11 @@ def upload_po_document(
     return doc
 
 
-def delete_po_document(session: Session, document_id: uuid.UUID) -> None:
-    """Delete a PO document. Validates PO status allows edits."""
-    from app.services import storage
+def delete_po_document(session: Session, document_id: uuid.UUID) -> str:
+    """Delete a PO document's row. Validates PO status allows edits.
 
+    Returns the stored file's key and leaves the file alone (#1171): the caller removes it once the
+    commit has landed, so a commit that fails keeps a row whose file is still there."""
     stmt = select(PODocument).where(PODocument.id == document_id)
     doc = session.scalars(stmt).first()
     if doc is None:
@@ -1472,7 +1494,7 @@ def delete_po_document(session: Session, document_id: uuid.UUID) -> None:
     deleted_doc_po_id = doc.po_id
     deleted_doc_type = doc.document_type
 
-    storage.delete_file(doc.s3_key)
+    s3_key = doc.s3_key
     session.delete(doc)
 
     # Auto-revert: VENDOR_CONFIRMED → GP_REGISTERED when last vendor ack doc is deleted
@@ -1486,6 +1508,8 @@ def delete_po_document(session: Session, document_id: uuid.UUID) -> None:
         ).first()
         if remaining_ack is None:
             po.status = POStatus.GP_REGISTERED
+
+    return s3_key
 
 
 def get_po_document(session: Session, document_id: uuid.UUID) -> PODocument:

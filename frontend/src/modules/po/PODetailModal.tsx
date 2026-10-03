@@ -276,7 +276,8 @@ export default function PODetailModal({
         const editVal = unitCostEdits[li.id];
         if (editVal === undefined || editVal === '') return false;
         const parsed = parseFloat(editVal);
-        return !isNaN(parsed) && parsed > 0 && parsed !== li.unitCost;
+        // A $0 no-charge line is valid, as it is when the PO is drafted and registered (#1172).
+        return !isNaN(parsed) && parsed >= 0 && parsed !== li.unitCost;
       })
       .map((li) =>
         updateUnitCost({
@@ -530,7 +531,7 @@ export default function PODetailModal({
             renderCell: (params) => {
               const val = unitCostEdits[params.row.id as string] ?? String(params.value ?? '');
               const parsed = parseFloat(val);
-              const isInvalid = val !== '' && (isNaN(parsed) || parsed <= 0);
+              const isInvalid = val !== '' && (isNaN(parsed) || parsed < 0);
               return (
                 <TextField
                   size="small"
@@ -567,13 +568,15 @@ export default function PODetailModal({
   const canEmailVendor = po.status !== 'DRAFT' && !!po.gpVendorId && hasGeneratedPo;
 
   // A Draft is accepted into GP via the Register in GP flow (GP-first push, then map vendor + cost code
-  // and advance to GP-Registered). The relay must be up to push.
-  const canRegisterInGp = po.status === 'DRAFT';
+  // and advance to GP-Registered). The relay must be up to push. A queued registration is still a Draft
+  // until the queue posts it; registering again would queue a second GP PO (#1165).
+  const canRegisterInGp = po.status === 'DRAFT' && !registrationQueued;
   const relayConnected = relayConnectedProp === true;
 
   // Draft only. Cancelling never told GP anything, so cancelling a registered PO left GP holding a
-  // live PO against the job that Nexus had dropped. Once GP has it, GP is where it gets unwound.
-  const canCancel = po.status === 'DRAFT';
+  // live PO against the job that Nexus had dropped. Once GP has it, GP is where it gets unwound. A queued
+  // registration is on its way into GP, so it is held the same way (#1166).
+  const canCancel = po.status === 'DRAFT' && !registrationQueued;
 
   // #858: the supplier PO document reads its details from GP, so it is offered only for a PO GP
   // holds and has been read back from - hidden on a Nexus Draft, held while the registration or its

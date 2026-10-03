@@ -176,6 +176,32 @@ def _notify_failure(row_id: uuid.UUID) -> None:
         session.commit()
 
 
+def _registration_stale_reason(context: dict) -> str | None:
+    """Why a queued PO registration must not be sent any more, or None when it still applies.
+
+    The persist after the relay call refuses a PO that left DRAFT, but by then GP has already made the
+    PO and nothing in Nexus records it (#1165). So the same question is asked before the push."""
+    from app.models.enums import POStatus
+    from app.models.purchase_order import PurchaseOrder
+
+    try:
+        po_id = uuid.UUID(str(context.get("po_id")))
+    except (TypeError, ValueError):
+        return None
+    with SessionLocal() as session:
+        po = session.get(PurchaseOrder, po_id)
+        if po is None:
+            # Cancelling only soft-deletes a PO; a row that is not there at all is left to the persist.
+            return None
+        if po.deleted_at is not None:
+            return "The purchase order was cancelled before it could be registered in GP; nothing was sent to GP"
+        if po.status != POStatus.DRAFT:
+            return (
+                f"The purchase order is {po.status.value}, no longer a Draft, so this registration was not sent to GP"
+            )
+    return None
+
+
 def _load_row(row_id: uuid.UUID):
     with SessionLocal() as session:
         return gp_outbox_repository.get_entry(session, row_id)
@@ -211,6 +237,12 @@ async def _drain_one(row_id: uuid.UUID) -> None:
         if state is not None and state.relay_result is not None:
             relay_result = state.relay_result
         else:
+            if op == "register_po_in_gp":
+                stale = await asyncio.to_thread(_registration_stale_reason, context)
+                if stale is not None:
+                    logger.warning("gp outbox: registration skipped, po no longer a draft", extra={"label": label})
+                    await asyncio.to_thread(_finish, row_id, "mark_skipped", error=stale)
+                    return
             if relay_op == "create_po":
                 # PO REGISTRATION is queued in cases a receipt never is, and every one of them rests
                 # on the relay recognising the attempt's key. A build that does not is refused here,

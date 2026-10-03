@@ -526,6 +526,15 @@ describe('PODetailModal', () => {
     expect(screen.queryByRole('button', { name: 'Cancel PO' })).not.toBeInTheDocument();
   });
 
+  // #1165 / #1166: a queued registration is still a Draft until the queue posts it. Registering again
+  // would queue a second GP PO, and cancelling would drop a PO GP is about to hold.
+  it('offers neither Register in GP nor Cancel PO while the registration is queued', () => {
+    renderModal(draftPo, [], true, true);
+
+    expect(screen.queryByRole('button', { name: 'Register in GP' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cancel PO' })).toBeNull();
+  });
+
   // Order As translates a hardware schedule item's name into the vendor's. A line added from the
   // non-schedule item catalog is already written the way the vendor sells it, so the column has
   // nothing to show for it.

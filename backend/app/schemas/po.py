@@ -20,6 +20,7 @@ from app.errors import (
 )
 from app.models.enums import PODocumentType as PODocumentTypeDB
 from app.repositories import (
+    gp_outbox_repository,
     po_document_settings_repository,
     po_repository,
     project_repository,
@@ -314,6 +315,14 @@ def _prepare_register_po(
             )
         if po.status != POStatus.DRAFT:
             raise InvalidStateTransitionError(f"Only a Draft PO can be registered in GP; this one is {po.status.value}")
+        # #1165: a queued registration leaves the PO a Draft until the worker drains it, so the check
+        # above passes a second attempt. Its fresh key would queue a second write and GP would end up
+        # with two POs, the second never recorded. The same attempt's key is let through: its resubmit
+        # is the no-op enqueue already makes it.
+        if gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=idempotency_key) is not None:
+            raise InvalidStateTransitionError(
+                "This PO's registration is already queued and will post to GP when the relay is back"
+            )
 
         # #316: a draft with no project may be given one here, and it has to take effect BEFORE the
         # payload is built - the GP job number keys off it, so validating against the old (absent)
@@ -1131,9 +1140,17 @@ class POMutations:
     def delete_po_document(self, info: strawberry.Info, document_id: strawberry.ID) -> bool:
         with SessionLocal() as session:
             tenancy.require_po_document_in_scope(session, uuid.UUID(str(document_id)), tenant_scope(info))
-            po_repository.delete_po_document(session, uuid.UUID(str(document_id)))
+            s3_key = po_repository.delete_po_document(session, uuid.UUID(str(document_id)))
             session.commit()
-            return True
+        # #1171: the file goes only once the row is gone for good, so a storage hiccup costs an
+        # orphaned object, never a document row whose download is missing.
+        from app.services import storage
+
+        try:
+            storage.delete_file(s3_key)
+        except Exception:  # noqa: BLE001 - best effort, the row is already deleted
+            logger.warning("po document file not removed from storage", extra={"s3_key": s3_key}, exc_info=True)
+        return True
 
     @strawberry.mutation
     def update_po_document_settings(
