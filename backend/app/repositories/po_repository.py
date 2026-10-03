@@ -1541,6 +1541,14 @@ def upsert_po_document_data(session: Session, po_id: uuid.UUID, **fields) -> POD
             value = fields[key]
             setattr(data, key, Decimal(str(value)) if value is not None else Decimal("0"))
 
+    # #1236: the trade discount stays null until a value is sent, so a document saved before it existed
+    # still prefills GP's discount; a sent value is stored as given (0 included).
+    if fields.get("trade_discount") is not None:
+        discount = Decimal(str(fields["trade_discount"]))
+        if discount < 0:
+            raise ValidationError("Trade discount cannot be negative", field="trade_discount")
+        data.trade_discount = discount
+
     for key in _DOC_DATA_BOOL_FIELDS:
         if key in fields and fields[key] is not None:
             setattr(data, key, bool(fields[key]))

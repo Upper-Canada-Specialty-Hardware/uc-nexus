@@ -127,6 +127,7 @@ function totalsMock(): MockedResponse {
           freight: 0,
           miscellaneous: 0,
           taxAmount: 0,
+          tradeDiscount: 0,
           header: null,
         },
       },
@@ -161,6 +162,7 @@ function saveMock(calls: Record<string, unknown>[]): MockedResponse {
               taxAmount: 0,
               taxLabel: 'Taxes',
               tariffAmount: 0,
+              tradeDiscount: null,
               requiredByOverride: null,
               includeFsc: false,
               includeUsaTariff: false,
@@ -312,6 +314,7 @@ function gpTotalsWithHeader(delay = 0): MockedResponse {
           freight: 7.5,
           miscellaneous: 0,
           taxAmount: 4.23,
+          tradeDiscount: 2.5,
           header: {
             __typename: 'GpPoHeader',
             shippingMethod: 'UPS GROUND',
@@ -342,6 +345,8 @@ describe('POGenerateDialog prefill from GP (#858)', () => {
     );
     expect(screen.getByRole('spinbutton', { name: 'Freight' })).toHaveValue(7.5);
     expect(screen.getByRole('spinbutton', { name: 'Tax amount' })).toHaveValue(4.23);
+    // #1236: GP's trade discount prefills too, so the document's total matches what GP holds.
+    expect(screen.getByRole('spinbutton', { name: 'Trade discount' })).toHaveValue(2.5);
   });
 
   it('keeps what the buyer saved and lets GP fill only what is empty', async () => {
@@ -360,6 +365,7 @@ describe('POGenerateDialog prefill from GP (#858)', () => {
         taxAmount: 1.11,
         taxLabel: 'Taxes',
         tariffAmount: 0,
+        tradeDiscount: null,
         requiredByOverride: null,
         includeFsc: false,
         includeUsaTariff: false,

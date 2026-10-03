@@ -54,6 +54,8 @@ interface GpPoTotals {
   freight: number;
   miscellaneous: number;
   taxAmount: number;
+  /** #1236: GP's trade discount (TRDISAMT); 0 from a relay build older than the read. */
+  tradeDiscount?: number | null;
   // Null from a relay build older than #858, or when GP's header could not be read.
   header: GpPoHeader | null;
 }
@@ -192,6 +194,11 @@ function GenerateForm({
   const [taxAmount, setTaxAmount] = useGpPrefilled(
     dd ? String(dd.taxAmount) : null, gpAmount(gpTotals?.taxAmount), '0',
   );
+  // #1236: GP's trade discount comes off the order total. A document saved before the field existed
+  // holds null, so it takes GP's figure rather than a saved 0.
+  const [tradeDiscount, setTradeDiscount] = useGpPrefilled(
+    dd?.tradeDiscount != null ? String(dd.tradeDiscount) : null, gpAmount(gpTotals?.tradeDiscount ?? undefined), '0',
+  );
   const [taxLabel, setTaxLabel] = useState(dd?.taxLabel ?? 'Taxes');
   const [tariffAmount, setTariffAmount] = useState(String(dd?.tariffAmount ?? po.tariffAmount ?? 0));
   const [includeFsc, setIncludeFsc] = useState(dd?.includeFsc ?? false);
@@ -228,13 +235,15 @@ function GenerateForm({
       taxAmount: num(taxAmount),
       taxLabel: taxLabel || 'Taxes',
       tariffAmount: num(tariffAmount),
+      tradeDiscount: num(tradeDiscount),
       requiredByOverride: requiredBy || null,
       includeFsc,
       includeUsaTariff,
       includeCustoms,
     }),
     [vendorAddress, buyerName, currency, shipTo, shippingMethod, quotationNumber, freight,
-      miscellaneous, taxAmount, taxLabel, tariffAmount, requiredBy, includeFsc, includeUsaTariff, includeCustoms],
+      miscellaneous, taxAmount, taxLabel, tariffAmount, tradeDiscount, requiredBy, includeFsc, includeUsaTariff,
+      includeCustoms],
   );
 
   const buildDocProps = useCallback((): PurchaseOrderDocumentProps => {
@@ -271,6 +280,7 @@ function GenerateForm({
       taxAmount: num(taxAmount),
       taxLabel: taxLabel || 'Taxes',
       tariffAmount: num(tariffAmount),
+      tradeDiscount: num(tradeDiscount),
       taxNumbers: settings.taxNumbers,
       mandatoryBullets: settings.mandatoryBullets,
       shippingAccounts: settings.shippingAccounts,
@@ -284,7 +294,8 @@ function GenerateForm({
       includeCustoms,
     };
   }, [po, quotationNumber, settings, vendorAddress, shipTo, shippingMethod, buyerName, currency, projectNumber,
-    requiredBy, freight, miscellaneous, taxAmount, taxLabel, tariffAmount, includeFsc, includeUsaTariff, includeCustoms]);
+    requiredBy, freight, miscellaneous, taxAmount, taxLabel, tariffAmount, tradeDiscount, includeFsc, includeUsaTariff,
+    includeCustoms]);
 
   const persist = useCallback(async () => {
     await saveDocData({ variables: { poId: po.id, input: docInput() } });
@@ -443,6 +454,12 @@ function GenerateForm({
             <TextField
               label="Tax label" value={taxLabel} onChange={(e) => setTaxLabel(e.target.value)}
               fullWidth size="small" placeholder="Taxes / HST"
+            />
+            <TextField
+              label="Trade discount" type="number" value={tradeDiscount}
+              onChange={(e) => setTradeDiscount(e.target.value)}
+              fullWidth size="small" helperText={gpHelper(dd?.tradeDiscount)}
+              slotProps={{ htmlInput: { min: 0, step: 0.01 }, input: gpAdornment(dd?.tradeDiscount) }}
             />
           </Stack>
 
