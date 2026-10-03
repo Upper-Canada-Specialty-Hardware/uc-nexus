@@ -29,7 +29,7 @@ def upgrade() -> None:
         op.get_bind()
         .execute(
             sa.text(
-                "SELECT company, lower(name) AS folded, string_agg(name, ', ' ORDER BY name) AS names "
+                "SELECT company, lower(name) AS folded, string_agg(name, ', ' ORDER BY name COLLATE \"C\") AS names "
                 "FROM shipment_methods GROUP BY company, lower(name) HAVING count(*) > 1 "
                 "ORDER BY company, folded"
             )
