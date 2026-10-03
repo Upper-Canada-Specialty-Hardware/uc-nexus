@@ -144,11 +144,12 @@ function renderPage(mocks: MockedResponse[], scope: 'tenant' | 'nexus' = 'nexus'
   );
 }
 
-/** Open the edit dialog by clicking the user's row. */
+/** Open the edit dialog by clicking the user's row. The dialog gets the grid's budget too: on a
+ * loaded run (the whole file at once) it can take longer than the default second to mount. */
 async function openEditDialog() {
   const cell = await screen.findByText('jay@example.com', {}, GRID_TIMEOUT);
   fireEvent.click(cell);
-  return screen.findByRole('dialog');
+  return screen.findByRole('dialog', {}, GRID_TIMEOUT);
 }
 
 /** The Choose…/Change… button that swaps the dialog body for the buyer chooser. */
@@ -412,8 +413,10 @@ test('with no company chosen the identity waits instead of listing another compa
   renderPage([relayStatusMock(true), usersMock({ ...USER, company: null }), buyersMock]);
 
   await openEditDialog();
+  // The helper reads "relay unavailable" until the relay status mock answers, so wait for the
+  // no-company wording rather than reading it the moment the dialog mounts.
+  expect(await screen.findByText(/Choose the company first/i, {}, GRID_TIMEOUT)).toBeInTheDocument();
   expect(chooseButton()).toBeDisabled();
-  expect(screen.getByText(/Choose the company first/i)).toBeInTheDocument();
 });
 
 test('the helper text names the company whose buyer master the chooser lists', async () => {
@@ -600,7 +603,9 @@ test('the UC Nexus Admin page carries the company and both elevated roles', asyn
 
   await openEditDialog();
 
-  expect(await screen.findByLabelText(/^Company$/i)).toBeInTheDocument();
+  // The field is a read-only text box until the relay status answers, then a different element - the
+  // company select. Wait for the select, so the assertion never holds the replaced, detached box.
+  expect(await screen.findByRole('combobox', { name: /^Company$/i }, GRID_TIMEOUT)).toBeInTheDocument();
   expect(screen.getByRole('checkbox', { name: 'UC Nexus Admin' })).toBeInTheDocument();
   expect(screen.getByRole('checkbox', { name: /DB Admin/ })).toBeInTheDocument();
   expect(screen.getByRole('checkbox', { name: 'Tenant Owner' })).toBeInTheDocument();
