@@ -18,6 +18,7 @@ from app.database import SessionLocal
 from app.errors import RelayCallError, RelayOpUnsupportedError, RelayTimeoutError, RelayUnavailableError
 from app.repositories import custom_items_repository, project_repository, tenancy, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
+from app.repositories.project_labels import project_labels
 from app.services import gp_idempotency, gp_outbox_enqueue, gp_po
 from app.services.relay_gateway import gateway as relay_gateway
 
@@ -87,6 +88,12 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _location_part(value):
+    """A row or bay argument as the location queries read it (#1251): omitted matches any, an explicit
+    null matches an empty part, so an aisle-only shelf shows only what sits on it."""
+    return warehouse_repository.ANY_LOCATION_PART if value is strawberry.UNSET else value
 
 
 def _pick_lines_from_input(lines: list[PickLineInput]) -> list[warehouse_repository.PickLine]:
@@ -301,7 +308,7 @@ def _is_warehouse_manager(info) -> bool:
 def _load_draft_type(draft_id: uuid.UUID) -> ReceiveDraft:
     with SessionLocal() as session:
         draft, po = warehouse_repository.get_receive_draft(session, draft_id)
-        return receive_draft_to_type(draft, po)
+        return receive_draft_to_type(draft, po, project_labels(session, [po.project_id if po else None]))
 
 
 def _authorize_draft_approval(info, user_id: str, draft_id: uuid.UUID) -> None:
@@ -396,14 +403,15 @@ class WarehouseQueries:
                 created_by_user_id=user["user_id"] if mine else None,
                 company=tenant_scope(info),
             )
-            return [receive_draft_to_type(draft, po) for draft, po in rows]
+            labels = project_labels(session, (po.project_id for _, po in rows if po is not None))
+            return [receive_draft_to_type(draft, po, labels) for draft, po in rows]
 
     @strawberry.field
     def receive_draft(self, info: strawberry.Info, id: strawberry.ID) -> ReceiveDraft:
         with SessionLocal() as session:
             tenancy.require_receive_draft_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             draft, po = warehouse_repository.get_receive_draft(session, uuid.UUID(str(id)))
-            return receive_draft_to_type(draft, po)
+            return receive_draft_to_type(draft, po, project_labels(session, [po.project_id if po else None]))
 
     @strawberry.field
     def project_inventory_availability(
@@ -505,9 +513,10 @@ class WarehouseQueries:
             # CODE in hardware_category and are absent from every hardware schedule by design, so
             # measuring them against one would flag all of it forever. One small query, and it is
             # what makes the flag mean "should be on a schedule and is not" rather than "is not on
-            # a schedule".
+            # a schedule". Retired types included (#1340): retiring hides a type from pickers, but the
+            # stock already on the shelf under its code is still non-schedule inventory.
             non_schedule_codes = {
-                t.code for t in custom_items_repository.get_item_types(session, active_only=True, company=scope)
+                t.code for t in custom_items_repository.get_item_types(session, active_only=False, company=scope)
             }
 
             def _matches(category: str, code: str) -> bool:
@@ -590,6 +599,9 @@ class WarehouseQueries:
         `poReceivingDetails` when a row is expanded, not from here."""
         with SessionLocal() as session:
             pid = uuid.UUID(str(project_id)) if project_id else None
+            rows = warehouse_repository.get_receiving_history_pos(session, pid, company=tenant_scope(info))
+            # One batched read for every row's project name (#1215), archived projects included.
+            labels = project_labels(session, (row["project_id"] for row in rows))
             return [
                 ReceivingHistoryPO(
                     id=strawberry.ID(str(row["id"])),
@@ -598,13 +610,15 @@ class WarehouseQueries:
                     status=row["status"],
                     vendor_name=row["vendor_name"],
                     project_id=strawberry.ID(str(row["project_id"])) if row["project_id"] else None,
+                    project_number=labels.get(row["project_id"], (None, None))[0],
+                    project_description=labels.get(row["project_id"], (None, None))[1],
                     pool_kind=row["pool_kind"],
                     ordered_total=row["ordered_total"],
                     received_total=row["received_total"],
                     receive_count=row["receive_count"],
                     last_received_at=row["last_received_at"],
                 )
-                for row in warehouse_repository.get_receiving_history_pos(session, pid, company=tenant_scope(info))
+                for row in rows
             ]
 
     @strawberry.field
@@ -674,7 +688,8 @@ class WarehouseQueries:
                 if pr.picked_at is None
                 else None
             )
-            return pick_sheet_to_type(sheet, partially_picked=partial)
+            label = project_labels(session, [pr.project_id]).get(pr.project_id)
+            return pick_sheet_to_type(sheet, partially_picked=partial, project_label=label)
 
     @strawberry.field
     def back_ordered_items(
@@ -803,16 +818,16 @@ class WarehouseQueries:
         self,
         info: strawberry.Info,
         aisle: str,
-        row: str | None = None,
-        bay: str | None = None,
+        row: str | None = strawberry.UNSET,
+        bay: str | None = strawberry.UNSET,
         warehouse_id: strawberry.ID | None = None,
     ) -> LocationContents:
         with SessionLocal() as session:
             data = warehouse_repository.get_location_contents(
                 session,
                 aisle,
-                row,
-                bay,
+                _location_part(row),
+                _location_part(bay),
                 uuid.UUID(str(warehouse_id)) if warehouse_id else None,
                 company=tenant_scope(info),
             )
@@ -834,8 +849,8 @@ class WarehouseQueries:
         self,
         info: strawberry.Info,
         aisle: str,
-        row: str | None = None,
-        bay: str | None = None,
+        row: str | None = strawberry.UNSET,
+        bay: str | None = strawberry.UNSET,
         limit: int = 10,
         warehouse_id: strawberry.ID | None = None,
     ) -> list[AuditLogEntry]:
@@ -843,8 +858,8 @@ class WarehouseQueries:
             entries = warehouse_repository.get_location_audit_history(
                 session,
                 aisle,
-                row,
-                bay,
+                _location_part(row),
+                _location_part(bay),
                 limit=cap_limit(limit),
                 warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
                 company=tenant_scope(info),
@@ -1260,7 +1275,9 @@ class WarehouseMutations:
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             tenancy.require_pull_request_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
-            pr = warehouse_repository.start_pull_request_pick(session, uuid.UUID(str(id)), actor)
+            pr = warehouse_repository.start_pull_request_pick(
+                session, uuid.UUID(str(id)), actor, started_by_user_id=auth["user_id"]
+            )
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, pr.id)
             return pull_request_to_type(pr, partially_picked=False)
@@ -1297,7 +1314,9 @@ class WarehouseMutations:
             # before the commit, because expire_on_commit would leave the ORM objects detached.
             pr_id = sheet.pull_request.id
             partial = pr_id in warehouse_repository.get_partially_picked_pull_ids(session, [pr_id])
-            result = pick_sheet_to_type(sheet, partially_picked=partial)
+            project_id = sheet.pull_request.project_id
+            label = project_labels(session, [project_id]).get(project_id)
+            result = pick_sheet_to_type(sheet, partially_picked=partial, project_label=label)
             session.commit()
             return result
 
