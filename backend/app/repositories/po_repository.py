@@ -519,6 +519,13 @@ def register_po_in_gp(
             if poli is None:
                 raise ValidationError(f"Line item {lid} does not belong to this PO", field="line_items")
             seen_ids.add(lid)
+            # #1167: the schedule rows tied to this line must still describe it. A changed category or
+            # product leaves every tied row describing other hardware, so all of it goes back; a lower
+            # quantity leaves the units over it never ordered, so the excess goes back.
+            identity_changed = (
+                poli.hardware_category != li_data["hardware_category"] or poli.product_code != li_data["product_code"]
+            )
+            _release_line_ties_beyond(session, poli.id, keep=0 if identity_changed else qty)
             poli.hardware_category = li_data["hardware_category"]
             poli.product_code = li_data["product_code"]
             poli.ordered_quantity = qty
@@ -766,6 +773,45 @@ def _link_available_items(
         if remaining <= 0:
             break
     return linked
+
+
+def _release_line_ties_beyond(session: Session, po_line_item_id: uuid.UUID, *, keep: int) -> int:
+    """Release the schedule rows tied to a PO line beyond its first `keep` units back to AVAILABLE
+    (#1167), the reverse of `_link_available_items`: rows are kept in its order (oldest opening first)
+    and the row that straddles `keep` is split, its kept part staying IN_PO and the rest going back as an
+    AVAILABLE row on the same opening. Returns the units released."""
+    from app.models.hardware import HardwareItem
+    from app.models.project import Opening
+
+    rows = (
+        session.execute(
+            select(HardwareItem)
+            .join(Opening, HardwareItem.opening_id == Opening.id)
+            .where(HardwareItem.po_line_item_id == po_line_item_id)
+            .order_by(Opening.opening_number, HardwareItem.id)
+        )
+        .scalars()
+        .all()
+    )
+    released = 0
+    remaining = max(keep, 0)
+    for hi in rows:
+        if remaining >= hi.item_quantity:
+            remaining -= hi.item_quantity
+            continue
+        if remaining > 0:
+            excess = _split_off_hardware_row(hi, hi.item_quantity - remaining)
+            excess.state = HardwareItemState.AVAILABLE
+            excess.po_line_item_id = None
+            session.add(excess)
+            hi.item_quantity = remaining
+            released += excess.item_quantity
+            remaining = 0
+            continue
+        hi.state = HardwareItemState.AVAILABLE
+        hi.po_line_item_id = None
+        released += hi.item_quantity
+    return released
 
 
 def _available_schedule_units(
