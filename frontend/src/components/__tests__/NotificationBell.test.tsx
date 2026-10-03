@@ -167,12 +167,16 @@ describe('NotificationBell', () => {
 
   it('shows 99+ when more than 99 are unread', async () => {
     // #1112: the count used to be the length of a 99-row fetch, so the badge could never pass 99.
+    // #1224: the server now stops at 100, so 100 is what "a lot" looks like; it must read as 99+
+    // on the badge, the label and the chip, never as an exact 100.
     renderBell([notification({ id: 'n-x', type: 'PULL_REQUEST_COMPLETED', message: 'X' })], [], {
-      unreadCount: 140,
+      unreadCount: 100,
     });
 
-    await screen.findByRole('button', { name: 'Notifications, 140 unread' }, SLOW);
+    const bell = await screen.findByRole('button', { name: 'Notifications, 99+ unread' }, SLOW);
     expect(screen.getByText('99+')).toBeInTheDocument();
+    fireEvent.click(bell);
+    expect(await screen.findByText('99+ new', undefined, SLOW)).toBeInTheDocument();
   });
 
   it('still only marks an audience-wide notification read, without navigating', async () => {
