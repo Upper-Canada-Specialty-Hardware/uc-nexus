@@ -66,9 +66,12 @@ class ShopAssemblyQueries:
 
     @strawberry.field
     def shop_assembly_request(self, info: strawberry.Info, id: strawberry.ID) -> ShopAssemblyRequest:
-        """One request with its openings and batches. NOT_FOUND if it does not exist."""
+        """One request with its openings and batches. NOT_FOUND if it does not exist, or belongs to
+        another company (#1113), like every other by-id read."""
+        request_id = uuid.UUID(str(id))
         with SessionLocal() as session:
-            req = shop_assembly_repository.get_shop_assembly_request(session, uuid.UUID(str(id)))
+            tenancy.require_shop_assembly_request_in_scope(session, request_id, tenant_scope(info))
+            req = shop_assembly_repository.get_shop_assembly_request(session, request_id)
             return _requests_to_types(session, [req])[0]
 
     @strawberry.field
@@ -79,10 +82,13 @@ class ShopAssemblyQueries:
         openings, each opening's owed lines, and the reservation-aware free stock behind them.
 
         Read-only and open to any signed-in user - it is the same availability arithmetic every other
-        screen shows. Creating the batch is what is role-gated.
+        screen shows. Creating the batch is what is role-gated. Scoped like the request itself: another
+        company's request is NOT_FOUND (#1113).
         """
+        rid = uuid.UUID(str(request_id))
         with SessionLocal() as session:
-            review = shop_assembly_repository.get_allocation_review(session, uuid.UUID(str(request_id)))
+            tenancy.require_shop_assembly_request_in_scope(session, rid, tenant_scope(info))
+            review = shop_assembly_repository.get_allocation_review(session, rid)
             return shop_assembly_allocation_review_to_type(review)
 
 
