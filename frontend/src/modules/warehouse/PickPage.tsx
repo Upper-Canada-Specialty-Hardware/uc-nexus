@@ -265,7 +265,7 @@ export default function PickPage() {
                 variant="outlined"
                 startIcon={<Save size={16} strokeWidth={1.75} />}
                 onClick={handleSaveDraft}
-                disabled={saving || confirming}
+                disabled={saving || confirming || totals.invalid}
               >
                 {saving ? 'Saving...' : 'Save draft'}
               </Button>
@@ -363,8 +363,9 @@ export default function PickPage() {
 
       {totals.over && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          Some rows ask for more than is there, or more than this request is owed. A pull never takes
-          more than it asked for - fix the highlighted boxes before confirming.
+          {totals.invalid
+            ? 'Some boxes are not a whole number of units. Fix the highlighted boxes before saving or confirming.'
+            : 'Some rows ask for more than is there, or more than this request is owed. A pull never takes more than it asked for - fix the highlighted boxes before confirming.'}
         </Alert>
       )}
 

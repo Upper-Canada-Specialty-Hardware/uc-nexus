@@ -74,13 +74,21 @@ export function entryKey(
   return `${section.hardwareCategory}|${section.productCode}|${inventoryLocationId}`;
 }
 
-/** A field's numeric value. Anything that is not a non-negative integer reads as nothing entered,
- *  which is what an empty box means and what a stray character should mean too. */
+/** Whether a box holds something the pick can take: empty, or a non-negative whole number (#1382).
+ *  A decimal, a negative or a stray character is a row error the picker must fix, never something
+ *  quietly read as a different count. */
+export function isValidEntry(raw: string | undefined): boolean {
+  if (raw === undefined) return true;
+  const trimmed = raw.trim();
+  return trimmed === '' || /^\d+$/.test(trimmed);
+}
+
+/** A field's numeric value. An empty box is nothing entered. An invalid box also reads as 0 here,
+ *  but it is not ignored: sectionTotals flags it, which keeps Confirm and Save draft off until it is
+ *  fixed, so no invalid entry is ever sent. */
 export function parseEntry(raw: string | undefined): number {
-  if (!raw) return 0;
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value < 0) return 0;
-  return Math.floor(value);
+  if (!raw || !isValidEntry(raw)) return 0;
+  return Number(raw.trim());
 }
 
 /** A location's bin label, or the Unlocated reading. Unlocated stock is real and pickable - it just
@@ -98,6 +106,8 @@ export interface SectionTotals {
   over: boolean;
   /** At least one row asks for more than that row has. */
   anyRowOver: boolean;
+  /** At least one row holds something that is not a whole number of units (#1382). */
+  anyRowInvalid: boolean;
   /** Entered more than another request has left free for this pull - the server's third ceiling.
    *  Without this the screen calls a sheet balanced and `confirmPick` rejects the whole submission,
    *  discarding every entry in every section and making the picker re-key the lot. */
@@ -107,8 +117,11 @@ export interface SectionTotals {
 export function sectionTotals(section: PickSheetSection, entries: PickEntries): SectionTotals {
   let entered = 0;
   let anyRowOver = false;
+  let anyRowInvalid = false;
   for (const loc of section.locations) {
-    const value = parseEntry(entries[entryKey(section, loc.inventoryLocationId)]);
+    const raw = entries[entryKey(section, loc.inventoryLocationId)];
+    if (!isValidEntry(raw)) anyRowInvalid = true;
+    const value = parseEntry(raw);
     entered += value;
     if (value > loc.available) anyRowOver = true;
   }
@@ -118,6 +131,7 @@ export function sectionTotals(section: PickSheetSection, entries: PickEntries): 
     remaining: Math.max(0, section.requiredQuantity - covered),
     over: covered > section.requiredQuantity,
     anyRowOver,
+    anyRowInvalid,
     beyondClaimable: entered > section.claimableQuantity,
   };
 }
@@ -131,6 +145,9 @@ export interface PickTotals {
   /** Any of the three ceilings has been crossed - the row, the request, or what other requests have
    *  left free. Confirming is refused, and the server would refuse it too. */
   over: boolean;
+  /** Some box holds something that is not a whole number (#1382). Counted into `over` too, and
+   *  the one thing that also keeps Save draft off: a draft is saved as numbers. */
+  invalid: boolean;
   /** Every product code is fully covered once this entry is applied. */
   balanced: boolean;
 }
@@ -141,13 +158,15 @@ export function pickTotals(sections: PickSheetSection[], entries: PickEntries): 
   let entered = 0;
   let remaining = 0;
   let over = false;
+  let invalid = false;
   for (const section of sections) {
     const totals = sectionTotals(section, entries);
     required += section.requiredQuantity;
     applied += section.appliedQuantity;
     entered += totals.entered;
     remaining += totals.remaining;
-    if (totals.over || totals.anyRowOver || totals.beyondClaimable) over = true;
+    if (totals.anyRowInvalid) invalid = true;
+    if (totals.over || totals.anyRowOver || totals.beyondClaimable || totals.anyRowInvalid) over = true;
   }
   return {
     codeCount: sections.length,
@@ -156,6 +175,7 @@ export function pickTotals(sections: PickSheetSection[], entries: PickEntries): 
     entered,
     remaining,
     over,
+    invalid,
     balanced: remaining === 0 && !over,
   };
 }
