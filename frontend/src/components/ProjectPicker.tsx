@@ -86,6 +86,12 @@ export default function ProjectPicker({
       value={value}
       onChange={(_, v) => onChange(v)}
       loading={loading}
+      // #1347: an empty list is not a search miss - projects come from GP's jobs, so say where.
+      noOptionsText={
+        options.length === 0
+          ? 'No projects yet - projects appear for every job in GP once the job sync runs.'
+          : 'No matching project'
+      }
       disabled={disabled}
       isOptionEqualToValue={(opt, val) => opt.id === val.id}
       getOptionLabel={projectLabel}

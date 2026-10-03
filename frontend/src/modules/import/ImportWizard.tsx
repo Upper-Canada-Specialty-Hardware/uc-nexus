@@ -34,7 +34,7 @@ import { useNavigate } from 'react-router-dom';
 import { GET_PROJECT_EXCLUDED_ITEMS, GET_PROJECT_HARDWARE_SCHEDULE, RECONCILE_SCHEDULE, FINALIZE_IMPORT_SESSION } from '../../graphql/import';
 import { UPLOAD_PO_DOCUMENT, GET_GP_COST_CODES } from '../../graphql/po';
 import { poTableHighlightHref } from '../po/poTableLinks';
-import { useRelayStatus } from '../../relay/useRelayStatus';
+import { relayServes, useRelayStatus } from '../../relay/useRelayStatus';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { GET_PROJECT_INVENTORY_AVAILABILITY } from '../../graphql/warehouse';
 import { GET_REQUEST_COVERAGE } from '../../graphql/shipping';
@@ -65,7 +65,7 @@ import {
 } from './types';
 import { buildPoDrafts, toPoDraftInput } from './poDrafts';
 import * as draftOps from './draftOps';
-import { mergeAddedProducts } from './draftOps';
+import { carryDraftEdits, mergeAddedProducts } from './draftOps';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { plural } from '../../utils/plural';
@@ -383,7 +383,7 @@ export default function ImportWizard({
     loading: costCodesLoading,
   } = useQuery<{ gpCostCodes: GpCostCode[] }>(GET_GP_COST_CODES, {
     variables: { company: relayCompany, job: gpJobNumber ?? '' },
-    skip: !open || purpose !== 'po' || relay.connected !== true || !relayCompany || !gpJobNumber,
+    skip: !open || purpose !== 'po' || !relayServes(relay, relayCompany || null) || !relayCompany || !gpJobNumber,
     fetchPolicy: 'cache-first',
   });
   const costCodes = useMemo(() => costCodesData?.gpCostCodes ?? [], [costCodesData]);
@@ -396,12 +396,14 @@ export default function ImportWizard({
     if (purpose !== 'po') return null;
     if (relay.connected === null) return null; // relay status still resolving
     if (relay.connected !== true || !relayCompany) return 'the relay is offline';
+    // #1336: a relay connected for other companies cannot read this job's codes either.
+    if (!relayServes(relay, relayCompany)) return `the relay does not serve ${relayCompany}`;
     if (!gpJobNumber) return 'this project has no GP job number';
     if (costCodesError) return 'the cost-code read from GP failed';
     if (costCodesLoading && costCodesData === undefined) return null; // read in flight
     if (costCodes.length === 0) return 'this GP job has no cost codes in GP';
     return null;
-  }, [purpose, relay.connected, relayCompany, gpJobNumber, costCodesError, costCodesLoading, costCodesData, costCodes.length]);
+  }, [purpose, relay, relayCompany, gpJobNumber, costCodesError, costCodesLoading, costCodesData, costCodes.length]);
 
   // Pre-populate BY_OTHERS classifications from this project's exclusion table once XML is parsed
   const parsedHardwareItems = parser.parseResult?.hardwareItems;
@@ -725,8 +727,9 @@ export default function ImportWizard({
     // that changed, the new products are folded into the buyer's drafts instead of re-seeding them.
     const seeded = seedDraftGroups(vendorGroups, orderQtyOverrides);
     const merged = draftGroups.length > 0 ? mergeAddedProducts(draftGroups, seeded) : null;
+    // #1314: a real re-seed still keeps each draft's info and attachments (see carryDraftEdits).
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot re-seed keyed off the selection signature, same pattern as the composer
-    setDraftGroups(merged ?? seeded);
+    setDraftGroups(merged ?? carryDraftEdits(draftGroups, seeded));
     setSeededDraftSignature(draftSeedSig);
   }, [purpose, draftSeedSig, vendorGroups, orderQtyOverrides, seededDraftSignature, draftGroups]);
 

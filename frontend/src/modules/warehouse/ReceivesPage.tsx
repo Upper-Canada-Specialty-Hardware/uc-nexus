@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
+  Button,
   Chip,
   CircularProgress,
   MenuItem,
@@ -65,28 +66,53 @@ const STATUS_COLOR: Record<string, 'default' | 'warning' | 'info' | 'error' | 's
 
 const STATUS_FILTERS = ['', 'PENDING_APPROVAL', 'APPROVING', 'REJECTED', 'APPROVED'];
 
+// One server page. A full page means older receives may exist, so Load more is offered.
+const PAGE_SIZE = 200;
+
 export default function ReceivesPage() {
   const [projectId, setProjectId] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [poSearch, setPoSearch] = useState('');
 
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
-  const { data, loading, error } = useQuery<{ receives: ReceiveRow[] }>(GET_RECEIVES, {
+  // Every filter, status included, is applied by the server (#1267). Status used to narrow the first
+  // page in the browser, so past one page an older rejected receive read as "nothing matches".
+  const { data, loading, error, fetchMore } = useQuery<{ receives: ReceiveRow[] }>(GET_RECEIVES, {
     variables: {
-      limit: 200,
+      limit: PAGE_SIZE,
       offset: 0,
       projectId: projectId || undefined,
       poSearch: poSearch.trim() || undefined,
+      status: statusFilter || undefined,
     },
     fetchPolicy: 'cache-and-network',
   });
 
-  // Status is filtered client-side: the server returns one interleaved list and the counts on
-  // screen should agree with what the filter narrowed, not with a second round trip.
-  const rows = useMemo(() => {
-    const all = data?.receives ?? [];
-    return statusFilter ? all.filter((r) => r.status === statusFilter) : all;
-  }, [data, statusFilter]);
+  const rows = useMemo(() => data?.receives ?? [], [data]);
+
+  // A changed filter starts a fresh first page, so the end-of-list flag resets with it.
+  const [reachedEnd, setReachedEnd] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset paging when the filters change
+    setReachedEnd(false);
+  }, [projectId, statusFilter, poSearch]);
+  const hasMore = !reachedEnd && rows.length > 0 && rows.length % PAGE_SIZE === 0;
+
+  const handleLoadMore = async () => {
+    setLoadingMore(true);
+    try {
+      const res = await fetchMore({
+        variables: { offset: rows.length },
+        updateQuery: (prev, { fetchMoreResult }) => ({
+          receives: [...(prev.receives ?? []), ...(fetchMoreResult?.receives ?? [])],
+        }),
+      });
+      if ((res.data?.receives?.length ?? 0) < PAGE_SIZE) setReachedEnd(true);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const columns = useMemo<GridColDef<ReceiveRow>[]>(
     () => [
@@ -212,9 +238,18 @@ export default function ReceivesPage() {
             initialState={{ pagination: { paginationModel: { pageSize: 50 } } }}
             pageSizeOptions={[25, 50, 100]}
           />
-          <Box sx={{ mt: 1.5 }}>
-            <Typography sx={microLabelSx}>Showing</Typography>
-            <Typography sx={{ ...tabularSx, fontWeight: 700 }}>{rows.length} receive(s)</Typography>
+          <Box sx={{ mt: 1.5, display: 'flex', alignItems: 'flex-end', gap: 2, flexWrap: 'wrap' }}>
+            <Box>
+              <Typography sx={microLabelSx}>Showing</Typography>
+              <Typography sx={{ ...tabularSx, fontWeight: 700 }}>
+                {rows.length} receive(s){hasMore ? ', newest first - older ones exist' : ''}
+              </Typography>
+            </Box>
+            {hasMore && (
+              <Button size="small" variant="outlined" onClick={handleLoadMore} disabled={loadingMore}>
+                {loadingMore ? 'Loading…' : 'Load more'}
+              </Button>
+            )}
           </Box>
         </>
       )}

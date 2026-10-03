@@ -45,14 +45,36 @@ def _to_int(value) -> int:
         return 0
 
 
+def _cost_text(value) -> str:
+    """A currency cell as plain digits: "$1,234.50" and "1 234.50" read as 1234.50 (#1370)."""
+    return "".join(ch for ch in str(value) if ch not in "$, \t ")
+
+
 def _to_float(value) -> float:
-    """SharePoint currency columns come back as floats or strings. Absent / unparseable reads as 0."""
+    """SharePoint currency columns come back as floats or strings. Absent / unparseable reads as 0;
+    `_cost_unreadable` says which of the two a 0 was."""
     if value is None:
         return 0.0
-    try:
+    if isinstance(value, (int, float)):
         return float(value)
+    try:
+        return float(_cost_text(value))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _cost_unreadable(value) -> bool:
+    """A non-blank cost cell that is still not a number once symbols and separators are dropped."""
+    if value is None or isinstance(value, (int, float)):
+        return False
+    text = _cost_text(value)
+    if not text:
+        return False
+    try:
+        float(text)
+    except ValueError:
+        return True
+    return False
 
 
 def _to_str(value) -> str:
@@ -99,6 +121,7 @@ class SharepointMigrationQueries:
                 project_number=_to_str(r.get("Project_x0020_Number_x0020_Temp")),
                 project_name=_to_str(r.get("Project_x0020_Name_x0020_Temp")),
                 unit_cost=_to_float(r.get("UnitCost")),
+                unit_cost_unreadable=_cost_unreadable(r.get("UnitCost")),
                 # The list has no Part Description column (see _FIELDS); always empty, and the
                 # catalog description falls back to Part Category 1 downstream.
                 part_description=_to_str(r.get("Part_x0020_Description")),
@@ -222,6 +245,7 @@ class SharepointMigrationMutations:
                 "row": e.row,
                 "bay": e.bay,
                 "po_line_item_id": uuid.UUID(str(e.po_line_item_id)) if e.po_line_item_id else None,
+                "unit_cost_unreadable": e.unit_cost_unreadable,
             }
             for e in input.entries
         ]
@@ -243,7 +267,27 @@ class SharepointMigrationMutations:
             }
             for c in (input.catalog_items or [])
         ]
+        # The acting company wins; an explicit target is only for a request that carries none, and may
+        # not contradict it.
+        scope = tenant_scope(info)
+        target = (input.company or "").strip().upper() or None
+        if scope is not None and target is not None and target != scope:
+            raise ValidationError(
+                f"The batch names {target} but the request is acting in {scope}",
+                field="company",
+            )
+        company = scope or target
         with SessionLocal() as session:
+            # Everything that can refuse the batch runs before anything is written (all-or-nothing):
+            # the re-run guard first, under its lock, then the one-company rule.
+            sharepoint_migration_repository.guard_rerun(session, allow_rerun=input.allow_rerun)
+            sharepoint_migration_repository.validate_batch_company(
+                session,
+                company=company,
+                entries=entries,
+                classifications=classifications,
+                catalog_items=catalog_items,
+            )
             # Catalog first: it is the description of what the quantities below are, and doing it in
             # the same transaction means a failure either way leaves neither behind.
             catalog = sharepoint_migration_repository.migrate_catalog_items(session, catalog_items)
@@ -257,4 +301,5 @@ class SharepointMigrationMutations:
                 catalog_items_created=catalog["items_created"],
                 catalog_items_skipped=catalog["items_skipped"],
                 catalog_attributes_created=catalog["attributes_created"],
+                unreadable_unit_costs=sum(1 for e in entries if e["unit_cost_unreadable"]),
             )

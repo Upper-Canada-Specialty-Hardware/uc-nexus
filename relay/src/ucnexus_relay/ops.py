@@ -635,6 +635,7 @@ def create_job_op(conn, *, company: str, request: models.CreateJobRequest) -> mo
         job_name=created["job_name"] or request.job_name,
         company=company,
         cost_codes_provisioned=provisioned,
+        record=created,
     )
 
 

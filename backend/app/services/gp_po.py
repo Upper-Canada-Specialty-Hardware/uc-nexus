@@ -9,6 +9,7 @@ import logging
 from datetime import date
 
 from app.errors import ValidationError
+from app.services import gp_window
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +184,7 @@ def build_create_po_payload(
             "vendor_id": vendor_gp_id,
             "buyer_id": buyer_id,
             "confirm_with": confirm_with,
-            "doc_date": (doc_date or date.today()).isoformat(),
+            "doc_date": (doc_date or gp_window.local_today()).isoformat(),
             # Issue #257 / #762: GP header charges. None -> 0 for the non-null relay Decimals; an empty
             # detail list is a PO with no tax (the relay then writes no tax row at all).
             "tax_detail_ids": list(tax_detail_ids or []),
@@ -223,6 +224,7 @@ def build_create_receipt_payload(
     received_by: str,
     line_items: list[dict],
     warehouse_code: str | None = None,
+    receipt_date: date | None = None,
 ) -> dict:
     """line_items: each with gp_line_ord, quantity, and locations (the same aisle/row/bay dicts the
     createReceive input carries for the UC Nexus put-away) - rack_location composes the distinct
@@ -252,8 +254,12 @@ def build_create_receipt_payload(
             }
         )
 
+    # #1332: the receipt is dated the day it was approved, in Toronto. The payload is built at approval
+    # and stored on the outbox row, so a drain days later replays this date instead of the relay
+    # stamping the receipt and its EC-<date> batch with the drain day.
     return {
         "po_number": po_number,
         "lines": lines,
         "received_by": received_by,
+        "receipt_date": (receipt_date or gp_window.local_today()).isoformat(),
     }

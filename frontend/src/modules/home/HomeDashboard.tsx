@@ -214,6 +214,14 @@ export default function HomeDashboard() {
         <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
           Here's what's happening across the warehouse and projects.
         </Typography>
+        {/* #1346: a new account signs in before anyone grants it a role. Say so, rather than show a
+            launcher with nothing in it. */}
+        {accessibleModules.length === 0 && (
+          <Alert severity="info" sx={{ mb: 3 }}>
+            Your account has no module access yet. Ask a Tenant Owner to grant you a role in User
+            Management.
+          </Alert>
+        )}
       </FadeIn>
 
       {/* An errored rollup renders as an error, never as a silently missing gauge row - the
