@@ -394,26 +394,6 @@ SCHEDULE_CHANGED_DROPPED_NOTE = (
 )
 
 
-def _gate_on_available_inventory(
-    session: Session,
-    project_id: uuid.UUID,
-    needs: list[tuple[str, str, int]],
-    *,
-    label: str,
-    request_number: str | None,
-) -> None:
-    """The creation-time inventory gate (#342), which now lives beside the arithmetic it applies.
-
-    Kept as a name here because the shop-assembly finalize below reads better calling it, and
-    because every test that pins the gate's behaviour names it.
-    """
-    from app.repositories import warehouse as warehouse_repository
-
-    warehouse_repository.gate_on_available_inventory(
-        session, project_id, needs, label=label, request_number=request_number
-    )
-
-
 def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> list[SARModel]:
     """Shop-assembly requests in a project that are still in flight (#646).
 
@@ -552,9 +532,11 @@ def _handle_schedule_replacement(
             session.refresh(sar, attribute_names=["items", "openings"])
 
         if pending and not any(o.status == ShopAssemblyOpeningStatus.PENDING for o in sar.openings):
-            if sar.batches:
+            if any(b.status == ShopAssemblyBatchStatus.ACTIVE for b in sar.batches):
                 # Part-worked: the batches that already went out are the record of what happened, so
-                # the request closes out rather than being rejected as though nothing had.
+                # the request closes out rather than being rejected as though nothing had. Only a live
+                # batch counts (#1156): a cancelled one sent nothing to the shop, and closing on it read
+                # the request as Done on the Worked tab.
                 sar.status = ShopAssemblyRequestStatus.APPROVED
                 sar.approved_by = SCHEDULE_IMPORT_ACTOR
                 sar.approved_at = datetime.utcnow()

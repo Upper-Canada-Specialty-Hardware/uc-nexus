@@ -3,7 +3,7 @@ import { MockedProvider, type MockedResponse } from '@apollo/client/testing/reac
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import ShopAssemblyRequestsPage from '../ShopAssemblyRequestsPage';
-import { GET_SHOP_ASSEMBLY_REQUESTS } from '../../../graphql/shop-assembly';
+import { DISMISS_SHOP_ASSEMBLY_OPENINGS, GET_SHOP_ASSEMBLY_REQUESTS } from '../../../graphql/shop-assembly';
 
 /**
  * #983: rejecting a shop assembly request leaves its openings' own status at PENDING, so the list used
@@ -24,6 +24,16 @@ vi.mock('../../../hooks/useIdentity', () => ({
     company: 'TUBC',
     user: null,
   }),
+}));
+
+// The panel needs a loaded allocation review before it shows its buttons; these tests are about the
+// page around it, so a stub hands back the one callback the dismiss test drives.
+vi.mock('../BatchReviewPanel', () => ({
+  default: ({ onDismissRemaining }: { onDismissRemaining: () => void }) => (
+    <button type="button" onClick={onDismissRemaining}>
+      Dismiss remaining
+    </button>
+  ),
 }));
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -71,9 +81,9 @@ const mock = (status: 'PENDING' | 'REJECTED'): MockedResponse => ({
   result: { data: { shopAssemblyRequests: [request(status)] } },
 });
 
-function renderPage() {
+function renderPage(extra: MockedResponse[] = []) {
   render(
-    <MockedProvider mocks={[mock('PENDING'), mock('REJECTED')]}>
+    <MockedProvider mocks={[mock('PENDING'), mock('REJECTED'), ...extra]}>
       <ToastProvider>
         <MemoryRouter>
           <ShopAssemblyRequestsPage />
@@ -97,4 +107,26 @@ it('never says the openings of a rejected request are waiting (#983)', async () 
   expect(await screen.findByText('80001-010')).toBeInTheDocument();
   expect(screen.getByText('1 opening')).toBeInTheDocument();
   expect(screen.queryByText(/waiting/)).not.toBeInTheDocument();
+});
+
+it('sends the reason typed into the dismiss confirm (#1156)', async () => {
+  const dismissed = vi.fn(() => ({ data: { dismissShopAssemblyOpenings: request('PENDING') } }));
+  renderPage([
+    {
+      request: {
+        query: DISMISS_SHOP_ASSEMBLY_OPENINGS,
+        variables: { requestId: 'req-PENDING', openingNumbers: null, reason: 'client supplying' },
+      },
+      result: dismissed,
+    },
+  ]);
+  fireEvent.click(await screen.findByText('80001-009'));
+
+  fireEvent.click(await screen.findByRole('button', { name: /dismiss remaining/i }));
+  const reason = await screen.findByLabelText('Reason (optional)');
+  expect(reason).toHaveAttribute('maxlength', '500');
+  fireEvent.change(reason, { target: { value: '  client supplying ' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+
+  await vi.waitFor(() => expect(dismissed).toHaveBeenCalled());
 });

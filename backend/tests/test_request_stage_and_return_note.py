@@ -163,3 +163,32 @@ def test_return_note_is_derived_only_for_a_returned_request(db_session):
     assert "Returned to Pending" in notes[returned.id]
     assert "Alex" in notes[returned.id]
     assert "wrong pull" in notes[returned.id]
+
+
+def test_cancelling_a_shipping_pull_locks_the_request_before_the_pull(db_session, monkeypatch):
+    """#1156: the shipping reopen locks the request and then the pull it discards, so the cancel takes
+    the request first as well - the other way round, the two racing deadlock."""
+    from app.repositories.warehouse import pull_requests
+    from app.services import locking
+
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=10)
+    req = _finalize_shipping(db_session, project)["shipping_out_requests"][0]
+    db_session.flush()
+    shipping_repository.accept_shipping_out_request(db_session, req.id, "acceptor")
+    db_session.flush()
+    pr_id = req.pull_request_id
+    pick_pull(db_session, pr_id, "picker")
+    seen: list[str] = []
+    real = pull_requests.lock_rows
+
+    def spy(session, model_class, ids):
+        seen.append(model_class.__name__)
+        return real(session, model_class, ids)
+
+    monkeypatch.setattr(pull_requests, "lock_rows", spy)
+    monkeypatch.setattr(locking, "lock_rows", spy)
+
+    warehouse_repository.cancel_pull_request(db_session, pr_id, "manager", "wrong pull")
+
+    assert seen[:2] == ["ShippingOutRequest", "PullRequest"]

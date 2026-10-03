@@ -11,6 +11,7 @@ module-level import here would create a services <-> schemas cycle."""
 import asyncio
 import logging
 import os
+import time
 import uuid
 from collections.abc import Callable
 
@@ -35,8 +36,15 @@ from app.services.relay_gateway import gateway as relay_gateway
 logger = logging.getLogger(__name__)
 
 POLL_SECONDS = 5.0
+# How often the worker looks for rows abandoned IN_FLIGHT (#1192).
+SWEEP_SECONDS = 120.0
 
 _wake_event: asyncio.Event | None = None
+
+# #1292: shutdown. Once stopping, the loop claims nothing new; `_idle` is clear only while a claimed
+# row is being drained, so shutdown can wait for that one to finish before the relay socket goes.
+_stopping = False
+_idle: asyncio.Event | None = None
 
 
 def enabled() -> bool:
@@ -176,21 +184,110 @@ def _notify_failure(row_id: uuid.UUID) -> None:
         session.commit()
 
 
+def _registration_stale_reason(context: dict) -> str | None:
+    """Why a queued PO registration must not be sent any more, or None when it still applies.
+
+    The persist after the relay call refuses a PO that left DRAFT, but by then GP has already made the
+    PO and nothing in Nexus records it (#1165). So the same question is asked before the push."""
+    from app.models.enums import POStatus
+    from app.models.purchase_order import PurchaseOrder
+
+    try:
+        po_id = uuid.UUID(str(context.get("po_id")))
+    except (TypeError, ValueError):
+        return None
+    with SessionLocal() as session:
+        po = session.get(PurchaseOrder, po_id)
+        if po is None:
+            # Cancelling only soft-deletes a PO; a row that is not there at all is left to the persist.
+            return None
+        if po.deleted_at is not None:
+            return "The purchase order was cancelled before it could be registered in GP; nothing was sent to GP"
+        if po.status != POStatus.DRAFT:
+            return (
+                f"The purchase order is {po.status.value}, no longer a Draft, so this registration was not sent to GP"
+            )
+    return None
+
+
 def _load_row(row_id: uuid.UUID):
     with SessionLocal() as session:
         return gp_outbox_repository.get_entry(session, row_id)
 
 
-def _finish(row_id: uuid.UUID, action: str, **kwargs) -> None:
+def _finish(row_id: uuid.UUID, action: str, *, from_status: str = "IN_FLIGHT", **kwargs) -> bool:
+    """Record an outcome, but only on a row still in the state this worker left it in (#1193).
+
+    Locked and re-read, so a status somebody else wrote meanwhile is seen, not overwritten: a retry or
+    a failure never revives a row an admin cancelled. Returns whether it applied.
+
+    A success is the one exception. It is only recorded after GP took the write and the Nexus side
+    persisted it (the ledger already carries the result), so it is a fact rather than an opinion about
+    the row. If the stale sweep marked the row meanwhile (a drain that outlived the threshold), leaving
+    it FAILED or PENDING would invite a person to retry a write that already happened. It is recorded
+    as succeeded over any status but SUCCEEDED, with a warning so the overtaken recovery is visible."""
     with SessionLocal() as session:
-        row = gp_outbox_repository.get_entry(session, row_id)
-        if row is None:
-            return
+        row = gp_outbox_repository.get_entry_locked(session, row_id)
+        if row is not None and action == "mark_succeeded" and row.status not in (from_status, "SUCCEEDED"):
+            logger.warning(
+                "gp outbox: write reached gp after the row was settled; recorded as succeeded",
+                extra={"label": row.label, "status": row.status},
+            )
+        elif row is None or row.status != from_status:
+            if row is not None:
+                logger.warning(
+                    "gp outbox: outcome not recorded, the row changed meanwhile",
+                    extra={"label": row.label, "status": row.status, "action": action},
+                )
+            return False
         getattr(gp_outbox_repository, action)(session, row, **kwargs)
         session.commit()
+        return True
+
+
+def _recover_in_flight() -> None:
+    """Settle the rows a stopped worker left IN_FLIGHT long enough ago to be abandoned (#1192), and
+    tell somebody about the ones that now need a person to look in GP."""
+    with SessionLocal() as session:
+        failed = gp_outbox_repository.recover_in_flight(session)
+        failed_ids = [row.id for row in failed]
+        session.commit()
+    for row_id in failed_ids:
+        _notify_failure(row_id)
 
 
 async def _drain_one(row_id: uuid.UUID) -> None:
+    """Run one claimed row through, and never leave it IN_FLIGHT on an error nobody planned for (#1192).
+
+    An exception escaping the drain used to leave the row claimed for good: cancel and retry refuse
+    IN_FLIGHT, and every later write for the same PO waited behind it. A registration is asked again
+    (the relay's key makes that safe); anything else may have reached GP, so it waits for a person.
+    A cancellation (shutdown) is let through; the next worker start recovers the row."""
+    try:
+        await _drain_one_claimed(row_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001 - recorded on the row, never left in flight
+        logger.exception("gp outbox: drain raised unexpectedly", extra={"row_id": str(row_id)})
+        row = await asyncio.to_thread(_load_row, row_id)
+        if row is None or row.status != "IN_FLIGHT":
+            return
+        if row.relay_op == "create_po":
+            await asyncio.to_thread(_finish, row_id, "mark_retry", error=str(e), bump_attempts=True)
+            await _fail_if_exhausted(row_id)
+        else:
+            applied = await asyncio.to_thread(
+                _finish,
+                row_id,
+                "mark_failed",
+                kind="ambiguous",
+                error=f"Unexpected error while sending; check GP before retrying: {e}",
+            )
+            if applied:
+                await asyncio.to_thread(_notify_failure, row_id)
+
+
+async def _drain_one_claimed(row_id: uuid.UUID) -> None:
     """Run one claimed row all the way through, and record where it got to.
 
     Mirrors the resolver exactly: a ledger that already holds `result_id` means the whole thing was
@@ -211,6 +308,12 @@ async def _drain_one(row_id: uuid.UUID) -> None:
         if state is not None and state.relay_result is not None:
             relay_result = state.relay_result
         else:
+            if op == "register_po_in_gp":
+                stale = await asyncio.to_thread(_registration_stale_reason, context)
+                if stale is not None:
+                    logger.warning("gp outbox: registration skipped, po no longer a draft", extra={"label": label})
+                    await asyncio.to_thread(_finish, row_id, "mark_skipped", error=stale)
+                    return
             if relay_op == "create_po":
                 # PO REGISTRATION is queued in cases a receipt never is, and every one of them rests
                 # on the relay recognising the attempt's key. A build that does not is refused here,
@@ -361,15 +464,18 @@ async def _fail_if_exhausted(row_id: uuid.UUID) -> None:
     row = await asyncio.to_thread(_load_row, row_id)
     if row is None or row.attempts <= gp_outbox_repository.MAX_ATTEMPTS:
         return
-    await asyncio.to_thread(
+    # The retry just put the row back to PENDING; a cancel since then stands.
+    applied = await asyncio.to_thread(
         _finish,
         row_id,
         "mark_failed",
+        from_status="PENDING",
         kind="exhausted",
         error=row.last_error or "retry budget exhausted",
         error_code=row.last_error_code,
     )
-    await asyncio.to_thread(_notify_failure, row_id)
+    if applied:
+        await asyncio.to_thread(_notify_failure, row_id)
 
 
 def _claim(company: str) -> uuid.UUID | None:
@@ -380,13 +486,61 @@ def _claim(company: str) -> uuid.UUID | None:
     return row_id
 
 
+def reset_for_start() -> None:
+    """Called by the lifespan before it starts the worker, so a stop from an earlier lifespan (another
+    TestClient, or a server restarted in-process) never carries into this one."""
+    global _stopping, _idle
+    _stopping = False
+    _idle = None
+
+
+def request_stop() -> None:
+    """Shutdown, first step (#1292): claim nothing new. A drain already under way runs on."""
+    global _stopping
+    _stopping = True
+    wake()
+
+
+async def wait_idle(timeout: float) -> bool:
+    """Wait, at most `timeout` seconds, for the row being drained (if any) to finish. True when the
+    worker is idle; False when it gave up, and the row is left for the next instance's stale sweep."""
+    if _idle is None or _idle.is_set():
+        return True
+    try:
+        await asyncio.wait_for(_idle.wait(), timeout=timeout)
+        return True
+    except TimeoutError:
+        logger.warning("gp outbox: shutdown did not wait out the drain in flight", extra={"timeout": timeout})
+        return False
+
+
 async def run_forever() -> None:
     """The lifespan task. Every iteration is wrapped so no error can kill it - a dead worker is a
     silently non-draining queue, which is worse than the failure it is trying to absorb."""
-    global _wake_event
+    global _wake_event, _idle
     _wake_event = asyncio.Event()
+    _idle = asyncio.Event()
+    _idle.set()
     logger.info("gp outbox worker started")
+    last_sweep = None
     while True:
+        if _stopping:
+            # Shutting down: nothing new is claimed, so the loop ends here rather than idling until it
+            # is cancelled. On Python 3.11 asyncio.wait_for swallows a cancel that lands as its wait
+            # completes - which is exactly what request_stop's wake-up followed by the lifespan's cancel
+            # does - and a loop that idled on would then never finish, holding shutdown forever.
+            logger.info("gp outbox worker stopped")
+            return
+        # #1192: rows left in flight are swept on start and then every SWEEP_SECONDS, so one that hangs
+        # while this instance runs is recovered too. The sweep's own age threshold is what keeps it off
+        # a drain still running elsewhere.
+        now = time.monotonic()
+        if last_sweep is None or now - last_sweep >= SWEEP_SECONDS:
+            last_sweep = now
+            try:
+                await asyncio.to_thread(_recover_in_flight)
+            except Exception:  # noqa: BLE001 - a failed sweep must not stop the worker; the next one retries
+                logger.exception("gp outbox: in-flight recovery failed")
         try:
             # No relay: nothing claimable, so do not even open a transaction. This is the steady
             # state during an outage and must be cheap. With a relay connected, each company it
@@ -394,10 +548,16 @@ async def run_forever() -> None:
             # one must not sit behind another company having nothing to drain.
             drained = False
             for company in relay_gateway.companies if relay_gateway.connected else []:
-                row_id = await asyncio.to_thread(_claim, company)
-                if row_id is not None:
-                    await _drain_one(row_id)
-                    drained = True
+                if _stopping:
+                    break
+                _idle.clear()
+                try:
+                    row_id = await asyncio.to_thread(_claim, company)
+                    if row_id is not None:
+                        await _drain_one(row_id)
+                        drained = True
+                finally:
+                    _idle.set()
             if drained:
                 continue  # keep draining while there is work
         except asyncio.CancelledError:

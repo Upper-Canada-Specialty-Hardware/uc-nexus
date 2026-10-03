@@ -1,8 +1,8 @@
 import { gql } from '@apollo/client/core';
 
 export const GET_PO_STATISTICS = gql`
-  query GetPOStatistics($projectId: ID) {
-    poStatistics(projectId: $projectId) {
+  query GetPOStatistics($projectId: ID, $origin: POOrigin) {
+    poStatistics(projectId: $projectId, origin: $origin) {
       total
       draft
       gpRegistered
@@ -127,7 +127,6 @@ export const PURCHASE_ORDER_DETAIL_FIELDS = gql`
       fileSize
       documentType
       uploadedAt
-      downloadUrl
     }
   }
 `;
@@ -485,7 +484,6 @@ export const UPDATE_PO = gql`
         fileSize
         documentType
         uploadedAt
-        downloadUrl
       }
     }
   }
@@ -530,7 +528,6 @@ export const CANCEL_PO = gql`
         fileSize
         documentType
         uploadedAt
-        downloadUrl
       }
     }
   }
@@ -628,7 +625,6 @@ export const UPLOAD_PO_DOCUMENT = gql`
       fileSize
       documentType
       uploadedAt
-      downloadUrl
     }
   }
 `;
@@ -733,6 +729,7 @@ export const EMAIL_PO_TO_VENDOR = gql`
   mutation EmailPoToVendor($poId: ID!) {
     emailPoToVendor(poId: $poId) {
       sent
+      failed
       message
       sentTo
     }

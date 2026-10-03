@@ -53,6 +53,9 @@ def get_pull_requests(
     statuses=None,
     *,
     company: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+    newest_finished_first: bool = False,
 ) -> list[PullRequestModel]:
     """
     Query PullRequest WHERE deleted_at IS NULL, optionally filtered by project_id.
@@ -63,6 +66,10 @@ def get_pull_requests(
     `status` filters to one status; `statuses` filters to any of a set - the active queue passes
     [PENDING, IN_PROGRESS] so completed and cancelled pulls leave it the moment they land, and the
     history page passes [COMPLETED, CANCELLED]. The two are additive when both are given.
+
+    The history page pages here (#1268): terminal pulls only accumulate, so it reads newest finished
+    first (completed or cancelled at, id as the tiebreak) a page at a time instead of every finished
+    pull and its items on each visit. `limit` None keeps the unpaged read the live queue relies on.
     """
     stmt = (
         select(PullRequestModel)
@@ -81,7 +88,15 @@ def get_pull_requests(
         from app.repositories import tenancy
 
         stmt = stmt.where(PullRequestModel.project_id.in_(tenancy.project_ids_for(company)))
-    stmt = stmt.order_by(PullRequestModel.created_at.asc())
+    if newest_finished_first:
+        finished_at = func.coalesce(
+            PullRequestModel.completed_at, PullRequestModel.cancelled_at, PullRequestModel.created_at
+        )
+        stmt = stmt.order_by(finished_at.desc(), PullRequestModel.id.desc())
+    else:
+        stmt = stmt.order_by(PullRequestModel.created_at.asc())
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
     return list(session.scalars(stmt).unique().all())
 
 
@@ -1497,6 +1512,22 @@ def _restock_cancelled_pull(
     ]
 
 
+def _lock_source_request_of(session: Session, pr_id: uuid.UUID) -> None:
+    """Row-lock the request a pull was minted for - a shop-assembly batch's request, or the shipping-out
+    request pointing at it - before the pull is locked (#1156). Read without a lock, because taking the
+    pull's lock first is exactly the inversion this avoids. A pull minted for neither locks nothing; a
+    request that unlinks the pull meanwhile only costs a lock nobody needed."""
+    batch = session.scalar(select(ShopAssemblyBatchModel).where(ShopAssemblyBatchModel.pull_request_id == pr_id))
+    if batch is not None:
+        lock_rows(session, ShopAssemblyRequestModel, [batch.shop_assembly_request_id])
+        return
+    shipping_id = session.scalar(
+        select(ShippingOutRequestModel.id).where(ShippingOutRequestModel.pull_request_id == pr_id)
+    )
+    if shipping_id is not None:
+        lock_rows(session, ShippingOutRequestModel, [shipping_id])
+
+
 def cancel_pull_request(
     session: Session,
     pr_id: uuid.UUID,
@@ -1541,10 +1572,17 @@ def cancel_pull_request(
             field="reason",
         )
 
+    # Lock order is request -> pull -> inventory, everywhere (#1156). Batch creation, batch discard and
+    # the shipping reopen each lock the request first and the pull or inventory after it, so the
+    # request this pull was minted for is found with a plain read and locked before the pull itself;
+    # the pull is then locked and read fresh, and every check below runs on that locked row.
+    _lock_source_request_of(session, pr_id)
+
     locked_prs = lock_rows(session, PullRequestModel, [pr_id])
     if not locked_prs:
         raise NotFoundError(f"Pull request {pr_id} not found")
     pr = locked_prs[0]
+    session.refresh(pr)
     if pr.deleted_at is not None:
         raise NotFoundError(f"Pull request {pr_id} not found")
 

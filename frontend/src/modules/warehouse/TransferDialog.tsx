@@ -13,7 +13,7 @@ import {
 } from '@mui/material';
 import { useQuery, useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
-import LocationAutocomplete from '../../components/LocationAutocomplete';
+import LocationAutocomplete, { NO_DEFINED_LOCATIONS_TEXT } from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { TRANSFER_INVENTORY } from '../../graphql/warehouse';
@@ -79,7 +79,7 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
   const [quantity, setQuantity] = useState<string>(single ? String(single.available) : '');
   // #1046: the destination is a strict pick from the destination warehouse's defined locations - the
   // server refuses any bin not on the Locations tab - with the same cascading picks put away makes.
-  const { aisleOptions, rowOptions, bayOptions, isDefinedPick } = useDefinedLocationPick(
+  const { aisleOptions, rowOptions, bayOptions, isDefinedPick, registryEmpty } = useDefinedLocationPick(
     [destWarehouseId],
     aisle,
     row,
@@ -183,12 +183,15 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
       onClose={onClose}
       title={title}
       disableEscapeKeyDown={hasTypedDestination}
+      // #1285: Enter in a field transfers, refused whenever the button is.
+      onSubmit={handleSubmit}
+      submitDisabled={!valid || submitting}
       actions={
         <>
           <Button onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button variant="contained" onClick={handleSubmit} disabled={!valid || submitting}>
+          <Button type="submit" variant="contained" disabled={!valid || submitting}>
             {submitting ? 'Transferring...' : 'Transfer'}
           </Button>
         </>
@@ -247,6 +250,8 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
           <Select
             labelId="transfer-dest-warehouse"
             label="Destination warehouse"
+            // #1285: the dialog opens ready to pick, not waiting for a click into it.
+            autoFocus
             value={destWarehouseId}
             onChange={(e) => setDestWarehouseId(e.target.value)}
           >
@@ -262,10 +267,18 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
           <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} />
           <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} />
         </Stack>
-        {destWarehouseId && hasTypedDestination && !isDefinedPick && (
+        {destWarehouseId && registryEmpty ? (
           <Typography variant="caption" color="text.secondary">
-            Pick an aisle, row and bay defined in the destination warehouse on the Locations tab.
+            {NO_DEFINED_LOCATIONS_TEXT}
           </Typography>
+        ) : (
+          destWarehouseId &&
+          hasTypedDestination &&
+          !isDefinedPick && (
+            <Typography variant="caption" color="text.secondary">
+              Pick an aisle, row and bay defined in the destination warehouse on the Locations tab.
+            </Typography>
+          )
         )}
 
         {single && (

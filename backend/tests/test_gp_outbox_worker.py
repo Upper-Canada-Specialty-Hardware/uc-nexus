@@ -36,6 +36,8 @@ def _enqueue_committed(
             entity_key=f"po:{uuid.uuid4()}",
             label="Receive against PO 0000123" if op == "create_receive" else "Register PO 0000123 in GP",
         )
+        # Drained directly, so start where the worker's claim leaves a row: in flight.
+        row.status = "IN_FLIGHT"
         row_id = row.id
         session.commit()
     return row_id, key

@@ -22,7 +22,7 @@ import {
   Tooltip,
 } from '@mui/material';
 import { Trash2, Download, Upload, FileText, Mail, Pencil } from 'lucide-react';
-import { useMutation, useQuery } from '@apollo/client/react';
+import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import type { GridColDef } from '@mui/x-data-grid';
 import Modal from '../../components/Modal';
@@ -31,7 +31,7 @@ import ConfirmDialog from '../../components/ConfirmDialog';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { useToast } from '../../components/Toast';
 import GpCompanyTag from '../../components/GpCompanyTag';
-import { UPDATE_PO, UPDATE_PO_NOTES, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM_UNIT_COST, UPLOAD_PO_DOCUMENT, DELETE_PO_DOCUMENT, EMAIL_PO_TO_VENDOR } from '../../graphql/po';
+import { UPDATE_PO, UPDATE_PO_NOTES, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM_UNIT_COST, UPLOAD_PO_DOCUMENT, DELETE_PO_DOCUMENT, EMAIL_PO_TO_VENDOR, GET_PO_DOCUMENT_DOWNLOAD_URL } from '../../graphql/po';
 import { GET_PRIOR_ORDER_AS_VALUES, GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
 import type { PurchaseOrder } from './index';
@@ -55,6 +55,9 @@ const EMPTY = '—';
 
 /** The stages a PO is still expecting hardware in - where its lines can still be registered in Nexus. */
 const OPEN_PO_STATUSES = new Set(['GP_REGISTERED', 'VENDOR_CONFIRMED', 'PARTIALLY_RECEIVED']);
+
+// Matches the server's cap on a PO document (#1233).
+const MAX_PO_DOCUMENT_BYTES = 20 * 1024 * 1024;
 
 const DOC_TYPE_LABELS: Record<string, string> = {
   PO_DOCUMENT: 'PO Document',
@@ -109,6 +112,7 @@ export default function PODetailModal({
   registrationQueued = false,
 }: PODetailModalProps) {
   const { showToast } = useToast();
+  const apollo = useApolloClient();
 
   // Edit mode state
   const [editing, setEditing] = useState(false);
@@ -216,7 +220,7 @@ export default function PODetailModal({
   });
 
   const [emailPoToVendor] = useMutation<{
-    emailPoToVendor: { sent: boolean; message: string; sentTo: string | null };
+    emailPoToVendor: { sent: boolean; failed: boolean; message: string; sentTo: string | null };
   }>(EMAIL_PO_TO_VENDOR);
 
   const [deleteDocument] = useMutation(DELETE_PO_DOCUMENT, {
@@ -276,7 +280,8 @@ export default function PODetailModal({
         const editVal = unitCostEdits[li.id];
         if (editVal === undefined || editVal === '') return false;
         const parsed = parseFloat(editVal);
-        return !isNaN(parsed) && parsed > 0 && parsed !== li.unitCost;
+        // A $0 no-charge line is valid, as it is when the PO is drafted and registered (#1172).
+        return !isNaN(parsed) && parsed >= 0 && parsed !== li.unitCost;
       })
       .map((li) =>
         updateUnitCost({
@@ -323,6 +328,11 @@ export default function PODetailModal({
 
   const handleUpload = useCallback(async () => {
     if (!uploadFile) return;
+    // #1233: the server refuses it too; saying so here spares reading and sending the whole file first.
+    if (uploadFile.size > MAX_PO_DOCUMENT_BYTES) {
+      showToast(`The file is larger than ${MAX_PO_DOCUMENT_BYTES / (1024 * 1024)} MB`, 'error');
+      return;
+    }
 
     const reader = new FileReader();
     reader.onload = () => {
@@ -338,7 +348,7 @@ export default function PODetailModal({
       });
     };
     reader.readAsDataURL(uploadFile);
-  }, [uploadFile, uploadDocType, po.id, uploadDocument]);
+  }, [uploadFile, uploadDocType, po.id, uploadDocument, showToast]);
 
   // #500: the result is an outcome, not an exception - "no email on the vendor card" and "generate
   // the document first" are things the user fixes, so they surface as an informational toast rather
@@ -348,13 +358,40 @@ export default function PODetailModal({
     try {
       const res = await emailPoToVendor({ variables: { poId: po.id } });
       const result = res.data?.emailPoToVendor;
-      showToast(result?.message ?? 'Sent', result?.sent ? 'success' : 'info');
+      // #1278: a step the buyer can take (generate the document, ask accounting) is a note; a real
+      // failure (mail server, GP, storage) is an error, which stays until it is dismissed.
+      showToast(result?.message ?? 'Sent', result?.sent ? 'success' : result?.failed ? 'error' : 'info');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Could not send the purchase order', 'error');
     } finally {
       setEmailing(false);
     }
   }, [emailPoToVendor, po.id, showToast]);
+
+  // #1339: the link is signed on click, not carried on the PO, so a modal left open past the link's
+  // hour still downloads. The tab is opened inside the click (a popup blocker allows that, not one
+  // opened after an await) and pointed at the link once it arrives.
+  const handleDownloadDocument = useCallback(
+    async (documentId: string) => {
+      const tab = window.open('', '_blank');
+      if (tab) tab.opener = null;
+      try {
+        const res = await apollo.query<{ poDocumentDownloadUrl: string }>({
+          query: GET_PO_DOCUMENT_DOWNLOAD_URL,
+          variables: { documentId },
+          fetchPolicy: 'network-only',
+        });
+        const url = res.data?.poDocumentDownloadUrl;
+        if (!url) throw new Error('Could not open the document.');
+        if (tab) tab.location.href = url;
+        else window.open(url, '_blank', 'noopener,noreferrer');
+      } catch (err) {
+        tab?.close();
+        showToast(err instanceof Error ? err.message : 'Could not open the document.', 'error');
+      }
+    },
+    [apollo, showToast],
+  );
 
   const handleDeleteDocument = (documentId: string) => {
     deleteDocument({ variables: { documentId } });
@@ -530,7 +567,7 @@ export default function PODetailModal({
             renderCell: (params) => {
               const val = unitCostEdits[params.row.id as string] ?? String(params.value ?? '');
               const parsed = parseFloat(val);
-              const isInvalid = val !== '' && (isNaN(parsed) || parsed <= 0);
+              const isInvalid = val !== '' && (isNaN(parsed) || parsed < 0);
               return (
                 <TextField
                   size="small"
@@ -541,7 +578,11 @@ export default function PODetailModal({
                   }
                   error={isInvalid}
                   fullWidth
-                  slotProps={{ input: { sx: { fontSize: '0.875rem' } } }}
+                  slotProps={{
+                    input: { sx: { fontSize: '0.875rem' } },
+                    // #1284: a field per line with no label read only as "edit text".
+                    htmlInput: { 'aria-label': `Unit cost of ${params.row.productCode ?? 'line'}` },
+                  }}
                 />
               );
             },
@@ -564,16 +605,19 @@ export default function PODetailModal({
   // Both refusals are also enforced server-side; this only keeps the button from being offered when
   // pressing it could only produce a message saying no.
   const hasGeneratedPo = po.documents.some((d) => d.documentType === 'GENERATED_PO');
-  const canEmailVendor = po.status !== 'DRAFT' && !!po.gpVendorId && hasGeneratedPo;
+  // A cancelled or closed PO is no longer an order, so it is not offered either (#1194).
+  const canEmailVendor = OPEN_PO_STATUSES.has(po.status) && !!po.gpVendorId && hasGeneratedPo;
 
   // A Draft is accepted into GP via the Register in GP flow (GP-first push, then map vendor + cost code
-  // and advance to GP-Registered). The relay must be up to push.
-  const canRegisterInGp = po.status === 'DRAFT';
+  // and advance to GP-Registered). The relay must be up to push. A queued registration is still a Draft
+  // until the queue posts it; registering again would queue a second GP PO (#1165).
+  const canRegisterInGp = po.status === 'DRAFT' && !registrationQueued;
   const relayConnected = relayConnectedProp === true;
 
   // Draft only. Cancelling never told GP anything, so cancelling a registered PO left GP holding a
-  // live PO against the job that Nexus had dropped. Once GP has it, GP is where it gets unwound.
-  const canCancel = po.status === 'DRAFT';
+  // live PO against the job that Nexus had dropped. Once GP has it, GP is where it gets unwound. A queued
+  // registration is on its way into GP, so it is held the same way (#1166).
+  const canCancel = po.status === 'DRAFT' && !registrationQueued;
 
   // #858: the supplier PO document reads its details from GP, so it is offered only for a PO GP
   // holds and has been read back from - hidden on a Nexus Draft, held while the registration or its
@@ -652,7 +696,13 @@ export default function PODetailModal({
               only has to drop between opening this and submitting. */}
           {canRegisterInGp && (
             <Tooltip
-              title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to register a PO'}
+              title={
+                relayConnected
+                  ? ''
+                  : relayConnectedProp === null
+                    ? 'Checking the GP relay…'
+                    : 'The GP relay (on the GP workstation) is not connected for this company - ask an admin to check it'
+              }
               arrow
             >
               <span>
@@ -990,9 +1040,7 @@ export default function PODetailModal({
                     <IconButton
                       size="small"
                       aria-label={`Download ${doc.fileName}`}
-                      href={doc.downloadUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                      onClick={() => handleDownloadDocument(doc.id)}
                     >
                       <Download {...ICON} />
                     </IconButton>

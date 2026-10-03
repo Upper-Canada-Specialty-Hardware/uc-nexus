@@ -200,8 +200,19 @@ export const GET_PULL_REQUESTS = gql`
     $source: PullRequestSource
     $status: PullRequestStatus
     $statuses: [PullRequestStatus!]
+    $limit: Int
+    $offset: Int
+    $newestFinishedFirst: Boolean
   ) {
-    pullRequests(projectId: $projectId, source: $source, status: $status, statuses: $statuses) {
+    pullRequests(
+      projectId: $projectId
+      source: $source
+      status: $status
+      statuses: $statuses
+      limit: $limit
+      offset: $offset
+      newestFinishedFirst: $newestFinishedFirst
+    ) {
       id
       requestNumber
       projectId
@@ -349,25 +360,6 @@ export const GET_STOCK_ITEMS = gql`
   }
 `;
 
-export const GET_STOCK_ITEM = gql`
-  query GetStockItem($id: ID!) {
-    stockItem(id: $id) {
-      id
-      hardwareCategory
-      productCode
-      quantity
-      deficientQuantity
-      available
-      aisle
-      row
-      bay
-      receivedAt
-      createdAt
-      updatedAt
-    }
-  }
-`;
-
 export const GET_DEFICIENT_ITEMS = gql`
   query GetDeficientItems($projectId: ID, $source: DeficientItemSource) {
     deficientItems(projectId: $projectId, source: $source) {
@@ -388,26 +380,6 @@ export const GET_DEFICIENT_ITEMS = gql`
   }
 `;
 
-export const GET_DEFICIENCY_REVIEWS = gql`
-  query GetDeficiencyReviews($inventoryLocationId: ID, $stockItemId: ID, $projectId: ID) {
-    deficiencyReviews(
-      inventoryLocationId: $inventoryLocationId
-      stockItemId: $stockItemId
-      projectId: $projectId
-    ) {
-      id
-      inventoryLocationId
-      stockItemId
-      resolution
-      quantity
-      reasonText
-      rmaReference
-      reviewedBy
-      reviewedAt
-      resultingStockItemId
-    }
-  }
-`;
 
 export const ADJUST_INVENTORY_QUANTITY = gql`
   mutation AdjustInventoryQuantity(
@@ -825,8 +797,8 @@ export const RESOLVE_DEFICIENCY = gql`
 // rejected drafts and booked records. The existing views each cover a slice, and a rejected draft
 // appeared in none of them.
 export const GET_RECEIVES = gql`
-  query GetReceives($limit: Int, $offset: Int, $projectId: ID, $poSearch: String) {
-    receives(limit: $limit, offset: $offset, projectId: $projectId, poSearch: $poSearch) {
+  query GetReceives($limit: Int, $offset: Int, $projectId: ID, $poSearch: String, $status: String) {
+    receives(limit: $limit, offset: $offset, projectId: $projectId, poSearch: $poSearch, status: $status) {
       kind
       id
       occurredAt

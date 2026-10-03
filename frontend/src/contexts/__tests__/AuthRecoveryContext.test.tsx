@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { AuthRecoveryProvider } from '../AuthRecoveryContext';
-import { notifyAuthFailure, readAuthBridge, resetAuthBridge } from '../../authBridge';
+import { isAuthLapsed, notifyAuthFailure, readAuthBridge, resetAuthBridge } from '../../authBridge';
 
 /**
  * The React end of #429. The Apollo auth link cannot call `useAuth` (the client is built at module
@@ -78,4 +78,65 @@ test('an open prompt closes when Clerk catches up and signs the user out', async
   rerender(<AuthRecoveryProvider><div /></AuthRecoveryProvider>);
 
   await waitFor(() => expect(screen.queryByText(PROMPT)).not.toBeInTheDocument());
+});
+
+// #1329: the polls of a lapsed session used to reopen the prompt every few seconds.
+test('"Not now" holds: background failures of the same lapse do not reopen the prompt', async () => {
+  render(<AuthRecoveryProvider><div /></AuthRecoveryProvider>);
+  act(() => notifyAuthFailure());
+  fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
+  await waitFor(() => expect(screen.queryByText(PROMPT)).not.toBeInTheDocument());
+
+  act(() => {
+    notifyAuthFailure();
+    notifyAuthFailure();
+  });
+
+  expect(screen.queryByText(PROMPT)).not.toBeInTheDocument();
+});
+
+test("the user's own failed save raises the prompt again mid-lapse", async () => {
+  render(<AuthRecoveryProvider><div /></AuthRecoveryProvider>);
+  act(() => notifyAuthFailure());
+  fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
+  await waitFor(() => expect(screen.queryByText(PROMPT)).not.toBeInTheDocument());
+
+  act(() => notifyAuthFailure({ userAction: true }));
+
+  expect(screen.getByText(PROMPT)).toBeInTheDocument();
+});
+
+test('"Sign in again" renews in place when Clerk can, without reloading the page', async () => {
+  const reload = vi.fn();
+  vi.stubGlobal('location', { ...window.location, reload });
+  auth.getToken.mockResolvedValueOnce('renewed');
+  try {
+    render(<AuthRecoveryProvider><div /></AuthRecoveryProvider>);
+    act(() => notifyAuthFailure());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
+
+    await waitFor(() => expect(isAuthLapsed()).toBe(false));
+    expect(auth.getToken).toHaveBeenCalledWith({ skipCache: true });
+    expect(reload).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+test('"Sign in again" falls back to a reload when the session cannot be renewed', async () => {
+  const reload = vi.fn();
+  vi.stubGlobal('location', { ...window.location, reload });
+  auth.getToken.mockResolvedValueOnce(null as unknown as string);
+  try {
+    render(<AuthRecoveryProvider><div /></AuthRecoveryProvider>);
+    act(() => notifyAuthFailure());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
+
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+    expect(isAuthLapsed()).toBe(true);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

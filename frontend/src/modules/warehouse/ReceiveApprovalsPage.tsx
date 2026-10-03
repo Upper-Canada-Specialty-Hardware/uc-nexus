@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type KeyboardEvent } from 'react';
 import {
   Alert,
   Box,
@@ -149,6 +149,17 @@ export default function ReceiveApprovalsPage() {
               // its author, so it stays read-only here.
               sx={{ cursor: openable ? 'pointer' : 'default' }}
               onClick={() => openable && setOpenDraft(draft)}
+              // #1283: an openable row takes focus and opens on Enter or Space, so review is not
+              // mouse-only. It stays a table row, so a screen reader still reads its cells.
+              {...(openable && {
+                tabIndex: 0,
+                onKeyDown: (e: KeyboardEvent<HTMLTableRowElement>) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setOpenDraft(draft);
+                  }
+                },
+              })}
             >
               <TableCell sx={monoSx}>{draft.poNumber ?? DASH}</TableCell>
               {/* Description first, falling back to the job number - the label every warehouse list

@@ -8,6 +8,11 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   Stack,
   TableCell,
   TableRow,
@@ -37,6 +42,7 @@ import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { plural } from '../../utils/plural';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
 import BatchReviewPanel from './BatchReviewPanel';
+import { dismissalLines } from './dismissals';
 import {
   PULL_STATUS_COLOR,
   PULL_STATUS_LABEL,
@@ -100,6 +106,9 @@ const evictReservationReads = {
     cache.gc();
   },
 };
+
+/** Matches the backend's MAX_DISMISSAL_REASON_LENGTH (shop_assembly_repository.py). */
+const MAX_DISMISSAL_REASON_LENGTH = 500;
 
 /** A batch mints a warehouse pull and a discard deletes it, so the pull queue goes stale too (#1232). */
 const evictReservationAndPullReads = {
@@ -190,6 +199,8 @@ export default function ShopAssemblyRequestsPage() {
     onError: (e) => settle(e.message, 'error'),
   });
   const busy = batching || dismissing || rejecting || discarding;
+  // #1156: the dismiss confirm carries an optional reason, shown against the openings afterwards.
+  const [dismissReason, setDismissReason] = useState('');
 
   const runConfirmed = useCallback(() => {
     const pending = confirm;
@@ -198,7 +209,9 @@ export default function ShopAssemblyRequestsPage() {
     if (pending.kind === 'batch') {
       createBatch({ variables: { input: { requestId: pending.requestId, lines: pending.lines } } });
     } else if (pending.kind === 'dismiss') {
-      dismissOpenings({ variables: { requestId: pending.requestId, openingNumbers: null, reason: null } });
+      dismissOpenings({
+        variables: { requestId: pending.requestId, openingNumbers: null, reason: dismissReason.trim() || null },
+      });
     } else if (pending.kind === 'reject') {
       const reason = rejectReason.trim();
       if (!reason) return;
@@ -207,7 +220,7 @@ export default function ShopAssemblyRequestsPage() {
     } else {
       discardBatch({ variables: { batchId: pending.batchId } });
     }
-  }, [confirm, rejectReason, createBatch, dismissOpenings, rejectRequest, discardBatch]);
+  }, [confirm, rejectReason, createBatch, dismissOpenings, rejectRequest, discardBatch, dismissReason]);
 
   const closeReject = () => {
     setConfirm(null);
@@ -422,9 +435,10 @@ export default function ShopAssemblyRequestsPage() {
                                 pendingOpenings.length - new Set(lines.map((l) => l.openingNumber)).size,
                             })
                           }
-                          onDismissRemaining={() =>
-                            setConfirm({ kind: 'dismiss', requestId: req.id, openings: pendingOpenings.length })
-                          }
+                          onDismissRemaining={() => {
+                            setDismissReason('');
+                            setConfirm({ kind: 'dismiss', requestId: req.id, openings: pendingOpenings.length });
+                          }}
                           onReject={() => setConfirm({ kind: 'reject', requestId: req.id })}
                         />
                       ) : (
@@ -505,12 +519,11 @@ export default function ShopAssemblyRequestsPage() {
                       {dismissedOpenings.length > 0 && (
                         <Box>
                           <Typography sx={{ ...microLabelSx, mb: 0.5 }}>Dismissed</Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            {dismissedOpenings.map((o) => o.openingNumber).join(', ')}
-                            {dismissedOpenings[0]?.dismissalReason
-                              ? ` - ${dismissedOpenings[0].dismissalReason}`
-                              : ''}
-                          </Typography>
+                          {dismissalLines(dismissedOpenings).map((line) => (
+                            <Typography key={line} variant="body2" color="text.secondary">
+                              {line}
+                            </Typography>
+                          ))}
                         </Box>
                       )}
                     </Stack>
@@ -521,6 +534,38 @@ export default function ShopAssemblyRequestsPage() {
           })}
         </Stack>
       </StaggerList>
+
+      <Dialog
+        open={confirm?.kind === 'dismiss'}
+        onClose={() => setConfirm(null)}
+        maxWidth="xs"
+        fullWidth
+        aria-labelledby="dismiss-openings-title"
+      >
+        <DialogTitle id="dismiss-openings-title" sx={{ fontWeight: 700, pb: 1 }}>
+          {confirmCopy.title}
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ fontSize: '0.875rem', mb: 2 }}>{confirmCopy.message}</DialogContentText>
+          <TextField
+            label="Reason (optional)"
+            value={dismissReason}
+            onChange={(e) => setDismissReason(e.target.value)}
+            fullWidth
+            size="small"
+            multiline
+            minRows={2}
+            slotProps={{ htmlInput: { maxLength: MAX_DISMISSAL_REASON_LENGTH } }}
+            helperText={`${dismissReason.length}/${MAX_DISMISSAL_REASON_LENGTH}`}
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2, pt: 1, justifyContent: 'flex-end', gap: 1 }}>
+          <Button onClick={() => setConfirm(null)}>Cancel</Button>
+          <Button variant="contained" color="warning" onClick={runConfirmed}>
+            {confirmCopy.label}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Modal
         open={confirm?.kind === 'reject'}
@@ -553,7 +598,7 @@ export default function ShopAssemblyRequestsPage() {
       </Modal>
 
       <ConfirmDialog
-        open={confirm !== null && confirm.kind !== 'reject'}
+        open={confirm !== null && confirm.kind !== 'dismiss' && confirm.kind !== 'reject'}
         title={confirmCopy.title}
         message={confirmCopy.message}
         confirmLabel={confirmCopy.label}

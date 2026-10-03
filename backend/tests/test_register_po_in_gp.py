@@ -513,7 +513,12 @@ class _NoCloseSession:
 
 
 def _use_test_session(monkeypatch, db_session) -> None:
+    from app.services import gp_outbox_enqueue
+
     monkeypatch.setattr(po_schema, "SessionLocal", lambda: _NoCloseSession(db_session))
+    # The queue checks the PO under its row lock where it queues (#1165), so it has to see the test's
+    # uncommitted draft too.
+    monkeypatch.setattr(gp_outbox_enqueue, "SessionLocal", lambda: _NoCloseSession(db_session))
 
 
 def _add_hardware_item(session, project, *, hardware_category, product_code, manufacturer, created_at=None):
@@ -889,14 +894,15 @@ def _run_register(draft, key):
 
 
 def _queued_write(key):
-    """The queued row as it was actually committed - read in its own session, because the enqueue the
-    resolver calls opens its own too. None when nothing was queued under this key."""
+    """The queued row, read through the same session factory the enqueue used (the test's own session
+    once `_use_test_session` has run, since the queue checks the uncommitted draft). None when nothing
+    was queued under this key."""
     from sqlalchemy import select as sa_select
 
-    from app.database import SessionLocal
     from app.models.gp_outbox import GpWriteOutbox
+    from app.services import gp_outbox_enqueue
 
-    with SessionLocal() as session:
+    with gp_outbox_enqueue.SessionLocal() as session:
         row = session.scalars(sa_select(GpWriteOutbox).where(GpWriteOutbox.idempotency_key == key)).first()
         if row is None:
             return None

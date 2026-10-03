@@ -369,10 +369,13 @@ def _take_off_waiting_shop_openings(
 
     category, code = product
     requests = session.scalars(
-        select(ShopAssemblyRequest).where(
+        select(ShopAssemblyRequest)
+        .where(
             ShopAssemblyRequest.project_id == project_id,
             ShopAssemblyRequest.status == ShopAssemblyRequestStatus.PENDING,
         )
+        # Read after set_product_classifications locked these requests: fresh, not what the session saw.
+        .execution_options(populate_existing=True)
     ).all()
     now = datetime.utcnow()
     for request in requests:
@@ -408,6 +411,19 @@ def _take_off_waiting_shop_openings(
         )
 
 
+def _lock_pending_shop_requests(session: Session, project_id: uuid.UUID) -> None:
+    """Row-lock every pending shop request on the project, in id order (the order lock_rows takes)."""
+    from app.services.locking import lock_rows
+
+    ids = session.scalars(
+        select(ShopAssemblyRequest.id).where(
+            ShopAssemblyRequest.project_id == project_id,
+            ShopAssemblyRequest.status == ShopAssemblyRequestStatus.PENDING,
+        )
+    ).all()
+    lock_rows(session, ShopAssemblyRequest, list(ids))
+
+
 def set_product_classifications(
     session: Session,
     project_id: uuid.UUID,
@@ -418,7 +434,13 @@ def set_product_classifications(
     """Apply every change or none - exactly what plan_product_classifications showed. A refusal names
     each blocked product and what holds it.
 
-    Returns the log rows written; a change to the value a product already has writes nothing."""
+    Returns the log rows written; a change to the value a product already has writes nothing.
+
+    The project's pending shop requests are locked first, in id order, and the plan is built under that
+    lock (#1156). Batch, dismiss, reject and discard each lock the request they decide (#1121); planned
+    from unlocked reads, a batch committed at the same moment could leave a site product on a live shop
+    pull, or a batch whose request lines this change then deleted."""
+    _lock_pending_shop_requests(session, project_id)
     plans = plan_product_classifications(session, project_id, changes)
     blocked = [
         f"{p['product_code']} ({p['hardware_category']}): {'; '.join(p['blocks'])}" for p in plans if p["blocks"]

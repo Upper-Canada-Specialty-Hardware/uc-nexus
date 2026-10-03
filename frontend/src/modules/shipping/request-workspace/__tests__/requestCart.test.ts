@@ -6,6 +6,7 @@ import {
   cartGroups,
   headroomByProduct,
   heldByRequest,
+  heldFromReservations,
   productLinesQuantity,
   removeLine,
   setLineQuantity,
@@ -94,6 +95,25 @@ describe('edit-mode add-back', () => {
   it('a new request has no add-back, so the ceiling is just what is free', () => {
     const headroom = headroomByProduct(new Map([[KEY, 6]]), heldByRequest([]));
     expect(headroom.get(KEY)).toBe(6);
+  });
+
+  // #1262: what the request really holds, not its lines.
+  const LINES = [{ hardwareCategory: 'HINGE', productCode: 'HG-100', requestedQuantity: 5 }];
+
+  it('adds back what the server says the request holds', () => {
+    const held = heldFromReservations([{ ...HINGE, quantity: 5 }], LINES);
+    expect(headroomByProduct(new Map([[KEY, 6]]), held).get(KEY)).toBe(11);
+  });
+
+  it('adds back nothing for a request that holds no claim, whatever its lines say', () => {
+    // Sent back to Pending by a cancelled pull it could not re-reserve: its 5 are not on hold.
+    const held = heldFromReservations([], LINES);
+    expect(headroomByProduct(new Map([[KEY, 6]]), held).get(KEY)).toBe(6);
+  });
+
+  it('falls back to the lines when the server does not say', () => {
+    const held = heldFromReservations(null, LINES);
+    expect(held.get(KEY)).toBe(5);
   });
 });
 
