@@ -192,10 +192,10 @@ def test_returning_a_cancelled_batch_locks_the_request(db_session, locks_taken):
     assert locks_taken[:1] == ["ShopAssemblyRequest"]
 
 
-def test_cancelling_a_batch_pull_locks_the_request_before_inventory(db_session, monkeypatch):
-    """#1156: batch creation takes the request lock and then inventory rows. The cancel returns the
-    batch under the request lock too, so it takes the request first as well - the other way round, a
-    cancel and a batch landing together would deadlock."""
+def test_cancelling_a_batch_pull_locks_request_then_pull_then_inventory(db_session, monkeypatch):
+    """#1156: batch creation takes the request and then inventory; batch discard takes the request and
+    then the pull. The cancel takes the request first too, then the pull, then inventory - any other
+    order and a cancel racing a batch or a discard deadlocks."""
     from app.repositories import warehouse as warehouse_repository
     from app.repositories.warehouse import pull_requests
 
@@ -215,8 +215,9 @@ def test_cancelling_a_batch_pull_locks_the_request_before_inventory(db_session, 
 
     warehouse_repository.cancel_pull_request(db_session, first.pull_request_id, "manager", "wrong pull")
 
+    # request -> pull -> inventory: the order batch creation and batch discard take.
     assert "InventoryLocation" in seen
-    assert seen.index("ShopAssemblyRequest") < seen.index("InventoryLocation")
+    assert seen.index("ShopAssemblyRequest") < seen.index("PullRequest") < seen.index("InventoryLocation")
 
 
 def test_a_request_closed_under_a_cancel_is_reopened_with_its_returned_opening(db_session):

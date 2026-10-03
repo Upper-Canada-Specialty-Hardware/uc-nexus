@@ -1480,6 +1480,22 @@ def _restock_cancelled_pull(
     ]
 
 
+def _lock_source_request_of(session: Session, pr_id: uuid.UUID) -> None:
+    """Row-lock the request a pull was minted for - a shop-assembly batch's request, or the shipping-out
+    request pointing at it - before the pull is locked (#1156). Read without a lock, because taking the
+    pull's lock first is exactly the inversion this avoids. A pull minted for neither locks nothing; a
+    request that unlinks the pull meanwhile only costs a lock nobody needed."""
+    batch = session.scalar(select(ShopAssemblyBatchModel).where(ShopAssemblyBatchModel.pull_request_id == pr_id))
+    if batch is not None:
+        lock_rows(session, ShopAssemblyRequestModel, [batch.shop_assembly_request_id])
+        return
+    shipping_id = session.scalar(
+        select(ShippingOutRequestModel.id).where(ShippingOutRequestModel.pull_request_id == pr_id)
+    )
+    if shipping_id is not None:
+        lock_rows(session, ShippingOutRequestModel, [shipping_id])
+
+
 def cancel_pull_request(
     session: Session,
     pr_id: uuid.UUID,
@@ -1524,10 +1540,17 @@ def cancel_pull_request(
             field="reason",
         )
 
+    # Lock order is request -> pull -> inventory, everywhere (#1156). Batch creation, batch discard and
+    # the shipping reopen each lock the request first and the pull or inventory after it, so the
+    # request this pull was minted for is found with a plain read and locked before the pull itself;
+    # the pull is then locked and read fresh, and every check below runs on that locked row.
+    _lock_source_request_of(session, pr_id)
+
     locked_prs = lock_rows(session, PullRequestModel, [pr_id])
     if not locked_prs:
         raise NotFoundError(f"Pull request {pr_id} not found")
     pr = locked_prs[0]
+    session.refresh(pr)
     if pr.deleted_at is not None:
         raise NotFoundError(f"Pull request {pr_id} not found")
 
@@ -1546,14 +1569,6 @@ def cancel_pull_request(
         raise InvalidStateTransitionError(
             "This pull is already complete and its hardware has been handed over - it can no longer be cancelled."
         )
-
-    # A shop-assembly pull's request is locked here, before any inventory row (#1156). Its batch is
-    # returned to the request further down under that request's lock, and batch creation takes the
-    # request first and inventory second; taking them the other way round here would deadlock against a
-    # batch landing at the same moment. With the lock already held, the re-lock below is a no-op.
-    batch = session.scalar(select(ShopAssemblyBatchModel).where(ShopAssemblyBatchModel.pull_request_id == pr.id))
-    if batch is not None:
-        lock_rows(session, ShopAssemblyRequestModel, [batch.shop_assembly_request_id])
 
     now = datetime.utcnow()
 
