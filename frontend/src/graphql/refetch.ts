@@ -64,9 +64,8 @@ export const SHIPPING_REFETCH_QUERIES = ['GetPackingSlips'];
 // - requestCoverage: a slip is the moment hardware leaves, so it moves the composer's `sent` term.
 //
 // Absent on purpose: packingSlips, which is refetched by name above rather than evicted (a mounted
-// ShipmentsList must not flash empty), and notifications (NotificationBell polls every 30s and
-// mounts two instances with different variables, so listing it costs two round-trips for a badge
-// that self-corrects).
+// ShipmentsList must not flash empty), and notifications (NotificationBell polls its list and its
+// unread count every 30s, so listing them costs two round-trips for a badge that self-corrects).
 export const SHIPPING_STALE_ROOT_FIELDS = ['stagingPool', 'shipReadyItems', 'requestCoverage'];
 
 // What starting or completing a pull invalidates. Eviction-only, including the queue itself.

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, Enum, ForeignKey, Index, String, text
+from sqlalchemy import Boolean, CheckConstraint, Enum, ForeignKey, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
@@ -26,11 +26,21 @@ class Notification(Base):
             "type",
             postgresql_where=text("pull_request_id IS NOT NULL AND is_read = false"),
         ),
+        # A person-targeted notification is looked up by its one recipient (#1111).
+        Index("ix_notifications_recipient_user_id", "recipient_user_id"),
+        # Every notification is for exactly one of: an audience, or a person (#1111).
+        CheckConstraint(
+            "(recipient_role IS NULL) <> (recipient_user_id IS NULL)",
+            name="ck_notifications_one_recipient",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("projects.id"), nullable=False)
-    recipient_role: Mapped[str] = mapped_column(String, nullable=False)
+    # Who it is for (#1111): an audience from notification_service.AUDIENCE_ROLES, or one person's
+    # Clerk user id in recipient_user_id. Exactly one of the two is set.
+    recipient_role: Mapped[str | None] = mapped_column(String, nullable=True)
+    recipient_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
     type: Mapped[NotificationType] = mapped_column(
         Enum(NotificationType, name="notification_type", create_constraint=True),
         nullable=False,
@@ -47,5 +57,20 @@ class Notification(Base):
     pull_request_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("pull_requests.id", ondelete="SET NULL"), nullable=True
     )
+    # Read by at least one person. Each person's own read state is a NotificationRead row (#1111);
+    # this flag stays because the pull dedupe keys on "has anybody seen it yet".
     is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
+
+
+class NotificationRead(Base):
+    """One person has read one notification (#1111). Read state used to be one flag per row, so the
+    first person to open a notification cleared it for everybody else."""
+
+    __tablename__ = "notification_reads"
+
+    notification_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("notifications.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[str] = mapped_column(String, primary_key=True)
+    read_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
