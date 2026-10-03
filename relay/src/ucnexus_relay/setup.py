@@ -13,6 +13,8 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+from .fsutil import atomic_write_text
+
 _PLACEHOLDER_SECRET = "REPLACE_ME_RANDOM_TOKEN"
 _DEFAULT_DRIVER = "ODBC Driver 17 for SQL Server"
 
@@ -60,15 +62,24 @@ def write_config(fields: dict, config_path: str | Path) -> dict:
     """Write config.toml from the wizard fields. Preserves an already-enrolled secret so re-running setup
     on an enrolled relay doesn't silently wipe enrollment (caller can pass shared_secret to override),
     and likewise any hand-added [channel] backend_url (#414). Both are things the wizard never asks for
-    and cannot reconstruct."""
+    and cannot reconstruct.
+
+    A config.toml that exists but cannot be read or parsed is refused, not rewritten (#1385): treating it
+    as empty used to replace the enrolled DPAPI secret with the placeholder and report ok. The write is
+    atomic (#1386)."""
     config_path = Path(config_path)
     fields = dict(fields)
     if config_path.exists():
         try:
             with open(config_path, "rb") as f:
                 existing = tomllib.load(f)
-        except (OSError, tomllib.TOMLDecodeError):
-            existing = {}
+        except tomllib.TOMLDecodeError as e:
+            return {
+                "ok": False,
+                "error": f"{config_path} is not valid TOML ({e}); fix or remove it, then run setup again",
+            }
+        except OSError as e:
+            return {"ok": False, "error": f"cannot read {config_path}: {e}"}
         if "shared_secret" not in fields:
             sec = (existing.get("auth") or {}).get("shared_secret")
             if sec and sec != _PLACEHOLDER_SECRET:
@@ -79,7 +90,7 @@ def write_config(fields: dict, config_path: str | Path) -> dict:
                 if value:
                     fields[key] = value
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(build_config_toml(fields), encoding="utf-8")
+    atomic_write_text(config_path, build_config_toml(fields))
     return {"ok": True, "path": str(config_path)}
 
 

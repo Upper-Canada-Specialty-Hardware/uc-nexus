@@ -26,7 +26,7 @@ find, let alone rewrite, so changing it would orphan the stock it was stamped on
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -121,10 +121,9 @@ class CustomInventoryItem(Base):
     """
 
     __tablename__ = "custom_inventory_items"
-    __table_args__ = (
-        UniqueConstraint("type_id", "product_code", name="uq_custom_inventory_items_type_code"),
-        Index("ix_custom_inventory_items_type_id", "type_id"),
-    )
+    # A product code is unique within its type ignoring case (#1342): the functional unique index is
+    # declared after the class, since it needs the column object.
+    __table_args__ = (Index("ix_custom_inventory_items_type_id", "type_id"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     type_id: Mapped[uuid.UUID] = mapped_column(
@@ -142,6 +141,14 @@ class CustomInventoryItem(Base):
         back_populates="item",
         cascade="all, delete-orphan",
     )
+
+
+Index(
+    "uq_custom_inventory_items_type_code_ci",
+    CustomInventoryItem.type_id,
+    func.lower(CustomInventoryItem.product_code),
+    unique=True,
+)
 
 
 class CustomInventoryItemValue(Base):

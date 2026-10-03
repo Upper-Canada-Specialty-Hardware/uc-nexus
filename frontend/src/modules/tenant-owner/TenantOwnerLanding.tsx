@@ -76,7 +76,7 @@ interface SubRoute {
 const SUB_ROUTES: SubRoute[] = [
   { label: 'Projects', path: '/app/tenant-owner/projects', icon: <Folder {...CARD_ICON} /> },
   { label: 'Project Purchasing Progress', path: '/app/tenant-owner/project-purchasing-progress', icon: <ClipboardList {...CARD_ICON} /> },
-  { label: 'Hardware Status by Project', path: '/app/tenant-owner/hardware-status', icon: <PackageSearch {...CARD_ICON} />, countKey: 'hardwareItemCount' },
+  { label: 'Hardware Status by Project', path: '/app/tenant-owner/hardware-status', icon: <PackageSearch {...CARD_ICON} /> },
   { label: 'Warehouses', path: '/app/tenant-owner/warehouses', icon: <Warehouse {...CARD_ICON} /> },
   { label: 'Location Cleanup', path: '/app/tenant-owner/location-cleanup', icon: <SprayCan {...CARD_ICON} /> },
   { label: 'Inventory Value', path: '/app/tenant-owner/inventory-value', icon: <CircleDollarSign {...CARD_ICON} /> },

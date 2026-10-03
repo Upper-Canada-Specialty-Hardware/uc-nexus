@@ -20,6 +20,7 @@ from .inventory import (
     resolve_project_combo_cost,
 )
 from .locations import (
+    ANY_LOCATION_PART,
     _normalize_and_validate_location_fields,
     assign_inventory_location,
     clone_origin_fields,
@@ -148,6 +149,7 @@ __all__ = [
     "get_back_ordered_items",
     "get_distinct_location_values",
     "get_inventory_rows",
+    "ANY_LOCATION_PART",
     "get_location_audit_history",
     "get_location_contents",
     "get_location_duplicates",

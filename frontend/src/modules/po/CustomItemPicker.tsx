@@ -55,7 +55,7 @@ function PickerBody({
   onClose: () => void;
   onPick: (item: CustomInventoryItem) => void;
 }) {
-  const { types, loading: typesLoading } = useInventoryItemTypes({ activeOnly: true });
+  const { types, loading: typesLoading, error: typesError } = useInventoryItemTypes({ activeOnly: true });
   const [pickedTypeId, setPickedTypeId] = useState<string | null>(null);
   const [selected, setSelected] = useState<CustomInventoryItem | null>(null);
 
@@ -63,7 +63,7 @@ function PickerBody({
   // state write to catch up with it is a cascading render for something derivation answers.
   const typeId = pickedTypeId ?? types[0]?.id ?? '';
 
-  const { items, loading } = useCustomInventoryItems({
+  const { items, loading, error: itemsError } = useCustomInventoryItems({
     typeId: typeId || undefined,
     activeOnly: true,
     skip: !typeId,
@@ -79,13 +79,22 @@ function PickerBody({
         under.
       </Alert>
 
+      {/* #1341: a failed catalog read is said, not shown as an empty list. */}
+      {itemsError && types.length > 0 && (
+        <Typography variant="body2" color="error">
+          Couldn't load the catalog for this type. Close this and try again.
+        </Typography>
+      )}
+
       {types.length === 0 ? (
         // Distinguish "still loading" from "genuinely none": the empty state sends the user off to
         // another screen, which is the wrong instruction to give while the list is in flight.
         <Typography variant="body2" color="text.secondary">
-          {typesLoading
-            ? 'Loading item types…'
-            : 'No active item types. Add one in Warehouse → Custom Items first.'}
+          {typesError
+            ? "Couldn't load the catalog. Close this and try again."
+            : typesLoading
+              ? 'Loading item types…'
+              : 'No active item types. Add one in Warehouse → Custom Items first.'}
         </Typography>
       ) : (
         <>
@@ -139,7 +148,13 @@ function PickerBody({
                 </Box>
               );
             }}
-            noOptionsText={loading ? 'Loading…' : 'No items catalogued for this type yet'}
+            noOptionsText={
+              itemsError
+                ? "Couldn't load the catalog. Close this and try again."
+                : loading
+                  ? 'Loading…'
+                  : 'No items catalogued for this type yet'
+            }
             fullWidth
           />
 
