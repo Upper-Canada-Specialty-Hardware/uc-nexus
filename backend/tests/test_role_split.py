@@ -78,7 +78,16 @@ def _codes(result) -> set:
 
 
 def _messages(result) -> set:
-    return {e.message for e in (result.errors or [])}
+    """Each error's message, plus the text of whatever it wraps: an unexpected exception is masked on
+    the wire since #1114, so a sentinel raised past the gate is on the original_error chain."""
+    out: set = set()
+    for e in result.errors or []:
+        out.add(e.message)
+        cause = e.original_error
+        while cause is not None:
+            out.add(str(cause))
+            cause = getattr(cause, "original_error", None)
+    return out
 
 
 def _caller(monkeypatch, roles, company=MY_COMPANY, *, companies_by_user=None):

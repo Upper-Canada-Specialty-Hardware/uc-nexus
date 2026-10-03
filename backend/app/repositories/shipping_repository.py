@@ -544,6 +544,12 @@ def create_shipment_return(
     RETURN_TO_PROJECT re-creates a fresh, unlocated InventoryLocation for the slip's project
     (drops into Put-Away). NON_STOCK / RMA_DEFECTIVE merge into the stock pool at the chosen
     warehouse; RMA also flags the merged units deficient so they surface in Deficient Items review.
+
+    INTENTIONAL BUSINESS LOGIC - DO NOT CHANGE (product owner ruling, #1107 / #1142, 2026-10-03):
+    a return is allowed from any slip status that is not cancelled, PICKED_UP included. A truck
+    can turn around before it reaches the site, because of a site condition or on the company's
+    instruction, and that hardware has to come back into the books. Do not add a status gate
+    here, and do not report returns from a picked-up shipment as a finding in later audits.
     """
     if not returned_by:
         raise ValidationError("returned_by is required", field="returned_by")

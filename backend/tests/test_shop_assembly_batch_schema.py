@@ -367,3 +367,48 @@ def test_reading_a_request_stays_open_to_any_signed_in_user(monkeypatch, db_sess
     result = _execute("{ shopAssemblyRequests { id } }")
 
     assert result.errors is None, result.errors
+
+
+# --- the by-id reads answer NOT_FOUND across the company line (#1113) ---------------------------
+
+
+def _foreign_request(db_session):
+    """A request on another company's project. The manager fixture is pinned to TUBC."""
+    project = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Other", company="UCSH")
+    db_session.add(project)
+    db_session.flush()
+    sar = _raise_request(db_session, project)
+    db_session.flush()
+    return sar
+
+
+def test_another_companys_request_is_not_found(as_manager, db_session):
+    sar = _foreign_request(db_session)
+
+    result = _execute("query($id: ID!){ shopAssemblyRequest(id: $id){ id } }", {"id": str(sar.id)})
+
+    assert result.data is None or result.data.get("shopAssemblyRequest") is None
+    assert result.errors[0].extensions["code"] == "NOT_FOUND"
+
+
+def test_another_companys_allocation_review_is_not_found(as_manager, db_session):
+    sar = _foreign_request(db_session)
+
+    result = _execute(
+        "query($rid: ID!){ shopAssemblyAllocationReview(requestId: $rid){ requestNumber } }",
+        {"rid": str(sar.id)},
+    )
+
+    assert result.data is None or result.data.get("shopAssemblyAllocationReview") is None
+    assert result.errors[0].extensions["code"] == "NOT_FOUND"
+
+
+def test_the_callers_own_request_still_reads(as_manager, db_session):
+    project = _make_project(db_session)
+    sar = _raise_request(db_session, project)
+    db_session.flush()
+
+    result = _execute("query($id: ID!){ shopAssemblyRequest(id: $id){ id } }", {"id": str(sar.id)})
+
+    assert result.errors is None, result.errors
+    assert result.data["shopAssemblyRequest"]["id"] == str(sar.id)

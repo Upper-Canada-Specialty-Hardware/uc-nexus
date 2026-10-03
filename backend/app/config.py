@@ -45,6 +45,24 @@ AZURE_CLIENT_ID = os.getenv("AZURE_CLIENT_ID", "")
 AZURE_CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET", "")
 
 
+# The browser origins allowed to call this backend cross-origin (#1115). The production frontend is
+# built with VITE_GRAPHQL_URL pointing here, so its requests are cross-origin; the Vite dev server
+# proxies /graphql and needs none of this, but its origins are listed so a dev build pointed straight
+# at a backend still works. CORS_ALLOW_ORIGINS (comma-separated) replaces the list when a frontend
+# gains another domain. The relay's /relay-link socket is not a browser and is not subject to CORS.
+DEFAULT_CORS_ALLOW_ORIGINS = (
+    "https://frontend-production-34fc.up.railway.app",
+    "http://localhost:5173",
+    "http://localhost:4173",
+)
+
+
+def cors_allow_origins() -> list[str]:
+    raw = os.getenv("CORS_ALLOW_ORIGINS", "")
+    origins = [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
+    return origins or list(DEFAULT_CORS_ALLOW_ORIGINS)
+
+
 def is_production_environment() -> bool:
     """Whether this deployment is the production Railway environment.
 
