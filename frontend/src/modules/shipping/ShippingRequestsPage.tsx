@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
@@ -100,9 +100,27 @@ const VIEW_COPY: Record<View, { description: string; empty: string }> = {
  */
 export default function ShippingRequestsPage() {
   const navigate = useNavigate();
-  // A notice about a rejected request links straight to that tab (#972).
-  const [searchParams] = useSearchParams();
-  const [view, setView] = useState<View>(searchParams.get('view') === 'REJECTED' ? 'REJECTED' : 'PENDING');
+  // A notice about a rejected request links straight to that tab (#972). The tab follows the URL
+  // rather than reading it once (#1243): the bell's link, followed while this page is already open,
+  // changes the URL without remounting, and the tab has to move with it.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const paramView = searchParams.get('view');
+  const view: View = paramView === 'APPROVED' || paramView === 'REJECTED' ? paramView : 'PENDING';
+  const setView = useCallback(
+    (next: View) => {
+      // replace, not push: flipping a tab is not a navigation step anybody wants to walk back through.
+      setSearchParams(
+        (prev) => {
+          const params = new URLSearchParams(prev);
+          if (next === 'PENDING') params.delete('view');
+          else params.set('view', next);
+          return params;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
   const [project, setProject] = useState<Project | null>(null);
   const projectId = project?.id;
   const { ownsTenant, hasRole } = useIdentity();

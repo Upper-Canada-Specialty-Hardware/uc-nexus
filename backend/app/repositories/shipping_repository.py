@@ -355,14 +355,15 @@ def confirm_shipment(
             )
         )
 
-    # 5. Create notification
-    item_count = sum(i["quantity"] for i in items)
+    # 5. Create notification. #1244: the slip is SCHEDULED here - nothing has left until it is picked up -
+    # and a manual line is free text that was never Nexus hardware, so it is not counted as items.
+    item_count = sum(i["quantity"] for i in items if not i.get("is_manual", False))
     notification_service.create_notification(
         session,
         project_id=project_id,
         recipient_role=notification_service.WAREHOUSE_RECIPIENT_ROLE,
         notification_type=NotificationType.SHIPMENT_COMPLETED,
-        message=f"Shipment {packing_slip_number} confirmed. {item_count} items shipped.",
+        message=f"Shipment {packing_slip_number} scheduled for pickup. {item_count} items on it.",
     )
 
     return packing_slip

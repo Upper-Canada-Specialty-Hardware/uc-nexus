@@ -501,6 +501,25 @@ def test_a_manual_line_needs_no_staged_stock(db_session):
     assert [(i.product_code, i.is_manual, i.quantity) for i in result.items] == [("MAN-1", True, 3)]
 
 
+def test_the_new_slip_notice_says_scheduled_and_counts_only_real_hardware(db_session):
+    # #1244: the slip is only scheduled when it is cut, and a manual line was never Nexus hardware.
+    from sqlalchemy import select
+
+    from app.models.notification import Notification
+
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4)
+    box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
+    containers.set_container_items(db_session, box.id, [_loose_item(2), _manual_item(5)])
+    slip = containers.confirm_shipment_from_containers(
+        db_session, project.id, [box.id], shipped_by="shipper", details=None
+    )
+    db_session.flush()
+
+    messages = db_session.scalars(select(Notification.message).where(Notification.project_id == project.id)).all()
+    assert f"Shipment {slip.packing_slip_number} scheduled for pickup. 2 items on it." in messages
+
+
 def test_a_manual_line_missing_its_product_or_category_is_refused(db_session):
     project = _project(db_session)
     box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
