@@ -520,6 +520,7 @@ def _assert_no_conflicting_claim(session: Session, draft: ReceiveDraftModel) -> 
     rows = session.execute(
         select(
             ReceiveDraftLineItemModel.po_line_item_id,
+            ReceiveDraftModel.approved_outbox_entry_id,
             func.sum(ReceiveDraftLineItemModel.quantity_received),
         )
         .join(ReceiveDraftModel, ReceiveDraftModel.id == ReceiveDraftLineItemModel.receive_draft_id)
@@ -530,9 +531,25 @@ def _assert_no_conflicting_claim(session: Session, draft: ReceiveDraftModel) -> 
             ReceiveDraftModel.receive_record_id.is_(None),
             ReceiveDraftLineItemModel.po_line_item_id.in_(list(wanted)),
         )
-        .group_by(ReceiveDraftLineItemModel.po_line_item_id)
+        .group_by(ReceiveDraftLineItemModel.po_line_item_id, ReceiveDraftModel.approved_outbox_entry_id)
     ).all()
-    in_flight = {po_line_item_id: int(total or 0) for po_line_item_id, total in rows}
+    # #1298: a queued approval whose receipt never reached GP holds nothing, even when it is still
+    # APPROVED because it finished before drafts were released on that path.
+    from app.models.gp_outbox import GpWriteOutbox
+
+    entry_ids = {entry_id for _, entry_id, _ in rows if entry_id is not None}
+    dead_entries = {
+        e.id
+        for e in (
+            session.scalars(select(GpWriteOutbox).where(GpWriteOutbox.id.in_(entry_ids))).all() if entry_ids else []
+        )
+        if outbox_entry_never_reached_gp(session, e)
+    }
+    in_flight: dict[uuid.UUID, int] = {}
+    for po_line_item_id, entry_id, total in rows:
+        if entry_id in dead_entries:
+            continue
+        in_flight[po_line_item_id] = in_flight.get(po_line_item_id, 0) + int(total or 0)
 
     # Read under the lock, refreshed: a receive that persisted since this draft was written has moved
     # received_quantity, and this draft's own total is checked against that even with nothing else in
@@ -668,3 +685,96 @@ def mark_approved(
         draft.approved_outbox_entry_id = outbox_entry_id
     session.flush()
     return draft
+
+
+# Failure kinds that say GP refused or never received the receipt. "ambiguous" (the job was on the
+# wire when the link died) and "persist_failed" (GP committed, Nexus refused it) are deliberately
+# absent: GP may hold those receipts, so their draft must stay put for a person to reconcile.
+_NEVER_REACHED_GP_KINDS = ("gp_rejected", "exhausted")
+
+
+def outbox_entry_never_reached_gp(session: Session, entry) -> bool:
+    """True when a queued receipt's outbox row is finished and GP never committed it (#1298).
+
+    A cancelled row qualifies unless it had already failed ambiguously or after GP committed; a failed
+    row only for the kinds above. Either way the GP idempotency ledger has the last word: a recorded
+    relay result means GP answered with a receipt, whatever the row says now."""
+    if entry is None or entry.op != "create_receive":
+        return False
+    if entry.status == "CANCELLED":
+        if entry.failure_kind not in (None, *_NEVER_REACHED_GP_KINDS):
+            return False
+    elif not (entry.status == "FAILED" and entry.failure_kind in _NEVER_REACHED_GP_KINDS):
+        return False
+    from app.models.gp_write import GpWriteIdempotency
+
+    ledger = session.get(GpWriteIdempotency, entry.idempotency_key)
+    return ledger is None or ledger.relay_result is None
+
+
+def release_draft_for_outbox_entry(session: Session, entry) -> ReceiveDraftModel | None:
+    """Send a queued approval's draft back for review when its receipt never reached GP (#1298).
+
+    Without this the draft stays APPROVED with no receive record for good: it counts as in flight
+    against its PO lines (so a fresh receive of them is refused as "already posting"), and it can be
+    neither deleted nor resubmitted. Called from the outbox's terminal transitions; a no-op for any
+    row that is not a never-committed receipt, or whose draft has already moved on."""
+    if not outbox_entry_never_reached_gp(session, entry):
+        return None
+    draft = session.scalars(
+        select(ReceiveDraftModel)
+        .where(
+            ReceiveDraftModel.approved_outbox_entry_id == entry.id,
+            ReceiveDraftModel.status == ReceiveDraftStatus.APPROVED,
+            ReceiveDraftModel.receive_record_id.is_(None),
+        )
+        .with_for_update()
+    ).first()
+    if draft is None:
+        return None
+    why = (
+        "the queued GP receipt was cancelled"
+        if entry.status == "CANCELLED"
+        else f"GP did not take the queued receipt: {entry.last_error or 'unknown error'}"
+    )
+    draft.status = ReceiveDraftStatus.PENDING_APPROVAL
+    draft.approved_outbox_entry_id = None
+    draft.approval_idempotency_key = None
+    draft.reviewed_by_user_id = None
+    draft.reviewed_by_name = None
+    draft.reviewed_at = None
+    draft.rejection_reason = f"Back for review: {why}"
+    session.flush()
+
+    po = session.get(POModel, draft.po_id)
+    if po is not None and po.project_id is not None:
+        notification_service.create_notification(
+            session,
+            project_id=po.project_id,
+            recipient_role=None,
+            recipient_user_id=draft.created_by_user_id,
+            notification_type=NotificationType.RECEIVE_DRAFT_REJECTED,
+            message=(
+                f"For {draft.created_by_name}: your receive against PO {po.po_number} is back awaiting "
+                f"approval - {why}. Nothing was received into inventory."
+            ),
+        )
+    return draft
+
+
+def assert_outbox_entry_retryable(session: Session, entry) -> None:
+    """Refuse to replay a queued receipt whose draft was sent back for review (#1298).
+
+    Once the draft is pending again, a manager can approve it afresh under a new key; replaying the old
+    row as well would post the same receipt to GP twice."""
+    if entry is None or entry.op != "create_receive":
+        return
+    draft_id = (entry.persist_context or {}).get("receive_draft_id")
+    if not draft_id:
+        return
+    draft = session.get(ReceiveDraftModel, uuid.UUID(str(draft_id)))
+    if draft is not None and draft.approved_outbox_entry_id != entry.id:
+        raise ConflictError(
+            "This receipt's draft went back for review when the GP write stopped. Approve the draft "
+            "again from Receive Approvals instead of retrying this entry."
+        )

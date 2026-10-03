@@ -152,6 +152,7 @@ def mark_failed(session: Session, row: GpWriteOutbox, *, kind: str, error: str, 
     row.last_error = error
     row.last_error_code = error_code
     session.flush()
+    _release_receive_draft(session, row)
 
 
 def list_entries(
@@ -221,6 +222,7 @@ def retry_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     row = session.get(GpWriteOutbox, entry_id)
     if row is None or row.status not in ("FAILED", "CANCELLED"):
         return None
+    _assert_receive_draft_still_queued(session, row)
     row.status = "PENDING"
     row.attempts = 0
     row.next_attempt_at = datetime.utcnow()
@@ -237,4 +239,18 @@ def cancel_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
         return None
     row.status = "CANCELLED"
     session.flush()
+    _release_receive_draft(session, row)
     return row
+
+
+def _release_receive_draft(session: Session, row: GpWriteOutbox) -> None:
+    """#1298: a queued receipt that ends without reaching GP hands its draft back for review."""
+    from app.repositories.warehouse.receive_drafts import release_draft_for_outbox_entry
+
+    release_draft_for_outbox_entry(session, row)
+
+
+def _assert_receive_draft_still_queued(session: Session, row: GpWriteOutbox) -> None:
+    from app.repositories.warehouse.receive_drafts import assert_outbox_entry_retryable
+
+    assert_outbox_entry_retryable(session, row)
