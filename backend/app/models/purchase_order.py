@@ -272,6 +272,9 @@ class PODocumentData(Base):
     tax_label: Mapped[str] = mapped_column(String, nullable=False, default="Taxes")
     # Tariff line for the document totals (issue #156). Prefills from PurchaseOrder.tariff_amount.
     tariff_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
+    # GP's trade discount (TRDISAMT), taken off the order total (#1236). Null until the dialog saves
+    # one, so a document saved before it existed still prefills GP's discount instead of a saved 0.
+    trade_discount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     # Overrides the header Required-by date (defaults to PurchaseOrder.expected_delivery_date).
     required_by_override: Mapped[date | None] = mapped_column(Date, nullable=True)
     # Conditional boilerplate toggles (wood-door FSC note, USA tariff note, international customs block).

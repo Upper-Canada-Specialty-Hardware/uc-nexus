@@ -5,12 +5,13 @@ from ucnexus_relay import econnect
 
 
 class _Row:
-    def __init__(self, po, subtotal, freight, misc, tax):
+    def __init__(self, po, subtotal, freight, misc, tax, trade_discount=0):
         self.po = po
         self.subtotal = subtotal
         self.freight = freight
         self.misc = misc
         self.tax = tax
+        self.trade_discount = trade_discount
 
 
 class _Cursor:
@@ -37,7 +38,7 @@ class _Conn:
 
 
 def test_reads_work_table_and_coerces_amounts():
-    row = _Row("PO0000056", 20, 100, 50, 75)
+    row = _Row("PO0000056", 20, 100, 50, 75, 4)
     conn = _Conn(_Cursor({"POP10100": row}))
     out = econnect.read_po_totals(conn, "PO0000056")
     assert out == {
@@ -46,14 +47,23 @@ def test_reads_work_table_and_coerces_amounts():
         "freight": 100.0,
         "miscellaneous": 50.0,
         "tax_amount": 75.0,
+        "trade_discount": 4.0,
     }
 
 
 def test_null_amounts_coerce_to_zero():
-    row = _Row("PO1", None, None, None, None)
+    row = _Row("PO1", None, None, None, None, None)
     conn = _Conn(_Cursor({"POP10100": row}))
     out = econnect.read_po_totals(conn, "PO1")
     assert out["subtotal"] == 0.0 and out["freight"] == 0.0 and out["tax_amount"] == 0.0
+    assert out["trade_discount"] == 0.0
+
+
+def test_reads_the_trade_discount_from_history_too():
+    # #1236: a fully processed PO keeps its discount in POP30100, and the document still needs it.
+    row = _Row("PO-HIST", 1000, 0, 0, 117, 100)
+    conn = _Conn(_Cursor({"POP10100": None, "POP30100": row}))
+    assert econnect.read_po_totals(conn, "PO-HIST")["trade_discount"] == 100.0
 
 
 def test_falls_back_to_history_table():

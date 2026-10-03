@@ -134,6 +134,8 @@ export interface PODocumentData {
   taxAmount: number;
   taxLabel: string;
   tariffAmount: number;
+  /** #1236: GP's trade discount, taken off the order total. Null until a document saves one. */
+  tradeDiscount: number | null;
   requiredByOverride: string | null;
   includeFsc: boolean;
   includeUsaTariff: boolean;

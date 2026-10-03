@@ -1187,6 +1187,7 @@ class POMutations:
                 tax_amount=input.tax_amount,
                 tax_label=input.tax_label,
                 tariff_amount=input.tariff_amount,
+                trade_discount=input.trade_discount,
                 required_by_override=input.required_by_override,
                 include_fsc=input.include_fsc,
                 include_usa_tariff=input.include_usa_tariff,
