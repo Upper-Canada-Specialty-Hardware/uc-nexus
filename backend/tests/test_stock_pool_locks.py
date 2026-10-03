@@ -136,6 +136,25 @@ def test_resolve_on_a_project_row_reads_the_deficient_count_after_another_resolv
         )
 
 
+def test_resolve_refuses_an_rma_reference_over_100_characters(db_session):
+    """The column is String(100); a longer reference is a field error, not a raw flush failure (#1209)."""
+    si = make_stock_item(db_session, quantity=10, deficient=4)
+
+    with pytest.raises(ValidationError) as exc:
+        stock_repository.resolve_deficiency(
+            db_session,
+            inventory_location_id=None,
+            stock_item_id=si.id,
+            resolution=DeficiencyResolution.RETURN_TO_VENDOR,
+            quantity=1,
+            reason_text=None,
+            rma_reference="R" * 101,
+            destock_source=None,
+            reviewed_by="manager",
+        )
+    assert exc.value.field == "rma_reference"
+
+
 def test_destock_computes_off_the_count_after_a_pick(db_session):
     project = make_project(db_session)
     il = make_il(db_session, project, quantity=10)

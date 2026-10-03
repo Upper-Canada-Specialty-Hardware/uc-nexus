@@ -138,6 +138,9 @@ def resolve_deficiency(
             "rma_reference is required when resolution is RETURN_TO_VENDOR",
             field="rma_reference",
         )
+    if rma_reference and len(rma_reference) > 100:
+        # The column is String(100); a longer one failed at flush as a raw server error (#1209).
+        raise ValidationError("rma_reference must be 100 characters or fewer", field="rma_reference")
     if resolution == DeficiencyResolution.SEND_TO_STOCK and destock_source is None:
         # default to DEFICIENT_SWAP for project sources if not specified
         destock_source = DestockSource.DEFICIENT_SWAP
