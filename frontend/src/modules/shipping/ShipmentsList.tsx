@@ -57,6 +57,7 @@ import {
   primaryWarehouse,
   returnableUnits,
   SHIPMENT_SLIP_PARAM,
+  SHIPMENT_STATUS_DISPLAY,
   shipmentStatusDisplay,
   slipMaterialLines,
   reprintContents,
@@ -64,6 +65,7 @@ import {
   valuesFromSlip,
   warehouseAddressLines,
   type PackingSlip,
+  type ShipmentStatus,
   type WarehouseAddress,
 } from './deliveryRequest';
 import { CONTAINER_TYPE_LABEL, isStacked } from './staging';
@@ -214,6 +216,23 @@ export default function ShipmentsList({ projectId, heading }: Props) {
   // searched to it and, once the list has it, with its row expanded - the slip is what was asked for.
   const [searchParams, setSearchParams] = useSearchParams();
   const linkedSlip = searchParams.get(SHIPMENT_SLIP_PARAM);
+  // #1361: the Shipping landing's gauges link here filtered to the slips they count.
+  const paramStatus = searchParams.get('status');
+  const statusFilter = (Object.keys(SHIPMENT_STATUS_DISPLAY) as ShipmentStatus[]).includes(
+    paramStatus as ShipmentStatus,
+  )
+    ? (paramStatus as ShipmentStatus)
+    : null;
+  const clearStatusFilter = useCallback(() => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('status');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [setSearchParams]);
   const [search, setSearch] = useState(() => linkedSlip ?? '');
   // What the server is asked for: the search box once typing has paused, so a slip number typed
   // character by character is one read rather than nine.
@@ -242,6 +261,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
     variables: {
       projectId: projectId ?? (projectFilter || null),
       search: query.trim() || null,
+      status: statusFilter,
       limit: shown,
     },
     fetchPolicy: 'cache-and-network',
@@ -385,6 +405,14 @@ export default function ShipmentsList({ projectId, heading }: Props) {
             },
           }}
         />
+        {statusFilter && (
+          <Chip
+            size="small"
+            variant="outlined"
+            label={`Status: ${SHIPMENT_STATUS_DISPLAY[statusFilter].label}`}
+            onDelete={clearStatusFilter}
+          />
+        )}
         {isGlobal && (
           <FormControl size="small" sx={{ minWidth: 220 }}>
             <InputLabel>Project</InputLabel>

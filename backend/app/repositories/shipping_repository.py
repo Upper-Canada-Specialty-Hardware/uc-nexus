@@ -500,7 +500,13 @@ PACKING_SLIP_PAGE_DEFAULT = 25
 PACKING_SLIP_PAGE_MAX = 200
 
 
-def _packing_slip_filter(stmt, project_id: uuid.UUID | None, company: str | None, search: str | None):
+def _packing_slip_filter(
+    stmt,
+    project_id: uuid.UUID | None,
+    company: str | None,
+    search: str | None,
+    status: ShipmentStatus | None = None,
+):
     if project_id is not None:
         stmt = stmt.where(PackingSlip.project_id == project_id)
     if company is not None:
@@ -511,6 +517,9 @@ def _packing_slip_filter(stmt, project_id: uuid.UUID | None, company: str | None
     if needle:
         escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         stmt = stmt.where(PackingSlip.packing_slip_number.ilike(f"%{escaped}%", escape="\\"))
+    # #1361: the Shipping landing's gauges link to the slips they count.
+    if status is not None:
+        stmt = stmt.where(PackingSlip.status == status)
     return stmt
 
 
@@ -531,6 +540,7 @@ def list_packing_slips(
     *,
     company: str | None = None,
     search: str | None = None,
+    status: ShipmentStatus | None = None,
     limit: int | None = None,
     offset: int = 0,
 ) -> list[PackingSlip]:
@@ -546,7 +556,7 @@ def list_packing_slips(
     if offset < 0:
         raise ValidationError("offset must not be negative", field="offset")
     stmt = (
-        _packing_slip_filter(select(PackingSlip), project_id, company, search)
+        _packing_slip_filter(select(PackingSlip), project_id, company, search, status)
         .options(*_packing_slip_loads())
         .order_by(PackingSlip.shipped_at.desc(), PackingSlip.id)
         .offset(offset)
@@ -561,9 +571,10 @@ def count_packing_slips(
     *,
     company: str | None = None,
     search: str | None = None,
+    status: ShipmentStatus | None = None,
 ) -> int:
     """How many slips the same filter matches, so the list can say how many more there are."""
-    stmt = _packing_slip_filter(select(func.count(PackingSlip.id)), project_id, company, search)
+    stmt = _packing_slip_filter(select(func.count(PackingSlip.id)), project_id, company, search, status)
     return int(session.scalar(stmt) or 0)
 
 

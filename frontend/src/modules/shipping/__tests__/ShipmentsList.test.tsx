@@ -110,10 +110,11 @@ function packingSlipsMock(
     search = null,
     limit = 25,
     count = slips.length,
-  }: { search?: string | null; limit?: number; count?: number } = {},
+    status = null,
+  }: { search?: string | null; limit?: number; count?: number; status?: string | null } = {},
 ): MockedResponse {
   return {
-    request: { query: GET_PACKING_SLIPS, variables: { projectId: null, search, limit } },
+    request: { query: GET_PACKING_SLIPS, variables: { projectId: null, search, status, limit } },
     maxUsageCount: INFINITE,
     result: { data: { packingSlips: slips, packingSlipCount: count } },
   };
@@ -507,6 +508,22 @@ describe('ShipmentsList', () => {
 
     await waitFor(() => expect(cancelled).toHaveBeenCalled());
     expect(await screen.findByText('PS-0019 cancelled')).toBeInTheDocument();
+  });
+
+  it('opens filtered to the status a landing gauge links with, and the chip lifts it (#1361)', async () => {
+    renderList(
+      [
+        packingSlipsMock([slip({ status: 'PICKED_UP' })], { status: 'PICKED_UP' }),
+        packingSlipsMock([slip(), slip({ id: 'ps-2', packingSlipNumber: 'PS-0020' })]),
+      ],
+      '/app/shipping/shipments?status=PICKED_UP',
+    );
+
+    expect(await screen.findByText('Status: Picked Up')).toBeInTheDocument();
+    expect(screen.queryByText('PS-0020')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('CancelIcon'));
+    expect(await screen.findByText('PS-0020')).toBeInTheDocument();
   });
 
   it('pages on the server and asks for the next page on Show more (#1107)', async () => {

@@ -6,6 +6,7 @@ import strawberry
 
 from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
+from app.models.enums import ShipmentStatus as ShipmentStatusDB
 from app.repositories import (
     request_composer,
     shipment_containers,
@@ -22,6 +23,7 @@ from .converters import (
     shipping_out_request_to_type,
 )
 from .enums import ShipmentContainerType as ShipmentContainerTypeEnum
+from .enums import ShipmentStatus as ShipmentStatusEnum
 from .enums import ShippingOutRequestStatus
 from .inputs import (
     ConfirmShipmentFromContainersInput,
@@ -120,6 +122,7 @@ class ShippingQueries:
         info: strawberry.Info,
         project_id: strawberry.ID | None = None,
         search: str | None = None,
+        status: ShipmentStatusEnum | None = None,
         limit: int | None = None,
         offset: int = 0,
     ) -> list[PackingSlip]:
@@ -130,7 +133,13 @@ class ShippingQueries:
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
             slips = shipping_repository.list_packing_slips(
-                session, pid, company=scope, search=search, limit=limit, offset=offset
+                session,
+                pid,
+                company=scope,
+                search=search,
+                status=ShipmentStatusDB(status.value) if status is not None else None,
+                limit=limit,
+                offset=offset,
             )
             return [packing_slip_to_type(ps) for ps in slips]
 
@@ -140,13 +149,20 @@ class ShippingQueries:
         info: strawberry.Info,
         project_id: strawberry.ID | None = None,
         search: str | None = None,
+        status: ShipmentStatusEnum | None = None,
     ) -> int:
         """How many shipments `packingSlips` would page through for the same filter (#1107)."""
         with SessionLocal() as session:
             scope = tenant_scope(info)
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
-            return shipping_repository.count_packing_slips(session, pid, company=scope, search=search)
+            return shipping_repository.count_packing_slips(
+                session,
+                pid,
+                company=scope,
+                search=search,
+                status=ShipmentStatusDB(status.value) if status is not None else None,
+            )
 
     @strawberry.field
     def shipping_out_requests(

@@ -307,7 +307,7 @@ export default function ProjectDetailPage() {
             color={poTotal === 0 ? 'text.secondary' : undefined}
           />
         </StatTile>
-        <StatTile to="/app/warehouse" ariaLabel="Open the Warehouse module">
+        <StatTile to={`/app/warehouse/inventory?project=${project.id}`} ariaLabel="Open this project's inventory">
           <StatCard
             icon={<Boxes size={20} strokeWidth={1.75} />}
             label="Inventory on hand"

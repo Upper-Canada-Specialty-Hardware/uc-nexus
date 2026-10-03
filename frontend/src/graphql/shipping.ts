@@ -244,8 +244,8 @@ const PACKING_SLIP_FIELDS =
 // One page of the Shipments list (#1107): paged and searched on the server, with the count of
 // everything the filter matches so the list can say how many more there are.
 export const GET_PACKING_SLIPS = gql`
-  query GetPackingSlips($projectId: ID, $search: String, $limit: Int) {
-    packingSlips(projectId: $projectId, search: $search, limit: $limit) {
+  query GetPackingSlips($projectId: ID, $search: String, $status: ShipmentStatus, $limit: Int) {
+    packingSlips(projectId: $projectId, search: $search, status: $status, limit: $limit) {
       ${PACKING_SLIP_FIELDS}
       items {
         id
@@ -260,7 +260,7 @@ export const GET_PACKING_SLIPS = gql`
         returnedQuantity
       }
     }
-    packingSlipCount(projectId: $projectId, search: $search)
+    packingSlipCount(projectId: $projectId, search: $search, status: $status)
   }
 `;
 
