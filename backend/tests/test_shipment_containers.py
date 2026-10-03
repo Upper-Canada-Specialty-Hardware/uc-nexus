@@ -520,6 +520,22 @@ def test_the_new_slip_notice_says_scheduled_and_counts_only_real_hardware(db_ses
     assert f"Shipment {slip.packing_slip_number} scheduled for pickup. 2 items on it." in messages
 
 
+def test_a_manual_line_in_the_box_does_not_free_real_stock_keyed_the_same(db_session):
+    # #1301: 4 staged, and the box already holds a manual 5 keyed the same. Re-saving the box with
+    # the manual line plus 6 real units used to count the manual 5 as held here and allow 9.
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4)
+    box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
+    manual = _manual_item(5, code="HG-100", cat="HINGE", opening="101")
+    containers.set_container_items(db_session, box.id, [manual])
+
+    with pytest.raises(ValidationError, match="only 4 staged"):
+        containers.set_container_items(db_session, box.id, [manual, _loose_item(6)])
+
+    result = containers.set_container_items(db_session, box.id, [manual, _loose_item(4)])
+    assert sorted((i.is_manual, i.quantity) for i in result.items) == [(False, 4), (True, 5)]
+
+
 def test_a_manual_line_missing_its_product_or_category_is_refused(db_session):
     project = _project(db_session)
     box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")

@@ -273,6 +273,27 @@ export function slipNetOfReturns(
 }
 
 /**
+ * What a reprint prints (#1304). While the slip is SCHEDULED nothing has left, so it says what is
+ * still on it, net of returns (#1107). Once picked up, the driver holds a signed copy, and a reprint
+ * is what gets pulled up in a site dispute - it must match that paper, so it prints the quantities the
+ * slip was cut with and lists what has come back in a separate note rather than rewriting the lines.
+ */
+export function reprintContents(slip: {
+  status: ShipmentStatus;
+  items: PackingSlipItem[];
+  containers?: SlipContainer[];
+}): { items: PackingSlipItem[]; containers: SlipContainer[]; returnedNote: string[] } {
+  if (slip.status === 'SCHEDULED') return { ...slipNetOfReturns(slip.items, slip.containers), returnedNote: [] };
+  const returnedNote = slip.items
+    .filter((i) => !i.isManual && (i.returnedQuantity ?? 0) > 0)
+    .map(
+      (i) =>
+        `${i.productCode} x ${i.returnedQuantity} returned${i.openingNumber ? ` (opening ${i.openingNumber})` : ''}`,
+    );
+  return { items: slip.items, containers: slip.containers ?? [], returnedNote };
+}
+
+/**
  * The same block built from a stored shipment's items, for a Delivery Request reprinted later.
  *
  * The placement comes off the slip's own snapshot rather than the opening it was read from (#452). A

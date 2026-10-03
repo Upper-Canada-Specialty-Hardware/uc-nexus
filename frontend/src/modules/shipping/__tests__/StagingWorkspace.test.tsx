@@ -272,6 +272,41 @@ describe('sameStagedStock', () => {
   });
 });
 
+describe('a refused save (#1302)', () => {
+  it('says why and redraws the pool, so the next try is made against the floor as it is now', async () => {
+    let poolReads = 0;
+    const pool: MockedResponse = {
+      ...poolMock({ looseItems: [looseRow()], containers: [container()] }),
+      result: () => {
+        poolReads += 1;
+        return {
+          data: {
+            stagingPool: {
+              __typename: 'StagingPool',
+              looseItems: [looseRow()],
+              containers: [container()],
+            },
+          },
+        };
+      },
+    };
+    const refused: MockedResponse = {
+      request: { query: SET_CONTAINER_ITEMS, variables: () => true },
+      maxUsageCount: INFINITE,
+      result: { errors: [{ message: 'HINGE HG-100 for opening 101: 4 placed but only 1 staged and unplaced.' }] },
+    };
+    renderWorkspace([pool, refused]);
+
+    await screen.findByText('HG-100 | HINGE');
+    const readsBefore = poolReads;
+    fireEvent.mouseDown(within(poolRow('HG-100 for 101')).getByRole('combobox'));
+    fireEvent.click(await screen.findByRole('option', { name: 'Box 1' }));
+
+    expect(await screen.findByText(/only 1 staged and unplaced/)).toBeInTheDocument();
+    await waitFor(() => expect(poolReads).toBeGreaterThan(readsBefore));
+  });
+});
+
 describe('adding a manual line', () => {
   it('appends a free-text off-inventory line flagged is_manual', async () => {
     const fired = vi.fn();

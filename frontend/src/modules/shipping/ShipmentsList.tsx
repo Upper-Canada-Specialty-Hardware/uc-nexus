@@ -59,7 +59,7 @@ import {
   SHIPMENT_SLIP_PARAM,
   shipmentStatusDisplay,
   slipMaterialLines,
-  slipNetOfReturns,
+  reprintContents,
   slipOpeningSummary,
   valuesFromSlip,
   warehouseAddressLines,
@@ -316,9 +316,9 @@ export default function ShipmentsList({ projectId, heading }: Props) {
     async (slip: PackingSlip) => {
       setGeneratingFor(slip.id);
       try {
-        // #1107: a reprint says what is still on the shipment, not what was first cut - a partial
-        // return before pickup used to leave the driver's copy carrying hardware that was back here.
-        const net = slipNetOfReturns(slip.items, slip.containers);
+        // #1107 / #1304: before pickup a reprint is net of returns (it is the copy the driver takes);
+        // after pickup it prints what the driver was handed, with returns noted beside it.
+        const net = reprintContents(slip);
         const blob = await pdf(
           <DeliveryRequestDocument
             packingSlipNumber={slip.packingSlipNumber}
@@ -330,6 +330,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
             materialLines={slipMaterialLines(net.items, net.containers)}
             divisionAddress={divisionAddress}
             values={valuesFromSlip(slip)}
+            returnedNote={net.returnedNote}
           />,
         ).toBlob();
         window.open(URL.createObjectURL(blob), '_blank');

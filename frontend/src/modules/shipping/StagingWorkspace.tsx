@@ -125,8 +125,17 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
   );
   const hidden = allUnplacedLoose.length - unplacedLoose.length;
 
-  const onError = useCallback((e: { message: string }) => showToast(e.message, 'error'), [showToast]);
   const afterChange = useCallback(() => refetch(), [refetch]);
+  // #1302: a refusal usually means the floor moved under this screen - someone else confirmed or
+  // loaded in the meantime - so redraw the pool as well as saying why, or the next try is refused
+  // for the same stale numbers.
+  const onError = useCallback(
+    (e: { message: string }) => {
+      showToast(e.message, 'error');
+      afterChange();
+    },
+    [showToast, afterChange],
+  );
 
   const [createContainer] = useMutation(CREATE_SHIPMENT_CONTAINER, {
     onCompleted: () => {

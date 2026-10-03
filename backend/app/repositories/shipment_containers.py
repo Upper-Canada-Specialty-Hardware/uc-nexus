@@ -368,6 +368,10 @@ def _check_available(
     """
     held_here: dict[tuple[str | None, str, str], int] = {}
     for item in container.items:
+        # #1301: a manual line is not counted as placed in `build_staged_pool`, so adding it back here
+        # would hand a real line keyed the same as it free units that were never staged.
+        if item.is_manual:
+            continue
         key = loose_key(item.opening_number, item.hardware_category, item.product_code)
         held_here[key] = held_here.get(key, 0) + item.quantity
 
