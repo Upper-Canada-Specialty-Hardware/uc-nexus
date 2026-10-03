@@ -1280,9 +1280,14 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     """
     from app.models.hardware import HardwareItem
 
+    # The PO's row lock, the one a queued registration is taken under (gp_outbox_enqueue), so a cancel
+    # and a registration cannot both pass their checks at once (#1166). Taken before the read below,
+    # which then sees the status the lock holder left.
+    session.execute(select(PurchaseOrder.id).where(PurchaseOrder.id == po_id).with_for_update())
     po = get_purchase_order(session, po_id)
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
+    session.refresh(po)
 
     if po.status is not POStatus.DRAFT:
         raise InvalidStateTransitionError(

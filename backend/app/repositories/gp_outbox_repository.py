@@ -223,13 +223,21 @@ def get_entry_locked(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | N
     return session.get(GpWriteOutbox, entry_id, with_for_update=True, populate_existing=True)
 
 
-def recover_in_flight(session: Session) -> list[GpWriteOutbox]:
-    """Settle rows a previous worker left IN_FLIGHT (#1192).
+# A row is only taken for abandoned once it has sat IN_FLIGHT far longer than any live drain can: the
+# relay call gives up at 30 seconds and the persist after it is a handful of queries. During a deploy
+# the old instance can still be mid-call while the new one starts, and its claim has already committed,
+# so a row lock cannot tell the two apart - only its age can.
+STALE_IN_FLIGHT_SECONDS = 600
+
+
+def recover_in_flight(session: Session, *, older_than_seconds: float = STALE_IN_FLIGHT_SECONDS) -> list[GpWriteOutbox]:
+    """Settle rows a stopped worker left IN_FLIGHT (#1192).
 
     The claim commits IN_FLIGHT before the relay call, so a worker stopped mid-call (every deploy
     restarts it) left the row there for good: cancel and retry refuse IN_FLIGHT, and the per-entity
-    guard holds every later write for the same PO behind it. Run once when the worker starts, before it
-    claims anything, so no row it touches can be one this worker is still sending.
+    guard holds every later write for the same PO behind it. Only a row whose claim (its last update)
+    is older than `older_than_seconds` is touched, so a drain still running on another instance is left
+    alone; the worker sweeps periodically, so such a row is still recovered once it is truly stuck.
 
     A PO registration goes back on the queue: the relay recognises the attempt's key and hands back the
     PO it already made, so asking again cannot order twice. Anything else (a receipt) carries no such
@@ -238,7 +246,10 @@ def recover_in_flight(session: Session) -> list[GpWriteOutbox]:
     rows = list(
         session.scalars(
             select(GpWriteOutbox)
-            .where(GpWriteOutbox.status == "IN_FLIGHT")
+            .where(
+                GpWriteOutbox.status == "IN_FLIGHT",
+                GpWriteOutbox.updated_at < datetime.utcnow() - timedelta(seconds=older_than_seconds),
+            )
             .with_for_update(skip_locked=True)
             .execution_options(populate_existing=True)
         ).all()

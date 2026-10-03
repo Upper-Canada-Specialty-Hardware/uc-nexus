@@ -11,6 +11,7 @@ module-level import here would create a services <-> schemas cycle."""
 import asyncio
 import logging
 import os
+import time
 import uuid
 from collections.abc import Callable
 
@@ -35,6 +36,8 @@ from app.services.relay_gateway import gateway as relay_gateway
 logger = logging.getLogger(__name__)
 
 POLL_SECONDS = 5.0
+# How often the worker looks for rows abandoned IN_FLIGHT (#1192).
+SWEEP_SECONDS = 120.0
 
 _wake_event: asyncio.Event | None = None
 
@@ -210,11 +213,22 @@ def _load_row(row_id: uuid.UUID):
 def _finish(row_id: uuid.UUID, action: str, *, from_status: str = "IN_FLIGHT", **kwargs) -> bool:
     """Record an outcome, but only on a row still in the state this worker left it in (#1193).
 
-    Locked and re-read, so a status somebody else wrote meanwhile is seen, not overwritten: an outcome
-    never revives a row an admin cancelled. Returns whether it applied."""
+    Locked and re-read, so a status somebody else wrote meanwhile is seen, not overwritten: a retry or
+    a failure never revives a row an admin cancelled. Returns whether it applied.
+
+    A success is the one exception. It is only recorded after GP took the write and the Nexus side
+    persisted it (the ledger already carries the result), so it is a fact rather than an opinion about
+    the row. If the stale sweep marked the row meanwhile (a drain that outlived the threshold), leaving
+    it FAILED or PENDING would invite a person to retry a write that already happened. It is recorded
+    as succeeded over any status but SUCCEEDED, with a warning so the overtaken recovery is visible."""
     with SessionLocal() as session:
         row = gp_outbox_repository.get_entry_locked(session, row_id)
-        if row is None or row.status != from_status:
+        if row is not None and action == "mark_succeeded" and row.status not in (from_status, "SUCCEEDED"):
+            logger.warning(
+                "gp outbox: write reached gp after the row was settled; recorded as succeeded",
+                extra={"label": row.label, "status": row.status},
+            )
+        elif row is None or row.status != from_status:
             if row is not None:
                 logger.warning(
                     "gp outbox: outcome not recorded, the row changed meanwhile",
@@ -227,8 +241,8 @@ def _finish(row_id: uuid.UUID, action: str, *, from_status: str = "IN_FLIGHT", *
 
 
 def _recover_in_flight() -> None:
-    """Settle the rows a stopped worker left IN_FLIGHT (#1192), and tell somebody about the ones that
-    now need a person to look in GP."""
+    """Settle the rows a stopped worker left IN_FLIGHT long enough ago to be abandoned (#1192), and
+    tell somebody about the ones that now need a person to look in GP."""
     with SessionLocal() as session:
         failed = gp_outbox_repository.recover_in_flight(session)
         failed_ids = [row.id for row in failed]
@@ -473,11 +487,18 @@ async def run_forever() -> None:
     global _wake_event
     _wake_event = asyncio.Event()
     logger.info("gp outbox worker started")
-    try:
-        await asyncio.to_thread(_recover_in_flight)
-    except Exception:  # noqa: BLE001 - a failed sweep must not stop the worker; the next start tries again
-        logger.exception("gp outbox: in-flight recovery failed")
+    last_sweep = None
     while True:
+        # #1192: rows left in flight are swept on start and then every SWEEP_SECONDS, so one that hangs
+        # while this instance runs is recovered too. The sweep's own age threshold is what keeps it off
+        # a drain still running elsewhere.
+        now = time.monotonic()
+        if last_sweep is None or now - last_sweep >= SWEEP_SECONDS:
+            last_sweep = now
+            try:
+                await asyncio.to_thread(_recover_in_flight)
+            except Exception:  # noqa: BLE001 - a failed sweep must not stop the worker; the next one retries
+                logger.exception("gp outbox: in-flight recovery failed")
         try:
             # No relay: nothing claimable, so do not even open a transaction. This is the steady
             # state during an outage and must be cheap. With a relay connected, each company it

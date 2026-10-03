@@ -304,7 +304,12 @@ def _prepare_register_po(
     from app.models.purchase_order import PurchaseOrder as POModel
 
     with SessionLocal() as session:
-        po = session.scalars(select(POModel).where(POModel.id == po_id, POModel.deleted_at.is_(None))).first()
+        # Locked so the queued-registration check below reads a settled PO (#1165). The pre-flight is its
+        # own short transaction; the check that serialises two tabs for good is repeated under the same
+        # lock in the transaction that queues (gp_outbox_enqueue).
+        po = session.scalars(
+            select(POModel).where(POModel.id == po_id, POModel.deleted_at.is_(None)).with_for_update()
+        ).first()
         if po is None:
             raise NotFoundError(f"Purchase order {po_id} not found")
         # #637: refused as NOT FOUND for a caller outside the PO's company, before anything reaches GP.

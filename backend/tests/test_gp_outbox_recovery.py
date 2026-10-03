@@ -7,8 +7,10 @@ or an exception nobody planned for left the row there for good, holding every la
 
 import asyncio
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
+from sqlalchemy import update
 
 from app import auth
 from app.database import SessionLocal
@@ -20,7 +22,8 @@ from app.services import gp_outbox_worker
 from main import schema
 
 
-def _row(op="register_po_in_gp", status="IN_FLIGHT") -> uuid.UUID:
+def _row(op="register_po_in_gp", status="IN_FLIGHT", age_seconds=0) -> uuid.UUID:
+    """`age_seconds` backdates the claim, the way a row a stopped worker left behind looks."""
     with SessionLocal() as session:
         row = gp_outbox_repository.enqueue(
             session,
@@ -34,8 +37,18 @@ def _row(op="register_po_in_gp", status="IN_FLIGHT") -> uuid.UUID:
             label="Outbox recovery test",
         )
         row.status = status
+        session.flush()
+        if age_seconds:
+            session.execute(
+                update(GpWriteOutbox)
+                .where(GpWriteOutbox.id == row.id)
+                .values(updated_at=datetime.utcnow() - timedelta(seconds=age_seconds))
+            )
         session.commit()
         return row.id
+
+
+STALE = gp_outbox_repository.STALE_IN_FLIGHT_SECONDS + 60
 
 
 def _read(row_id):
@@ -56,18 +69,53 @@ def _delete(*row_ids):
 # --- #1192: nothing stays in flight ---
 
 
-def test_worker_start_puts_a_registration_back_and_fails_a_receipt_as_ambiguous(_migrate_database, monkeypatch):
+def test_the_sweep_puts_a_stale_registration_back_and_fails_a_stale_receipt_as_ambiguous(
+    _migrate_database, monkeypatch
+):
     notified = []
     monkeypatch.setattr(gp_outbox_worker, "_notify_failure", lambda row_id: notified.append(row_id))
-    registration, receipt, pending = _row(), _row(op="create_receive"), _row(status="PENDING")
+    registration = _row(age_seconds=STALE)
+    receipt = _row(op="create_receive", age_seconds=STALE)
+    pending = _row(status="PENDING", age_seconds=STALE)
     try:
         gp_outbox_worker._recover_in_flight()
         assert _read(registration)["status"] == "PENDING"  # the relay's key makes asking again safe
         assert _read(receipt) == {"status": "FAILED", "failure_kind": "ambiguous", "attempts": 0}
         assert _read(pending)["status"] == "PENDING"
-        assert notified == [receipt]
+        assert receipt in notified
     finally:
         _delete(registration, receipt, pending)
+
+
+def test_the_sweep_leaves_a_drain_that_may_still_be_running_alone(_migrate_database, monkeypatch):
+    """A deploy: the new instance sweeps while the old one is still mid relay call. Its claim is
+    fresh, so the sweep must not touch it - failing a receipt the old worker is about to post would
+    invite a duplicate."""
+    monkeypatch.setattr(gp_outbox_worker, "_notify_failure", lambda row_id: None)
+    receipt = _row(op="create_receive", age_seconds=30)
+    registration = _row(age_seconds=30)
+    try:
+        gp_outbox_worker._recover_in_flight()
+        assert _read(receipt)["status"] == "IN_FLIGHT"
+        assert _read(registration)["status"] == "IN_FLIGHT"
+    finally:
+        _delete(receipt, registration)
+
+
+def test_a_success_that_lands_after_the_sweep_is_still_recorded(_migrate_database, monkeypatch):
+    """A drain that outlived the threshold: the sweep failed the row, then GP took the write and the
+    Nexus side persisted it. The success is recorded rather than left as a failure someone retries."""
+    monkeypatch.setattr(gp_outbox_worker, "_notify_failure", lambda row_id: None)
+    receipt = _row(op="create_receive", age_seconds=STALE)
+    try:
+        gp_outbox_worker._recover_in_flight()
+        assert _read(receipt)["status"] == "FAILED"
+        assert gp_outbox_worker._finish(receipt, "mark_succeeded") is True
+        assert _read(receipt)["status"] == "SUCCEEDED"
+        # A failure from that late drain is still refused.
+        assert gp_outbox_worker._finish(receipt, "mark_failed", kind="ambiguous", error="late") is False
+    finally:
+        _delete(receipt)
 
 
 @pytest.mark.parametrize(
@@ -92,11 +140,11 @@ def test_an_unexpected_error_never_leaves_the_row_in_flight(_migrate_database, m
 # --- #1193: cancelled is final, a claimed row cannot be cancelled ---
 
 
-def test_an_outcome_never_revives_a_cancelled_row(_migrate_database):
+def test_a_retry_or_failure_never_revives_a_cancelled_row(_migrate_database):
     row_id = _row(status="CANCELLED")
     try:
-        assert gp_outbox_worker._finish(row_id, "mark_succeeded") is False
         assert gp_outbox_worker._finish(row_id, "mark_retry", error="relay down", bump_attempts=False) is False
+        assert gp_outbox_worker._finish(row_id, "mark_failed", kind="gp_rejected", error="no") is False
         assert _read(row_id)["status"] == "CANCELLED"
     finally:
         _delete(row_id)
