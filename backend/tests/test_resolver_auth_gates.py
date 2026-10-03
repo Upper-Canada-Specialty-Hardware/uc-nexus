@@ -306,6 +306,7 @@ _DELIVERY_REQUEST_MUTATIONS = {
     "updateShipmentDetails": f'updateShipmentDetails(input: {{id: "{_SLIP_ID}"}}) {{ id }}',
     "markShipmentPickedUp": f'markShipmentPickedUp(id: "{_SLIP_ID}") {{ id }}',
     "markShipmentDelivered": f'markShipmentDelivered(id: "{_SLIP_ID}") {{ id }}',
+    "cancelShipment": f'cancelShipment(id: "{_SLIP_ID}") {{ id }}',
 }
 
 

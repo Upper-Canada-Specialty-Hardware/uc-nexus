@@ -142,6 +142,8 @@ export default function ShipmentMethodsDialog({ open, onClose }: Props) {
                 size="small"
                 label="New method"
                 value={newName}
+                // The column holds 100 (#1175); the server refuses longer with a message too.
+                inputProps={{ maxLength: 100 }}
                 onChange={(e) => setNewName(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') submitNew();

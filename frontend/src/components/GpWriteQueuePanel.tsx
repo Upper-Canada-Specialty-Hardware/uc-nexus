@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Box, Button, Chip, Stack, Typography } from '@mui/material';
+import { Alert, Box, Button, Chip, Stack, Tooltip, Typography } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_GP_OUTBOX, GET_GP_OUTBOX_SUMMARY } from '../graphql/shared';
@@ -9,11 +9,13 @@ import { useGridColumnFit } from './useGridColumnFit';
 import { useToast } from './Toast';
 import { microLabelSx, monoSx, tabularSx } from '../theme';
 import { parseServerDate } from '../utils/serverDate';
+import { useIdentity } from '../hooks/useIdentity';
 
 interface OutboxEntry {
   id: string;
   label: string;
   op: string;
+  relayOp: string;
   company: string;
   status: string;
   attempts: number;
@@ -66,18 +68,44 @@ const AMBIGUOUS_RETRY_WARNING =
 const NORMAL_RETRY_WARNING =
   'This puts the write back on the queue with a fresh attempt budget. It will be sent as soon as the GP relay is connected.';
 
+// #1216: who may retry or cancel a held write, by the GP-side op it is waiting to make - the same map
+// as `_ROLES_BY_RELAY_OP` in backend/app/schemas/gp_outbox.py, which refuses everyone else. Anything
+// not listed is a tenant owner's. Mirrored here so a person never confirms an action only to be told
+// it is not theirs.
+const ROLES_BY_RELAY_OP: Record<string, string[]> = {
+  create_po: ['PO Manager', 'PO User'],
+  create_receipt: ['Warehouse Manager'],
+};
+
+const ROLE_LABEL_BY_RELAY_OP: Record<string, string> = {
+  create_po: 'a PO Manager or PO User',
+  create_receipt: 'a Warehouse Manager',
+};
+
+function gpWriteGateReason(relayOp: string): string {
+  return `Only ${ROLE_LABEL_BY_RELAY_OP[relayOp] ?? 'a Tenant Owner'} can retry or cancel this write.`;
+}
+
 // The columns the compact mounting keeps. The company is the caller's own one, and the queued-at
 // time is an admin's forensic detail, so neither earns its width inside a module.
 const COMPACT_FIELDS = ['label', 'status', 'attempts', 'nextAttemptAt', 'lastError', 'actions'];
 
 export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: GpWriteQueuePanelProps) {
   const { showToast } = useToast();
+  const { ownsTenant, roles } = useIdentity();
+  // Keyed on the role names, not the array, so the columns are not rebuilt on every render.
+  const rolesKey = roles.join('|');
+  // Tenant owners and UC Nexus admins hold every op (the backend's role sets all include them).
+  const canActOn = useMemo(() => {
+    const held = new Set(rolesKey.split('|'));
+    return (relayOp: string) => ownsTenant || (ROLES_BY_RELAY_OP[relayOp] ?? []).some((role) => held.has(role));
+  }, [ownsTenant, rolesKey]);
   const [retryTarget, setRetryTarget] = useState<OutboxEntry | null>(null);
   const [cancelTarget, setCancelTarget] = useState<OutboxEntry | null>(null);
 
   const variables = useMemo(() => ({ ...(ops ? { ops } : {}), ...(statuses ? { statuses } : {}) }), [ops, statuses]);
 
-  const { data, loading } = useQuery<{ gpOutbox: OutboxEntry[] }>(GET_GP_OUTBOX, {
+  const { data, loading, error } = useQuery<{ gpOutbox: OutboxEntry[] }>(GET_GP_OUTBOX, {
     variables,
     fetchPolicy: 'cache-and-network',
     // Long enough not to be chatty, short enough that a drain shows up while an admin is watching.
@@ -171,9 +199,10 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
         filterable: false,
         renderCell: (p) => {
           const row = p.row as OutboxEntry;
-          const canRetry = row.status === 'FAILED' || row.status === 'CANCELLED';
-          const canCancel = row.status === 'PENDING' || row.status === 'FAILED';
-          return (
+          const allowed = canActOn(row.relayOp);
+          const canRetry = allowed && (row.status === 'FAILED' || row.status === 'CANCELLED');
+          const canCancel = allowed && (row.status === 'PENDING' || row.status === 'FAILED');
+          const buttons = (
             <Stack direction="row" spacing={1}>
               <Button size="small" disabled={!canRetry} onClick={() => setRetryTarget(row)}>
                 Retry
@@ -183,11 +212,20 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
               </Button>
             </Stack>
           );
+          if (allowed) return buttons;
+          // A disabled button fires no pointer events, so the reason hangs off a wrapper.
+          return (
+            <Tooltip title={gpWriteGateReason(row.relayOp)}>
+              <Box component="span" sx={{ display: 'inline-flex' }}>
+                {buttons}
+              </Box>
+            </Tooltip>
+          );
         },
       },
     ];
     return compact ? all.filter((c) => COMPACT_FIELDS.includes(c.field)) : all;
-  }, [compact]);
+  }, [compact, canActOn]);
 
   // #909: the columns fit the panel's width instead of scrolling sideways, and a person's resized
   // widths are remembered - apart for the admin queue and a module's compact mounting, whose column
@@ -204,7 +242,16 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
 
   // A module page is not the place to announce an empty queue: with nothing held, the panel takes no
   // space at all. The admin queue keeps its table either way, because an admin came looking for it.
-  if (compact && entries.length === 0) return null;
+  // #1280: a failed poll is not an empty queue. With nothing on screen to show, say the list could not
+  // be read rather than vanish, so writes stuck behind a failing read are not mistaken for none held.
+  if (compact && entries.length === 0) {
+    if (!error) return null;
+    return (
+      <Alert severity="warning" sx={{ mb: 2.5 }}>
+        Could not load held GP writes: {error.message}
+      </Alert>
+    );
+  }
 
   return (
     <Box sx={{ mt: compact ? 0 : 4, mb: compact ? 2.5 : 0, minWidth: 0 }}>

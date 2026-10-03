@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.errors import NotFoundError
+from app.errors import NotFoundError, ValidationError
 from app.repositories import po_repository
 
 
@@ -106,6 +106,27 @@ def test_upsert_persists_tariff_amount(db_session):
 
     untouched = po_repository.upsert_po_document_data(db_session, po.id, buyer_name="Second")
     assert untouched.tariff_amount == Decimal("42.75")
+
+
+def test_upsert_trade_discount_stays_null_until_sent(db_session):
+    # #1236: null means never captured, so the dialog prefills GP's discount; a sent 0 is kept as 0.
+    po = _make_po(db_session)
+    data = po_repository.upsert_po_document_data(db_session, po.id, buyer_name="First")
+    assert data.trade_discount is None
+
+    data = po_repository.upsert_po_document_data(db_session, po.id, trade_discount=100)
+    assert data.trade_discount == Decimal("100")
+    data = po_repository.upsert_po_document_data(db_session, po.id, trade_discount=None)
+    assert data.trade_discount == Decimal("100")
+    data = po_repository.upsert_po_document_data(db_session, po.id, trade_discount=0)
+    assert data.trade_discount == Decimal("0")
+
+
+def test_upsert_refuses_a_negative_trade_discount(db_session):
+    po = _make_po(db_session)
+    with pytest.raises(ValidationError) as exc:
+        po_repository.upsert_po_document_data(db_session, po.id, trade_discount=-1)
+    assert exc.value.field == "trade_discount"
 
 
 def test_get_document_data_none_when_never_saved(db_session):

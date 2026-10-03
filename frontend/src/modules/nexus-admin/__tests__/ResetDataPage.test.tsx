@@ -124,3 +124,26 @@ test('cancelling the confirm sends nothing', async () => {
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   expect(fetchMock).not.toHaveBeenCalled();
 });
+
+test('a double click on the confirm sends one reset (#1319)', async () => {
+  let finish: () => void = () => {};
+  fetchMock.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ ok: true, json: async () => ({ status: 'ok', message: 'Schema dropped and rebuilt' }) });
+      }),
+  );
+  renderPage();
+
+  fireEvent.change(screen.getByLabelText('Confirmation phrase'), { target: { value: PHRASE } });
+  fireEvent.click(resetButton());
+
+  const confirm = within(await screen.findByRole('dialog')).getByRole('button', { name: 'Reset data' });
+  fireEvent.click(confirm);
+  fireEvent.click(confirm);
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  finish();
+  await screen.findByText('Reset finished');
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});

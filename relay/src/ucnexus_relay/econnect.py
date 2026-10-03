@@ -1323,12 +1323,14 @@ def read_po_totals(conn, po_number: str) -> dict | None:
     """Read-only: a PO's GP-computed header totals, to auto-fill the generated PO document (issue
     #230). Reads the open-PO work table POP10100 first, then the history table POP30100 (a fully
     processed PO moves there). Columns (verified against the live TUBC POP10100 schema): SUBTOTAL,
-    FRTAMNT (freight), MSCCHAMT (misc charges), TAXAMNT (tax). Returns None if the PO isn't in GP."""
+    FRTAMNT (freight), MSCCHAMT (misc charges), TAXAMNT (tax), TRDISAMT (trade discount, #1236: the
+    discount PO REGISTRATION writes, which the document takes off its total). Returns None if the PO
+    isn't in GP."""
     cur = conn.cursor()
     for table in ("POP10100", "POP30100"):
         row = cur.execute(
             f"SELECT RTRIM(PONUMBER) AS po, SUBTOTAL AS subtotal, FRTAMNT AS freight, "
-            f"MSCCHAMT AS misc, TAXAMNT AS tax FROM dbo.{table} WHERE PONUMBER = ?",
+            f"MSCCHAMT AS misc, TAXAMNT AS tax, TRDISAMT AS trade_discount FROM dbo.{table} WHERE PONUMBER = ?",
             po_number,
         ).fetchone()
         if row is not None:
@@ -1338,6 +1340,7 @@ def read_po_totals(conn, po_number: str) -> dict | None:
                 "freight": float(row.freight or 0),
                 "miscellaneous": float(row.misc or 0),
                 "tax_amount": float(row.tax or 0),
+                "trade_discount": float(row.trade_discount or 0),
             }
     return None
 
