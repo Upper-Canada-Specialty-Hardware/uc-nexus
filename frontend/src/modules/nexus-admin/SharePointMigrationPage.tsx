@@ -9,6 +9,8 @@ import {
   CardContent,
   Stack,
   Chip,
+  Checkbox,
+  FormControlLabel,
   Stepper,
   Step,
   StepLabel,
@@ -181,7 +183,10 @@ export default function SharePointMigrationPage() {
     catalogItemsCreated: number;
     catalogItemsSkipped: number;
     catalogAttributesCreated: number;
+    unreadableUnitCosts: number;
   } | null>(null);
+  const alreadyMigrated = !!data?.sharepointInventorySnapshot.alreadyMigrated;
+  const [rerunConfirmed, setRerunConfirmed] = useState(false);
 
   const items = useMemo(
     () => data?.sharepointInventorySnapshot.items ?? [],
@@ -382,6 +387,10 @@ export default function SharePointMigrationPage() {
     () => built.entries.filter((e) => e.unitCost === null).length,
     [built.entries],
   );
+  const unreadableCostCount = useMemo(
+    () => built.entries.filter((e) => e.unitCostUnreadable).length,
+    [built.entries],
+  );
 
   // The classification step: one row per (project, product) matched to a schedule. An inherited row
   // is read-only; a matched-but-unclassified row needs a Site/Shop pick before commit.
@@ -425,6 +434,7 @@ export default function SharePointMigrationPage() {
               productCode: e.productCode,
               quantity: e.quantity,
               unitCost: e.unitCost,
+              unitCostUnreadable: !!e.unitCostUnreadable,
               projectId: e.projectId,
               aisle: e.aisle,
               row: e.row,
@@ -443,6 +453,8 @@ export default function SharePointMigrationPage() {
               productCode: d.productCode,
               classification: d.classification,
             })),
+            // Only ever true from the "already run" warning's own checkbox (#1366).
+            allowRerun: alreadyMigrated && rerunConfirmed,
           },
         },
       });
@@ -455,7 +467,16 @@ export default function SharePointMigrationPage() {
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Migration failed', 'error');
     }
-  }, [built.entries, catalogItems, classificationRows, classificationPicks, migrate, showToast]);
+  }, [
+    built.entries,
+    catalogItems,
+    classificationRows,
+    classificationPicks,
+    migrate,
+    showToast,
+    alreadyMigrated,
+    rerunConfirmed,
+  ]);
 
   if (loading && !data) {
     return (
@@ -532,6 +553,9 @@ export default function SharePointMigrationPage() {
                   .
                 </>
               )}
+              {result.unreadableUnitCosts > 0 && (
+                <> {result.unreadableUnitCosts} entries carried an unreadable cost and have none.</>
+              )}
             </Alert>
             <Stack direction="row" spacing={1}>
               <Button variant="contained" onClick={() => navigate('/app/warehouse')}>
@@ -545,12 +569,23 @@ export default function SharePointMigrationPage() {
           {step === 0 && (
             <Card variant="outlined">
               <CardContent>
-                {data?.sharepointInventorySnapshot.alreadyMigrated && (
+                {alreadyMigrated && (
                   <Alert severity="warning" sx={{ mb: 2 }}>
                     <AlertTitle>This migration has already been run</AlertTitle>
                     Running it a second time adds every row again rather than reconciling. Only
                     continue if you are certain the previous run should be duplicated - reset the
                     data first if you mean to start over.
+                    <FormControlLabel
+                      sx={{ display: 'flex', mt: 1 }}
+                      control={
+                        <Checkbox
+                          size="small"
+                          checked={rerunConfirmed}
+                          onChange={(e) => setRerunConfirmed(e.target.checked)}
+                        />
+                      }
+                      label="Run it again anyway"
+                    />
                   </Alert>
                 )}
                 <Typography variant="subtitle2" sx={{ ...microLabelSx, mb: 1 }}>
@@ -998,6 +1033,13 @@ export default function SharePointMigrationPage() {
                     migration, because there is no second run to correct it.
                   </Alert>
                 )}
+                {unreadableCostCount > 0 && (
+                  <Alert severity="warning" sx={{ mb: 2 }}>
+                    {unreadableCostCount} entr{unreadableCostCount === 1 ? 'y has' : 'ies have'} a
+                    SharePoint unit cost that is not a number, so they migrate with no cost. Fix the
+                    cells in SharePoint and re-fetch, or price them by hand afterwards.
+                  </Alert>
+                )}
                 {built.excluded.length > 0 && (
                   <>
                     <Typography variant="subtitle2" sx={{ ...microLabelSx, mb: 1 }}>
@@ -1099,7 +1141,9 @@ export default function SharePointMigrationPage() {
                   migrating ||
                   undecidedTypes.length > 0 ||
                   unclassifiedRequired.length > 0 ||
-                  scheduleProductsBlocked
+                  scheduleProductsBlocked ||
+                  // A re-run adds every row again; the server refuses it unless confirmed (#1366).
+                  (alreadyMigrated && !rerunConfirmed)
                 }
                 onClick={handleCommit}
               >

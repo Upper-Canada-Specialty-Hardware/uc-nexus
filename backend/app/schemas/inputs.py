@@ -960,6 +960,8 @@ class MigrationEntryInput:
     # The GP PO LINE ITEM this row's units were bought on, when the wizard's Reconcile GP PO link step
     # found one. Absent is the ordinary case and migrates exactly as it always has.
     po_line_item_id: strawberry.ID | None = None
+    # The source cost cell was not a number (#1370). Counted in the result, nothing else.
+    unit_cost_unreadable: bool = False
 
 
 @strawberry.input
@@ -1001,6 +1003,12 @@ class MigrateSharepointInventoryInput:
     catalog_items: list[MigrationCatalogItemInput] | None = None
     # The classification step's decisions, one per matched-but-unclassified (project, product).
     classifications: list[MigrationClassificationInput] | None = None
+    # A second run adds every row again, so it is refused unless asked for on purpose (#1366). The
+    # wizard sets it only from its "already run" warning.
+    allow_rerun: bool = False
+    # The GP company the batch writes into when the request carries no acting company (#1367). Every
+    # warehouse, project, PO and item type in the batch must belong to it.
+    company: str | None = None
 
 
 @strawberry.input

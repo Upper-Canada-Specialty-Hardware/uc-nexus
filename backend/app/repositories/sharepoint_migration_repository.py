@@ -30,14 +30,14 @@ from decimal import Decimal
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from app.errors import NotFoundError, ValidationError
+from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models.enums import AuditAction, AuditEntityType, Classification, HardwareItemState, POOrigin
 from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
-from app.models.inventory_item_type import CustomInventoryItem
+from app.models.inventory_item_type import CustomInventoryItem, InventoryItemType
 from app.models.project import Opening
 from app.models.project import Project as ProjectModel
-from app.models.purchase_order import POLineItem
+from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.receiving import ReceiveLineItem, ReceiveRecord
 from app.models.sharepoint_migration_run import SharepointMigrationMark, SharepointMigrationRun
 from app.models.warehouse import Warehouse
@@ -58,6 +58,100 @@ DESTINATION_STOCK = "STOCK"
 # What a migrated receipt is called wherever a receive record's notes are shown. Nexus-only text; it
 # never reaches GP, because no GP RECEIVE ENTRY is made for these units.
 MIGRATION_RECEIPT_NOTE = "SharePoint migration"
+
+# The transaction-scoped advisory lock every run takes before it reads the run marker, so two runs
+# (a double click, a second admin) queue here and the second one sees the first one's marker.
+_MIGRATION_LOCK_KEY = 0x5350_4D49_4752  # "SPMIGR"
+
+
+def guard_rerun(session: Session, *, allow_rerun: bool) -> None:
+    """Refuse a second run unless the caller asked for one on purpose (#1366).
+
+    A run is not idempotent: every stock row is incremented again, project rows and receipts are
+    written again, and the coverage marks double (reapply sums them). The wizard's warning used to be
+    the only thing between a double click and that, and a warning is read once per page load. Taken
+    under the lock, so two runs that both start before either commits cannot both pass the check.
+    """
+    session.execute(select(func.pg_advisory_xact_lock(_MIGRATION_LOCK_KEY)))
+    if has_migration_run(session) and not allow_rerun:
+        raise ConflictError(
+            "The SharePoint migration has already been run. Running it again adds every row a second "
+            "time; confirm the re-run on the wizard's warning to go ahead.",
+            field="allowRerun",
+        )
+
+
+def validate_batch_company(
+    session: Session,
+    *,
+    company: str | None,
+    entries: list[dict],
+    classifications: list[dict] | None = None,
+    catalog_items: list[dict] | None = None,
+) -> str | None:
+    """Every warehouse, project, PO and catalog type a batch names belongs to one company (#1367).
+
+    The mutation is an admin's, and an admin with no acting company is unscoped, so nothing else
+    would stop a mis-mapped row landing one company's units in another's warehouse or tagging another
+    company's PO line. `company` is the acting company or the explicit target; without either the
+    batch has to agree with itself. Ids that do not exist are left to the existence checks, which
+    name them. Returns the company the batch belongs to.
+    """
+    owners: list[tuple[str, str]] = []  # (owning company, the thing by name)
+
+    warehouse_ids = {e["warehouse_id"] for e in entries if e.get("warehouse_id")}
+    if warehouse_ids:
+        for code, owner in session.execute(
+            select(Warehouse.code, Warehouse.company).where(Warehouse.id.in_(warehouse_ids))
+        ).all():
+            owners.append((owner, f"warehouse {code}"))
+
+    project_ids = {e["project_id"] for e in entries if e.get("project_id")}
+    project_ids |= {c["project_id"] for c in classifications or [] if c.get("project_id")}
+    if project_ids:
+        for number, owner in session.execute(
+            select(ProjectModel.project_id, ProjectModel.company).where(ProjectModel.id.in_(project_ids))
+        ).all():
+            owners.append((owner, f"project {number}"))
+
+    line_ids = {e["po_line_item_id"] for e in entries if e.get("po_line_item_id")}
+    if line_ids:
+        for number, po_id, owner in session.execute(
+            select(PurchaseOrder.po_number, PurchaseOrder.id, PurchaseOrder.company)
+            .join(POLineItem, POLineItem.po_id == PurchaseOrder.id)
+            .where(POLineItem.id.in_(line_ids))
+            .distinct()
+        ).all():
+            owners.append((owner, f"purchase order {number or po_id}"))
+
+    type_ids = {c["type_id"] for c in catalog_items or [] if c.get("type_id")}
+    if type_ids:
+        for name, owner in session.execute(
+            select(InventoryItemType.name, InventoryItemType.company).where(InventoryItemType.id.in_(type_ids))
+        ).all():
+            owners.append((owner, f"item type {name}"))
+
+    if company is None:
+        companies = sorted({owner for owner, _ in owners})
+        if len(companies) > 1:
+            by_company = "; ".join(
+                f"{c}: {', '.join(sorted(what for owner, what in owners if owner == c))}" for c in companies
+            )
+            raise ValidationError(
+                f"One migration writes into one GP company, and this batch spans {len(companies)} "
+                f"({by_company}). Pick the company in the app bar and map every row inside it.",
+                field="company",
+            )
+        return companies[0] if companies else None
+
+    outside = sorted(what for owner, what in owners if owner != company)
+    if outside:
+        raise ValidationError(
+            f"The migration is writing into {company}, but these belong to another company: "
+            f"{', '.join(outside)}. Map those rows to this company's warehouses, projects and purchase orders.",
+            field="company",
+        )
+    return company
 
 
 def migrate_catalog_items(session: Session, catalog_items: list[dict]) -> dict:
@@ -198,9 +292,9 @@ def migrate_inventory(
         quantity = entry["quantity"]
         warehouse_id = entry["warehouse_id"]
         unit_cost = _clean_unit_cost(entry.get("unit_cost"))
-        aisle = _clean_location(entry.get("aisle"))
-        row = _clean_location(entry.get("row"))
-        bay = _clean_location(entry.get("bay"))
+        # Canonical, as validated: the stock branch writes what it is given, and the registry check
+        # above passed the normalized triple.
+        aisle, row, bay = _location_triple(entry)
         line = linked_lines.get(entry.get("po_line_item_id")) if entry.get("po_line_item_id") else None
 
         try:
@@ -499,6 +593,27 @@ def _validate_po_links(session: Session, entries: list[dict]) -> dict[uuid.UUID,
         code = entry["product_code"].strip()
         line = lines[line_id]
 
+        # A receipt against the line lands the units on the entry's project and ties that project's
+        # schedule rows to the line, so the PO has to be that project's (#1368). A PO with no project
+        # was bought for the shelf: it can describe stock, never a job's hardware.
+        po = line.purchase_order
+        if entry["destination"] == DESTINATION_PROJECT and po.project_id != entry["project_id"]:
+            number = po.po_number or po.id
+            if po.project_id is None:
+                raise ValidationError(
+                    f"Entry {index + 1} ({category} / {code}) goes to a project, but purchase order "
+                    f"{number} has no project; a project-less purchase order can only take stock rows",
+                    field="po_line_item_id",
+                )
+            ours = session.get(ProjectModel, entry["project_id"])
+            theirs = session.get(ProjectModel, po.project_id)
+            raise ValidationError(
+                f"Entry {index + 1} ({category} / {code}) goes to project "
+                f"{ours.project_id if ours else entry['project_id']}, but purchase order {number} was "
+                f"bought for project {theirs.project_id if theirs else po.project_id}",
+                field="po_line_item_id",
+            )
+
         if line.nexus_registered and (line.hardware_category, line.product_code) != (category, code):
             raise ValidationError(
                 f"Entry {index + 1} ({category} / {code}) links to a purchase order line already "
@@ -776,6 +891,33 @@ def _validate_entries(session: Session, entries: list[dict]) -> None:
                 f"Unknown project(s): {', '.join(str(m) for m in sorted(missing, key=str))}",
                 field="project_id",
             )
+
+    # Every shelf, before any write (#1369). The project branches already held a migrated row to a
+    # whole, defined triple, but only mid-batch; the stock branch held it to nothing, so company stock
+    # landed on undefined or aisle-only shelves - the legacy rows location cleanup exists for. No
+    # shelf at all is still fine: 340 source rows have no location and still hold real hardware.
+    checked: set[tuple] = set()
+    for index, entry in enumerate(entries):
+        triple = _location_triple(entry)
+        provided = [v for v in triple if v is not None]
+        if not provided:
+            continue
+        label = f"Entry {index + 1} ({entry['hardware_category'].strip()} / {entry['product_code'].strip()})"
+        if len(provided) != 3:
+            raise ValidationError(f"{label}: aisle, row and bay must all be given together, or none", field="location")
+        key = (entry["warehouse_id"], *triple)
+        if key in checked:
+            continue
+        try:
+            ensure_registered_location(session, entry["warehouse_id"], *triple)
+        except ValidationError as e:
+            raise ValidationError(f"{label}: {e.message}", field=e.field) from e
+        checked.add(key)
+
+
+def _location_triple(entry: dict) -> tuple[str | None, str | None, str | None]:
+    """An entry's aisle/row/bay in the canonical form the location registry stores."""
+    return tuple(normalize_location_value(_clean_location(entry.get(part))) for part in ("aisle", "row", "bay"))
 
 
 def has_migration_run(session: Session) -> bool:
