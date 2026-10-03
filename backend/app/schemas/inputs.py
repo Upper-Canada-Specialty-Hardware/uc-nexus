@@ -313,6 +313,9 @@ class EditShippingOutRequestInput:
 
     id: strawberry.ID
     items: list[ShippingOutPRDraftItemInput] = strawberry.field(default_factory=list)
+    # #1260: the request's linesVersion when the editor loaded it. A save over lines someone else has
+    # changed since is refused. Omitted, no check is made.
+    expected_lines_version: str | None = None
 
 
 @strawberry.input

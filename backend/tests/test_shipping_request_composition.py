@@ -245,3 +245,114 @@ def test_an_edited_request_carries_its_new_lines_onto_the_pull(db_session):
         select(PullRequestItem).where(PullRequestItem.pull_request_id == accepted.pull_request_id)
     ).all()
     assert [(line.opening_number, line.requested_quantity) for line in lines] == [(None, 5)]
+
+
+# --- lines held to the schedule (#1258) -------------------------------------------------------
+
+
+def _opening(session, project, number):
+    from app.models.project import Opening
+
+    session.add(Opening(id=uuid.uuid4(), project_id=project.id, opening_number=number))
+    session.flush()
+
+
+def test_a_line_on_an_opening_the_project_does_not_have_is_refused(db_session):
+    # A draft saved before a re-upload dropped A05, submitted after it: refused, nothing reserved.
+    project = _project(db_session)
+    _stock(db_session, project, qty=10)
+    _opening(db_session, project, "A01")
+
+    with pytest.raises(ValidationError, match="A05") as exc:
+        _create(db_session, project, [_loose(qty=2, opening="A01"), _loose(qty=1, opening="A05")])
+    assert exc.value.field == "opening_number"
+
+
+def test_lines_on_the_projects_openings_and_loose_lines_go_through(db_session):
+    project = _project(db_session)
+    _stock(db_session, project, qty=10)
+    _opening(db_session, project, "A01")
+
+    req = _create(db_session, project, [_loose(qty=2, opening="A01"), _loose(qty=1)])
+
+    assert sorted((i.opening_number or "", i.requested_quantity) for i in req.items) == [("", 1), ("A01", 2)]
+
+
+def test_an_edit_onto_an_opening_the_project_does_not_have_is_refused(db_session):
+    project = _project(db_session)
+    _stock(db_session, project, qty=10)
+    req = _create(db_session, project, [_loose(qty=2)])
+
+    with pytest.raises(ValidationError, match="B99"), db_session.begin_nested():
+        shipping_requests.replace_shipping_out_request_items(db_session, req.id, [_loose(qty=2, opening="B99")])
+
+    assert _reserved(db_session, req) == 2
+
+
+# --- two editors (#1260) ----------------------------------------------------------------------
+
+
+def test_an_edit_against_the_lines_it_loaded_goes_through(db_session):
+    project = _project(db_session)
+    _stock(db_session, project, qty=10)
+    req = _create(db_session, project, [_loose(qty=2)])
+    loaded = shipping_requests.lines_version(req.items)
+
+    shipping_requests.replace_shipping_out_request_items(
+        db_session, req.id, [_loose(qty=3)], expected_lines_version=loaded
+    )
+
+    assert _reserved(db_session, req) == 3
+
+
+def test_an_edit_over_someone_elses_save_is_refused(db_session):
+    # A and B open the same request. A trims it to 1 and saves; B, still on the original lines,
+    # saves 4. Without the check B silently undoes A's trim.
+    from app.errors import ConflictError
+
+    project = _project(db_session)
+    _stock(db_session, project, qty=10)
+    req = _create(db_session, project, [_loose(qty=2)])
+    both_loaded = shipping_requests.lines_version(req.items)
+
+    shipping_requests.replace_shipping_out_request_items(
+        db_session, req.id, [_loose(qty=1)], expected_lines_version=both_loaded
+    )
+    with pytest.raises(ConflictError, match="changed by someone else"), db_session.begin_nested():
+        shipping_requests.replace_shipping_out_request_items(
+            db_session, req.id, [_loose(qty=4)], expected_lines_version=both_loaded
+        )
+
+    assert _reserved(db_session, req) == 1
+
+
+def test_lines_version_ignores_line_order():
+    from types import SimpleNamespace as Line
+
+    a = Line(opening_number="A01", hardware_category="HINGE", product_code="HG-100", requested_quantity=2)
+    b = Line(opening_number=None, hardware_category="LOCK", product_code="LK-9", requested_quantity=1)
+    c = Line(opening_number="A01", hardware_category="HINGE", product_code="HG-100", requested_quantity=3)
+
+    assert shipping_requests.lines_version([a, b]) == shipping_requests.lines_version([b, a])
+    assert shipping_requests.lines_version([a, b]) != shipping_requests.lines_version([c, b])
+
+
+# --- what a request really holds (#1262) ------------------------------------------------------
+
+
+def test_reserved_by_product_is_the_requests_claim(db_session):
+    project = _project(db_session)
+    _stock(db_session, project, qty=10)
+    req = _create(db_session, project, [_loose(qty=2), _loose(qty=3)])
+
+    assert shipping_requests.get_reserved_by_product(db_session, req.id) == [("HINGE", "HG-100", 5)]
+
+
+def test_a_request_holding_no_claim_reports_nothing_reserved(db_session):
+    # The state a cancelled pull leaves when it cannot re-reserve: pending, lines intact, no claim.
+    project = _project(db_session)
+    _stock(db_session, project, qty=10)
+    req = _create(db_session, project, [_loose(qty=2)])
+    warehouse_repository.release_reservations(db_session, ReservationSource.SHIPPING_OUT_REQUEST, req.id)
+
+    assert shipping_requests.get_reserved_by_product(db_session, req.id) == []

@@ -72,6 +72,22 @@ export function heldByRequest(
   return held;
 }
 
+/** What the request actually holds on stock, per product (#1262), as the server reports it. A request
+ *  sent back to Pending by a cancelled pull it could not re-reserve holds nothing, so its lines are not
+ *  headroom. Falls back to the lines only when the server did not say (an older backend). */
+export function heldFromReservations(
+  reserved: { hardwareCategory: string; productCode: string; quantity: number }[] | null | undefined,
+  items: { hardwareCategory: string; productCode: string; requestedQuantity: number }[],
+): Map<string, number> {
+  if (!reserved) return heldByRequest(items);
+  const held = new Map<string, number>();
+  for (const row of reserved) {
+    const key = productKey(row);
+    held.set(key, (held.get(key) ?? 0) + row.quantity);
+  }
+  return held;
+}
+
 /** How much of each product the whole cart currently holds, across schedule and loose lines alike. */
 export function cartTotalsByProduct(lines: CartLine[]): Map<string, number> {
   const totals = new Map<string, number>();

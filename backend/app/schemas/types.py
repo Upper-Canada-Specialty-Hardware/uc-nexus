@@ -1138,6 +1138,15 @@ class ShippingOutRequestItem:
 
 
 @strawberry.type
+class ShippingOutRequestReservedProduct:
+    """What a request actually holds on stock for one product (#1262)."""
+
+    hardware_category: str
+    product_code: str
+    quantity: int
+
+
+@strawberry.type
 class ShippingOutRequest:
     id: strawberry.ID
     request_number: str
@@ -1159,6 +1168,16 @@ class ShippingOutRequest:
     stage: RequestStage
     # See ShopAssemblyRequest.return_note (#343).
     return_note: str | None
+    # #1260: a fingerprint of the lines. The edit page sends back the one it loaded, and a save over
+    # lines someone else changed in between is refused instead of silently undoing their change.
+    lines_version: str
+    # Resolved only by the single-request read that seeds the edit page; null on list reads.
+    # #1257: the request's own project, archived included, so the edit page can open a request whose
+    # job was archived while it was pending (the projects list leaves archived jobs out).
+    project: Project | None = None
+    # #1262: what the request actually holds on stock, which the edit page adds back as headroom.
+    # Usually the line totals; nothing at all for a request a cancelled pull could not re-reserve.
+    reserved_by_product: list[ShippingOutRequestReservedProduct] | None = None
 
 
 @strawberry.type

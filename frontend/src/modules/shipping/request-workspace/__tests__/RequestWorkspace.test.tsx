@@ -8,6 +8,7 @@ import { GET_PROJECTS } from '../../../../graphql/shared';
 import { GET_PROJECT_INVENTORY_AVAILABILITY } from '../../../../graphql/warehouse';
 import {
   GET_PROJECT_OPENINGS,
+  EDIT_SHIPPING_OUT_REQUEST,
   GET_REQUEST_COVERAGE,
   GET_SHIPPING_OUT_REQUEST,
 } from '../../../../graphql/shipping';
@@ -117,7 +118,28 @@ function openingsMock(): MockedResponse {
   };
 }
 
-function requestMock(): MockedResponse {
+const ARCHIVED_PROJECT = {
+  __typename: 'Project',
+  id: 'proj-1',
+  projectId: 'JOB-1',
+  description: 'Riverside Tower',
+  client: null,
+  jobSiteName: null,
+  scheduleFilename: null,
+  company: 'TUBC',
+  openingCount: 4,
+  gpSetupOk: true,
+  gpSetupCheckedAt: null,
+  gpSetupIssues: null,
+  gpJobState: null,
+};
+
+function requestMock(
+  overrides?: Partial<{
+    project: typeof ARCHIVED_PROJECT | null;
+    reservedByProduct: { hardwareCategory: string; productCode: string; quantity: number }[] | null;
+  }>,
+): MockedResponse {
   return {
     request: { query: GET_SHIPPING_OUT_REQUEST, variables: { id: 'req-1' } },
     maxUsageCount: Number.POSITIVE_INFINITY,
@@ -132,6 +154,12 @@ function requestMock(): MockedResponse {
           createdBy: 'Shipper',
           createdAt: '2026-08-03T00:00:00',
           integrityNote: null,
+          linesVersion: 'v1',
+          project: overrides?.project ?? null,
+          reservedByProduct: (overrides?.reservedByProduct ?? null)?.map((r) => ({
+            __typename: 'ShippingOutRequestReservedProduct',
+            ...r,
+          })) ?? null,
           items: [
             {
               __typename: 'ShippingOutRequestItem',
@@ -583,6 +611,67 @@ describe('cart drawer', () => {
     expect(
       screen.getByRole('spinbutton', { name: 'Cart quantity of HG-100 loose' }),
     ).toHaveValue(2);
+  });
+});
+
+// #1257 / #1260: the edit page reads its project off the request, and sends back the lines it loaded.
+
+function emptyProjectsMock(): MockedResponse {
+  return {
+    request: { query: GET_PROJECTS },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+    result: { data: { projects: [] } },
+  };
+}
+
+describe('edit mode', () => {
+  it('opens a request whose project was archived, from the project on the request', async () => {
+    // The projects list leaves archived jobs out, so it has nothing for this request.
+    renderAt('/app/shipping/requests/req-1/edit', [
+      emptyProjectsMock(),
+      availabilityMock(),
+      openingsMock(),
+      requestMock({ project: ARCHIVED_PROJECT }),
+    ]);
+    expect(await screen.findByRole('button', { name: 'Save request' }, SLOW)).toBeInTheDocument();
+    expect(screen.getByText(/Edit request JOB-1-003/)).toBeInTheDocument();
+  });
+
+  it('says so instead of spinning when the project cannot be found', async () => {
+    renderAt('/app/shipping/requests/req-1/edit', [emptyProjectsMock(), requestMock()]);
+    expect(await screen.findByText(/belongs to a project that could not be loaded/i, {}, SLOW)).toBeInTheDocument();
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  });
+
+  it('sends back the lines version it loaded when saving', async () => {
+    const saved = vi.fn();
+    const editMock: MockedResponse = {
+      request: {
+        query: EDIT_SHIPPING_OUT_REQUEST,
+        variables: {
+          input: {
+            id: 'req-1',
+            items: [
+              { openingNumber: null, hardwareCategory: 'HINGE', productCode: 'HG-100', requestedQuantity: 2 },
+            ],
+            expectedLinesVersion: 'v1',
+          },
+        },
+      },
+      result: () => {
+        saved();
+        return { data: { editShippingOutRequest: null } };
+      },
+    };
+    renderAt('/app/shipping/requests/req-1/edit', [
+      projectsMock(),
+      availabilityMock(),
+      openingsMock(),
+      requestMock(),
+      editMock,
+    ]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Save request' }, SLOW));
+    await waitFor(() => expect(saved).toHaveBeenCalled(), SLOW);
   });
 });
 
