@@ -211,3 +211,18 @@ def test_nexus_companies_is_refused_to_a_tenant_owner(companies):
     )
     assert result.errors is not None
     assert result.errors[0].extensions["code"] == "FORBIDDEN"
+
+
+# --- a company named in an argument ------------------------------------------------------------
+
+
+def test_an_unscoped_admin_naming_an_unknown_company_for_an_item_type_is_refused(companies):
+    """A typo must not file a catalog type under a company nobody can pick (#1183)."""
+    result = asyncio.run(
+        schema.execute(
+            'mutation { createInventoryItemType(name: "Typo frames", company: "TUBX") { id } }',
+            context_value=_ctx([NEXUS_ADMIN_ROLE]),
+        )
+    )
+    assert result.errors is not None
+    assert "Unknown GP company 'TUBX'" in result.errors[0].message

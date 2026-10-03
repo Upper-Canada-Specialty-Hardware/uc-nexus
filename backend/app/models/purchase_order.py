@@ -155,7 +155,9 @@ class POLineItem(Base):
     __tablename__ = "po_line_items"
     __table_args__ = (
         Index("ix_po_line_items_po_id", "po_id"),
-        CheckConstraint("ordered_quantity >= 1", name="ck_po_line_items_ordered_quantity_positive"),
+        # >= 0, not >= 1 (#1228): a line GP cancelled before anything arrived orders nothing. Every input
+        # path still refuses a quantity below 1; only the GP sync writes 0.
+        CheckConstraint("ordered_quantity >= 0", name="ck_po_line_items_ordered_quantity_positive"),
         CheckConstraint("received_quantity >= 0", name="ck_po_line_items_received_quantity_nonneg"),
     )
 
