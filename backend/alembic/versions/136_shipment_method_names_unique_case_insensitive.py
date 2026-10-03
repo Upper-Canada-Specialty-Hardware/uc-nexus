@@ -10,7 +10,7 @@ Upgrade refuses, naming them, when a company already has names that differ only 
 to keep is a shipping department's call, not a migration's.
 
 Revision ID: 136
-Revises: 127
+Revises: 135
 Create Date: 2026-10-03
 """
 
@@ -19,7 +19,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "136"
-down_revision = "127"
+down_revision = "135"
 branch_labels = None
 depends_on = None
 
