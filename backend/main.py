@@ -220,6 +220,7 @@ async def lifespan(_app: FastAPI):
     TestClient(app) this runs too, and is harmless: with no relay registered neither loop queries."""
     tasks: list[asyncio.Task] = []
     if gp_outbox_worker.enabled():
+        gp_outbox_worker.reset_for_start()  # a stop from an earlier lifespan must not carry in (#1292)
         tasks.append(asyncio.create_task(gp_outbox_worker.run_forever()))
     if gp_job_sync.enabled():
         tasks.append(asyncio.create_task(gp_job_sync.run_forever()))

@@ -81,21 +81,47 @@ def test_a_stopping_worker_claims_nothing(monkeypatch):
     monkeypatch.setattr(gp_outbox_worker, "POLL_SECONDS", 0.05)
 
     async def _scenario():
+        gp_outbox_worker.reset_for_start()
         task = asyncio.create_task(gp_outbox_worker.run_forever())
         await asyncio.sleep(0.15)
         before = len(claims)
         assert before > 0  # it was claiming
         gp_outbox_worker.request_stop()
-        await asyncio.sleep(0.3)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        # It ends on its own: nothing has to cancel it.
+        await asyncio.wait_for(task, timeout=2)
         return before
 
     before = asyncio.run(_scenario())
     assert len(claims) <= before + 1  # at most the claim already under way when stop landed
+
+
+def test_a_stop_and_a_cancel_in_the_same_tick_still_end_the_worker(monkeypatch):
+    """The lifespan's shutdown with nothing in flight: request_stop wakes the worker and the cancel
+    follows without a yield in between. Python 3.11's wait_for swallows that cancel; the worker used
+    to idle on after it and hold shutdown forever (every TestClient exit in CI)."""
+    monkeypatch.setattr(type(gp_outbox_worker.relay_gateway), "connected", property(lambda self: False))
+    monkeypatch.setattr(gp_outbox_worker, "_recover_in_flight", lambda: None)
+
+    async def _scenario():
+        gp_outbox_worker.reset_for_start()
+        task = asyncio.create_task(gp_outbox_worker.run_forever())
+        await asyncio.sleep(0.1)  # parked on its wake-up wait
+        gp_outbox_worker.request_stop()
+        assert await gp_outbox_worker.wait_idle(1) is True  # nothing in flight: no wait
+        task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=2)
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_scenario())
+
+
+def test_a_new_lifespan_starts_with_no_stop_left_over():
+    gp_outbox_worker._stopping = True
+    gp_outbox_worker.reset_for_start()
+    assert gp_outbox_worker._stopping is False
+    assert gp_outbox_worker._idle is None
     assert asyncio.run(gp_outbox_worker.wait_idle(0.1)) is True
 
 

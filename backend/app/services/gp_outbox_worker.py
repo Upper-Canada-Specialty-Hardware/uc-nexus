@@ -486,6 +486,14 @@ def _claim(company: str) -> uuid.UUID | None:
     return row_id
 
 
+def reset_for_start() -> None:
+    """Called by the lifespan before it starts the worker, so a stop from an earlier lifespan (another
+    TestClient, or a server restarted in-process) never carries into this one."""
+    global _stopping, _idle
+    _stopping = False
+    _idle = None
+
+
 def request_stop() -> None:
     """Shutdown, first step (#1292): claim nothing new. A drain already under way runs on."""
     global _stopping
@@ -509,19 +517,20 @@ async def wait_idle(timeout: float) -> bool:
 async def run_forever() -> None:
     """The lifespan task. Every iteration is wrapped so no error can kill it - a dead worker is a
     silently non-draining queue, which is worse than the failure it is trying to absorb."""
-    global _wake_event, _idle, _stopping
+    global _wake_event, _idle
     _wake_event = asyncio.Event()
     _idle = asyncio.Event()
     _idle.set()
-    _stopping = False
     logger.info("gp outbox worker started")
     last_sweep = None
     while True:
         if _stopping:
-            # Shutting down: nothing new is claimed; the lifespan cancels this task once the socket
-            # is closed.
-            await asyncio.sleep(POLL_SECONDS)
-            continue
+            # Shutting down: nothing new is claimed, so the loop ends here rather than idling until it
+            # is cancelled. On Python 3.11 asyncio.wait_for swallows a cancel that lands as its wait
+            # completes - which is exactly what request_stop's wake-up followed by the lifespan's cancel
+            # does - and a loop that idled on would then never finish, holding shutdown forever.
+            logger.info("gp outbox worker stopped")
+            return
         # #1192: rows left in flight are swept on start and then every SWEEP_SECONDS, so one that hangs
         # while this instance runs is recovered too. The sweep's own age threshold is what keeps it off
         # a drain still running elsewhere.
