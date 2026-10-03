@@ -30,6 +30,7 @@ interface StatusRow {
   sentToShop: number;
   stagedForShipping: number;
   shippedOut: number;
+  returnedToProject: number;
 }
 
 // Zeros dominate most rows; dimming them makes the non-zero counts - the actual signal - pop
@@ -130,7 +131,19 @@ const buildColumns = (anySchedule: boolean): GridColDef[] => [
     'Pulled for shipping and waiting for a truck - completed shipping pulls not yet on a packing slip.',
     96,
   ),
-  countColumn('shippedOut', 'Shipped Out', 'Total quantity on packing slips.', 116),
+  countColumn(
+    'shippedOut',
+    'Shipped Out',
+    'Gross quantity on packing slips (manual lines excluded). Returns never reduce it: units returned to the project are counted here and again in On Hand.',
+    116,
+  ),
+  // #1381: the returned units Shipped Out still holds, so the two columns can be read together.
+  countColumn(
+    'returnedToProject',
+    'Returned to Project',
+    'Shipped units that came back to the project. They are back in On Hand and still inside Shipped Out.',
+    150,
+  ),
 ];
 
 interface ProjectOption {
