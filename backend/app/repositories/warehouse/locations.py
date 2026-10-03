@@ -115,9 +115,18 @@ def create_warehouse_location(
         session.flush()
         return existing
 
+    # The read above is unlocked, so two people defining the same shelf at once both reach here. The
+    # insert runs in a savepoint and the loser's unique-key violation becomes the same conflict the
+    # read gives, instead of a masked server error that also poisons the outer transaction (#1387).
+    from sqlalchemy.exc import IntegrityError
+
     loc = WarehouseLocationModel(warehouse_id=warehouse_id, aisle=aisle, row=row, bay=bay, active=True)
-    session.add(loc)
-    session.flush()
+    try:
+        with session.begin_nested():
+            session.add(loc)
+            session.flush()
+    except IntegrityError:
+        raise ConflictError(f"{aisle} / {row} / {bay} is already defined in this warehouse") from None
     return loc
 
 
