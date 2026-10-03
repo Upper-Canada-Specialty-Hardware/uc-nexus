@@ -532,19 +532,29 @@ def _assert_no_conflicting_claim(session: Session, draft: ReceiveDraftModel) -> 
         .group_by(ReceiveDraftLineItemModel.po_line_item_id)
     ).all()
     in_flight = {po_line_item_id: int(total or 0) for po_line_item_id, total in rows}
-    if not in_flight:
-        return
 
+    # Read under the lock, refreshed: a receive that persisted since this draft was written has moved
+    # received_quantity, and this draft's own total is checked against that even with nothing else in
+    # flight (#1120) - it used to return early here and trust the check made when it was written.
     poli_dict = {
-        li.id: li for li in session.scalars(select(POLineItemModel).where(POLineItemModel.id.in_(list(wanted)))).all()
+        li.id: li
+        for li in session.scalars(
+            select(POLineItemModel)
+            .where(POLineItemModel.id.in_(list(wanted)))
+            .execution_options(populate_existing=True)
+        ).all()
     }
     for poli_id, qty in wanted.items():
         claimed = in_flight.get(poli_id, 0)
-        if not claimed:
-            continue
         poli = poli_dict[poli_id]
         pending = poli.ordered_quantity - poli.received_quantity
-        if qty + claimed > pending:
+        if not claimed and qty > pending:
+            raise ConflictError(
+                f"This draft receives {qty} of {poli.product_code}, but only {pending} "
+                f"{'unit is' if pending == 1 else 'units are'} still outstanding on this PO. "
+                "Adjust the count to what is outstanding."
+            )
+        if claimed and qty + claimed > pending:
             raise ConflictError(
                 f"Another receive of {claimed} {'unit' if claimed == 1 else 'units'} of "
                 f"{poli.product_code} is already posting against this PO. Only {pending} "
