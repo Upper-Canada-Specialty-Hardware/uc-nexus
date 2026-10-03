@@ -527,3 +527,34 @@ def test_po_lines_sum_several_lines_of_the_product_on_one_po(db_session):
     assert lines[0]["ordered_quantity"] == 8
     assert lines[0]["received_quantity"] == 1
     assert lines[0]["request_number"] == po.request_number
+
+
+def test_manual_slip_lines_are_not_shipped_and_do_not_eat_staged(db_session):
+    """#1198: a manual line is free text that never came off the staged pool. Counting it inflated
+    Shipped out and, netted against the pull, read Staged low for the real product sharing its code -
+    the shipping workspace leaves it out, so this page must too."""
+    project = _make_project(db_session)
+    _make_pull(
+        db_session,
+        project_id=project.id,
+        source=PullRequestSource.SHIPPING_OUT,
+        status=PullRequestStatus.COMPLETED,
+        lines=[("A01", "HG-100", 10)],
+    )
+    slip = _make_slip(db_session, project_id=project.id, lines=[("A01", "HG-100", 4)])
+    db_session.add(
+        PackingSlipItem(
+            id=uuid.uuid4(),
+            packing_slip_id=slip.id,
+            opening_number="A01",
+            hardware_category=CAT,
+            product_code="HG-100",
+            quantity=6,
+            is_manual=True,
+        )
+    )
+    db_session.flush()
+
+    row = _row(warehouse_repository.get_hardware_status_by_product(db_session, [project.id]), "HG-100")
+    assert row["shipped_out"] == 4
+    assert row["staged_for_shipping"] == 6
