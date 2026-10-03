@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import ShipmentContainerType
+from app.models.project import Project
 from app.models.shipment_container import (
     ShipmentContainer,
     ShipmentContainerItem,
@@ -44,6 +45,22 @@ def loose_key(opening_number: str | None, hardware_category: str, product_code: 
     to attribute (#451), and those units are their own bucket rather than everyone's.
     """
     return (opening_number, hardware_category, product_code)
+
+
+def lock_staging_pool(session: Session, project_id: uuid.UUID) -> None:
+    """Serialise every write that is measured against this project's staged pool (#1107).
+
+    The pool is not a row. It is arithmetic over completed pulls, packing slips and open containers,
+    so there is nothing of its own to lock - and checking it unlocked let two people confirming the
+    same containers both pass, minting two slips for one load. The project row stands in for it:
+    every confirm and every container save takes this lock before reading the pool, so the second
+    one reads it after the first has committed.
+
+    FOR NO KEY UPDATE rather than FOR UPDATE. The plain form also conflicts with the key-share lock
+    that every insert of a row referencing the project takes, which would stall unrelated writes on
+    the job (a receive, a request) for the length of a confirm.
+    """
+    session.execute(select(Project.id).where(Project.id == project_id).with_for_update(key_share=True))
 
 
 def get_containers(session: Session, project_id: uuid.UUID, *, open_only: bool = True) -> list[ShipmentContainer]:
@@ -125,6 +142,13 @@ def set_container_items(
     the caller: what is free to place has to be measured against the other containers as they are at
     the moment of saving, not as they were when the screen was drawn.
     """
+    project_id = session.scalar(select(ShipmentContainer.project_id).where(ShipmentContainer.id == container_id))
+    if project_id is None:
+        raise NotFoundError(f"Shipment container {container_id} not found")
+    # Pool first, then the container: the same order the confirm takes them in (#1107). Two saves
+    # into different containers each counted the other's placements as they were before either
+    # committed, and between them could place more than was staged.
+    lock_staging_pool(session, project_id)
     container = _open_container(session, container_id)
     staged_pool = build_staged_pool(session, container.project_id)
 
@@ -136,14 +160,17 @@ def set_container_items(
         category = (item.get("hardware_category") or "").strip()
         product = (item.get("product_code") or "").strip()
         quantity = int(item.get("quantity", 1))
+        # Every line, not only manual ones (#1107). A negative real line paired with a matching
+        # positive one passed the aggregate check and wrote a negative row, which the confirm then
+        # carried onto the slip - growing the staged pool by hardware that does not exist.
+        if quantity < 1:
+            raise ValidationError("Every line needs a quantity of at least 1.", field="items")
         if item.get("is_manual"):
             if not category or not product:
                 raise ValidationError(
                     "A manual line needs a hardware category and a product code.",
                     field="items",
                 )
-            if quantity < 1:
-                raise ValidationError("A manual line needs a quantity of at least 1.", field="items")
             continue
         key = loose_key(item.get("opening_number"), item["hardware_category"], item["product_code"])
         wanted[key] = wanted.get(key, 0) + quantity
@@ -200,10 +227,17 @@ def confirm_shipment_from_containers(
     if not container_ids:
         raise ValidationError("Pick at least one container to ship.", field="containerIds")
 
+    # #1107: the pool lock before anything is read, then the containers in id order. A second confirm
+    # of the same containers waits here, and once it gets through `_open_container` sees the first
+    # one's slip on them and refuses - rather than minting a second slip and moving the containers
+    # onto it.
+    lock_staging_pool(session, project_id)
+
     # Deduplicated before loading. The same id twice builds the item list twice, which doubles every
     # loose quantity on the slip and makes `confirm_shipment`'s leaf count disagree with the number
-    # of distinct leaves it found - reported as the leaf not existing.
-    containers = [_open_container(session, cid) for cid in dict.fromkeys(container_ids)]
+    # of distinct leaves it found - reported as the leaf not existing. Sorted so two confirms lock
+    # overlapping sets in the same order.
+    containers = [_open_container(session, cid) for cid in sorted(dict.fromkeys(container_ids))]
     for container in containers:
         if container.project_id != project_id:
             raise ValidationError(f"{container.name} belongs to another project.", field="containerIds")
@@ -314,11 +348,19 @@ def _check_available(
 
 
 def _open_container(session: Session, container_id: uuid.UUID) -> ShipmentContainer:
+    """The container, row-locked and re-read, and refused if it has already shipped.
+
+    Locked because every caller goes on to change it or ship it (#1107), and the shipped check is
+    only worth anything against a row nobody else is mid-confirm on. `populate_existing` because an
+    earlier read in the same session would otherwise hand back the copy from before the lock.
+    """
     container = (
         session.scalars(
             select(ShipmentContainer)
             .options(selectinload(ShipmentContainer.items))
             .where(ShipmentContainer.id == container_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         .unique()
         .first()

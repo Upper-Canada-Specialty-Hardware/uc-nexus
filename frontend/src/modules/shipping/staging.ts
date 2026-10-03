@@ -59,9 +59,9 @@ export interface StagingPool {
  * Whether a container line and a staged pool row are the same stock.
  *
  * The opening is part of it, not decoration. `get_ship_ready_items` groups the staged pool by
- * (opening, category, product) and `confirmShipment` checks availability the same way, so two
- * openings staging the same product are two separate quantities - merging them here would top up a
- * line booked against the wrong door.
+ * (opening, category, product) and `confirmShipmentFromContainers` checks availability the same way,
+ * so two openings staging the same product are two separate quantities - merging them here would top
+ * up a line booked against the wrong door.
  *
  * A manual line is never the same stock as a staged pool row even when its category/product/opening
  * coincide: it is off-inventory, so folding a staged placement into it (or the reverse) would put
