@@ -7,7 +7,7 @@
 Downgrade drops the column.
 
 Revision ID: 130
-Revises: 127
+Revises: 129
 Create Date: 2026-10-03
 """
 
@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "130"
-down_revision = "127"
+down_revision = "129"
 branch_labels = None
 depends_on = None
 
