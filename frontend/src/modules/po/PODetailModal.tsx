@@ -56,6 +56,9 @@ const EMPTY = '—';
 /** The stages a PO is still expecting hardware in - where its lines can still be registered in Nexus. */
 const OPEN_PO_STATUSES = new Set(['GP_REGISTERED', 'VENDOR_CONFIRMED', 'PARTIALLY_RECEIVED']);
 
+// Matches the server's cap on a PO document (#1233).
+const MAX_PO_DOCUMENT_BYTES = 20 * 1024 * 1024;
+
 const DOC_TYPE_LABELS: Record<string, string> = {
   PO_DOCUMENT: 'PO Document',
   VENDOR_ACKNOWLEDGEMENT: 'Vendor Acknowledgement',
@@ -324,6 +327,11 @@ export default function PODetailModal({
 
   const handleUpload = useCallback(async () => {
     if (!uploadFile) return;
+    // #1233: the server refuses it too; saying so here spares reading and sending the whole file first.
+    if (uploadFile.size > MAX_PO_DOCUMENT_BYTES) {
+      showToast(`The file is larger than ${MAX_PO_DOCUMENT_BYTES / (1024 * 1024)} MB`, 'error');
+      return;
+    }
 
     const reader = new FileReader();
     reader.onload = () => {
@@ -339,7 +347,7 @@ export default function PODetailModal({
       });
     };
     reader.readAsDataURL(uploadFile);
-  }, [uploadFile, uploadDocType, po.id, uploadDocument]);
+  }, [uploadFile, uploadDocType, po.id, uploadDocument, showToast]);
 
   // #500: the result is an outcome, not an exception - "no email on the vendor card" and "generate
   // the document first" are things the user fixes, so they surface as an informational toast rather
@@ -566,10 +574,7 @@ export default function PODetailModal({
   // pressing it could only produce a message saying no.
   const hasGeneratedPo = po.documents.some((d) => d.documentType === 'GENERATED_PO');
   // A cancelled or closed PO is no longer an order, so it is not offered either (#1194).
-  const canEmailVendor =
-    (po.status === 'GP_REGISTERED' || po.status === 'VENDOR_CONFIRMED' || po.status === 'PARTIALLY_RECEIVED') &&
-    !!po.gpVendorId &&
-    hasGeneratedPo;
+  const canEmailVendor = OPEN_PO_STATUSES.has(po.status) && !!po.gpVendorId && hasGeneratedPo;
 
   // A Draft is accepted into GP via the Register in GP flow (GP-first push, then map vendor + cost code
   // and advance to GP-Registered). The relay must be up to push. A queued registration is still a Draft

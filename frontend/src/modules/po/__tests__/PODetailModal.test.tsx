@@ -9,6 +9,7 @@ import {
   UPDATE_PO_LINE_ITEM_ORDER_AS,
   UPDATE_PO_LINE_ITEM_UNIT_COST,
   DELETE_PO_DOCUMENT,
+  UPLOAD_PO_DOCUMENT,
 } from '../../../graphql/po';
 import { GET_PROJECTS } from '../../../graphql/shared';
 
@@ -566,6 +567,29 @@ describe('PODetailModal', () => {
 
     renderModal(withDocument('CLOSED'));
     expect(screen.queryByRole('button', { name: 'Email to vendor' })).toBeNull();
+  });
+
+  // #1233: the server caps a document at 20 MB; the dialog says so before reading and sending the file.
+  it('refuses a document over 20 MB without uploading it', async () => {
+    const uploads: unknown[] = [];
+    const uploadMock: MockedResponse = {
+      request: { query: UPLOAD_PO_DOCUMENT, variables: () => true },
+      result: (vars) => {
+        uploads.push(vars);
+        return { data: { uploadPoDocument: { id: 'doc-new' } } };
+      },
+    };
+    renderModal(registeredPo, [uploadMock]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Upload Document' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Upload Document' });
+    const big = new File(['x'], 'scan.pdf', { type: 'application/pdf' });
+    Object.defineProperty(big, 'size', { value: 21 * 1024 * 1024 });
+    fireEvent.change(dialog.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [big] } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Upload' }));
+
+    expect(await screen.findByText('The file is larger than 20 MB')).toBeInTheDocument();
+    expect(uploads).toEqual([]);
   });
 
   // Order As translates a hardware schedule item's name into the vendor's. A line added from the

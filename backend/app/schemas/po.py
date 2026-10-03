@@ -1142,7 +1142,13 @@ class POMutations:
                 PODocTypeDB(document_type.value),
                 file_data_base64,
             )
-            session.commit()
+            s3_key = doc.s3_key
+            try:
+                session.commit()
+            except Exception:
+                # #1235: the object is already in storage; without its row it is an orphan nobody sees.
+                po_repository.discard_uploaded_file(s3_key)
+                raise
             session.refresh(doc)
             return po_document_to_type(doc)
 

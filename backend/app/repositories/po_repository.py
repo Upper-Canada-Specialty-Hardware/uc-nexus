@@ -1,7 +1,9 @@
 """Repository for purchase order data access."""
 
 import base64
+import binascii
 import logging
+import re
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -1443,34 +1445,109 @@ def upload_po_document(
     if po.status in (POStatus.CANCELLED, POStatus.CLOSED):
         raise InvalidStateTransitionError(f"Cannot upload documents to PO in {po.status.value} status")
 
-    file_data = base64.b64decode(file_data_base64)
-    file_size = len(file_data)
+    file_data = _decode_po_document(file_data_base64)
+    stored_type, as_attachment = _stored_content_type(content_type)
 
     doc_id = uuid.uuid4()
-    s3_key = f"po-documents/{po_id}/{doc_id}_{file_name}"
+    s3_key = f"po-documents/{po_id}/{doc_id}_{_safe_key_name(file_name)}"
 
-    storage.upload_file(s3_key, file_data, content_type)
+    storage.upload_file(s3_key, file_data, stored_type, as_attachment=as_attachment)
+    try:
+        doc = PODocument(
+            id=doc_id,
+            po_id=po_id,
+            file_name=file_name,
+            content_type=stored_type,
+            file_size=len(file_data),
+            document_type=document_type,
+            s3_key=s3_key,
+        )
+        session.add(doc)
 
-    doc = PODocument(
-        id=doc_id,
-        po_id=po_id,
-        file_name=file_name,
-        content_type=content_type,
-        file_size=file_size,
-        document_type=document_type,
-        s3_key=s3_key,
-    )
-    session.add(doc)
-
-    # Auto-transition: GP_REGISTERED → VENDOR_CONFIRMED when uploading vendor ack and quote number exists
-    if (
-        document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT
-        and po.status == POStatus.GP_REGISTERED
-        and po.vendor_quote_number is not None
-    ):
-        po.status = POStatus.VENDOR_CONFIRMED
+        # Auto-transition: GP_REGISTERED → VENDOR_CONFIRMED when uploading vendor ack and quote number exists
+        if (
+            document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT
+            and po.status == POStatus.GP_REGISTERED
+            and po.vendor_quote_number is not None
+        ):
+            po.status = POStatus.VENDOR_CONFIRMED
+    except Exception:
+        discard_uploaded_file(s3_key)
+        raise
 
     return doc
+
+
+# #1233: a PO document is a quote, an acknowledgement, a packing slip or the generated PO - a scan or a
+# PDF, well under this. The cap is checked on the encoded length first, so an oversized upload is
+# refused before it is decoded into memory at all.
+MAX_PO_DOCUMENT_BYTES = 20 * 1024 * 1024
+
+# Types a browser may render inline from the document link. SVG is left out on purpose (it can carry
+# script); anything not listed is stored as a download.
+_INLINE_DOCUMENT_TYPES = frozenset(
+    {
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/tiff",
+        "image/bmp",
+        "image/heic",
+        "application/msword",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+)
+
+
+def _decode_po_document(file_data_base64: str) -> bytes:
+    if len(file_data_base64 or "") > (MAX_PO_DOCUMENT_BYTES * 4) // 3 + 4:
+        raise ValidationError(
+            f"The file is larger than {MAX_PO_DOCUMENT_BYTES // (1024 * 1024)} MB", field="file_data_base64"
+        )
+    try:
+        data = base64.b64decode(file_data_base64 or "", validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise ValidationError("The file could not be read; upload it again", field="file_data_base64") from e
+    if not data:
+        raise ValidationError("The file is empty", field="file_data_base64")
+    if len(data) > MAX_PO_DOCUMENT_BYTES:
+        raise ValidationError(
+            f"The file is larger than {MAX_PO_DOCUMENT_BYTES // (1024 * 1024)} MB", field="file_data_base64"
+        )
+    return data
+
+
+def _stored_content_type(content_type: str | None) -> tuple[str, bool]:
+    """The type the object is stored and served with, and whether it must download as an attachment.
+    The client's word is kept only for a type on the list; anything else is opaque bytes."""
+    normalised = (content_type or "").split(";", 1)[0].strip().lower()
+    if normalised in _INLINE_DOCUMENT_TYPES:
+        return normalised, False
+    return "application/octet-stream", True
+
+
+def _safe_key_name(file_name: str | None) -> str:
+    """The file name as it appears in the storage key: letters, digits, dot, dash and underscore only,
+    no leading dots, at most 100 characters. The row keeps the name as uploaded for display."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", file_name or "").strip("._")
+    return cleaned[-100:] or "file"
+
+
+def discard_uploaded_file(s3_key: str) -> None:
+    """Remove an object whose row never landed (#1235). Best effort: a failure here costs an orphaned
+    object, and the error that got us here is the one worth raising."""
+    from app.services import storage
+
+    try:
+        storage.delete_file(s3_key)
+    except Exception:  # noqa: BLE001
+        logger.warning("po document upload not removed from storage", extra={"s3_key": s3_key}, exc_info=True)
 
 
 def delete_po_document(session: Session, document_id: uuid.UUID) -> str:
