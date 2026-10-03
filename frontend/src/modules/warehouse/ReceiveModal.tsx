@@ -121,6 +121,9 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   });
   const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
   const [warehouseId, setWarehouseId] = useState<string>('');
+  // #1344: with no active warehouse a draft could never be approved (nothing to receive into), so
+  // the dock is told before it counts, not the manager after.
+  const noActiveWarehouse = !!warehousesData && warehouses.length === 0;
 
   // #425: the GP setup verdict lives on the project, and the PO only carries a project id. Read from
   // the shared projects query, which every other screen already primes, so this is normally a cache
@@ -579,6 +582,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
           !allPackingSlipsAttached ||
           blockedPos.length > 0 ||
           notOpenJobs.length > 0 ||
+          noActiveWarehouse ||
           submitting
         }
         onClick={() => setConfirmOpen(true)}
@@ -669,6 +673,12 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
         )}
         {/* #831: the count posts into GP once approved, so the GP company it lands in sits on the same
             row as the warehouse it lands in. One tag per company, though a batch is almost always one. */}
+        {showEntry && noActiveWarehouse && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            No active warehouse to receive into. A Tenant Owner must add one under Tenant Owner →
+            Warehouses before hardware can be received.
+          </Alert>
+        )}
         {showEntry && (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', mb: 2 }}>
             <FormControl size="small" sx={{ minWidth: 240 }}>
