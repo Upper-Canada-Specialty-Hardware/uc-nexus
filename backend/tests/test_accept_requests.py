@@ -38,7 +38,7 @@ from app.repositories import (
     warehouse_admin_repository,
 )
 from tests.pick_helpers import pick_pull
-from tests.shop_assembly_helpers import batch_pull, batch_request
+from tests.shop_assembly_helpers import batch_pull, batch_request, with_schedule
 
 
 def _make_project(session) -> Project:
@@ -84,20 +84,22 @@ def _reservations(session, project_id):
 def _finalize_shop_assembly(session, project, *, code="HG-100", qty=2, opening_number="A01"):
     return import_repository.finalize_import_session(
         session,
-        {
-            "project_id": str(project.id),
-            "openings": [{"opening_number": opening_number, "building": "B1", "floor": "F2", "location": "Lobby"}],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_items": [
-                {
-                    "opening_number": opening_number,
-                    "hardware_category": "HINGE",
-                    "product_code": code,
-                    "quantity": qty,
-                },
-            ],
-        },
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [{"opening_number": opening_number, "building": "B1", "floor": "F2", "location": "Lobby"}],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": [
+                    {
+                        "opening_number": opening_number,
+                        "hardware_category": "HINGE",
+                        "product_code": code,
+                        "quantity": qty,
+                    },
+                ],
+            }
+        ),
     )
 
 
@@ -153,15 +155,17 @@ def test_a_shop_assembly_line_must_name_an_opening(db_session):
     with pytest.raises(ValidationError) as excinfo:
         import_repository.finalize_import_session(
             db_session,
-            {
-                "project_id": str(project.id),
-                "openings": [{"opening_number": "A01"}],
-                "hardware_items": [],
-                "include_shop_assembly_request": True,
-                "shop_assembly_items": [
-                    {"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 2},
-                ],
-            },
+            with_schedule(
+                {
+                    "project_id": str(project.id),
+                    "openings": [{"opening_number": "A01"}],
+                    "hardware_items": [],
+                    "include_shop_assembly_request": True,
+                    "shop_assembly_items": [
+                        {"hardware_category": "HINGE", "product_code": "HG-100", "quantity": 2},
+                    ],
+                }
+            ),
         )
     assert excinfo.value.field == "opening_number"
 
@@ -234,16 +238,18 @@ def test_batching_leaves_unbatched_openings_pending_for_the_next_one(db_session)
     _seed_inventory(db_session, project.id, quantity=10)
     sar = import_repository.finalize_import_session(
         db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_items": [
-                {"opening_number": n, "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 2}
-                for n in ("A01", "A02")
-            ],
-        },
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": [
+                    {"opening_number": n, "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 2}
+                    for n in ("A01", "A02")
+                ],
+            }
+        ),
     )["shop_assembly_request"]
     db_session.flush()
 
@@ -303,16 +309,18 @@ def test_an_opening_with_nothing_allocatable_simply_stays_pending(db_session):
     _seed_inventory(db_session, project.id, category="CLOSER", code="CL-1", quantity=0)
     sar = import_repository.finalize_import_session(
         db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_items": [
-                {"opening_number": "A01", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 4},
-                {"opening_number": "A02", "hardware_category": "CLOSER", "product_code": "CL-1", "quantity": 1},
-            ],
-        },
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": [
+                    {"opening_number": "A01", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 4},
+                    {"opening_number": "A02", "hardware_category": "CLOSER", "product_code": "CL-1", "quantity": 1},
+                ],
+            }
+        ),
     )["shop_assembly_request"]
     db_session.flush()
 
@@ -349,16 +357,18 @@ def test_dismissing_the_remainder_closes_the_request(db_session):
     _seed_inventory(db_session, project.id, quantity=10)
     sar = import_repository.finalize_import_session(
         db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_items": [
-                {"opening_number": n, "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 2}
-                for n in ("A01", "A02")
-            ],
-        },
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": [
+                    {"opening_number": n, "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 2}
+                    for n in ("A01", "A02")
+                ],
+            }
+        ),
     )["shop_assembly_request"]
     db_session.flush()
     batch_request(db_session, sar.id, openings=["A01"])
@@ -403,16 +413,18 @@ def test_a_batched_request_cannot_be_rejected_whole(db_session):
     _seed_inventory(db_session, project.id, quantity=10)
     sar = import_repository.finalize_import_session(
         db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_items": [
-                {"opening_number": n, "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 2}
-                for n in ("A01", "A02")
-            ],
-        },
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": [
+                    {"opening_number": n, "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 2}
+                    for n in ("A01", "A02")
+                ],
+            }
+        ),
     )["shop_assembly_request"]
     db_session.flush()
     batch_request(db_session, sar.id, openings=["A01"])
@@ -741,16 +753,18 @@ def test_a_part_batched_request_still_reads_as_requested(db_session):
     _seed_inventory(db_session, project.id, quantity=10)
     sar = import_repository.finalize_import_session(
         db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_items": [
-                {"opening_number": n, "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 2}
-                for n in ("A01", "A02")
-            ],
-        },
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": [
+                    {"opening_number": n, "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 2}
+                    for n in ("A01", "A02")
+                ],
+            }
+        ),
     )["shop_assembly_request"]
     db_session.flush()
     batch = batch_request(db_session, sar.id, openings=["A01"])
