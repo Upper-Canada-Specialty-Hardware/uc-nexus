@@ -979,6 +979,8 @@ class PullRequest:
     status: PullRequestStatus
     requested_by: str
     assigned_to: str | None
+    # #1356: who started the pick, by user id. Null on pulls started before it was recorded.
+    assigned_to_user_id: str | None
     created_at: datetime
     updated_at: datetime
     approved_at: datetime | None

@@ -909,6 +909,7 @@ def pull_request_to_type(pr, partially_picked=None) -> PullRequest:
         status=pr.status,
         requested_by=pr.requested_by,
         assigned_to=pr.assigned_to,
+        assigned_to_user_id=pr.assigned_to_user_id,
         created_at=pr.created_at,
         updated_at=pr.updated_at,
         approved_at=pr.approved_at,
