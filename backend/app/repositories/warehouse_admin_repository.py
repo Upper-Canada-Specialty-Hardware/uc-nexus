@@ -270,14 +270,18 @@ def update_warehouse(
     name = wh.name if name is None else name.strip()
     if not name:
         raise ValidationError("Warehouse name is required", field="name")
-    _check_name_unique(session, name, company=wh.company, exclude_id=warehouse_id)
+    # no_autoflush: a pending company move must not reach the database (and its per-company unique
+    # index) before these checks have had the chance to refuse it with a field error.
+    with session.no_autoflush:
+        _check_name_unique(session, name, company=wh.company, exclude_id=warehouse_id)
     wh.name = name
     code = wh.code if code is None else code.strip()
     if not code:
         raise ValidationError("Warehouse code is required", field="code")
     if len(code) > 20:
         raise ValidationError("Warehouse code must be 20 characters or fewer", field="code")
-    _check_code_unique(session, code, company=wh.company, exclude_id=warehouse_id)
+    with session.no_autoflush:
+        _check_code_unique(session, code, company=wh.company, exclude_id=warehouse_id)
     wh.code = code
     if address is not None:
         wh.address = _norm(address)
