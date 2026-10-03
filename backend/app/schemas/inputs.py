@@ -937,6 +937,9 @@ class OverrideInventoryQuantityInput:
     reason_text: str
     # required when new_quantity increases the row; ignored on a decrease. quantities must sum to the delta.
     destinations: list[OverrideDestinationInput] = strawberry.field(default_factory=list)
+    # A decrease below the combo's active reservations is recorded only when a Warehouse Manager sets
+    # this, having been shown the shortfall (#1124).
+    confirm_below_reserved: bool = False
 
 
 @strawberry.input

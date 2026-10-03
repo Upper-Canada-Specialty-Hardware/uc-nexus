@@ -1,22 +1,30 @@
 """Project inventory + opening item reads and admin quantity corrections."""
 
 import uuid
+from collections.abc import Callable
 from datetime import datetime
 
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
-from app.models.enums import AuditAction, AuditEntityType, Classification, HardwareItemState
+from app.models.enums import AuditAction, AuditEntityType, Classification, HardwareItemState, NotificationType
 from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.project import Project as ProjectModel
 from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 from app.repositories import tenancy
+from app.services.locking import lock_inventory_combo
 
 from .audit import _log_audit_event
-from .locations import _normalize_and_validate_location_fields, clone_origin_fields, location_detail
+from .locations import (
+    _normalize_and_validate_location_fields,
+    clone_origin_fields,
+    ensure_registered_location,
+    location_detail,
+)
+from .reservations import get_available_quantities, get_reserved_quantities
 
 
 def get_unlocated_inventory(
@@ -83,8 +91,128 @@ def get_unlocated_inventory(
     return result
 
 
+def _lock_row(session: Session, inv_id: uuid.UUID) -> InventoryLocationModel:
+    """The row, fresh, with its whole (project, category, code) combo row-locked (#1119)."""
+    il = lock_inventory_combo(session, inv_id)
+    if il is None:
+        raise NotFoundError(f"Inventory location {inv_id} not found")
+    return il
+
+
+def _gate_reservation_shortfall(
+    session: Session,
+    il: InventoryLocationModel,
+    removed: int,
+    *,
+    caller_is_manager: Callable[[], bool],
+    confirm_below_reserved: bool,
+    field: str,
+) -> int:
+    """Refuse a count correction that would leave the combo's sound on-hand below its reservations,
+    unless a Warehouse Manager confirmed it (#1124).
+
+    A spot-check or an override records what is physically on the shelf, so it cannot be refused
+    outright the way a destock is - the units are gone whether the system agrees or not. What it must
+    not do is strand an active claim silently: the pick then comes up short and nobody knows why. So
+    the floor decides nothing here; a Warehouse Manager does, having been shown the shortfall, and the
+    holders of the stranded claims are told (`_flag_stranded_holders`).
+
+    `removed` is how many sound units the write takes off the combo. `caller_is_manager` is a callable
+    so the role lookup (a Clerk round trip) happens only for a confirmed write that actually strands a
+    claim. Returns the reserved total when the write strands a claim (the caller flags the holders
+    after writing), 0 otherwise. The combo is already locked by `_lock_row`, so the availability read
+    is consistent with the write.
+    """
+    if removed <= 0:
+        return 0
+    combo = (il.hardware_category, il.product_code)
+    available = get_available_quantities(session, il.project_id, [combo]).get(combo, 0)
+    if removed <= available:
+        return 0
+    reserved = get_reserved_quantities(session, il.project_id, [combo]).get(combo, 0)
+    shortfall = (
+        f"This leaves fewer {il.product_code} on hand than the {reserved} unit(s) reserved by active requests "
+        f"({available} free)."
+    )
+    if not confirm_below_reserved:
+        raise ValidationError(
+            f"{shortfall} A Warehouse Manager can confirm it to record it anyway, and the affected pulls are flagged.",
+            field=field,
+        )
+    if not caller_is_manager():
+        raise ValidationError(
+            f"{shortfall} Only a Warehouse Manager can record a count below what is reserved.",
+            field=field,
+        )
+    return reserved
+
+
+def _flag_stranded_holders(
+    session: Session, il: InventoryLocationModel, reserved: int, *, performed_by: str, reason: str
+) -> None:
+    """Tell the warehouse managers about every request whose claim on this combo a count just stranded
+    (#1124), one notification per holder, carrying the holder's pull where one exists so the bell
+    links to it. A shipping-out request reserves at creation and mints its pull only at accept, so a
+    holder without a pull is named by its request number instead.
+    """
+    from app.models.inventory_reservation import InventoryReservation
+    from app.models.shipping_out_request import ShippingOutRequest
+    from app.models.shop_assembly import ShopAssemblyBatch
+    from app.services.notification_service import WAREHOUSE_MANAGER_RECIPIENT_ROLE, create_notification
+
+    on_hand = session.scalar(
+        select(
+            func.coalesce(func.sum(InventoryLocationModel.quantity - InventoryLocationModel.deficient_quantity), 0)
+        ).where(
+            InventoryLocationModel.project_id == il.project_id,
+            InventoryLocationModel.hardware_category == il.hardware_category,
+            InventoryLocationModel.product_code == il.product_code,
+        )
+    )
+    holders = session.execute(
+        select(
+            func.coalesce(ShopAssemblyBatch.batch_number, ShippingOutRequest.request_number),
+            func.coalesce(ShopAssemblyBatch.pull_request_id, ShippingOutRequest.pull_request_id),
+            func.sum(InventoryReservation.quantity),
+        )
+        .select_from(InventoryReservation)
+        .outerjoin(ShopAssemblyBatch, InventoryReservation.shop_assembly_batch_id == ShopAssemblyBatch.id)
+        .outerjoin(ShippingOutRequest, InventoryReservation.shipping_out_request_id == ShippingOutRequest.id)
+        .where(
+            InventoryReservation.project_id == il.project_id,
+            InventoryReservation.hardware_category == il.hardware_category,
+            InventoryReservation.product_code == il.product_code,
+        )
+        .group_by(
+            func.coalesce(ShopAssemblyBatch.batch_number, ShippingOutRequest.request_number),
+            func.coalesce(ShopAssemblyBatch.pull_request_id, ShippingOutRequest.pull_request_id),
+        )
+    ).all()
+    for number, pull_request_id, held in holders:
+        create_notification(
+            session,
+            project_id=il.project_id,
+            recipient_role=WAREHOUSE_MANAGER_RECIPIENT_ROLE,
+            notification_type=NotificationType.INVENTORY_SHORTFALL,
+            message=(
+                f"{performed_by} recorded {il.hardware_category} {il.product_code} below what is reserved: "
+                f"{on_hand} on hand against {reserved} reserved. {number} holds {held} and may come up "
+                f"short at the pick. Reason: {reason}"
+            ),
+            pull_request_id=pull_request_id,
+        )
+
+
 def adjust_inventory_quantity(
-    session: Session, inv_id: uuid.UUID, adjustment: int, reason: str, *, performed_by: str, spot_check: bool = False
+    session: Session,
+    inv_id: uuid.UUID,
+    adjustment: int,
+    reason: str,
+    *,
+    performed_by: str,
+    spot_check: bool = False,
+    caller_is_manager: Callable[[], bool] = lambda: False,
+    confirm_below_reserved: bool = False,
 ) -> InventoryLocationModel:
     """Adjust the quantity of an InventoryLocation by a positive or negative amount.
 
@@ -97,13 +225,14 @@ def adjust_inventory_quantity(
     `spot_check` marks a physical-count reconciliation: the audit row's action is SPOT_CHECK rather
     than ADJUSTMENT and its detail carries systemQuantity/physicalQuantity, so the history render can
     show what was counted against what the system held. The SPOT_CHECK enum value existed unused
-    until this - the spot-check UI wrote a plain ADJUSTMENT before."""
-    il = session.get(InventoryLocationModel, inv_id)
-    if il is None:
-        raise NotFoundError(f"Inventory location {inv_id} not found")
+    until this - the spot-check UI wrote a plain ADJUSTMENT before.
 
+    A decrease that would leave the combo below its active reservations is refused unless a
+    Warehouse Manager confirmed it, and then the stranded holders are flagged (#1124)."""
     if not reason or len(reason) > 500:
         raise ValidationError("reason must be 1-500 characters", field="reason")
+
+    il = _lock_row(session, inv_id)
 
     new_quantity = il.quantity + adjustment
     if new_quantity < 0:
@@ -115,6 +244,14 @@ def adjust_inventory_quantity(
             "Cannot set quantity below this row's deficient quantity",
             field="adjustment",
         )
+    stranded = _gate_reservation_shortfall(
+        session,
+        il,
+        -adjustment,
+        caller_is_manager=caller_is_manager,
+        confirm_below_reserved=confirm_below_reserved,
+        field="adjustment",
+    )
 
     old_quantity = il.quantity
     il.quantity = new_quantity
@@ -139,6 +276,9 @@ def adjust_inventory_quantity(
         performed_by=performed_by,
         detail=detail,
     )
+    if stranded:
+        session.flush()
+        _flag_stranded_holders(session, il, stranded, performed_by=performed_by, reason=reason)
 
     return il
 
@@ -151,6 +291,8 @@ def override_inventory_quantity(
     reason: str,
     destinations: list[dict],
     performed_by: str,
+    caller_is_manager: Callable[[], bool] = lambda: False,
+    confirm_below_reserved: bool = False,
 ) -> InventoryLocationModel:
     """Set an InventoryLocation row to an absolute new_quantity. Reason always required, audit-logged.
 
@@ -160,15 +302,17 @@ def override_inventory_quantity(
     Increase: the added (new_quantity - current) units must be placed via `destinations`, whose
     quantities sum to the delta. A destination at the row's own aisle/row/bay bumps this row; any other
     destination becomes a new InventoryLocation that inherits this row's origin, so the has-origin CHECK
-    holds and valuations keep the same unit_cost.
+    holds and valuations keep the same unit_cost. Every destination is held to the warehouse's
+    defined locations, like every other user-chosen shelf (#1129, #632).
+
+    A decrease below the combo's active reservations follows the same manager rule as a spot-check
+    (#1124).
     """
-    il = session.get(InventoryLocationModel, inv_id)
-    if il is None:
-        raise NotFoundError(f"Inventory location {inv_id} not found")
     if not reason or len(reason) > 500:
         raise ValidationError("reason_text must be 1-500 characters", field="reason_text")
     if new_quantity < 0:
         raise ValidationError("new_quantity must be >= 0", field="new_quantity")
+    il = _lock_row(session, inv_id)
 
     old_quantity = il.quantity
     delta = new_quantity - old_quantity
@@ -177,6 +321,7 @@ def override_inventory_quantity(
 
     created: list[InventoryLocationModel] = []
     audit_destinations: list[dict] = []
+    stranded = 0
 
     if delta < 0:
         if new_quantity < il.deficient_quantity:
@@ -184,6 +329,14 @@ def override_inventory_quantity(
                 "Cannot set quantity below this row's deficient quantity",
                 field="new_quantity",
             )
+        stranded = _gate_reservation_shortfall(
+            session,
+            il,
+            -delta,
+            caller_is_manager=caller_is_manager,
+            confirm_below_reserved=confirm_below_reserved,
+            field="new_quantity",
+        )
         il.quantity = new_quantity
     else:
         if not destinations:
@@ -197,6 +350,9 @@ def override_inventory_quantity(
             if qty < 1:
                 raise ValidationError("destination quantity must be >= 1", field="destinations")
             a, b, c = _normalize_and_validate_location_fields(dest["aisle"], dest["row"], dest["bay"])
+            if (a, b, c) != (il.aisle, il.row, il.bay):
+                # The row's own shelf is inherited, not chosen, so a retired one is not re-checked.
+                ensure_registered_location(session, il.warehouse_id, a, b, c)
             normalized.append({"aisle": a, "row": b, "bay": c, "quantity": qty})
         if sum(d["quantity"] for d in normalized) != delta:
             raise ValidationError(
@@ -259,6 +415,8 @@ def override_inventory_quantity(
                 "reason": reason,
             },
         )
+    if stranded:
+        _flag_stranded_holders(session, il, stranded, performed_by=performed_by, reason=reason)
 
     return il
 

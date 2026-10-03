@@ -17,6 +17,7 @@ from app.models.enums import (
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.stock_item import StockItem
+from app.services.locking import lock_inventory_combo
 
 from .common import _find_or_create_stock_row, _log_audit_event, destock_unit_cost
 from .items import get_stock_item
@@ -33,7 +34,9 @@ def report_inventory_deficiency(
     if quantity < 1:
         raise ValidationError("quantity must be >= 1", field="quantity")
 
-    il = session.get(InventoryLocationModel, inventory_location_id)
+    # Locked and re-read (#1119): the new deficient count is computed off the row's quantity, and a pick
+    # confirmed in between would otherwise leave deficient above quantity.
+    il = lock_inventory_combo(session, inventory_location_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inventory_location_id} not found")
 

@@ -74,7 +74,7 @@ export const GET_UNLOCATED_INVENTORY = gql`
     unlocatedInventory(projectId: $projectId, warehouseId: $warehouseId) {
       inventoryLocation {
         id projectId poLineItemId receiveLineItemId warehouseId
-        hardwareCategory productCode quantity
+        hardwareCategory productCode quantity deficientQuantity
         aisle row bay receivedAt createdAt updatedAt
       }
       poNumber
@@ -405,12 +405,14 @@ export const ADJUST_INVENTORY_QUANTITY = gql`
     $adjustment: Int!
     $reason: String!
     $spotCheck: Boolean
+    $confirmBelowReserved: Boolean
   ) {
     adjustInventoryQuantity(
       inventoryLocationId: $inventoryLocationId
       adjustment: $adjustment
       reason: $reason
       spotCheck: $spotCheck
+      confirmBelowReserved: $confirmBelowReserved
     ) {
       id
       projectId

@@ -631,15 +631,26 @@ def split_inventory_location(
     Deficient units stay with the original row. They are not on a shelf; they are a claim against
     the vendor, and moving a fraction of them to a bin nobody put them in would be a lie.
     """
-    il = session.get(InventoryLocationModel, inv_id)
-    if il is None:
-        raise NotFoundError(f"Inventory location {inv_id} not found")
+    from app.services.locking import lock_inventory_combo
+
     if quantity < 1:
         raise ValidationError("Split quantity must be at least 1", field="quantity")
+    il = lock_inventory_combo(session, inv_id)
+    if il is None:
+        raise NotFoundError(f"Inventory location {inv_id} not found")
+    deficient = il.deficient_quantity or 0
     if quantity >= il.quantity:
         # Equal is refused too: splitting off everything is a no-op that leaves an empty row behind.
         raise ValidationError(
             f"Cannot split {quantity} off a row holding {il.quantity}; leave at least one unit behind",
+            field="quantity",
+        )
+    if quantity > il.quantity - deficient:
+        # The deficient units stay on this row, so only the sound ones can leave it (#1130). Without
+        # this the row drops below its own deficient count and the CHECK fails as a raw 500.
+        raise ValidationError(
+            f"Cannot split {quantity} off this row: {deficient} of its {il.quantity} are deficient and stay "
+            f"behind, so at most {il.quantity - deficient} can be put away elsewhere",
             field="quantity",
         )
 

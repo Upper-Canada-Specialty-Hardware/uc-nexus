@@ -14,7 +14,7 @@ import { useToast } from '../../components/Toast';
 import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED } from '../../graphql/shared';
 import { ADJUST_INVENTORY_QUANTITY, MOVE_STOCK_LOCATION, MARK_STOCK_ITEM_UNLOCATED, ADJUST_STOCK_QUANTITY } from '../../graphql/warehouse';
 import { microLabelSx, monoSx } from '../../theme';
-import { ReservationNotice, useComboReservation } from './reservationNotice';
+import { ReservationGateNotice, useComboReservation, useReservationGate } from './reservationNotice';
 import { useDefinedLocationPick } from './useDefinedLocationPick';
 
 export type LocationActionTarget = {
@@ -126,6 +126,9 @@ export default function LocationActionDialog({
   });
   const resultingSound =
     reservation == null ? null : reservation.soundOnHand + (isNaN(adjustmentNum) ? 0 : adjustmentNum);
+  // #1124: below the reserved claim, only a Warehouse Manager may record the count, and only once
+  // they confirm it.
+  const gate = useReservationGate(reservation, resultingSound, adjustingInventory && adjustmentNum < 0);
 
   const isValid = useMemo(() => {
     if (mode === 'unlocate') return true;
@@ -135,8 +138,9 @@ export default function LocationActionDialog({
     if (isNaN(adjustmentNum) || adjustmentNum === 0) return false;
     if (newQuantity < 0) return false;
     if (!reason.trim() || reason.length > REASON_MAX_LENGTH) return false;
+    if (gate.blocked) return false;
     return true;
-  }, [mode, isDefinedPick, adjustmentNum, newQuantity, reason, single]);
+  }, [mode, isDefinedPick, adjustmentNum, newQuantity, reason, single, gate.blocked]);
 
   // #981: why Confirm is off on an adjust, whichever check is blocking it, so a dead button always
   // says what it is waiting for.
@@ -148,6 +152,11 @@ export default function LocationActionDialog({
     }
     if (!reason.trim()) return 'Give a reason for the adjustment.';
     if (reason.length > REASON_MAX_LENGTH) return `Keep the reason to ${REASON_MAX_LENGTH} characters.`;
+    if (gate.blocked) {
+      return gate.isManager
+        ? 'Confirm the count below what is reserved to record it.'
+        : 'Only a Warehouse Manager can record a count below what is reserved.';
+    }
     return null;
   })();
 
@@ -200,6 +209,7 @@ export default function LocationActionDialog({
                 inventoryLocationId: single.id,
                 adjustment: adjustmentNum,
                 reason: reason.trim(),
+                ...(gate.confirmed ? { confirmBelowReserved: true } : {}),
               },
             });
           } else if (single.kind === 'stock') {
@@ -331,7 +341,7 @@ export default function LocationActionDialog({
             helperText={`${reason.length}/${REASON_MAX_LENGTH}`}
           />
           {reservation != null && resultingSound != null && (
-            <ReservationNotice reserved={reservation.reserved} resulting={resultingSound} />
+            <ReservationGateNotice reserved={reservation.reserved} resulting={resultingSound} gate={gate} />
           )}
           {adjustBlockedReason && (
             <Typography variant="body2" color="text.secondary" data-testid="adjust-blocked-reason">

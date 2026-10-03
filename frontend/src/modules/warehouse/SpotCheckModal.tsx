@@ -7,7 +7,7 @@ import { useToast } from '../../components/Toast';
 import { ADJUST_INVENTORY_QUANTITY } from '../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
-import { ReservationNotice, useComboReservation } from './reservationNotice';
+import { ReservationGateNotice, useComboReservation, useReservationGate } from './reservationNotice';
 import { Appear } from '../../motion';
 
 interface SpotCheckItem {
@@ -48,20 +48,23 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
   const floor = item.deficientQuantity;
   const belowFloor = !isNaN(physicalNum) && physicalNum < floor;
 
-  const isValid = useMemo(() => {
-    if (isNaN(physicalNum) || physicalNum < 0) return false;
-    if (physicalNum < floor) return false;
-    return true;
-  }, [physicalNum, floor]);
-
-  // A spot count that comes up under what active requests have reserved strands their claim. It
-  // still applies (the count is physical reality) - the notice just makes the shortfall visible.
+  // A spot count that comes up under what active requests have reserved strands their claim. The
+  // count is physical reality, but it is recorded only by a Warehouse Manager who confirms it, and
+  // the server then flags the affected pulls (#1124).
   const reservation = useComboReservation({
     projectId: item.projectId,
     hardwareCategory: item.hardwareCategory,
     productCode: item.productCode,
   });
   const resultingSound = reservation == null ? null : reservation.soundOnHand + (discrepancy ?? 0);
+  const gate = useReservationGate(reservation, resultingSound, discrepancy !== null && discrepancy < 0);
+
+  const isValid = useMemo(() => {
+    if (isNaN(physicalNum) || physicalNum < 0) return false;
+    if (physicalNum < floor) return false;
+    if (gate.blocked) return false;
+    return true;
+  }, [physicalNum, floor, gate.blocked]);
 
   const [adjustQuantity, { loading }] = useMutation(ADJUST_INVENTORY_QUANTITY, {
     refetchQueries: WAREHOUSE_REFETCH_QUERIES,
@@ -83,6 +86,7 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
         adjustment: discrepancy,
         reason: `Spot check: system=${item.quantity}, physical=${physicalNum}`,
         spotCheck: true,
+        ...(gate.confirmed ? { confirmBelowReserved: true } : {}),
       },
     });
   };
@@ -176,7 +180,7 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
 
         {reservation != null && resultingSound != null && !belowFloor && (
           <Box sx={{ mt: 1 }}>
-            <ReservationNotice reserved={reservation.reserved} resulting={resultingSound} />
+            <ReservationGateNotice reserved={reservation.reserved} resulting={resultingSound} gate={gate} />
           </Box>
         )}
       </Modal>

@@ -138,3 +138,24 @@ def test_splitting_twice_leaves_three_rows_that_still_sum(db_session):
     assert first.quantity == 5
     assert second.quantity == 3
     assert il.quantity + first.quantity + second.quantity == 10
+
+
+def test_a_split_cannot_take_the_deficient_units_with_it(db_session):
+    """#1130: 10 on the row, 5 deficient. Only the 5 sound units can leave; asking for 6 used to drop
+    the row below its own deficient count and fail the CHECK as a raw 500. Now it is a validation
+    error that says how many can go."""
+    _project, il = _row(db_session, quantity=10, deficient=5)
+
+    with pytest.raises(ValidationError, match="at most 5"):
+        warehouse_repository.split_inventory_location(db_session, il.id, 6, performed_by="picker")
+    assert il.quantity == 10
+
+
+def test_a_split_may_take_every_sound_unit_and_leave_the_deficient_behind(db_session):
+    _project, il = _row(db_session, quantity=10, deficient=5)
+
+    kept, moved = warehouse_repository.split_inventory_location(db_session, il.id, 5, performed_by="picker")
+    db_session.flush()
+
+    assert (kept.quantity, kept.deficient_quantity) == (5, 5)
+    assert moved.quantity == 5

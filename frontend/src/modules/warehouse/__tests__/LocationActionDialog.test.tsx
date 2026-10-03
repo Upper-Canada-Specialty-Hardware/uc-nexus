@@ -8,9 +8,22 @@ import {
 } from '../../../graphql/shared';
 import {
   ADJUST_INVENTORY_QUANTITY,
+  GET_PROJECT_INVENTORY_AVAILABILITY,
   GET_WAREHOUSE_LOCATIONS,
   MOVE_STOCK_LOCATION,
 } from '../../../graphql/warehouse';
+
+// #1124: whether the caller may record a count below what is reserved. Floor staff by default.
+const identity = { roles: [] as string[] };
+vi.mock('../../../hooks/useIdentity', () => ({
+  useIdentity: () => ({
+    ownsTenant: false,
+    hasRole: (role: string) => identity.roles.includes(role),
+  }),
+}));
+afterEach(() => {
+  identity.roles = [];
+});
 
 // #975: move mode picks only from the defined-locations registry. Supplied to every render;
 // adjust/unlocate skip the query so the mock simply goes unused there. A3-C1-B1 is defined in a
@@ -273,6 +286,100 @@ describe('LocationActionDialog', () => {
 
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(called).toBe(true);
+  });
+
+  describe('a count below what is reserved (#1124)', () => {
+    // 10 on hand of HG-100 in p1, 4 of them reserved: taking 8 off leaves 2 under the claim.
+    const reservedTarget: LocationActionTarget = {
+      ...invTarget,
+      projectId: 'p1',
+      hardwareCategory: 'HINGE',
+    };
+    const availabilityMock: MockedResponse = {
+      request: { query: GET_PROJECT_INVENTORY_AVAILABILITY, variables: { projectId: 'p1' } },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: {
+        data: {
+          projectInventoryAvailability: [
+            {
+              hardwareCategory: 'HINGE',
+              productCode: 'HG-100',
+              onHandQuantity: 10,
+              deficientQuantity: 0,
+              reservedQuantity: 4,
+              availableQuantity: 6,
+              classification: null,
+              __typename: 'ProjectInventoryAvailability',
+            },
+          ],
+        },
+      },
+    };
+
+    function enterShortCount() {
+      fireEvent.change(screen.getByLabelText('Adjustment (+/-)'), { target: { value: '-8' } });
+      fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'counted short' } });
+    }
+
+    it('is refused to floor staff, saying who can record it', async () => {
+      renderDialog({ mode: 'adjust', targets: [reservedTarget] }, [availabilityMock]);
+      enterShortCount();
+
+      await waitFor(() =>
+        expect(screen.getByRole('alert')).toHaveTextContent('below the 4 unit(s) reserved by active requests'),
+      );
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'Only a Warehouse Manager can record a count below what is reserved.',
+      );
+      expect(screen.queryByRole('checkbox')).toBeNull();
+      expect(confirmButton()).toBeDisabled();
+    });
+
+    it('lets a Warehouse Manager record it once confirmed, and says so to the server', async () => {
+      identity.roles = ['Warehouse Manager'];
+      let calledVariables: Record<string, unknown> | null = null;
+      const adjustMock: MockedResponse = {
+        request: {
+          query: ADJUST_INVENTORY_QUANTITY,
+          variables: { inventoryLocationId: 'inv-1', adjustment: -8, reason: 'counted short', confirmBelowReserved: true },
+        },
+        result: (vars) => {
+          calledVariables = vars as Record<string, unknown>;
+          return {
+            data: {
+              adjustInventoryQuantity: {
+                id: 'inv-1',
+                quantity: 2,
+                deficientQuantity: 0,
+                available: 2,
+                __typename: 'InventoryLocation',
+              },
+            },
+          };
+        },
+      };
+      const { onSuccess } = renderDialog({ mode: 'adjust', targets: [reservedTarget] }, [availabilityMock, adjustMock]);
+      enterShortCount();
+
+      const confirmBox = await screen.findByRole('checkbox', { name: /record it anyway/i });
+      expect(confirmButton()).toBeDisabled();
+      fireEvent.click(confirmBox);
+      await waitFor(() => expect(confirmButton()).toBeEnabled());
+      fireEvent.click(confirmButton());
+
+      await waitFor(() => expect(onSuccess).toHaveBeenCalled());
+      expect(calledVariables).toMatchObject({ confirmBelowReserved: true });
+    });
+
+    it('does not gate a decrease that stays within the free stock', async () => {
+      renderDialog({ mode: 'adjust', targets: [reservedTarget] }, [availabilityMock]);
+      fireEvent.change(screen.getByLabelText('Adjustment (+/-)'), { target: { value: '-6' } });
+      fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'counted short' } });
+
+      await waitFor(() => expect(screen.getByText('4 unit(s) reserved by active requests.')).toBeInTheDocument());
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(confirmButton()).toBeEnabled();
+    });
   });
 
   it('keeps the dialog open and reports the error when the mutation fails', async () => {

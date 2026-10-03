@@ -1429,6 +1429,7 @@ class WarehouseMutations:
         adjustment: int,
         reason: str,
         spot_check: bool = False,
+        confirm_below_reserved: bool = False,
     ) -> InventoryLocation:
         """Move a project inventory row's count by a delta, with a reason, writing an ADJUSTMENT
         audit row - or a SPOT_CHECK one when `spot_check` is set (the physical-count reconciliation
@@ -1437,7 +1438,10 @@ class WarehouseMutations:
         Every one of those rows said "Admin/Manager" until #427, whoever actually made the change:
         the repository hardcoded it and there was no parameter to pass the truth through. `auditLog`,
         the location history panel and the recent-activity feed all read that column, so the one
-        record of who altered a count was uniformly wrong."""
+        record of who altered a count was uniformly wrong.
+
+        A decrease below the combo's active reservations needs `confirmBelowReserved` from a Warehouse
+        Manager (#1124); the role is looked up only then."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
@@ -1451,6 +1455,8 @@ class WarehouseMutations:
                 reason,
                 performed_by=actor,
                 spot_check=spot_check,
+                caller_is_manager=lambda: _is_warehouse_manager(info),
+                confirm_below_reserved=confirm_below_reserved,
             )
             session.commit()
             session.refresh(result)
@@ -1482,6 +1488,8 @@ class WarehouseMutations:
                     {"aisle": d.aisle, "row": d.row, "bay": d.bay, "quantity": d.quantity} for d in input.destinations
                 ],
                 performed_by=actor,
+                caller_is_manager=lambda: _is_warehouse_manager(info),
+                confirm_below_reserved=input.confirm_below_reserved,
             )
             session.commit()
             session.refresh(result)

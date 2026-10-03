@@ -18,6 +18,7 @@ from app.repositories.warehouse import (
     get_reserved_quantities,
     location_detail,
 )
+from app.services.locking import lock_inventory_combo, lock_rows
 
 from .common import (
     _find_or_create_stock_row,
@@ -418,7 +419,9 @@ def transfer_inventory(
     now = datetime.utcnow()
 
     if source_type == "INVENTORY_LOCATION":
-        il = session.get(InventoryLocationModel, source_id)
+        # Locked and re-read (#1119): the source shrinks by a count read here, and a merge target of the
+        # same combo grows, so both are taken under the combo lock every inventory writer shares.
+        il = lock_inventory_combo(session, source_id)
         if il is None:
             raise NotFoundError(f"Inventory location {source_id} not found")
         available = il.quantity - (il.deficient_quantity or 0)
@@ -472,7 +475,10 @@ def transfer_inventory(
         return {"success": True, "quantity": quantity, "dest_warehouse_id": dest_warehouse_id}
 
     if source_type == "STOCK_ITEM":
-        si = session.get(StockItem, source_id)
+        locked = lock_rows(session, StockItem, [source_id])
+        si = locked[0] if locked else None
+        if si is not None:
+            session.refresh(si)
         if si is None:
             raise NotFoundError(f"Stock item {source_id} not found")
         available = si.quantity - (si.deficient_quantity or 0)
