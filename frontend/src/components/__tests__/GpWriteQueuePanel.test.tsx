@@ -205,3 +205,18 @@ it('keeps a held po registration out of a warehouse manager hands', async () => 
   renderPanel({ ops: ['create_po'], compact: true }, [entry({ status: 'FAILED' })]);
   expect(await screen.findByRole('button', { name: 'Retry' })).toBeDisabled();
 });
+
+// #1280: a failed outbox read inside a module says so instead of rendering nothing.
+it('warns inside a module when the held writes cannot be loaded', async () => {
+  render(
+    <MockedProvider
+      mocks={[{ request: { query: GET_GP_OUTBOX, variables: () => true }, error: new Error('backend down') }]}
+    >
+      <ToastProvider>
+        <GpWriteQueuePanel ops={['create_receipt']} compact />
+      </ToastProvider>
+    </MockedProvider>,
+  );
+
+  expect(await screen.findByText(/Could not load held GP writes/)).toBeInTheDocument();
+});

@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Box, Button, Chip, Stack, Tooltip, Typography } from '@mui/material';
+import { Alert, Box, Button, Chip, Stack, Tooltip, Typography } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_GP_OUTBOX, GET_GP_OUTBOX_SUMMARY } from '../graphql/shared';
@@ -105,7 +105,7 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
 
   const variables = useMemo(() => ({ ...(ops ? { ops } : {}), ...(statuses ? { statuses } : {}) }), [ops, statuses]);
 
-  const { data, loading } = useQuery<{ gpOutbox: OutboxEntry[] }>(GET_GP_OUTBOX, {
+  const { data, loading, error } = useQuery<{ gpOutbox: OutboxEntry[] }>(GET_GP_OUTBOX, {
     variables,
     fetchPolicy: 'cache-and-network',
     // Long enough not to be chatty, short enough that a drain shows up while an admin is watching.
@@ -242,7 +242,16 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
 
   // A module page is not the place to announce an empty queue: with nothing held, the panel takes no
   // space at all. The admin queue keeps its table either way, because an admin came looking for it.
-  if (compact && entries.length === 0) return null;
+  // #1280: a failed poll is not an empty queue. With nothing on screen to show, say the list could not
+  // be read rather than vanish, so writes stuck behind a failing read are not mistaken for none held.
+  if (compact && entries.length === 0) {
+    if (!error) return null;
+    return (
+      <Alert severity="warning" sx={{ mb: 2.5 }}>
+        Could not load held GP writes: {error.message}
+      </Alert>
+    );
+  }
 
   return (
     <Box sx={{ mt: compact ? 0 : 4, mb: compact ? 2.5 : 0, minWidth: 0 }}>
