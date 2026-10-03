@@ -11,15 +11,23 @@ from app.models.notification import Notification
 def create_notification(
     session: Session,
     project_id: uuid.UUID,
-    recipient_role: str,
+    recipient_role: str | None,
     notification_type: NotificationType,
     message: str,
     pull_request_id: uuid.UUID | None = None,
+    recipient_user_id: str | None = None,
 ) -> Notification:
+    """Raise a notification for an audience (`recipient_role`, a key of AUDIENCE_ROLES) or for one
+    person (`recipient_user_id`, a Clerk user id). Exactly one of the two (#1111)."""
+    if (recipient_role is None) == (recipient_user_id is None):
+        raise ValueError("A notification is for an audience or for one person, not both or neither")
+    if recipient_role is not None and recipient_role not in AUDIENCE_ROLES:
+        raise ValueError(f"Unknown notification audience {recipient_role!r}")
     notification = Notification(
         id=uuid.uuid4(),
         project_id=project_id,
         recipient_role=recipient_role,
+        recipient_user_id=recipient_user_id,
         type=notification_type,
         message=message,
         pull_request_id=pull_request_id,
@@ -30,11 +38,11 @@ def create_notification(
     return notification
 
 
-# `recipient_role` is an audience tag, not an access control. The notification bell queries with no
-# recipient filter, so every signed-in user sees every notification; the tag says who it is *for*,
-# which is what makes a targeted bell a later filtering change rather than a data migration. Two
-# shapes of value live in this column: a named audience (the constants below) and, for the one
-# signal that is owed to a specific person, that person's stable Clerk user id.
+# Who a notification is for (#1111). `recipient_role` holds one of the audiences below, and the bell
+# shows it to the people holding one of that audience's roles, in the notification's company. A
+# signal owed to one person carries that person's Clerk user id in `recipient_user_id` instead. A
+# TENANT OWNER and a UC NEXUS ADMIN hold every module role inside their company, so they see every
+# audience; nobody but the person sees a person-targeted one.
 
 # Recipient role for the purchasing officer who backfills short inventory (#224).
 PO_RECIPIENT_ROLE = "PO"
@@ -56,6 +64,38 @@ WAREHOUSE_RECIPIENT_ROLE = "WAREHOUSE"
 # whole warehouse, for the same reason as the shop-assembly one above: approving is a decision only
 # managers can make, and the person who submitted it already knows it is there.
 WAREHOUSE_MANAGER_RECIPIENT_ROLE = "WAREHOUSE_MANAGER"
+
+# Recipient role for a shop-assembly pull that was fulfilled or cancelled (#1111). The pull records
+# its requester by name only, so the audience is the module the requester works in.
+SHOP_ASSEMBLY_RECIPIENT_ROLE = "SHOP_ASSEMBLY"
+
+# Which roles see each audience. The names match app/auth.py and the User Management page.
+AUDIENCE_ROLES: dict[str, frozenset[str]] = {
+    PO_RECIPIENT_ROLE: frozenset({"PO User", "PO Manager"}),
+    SHIPPING_RECIPIENT_ROLE: frozenset({"Shipping Out", "Shipping Manager"}),
+    SHOP_ASSEMBLY_RECIPIENT_ROLE: frozenset({"Shop Assembly User", "Shop Assembly Manager"}),
+    SHOP_ASSEMBLY_MANAGER_RECIPIENT_ROLE: frozenset({"Shop Assembly Manager"}),
+    WAREHOUSE_RECIPIENT_ROLE: frozenset({"Warehouse Staff", "Warehouse Manager"}),
+    WAREHOUSE_MANAGER_RECIPIENT_ROLE: frozenset({"Warehouse Manager"}),
+}
+
+# Roles that see every audience: they hold every module role inside their company.
+ALL_AUDIENCE_ROLES = frozenset({"UC Nexus Admin", "Tenant Owner"})
+
+
+def pull_audience(source) -> str:
+    """Who hears that a pull was fulfilled or cancelled: the module that asked for it. The pull keeps
+    its requester's name only, never a user id, so the person cannot be addressed directly."""
+    value = getattr(source, "value", source)
+    return SHIPPING_RECIPIENT_ROLE if value == "SHIPPING_OUT" else SHOP_ASSEMBLY_RECIPIENT_ROLE
+
+
+def audiences_for(roles) -> list[str] | None:
+    """The audiences a caller holding these roles sees, or None for every audience."""
+    held = set(roles or ())
+    if held & ALL_AUDIENCE_ROLES:
+        return None
+    return sorted(audience for audience, members in AUDIENCE_ROLES.items() if held & members)
 
 
 def has_unread_notification_for_pull(

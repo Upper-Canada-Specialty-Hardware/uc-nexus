@@ -347,7 +347,7 @@ def confirm_shipment(
     notification_service.create_notification(
         session,
         project_id=project_id,
-        recipient_role="Warehouse Staff",
+        recipient_role=notification_service.WAREHOUSE_RECIPIENT_ROLE,
         notification_type=NotificationType.SHIPMENT_COMPLETED,
         message=f"Shipment {packing_slip_number} confirmed. {item_count} items shipped.",
     )
@@ -943,7 +943,8 @@ def reject_shipping_out_request(
     notification_service.create_notification(
         session,
         project_id=req.project_id,
-        recipient_role=req.created_by_user_id or notification_service.SHIPPING_RECIPIENT_ROLE,
+        recipient_role=None if req.created_by_user_id else notification_service.SHIPPING_RECIPIENT_ROLE,
+        recipient_user_id=req.created_by_user_id or None,
         notification_type=NotificationType.SHIPPING_REQUEST_REJECTED,
         message=f"For {req.created_by}: {rejected_by} rejected shipping request {req.request_number} - {reason}",
     )

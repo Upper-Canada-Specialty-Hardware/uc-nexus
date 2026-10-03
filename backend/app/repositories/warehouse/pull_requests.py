@@ -1226,7 +1226,7 @@ def complete_pull_request(session: Session, pr_id: uuid.UUID, completed_by: str 
     notification_service.create_notification(
         session,
         project_id=pr.project_id,
-        recipient_role=pr.requested_by,
+        recipient_role=notification_service.pull_audience(pr.source),
         notification_type=NotificationType.PULL_REQUEST_COMPLETED,
         message=f"Pull Request {pr.request_number} has been fulfilled.",
         pull_request_id=pr.id,
@@ -1655,7 +1655,7 @@ def cancel_pull_request(
     notification_service.create_notification(
         session,
         project_id=pr.project_id,
-        recipient_role=pr.requested_by,
+        recipient_role=notification_service.pull_audience(pr.source),
         notification_type=NotificationType.PULL_REQUEST_CANCELLED,
         message=(
             f"Pull Request {pr.request_number} was cancelled by {cancelled_by}"
