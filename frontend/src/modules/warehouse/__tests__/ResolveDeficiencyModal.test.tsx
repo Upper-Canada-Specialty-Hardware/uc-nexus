@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, within, configure, waitFor } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import { RESOLVE_DEFICIENCY } from '../../../graphql/warehouse';
 import ResolveDeficiencyModal, { type DeficientRow } from '../stock/ResolveDeficiencyModal';

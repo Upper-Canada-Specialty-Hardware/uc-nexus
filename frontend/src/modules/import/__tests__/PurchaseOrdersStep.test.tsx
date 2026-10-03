@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { render, screen, fireEvent, within } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import PurchaseOrdersStep from '../PurchaseOrdersStep';
 import * as draftOps from '../draftOps';
 import type { DraftGroup } from '../types';

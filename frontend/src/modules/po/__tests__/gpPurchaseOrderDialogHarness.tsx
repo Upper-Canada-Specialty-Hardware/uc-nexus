@@ -4,7 +4,8 @@
 // here. This module is not a test file (it does not match the test include pattern), and it cannot
 // carry the vi.mock calls: those are hoisted per test file, so each file declares its own.
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { GraphQLError } from 'graphql';
 import { ToastProvider } from '../../../components/Toast';
 import GpPurchaseOrderDialog from '../GpPurchaseOrderDialog';
@@ -34,6 +35,9 @@ export const stockDraft: PurchaseOrder = {
   id: 'po-1',
   poNumber: null,
   requestNumber: 'REQ-001',
+  origin: 'NEXUS',
+  gpSyncedAt: null,
+  nexusRegistered: false,
   projectId: null,
   status: 'DRAFT',
   // #831: the company the relay serves - a draft registers into its own company and no other.
@@ -67,6 +71,9 @@ export const stockDraft: PurchaseOrder = {
       uofm: 'Each',
       // Nothing on a stock PO books to a job.
       jobCost: false,
+      gpLineOrd: null,
+      nexusRegistered: true,
+      customInventoryItemId: null,
       manufacturer: null,
       createdAt: '2026-07-01T12:00:00Z',
       updatedAt: '2026-07-01T12:00:00Z',

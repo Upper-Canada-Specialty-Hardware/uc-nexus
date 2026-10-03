@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { ApolloClient } from '@apollo/client';
 import { GraphQLError } from 'graphql';
 import { ToastProvider } from '../../../components/Toast';
@@ -52,6 +53,9 @@ function pullRequest(overrides: Partial<PullRequest> = {}): PullRequest {
     cancelledAt: null,
     cancelledBy: null,
     cancellationReason: null,
+    stagingStatus: null,
+    stagedOpeningCount: null,
+    totalOpeningCount: null,
     // #367: an In Progress pull is only cancellable-with-restock once its pick is confirmed, so the
     // default fixture is a picked pull.
     pickedAt: '2026-07-01T01:00:00Z',

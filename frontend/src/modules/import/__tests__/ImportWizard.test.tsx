@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, act, within } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import { WizardProvider } from '../../../contexts/WizardContext';
 import { ToastProvider } from '../../../components/Toast';
@@ -39,7 +40,6 @@ vi.setConfig({ testTimeout: 60_000 });
 // MUI X DataGrid observes container size; jsdom has no ResizeObserver.
 beforeAll(() => {
   if (!('ResizeObserver' in globalThis)) {
-    // @ts-expect-error minimal stub for jsdom
     globalThis.ResizeObserver = class {
       observe() {}
       unobserve() {}
@@ -70,6 +70,7 @@ function makeOpening(openingNumber: string): ParsedOpening {
     heading_no: null,
     single_pair: null,
     assignment_multiplier: null,
+    leaf_count: 1,
   };
 }
 
@@ -78,6 +79,7 @@ function makeHardwareItem(overrides: Partial<ParsedHardwareItem>): ParsedHardwar
     opening_number: 'O-1',
     product_code: 'HNG-100',
     material_id: 'M-1',
+    leaf: null,
     hardware_category: 'Hinges',
     item_quantity: 3,
     unit_cost: 10,

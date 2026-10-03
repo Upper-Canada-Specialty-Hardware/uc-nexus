@@ -14,7 +14,6 @@ import type { ParsedOpening } from '../../../types/hardwareSchedule';
 // MUI X DataGrid observes container size; jsdom has no ResizeObserver.
 beforeAll(() => {
   if (!('ResizeObserver' in globalThis)) {
-    // @ts-expect-error minimal stub for jsdom
     globalThis.ResizeObserver = class {
       observe() {}
       unobserve() {}
@@ -30,7 +29,6 @@ vi.setConfig({ testTimeout: 60_000 });
 
 function makeOpening(overrides: Partial<ParsedOpening> & { opening_number: string }): ParsedOpening {
   return {
-    opening_number: overrides.opening_number,
     building: null,
     floor: null,
     location: null,

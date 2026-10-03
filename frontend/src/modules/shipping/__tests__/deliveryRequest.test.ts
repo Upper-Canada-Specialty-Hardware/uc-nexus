@@ -81,6 +81,7 @@ describe('buildMaterialLines', () => {
           productCode: 'AD8406',
           hardwareCategory: 'Locksets',
           quantity: 1,
+          isManual: false,
         },
       ]),
     ).toEqual(['(1) Unit of AD8406 - Locksets (Opening 0019-EX) - A / 1 / Rm 101']);
@@ -96,6 +97,7 @@ describe('buildMaterialLines', () => {
           productCode: 'AD8406',
           hardwareCategory: 'Locksets',
           quantity: 1,
+          isManual: false,
         },
       ]),
     ).toEqual(['(1) Unit of AD8406 - Locksets (Opening 0019-EX)']);
@@ -109,6 +111,7 @@ describe('containers on the Delivery Request', () => {
     hardwareCategory: 'Hinges',
     productCode: 'BB1279',
     quantity: 3,
+    isManual: false,
     position: 0,
   };
   const locks = {
@@ -117,6 +120,7 @@ describe('containers on the Delivery Request', () => {
     hardwareCategory: 'Locksets',
     productCode: 'AD8406',
     quantity: 2,
+    isManual: false,
     position: 1,
   };
 
@@ -159,6 +163,7 @@ describe('containers on the Delivery Request', () => {
           productCode: 'AD8406',
           hardwareCategory: 'Locksets',
           quantity: 1,
+          isManual: false,
         },
       ],
       [],
@@ -171,8 +176,8 @@ describe('slipOpeningSummary', () => {
   it('lists every distinct opening once, sorted, from both slip items and containers', () => {
     const summary = slipOpeningSummary(
       [
-        { id: '1', openingNumber: '0021-EX', productCode: 'AD8406', hardwareCategory: 'Locksets', quantity: 1 },
-        { id: '2', openingNumber: '0019-EX', productCode: 'BB1279', hardwareCategory: 'Hinges', quantity: 2 },
+        { id: '1', openingNumber: '0021-EX', productCode: 'AD8406', hardwareCategory: 'Locksets', quantity: 1, isManual: false },
+        { id: '2', openingNumber: '0019-EX', productCode: 'BB1279', hardwareCategory: 'Hinges', quantity: 2, isManual: false },
       ],
       [
         {
@@ -181,8 +186,8 @@ describe('slipOpeningSummary', () => {
           name: 'Skid 1',
           items: [
             // A repeat of an opening already on the flat list, plus a new one only in a container.
-            { id: 'ci-1', openingNumber: '0019-EX', hardwareCategory: 'Hinges', productCode: 'BB1279', quantity: 1, position: 0 },
-            { id: 'ci-2', openingNumber: '0005-EX', hardwareCategory: 'Closers', productCode: 'CL100', quantity: 1, position: 1 },
+            { id: 'ci-1', openingNumber: '0019-EX', hardwareCategory: 'Hinges', productCode: 'BB1279', quantity: 1, isManual: false, position: 0 },
+            { id: 'ci-2', openingNumber: '0005-EX', hardwareCategory: 'Closers', productCode: 'CL100', quantity: 1, isManual: false, position: 1 },
           ],
         },
       ],
@@ -193,7 +198,7 @@ describe('slipOpeningSummary', () => {
   it('is blank when a shipment carries only loose stock with no opening', () => {
     expect(
       slipOpeningSummary([
-        { id: '1', openingNumber: null, productCode: 'AD8406', hardwareCategory: 'Locksets', quantity: 2 },
+        { id: '1', openingNumber: null, productCode: 'AD8406', hardwareCategory: 'Locksets', quantity: 2, isManual: false },
       ]),
     ).toBe('');
   });
@@ -271,7 +276,7 @@ describe('warehouseAddressLines', () => {
 
 describe('primaryWarehouse', () => {
   it('prefers the flagged one and falls back to the first', () => {
-    const a = { id: 'a' };
+    const a: { id: string; isPrimary?: boolean } = { id: 'a' };
     const b = { id: 'b', isPrimary: true };
     expect(primaryWarehouse([a, b])).toBe(b);
     expect(primaryWarehouse([a])).toBe(a);

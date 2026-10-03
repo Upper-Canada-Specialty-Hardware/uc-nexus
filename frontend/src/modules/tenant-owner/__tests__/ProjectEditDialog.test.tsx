@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor, within, configure } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { GraphQLError } from 'graphql';
 import { ToastProvider } from '../../../components/Toast';
 import ProjectEditDialog, { type ProjectFormValue } from '../ProjectEditDialog';

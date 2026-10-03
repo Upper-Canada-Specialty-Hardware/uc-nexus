@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import OpeningLeafStatusPanel from '../OpeningLeafStatusPanel';
 import { GET_OPENING_LEAF_STATUS } from '../../graphql/shared';
 

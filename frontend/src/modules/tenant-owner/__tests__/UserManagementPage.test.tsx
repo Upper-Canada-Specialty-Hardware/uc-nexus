@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { GraphQLError } from 'graphql';
 import { ToastProvider } from '../../../components/Toast';
 import { MemoryRouter } from 'react-router-dom';
@@ -325,9 +326,9 @@ test('re-checking PO User before saving keeps the identity and writes nothing', 
     result: { data: { updateUserRoles: { ...USER, gpBuyerId: 'donr' } } },
   };
   const buyerWriteMock: MockedResponse = {
-    request: { query: UPDATE_USER_GP_BUYER_ID },
+    // Apollo 4 takes the matcher as request.variables; a top-level variableMatcher is ignored.
+    request: { query: UPDATE_USER_GP_BUYER_ID, variables: () => true },
     maxUsageCount: INFINITE,
-    variableMatcher: () => true,
     result: () => {
       buyerWrites += 1;
       return { data: { updateUserGpBuyerId: { ...USER, gpBuyerId: 'donr' } } };

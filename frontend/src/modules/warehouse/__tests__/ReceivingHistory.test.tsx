@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import ReceivingHistory from '../ReceivingHistory';
 import { GET_PO_RECEIVING_DETAILS, GET_RECEIVING_HISTORY_POS } from '../../../graphql/warehouse';
 

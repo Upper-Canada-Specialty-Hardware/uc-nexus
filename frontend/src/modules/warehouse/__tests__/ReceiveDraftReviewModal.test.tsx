@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, within } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import ReceiveDraftReviewModal from '../ReceiveDraftReviewModal';
@@ -40,6 +41,7 @@ function draft(overrides: Partial<ReceiveDraft> = {}): ReceiveDraft {
     poId: 'po-1',
     poNumber: 'PO-123',
     projectId: 'proj-1',
+    poolKind: 'STOCK',
     warehouseId: 'wh-1',
     createdByUserId: 'u_author',
     createdBy: 'Wendy Warehouse',
@@ -49,6 +51,7 @@ function draft(overrides: Partial<ReceiveDraft> = {}): ReceiveDraft {
     approvalIdempotencyKey: null,
     receiveRecordId: null,
     outboxEntryId: null,
+    packingSlipDocumentId: null,
     notes: null,
     totalQuantity: 2,
     createdAt: '2026-08-02T10:00:00Z',

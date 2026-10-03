@@ -35,7 +35,6 @@ vi.mock('@apollo/client/react', () => ({
 // MUI X DataGrid observes container size; jsdom has no ResizeObserver.
 beforeAll(() => {
   if (!('ResizeObserver' in globalThis)) {
-    // @ts-expect-error minimal stub for jsdom
     globalThis.ResizeObserver = class {
       observe() {}
       unobserve() {}

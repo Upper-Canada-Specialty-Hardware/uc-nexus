@@ -769,8 +769,8 @@ describe('extractMlLeaf', () => {
 });
 
 describe('extractHardwareItems - door leaf', () => {
-  function mlWithLeafAttr(leafValue: string | null, assignments: object[]) {
-    const attribute: object[] = [{ '@_Code': 'Degrees', Value: '90' }];
+  function mlWithLeafAttr(leafValue: string | null, assignments: Record<string, string>[]) {
+    const attribute: Record<string, string>[] = [{ '@_Code': 'Degrees', Value: '90' }];
     if (leafValue !== null) attribute.push({ '@_Code': 'Leaf', Value: leafValue });
     return {
       Detail: {

@@ -1,5 +1,6 @@
 import { render, screen, fireEvent } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import ShopAssemblyRequestsPage from '../ShopAssemblyRequestsPage';

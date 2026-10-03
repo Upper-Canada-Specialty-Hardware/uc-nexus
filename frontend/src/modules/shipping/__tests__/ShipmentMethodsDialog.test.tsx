@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import ShipmentMethodsDialog from '../ShipmentMethodsDialog';
 import { CREATE_SHIPMENT_METHOD, GET_SHIPMENT_METHODS } from '../../../graphql/shipping';

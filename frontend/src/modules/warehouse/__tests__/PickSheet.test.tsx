@@ -49,6 +49,8 @@ function section(overrides: Partial<PickSheetSection> = {}): PickSheetSection {
         receivedAt: '2020-01-01T00:00:00Z',
         draftQuantity: 0,
         appliedQuantity: 0,
+        orderAs: null,
+        poNumber: null,
       },
       {
         inventoryLocationId: 'loc-new',
@@ -61,6 +63,8 @@ function section(overrides: Partial<PickSheetSection> = {}): PickSheetSection {
         receivedAt: '2024-01-01T00:00:00Z',
         draftQuantity: 0,
         appliedQuantity: 0,
+        orderAs: null,
+        poNumber: null,
       },
     ],
     ...overrides,

@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, within, configure, waitFor } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { DESTOCK_INVENTORY, GET_WAREHOUSE_LOCATIONS } from '../../../graphql/warehouse';
 import { ToastProvider } from '../../../components/Toast';
 import DestockInventoryModal, { type DestockSource } from '../stock/DestockInventoryModal';

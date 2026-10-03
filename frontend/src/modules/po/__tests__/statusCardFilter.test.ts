@@ -4,7 +4,7 @@ import { isStatusCardActive, toggleStatusCard } from '../statusCardFilter';
 // Issue #316: the PO stat cards became the status filter. The rules that matter are that a click is
 // always reversible, and that it never quietly discards the rest of someone's filter.
 
-const filter = (statuses: string[] = [], rest: Record<string, unknown> = {}) => ({
+const filter = <R extends Record<string, unknown>>(statuses: string[] = [], rest: R = {} as R) => ({
   statuses: new Set(statuses),
   ...rest,
 });
