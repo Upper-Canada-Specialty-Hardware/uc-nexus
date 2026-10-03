@@ -442,6 +442,49 @@ def test_deleting_is_open_to_the_author_and_a_manager_but_not_after_approval(db_
     assert excinfo.value.code == "INVALID_STATE_TRANSITION"
 
 
+def _claim_behind_the_session(session, draft) -> None:
+    """Flip a draft to APPROVING without touching the session's copy of it - what an approval claim
+    committed by another request looks like to a session that loaded the draft before it landed."""
+    from sqlalchemy import update
+
+    session.execute(
+        update(ReceiveDraft)
+        .where(ReceiveDraft.id == draft.id)
+        .values(status=ReceiveDraftStatus.APPROVING)
+        .execution_options(synchronize_session=False)
+    )
+    assert draft.status == ReceiveDraftStatus.PENDING_APPROVAL, "the session's copy must still be stale"
+
+
+def test_an_edit_reads_the_draft_under_its_lock_and_refuses_a_claimed_one(db_session):
+    """#1195: an edit checks the status it locked, not the copy the session loaded earlier, so a claim
+    that landed in between refuses the edit instead of rewriting lines GP was already handed."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li, 3)
+    _claim_behind_the_session(db_session, draft)
+
+    with pytest.raises(AppError) as excinfo:
+        warehouse_repository.update_receive_draft(db_session, draft.id, _lines(li, 5), AUTHOR, actor_is_manager=False)
+
+    assert excinfo.value.code == "INVALID_STATE_TRANSITION"
+
+
+def test_a_delete_reads_the_draft_under_its_lock_and_refuses_a_claimed_one(db_session):
+    """#1195: a delete landing behind an approval claim is refused - the draft is the record of what a
+    GP receipt is being posted for."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li, 3)
+    _claim_behind_the_session(db_session, draft)
+
+    with pytest.raises(AppError) as excinfo:
+        warehouse_repository.delete_receive_draft(db_session, draft.id, AUTHOR, actor_is_manager=False)
+
+    assert excinfo.value.code == "INVALID_STATE_TRANSITION"
+    assert db_session.get(ReceiveDraft, draft.id) is not None
+
+
 def test_deleting_a_draft_takes_its_unshared_packing_slip_off_the_po(db_session):
     """#1048: a deleted count's slip goes with it, and the stored file's key is handed back for removal
     once the delete commits."""
