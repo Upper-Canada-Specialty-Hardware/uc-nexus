@@ -15,7 +15,7 @@ import {
   GET_GP_TAX_SCHEDULES,
 } from '../../graphql/import';
 import { extractGpError, RELAY_OP_UNSUPPORTED, type GpError } from '../../graphql/gpError';
-import { useRelayStatus } from '../../relay/useRelayStatus';
+import { relayBlockedReason, relayFor, useRelayStatus } from '../../relay/useRelayStatus';
 import { gpJobNotOpenReason, isGpJobNotOpen, type GpJobState, type GpSetupIssue } from '../../types/project';
 import { microLabelSx, monoSx } from '../../theme';
 import {
@@ -236,8 +236,10 @@ function ProjectEditDialogContent({ project, onClose }: { project: ProjectFormVa
   // GP refuses every write to an inactive, closed or missing job, so its fields are shown and not
   // offered. Nexus-only fields stay editable either way.
   const jobNotOpen = isGpJobNotOpen(project);
-  const relay = useRelayStatus({ skip: jobNotOpen });
-  const relayConnected = relay.connected === true;
+  // #1336: the relay must serve the project's company, not just be connected.
+  const relay = relayFor(useRelayStatus({ skip: jobNotOpen }), company);
+  const relayConnected = relay.servesCompany;
+  const relayReason = relayBlockedReason(relay);
   // The GP pickers are live reads through the relay, and a GP write needs it too.
   const gpEditable = !jobNotOpen && relayConnected;
   const readsSkipped = !gpEditable;
@@ -323,7 +325,7 @@ function ProjectEditDialogContent({ project, onClose }: { project: ProjectFormVa
     project.state,
   ]);
 
-  const addAddress = useAddCustomerAddress(company, relayConnected);
+  const addAddress = useAddCustomerAddress(company, relayConnected, relayReason);
   const startAddAddress = addAddress.open;
 
   const setGpField = useCallback((key: GpKey, value: string) => setGp((f) => ({ ...f, [key]: value })), []);
@@ -555,10 +557,10 @@ function ProjectEditDialogContent({ project, onClose }: { project: ProjectFormVa
         {jobNotOpen && (
           <Alert severity="info">{`${gpJobNotOpenReason(project)} The GP fields are read-only.`}</Alert>
         )}
-        {!jobNotOpen && relay.connected === false && (
+        {!jobNotOpen && relayReason && (
           <Alert severity="warning">
-            The GP relay is not connected. The GP fields can only be changed against live GP data, so they stay
-            read-only until the relay is running.
+            {relayReason} The GP fields can only be changed against live GP data, so they stay read-only until
+            then.
           </Alert>
         )}
         {gpEditable && readError && (

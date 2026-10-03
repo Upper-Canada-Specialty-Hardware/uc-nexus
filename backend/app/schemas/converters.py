@@ -13,6 +13,7 @@ from app.models.enums import ShippingOutRequestStatus as ShippingOutRequestStatu
 from app.models.enums import ShopAssemblyRequestStatus as ShopAssemblyRequestStatusDB
 from app.models.project import Project as ProjectModel
 from app.repositories import project_repository, shipping_repository
+from app.repositories.shipping_requests import lines_version as shipping_lines_version
 
 from .enums import GpOutboxStatus, RelayEventKind, RequestStage
 from .types import (
@@ -25,7 +26,6 @@ from .types import (
     GpCustomer,
     GpCustomerAddress,
     GpEmployee,
-    GpJob,
     GpOutboxEntry,
     GpOutboxSummary,
     GpPoEntryOptions,
@@ -257,10 +257,6 @@ def relay_event_to_type(e) -> RelayEvent:
         companies=list(e.companies) if e.companies is not None else None,
         reason=e.reason,
     )
-
-
-def gp_job_to_type(j: dict) -> GpJob:
-    return GpJob(job_number=j["job_number"], job_name=j.get("job_name"))
 
 
 def gp_vendor_to_type(v: dict) -> GpVendor:
@@ -880,6 +876,7 @@ def shipping_out_request_to_type(
         items=[shipping_out_request_item_to_type(i) for i in req.items],
         stage=RequestStage(stage or _fallback_shipping_stage(req)),
         return_note=return_note,
+        lines_version=shipping_lines_version(req.items),
     )
 
 

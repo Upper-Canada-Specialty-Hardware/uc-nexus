@@ -92,7 +92,7 @@ def test_build_create_po_payload_maps_gp_charges_with_freight_from_shipping_cost
 def test_build_create_po_payload_header_defaults_match_what_gp_entry_expects():
     """Every header field the register form can leave blank has one answer, and these are they. The
     site is not among them: it is picked from the company's own GP sites and always sent."""
-    from datetime import date
+    from app.services import gp_window
 
     payload = gp_po.build_create_po_payload(
         vendor_gp_id="ING100",
@@ -107,7 +107,8 @@ def test_build_create_po_payload_header_defaults_match_what_gp_entry_expects():
     h = payload["header"]
     assert h["shipping_method"] == "LOCAL DELIVERY"
     assert h["vendor_address_code"] == "PRIMARY"
-    assert h["doc_date"] == date.today().isoformat()
+    # Today in Toronto, not the container's UTC date (#1273).
+    assert h["doc_date"] == gp_window.local_today().isoformat()
     # The form set no contact, so none is sent - the relay then leaves the GP parameter out entirely.
     assert h["contact"] is None
     # Confirm With still falls back, because that field is verified in GP.
@@ -400,6 +401,33 @@ def test_build_create_receipt_payload_dedupes_and_joins_rack_locations():
     assert line["po_line_ord"] == 16384
     assert line["quantity"] == 5
     assert line["rack_location"] == "A1-B1-C1, A2-B2-C2"
+
+
+def _receipt(**kwargs) -> dict:
+    return gp_po.build_create_receipt_payload(
+        po_number="PO0000001",
+        received_by="Jane Doe",
+        line_items=[{"gp_line_ord": 16384, "quantity": 5, "locations": []}],
+        **kwargs,
+    )
+
+
+def test_a_receipt_carries_the_toronto_date_it_was_approved_on(monkeypatch):
+    """#1332: approved at 9pm EDT on Oct 3 (01:00 UTC on the 4th). The stored payload says the 3rd,
+    so a drain on a later day still dates the GP receipt and its batch on the approval day."""
+    from datetime import datetime
+
+    from app.services import gp_window
+
+    real = gp_window.local_today
+    monkeypatch.setattr(gp_window, "local_today", lambda now=None: real(now or datetime(2026, 10, 4, 1, 0)))
+    assert _receipt()["receipt_date"] == "2026-10-03"
+
+
+def test_a_receipt_date_given_is_sent_as_given():
+    from datetime import date
+
+    assert _receipt(receipt_date=date(2026, 9, 30))["receipt_date"] == "2026-09-30"
 
 
 def test_a_line_with_no_locations_tells_gp_the_warehouse():

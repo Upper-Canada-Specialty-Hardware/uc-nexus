@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApolloClient, ApolloLink, InMemoryCache, Observable, gql } from '@apollo/client/core';
-import { authLinks } from '../apollo';
-import { publishAuthBridge, onAuthFailure, resetAuthBridge } from '../authBridge';
+import { AuthSuspendedError, authLinks } from '../apollo';
+import {
+  AUTH_PROBE_INTERVAL_MS,
+  isAuthLapsed,
+  onAuthFailure,
+  publishAuthBridge,
+  resetAuthBridge,
+} from '../authBridge';
 import { ACTING_COMPANY_HEADER, publishActingCompanyHeader } from '../company/actingCompany';
 
 /**
@@ -252,5 +258,106 @@ describe('missing token with a live session', () => {
     expect(result.data).toEqual({ ping: 'pong' });
     expect(attempts).toEqual(['Bearer fresh']);
     expect(authFailures).toBe(0);
+  });
+});
+
+describe('a lapsed session (#1329)', () => {
+  const SAVE = gql`
+    mutation Save {
+      save
+    }
+  `;
+
+  function runMutation(terminating: ApolloLink) {
+    return new Promise<ApolloLink.Result>((resolve, reject) => {
+      ApolloLink.execute(ApolloLink.from([...authLinks, terminating]), { query: SAVE }, { client }).subscribe({
+        next: resolve,
+        error: reject,
+      });
+    });
+  }
+
+  it('announces once, then holds background queries back without minting or sending', async () => {
+    const getToken = vi.fn(async () => null);
+    publishAuthBridge({ isLoaded: true, isSignedIn: true, getToken });
+    const { link, attempts } = backend(() => OK_RESULT);
+
+    await expect(run(link)).rejects.toThrow(/session token/);
+    expect(authFailures).toBe(1);
+    expect(isAuthLapsed()).toBe(true);
+    const mintsAfterLapse = getToken.mock.calls.length;
+
+    // The next polls inside the probe window: stopped before Clerk and before the network, and quiet.
+    await expect(run(link)).rejects.toBeInstanceOf(AuthSuspendedError);
+    await expect(run(link)).rejects.toBeInstanceOf(AuthSuspendedError);
+    expect(getToken).toHaveBeenCalledTimes(mintsAfterLapse);
+    expect(attempts).toEqual([]);
+    expect(authFailures).toBe(1);
+  });
+
+  it('lets one probe a minute through, and a successful probe ends the lapse', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      let tokenOk = false;
+      const getToken = vi.fn(async () => (tokenOk ? 'fresh' : null));
+      publishAuthBridge({ isLoaded: true, isSignedIn: true, getToken });
+      const { link, attempts } = backend(() => OK_RESULT);
+
+      await expect(run(link)).rejects.toThrow(/session token/);
+      expect(isAuthLapsed()).toBe(true);
+
+      tokenOk = true;
+      await expect(run(link)).rejects.toBeInstanceOf(AuthSuspendedError);
+
+      vi.setSystemTime(Date.now() + AUTH_PROBE_INTERVAL_MS);
+      const result = await run(link);
+
+      expect(result.data).toEqual({ ping: 'pong' });
+      expect(attempts).toEqual(['Bearer fresh']);
+      expect(isAuthLapsed()).toBe(false);
+      // Back to normal: the next query goes straight through.
+      await run(link);
+      expect(attempts).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('always attempts a mutation, and its failure raises the prompt again', async () => {
+    const getToken = vi.fn(async () => null);
+    publishAuthBridge({ isLoaded: true, isSignedIn: true, getToken });
+    const { link } = backend(() => OK_RESULT);
+
+    await expect(run(link)).rejects.toThrow(/session token/);
+    expect(authFailures).toBe(1);
+
+    // A background query failing again stays quiet; the user's own save does not.
+    await expect(runMutation(link)).rejects.toThrow(/session token/);
+    expect(authFailures).toBe(2);
+  });
+
+  it('a mutation that succeeds ends the lapse', async () => {
+    let tokenOk = false;
+    const getToken = vi.fn(async () => (tokenOk ? 'fresh' : null));
+    publishAuthBridge({ isLoaded: true, isSignedIn: true, getToken });
+    const { link } = backend(() => ({ data: { save: true } }));
+
+    await expect(run(link)).rejects.toThrow(/session token/);
+    tokenOk = true;
+    await runMutation(link);
+
+    expect(isAuthLapsed()).toBe(false);
+  });
+
+  it('a backend refusal is not a recovery', async () => {
+    const getToken = vi.fn(async () => 'stale');
+    publishAuthBridge({ isLoaded: true, isSignedIn: true, getToken });
+    const { link } = backend(() => UNAUTHENTICATED_RESULT);
+
+    await run(link).catch(() => undefined);
+    expect(isAuthLapsed()).toBe(true);
+    await runMutation(link).catch(() => undefined);
+
+    expect(isAuthLapsed()).toBe(true);
   });
 });

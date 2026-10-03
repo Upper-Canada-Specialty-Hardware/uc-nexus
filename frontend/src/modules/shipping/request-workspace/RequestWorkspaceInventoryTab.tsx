@@ -19,6 +19,7 @@ import {
 import { ChevronDown, Search } from 'lucide-react';
 import type { InventoryAvailabilityRow } from '../../import/types';
 import {
+  indexCart,
   lineQuantity,
   productKey,
   remainingForProduct,
@@ -94,6 +95,8 @@ export default function RequestWorkspaceInventoryTab({
   scheduledByProduct,
 }: Props) {
   const [search, setSearch] = useState('');
+  // #1290: the cart indexed once per render, for the per-row lookups below.
+  const cartIndex = useMemo(() => indexCart(cart), [cart]);
   const [sort, setSort] = useState<SortKey>('product');
   // Open on mount only when the cart already holds loose lines; a fresh request finds the lane
   // collapsed, because the openings-first catalog is where composition should start.
@@ -254,9 +257,9 @@ export default function RequestWorkspaceInventoryTab({
                           hardwareCategory: row.hardwareCategory,
                           productCode: row.productCode,
                         };
-                        const current = lineQuantity(cart, loose);
+                        const current = lineQuantity(cartIndex, loose);
                         const remaining = remainingForProduct(
-                          cart,
+                          cartIndex,
                           productKey(row),
                           headroom,
                           `|${row.hardwareCategory}|${row.productCode}`,

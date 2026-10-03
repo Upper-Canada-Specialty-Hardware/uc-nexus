@@ -32,7 +32,7 @@ import { useToast } from '../../components/Toast';
 import GpErrorAlert from '../../components/GpErrorAlert';
 import { extractGpError, isRelayOpUnsupported, type GpError } from '../../graphql/gpError';
 import RelayStatusChip from '../../relay/RelayStatusChip';
-import { useRelayStatus } from '../../relay/useRelayStatus';
+import { relayBlockedReason, relayFor, useRelayStatus } from '../../relay/useRelayStatus';
 import { useActingCompany } from '../../company/ActingCompanyContext';
 import GpCompanyTag from '../../components/GpCompanyTag';
 import type { Project } from '../../types/project';
@@ -140,11 +140,13 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
 
   // #845: the job is created in the company the user is working in. skip: !open so a hidden dialog
   // doesn't poll.
-  const relay = useRelayStatus({ skip: !open });
   const company = useActingCompany().company ?? '';
-  const relayConnected = relay.connected === true;
+  // #1336: GP work needs the relay to serve this company, not just to be connected.
+  const relay = relayFor(useRelayStatus({ skip: !open }), company || null);
+  const relayConnected = relay.servesCompany;
+  const relayReason = relayBlockedReason(relay);
   // #444: the "+ Add new address" round trip, shared with the project edit dialog.
-  const addAddress = useAddCustomerAddress(company, relayConnected);
+  const addAddress = useAddCustomerAddress(company, relayConnected, relayReason);
   const { open: startAddAddress, close: closeAddAddress } = addAddress;
 
   const readsSkipped = !open || !relayConnected || !company;
@@ -343,7 +345,12 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
   ]);
 
   const [createGpJob, { loading }] = useMutation<{
-    createGpJob: { created: boolean; costCodesProvisioned: number; project: Pick<Project, 'id'> };
+    createGpJob: {
+      created: boolean;
+      costCodesProvisioned: number;
+      costCodesInGp: number | null;
+      project: Pick<Project, 'id'>;
+    };
   }>(CREATE_GP_JOB, { refetchQueries: [{ query: GET_PROJECTS }] });
 
   // #448: the selection is derived from a master that is not there yet while the read is in flight, so
@@ -495,14 +502,21 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
       const asked = selectedCostCodeEntries.length;
       const job = jobNumber.trim();
       if (!created) {
-        // The job is somebody else's setup, left exactly as GP has it - the picked codes were not
-        // added to it, so the selection the user made here has gone nowhere.
-        showToast(
-          asked === 0
-            ? `Job ${job} already existed in GP and is now a project.`
-            : `Job ${job} already existed in GP and is now a project. The cost codes selected here were not applied to it.`,
-          asked === 0 ? 'success' : 'warning',
-        );
+        // #1306: GP already held the job - either somebody else's setup, or ours from an earlier
+        // attempt whose reply was lost. This call added nothing, so it says what GP holds rather
+        // than claiming the selection never landed (on a lost reply it did).
+        const inGp = response.data?.createGpJob?.costCodesInGp;
+        const base = `GP already held job ${job}; it is now a project.`;
+        if (asked === 0) {
+          showToast(base, 'success');
+        } else if (typeof inGp === 'number') {
+          showToast(
+            `${base} GP holds ${inGp} active cost code${inGp === 1 ? '' : 's'} on it - check they match the ones selected here.`,
+            inGp === 0 ? 'warning' : 'info',
+          );
+        } else {
+          showToast(`${base} Check its cost codes in GP.`, 'warning');
+        }
       } else if (asked > 0 && provisioned === 0) {
         showToast(
           `Job ${job} was created in GP, but its cost codes were not provisioned - the relay on that workstation is ` +
@@ -572,7 +586,12 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
             {/* #637: which company the job is created in. #845: always the company the user is
                 working in - a UC NEXUS ADMIN changes it with the app bar switcher, not a pick here. */}
             <GpCompanyTag code={company} gpCompanies={relay.gpCompanies} caption="GP company" />
-            <RelayStatusChip connected={relayConnected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
+            <RelayStatusChip
+              connected={relay.connected}
+              unreachable={relay.unreachable}
+              companies={relay.companies}
+              gpCompanies={relay.gpCompanies}
+            />
             <IconButton
               size="small"
               aria-label="Refresh GP data"
@@ -584,10 +603,10 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
             </IconButton>
           </Stack>
 
-          {!relayConnected && (
+          {relayReason && (
             <Alert severity="warning">
-              The GP relay is not connected. A job can only be created against live GP data, so this form stays
-              disabled until the relay is running.
+              {relayReason} A job can only be created against live GP data, so this form stays disabled until
+              then.
             </Alert>
           )}
 

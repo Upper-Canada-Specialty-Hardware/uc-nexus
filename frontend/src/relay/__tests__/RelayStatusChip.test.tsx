@@ -98,6 +98,6 @@ it('says nothing about a company while the relay is down', () => {
   identity.company = 'TUBC';
   renderChip(false);
 
-  expect(screen.getByText('GP relay not detected')).toBeInTheDocument();
+  expect(screen.getByText('GP relay not connected')).toBeInTheDocument();
   expect(screen.queryByText('TUBC')).toBeNull();
 });

@@ -203,12 +203,6 @@ class RelayEvent:
 
 
 @strawberry.type
-class GpJob:
-    job_number: str
-    job_name: str | None
-
-
-@strawberry.type
 class GpVendor:
     vendor_id: str
     vendor_name: str
@@ -371,6 +365,10 @@ class CreateGpJobResult:
     project: "Project"
     created: bool
     cost_codes_provisioned: int
+    # #1306: on the adopt path (created false), how many active cost codes GP holds on the job, read
+    # from GP; None when it could not be read, and on a real create. That path is also where a retry
+    # after a lost reply lands, so a flat 0 there would wrongly say the selected codes never landed.
+    cost_codes_in_gp: int | None = None
 
 
 @strawberry.type
@@ -1160,6 +1158,15 @@ class ShippingOutRequestItem:
 
 
 @strawberry.type
+class ShippingOutRequestReservedProduct:
+    """What a request actually holds on stock for one product (#1262)."""
+
+    hardware_category: str
+    product_code: str
+    quantity: int
+
+
+@strawberry.type
 class ShippingOutRequest:
     id: strawberry.ID
     request_number: str
@@ -1181,6 +1188,16 @@ class ShippingOutRequest:
     stage: RequestStage
     # See ShopAssemblyRequest.return_note (#343).
     return_note: str | None
+    # #1260: a fingerprint of the lines. The edit page sends back the one it loaded, and a save over
+    # lines someone else changed in between is refused instead of silently undoing their change.
+    lines_version: str
+    # Resolved only by the single-request read that seeds the edit page; null on list reads.
+    # #1257: the request's own project, archived included, so the edit page can open a request whose
+    # job was archived while it was pending (the projects list leaves archived jobs out).
+    project: Project | None = None
+    # #1262: what the request actually holds on stock, which the edit page adds back as headroom.
+    # Usually the line totals; nothing at all for a request a cancelled pull could not re-reserve.
+    reserved_by_product: list[ShippingOutRequestReservedProduct] | None = None
 
 
 @strawberry.type
@@ -2329,6 +2346,9 @@ class SharepointInventoryItem:
     # Cost per unit off the source list. There is no PO line in Nexus for migrated stock, so this is
     # the only cost the units can carry; the migration writes it onto the inventory rows.
     unit_cost: float
+    # The source cell held something that is not a number even after "$", "," and spaces are dropped
+    # (#1370); `unit_cost` then reads 0 and the row migrates with no cost.
+    unit_cost_unreadable: bool
     # What describes a non-schedule product, since no hardware schedule does (#454).
     part_description: str
     finish: str
@@ -2420,6 +2440,9 @@ class MigrationResult:
     catalog_items_created: int = 0
     catalog_items_skipped: int = 0
     catalog_attributes_created: int = 0
+    # Entries whose source cost could not be read as a number (#1370): migrated with no cost, to be
+    # priced by hand.
+    unreadable_unit_costs: int = 0
 
 
 # --- INVENTORY VALUE (#662) ----------------------------------------------------------------------
