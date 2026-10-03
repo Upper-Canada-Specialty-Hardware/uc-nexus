@@ -19,6 +19,7 @@ many are in the building stays with `InventoryLocation` / `StockItem`, unchanged
 import uuid
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, NotFoundError, ValidationError
@@ -317,8 +318,16 @@ def create_item(
         description=description,
         is_active=True,
     )
-    session.add(item)
-    session.flush()
+    # #1342: the check above is unlocked, so two creates at once can both pass it. The unique index on
+    # (type_id, lower(product_code)) refuses the second; that refusal is the same conflict, not a 500.
+    try:
+        with session.begin_nested():
+            session.add(item)
+            session.flush()
+    except IntegrityError:
+        raise ConflictError(
+            f"An item with product code {product_code} already exists for this type", field="product_code"
+        ) from None
     _apply_values(session, item, values or [])
     session.flush()
     return item

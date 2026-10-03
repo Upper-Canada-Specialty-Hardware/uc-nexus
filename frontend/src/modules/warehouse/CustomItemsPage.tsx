@@ -55,7 +55,7 @@ import {
  */
 export default function CustomItemsPage() {
   const { showToast } = useToast();
-  const { types, loading: typesLoading, refetch: refetchTypes } = useInventoryItemTypes();
+  const { types, loading: typesLoading, error: typesError, refetch: refetchTypes } = useInventoryItemTypes();
   const [pickedTypeId, setPickedTypeId] = useState<string | null>(null);
 
   // Land on the first type rather than an empty right-hand pane - there is always at least one, the
@@ -71,6 +71,7 @@ export default function CustomItemsPage() {
   const {
     items,
     loading: itemsLoading,
+    error: itemsError,
     refetch: refetchItems,
   } = useCustomInventoryItems({ typeId: selectedType?.id, skip: !selectedType });
 
@@ -109,6 +110,14 @@ export default function CustomItemsPage() {
           }
         />
       </FadeIn>
+
+      {/* #1341: a failed read is said, not shown as an empty catalog someone might re-create. */}
+      {(typesError || itemsError) && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          Couldn't load the custom items catalog: {(typesError ?? itemsError)?.message}. Reload to try again
+          before adding anything - what is shown may be incomplete.
+        </Alert>
+      )}
 
       {typesLoading && types.length === 0 ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -158,7 +167,7 @@ export default function CustomItemsPage() {
                   updateType({ variables: { id: selectedType.id, isActive: !selectedType.isActive } })
                 }
               />
-            ) : (
+            ) : typesError ? null : (
               <Alert severity="info">No inventory item types yet. Add one to get started.</Alert>
             )}
           </Box>

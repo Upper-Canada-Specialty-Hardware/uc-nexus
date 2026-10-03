@@ -195,6 +195,46 @@ def test_names_codes_and_descriptions_longer_than_their_columns_are_field_errors
     assert item.description == "D" * 255
 
 
+def test_a_product_code_is_unique_within_its_type_ignoring_case(db_session):
+    """#1342: fr-101 beside FR-101 is the same product, refused by the pre-check."""
+    frames = _type(db_session)
+    catalog.create_item(db_session, type_id=frames.id, product_code="FR-101")
+    with pytest.raises(ConflictError):
+        catalog.create_item(db_session, type_id=frames.id, product_code="fr-101")
+
+
+def test_a_create_that_loses_the_race_is_a_conflict_not_a_server_error(db_session, monkeypatch):
+    """#1342: two creates at once both pass the unlocked pre-check; the case-insensitive unique index
+    refuses the second, and that is the same conflict."""
+    frames = _type(db_session)
+    catalog.create_item(db_session, type_id=frames.id, product_code="FR-202")
+
+    real_scalars = db_session.scalars
+    calls = {"n": 0}
+
+    class _Nothing:
+        def first(self):
+            return None
+
+    def blind_first_check(stmt, *args, **kwargs):
+        # The pre-check is the first read create_item makes; pretend the race hid the other row.
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _Nothing()
+        return real_scalars(stmt, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "scalars", blind_first_check)
+    monkeypatch.setattr(catalog, "_require_active_type", lambda session, type_id: frames)
+
+    with pytest.raises(ConflictError) as exc:
+        catalog.create_item(db_session, type_id=frames.id, product_code="fr-202")
+    assert exc.value.field == "product_code"
+
+    monkeypatch.undo()
+    # The session is still usable after the refused insert: it was a savepoint.
+    assert catalog.create_item(db_session, type_id=frames.id, product_code="FR-203").product_code == "FR-203"
+
+
 # --- attributes -------------------------------------------------------------------------------
 
 
