@@ -168,11 +168,16 @@ export const PURCHASE_ORDERS_PAGE = gql`
       offset: $offset
     ) {
       totalCount
+      # #1238: the scoped project's number and name, for the scope chip, archived included.
+      scopeProjectNumber
+      scopeProjectDescription
       rows {
         id
         poNumber
         requestNumber
         projectId
+        projectNumber
+        projectDescription
         poolKind
         status
         origin

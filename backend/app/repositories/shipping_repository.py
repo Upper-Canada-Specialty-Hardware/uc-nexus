@@ -354,14 +354,15 @@ def confirm_shipment(
             )
         )
 
-    # 5. Create notification
-    item_count = sum(i["quantity"] for i in items)
+    # 5. Create notification. #1244: the slip is SCHEDULED here - nothing has left until it is picked up -
+    # and a manual line is free text that was never Nexus hardware, so it is not counted as items.
+    item_count = sum(i["quantity"] for i in items if not i.get("is_manual", False))
     notification_service.create_notification(
         session,
         project_id=project_id,
         recipient_role=notification_service.WAREHOUSE_RECIPIENT_ROLE,
         notification_type=NotificationType.SHIPMENT_COMPLETED,
-        message=f"Shipment {packing_slip_number} confirmed. {item_count} items shipped.",
+        message=f"Shipment {packing_slip_number} scheduled for pickup. {item_count} items on it.",
     )
 
     return packing_slip
@@ -438,6 +439,32 @@ def mark_shipment_picked_up(
     return ps
 
 
+def cancel_shipment(session: Session, packing_slip_id: uuid.UUID) -> PackingSlip:
+    """SCHEDULED -> CANCELLED for a shipment with nothing left to return (#1176).
+
+    #973 cancels a scheduled shipment once its last returnable line comes back, and the return path
+    is still how inventory gets back: this restocks nothing. It covers the one shipment that path
+    can never reach - a slip whose lines are all manual (never in inventory, so not returnable) or
+    already returned. Anything still returnable has to come back through a return first, which
+    cancels the shipment on its own.
+    """
+    ps = _locked_packing_slip(session, packing_slip_id)
+    if ps.status != ShipmentStatus.SCHEDULED:
+        raise InvalidStateTransitionError(
+            f"Delivery Request {ps.packing_slip_number} must be Scheduled to cancel (current: {ps.status.value})"
+        )
+    session.refresh(ps, attribute_names=["items"])
+    returned = _returned_quantities(session, packing_slip_id)
+    if any(not psi.is_manual and returned.get(psi.id, 0) < psi.quantity for psi in ps.items):
+        raise ValidationError(
+            f"Delivery Request {ps.packing_slip_number} still has hardware to return. "
+            "Return it instead; the shipment is cancelled once nothing is left on it.",
+            field="id",
+        )
+    ps.status = ShipmentStatus.CANCELLED
+    return ps
+
+
 def mark_shipment_delivered(
     session: Session,
     packing_slip_id: uuid.UUID,
@@ -472,7 +499,13 @@ PACKING_SLIP_PAGE_DEFAULT = 25
 PACKING_SLIP_PAGE_MAX = 200
 
 
-def _packing_slip_filter(stmt, project_id: uuid.UUID | None, company: str | None, search: str | None):
+def _packing_slip_filter(
+    stmt,
+    project_id: uuid.UUID | None,
+    company: str | None,
+    search: str | None,
+    status: ShipmentStatus | None = None,
+):
     if project_id is not None:
         stmt = stmt.where(PackingSlip.project_id == project_id)
     if company is not None:
@@ -483,16 +516,20 @@ def _packing_slip_filter(stmt, project_id: uuid.UUID | None, company: str | None
     if needle:
         escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         stmt = stmt.where(PackingSlip.packing_slip_number.ilike(f"%{escaped}%", escape="\\"))
+    # #1361: the Shipping landing's gauges link to the slips they count.
+    if status is not None:
+        stmt = stmt.where(PackingSlip.status == status)
     return stmt
 
 
 def _packing_slip_loads():
     """What `packing_slip_to_type` walks, loaded up front (CLAUDE.md perf rules): items with what has
-    come back off them, and containers with their items. Lazy here is extra queries per slip on a
-    list, and a DetachedInstanceError on a mutation reload."""
+    come back off them, containers with their items, and the project for its number and name. Lazy
+    here is extra queries per slip on a list, and a DetachedInstanceError on a mutation reload."""
     return (
         selectinload(PackingSlip.items).selectinload(PackingSlipItem.return_items),
         selectinload(PackingSlip.containers).selectinload(ShipmentContainer.items),
+        selectinload(PackingSlip.project),
     )
 
 
@@ -502,6 +539,7 @@ def list_packing_slips(
     *,
     company: str | None = None,
     search: str | None = None,
+    status: ShipmentStatus | None = None,
     limit: int | None = None,
     offset: int = 0,
 ) -> list[PackingSlip]:
@@ -517,7 +555,7 @@ def list_packing_slips(
     if offset < 0:
         raise ValidationError("offset must not be negative", field="offset")
     stmt = (
-        _packing_slip_filter(select(PackingSlip), project_id, company, search)
+        _packing_slip_filter(select(PackingSlip), project_id, company, search, status)
         .options(*_packing_slip_loads())
         .order_by(PackingSlip.shipped_at.desc(), PackingSlip.id)
         .offset(offset)
@@ -532,9 +570,10 @@ def count_packing_slips(
     *,
     company: str | None = None,
     search: str | None = None,
+    status: ShipmentStatus | None = None,
 ) -> int:
     """How many slips the same filter matches, so the list can say how many more there are."""
-    stmt = _packing_slip_filter(select(func.count(PackingSlip.id)), project_id, company, search)
+    stmt = _packing_slip_filter(select(func.count(PackingSlip.id)), project_id, company, search, status)
     return int(session.scalar(stmt) or 0)
 
 

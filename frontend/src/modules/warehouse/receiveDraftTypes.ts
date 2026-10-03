@@ -33,6 +33,9 @@ export interface ReceiveDraft {
   poId: string;
   poNumber: string | null;
   projectId: string | null;
+  /** Off the project itself (#1196), archived included; null on a PO with no project. */
+  projectNumber: string | null;
+  projectDescription: string | null;
   /** #958: Stock or Overhead - what a draft against a PO with no project is labelled. */
   poolKind: PoolKind;
   warehouseId: string | null;
