@@ -175,6 +175,9 @@ it('will not save while a product is blocked (#1050)', async () => {
   const group = await screen.findByRole('group', { name: 'Classification of HG-1' });
   fireEvent.click(within(group).getByRole('button', { name: 'UCH Site' }));
 
-  expect(await screen.findByRole('button', { name: 'Save' })).toBeDisabled();
-  expect(screen.getByLabelText('What this change does')).toHaveTextContent(/Blocks the change.*still being pulled/);
+  // Wait on the preview, as the confirm test does: the Save button appears only after the impact
+  // query resolves, and findByRole's accessible-name scan outlasted its 1s default under CI load (#1151).
+  const preview = await screen.findByLabelText('What this change does');
+  expect(preview).toHaveTextContent(/Blocks the change.*still being pulled/);
+  expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
 });

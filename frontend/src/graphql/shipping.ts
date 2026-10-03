@@ -264,26 +264,6 @@ export const GET_RETURNABLE_LINES = gql`
   }
 `;
 
-export const CONFIRM_SHIPMENT = gql`
-  mutation ConfirmShipment($input: ConfirmShipmentInput!) {
-    confirmShipment(input: $input) {
-      ${PACKING_SLIP_FIELDS}
-      items {
-        id
-        packingSlipId
-        openingNumber
-        building
-        floor
-        location
-        productCode
-        hardwareCategory
-        quantity
-        isManual
-      }
-    }
-  }
-`;
-
 // The container flow's confirm (#451): the same slip, composed from whole containers instead of a
 // hand-built item list.
 export const CONFIRM_SHIPMENT_FROM_CONTAINERS = gql`
