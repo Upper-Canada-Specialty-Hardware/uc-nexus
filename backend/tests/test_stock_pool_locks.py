@@ -270,3 +270,51 @@ def test_merge_matches_an_empty_row_and_bay_as_null(db_session):
     assert counts["inventory_locations"] >= 1 and counts["stock_items"] >= 1
     assert (il.aisle, il.row, il.bay) == ("B", "2", "2")
     assert (si.aisle, si.row, si.bay) == ("B", "2", "2")
+
+
+def test_move_folds_into_the_same_key_row_on_the_target_shelf(db_session):
+    """#1377: a move onto a shelf already holding the row's key sums into that row; the unreferenced
+    source is deleted."""
+    define_location(db_session, aisle="C", row="3", bay="3")
+    source = make_stock_item(db_session, quantity=4, deficient=1, aisle="A", row="1", bay="1")
+    target = make_stock_item(db_session, quantity=6, aisle="C", row="3", bay="3")
+    source_id = source.id
+
+    result = stock_repository.move_stock_location(
+        db_session, stock_item_id=source_id, new_aisle="C", new_row="3", new_bay="3", performed_by="warehouse"
+    )
+
+    assert result.id == target.id
+    assert (target.quantity, target.deficient_quantity) == (10, 1)
+    assert db_session.get(StockItem, source_id) is None
+
+
+def test_put_away_folds_and_keeps_a_referenced_source_empty(db_session):
+    """A source that is still the origin of an allocated project row is emptied, not deleted."""
+    define_location(db_session, aisle="C", row="3", bay="3")
+    project = make_project(db_session)
+    source = make_stock_item(db_session, quantity=4)
+    make_il(db_session, project, quantity=1, stock_item_id=source.id)
+    target = make_stock_item(db_session, quantity=6, aisle="C", row="3", bay="3")
+
+    result = stock_repository.assign_stock_item_location(
+        db_session, stock_item_id=source.id, aisle="C", row="3", bay="3", performed_by="warehouse"
+    )
+
+    assert result.id == target.id
+    assert target.quantity == 10
+    assert db_session.get(StockItem, source.id) is not None
+    assert (source.quantity, source.deficient_quantity) == (0, 0)
+
+
+def test_move_without_a_same_key_row_just_moves(db_session):
+    define_location(db_session, aisle="C", row="3", bay="3")
+    source = make_stock_item(db_session, quantity=4, aisle="A", row="1", bay="1")
+    make_stock_item(db_session, quantity=6, code="HG-OTHER", aisle="C", row="3", bay="3")
+
+    result = stock_repository.move_stock_location(
+        db_session, stock_item_id=source.id, new_aisle="C", new_row="3", new_bay="3", performed_by="warehouse"
+    )
+
+    assert result.id == source.id
+    assert (source.aisle, source.row, source.bay, source.quantity) == ("C", "3", "3", 4)

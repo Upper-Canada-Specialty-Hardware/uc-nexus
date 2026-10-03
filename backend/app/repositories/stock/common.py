@@ -143,6 +143,59 @@ def _find_stock_row(
     return session.scalars(stmt).first()
 
 
+def fold_into_same_key_row(
+    session: Session, si: StockItem, *, aisle: str | None, row: str | None, bay: str | None
+) -> StockItem | None:
+    """Fold `si` into the pool row already on (aisle, row, bay) with its key, and return that row.
+
+    A pool row keys on (warehouse, category, code, shelf, kind, price), so moving a row onto a shelf
+    that already holds its key must not leave two rows with one key (#1164, #1377): the same product
+    would show twice and later writes would land in whichever the finder returned. The target comes
+    back locked from `_find_stock_row`. The emptied source is deleted when nothing points at it; a row
+    still referenced (the origin of allocated project rows, a deficiency review, a shipment return)
+    stays, empty, where it was, and an empty pool row is hidden from the browse view.
+
+    Returns None, changing nothing, when the shelf holds no other row with this key.
+    """
+    target = _find_stock_row(
+        session,
+        warehouse_id=si.warehouse_id,
+        hardware_category=si.hardware_category,
+        product_code=si.product_code,
+        aisle=aisle,
+        row=row,
+        bay=bay,
+        kind=si.kind,
+        unit_cost=si.unit_cost,
+    )
+    if target is None or target.id == si.id:
+        return None
+    target.quantity += si.quantity
+    target.deficient_quantity += si.deficient_quantity
+    si.quantity = 0
+    si.deficient_quantity = 0
+    session.flush()
+    if not _stock_row_is_referenced(session, si.id):
+        session.delete(si)
+        session.flush()
+    return target
+
+
+def _stock_row_is_referenced(session: Session, stock_item_id: uuid.UUID) -> bool:
+    from app.models.deficiency_review import DeficiencyReview
+    from app.models.shipping import ShipmentReturnItem
+
+    checks = (
+        (InventoryLocationModel, InventoryLocationModel.stock_item_id),
+        (DeficiencyReview, DeficiencyReview.stock_item_id),
+        (DeficiencyReview, DeficiencyReview.resulting_stock_item_id),
+        (ShipmentReturnItem, ShipmentReturnItem.resulting_stock_item_id),
+    )
+    return any(
+        session.scalar(select(model.id).where(column == stock_item_id).limit(1)) is not None for model, column in checks
+    )
+
+
 def _find_or_create_stock_row(
     session: Session,
     *,

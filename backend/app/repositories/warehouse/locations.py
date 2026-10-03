@@ -537,37 +537,16 @@ def merge_locations(
             )
         ).all()
     )
-    from app.repositories.stock.common import _find_stock_row
+    from app.repositories.stock.common import fold_into_same_key_row
 
     for si in si_rows:
-        # A pool row keys on (warehouse, category, code, shelf, kind, price), so a row already on the
-        # target shelf with the same key takes this one's units (#1156). Two rows with one key would
-        # show the same product twice and later writes would land in whichever the finder returned.
-        # The source row stays, emptied, at its old shelf: it may still be the origin of project rows
-        # allocated out of it, and an empty pool row is hidden from the browse view.
-        target = _find_stock_row(
-            session,
-            warehouse_id=si.warehouse_id,
-            hardware_category=si.hardware_category,
-            product_code=si.product_code,
-            aisle=to_aisle,
-            row=to_row,
-            bay=to_bay,
-            kind=si.kind,
-            unit_cost=si.unit_cost,
-        )
+        # A row already on the target shelf with this row's key takes its units (#1164), through the
+        # same fold a single move or put-away uses (#1377).
         detail = {"fromLocation": from_loc, "toLocation": to_loc, "reason": "location_merge"}
-        if target is not None and target.id != si.id:
-            target.quantity += si.quantity
-            target.deficient_quantity += si.deficient_quantity
-            detail = {
-                **detail,
-                "foldedIntoStockItemId": str(target.id),
-                "quantity": si.quantity,
-                "deficientQuantity": si.deficient_quantity,
-            }
-            si.quantity = 0
-            si.deficient_quantity = 0
+        moved = {"quantity": si.quantity, "deficientQuantity": si.deficient_quantity}
+        target = fold_into_same_key_row(session, si, aisle=to_aisle, row=to_row, bay=to_bay)
+        if target is not None:
+            detail = {**detail, "foldedIntoStockItemId": str(target.id), **moved}
         else:
             si.aisle, si.row, si.bay = to_aisle, to_row, to_bay
         session.flush()
