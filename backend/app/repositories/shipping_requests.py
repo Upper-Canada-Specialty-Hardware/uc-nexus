@@ -17,10 +17,9 @@ fungible stock and re-attaches the opening as a tag, the same as every other pul
 
 import uuid
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
-from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
+from app.errors import InvalidStateTransitionError, ValidationError
 from app.models.enums import ReservationSource, ShippingOutRequestStatus
 from app.models.shipping_out_request import ShippingOutRequest, ShippingOutRequestItem
 
@@ -121,17 +120,11 @@ def replace_shipping_out_request_items(
     a line from 4 to 3 would be gated as if it wanted 3 *more*. Anything the gate refuses raises, and
     the whole transaction rolls back with the original claim intact.
     """
-    req = (
-        session.scalars(
-            select(ShippingOutRequest)
-            .options(selectinload(ShippingOutRequest.items))
-            .where(ShippingOutRequest.id == request_id)
-        )
-        .unique()
-        .first()
-    )
-    if req is None:
-        raise NotFoundError(f"Shipping-out request {request_id} not found")
+    from app.repositories.shipping_repository import lock_shipping_out_request
+
+    # Locked (#1107): an edit racing an accept could otherwise rewrite lines the accept had just
+    # copied onto a warehouse pull.
+    req = lock_shipping_out_request(session, request_id)
     if req.status != ShippingOutRequestStatus.PENDING:
         raise InvalidStateTransitionError(
             f"Shipping-out request must be Pending to edit, got {req.status.value}. "

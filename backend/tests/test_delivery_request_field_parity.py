@@ -75,14 +75,18 @@ def test_the_tuple_names_every_header_column_and_nothing_else():
 
 
 def test_both_mutation_inputs_carry_the_whole_header():
-    """`confirmShipment` writes the header and `updateShipmentDetails` rewrites it. A field on one
+    """`confirmShipmentFromContainers` writes the header and `updateShipmentDetails` rewrites it. A field on one
     and not the other is a field that can be set and never corrected, or corrected and never set.
 
     Asserted against the built schema rather than the classes: the shared base is flattened into
     each input by Strawberry, and the caller only ever sees the flattened result."""
     header = {_camel(field) for field in DELIVERY_REQUEST_FIELDS}
 
-    assert _input_fields("ConfirmShipmentInput") == header | {"projectId", "packingSlipNumber", "items"}
+    assert _input_fields("ConfirmShipmentFromContainersInput") == header | {
+        "projectId",
+        "packingSlipNumber",
+        "containerIds",
+    }
     assert _input_fields("UpdateShipmentDetailsInput") == header | {"id"}
 
 

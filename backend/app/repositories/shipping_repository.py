@@ -273,6 +273,19 @@ def confirm_shipment(
     if not items:
         raise ValidationError("items must not be empty", field="items")
 
+    # #1107: no line ships fewer than one unit. A negative line paired with a matching positive one
+    # nets to nothing in the aggregate below and passes, then lands on the slip as a negative row that
+    # `staged_shipped_stmt` subtracts - growing the staged pool by hardware that does not exist.
+    for item in items:
+        if item.get("quantity") is None or item["quantity"] < 1:
+            raise ValidationError("Every line needs a quantity of at least 1.", field="items")
+
+    # #1107: serialise on the project's staged pool before reading it, so two confirms cannot both
+    # pass the check below against the same staged hardware.
+    from app.repositories import shipment_containers
+
+    shipment_containers.lock_staging_pool(session, project_id)
+
     # 1. Validate availability against the staged pool. Manual lines never entered inventory, so they
     # are not measured against what is staged - only the real lines are.
     ship_ready = get_ship_ready_items(session, project_id)
@@ -347,7 +360,7 @@ def confirm_shipment(
     notification_service.create_notification(
         session,
         project_id=project_id,
-        recipient_role="Warehouse Staff",
+        recipient_role=notification_service.WAREHOUSE_RECIPIENT_ROLE,
         notification_type=NotificationType.SHIPMENT_COMPLETED,
         message=f"Shipment {packing_slip_number} confirmed. {item_count} items shipped.",
     )
@@ -849,6 +862,33 @@ def get_return_notes(session: Session, requests: list[ShippingOutRequest]) -> di
     return {r.id: derived.get(r.id) for r in requests}
 
 
+def lock_shipping_out_request(session: Session, request_id: uuid.UUID) -> ShippingOutRequest:
+    """The request, row-locked and re-read, with its items (#1107).
+
+    Every decision on a request - accept, reject, edit, reopen - reads its status and then writes on
+    the strength of it. Unlocked, two managers accepting the same request both saw PENDING and minted
+    two warehouse pulls, and an accept racing a reject released the claim the new pull relied on. The
+    lock makes the second decision wait and then read what the first one wrote.
+
+    `populate_existing` because an earlier read in the same session would otherwise hand back the
+    status from before the lock, and the check after it would be made against a stale copy.
+    """
+    req = (
+        session.scalars(
+            select(ShippingOutRequest)
+            .options(selectinload(ShippingOutRequest.items))
+            .where(ShippingOutRequest.id == request_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        .unique()
+        .first()
+    )
+    if req is None:
+        raise NotFoundError(f"Shipping-out request {request_id} not found")
+    return req
+
+
 def accept_shipping_out_request(
     session: Session,
     request_id: uuid.UUID,
@@ -861,14 +901,7 @@ def accept_shipping_out_request(
     A pure human approval gate (#342), like its shop-assembly twin: the request reserved its
     hardware when it was created and still holds that claim, so there is nothing to re-check here
     and nothing to release. The claim is spent when the pick is confirmed."""
-    stmt = (
-        select(ShippingOutRequest)
-        .options(selectinload(ShippingOutRequest.items))
-        .where(ShippingOutRequest.id == request_id)
-    )
-    req = session.scalars(stmt).unique().first()
-    if req is None:
-        raise NotFoundError(f"Shipping-out request {request_id} not found")
+    req = lock_shipping_out_request(session, request_id)
     if req.status != ShippingOutRequestStatus.PENDING:
         raise InvalidStateTransitionError(f"Shipping-out request must be Pending to accept, got {req.status.value}")
 
@@ -924,14 +957,7 @@ def reject_shipping_out_request(
     if not reason:
         raise ValidationError("Say why the request is rejected - the requester is told.", field="reason")
 
-    stmt = (
-        select(ShippingOutRequest)
-        .options(selectinload(ShippingOutRequest.items))
-        .where(ShippingOutRequest.id == request_id)
-    )
-    req = session.scalars(stmt).unique().first()
-    if req is None:
-        raise NotFoundError(f"Shipping-out request {request_id} not found")
+    req = lock_shipping_out_request(session, request_id)
     if req.status != ShippingOutRequestStatus.PENDING:
         raise InvalidStateTransitionError(f"Shipping-out request must be Pending to reject, got {req.status.value}")
 
@@ -943,7 +969,8 @@ def reject_shipping_out_request(
     notification_service.create_notification(
         session,
         project_id=req.project_id,
-        recipient_role=req.created_by_user_id or notification_service.SHIPPING_RECIPIENT_ROLE,
+        recipient_role=None if req.created_by_user_id else notification_service.SHIPPING_RECIPIENT_ROLE,
+        recipient_user_id=req.created_by_user_id or None,
         notification_type=NotificationType.SHIPPING_REQUEST_REJECTED,
         message=f"For {req.created_by}: {rejected_by} rejected shipping request {req.request_number} - {reason}",
     )
@@ -961,9 +988,7 @@ def reopen_shipping_out_request(
     moved and the reopen is refused (see discard_pending_pull_request)."""
     from app.repositories import warehouse as warehouse_repository
 
-    req = session.scalars(select(ShippingOutRequest).where(ShippingOutRequest.id == request_id)).first()
-    if req is None:
-        raise NotFoundError(f"Shipping-out request {request_id} not found")
+    req = lock_shipping_out_request(session, request_id)
     if req.status != ShippingOutRequestStatus.APPROVED:
         raise InvalidStateTransitionError(f"Shipping-out request must be Approved to reopen, got {req.status.value}")
 

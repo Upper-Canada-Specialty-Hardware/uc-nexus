@@ -1276,7 +1276,8 @@ class ShipmentReturn:
 class Notification:
     id: strawberry.ID
     project_id: strawberry.ID
-    recipient_role: str
+    # The audience it is for, or null when it is for one person (#1111).
+    recipient_role: str | None
     type: NotificationType
     message: str
     is_read: bool
@@ -2228,6 +2229,15 @@ class NexusRegisterPoLinesResult:
 
     tied_units: int
     purchase_order: PurchaseOrder
+
+
+@strawberry.type
+class PoLineTiedQuantity:
+    """How many schedule units are tied to one PO line (#1128). The registration panel keeps a line
+    open while it still has outstanding units with nothing tied to them."""
+
+    po_line_item_id: strawberry.ID
+    tied_quantity: int
 
 
 @strawberry.type

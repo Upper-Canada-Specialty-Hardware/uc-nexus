@@ -12,6 +12,35 @@ from app.models.pull_request import PullRequest
 from app.repositories import shop_assembly_repository
 
 
+def schedule_for(sar_items):
+    """The finalize `hardware_items` a set of request lines needs to be raisable (#1133).
+
+    A request line is now held to its opening's schedule, so a test that raises one has to schedule
+    the hardware too. Each (opening, category, code) is scheduled at the most any line asks of it;
+    a line without an opening is skipped, since it is refused before the schedule is read.
+    """
+    scheduled: dict[tuple[str, str, str], int] = {}
+    for item in sar_items:
+        opening = item.get("opening_number")
+        if not opening:
+            continue
+        key = (opening, item["hardware_category"], item["product_code"])
+        quantity = item.get("quantity") or item.get("requested_quantity") or 1
+        scheduled[key] = max(scheduled.get(key, 0), quantity)
+    return [
+        {"opening_number": o, "hardware_category": c, "product_code": p, "item_quantity": q}
+        for (o, c, p), q in scheduled.items()
+    ]
+
+
+def with_schedule(payload: dict) -> dict:
+    """A finalize payload whose `hardware_items` schedule what its `shop_assembly_items` ask for."""
+    return {
+        **payload,
+        "hardware_items": [*(payload.get("hardware_items") or []), *schedule_for(payload["shop_assembly_items"])],
+    }
+
+
 def batch_lines(session, request_id, *, openings=None, quantities=None):
     """Batch lines for a request's pending openings, at their full owed quantity by default.
 

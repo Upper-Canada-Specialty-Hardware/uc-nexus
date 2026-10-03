@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { Box, Button, Chip, TextField, Typography } from '@mui/material';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
-import { NEXUS_REGISTER_PO_LINES } from '../../graphql/po';
+import { GET_PO_LINE_TIED_QUANTITIES, NEXUS_REGISTER_PO_LINES } from '../../graphql/po';
 import { GET_PROJECT_SCHEDULE_PRODUCTS } from '../../graphql/admin';
 import { useToast } from '../../components/Toast';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
@@ -71,7 +71,39 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
     return map;
   }, [products]);
 
-  const openLines = useMemo(() => po.lineItems.filter((li) => !li.nexusRegistered), [po.lineItems]);
+  // #1128: what is already tied to each line. A registered line keeps its row open while some of its
+  // outstanding units have nothing tied to them, so the rest can be tied later.
+  const { data: tiedData } = useQuery<{
+    poLineTiedQuantities: { poLineItemId: string; tiedQuantity: number }[];
+  }>(GET_PO_LINE_TIED_QUANTITIES, { variables: { poId: po.id }, skip: !isProjectPo });
+
+  const tiedByLine = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const t of tiedData?.poLineTiedQuantities ?? []) map.set(t.poLineItemId, t.tiedQuantity);
+    return map;
+  }, [tiedData]);
+
+  /** What a line still has coming with nothing tied to it. An unregistered line has no tie yet. */
+  const untiedOf = useCallback(
+    (li: POLine) => Math.max(outstandingOf(li) - (tiedByLine.get(li.id) ?? 0), 0),
+    [tiedByLine],
+  );
+
+  /** A registered line that can still take a tie: units untied, and its product still on the
+   *  schedule with some left unpurchased. Its identity is fixed; only the quantity is asked. */
+  const isToppable = useCallback(
+    (li: POLine) => {
+      if (!isProjectPo || !li.nexusRegistered || !tiedData) return false;
+      const own = productsByKey.get(productKeyOf(li));
+      return untiedOf(li) > 0 && Boolean(own && own.availableQuantity > 0);
+    },
+    [isProjectPo, tiedData, productsByKey, untiedOf],
+  );
+
+  const openLines = useMemo(
+    () => po.lineItems.filter((li) => !li.nexusRegistered || isToppable(li)),
+    [po.lineItems, isToppable],
+  );
 
   // Only what has actually been edited. Everything else falls through to `suggested` below.
   const [rows, setRows] = useState<Record<string, RowState>>({});
@@ -82,10 +114,15 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
   const suggested = useMemo(() => {
     const map: Record<string, RowState> = {};
     for (const li of openLines) {
-      const outstanding = outstandingOf(li);
+      const outstanding = untiedOf(li);
       // On an unregistered line both fields still hold GP's own: the item number in
-      // hardwareCategory, the item description in productCode.
-      const suggestion = isProjectPo ? suggestScheduleProduct(li.productCode, products) : null;
+      // hardwareCategory, the item description in productCode. A registered line already names its
+      // schedule product.
+      const suggestion = !isProjectPo
+        ? null
+        : li.nexusRegistered
+          ? (productsByKey.get(productKeyOf(li)) ?? null)
+          : suggestScheduleProduct(li.productCode, products);
       const cap = suggestion ? Math.min(outstanding, suggestion.availableQuantity) : outstanding;
       map[li.id] = {
         ...BLANK_ROW,
@@ -94,11 +131,13 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
       };
     }
     return map;
-  }, [openLines, isProjectPo, products]);
+  }, [openLines, isProjectPo, products, productsByKey, untiedOf]);
 
   const [registerLines, { loading }] = useMutation<{
     nexusRegisterPoLines: { tiedUnits: number; purchaseOrder: { id: string } };
-  }>(NEXUS_REGISTER_PO_LINES);
+  }>(NEXUS_REGISTER_PO_LINES, {
+    refetchQueries: isProjectPo ? [{ query: GET_PO_LINE_TIED_QUANTITIES, variables: { poId: po.id } }] : [],
+  });
 
   const rowFor = useCallback(
     (id: string): RowState => rows[id] ?? suggested[id] ?? BLANK_ROW,
@@ -118,9 +157,9 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
     (li: POLine, row: RowState) => {
       const picked = productsByKey.get(row.productKey);
       if (!picked) return 0;
-      return Math.min(outstandingOf(li), picked.availableQuantity);
+      return Math.min(untiedOf(li), picked.availableQuantity);
     },
-    [productsByKey],
+    [productsByKey, untiedOf],
   );
 
   /** The lines to send: the ones somebody has actually named a product for. */
@@ -132,9 +171,11 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
           if (isProjectPo) {
             const picked = productsByKey.get(row.productKey);
             if (!picked) return null;
-            const cap = Math.min(outstandingOf(li), picked.availableQuantity);
+            const cap = Math.min(untiedOf(li), picked.availableQuantity);
             const typed = parseInt(row.tieQuantity, 10);
             const tie = Number.isNaN(typed) ? 0 : Math.max(0, Math.min(typed, cap));
+            // A registered line is only here to tie more; re-sending it with nothing to tie is a no-op.
+            if (li.nexusRegistered && tie === 0) return null;
             return {
               poLineItemId: li.id,
               hardwareCategory: picked.hardwareCategory,
@@ -149,7 +190,7 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
           return { poLineItemId: li.id, hardwareCategory: category, productCode: code, tieQuantity: 0 };
         })
         .filter((line): line is NonNullable<typeof line> => line !== null),
-    [openLines, rowFor, isProjectPo, productsByKey],
+    [openLines, rowFor, isProjectPo, productsByKey, untiedOf],
   );
 
   const handleSave = async () => {
@@ -158,13 +199,19 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
         variables: { input: { poId: po.id, lines: pendingLines } },
       });
       const tied = res.data?.nexusRegisterPoLines.tiedUnits ?? 0;
+      const asked = pendingLines.reduce((sum, line) => sum + line.tieQuantity, 0);
       const count = pendingLines.length;
-      showToast(
-        tied > 0
-          ? `${count} ${count === 1 ? 'line' : 'lines'} registered, ${tied} ${tied === 1 ? 'unit' : 'units'} tied to the schedule`
-          : `${count} ${count === 1 ? 'line' : 'lines'} registered`,
-        'success',
-      );
+      const registered = `${count} ${count === 1 ? 'line' : 'lines'} registered`;
+      const units = (n: number) => `${n} ${n === 1 ? 'unit' : 'units'}`;
+      // #1128: say so when fewer units were tied than asked, rather than reading as a full success.
+      if (tied < asked) {
+        showToast(
+          `${registered}, ${units(tied)} of ${asked} tied to the schedule. ${units(asked - tied)} could not be tied; they are still open below.`,
+          'warning',
+        );
+      } else {
+        showToast(tied > 0 ? `${registered}, ${units(tied)} tied to the schedule` : registered, 'success');
+      }
       onRefetch();
     } catch (e) {
       const message =
@@ -253,6 +300,40 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
           const row = rowFor(li.id);
           const outstanding = outstandingOf(li);
           const cap = capFor(li, row);
+          const toppable = isToppable(li);
+          const tieBox = (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
+              <TextField
+                size="small"
+                type="number"
+                value={row.tieQuantity}
+                onChange={(e) => setRow(li.id, { tieQuantity: e.target.value })}
+                disabled={!row.productKey}
+                slotProps={{ htmlInput: { min: 0, max: cap, 'aria-label': 'Tie quantity' } }}
+                // Gives way before the note does when the column is scaled down (#909).
+                sx={{ width: 76, flexShrink: 1, minWidth: 48 }}
+              />
+              <Typography component="span" variant="caption" color="text.secondary" noWrap sx={{ minWidth: 0 }}>
+                max {cap}
+              </Typography>
+            </Box>
+          );
+          const identity = (
+            <Box
+              sx={{
+                minWidth: 0,
+                gridColumn: toppable ? undefined : 'span 2',
+                color: 'text.secondary',
+                fontSize: '0.875rem',
+                overflowWrap: 'anywhere',
+              }}
+            >
+              {li.hardwareCategory} /{' '}
+              <Box component="span" sx={monoSx}>
+                {li.productCode}
+              </Box>
+            </Box>
+          );
           return (
             <Box
               key={li.id}
@@ -277,20 +358,10 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
               <Box sx={{ ...tabularSx, minWidth: 0, fontSize: '0.875rem' }}>{outstanding}</Box>
 
               {li.nexusRegistered ? (
-                <Box
-                  sx={{
-                    minWidth: 0,
-                    gridColumn: 'span 2',
-                    color: 'text.secondary',
-                    fontSize: '0.875rem',
-                    overflowWrap: 'anywhere',
-                  }}
-                >
-                  {li.hardwareCategory} /{' '}
-                  <Box component="span" sx={monoSx}>
-                    {li.productCode}
-                  </Box>
-                </Box>
+                <>
+                  {identity}
+                  {toppable && tieBox}
+                </>
               ) : isProjectPo ? (
                 <>
                   <TextField
@@ -316,27 +387,7 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
                       </option>
                     ))}
                   </TextField>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
-                    <TextField
-                      size="small"
-                      type="number"
-                      value={row.tieQuantity}
-                      onChange={(e) => setRow(li.id, { tieQuantity: e.target.value })}
-                      disabled={!row.productKey}
-                      slotProps={{ htmlInput: { min: 0, max: cap, 'aria-label': 'Tie quantity' } }}
-                      // Gives way before the note does when the column is scaled down (#909).
-                      sx={{ width: 76, flexShrink: 1, minWidth: 48 }}
-                    />
-                    <Typography
-                      component="span"
-                      variant="caption"
-                      color="text.secondary"
-                      noWrap
-                      sx={{ minWidth: 0 }}
-                    >
-                      max {cap}
-                    </Typography>
-                  </Box>
+                  {tieBox}
                 </>
               ) : (
                 <>
