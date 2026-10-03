@@ -55,6 +55,26 @@ def _wh(session) -> uuid.UUID:
     return warehouse_admin_repository.get_primary_warehouse_id(session)
 
 
+def test_a_return_into_another_companys_warehouse_is_refused(db_session):
+    """#1376: the return warehouse is the slip's project's company's own building."""
+    project = _make_project(db_session)
+    slip = _make_slip(db_session, project.id)
+    item = _make_loose_item(db_session, slip.id, qty=5)
+    tag = uuid.uuid4().hex[:6]
+    elsewhere = warehouse_admin_repository.create_warehouse(
+        db_session, name=f"Other {tag}", code=f"O{tag}", company=f"T{tag.upper()}"
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        _return(
+            db_session,
+            slip.id,
+            elsewhere.id,
+            [{"packing_slip_item_id": item.id, "quantity": 1, "disposition": ReturnDisposition.RETURN_TO_PROJECT}],
+        )
+    assert exc.value.field == "warehouse_id"
+
+
 def _return(session, slip_id, wh_id, items):
     return shipping_repository.create_shipment_return(
         session,

@@ -606,6 +606,8 @@ class SavePODocumentDataInput:
     tax_amount: float = 0
     tax_label: str = "Taxes"
     tariff_amount: float = 0
+    # #1236: GP's trade discount, taken off the document's order total. Omitted leaves the saved one.
+    trade_discount: float | None = None
     required_by_override: date | None = None
     include_fsc: bool = False
     include_usa_tariff: bool = False

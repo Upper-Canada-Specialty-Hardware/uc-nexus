@@ -642,6 +642,8 @@ class PODocumentData:
     tax_amount: float
     tax_label: str
     tariff_amount: float
+    # #1236: null until a document saves one; the dialog then prefills GP's discount.
+    trade_discount: float | None
     required_by_override: date | None
     include_fsc: bool
     include_usa_tariff: bool
@@ -705,6 +707,9 @@ class GpPoTotals:
     freight: float
     miscellaneous: float
     tax_amount: float
+    # #1236: the trade discount PO REGISTRATION wrote (TRDISAMT). 0 from a relay build that predates
+    # the read, which is what such a PO showed before.
+    trade_discount: float = 0.0
     # #858: the header fields the document prints, as GP holds them on the PO. Null when the relay
     # build predates the read or the read failed - the totals still come back either way.
     header: GpPoHeader | None = None

@@ -11,9 +11,11 @@ class Warehouse(Base):
     """A physical warehouse building. Locations (aisle/row/bay) are scoped to one warehouse."""
 
     __tablename__ = "warehouses"
+    # Unique per company (#1256): one tenant's "Main" does not block another's, and codes are GP site
+    # codes each company's GP assigns on its own.
     __table_args__ = (
-        UniqueConstraint("name", name="uq_warehouses_name"),
-        UniqueConstraint("code", name="uq_warehouses_code"),
+        UniqueConstraint("company", "name", name="uq_warehouses_company_name"),
+        UniqueConstraint("company", "code", name="uq_warehouses_company_code"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)

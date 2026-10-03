@@ -323,6 +323,89 @@ def test_a_registered_line_can_be_topped_up_to_what_is_untied_and_no_further(db_
     assert _tied_units(db_session, line) == 10
 
 
+@pytest.mark.parametrize(
+    ("ordered", "received", "tied", "expected"),
+    [
+        (10, 0, 0, 10),  # nothing yet
+        (10, 3, 0, 7),  # arrived before Nexus knew: not tied, not outstanding
+        (10, 5, 5, 5),  # the tied units arrived; the other 5 are still coming
+        (10, 2, 6, 4),  # some tied units arrived
+        (10, 10, 4, 0),  # all in
+    ],
+)
+def test_untied_outstanding_counts_received_tied_units_once(ordered, received, tied, expected):
+    """#1371: tied rows keep their tie after receipt, so received and tied overlap."""
+    assert po_repository.untied_outstanding(ordered, received, tied) == expected
+
+
+def test_a_line_can_be_topped_up_after_its_tied_units_arrive(db_session, project):
+    """#1371: 10 ordered, 5 tied and received - the 5 still coming can be tied, and no more."""
+    _schedule_rows(db_session, project, [1] * 12)
+    po, line = _mirrored_po(db_session, project=project, ordered=10)
+    po_repository.nexus_register_po_lines(db_session, po.id, [_entry(line, tie_quantity=5)])
+    line.received_quantity = 5
+    db_session.flush()
+
+    with pytest.raises(ValidationError) as exc:
+        po_repository.nexus_register_po_lines(db_session, po.id, [_entry(line, tie_quantity=6)])
+    assert "At most 5" in str(exc.value)
+
+    _po, tied = po_repository.nexus_register_po_lines(db_session, po.id, [_entry(line, tie_quantity=5)])
+    assert tied == 5
+    assert _tied_units(db_session, line) == 10
+
+
+def test_two_lines_for_one_product_are_told_they_share_the_schedule(db_session, project):
+    """#1372: the second line's refusal says the first line in the same save took the units."""
+    _schedule_rows(db_session, project, [1] * 7)
+    po, first = _mirrored_po(db_session, project=project, ordered=5)
+    second = POLineItem(
+        id=uuid.uuid4(),
+        po_id=po.id,
+        gp_line_ord=32768,
+        hardware_category="HD 001 HINGE 4.5 X 4.5",
+        product_code="HD 001",
+        ordered_quantity=5,
+        received_quantity=0,
+        unit_cost=Decimal("10.00"),
+        nexus_registered=False,
+    )
+    db_session.add(second)
+    db_session.flush()
+
+    with pytest.raises(ValidationError) as exc:
+        po_repository.nexus_register_po_lines(
+            db_session, po.id, [_entry(first, tie_quantity=5), _entry(second, tie_quantity=5)]
+        )
+    message = str(exc.value)
+    assert "At most 2" in message
+    assert "5 went to earlier lines for the same product in this save" in message
+
+
+def test_two_lines_for_one_product_split_the_schedule_between_them(db_session, project):
+    _schedule_rows(db_session, project, [1] * 7)
+    po, first = _mirrored_po(db_session, project=project, ordered=5)
+    second = POLineItem(
+        id=uuid.uuid4(),
+        po_id=po.id,
+        gp_line_ord=32768,
+        hardware_category="HD 001 HINGE 4.5 X 4.5",
+        product_code="HD 001",
+        ordered_quantity=5,
+        received_quantity=0,
+        unit_cost=Decimal("10.00"),
+        nexus_registered=False,
+    )
+    db_session.add(second)
+    db_session.flush()
+
+    _po, tied = po_repository.nexus_register_po_lines(
+        db_session, po.id, [_entry(first, tie_quantity=5), _entry(second, tie_quantity=2)]
+    )
+    assert tied == 7
+    assert (_tied_units(db_session, first), _tied_units(db_session, second)) == (5, 2)
+
+
 def test_tied_units_by_line_sums_each_line_in_one_read(db_session, project):
     _schedule_rows(db_session, project, [2, 2, 2])
     po, line = _mirrored_po(db_session, project=project, ordered=6)
