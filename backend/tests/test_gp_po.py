@@ -92,7 +92,7 @@ def test_build_create_po_payload_maps_gp_charges_with_freight_from_shipping_cost
 def test_build_create_po_payload_header_defaults_match_what_gp_entry_expects():
     """Every header field the register form can leave blank has one answer, and these are they. The
     site is not among them: it is picked from the company's own GP sites and always sent."""
-    from datetime import date
+    from app.services import gp_window
 
     payload = gp_po.build_create_po_payload(
         vendor_gp_id="ING100",
@@ -107,7 +107,8 @@ def test_build_create_po_payload_header_defaults_match_what_gp_entry_expects():
     h = payload["header"]
     assert h["shipping_method"] == "LOCAL DELIVERY"
     assert h["vendor_address_code"] == "PRIMARY"
-    assert h["doc_date"] == date.today().isoformat()
+    # Today in Toronto, not the container's UTC date (#1273).
+    assert h["doc_date"] == gp_window.local_today().isoformat()
     # The form set no contact, so none is sent - the relay then leaves the GP parameter out entirely.
     assert h["contact"] is None
     # Confirm With still falls back, because that field is verified in GP.

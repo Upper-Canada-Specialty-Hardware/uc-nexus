@@ -21,6 +21,7 @@ import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { useToast } from '../../components/Toast';
 import { useActingCompany } from '../../company/ActingCompanyContext';
 import { extractGpError } from '../../graphql/gpError';
+import { parseServerDate } from '../../utils/serverDate';
 import {
   GET_INVENTORY_VALUE,
   REMOVE_DOORS_ON_HAND,
@@ -537,7 +538,7 @@ function AverageDoorCostCard({ company, value }: { company: string; value: Inven
   const invalid = Number.isNaN(parsed) || parsed < 0;
 
   const updated = value.averageDoorCostUpdatedAt
-    ? new Date(value.averageDoorCostUpdatedAt).toLocaleString()
+    ? parseServerDate(value.averageDoorCostUpdatedAt).toLocaleString()
     : null;
 
   return (

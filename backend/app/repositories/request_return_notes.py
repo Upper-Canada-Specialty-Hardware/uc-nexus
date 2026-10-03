@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from app.models.enums import PullRequestStatus
 from app.models.pull_request import PullRequest as PullRequestModel
+from app.services.gp_window import local_date
 
 
 def return_notes_for(session, pending_requests) -> dict[uuid.UUID, str | None]:
@@ -56,6 +57,6 @@ def return_notes_for(session, pending_requests) -> dict[uuid.UUID, str | None]:
 
 def _format_note(request_number: str, cancelled_by: str | None, cancelled_at, reason: str | None) -> str:
     who = cancelled_by or "someone"
-    when = cancelled_at.date().isoformat() if cancelled_at is not None else "an earlier date"
+    when = local_date(cancelled_at).isoformat() if cancelled_at is not None else "an earlier date"
     head = f"Returned to Pending: pull {request_number} was cancelled by {who} on {when}"
     return f"{head}: {reason}" if reason else f"{head}."
