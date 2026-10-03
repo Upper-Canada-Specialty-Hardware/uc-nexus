@@ -50,9 +50,9 @@ logger = logging.getLogger(__name__)
 # them can contain a leading "@" the way this sentinel does.
 SIGNED_IN = "@signed-in"
 
-# Root fields whose bodies enumerate the whole Clerk roster anyway (`list_users`, or
-# `list_shop_assembly_members` which wraps it). For these the gate answers "what roles does the
-# caller hold" out of that one roster call instead of adding its own `GET /users/{id}` - which is the
+# Root fields whose bodies enumerate the whole Clerk roster anyway (`list_users`). For these the
+# gate answers "what roles does the caller hold" out of that one roster call instead of adding its
+# own `GET /users/{id}` - which is the
 # `adminStats` double round trip: `require_admin`'s role lookup, then the `list_users` the resolver
 # was always going to make, which already carries roles for every user including the caller.
 #
@@ -238,7 +238,6 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "gpCustomers": SIGNED_IN,
     "gpDivisions": SIGNED_IN,
     "gpEmployees": TENANT_OWNERS,
-    "gpJobs": SIGNED_IN,
     "gpPoEntryOptions": SIGNED_IN,
     "gpPoTotals": SIGNED_IN,
     "gpTaxDetails": SIGNED_IN,

@@ -65,17 +65,6 @@ export const GET_PROJECT_HARDWARE_SCHEDULE = gql`
   }
 `;
 
-export const GET_PROJECT_BY_SCHEDULE_ID = gql`
-  query GetProjectByScheduleId($projectId: String!) {
-    projectByScheduleId(projectId: $projectId) {
-      id
-      projectId
-      description
-      jobSiteName
-    }
-  }
-`;
-
 export const GET_PROJECT_EXCLUDED_ITEMS = gql`
   query GetProjectExcludedItems($projectId: ID!) {
     projectExcludedItems(projectId: $projectId) {

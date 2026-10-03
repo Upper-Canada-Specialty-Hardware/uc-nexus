@@ -7,10 +7,6 @@ from app.errors import AppError, ValidationError
 
 CLERK_API_BASE = "https://api.clerk.com/v1"
 
-# Roles that make a user a shop-assembly team member (#330): assignable work in the shop-assembly
-# module. A manager can assign to a plain user or to another manager.
-SHOP_ASSEMBLY_ROLES = ("Shop Assembly User", "Shop Assembly Manager")
-
 # The role a GP buyer identity exists for (#699, #687 gap 6). Only a PO User raises POs, so an
 # identity is refused on any other account and is given back the moment the role goes - enforced
 # here, on the server, and not only in the Edit User dialog, so a role removed in the Clerk dashboard
@@ -95,18 +91,6 @@ def list_users() -> list[dict]:
         offset += limit
 
     return users
-
-
-def shop_assembly_members(users: list[dict]) -> list[dict]:
-    """Shop-assembly team members (#330): the subset of a Clerk roster holding a shop-assembly role,
-    for the manager assignment picker. Clerk has no server-side filter on publicMetadata, so this is
-    a client-side filter over the whole roster either way.
-
-    Takes the roster rather than fetching it so the resolver can pass the request-scoped one the auth
-    gate already loaded (#423) - `shopAssemblyMembers` is role-gated, and that check and this answer
-    now come out of the same single call to Clerk."""
-    members = set(SHOP_ASSEMBLY_ROLES)
-    return [u for u in users if members.intersection(u["roles"])]
 
 
 def get_user(user_id: str) -> dict:

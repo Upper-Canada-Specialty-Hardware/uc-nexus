@@ -221,20 +221,3 @@ export const MARK_ALL_NOTIFICATIONS_AS_READ = gql`
     markAllNotificationsAsRead
   }
 `;
-
-// Per-opening door-leaf rollup (#313). No projectId -> all projects (global shop-assembly view);
-// rows carry project identity so colliding opening numbers stay distinct.
-export const GET_OPENING_LEAF_STATUS = gql`
-  query GetOpeningLeafStatus($projectId: ID) {
-    openingLeafStatus(projectId: $projectId) {
-      projectId
-      projectName
-      openingNumber
-      leafCount
-      leaves {
-        leaf
-        status
-      }
-    }
-  }
-`;

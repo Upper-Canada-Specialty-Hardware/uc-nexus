@@ -203,12 +203,6 @@ class RelayEvent:
 
 
 @strawberry.type
-class GpJob:
-    job_number: str
-    job_name: str | None
-
-
-@strawberry.type
 class GpVendor:
     vendor_id: str
     vendor_name: str

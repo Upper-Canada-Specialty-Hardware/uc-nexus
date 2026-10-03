@@ -357,8 +357,7 @@ def remember_roster_entry(context, entry: dict) -> list[str]:
 
 
 def user_roster(context) -> list[dict]:
-    """Every Clerk user, once per request - the roster `users`, `adminStats` and `shopAssemblyMembers`
-    each need in full.
+    """Every Clerk user, once per request - the roster `users` and `adminStats` each need in full.
 
     Loading it also fills the roles memo, because the roster carries roles per user and the caller is
     one of them. That is what removes `adminStats`' second Clerk round trip: the gate's role lookup

@@ -342,25 +342,6 @@ export const GET_STOCK_ITEMS = gql`
   }
 `;
 
-export const GET_STOCK_ITEM = gql`
-  query GetStockItem($id: ID!) {
-    stockItem(id: $id) {
-      id
-      hardwareCategory
-      productCode
-      quantity
-      deficientQuantity
-      available
-      aisle
-      row
-      bay
-      receivedAt
-      createdAt
-      updatedAt
-    }
-  }
-`;
-
 export const GET_DEFICIENT_ITEMS = gql`
   query GetDeficientItems($projectId: ID, $source: DeficientItemSource) {
     deficientItems(projectId: $projectId, source: $source) {
@@ -378,26 +359,6 @@ export const GET_DEFICIENT_ITEMS = gql`
   }
 `;
 
-export const GET_DEFICIENCY_REVIEWS = gql`
-  query GetDeficiencyReviews($inventoryLocationId: ID, $stockItemId: ID, $projectId: ID) {
-    deficiencyReviews(
-      inventoryLocationId: $inventoryLocationId
-      stockItemId: $stockItemId
-      projectId: $projectId
-    ) {
-      id
-      inventoryLocationId
-      stockItemId
-      resolution
-      quantity
-      reasonText
-      rmaReference
-      reviewedBy
-      reviewedAt
-      resultingStockItemId
-    }
-  }
-`;
 
 export const ADJUST_INVENTORY_QUANTITY = gql`
   mutation AdjustInventoryQuantity(
