@@ -48,6 +48,15 @@ def test_a_blank_name_is_refused(db_session):
         methods.create_shipment_method(db_session, name="   ", company="TUBC")
 
 
+def test_a_name_over_100_characters_is_refused_on_create_and_rename(db_session):
+    # #1175: the column is String(100); past it the flush failed as a masked server error.
+    with pytest.raises(ValidationError):
+        methods.create_shipment_method(db_session, name="x" * 101, company="TUBC")
+    method = methods.create_shipment_method(db_session, name="x" * 100, company="TUBC")
+    with pytest.raises(ValidationError):
+        methods.update_shipment_method(db_session, method.id, name="y" * 101)
+
+
 def test_names_are_trimmed(db_session):
     method = methods.create_shipment_method(db_session, name="  Our truck  ", company="TUBC")
     assert method.name == "Our truck"

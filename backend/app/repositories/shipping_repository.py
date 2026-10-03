@@ -439,6 +439,32 @@ def mark_shipment_picked_up(
     return ps
 
 
+def cancel_shipment(session: Session, packing_slip_id: uuid.UUID) -> PackingSlip:
+    """SCHEDULED -> CANCELLED for a shipment with nothing left to return (#1176).
+
+    #973 cancels a scheduled shipment once its last returnable line comes back, and the return path
+    is still how inventory gets back: this restocks nothing. It covers the one shipment that path
+    can never reach - a slip whose lines are all manual (never in inventory, so not returnable) or
+    already returned. Anything still returnable has to come back through a return first, which
+    cancels the shipment on its own.
+    """
+    ps = _locked_packing_slip(session, packing_slip_id)
+    if ps.status != ShipmentStatus.SCHEDULED:
+        raise InvalidStateTransitionError(
+            f"Delivery Request {ps.packing_slip_number} must be Scheduled to cancel (current: {ps.status.value})"
+        )
+    session.refresh(ps, attribute_names=["items"])
+    returned = _returned_quantities(session, packing_slip_id)
+    if any(not psi.is_manual and returned.get(psi.id, 0) < psi.quantity for psi in ps.items):
+        raise ValidationError(
+            f"Delivery Request {ps.packing_slip_number} still has hardware to return. "
+            "Return it instead; the shipment is cancelled once nothing is left on it.",
+            field="id",
+        )
+    ps.status = ShipmentStatus.CANCELLED
+    return ps
+
+
 def mark_shipment_delivered(
     session: Session,
     packing_slip_id: uuid.UUID,
@@ -489,11 +515,12 @@ def _packing_slip_filter(stmt, project_id: uuid.UUID | None, company: str | None
 
 def _packing_slip_loads():
     """What `packing_slip_to_type` walks, loaded up front (CLAUDE.md perf rules): items with what has
-    come back off them, and containers with their items. Lazy here is extra queries per slip on a
-    list, and a DetachedInstanceError on a mutation reload."""
+    come back off them, containers with their items, and the project for its number and name. Lazy
+    here is extra queries per slip on a list, and a DetachedInstanceError on a mutation reload."""
     return (
         selectinload(PackingSlip.items).selectinload(PackingSlipItem.return_items),
         selectinload(PackingSlip.containers).selectinload(ShipmentContainer.items),
+        selectinload(PackingSlip.project),
     )
 
 

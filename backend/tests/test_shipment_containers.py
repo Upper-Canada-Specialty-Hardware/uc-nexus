@@ -82,6 +82,16 @@ def test_a_blank_name_is_refused(db_session):
         _container(db_session, project, name="   ")
 
 
+def test_a_name_over_100_characters_is_refused_on_create_and_rename(db_session):
+    # #1175: the column is String(100); past it the flush failed as a masked server error.
+    project = _project(db_session)
+    with pytest.raises(ValidationError):
+        _container(db_session, project, name="x" * 101)
+    container = _container(db_session, project, name="x" * 100)
+    with pytest.raises(ValidationError):
+        containers.rename_container(db_session, container.id, "y" * 101)
+
+
 def test_breaking_down_a_container_returns_its_contents_to_the_pool(db_session):
     project = _project(db_session)
     _staged_loose(db_session, project, qty=4)
@@ -257,6 +267,49 @@ def test_a_container_from_another_project_cannot_join_the_shipment(db_session):
             shipped_by="shipper",
             details=None,
         )
+
+
+def test_a_move_between_containers_is_one_save(db_session):
+    # #1178: the whole staged quantity sits in Skid 1, so the target is gated against stock the
+    # source has just given up - the reason the screen used to empty the source first, as its own save.
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4)
+    source = _container(db_session, project, name="Skid 1")
+    target = _container(db_session, project, name="Skid 2")
+    containers.set_container_items(db_session, source.id, [_loose_item(4)])
+
+    moved_from, moved_to = containers.move_between_containers(db_session, source.id, [], target.id, [_loose_item(4)])
+
+    assert moved_from.items == []
+    assert [(i.product_code, i.quantity) for i in moved_to.items] == [("HG-100", 4)]
+
+
+def test_a_refused_move_leaves_the_item_where_it_was(db_session):
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4)
+    source = _container(db_session, project, name="Skid 1")
+    target = _container(db_session, project, name="Skid 2")
+    containers.set_container_items(db_session, source.id, [_loose_item(4)])
+
+    with pytest.raises(ValidationError):
+        with db_session.begin_nested():
+            # More than is staged: the target is refused after the source was already rewritten.
+            containers.move_between_containers(db_session, source.id, [], target.id, [_loose_item(5)])
+
+    db_session.expire_all()
+    assert [(i.product_code, i.quantity) for i in containers._open_container(db_session, source.id).items] == [
+        ("HG-100", 4)
+    ]
+
+
+def test_a_move_across_projects_is_refused(db_session):
+    project = _project(db_session)
+    other = _project(db_session)
+    source = _container(db_session, project, name="Skid 1")
+    target = _container(db_session, other, name="Skid 1")
+
+    with pytest.raises(ValidationError):
+        containers.move_between_containers(db_session, source.id, [], target.id, [])
 
 
 def test_a_missing_container_is_a_not_found(db_session):

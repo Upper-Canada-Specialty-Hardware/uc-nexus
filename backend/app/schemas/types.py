@@ -1194,6 +1194,10 @@ class PackingSlip:
     id: strawberry.ID
     packing_slip_number: str
     project_id: strawberry.ID
+    # The project's business number (the job number) and name, read off the project itself (#1173),
+    # so a shipment of an archived project still says whose it is.
+    project_number: str
+    project_description: str | None
     # Where the truck has got to. The header is editable only while SCHEDULED.
     status: ShipmentStatus
     shipped_by: str

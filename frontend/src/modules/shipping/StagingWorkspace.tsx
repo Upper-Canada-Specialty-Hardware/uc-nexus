@@ -39,6 +39,7 @@ import {
   DELETE_SHIPMENT_CONTAINER,
   GET_STAGING_POOL,
   SET_CONTAINER_ITEMS,
+  MOVE_CONTAINER_ITEMS,
 } from '../../graphql/shipping';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
@@ -143,6 +144,7 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
     onError,
   });
   const [setItems] = useMutation(SET_CONTAINER_ITEMS, { onCompleted: afterChange, onError });
+  const [moveItems] = useMutation(MOVE_CONTAINER_ITEMS, { onCompleted: afterChange, onError });
 
   const save = useCallback(
     (container: Container, items: ContainerItem[]) =>
@@ -273,19 +275,23 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
           if (to >= 0 && from !== to) save(owner, arrayMove(owner.items, from, to));
           return;
         }
-        // A different container: the move this screen mostly exists for. Two saves, and the order
-        // matters - adding first would be refused for stock that is still recorded in the container
-        // it is leaving, so the source is emptied and awaited before the target is written.
+        // A different container: the move this screen mostly exists for. One save (#1178): the server
+        // rewrites the source and then the target in one transaction, so a refused target leaves the
+        // item where it was instead of in neither container.
         const moving = owner.items.find((i) => i.id === activeId);
         if (!moving) return;
-        await save(owner, owner.items.filter((i) => i.id !== activeId));
         const existing = target.items.find((i) => sameStagedStock(i, moving));
-        await save(
-          target,
-          existing
-            ? target.items.map((i) => (i === existing ? { ...i, quantity: i.quantity + moving.quantity } : i))
-            : [...target.items, { ...moving, id: 'new', position: target.items.length }],
-        );
+        const targetItems = existing
+          ? target.items.map((i) => (i === existing ? { ...i, quantity: i.quantity + moving.quantity } : i))
+          : [...target.items, { ...moving, id: 'new', position: target.items.length }];
+        await moveItems({
+          variables: {
+            input: {
+              source: { containerId: owner.id, items: toItemsInput(owner.items.filter((i) => i.id !== activeId)) },
+              target: { containerId: target.id, items: toItemsInput(targetItems) },
+            },
+          },
+        });
         return;
       }
 
@@ -294,7 +300,7 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
       const loose = unplacedLoose.find((l) => poolLooseId(l) === activeId);
       if (loose) placeLoose(target, loose, quantityFor(loose));
     },
-    [containers, unplacedLoose, placeLoose, quantityFor, save, showToast],
+    [containers, unplacedLoose, placeLoose, quantityFor, save, moveItems],
   );
 
   const toggleSelected = (id: string) =>
@@ -469,6 +475,8 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
                   label="Name"
                   placeholder="Skid 1"
                   value={newName}
+                  // The column holds 100 (#1175); the server refuses longer with a message too.
+                  inputProps={{ maxLength: 100 }}
                   onChange={(e) => setNewName(e.target.value)}
                   fullWidth
                 />

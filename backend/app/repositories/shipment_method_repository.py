@@ -32,11 +32,22 @@ def get_shipment_methods(
     return list(session.scalars(stmt).all())
 
 
-def create_shipment_method(session: Session, *, name: str, sort_order: int = 0, company: str) -> ShipmentMethod:
+# The column is String(100) (#1175). Longer failed at flush as a masked "unexpected error".
+NAME_MAX = 100
+
+
+def _clean_name(name: str | None) -> str:
     name = (name or "").strip()
-    company = (company or "").strip().upper()
     if not name:
         raise ValidationError("A shipment method needs a name.", field="name")
+    if len(name) > NAME_MAX:
+        raise ValidationError(f"A shipment method name can be at most {NAME_MAX} characters.", field="name")
+    return name
+
+
+def create_shipment_method(session: Session, *, name: str, sort_order: int = 0, company: str) -> ShipmentMethod:
+    name = _clean_name(name)
+    company = (company or "").strip().upper()
     if not company:
         raise ValidationError("A GP company is required for a shipment method.", field="company")
     _check_name_free(session, name, company)
@@ -65,9 +76,7 @@ def update_shipment_method(
         raise NotFoundError(f"Shipment method {method_id} not found")
 
     if name is not None:
-        name = name.strip()
-        if not name:
-            raise ValidationError("A shipment method needs a name.", field="name")
+        name = _clean_name(name)
         if name != method.name:
             _check_name_free(session, name, method.company)
             method.name = name

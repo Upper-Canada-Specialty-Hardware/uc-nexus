@@ -80,6 +80,20 @@ def get_containers(session: Session, project_id: uuid.UUID, *, open_only: bool =
     return list(session.scalars(stmt).unique().all())
 
 
+# The column is String(100) (#1175). Longer failed at flush and reached the user as a masked
+# "unexpected error" rather than a message about the name.
+NAME_MAX = 100
+
+
+def _clean_name(name: str | None) -> str:
+    name = (name or "").strip()
+    if not name:
+        raise ValidationError("A container needs a name - the label that goes on it.", field="name")
+    if len(name) > NAME_MAX:
+        raise ValidationError(f"A container name can be at most {NAME_MAX} characters.", field="name")
+    return name
+
+
 def create_container(
     session: Session,
     project_id: uuid.UUID,
@@ -88,9 +102,7 @@ def create_container(
     name: str,
     created_by: str,
 ) -> ShipmentContainer:
-    name = (name or "").strip()
-    if not name:
-        raise ValidationError("A container needs a name - the label that goes on it.", field="name")
+    name = _clean_name(name)
     _check_name_free(session, project_id, name)
     container = ShipmentContainer(
         id=uuid.uuid4(),
@@ -106,9 +118,7 @@ def create_container(
 
 def rename_container(session: Session, container_id: uuid.UUID, name: str) -> ShipmentContainer:
     container = _open_container(session, container_id)
-    name = (name or "").strip()
-    if not name:
-        raise ValidationError("A container needs a name - the label that goes on it.", field="name")
+    name = _clean_name(name)
     if name != container.name:
         _check_name_free(session, container.project_id, name)
         container.name = name
@@ -201,6 +211,33 @@ def set_container_items(
     # trap the shipping-request edit hit (#451).
     session.expire(container, ["items"])
     return container
+
+
+def move_between_containers(
+    session: Session,
+    source_id: uuid.UUID,
+    source_items: list[dict],
+    target_id: uuid.UUID,
+    target_items: list[dict],
+) -> tuple[ShipmentContainer, ShipmentContainer]:
+    """Rewrite two containers of one project in one transaction: a move from one to the other (#1178).
+
+    The screen used to make the move as two saves. A refused target save left the item in neither
+    container, back in the unplaced pool. Here the source is written first and flushed, so the target
+    is gated against stock the source no longer holds, and a refusal anywhere rolls both back.
+    """
+    if source_id == target_id:
+        raise ValidationError("A move needs two different containers.", field="target")
+    projects = set(
+        session.scalars(
+            select(ShipmentContainer.project_id).where(ShipmentContainer.id.in_([source_id, target_id]))
+        ).all()
+    )
+    if len(projects) != 1:
+        raise ValidationError("Both containers must belong to the same project.", field="target")
+    source = set_container_items(session, source_id, source_items)
+    target = set_container_items(session, target_id, target_items)
+    return source, target
 
 
 def confirm_shipment_from_containers(

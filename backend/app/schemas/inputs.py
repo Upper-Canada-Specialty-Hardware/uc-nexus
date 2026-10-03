@@ -282,6 +282,14 @@ class SetContainerItemsInput:
 
 
 @strawberry.input
+class MoveContainerItemsInput:
+    """Both containers' new contents for a move between them, saved in one transaction (#1178)."""
+
+    source: SetContainerItemsInput
+    target: SetContainerItemsInput
+
+
+@strawberry.input
 class CreateShippingOutRequestInput:
     """Raise a shipping-out request from the Shipping module rather than from Start a Request (#451).
 

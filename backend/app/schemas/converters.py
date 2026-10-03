@@ -1050,6 +1050,8 @@ def packing_slip_to_type(ps) -> PackingSlip:
         id=strawberry.ID(str(ps.id)),
         packing_slip_number=ps.packing_slip_number,
         project_id=strawberry.ID(str(ps.project_id)),
+        project_number=ps.project.project_id,
+        project_description=ps.project.description,
         status=ps.status,
         shipped_by=ps.shipped_by,
         shipped_at=ps.shipped_at,

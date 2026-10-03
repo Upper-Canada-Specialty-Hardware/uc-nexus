@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import ShipmentsList from '../ShipmentsList';
 import {
+  CANCEL_SHIPMENT,
   GET_PACKING_SLIPS,
   MARK_SHIPMENT_DELIVERED,
   MARK_SHIPMENT_PICKED_UP,
@@ -28,6 +29,8 @@ const INFINITE = Number.POSITIVE_INFINITY;
 const HEADER = {
   __typename: 'PackingSlip',
   projectId: 'proj-1',
+  projectNumber: '23093',
+  projectDescription: 'Cowichan District Hospital',
   shippedBy: 'Darren W',
   shippedAt: '2026-07-13T00:00:00Z',
   createdAt: '2026-07-13T00:00:00Z',
@@ -220,6 +223,17 @@ describe('ShipmentsList', () => {
     expect(screen.getAllByText('Cowichan District Hospital')).toHaveLength(3);
   });
 
+  it('names the project of an archived project shipment, which the project list leaves out (#1173)', async () => {
+    renderList([
+      packingSlipsMock([
+        slip({ id: 'ps-9', packingSlipNumber: 'PS-0099', projectId: 'proj-gone', projectNumber: '19001', projectDescription: 'Old Library' }),
+      ]),
+    ]);
+
+    expect(await screen.findByText('PS-0099')).toBeInTheDocument();
+    expect(screen.getByText('Old Library')).toBeInTheDocument();
+  });
+
   it('shows when a shipment was picked up and delivered and who marked it, else the plan (#961)', async () => {
     renderList([
       packingSlipsMock([
@@ -275,8 +289,8 @@ describe('ShipmentsList', () => {
 
     await expandRow('PS-0019');
 
-    expect(await screen.findByText(/this shipment is\s+cancelled/)).toBeInTheDocument();
-    for (const name of ['Delivery Request', 'Edit', 'Mark Picked Up', 'Return']) {
+    expect(await screen.findByText(/This shipment was\s+cancelled/)).toBeInTheDocument();
+    for (const name of ['Delivery Request', 'Edit', 'Mark Picked Up', 'Return', 'Cancel Shipment']) {
       expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
     }
   });
@@ -470,6 +484,29 @@ describe('ShipmentsList', () => {
     for (const button of screen.getAllByRole('button', { name: 'Return' })) {
       expect(button).toBeDisabled();
     }
+  });
+
+  it('offers Cancel Shipment only on a scheduled shipment nothing can come back from (#1176)', async () => {
+    const manualOnly = slip({
+      items: [{ ...(slip().items as Record<string, unknown>[])[0], id: 'psi-9', isManual: true }],
+    });
+    const cancelled = vi.fn(() => ({ data: { cancelShipment: { ...manualOnly, status: 'CANCELLED' } } }));
+    renderList([
+      packingSlipsMock([manualOnly, slip({ id: 'ps-2', packingSlipNumber: 'PS-0020' })]),
+      { request: { query: CANCEL_SHIPMENT, variables: { id: 'ps-1' } }, result: cancelled },
+    ]);
+
+    await expandRow('PS-0020');
+    // Still has hardware that can come back: the return is how it cancels.
+    expect(await screen.findByRole('button', { name: 'Return' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Cancel Shipment' })).not.toBeInTheDocument();
+
+    await expandRow('PS-0019');
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel Shipment' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel shipment' }));
+
+    await waitFor(() => expect(cancelled).toHaveBeenCalled());
+    expect(await screen.findByText('PS-0019 cancelled')).toBeInTheDocument();
   });
 
   it('pages on the server and asks for the next page on Show more (#1107)', async () => {

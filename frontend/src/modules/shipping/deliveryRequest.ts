@@ -94,6 +94,9 @@ export type PackingSlipHeader = {
   id: string;
   packingSlipNumber: string;
   projectId: string;
+  // Read off the project by the server (#1173), so an archived project's shipments still name it.
+  projectNumber: string;
+  projectDescription: string | null;
   status: ShipmentStatus;
   shippedBy: string;
   shippedAt: string;

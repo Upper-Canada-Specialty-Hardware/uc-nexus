@@ -28,6 +28,7 @@ from .inputs import (
     CreateShipmentReturnInput,
     CreateShippingOutRequestInput,
     EditShippingOutRequestInput,
+    MoveContainerItemsInput,
     SetContainerItemsInput,
     ShippingOutPRDraftItemInput,
     UpdateShipmentDetailsInput,
@@ -407,6 +408,27 @@ class ShippingMutations:
             return container_to_type(updated)
 
     @strawberry.mutation
+    def move_container_items(self, info: strawberry.Info, input: MoveContainerItemsInput) -> list[ShipmentContainer]:
+        """A move from one container to another as one save (#1178): both rewrites commit together or
+        neither does, so a refused target never leaves the item out of both."""
+        source_id = uuid.UUID(str(input.source.container_id))
+        target_id = uuid.UUID(str(input.target.container_id))
+        with SessionLocal() as session:
+            tenancy.require_container_in_scope(session, source_id, tenant_scope(info))
+            tenancy.require_container_in_scope(session, target_id, tenant_scope(info))
+            source, target = shipment_containers.move_between_containers(
+                session,
+                source_id,
+                _container_items_input(input.source.items),
+                target_id,
+                _container_items_input(input.target.items),
+            )
+            session.commit()
+            session.refresh(source)
+            session.refresh(target)
+            return [container_to_type(source), container_to_type(target)]
+
+    @strawberry.mutation
     def confirm_shipment_from_containers(
         self, info: strawberry.Info, input: ConfirmShipmentFromContainersInput
     ) -> PackingSlip:
@@ -566,6 +588,17 @@ class ShippingMutations:
         with SessionLocal() as session:
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             ps = shipping_repository.mark_shipment_picked_up(session, uuid.UUID(str(id)), actor)
+            session.commit()
+            refreshed = shipping_repository.get_packing_slip(session, ps.id)
+            return packing_slip_to_type(refreshed)
+
+    @strawberry.mutation
+    def cancel_shipment(self, info: strawberry.Info, id: strawberry.ID) -> PackingSlip:
+        """Call off a SCHEDULED shipment with nothing left to return (#1176): one made only of manual
+        lines, which a return cannot reach. Moves no inventory."""
+        with SessionLocal() as session:
+            tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
+            ps = shipping_repository.cancel_shipment(session, uuid.UUID(str(id)))
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)
             return packing_slip_to_type(refreshed)

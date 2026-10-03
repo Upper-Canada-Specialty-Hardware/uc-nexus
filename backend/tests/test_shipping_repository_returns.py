@@ -387,3 +387,39 @@ def test_a_picked_up_shipment_returned_in_full_keeps_its_status(db_session):
     _return(db_session, slip.id, _wh(db_session), [_back(item, 2)])
 
     assert slip.status == ShipmentStatus.PICKED_UP
+
+
+def test_a_scheduled_shipment_of_only_manual_lines_can_be_cancelled(db_session):
+    # #1176: a manual line is not returnable, so the return path can never cancel this shipment.
+    project = _make_project(db_session)
+    slip = _make_slip(db_session, project.id)
+    slip.status = ShipmentStatus.SCHEDULED
+    _make_manual_item(db_session, slip.id)
+
+    shipping_repository.cancel_shipment(db_session, slip.id)
+
+    assert slip.status == ShipmentStatus.CANCELLED
+
+
+def test_cancel_is_refused_while_hardware_is_still_returnable(db_session):
+    # Restocking goes through a return, which cancels the shipment on its own once nothing is left.
+    project = _make_project(db_session)
+    slip = _make_slip(db_session, project.id)
+    slip.status = ShipmentStatus.SCHEDULED
+    _make_loose_item(db_session, slip.id, qty=2)
+    _make_manual_item(db_session, slip.id)
+
+    with pytest.raises(ValidationError):
+        shipping_repository.cancel_shipment(db_session, slip.id)
+    assert slip.status == ShipmentStatus.SCHEDULED
+
+
+def test_cancel_is_refused_past_scheduled(db_session):
+    project = _make_project(db_session)
+    slip = _make_slip(db_session, project.id)
+    slip.status = ShipmentStatus.SCHEDULED
+    _make_manual_item(db_session, slip.id)
+    shipping_repository.mark_shipment_picked_up(db_session, slip.id, "driver")
+
+    with pytest.raises(InvalidStateTransitionError):
+        shipping_repository.cancel_shipment(db_session, slip.id)

@@ -340,6 +340,8 @@ describe('confirming a shipment (#859)', () => {
           id: 'ps-2',
           packingSlipNumber: 'PS-00002',
           projectId: PROJECT_ID,
+          projectNumber: '23093',
+          projectDescription: null,
           status: 'SCHEDULED',
           shippedBy: 'Darren W',
           shippedAt: '2026-09-25T00:00:00Z',
