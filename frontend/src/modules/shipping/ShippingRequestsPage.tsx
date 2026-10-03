@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import {
   Alert,
   Box,
@@ -29,6 +29,7 @@ import PageHeader from '../../components/PageHeader';
 import ProjectPicker from '../../components/ProjectPicker';
 import { useIdentity } from '../../hooks/useIdentity';
 import type { Project } from '../../types/project';
+import { GET_PROJECTS } from '../../graphql/shared';
 import { monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
 // The stage ladder is identical to shop assembly's, so its labels, colours and reopen rule are the
@@ -40,6 +41,11 @@ import {
   reopenBlockedReason,
   type RequestStage,
 } from '../shop-assembly/requestStages';
+
+// UI law 1 (#1231): a short value hugs its column, and the one text column takes the slack. A long
+// product code wraps inside its cell rather than pushing the table wider.
+const HUG_SX = { width: '1%', whiteSpace: 'nowrap' as const };
+const SLACK_SX = { overflowWrap: 'anywhere' as const };
 
 interface ShippingRequestItem {
   id: string;
@@ -95,11 +101,50 @@ const VIEW_COPY: Record<View, { description: string; empty: string }> = {
  */
 export default function ShippingRequestsPage() {
   const navigate = useNavigate();
-  // A notice about a rejected request links straight to that tab (#972).
-  const [searchParams] = useSearchParams();
-  const [view, setView] = useState<View>(searchParams.get('view') === 'REJECTED' ? 'REJECTED' : 'PENDING');
-  const [project, setProject] = useState<Project | null>(null);
-  const projectId = project?.id;
+  // A notice about a rejected request links straight to that tab (#972). The tab follows the URL
+  // rather than reading it once (#1243): the bell's link, followed while this page is already open,
+  // changes the URL without remounting, and the tab has to move with it.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const paramView = searchParams.get('view');
+  const view: View = paramView === 'APPROVED' || paramView === 'REJECTED' ? paramView : 'PENDING';
+  const setView = useCallback(
+    (next: View) => {
+      // replace, not push: flipping a tab is not a navigation step anybody wants to walk back through.
+      setSearchParams(
+        (prev) => {
+          const params = new URLSearchParams(prev);
+          if (next === 'PENDING') params.delete('view');
+          else params.set('view', next);
+          return params;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+  // The scoped project lives in the URL too (#1310), so a project's page can link straight to its
+  // requests and a reload keeps the scope. The picker needs the whole project, read off the same
+  // projects list it loads; the list itself scopes by the id alone, so it holds even before that read.
+  const projectId = searchParams.get('project') || undefined;
+  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !projectId });
+  const project = useMemo(
+    () => (projectId ? (projectsData?.projects.find((p) => p.id === projectId) ?? null) : null),
+    [projectsData, projectId],
+  );
+  const setProject = useCallback(
+    (next: Project | null) => {
+      setSearchParams(
+        (prev) => {
+          const params = new URLSearchParams(prev);
+          if (next) params.set('project', next.id);
+          else params.delete('project');
+          return params;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
   const { ownsTenant, hasRole } = useIdentity();
   // #753: accepting, rejecting and reopening are the SHIPPING MANAGER's, with the TENANT OWNER
   // beside them - the same any-of the server enforces. Shown-and-explained rather than hidden: the
@@ -249,19 +294,23 @@ export default function ShippingRequestsPage() {
             <Table size="small">
               <TableHead>
                 <TableRow>
-                  <TableCell>Opening</TableCell>
+                  <TableCell sx={HUG_SX}>Opening</TableCell>
                   <TableCell>Product Code</TableCell>
-                  <TableCell>Hardware Category</TableCell>
-                  <TableCell align="right">Quantity</TableCell>
+                  <TableCell sx={HUG_SX}>Hardware Category</TableCell>
+                  <TableCell align="right" sx={HUG_SX}>
+                    Quantity
+                  </TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
                 {req.items.map((item) => (
                   <TableRow key={item.id} hover>
-                    <TableCell sx={monoSx}>{item.openingNumber || '-'}</TableCell>
-                    <TableCell sx={monoSx}>{item.productCode}</TableCell>
-                    <TableCell>{item.hardwareCategory}</TableCell>
-                    <TableCell align="right">{item.requestedQuantity}</TableCell>
+                    <TableCell sx={{ ...monoSx, ...HUG_SX }}>{item.openingNumber || '-'}</TableCell>
+                    <TableCell sx={{ ...monoSx, ...SLACK_SX }}>{item.productCode}</TableCell>
+                    <TableCell sx={HUG_SX}>{item.hardwareCategory}</TableCell>
+                    <TableCell align="right" sx={{ ...HUG_SX, ...tabularSx }}>
+                      {item.requestedQuantity}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>

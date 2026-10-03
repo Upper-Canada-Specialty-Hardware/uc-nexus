@@ -251,3 +251,36 @@ describe('draftOps.mergeAddedProducts (#814)', () => {
     expect(draftOps.mergeAddedProducts([draft('seed:a', { HG: 3 })], [draft('seed:a', { HG: 3 })])).toBeNull();
   });
 });
+
+describe('draftOps.carryDraftEdits (#1314)', () => {
+  const info = { notes: 'rush', preferredDeliveryDate: '2026-11-01', costCode: '210-200-2', vendorQuoteNumber: 'Q-7' };
+
+  it('keeps info and attachments on the re-seeded draft with the same id, lines from the seed', () => {
+    const old = draftOps.addAttachments([{ ...draft('seed:Acme', { HG: 3 }), info }], 'seed:Acme', [att('d1')]);
+    const [next] = draftOps.carryDraftEdits(old, [draft('seed:Acme', { HG: 5 })]);
+    expect(next.info).toEqual(info);
+    expect(next.attachments?.map((a) => a.id)).toEqual(['d1']);
+    expect(next.lines.get('HG')).toBe(5);
+  });
+
+  it('matches by vendor label when the id differs', () => {
+    const old = [{ ...draft('custom-1', { HG: 1 }), label: 'Acme', info }];
+    const seeded = [{ ...draft('seed:Acme', { HG: 2 }), label: 'Acme' }];
+    const [next] = draftOps.carryDraftEdits(old, seeded);
+    expect(next.id).toBe('seed:Acme');
+    expect(next.info.costCode).toBe('210-200-2');
+  });
+
+  it('keeps an unmatched draft that holds attachments as an empty card, drops an untouched one', () => {
+    const withDocs = draftOps.addAttachments([draft('gone', { LK: 1 })], 'gone', [att('d2')]);
+    const next = draftOps.carryDraftEdits([...withDocs, draft('plain', { XX: 1 })], [draft('seed:Acme', { HG: 2 })]);
+    expect(next.map((g) => g.id)).toEqual(['seed:Acme', 'gone']);
+    expect(next[1].lines.size).toBe(0);
+    expect(next[1].attachments?.map((a) => a.id)).toEqual(['d2']);
+  });
+
+  it('returns the seed unchanged when nothing was edited', () => {
+    const seeded = [draft('seed:Acme', { HG: 2 })];
+    expect(draftOps.carryDraftEdits([draft('seed:Acme', { HG: 1 })], seeded)).toEqual(seeded);
+  });
+});

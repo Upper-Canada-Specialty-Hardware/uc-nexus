@@ -196,6 +196,21 @@ def test_reducing_a_line_is_not_gated_against_stock_it_already_holds(db_session)
     }
 
 
+def test_an_edit_that_reserves_every_line_clears_the_integrity_note(db_session):
+    # #1174: a cancelled pull that could not re-reserve leaves "holds no claim on inventory". Once an
+    # edit has gated and reserved every line again, the note is false and must not stay on the request.
+    project = _project(db_session)
+    _stock(db_session, project, qty=4)
+    req = _create(db_session, project, [_loose(qty=2)])
+    req.integrity_note = "Pull X was cancelled ... It holds no claim on inventory, so the pull can come up short."
+    db_session.flush()
+
+    edited = shipping_requests.replace_shipping_out_request_items(db_session, req.id, [_loose(qty=2)])
+
+    assert edited.integrity_note is None
+    assert _reserved(db_session, req) == 2
+
+
 def test_an_edit_that_over_claims_is_refused_and_leaves_the_original_claim(db_session):
     # The edit deletes the old lines and releases the old claim BEFORE the gate, so what happens
     # when the gate refuses is the whole question: the caller must be left holding what it had.

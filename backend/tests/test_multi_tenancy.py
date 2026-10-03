@@ -30,7 +30,7 @@ from app.auth_policy import ROOT_FIELD_POLICY
 from app.errors import NotFoundError, ValidationError
 from app.models.enums import POStatus, PullRequestSource, PullRequestStatus, ShippingOutRequestStatus
 from app.models.inventory import InventoryLocation
-from app.models.project import Project
+from app.models.project import Opening, Project
 from app.models.pull_request import PullRequest
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.shipping_out_request import ShippingOutRequest
@@ -137,6 +137,7 @@ def test_the_company_is_stored_trimmed_and_uppercased(monkeypatch):
         "_merge_public_metadata",
         lambda user_id, patch: written.update(patch) or {"id": user_id},
     )
+    monkeypatch.setattr(user_repository, "_public_metadata", lambda user_id: {})
 
     user_repository.update_user_company("u_1", "  tubc  ")
 
@@ -152,6 +153,7 @@ def test_a_blank_company_clears_the_assignment(monkeypatch):
         "_merge_public_metadata",
         lambda user_id, patch: written.update(patch) or {"id": user_id},
     )
+    monkeypatch.setattr(user_repository, "_public_metadata", lambda user_id: {})
 
     user_repository.update_user_company("u_1", "   ")
 
@@ -399,6 +401,21 @@ def test_the_project_picker_shows_only_the_callers_company(db_session, two_compa
 
     assert two_companies["mine"].id in ids
     assert two_companies["theirs"].id not in ids
+
+
+def test_the_picker_counts_only_its_own_projects_openings(db_session):
+    """The grouped count is limited to the listed projects (#1181), and still counts them right."""
+    mine = _project(db_session, "TUBC")
+    theirs = _project(db_session, "UCSH")
+    for project, n in ((mine, 2), (theirs, 3)):
+        for i in range(n):
+            db_session.add(Opening(id=uuid.uuid4(), project_id=project.id, opening_number=f"{i + 1:03d}"))
+    db_session.flush()
+
+    counts = {p.id: c for p, c in project_repository.list_projects_with_opening_counts(db_session, company="TUBC")}
+
+    assert counts[mine.id] == 2
+    assert theirs.id not in counts
 
 
 def test_an_admin_sees_every_company(db_session, two_companies):
@@ -911,6 +928,21 @@ def test_archiving_is_reversible(db_session):
 
 
 # --- the admin project detail --------------------------------------------------------------------
+
+
+def test_a_request_back_in_pending_after_its_pull_was_cancelled_counts_as_open(db_session):
+    """Cancelling a pull returns its request to PENDING but leaves the link to the cancelled pull
+    (#1197). The request is waiting on somebody again, so the detail must count it."""
+    project = _project(db_session, "TUBC")
+    pull = _pull(db_session, project)
+    pull.status = PullRequestStatus.CANCELLED
+    req = _shipping_request(db_session, project)
+    req.pull_request_id = pull.id
+    db_session.flush()
+
+    detail = project_repository.get_admin_project_detail(db_session, project.id)
+
+    assert detail["open_shipping_request_count"] == 1
 
 
 def test_the_admin_detail_counts_pos_by_status_inventory_and_open_requests(db_session, two_companies):
