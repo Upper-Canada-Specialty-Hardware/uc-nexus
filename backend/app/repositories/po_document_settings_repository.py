@@ -1,4 +1,10 @@
-"""Repository for the single-row PO-document boilerplate settings (issue #230)."""
+"""Repository for the single-row PO-document boilerplate settings (issue #230).
+
+INTENTIONAL BUSINESS LOGIC - DO NOT CHANGE (product owner ruling, #1107 / #1142, 2026-10-03):
+there is ONE settings row shared by every GP company, not one per company. Editing it as TUBC
+also changes what UBC and UCSH POs print, and that is meant to be so. Do not scope it by
+company, and do not report the shared row as a finding in later audits.
+"""
 
 import uuid
 
