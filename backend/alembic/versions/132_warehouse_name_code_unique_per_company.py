@@ -15,14 +15,14 @@ also start from 127: whichever merges later re-points its down_revision at the o
 so the chain keeps a single head.
 
 Revision ID: 132
-Revises: 127
+Revises: 134
 Create Date: 2026-10-03
 """
 
 from alembic import op
 
 revision = "132"
-down_revision = "127"
+down_revision = "134"
 branch_labels = None
 depends_on = None
 
