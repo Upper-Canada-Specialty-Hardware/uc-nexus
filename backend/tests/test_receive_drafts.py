@@ -388,7 +388,7 @@ def test_rejecting_returns_the_draft_to_its_author_with_the_reason(db_session):
     assert draft.rejection_reason == "Count is short a box"
     raised = _notifications(db_session, project.id, NotificationType.RECEIVE_DRAFT_REJECTED)
     assert len(raised) == 1
-    assert raised[0].recipient_role == AUTHOR, "a rejection is owed to the person who has to act on it"
+    assert raised[0].recipient_user_id == AUTHOR, "a rejection is owed to the person who has to act on it"
     assert "Count is short a box" in raised[0].message
 
 
