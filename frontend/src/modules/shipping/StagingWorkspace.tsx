@@ -356,7 +356,9 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
           </Box>
         </Box>
 
-        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems="flex-start">
+        {/* #1323: side by side only from lg. Each pane's rows carry ~185-246px of fixed controls, so
+            two panes at 900-1199px left the product text 0-60px; on a tablet they stack instead. */}
+        <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} alignItems="flex-start">
           <Paper variant="outlined" sx={{ p: 2, flex: 1, minWidth: 0, width: '100%' }}>
             <Typography sx={{ ...microLabelSx, display: 'block', mb: 1 }}>
               Staged, not yet in a container

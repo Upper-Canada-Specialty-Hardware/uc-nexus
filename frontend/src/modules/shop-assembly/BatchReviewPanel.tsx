@@ -64,7 +64,8 @@ const OPENING_COLUMNS: FitTableColumn[] = [
   { id: 'hardwareCategory', label: 'Hardware Category', min: 120, weight: 1.4 },
   { id: 'owed', label: 'Owed', min: 68, weight: 0.4, align: 'right' },
   { id: 'free', label: 'Free', min: 64, weight: 0.4, align: 'right' },
-  { id: 'send', label: 'Send', min: 104, weight: 0.5, align: 'right', dense: true },
+  // #1322: protected, so the quantity box keeps its width and the text columns give way first.
+  { id: 'send', label: 'Send', min: 104, weight: 0.5, align: 'right', dense: true, protect: true },
   { id: 'short', label: 'Short', min: 68, weight: 0.4, align: 'right' },
 ];
 
@@ -192,14 +193,16 @@ export default function BatchReviewPanel({
     <Stack spacing={2}>
       {review.integrityNote && <Alert severity="warning">{review.integrityNote}</Alert>}
 
-      <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start', flexWrap: { xs: 'wrap', md: 'nowrap' } }}>
+      <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start', flexWrap: { xs: 'wrap', lg: 'nowrap' } }}>
         {/* The walk, made addressable. Collapsed to a rail so the detail gets the width - it is the
             thing being decided about, and a full-width list of opening numbers would be a column of
             six-character strings across a 1400px viewport. */}
         <Box
           sx={{
             flex: '0 0 auto',
-            width: { xs: '100%', md: 200 },
+            // #1322: beside the table only from lg; on a tablet the rail sits above it so Send keeps
+            // its width (at 900px with the nav rail open, 200px beside it left the table ~378px).
+            width: { xs: '100%', lg: 200 },
             maxHeight: 420,
             overflowY: 'auto',
             border: 1,

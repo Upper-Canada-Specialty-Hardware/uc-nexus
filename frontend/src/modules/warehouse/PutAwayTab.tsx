@@ -51,7 +51,16 @@ import { isPutAwaySplitValid } from './putAwaySplit';
 // columns are resizable and remembered per person. Minimums hold each value whole: a PO number, a
 // date, three bin pickers, the quantity field and the Assign button. Description and item number
 // give way first and ellipsize, with the full value on hover.
-const DESTINATION_COL: FitTableColumn = { id: 'destination', label: 'Destination', min: 248, weight: 2.2, dense: true };
+// #1322: the pickers and the quantity field are protected, so on a narrow tablet the text columns give
+// way first instead of every column scaling under its minimum and clipping the controls.
+const DESTINATION_COL: FitTableColumn = {
+  id: 'destination',
+  label: 'Destination',
+  min: 248,
+  weight: 2.2,
+  dense: true,
+  protect: true,
+};
 const ASSIGN_COL: FitTableColumn = { id: 'assign', label: 'Assign', min: 96, fixed: 96, header: null };
 // The three bin pickers share the destination column evenly and shrink with it (minWidth 0).
 const DESTINATION_FIELDS_SX = { display: 'flex', gap: 1, minWidth: 0, '& > *': { flex: 1, minWidth: 0 } } as const;
@@ -75,7 +84,7 @@ function projectColumns(showWarehouse: boolean, selectHeader: ReactNode): FitTab
     // One destination cell instead of three unlabelled columns: the fields carry their own
     // Aisle/Row/Bay labels rather than relying on a header three rows up.
     DESTINATION_COL,
-    { id: 'putAwayQty', label: 'Qty to put away', min: 72, weight: 0.7, align: 'right', dense: true },
+    { id: 'putAwayQty', label: 'Qty to put away', min: 72, weight: 0.7, align: 'right', dense: true, protect: true },
     ASSIGN_COL,
   ];
 }
