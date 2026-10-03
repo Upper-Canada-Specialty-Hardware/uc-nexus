@@ -420,6 +420,32 @@ it('shows the held PO registrations on the PO table', async () => {
   );
 });
 
+// #1223: the queued chip (and the detail's Register/Cancel hold) reads only waiting registrations,
+// asked for by name, so 200 newer writes of other kinds can never push one off the list.
+it('marks a PO whose registration is waiting, asking only for waiting registrations', async () => {
+  renderRegister([
+    {
+      __typename: 'GpOutboxEntry',
+      id: 'queued-1',
+      label: 'PO registration PO-REQ-001',
+      op: 'create_po',
+      company: 'TUBC',
+      status: 'PENDING',
+      attempts: 0,
+      nextAttemptAt: '2026-07-01T12:05:00Z',
+      lastError: null,
+      failureKind: null,
+      entityKey: 'po:po-draft',
+      createdAt: '2026-07-01T12:00:00Z',
+    },
+  ]);
+
+  expect(await screen.findByText('GP registration queued')).toBeInTheDocument();
+  await waitFor(() =>
+    expect(outboxAsked).toContainEqual({ ops: ['create_po'], statuses: ['PENDING', 'IN_FLIGHT'], limit: 200 }),
+  );
+});
+
 // The normal state: nothing is held, and the table looks exactly as it did.
 it('says nothing about held PO registrations while there are none', async () => {
   renderRegister();

@@ -524,10 +524,17 @@ function POListPage() {
   const relayConnected = relay.connected;
 
   // #353 PR E: which POs have a GP write still on the outbox, joined onto rows client-side on
-  // entityKey (`po:<id>`) rather than as a per-row resolver (which would be an N+1).
+  // entityKey (`po:<id>`) rather than as a per-row resolver (which would be an N+1). Narrowed on the
+  // server to registrations still waiting (#1223): the newest 200 of every kind used to push an older
+  // waiting registration off the list, and the PO lost its queued chip and its Register/Cancel hold.
+  // A queued receipt is keyed on its PO too, but it is not a registration, so it no longer lights the chip.
   const { data: outboxData } = useQuery<{ gpOutbox: { id: string; entityKey: string; status: string }[] }>(
     GET_GP_OUTBOX,
-    { variables: { limit: 200 }, fetchPolicy: 'cache-and-network', pollInterval: 15_000 },
+    {
+      variables: { ops: ['create_po'], statuses: ['PENDING', 'IN_FLIGHT'], limit: 200 },
+      fetchPolicy: 'cache-and-network',
+      pollInterval: 15_000,
+    },
   );
   const queuedPoIds = useMemo(() => {
     const ids = new Set<string>();
