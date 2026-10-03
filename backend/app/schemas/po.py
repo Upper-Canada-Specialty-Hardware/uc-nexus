@@ -79,6 +79,11 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
+# The statuses of a PO that is a live order in GP, the only ones sent to the vendor (#1194).
+_EMAILABLE_PO_STATUSES = frozenset(
+    (POStatus.GP_REGISTERED.value, POStatus.VENDOR_CONFIRMED.value, POStatus.PARTIALLY_RECEIVED.value)
+)
+
 
 # --- GP-first write orchestration (issue #202 #1/#3) --------------------------------------------------
 # create_po / register_po_in_gp / create_receive (schemas/warehouse.py) push to GP via the relay BEFORE
@@ -761,6 +766,11 @@ class POMutations:
                 raise NotFoundError(f"Purchase order {po_id} not found")
             if po.status == POStatus.DRAFT.value or po.gp_vendor_id is None or not po.gp_company:
                 return EmailPoResult(sent=False, message="Register the PO in GP before sending it to the vendor.")
+            # #1194: a cancelled or closed PO is not an order any more, and sending it would put a
+            # live-looking PO in front of the vendor for something nobody wants delivered.
+            if po.status not in _EMAILABLE_PO_STATUSES:
+                status_word = "cancelled" if po.status == POStatus.CANCELLED.value else "closed"
+                return EmailPoResult(sent=False, message=f"This PO is {status_word}, so it is not sent to the vendor.")
             document = next(
                 (d for d in (po.documents or []) if d.document_type == PODocumentTypeDB.GENERATED_PO),
                 None,

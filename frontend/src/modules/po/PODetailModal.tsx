@@ -565,7 +565,11 @@ export default function PODetailModal({
   // Both refusals are also enforced server-side; this only keeps the button from being offered when
   // pressing it could only produce a message saying no.
   const hasGeneratedPo = po.documents.some((d) => d.documentType === 'GENERATED_PO');
-  const canEmailVendor = po.status !== 'DRAFT' && !!po.gpVendorId && hasGeneratedPo;
+  // A cancelled or closed PO is no longer an order, so it is not offered either (#1194).
+  const canEmailVendor =
+    (po.status === 'GP_REGISTERED' || po.status === 'VENDOR_CONFIRMED' || po.status === 'PARTIALLY_RECEIVED') &&
+    !!po.gpVendorId &&
+    hasGeneratedPo;
 
   // A Draft is accepted into GP via the Register in GP flow (GP-first push, then map vendor + cost code
   // and advance to GP-Registered). The relay must be up to push. A queued registration is still a Draft

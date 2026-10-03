@@ -101,7 +101,7 @@ def _committed_po_with_queued_registration(status=POStatus.DRAFT, deleted=False)
         po = _po(session, status=status)
         if deleted:
             po.deleted_at = datetime.utcnow()
-        row = _queue_registration(session, po.id)
+        row = _queue_registration(session, po.id, status="IN_FLIGHT")  # as the worker's claim leaves it
         session.commit()
         return po.id, row.id
 

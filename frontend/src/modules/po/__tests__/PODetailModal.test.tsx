@@ -535,6 +535,39 @@ describe('PODetailModal', () => {
     expect(screen.queryByRole('button', { name: 'Cancel PO' })).toBeNull();
   });
 
+  // #1194: only a PO that is still a live order goes to the vendor; a cancelled or closed one would
+  // reach them as a live-looking PO for something nobody wants delivered.
+  it('offers Email to vendor on a live order only, not once it is cancelled or closed', () => {
+    const withDocument = (status: PurchaseOrder['status']): PurchaseOrder => ({
+      ...registeredPo,
+      status,
+      gpVendorId: 'ACME',
+      documents: [
+        {
+          id: 'doc-po',
+          poId: 'po-1',
+          fileName: 'po.pdf',
+          contentType: 'application/pdf',
+          fileSize: 12,
+          documentType: 'GENERATED_PO',
+          uploadedAt: '2026-10-01T00:00:00Z',
+          downloadUrl: 'https://example.test/po.pdf',
+        },
+      ],
+    });
+
+    const live = renderModal(withDocument('GP_REGISTERED'));
+    expect(screen.getByRole('button', { name: 'Email to vendor' })).toBeInTheDocument();
+    live.unmount();
+
+    const cancelled = renderModal(withDocument('CANCELLED'));
+    expect(screen.queryByRole('button', { name: 'Email to vendor' })).toBeNull();
+    cancelled.unmount();
+
+    renderModal(withDocument('CLOSED'));
+    expect(screen.queryByRole('button', { name: 'Email to vendor' })).toBeNull();
+  });
+
   // Order As translates a hardware schedule item's name into the vendor's. A line added from the
   // non-schedule item catalog is already written the way the vendor sells it, so the column has
   // nothing to show for it.

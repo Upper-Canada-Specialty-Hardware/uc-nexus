@@ -207,16 +207,68 @@ def _load_row(row_id: uuid.UUID):
         return gp_outbox_repository.get_entry(session, row_id)
 
 
-def _finish(row_id: uuid.UUID, action: str, **kwargs) -> None:
+def _finish(row_id: uuid.UUID, action: str, *, from_status: str = "IN_FLIGHT", **kwargs) -> bool:
+    """Record an outcome, but only on a row still in the state this worker left it in (#1193).
+
+    Locked and re-read, so a status somebody else wrote meanwhile is seen, not overwritten: an outcome
+    never revives a row an admin cancelled. Returns whether it applied."""
     with SessionLocal() as session:
-        row = gp_outbox_repository.get_entry(session, row_id)
-        if row is None:
-            return
+        row = gp_outbox_repository.get_entry_locked(session, row_id)
+        if row is None or row.status != from_status:
+            if row is not None:
+                logger.warning(
+                    "gp outbox: outcome not recorded, the row changed meanwhile",
+                    extra={"label": row.label, "status": row.status, "action": action},
+                )
+            return False
         getattr(gp_outbox_repository, action)(session, row, **kwargs)
         session.commit()
+        return True
+
+
+def _recover_in_flight() -> None:
+    """Settle the rows a stopped worker left IN_FLIGHT (#1192), and tell somebody about the ones that
+    now need a person to look in GP."""
+    with SessionLocal() as session:
+        failed = gp_outbox_repository.recover_in_flight(session)
+        failed_ids = [row.id for row in failed]
+        session.commit()
+    for row_id in failed_ids:
+        _notify_failure(row_id)
 
 
 async def _drain_one(row_id: uuid.UUID) -> None:
+    """Run one claimed row through, and never leave it IN_FLIGHT on an error nobody planned for (#1192).
+
+    An exception escaping the drain used to leave the row claimed for good: cancel and retry refuse
+    IN_FLIGHT, and every later write for the same PO waited behind it. A registration is asked again
+    (the relay's key makes that safe); anything else may have reached GP, so it waits for a person.
+    A cancellation (shutdown) is let through; the next worker start recovers the row."""
+    try:
+        await _drain_one_claimed(row_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001 - recorded on the row, never left in flight
+        logger.exception("gp outbox: drain raised unexpectedly", extra={"row_id": str(row_id)})
+        row = await asyncio.to_thread(_load_row, row_id)
+        if row is None or row.status != "IN_FLIGHT":
+            return
+        if row.relay_op == "create_po":
+            await asyncio.to_thread(_finish, row_id, "mark_retry", error=str(e), bump_attempts=True)
+            await _fail_if_exhausted(row_id)
+        else:
+            applied = await asyncio.to_thread(
+                _finish,
+                row_id,
+                "mark_failed",
+                kind="ambiguous",
+                error=f"Unexpected error while sending; check GP before retrying: {e}",
+            )
+            if applied:
+                await asyncio.to_thread(_notify_failure, row_id)
+
+
+async def _drain_one_claimed(row_id: uuid.UUID) -> None:
     """Run one claimed row all the way through, and record where it got to.
 
     Mirrors the resolver exactly: a ledger that already holds `result_id` means the whole thing was
@@ -393,15 +445,18 @@ async def _fail_if_exhausted(row_id: uuid.UUID) -> None:
     row = await asyncio.to_thread(_load_row, row_id)
     if row is None or row.attempts <= gp_outbox_repository.MAX_ATTEMPTS:
         return
-    await asyncio.to_thread(
+    # The retry just put the row back to PENDING; a cancel since then stands.
+    applied = await asyncio.to_thread(
         _finish,
         row_id,
         "mark_failed",
+        from_status="PENDING",
         kind="exhausted",
         error=row.last_error or "retry budget exhausted",
         error_code=row.last_error_code,
     )
-    await asyncio.to_thread(_notify_failure, row_id)
+    if applied:
+        await asyncio.to_thread(_notify_failure, row_id)
 
 
 def _claim(company: str) -> uuid.UUID | None:
@@ -418,6 +473,10 @@ async def run_forever() -> None:
     global _wake_event
     _wake_event = asyncio.Event()
     logger.info("gp outbox worker started")
+    try:
+        await asyncio.to_thread(_recover_in_flight)
+    except Exception:  # noqa: BLE001 - a failed sweep must not stop the worker; the next start tries again
+        logger.exception("gp outbox: in-flight recovery failed")
     while True:
         try:
             # No relay: nothing claimable, so do not even open a transaction. This is the steady

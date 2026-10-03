@@ -780,6 +780,7 @@ def test_a_queued_write_gp_refuses_for_the_job_fails_for_good_in_the_same_words(
             entity_key=f"po:{uuid.uuid4()}",
             label="Register PO in GP",
         )
+        row.status = "IN_FLIGHT"  # as the worker's claim leaves it
         row_id = row.id
         session.commit()
 
