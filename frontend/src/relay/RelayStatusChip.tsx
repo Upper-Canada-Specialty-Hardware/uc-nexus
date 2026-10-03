@@ -8,6 +8,9 @@ import type { GpCompany } from './useRelayStatus';
 interface RelayStatusChipProps {
   // null = check still in flight.
   connected: boolean | null;
+  // #1334: no status has arrived and the poll is failing - Nexus itself is unreachable, which says
+  // nothing about the relay. Shown as its own state so nobody restarts a healthy relay.
+  unreachable?: boolean;
   // #637: the GP companies the live relay serves. Shown compactly beside the status when given -
   // the full list is in the tooltip, so a multi-company relay never widens the header. For a scoped
   // user this list only decides whether the relay is serving their own company yet.
@@ -25,10 +28,24 @@ interface RelayStatusChipProps {
 //
 // The company half reads differently for the two kinds of caller, which is why the identity is read
 // here rather than passed in: fixing it once fixes every place the indicator is used.
-export default function RelayStatusChip({ connected, companies, gpCompanies, showReach = false }: RelayStatusChipProps) {
+export default function RelayStatusChip({
+  connected,
+  unreachable = false,
+  companies,
+  gpCompanies,
+  showReach = false,
+}: RelayStatusChipProps) {
   const { isNexusAdmin } = useIdentity();
   // #863: the company on screen - a scoped user's own, or the one a UC NEXUS ADMIN has switched to.
   const { company: ownCompany } = useActingCompany();
+
+  if (unreachable) {
+    return (
+      <Tooltip title="Nexus is not answering right now (a deploy or a network blip). Retrying - the GP relay may be fine." arrow>
+        <Chip size="small" color="warning" label="can't reach Nexus - retrying" />
+      </Tooltip>
+    );
+  }
 
   const status =
     connected === null ? (
@@ -36,7 +53,7 @@ export default function RelayStatusChip({ connected, companies, gpCompanies, sho
     ) : connected ? (
       <Chip size="small" color="success" label="relay connected" />
     ) : (
-      <Chip size="small" color="error" label="GP relay not detected" />
+      <Chip size="small" color="error" label="GP relay not connected" />
     );
 
   if (!connected || !companies) return status;

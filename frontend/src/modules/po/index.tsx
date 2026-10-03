@@ -39,7 +39,7 @@ import CreatePOChooser from './CreatePOChooser';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import GpCompanyLabel from '../../relay/GpCompanyLabel';
 import { useActingCompany } from '../../company/ActingCompanyContext';
-import { useRelayStatus } from '../../relay/useRelayStatus';
+import { useRelayFor } from '../../relay/useRelayStatus';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
 import { isAwaitingGpReadBack } from './poDocumentGate';
 import { isStatusCardActive, toggleStatusCard } from './statusCardFilter';
@@ -523,8 +523,10 @@ function POListPage() {
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  const relay = useRelayStatus();
-  const relayConnected = relay.connected;
+  // #1336: the PO table works in the acting company, so GP actions need the relay to serve it - a relay
+  // connected for another company reads as down for Sync, Register and the dialogs fed from here.
+  const relay = useRelayFor();
+  const relayConnected = relay.connected === true ? relay.servesCompany : relay.connected;
 
   // #353 PR E: which POs have a GP write still on the outbox, joined onto rows client-side on
   // entityKey (`po:<id>`) rather than as a per-row resolver (which would be an N+1).
@@ -746,7 +748,12 @@ function POListPage() {
             {company && <GpCompanyLabel code={company} gpCompanies={relay.gpCompanies} />}
           </Typography>
         </Box>
-        <RelayStatusChip connected={relayConnected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
+        <RelayStatusChip
+          connected={relay.connected}
+          unreachable={relay.unreachable}
+          companies={relay.companies}
+          gpCompanies={relay.gpCompanies}
+        />
         {/* #744: everyone who works the PO table may bring the mirror up to date. The server scopes
             the pass to the caller's own company, so this is never a cross-company action. */}
         <Button

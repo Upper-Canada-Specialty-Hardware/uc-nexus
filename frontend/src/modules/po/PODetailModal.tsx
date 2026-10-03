@@ -652,7 +652,13 @@ export default function PODetailModal({
               only has to drop between opening this and submitting. */}
           {canRegisterInGp && (
             <Tooltip
-              title={relayConnected ? '' : 'GP relay not detected on this machine - it must be running to register a PO'}
+              title={
+                relayConnected
+                  ? ''
+                  : relayConnectedProp === null
+                    ? 'Checking the GP relay…'
+                    : 'The GP relay (on the GP workstation) is not connected for this company - ask an admin to check it'
+              }
               arrow
             >
               <span>
