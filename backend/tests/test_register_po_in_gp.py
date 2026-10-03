@@ -1269,3 +1269,153 @@ def test_a_schedule_registration_is_refused_by_a_relay_that_does_not_expand_sche
         assert _queued_write(key) is None
     finally:
         _delete_queued_write(key)
+
+
+# --- #1167: a kept line's schedule ties follow what it is registered as ------------------------------
+
+
+def _import_multi_unit_draft(session, project: Project) -> PurchaseOrder:
+    """A Draft PO whose HG-100 line is tied to 6 schedule units (2 on each of A01-A03) and whose HG-200
+    line is tied to 1 unit on A04."""
+    items = []
+    for opening in ("A01", "A02", "A03"):
+        item = _hardware_item_input(opening, "HG-100")
+        item["item_quantity"] = 2
+        items.append(item)
+    items.append(_hardware_item_input("A04", "HG-200"))
+    import_repository.finalize_import_session(
+        session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input(o) for o in ("A01", "A02", "A03", "A04")],
+            "hardware_items": items,
+            "po_drafts": [
+                {
+                    "po_number": None,
+                    "notes": None,
+                    "hardware_item_refs": [
+                        {"opening_number": o, "product_code": "HG-100", "hardware_category": "HINGE"}
+                        for o in ("A01", "A02", "A03")
+                    ]
+                    + [{"opening_number": "A04", "product_code": "HG-200", "hardware_category": "HINGE"}],
+                    "line_item_aliases": [],
+                }
+            ],
+        },
+    )
+    session.flush()
+    return session.scalars(select(PurchaseOrder).where(PurchaseOrder.project_id == project.id)).one()
+
+
+def _register_lines(session, po, lines):
+    po_repository.register_po_in_gp(
+        session,
+        po.id,
+        gp_vendor_id="GPV1",
+        vendor_name_snapshot="GP Vendor",
+        po_number=f"PO{uuid.uuid4().hex[:6]}",
+        gp_company="TUBC",
+        line_items=[
+            {
+                "id": str(li.id),
+                "hardware_category": cat,
+                "product_code": code,
+                "ordered_quantity": qty,
+                "unit_cost": 10.0,
+                "classification": None,
+                "order_as": None,
+            }
+            for li, cat, code, qty in lines
+        ],
+    )
+    session.flush()
+
+
+def _tied_units(session, line_id) -> int:
+    rows = session.scalars(select(HardwareItem).where(HardwareItem.po_line_item_id == line_id))
+    return sum(hi.item_quantity for hi in rows)
+
+
+def _hinge_rows(session, project):
+    return session.scalars(
+        select(HardwareItem).where(HardwareItem.project_id == project.id, HardwareItem.product_code == "HG-100")
+    ).all()
+
+
+def test_registering_a_line_at_a_lower_quantity_releases_the_excess(db_session):
+    project = _make_project(db_session)
+    po = _import_multi_unit_draft(db_session, project)
+    lines = {li.product_code: li for li in po.line_items}
+    hinge = lines["HG-100"]
+    assert _tied_units(db_session, hinge.id) == 6
+
+    _register_lines(db_session, po, [(hinge, "HINGE", "HG-100", 3), (lines["HG-200"], "HINGE", "HG-200", 1)])
+
+    assert _tied_units(db_session, hinge.id) == 3
+    rows = _hinge_rows(db_session, project)
+    # every unit is still on the schedule: 3 ordered on this line, 3 back to AVAILABLE
+    assert sum(r.item_quantity for r in rows) == 6
+    available = [r for r in rows if r.state == HardwareItemState.AVAILABLE]
+    assert sum(r.item_quantity for r in available) == 3
+    assert all(r.po_line_item_id is None for r in available)
+    # the oldest openings keep their ties; A02 is split at the boundary
+    openings = {
+        o.id: o.opening_number for o in db_session.scalars(select(Opening).where(Opening.project_id == project.id))
+    }
+    tied: dict[str, int] = {}
+    for r in rows:
+        if r.po_line_item_id == hinge.id:
+            tied[openings[r.opening_id]] = tied.get(openings[r.opening_id], 0) + r.item_quantity
+    assert tied == {"A01": 2, "A02": 1}
+    # the other line is untouched
+    assert _tied_units(db_session, lines["HG-200"].id) == 1
+
+
+def test_registering_a_line_as_another_product_releases_every_tie(db_session):
+    project = _make_project(db_session)
+    po = _import_multi_unit_draft(db_session, project)
+    lines = {li.product_code: li for li in po.line_items}
+    hinge = lines["HG-100"]
+
+    _register_lines(db_session, po, [(hinge, "HINGE", "HG-999", 6), (lines["HG-200"], "HINGE", "HG-200", 1)])
+
+    assert _tied_units(db_session, hinge.id) == 0
+    rows = _hinge_rows(db_session, project)
+    assert sum(r.item_quantity for r in rows) == 6
+    assert all(r.state == HardwareItemState.AVAILABLE and r.po_line_item_id is None for r in rows)
+
+
+def test_registering_a_line_as_another_category_releases_every_tie(db_session):
+    project = _make_project(db_session)
+    po = _import_multi_unit_draft(db_session, project)
+    lines = {li.product_code: li for li in po.line_items}
+
+    _register_lines(db_session, po, [(lines["HG-100"], "LOCK", "HG-100", 6), (lines["HG-200"], "HINGE", "HG-200", 1)])
+
+    assert _tied_units(db_session, lines["HG-100"].id) == 0
+
+
+def test_registering_a_line_unchanged_keeps_every_tie(db_session):
+    project = _make_project(db_session)
+    po = _import_multi_unit_draft(db_session, project)
+    lines = {li.product_code: li for li in po.line_items}
+    hinge = lines["HG-100"]
+    before = {r.id for r in db_session.scalars(select(HardwareItem).where(HardwareItem.po_line_item_id == hinge.id))}
+
+    _register_lines(db_session, po, [(hinge, "HINGE", "HG-100", 6), (lines["HG-200"], "HINGE", "HG-200", 1)])
+
+    after = db_session.scalars(select(HardwareItem).where(HardwareItem.po_line_item_id == hinge.id)).all()
+    assert {r.id for r in after} == before
+    assert _tied_units(db_session, hinge.id) == 6
+    assert all(r.state == HardwareItemState.IN_PO for r in after)
+
+
+def test_registering_a_line_at_a_higher_quantity_keeps_its_ties(db_session):
+    project = _make_project(db_session)
+    po = _import_multi_unit_draft(db_session, project)
+    lines = {li.product_code: li for li in po.line_items}
+    hinge = lines["HG-100"]
+
+    _register_lines(db_session, po, [(hinge, "HINGE", "HG-100", 10), (lines["HG-200"], "HINGE", "HG-200", 1)])
+
+    assert _tied_units(db_session, hinge.id) == 6

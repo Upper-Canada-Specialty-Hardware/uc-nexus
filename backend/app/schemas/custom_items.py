@@ -16,7 +16,9 @@ import strawberry
 
 from app.auth import tenant_scope
 from app.database import SessionLocal
-from app.repositories import custom_items_repository, tenancy
+from app.errors import ValidationError
+from app.repositories import custom_items_repository, tenancy, user_repository
+from app.services import nexus_companies
 
 
 @strawberry.type
@@ -193,15 +195,22 @@ class CustomItemMutations:
         `code` defaults to one derived from the name and is fixed from here on - it is what reaches
         `hardwareCategory` on every row this type's items produce. A code already in use, whether by
         another type or as a hardware category on existing stock, is refused."""
+        scope = tenant_scope(info)
+        if scope is None and company:
+            # An unscoped UC NEXUS ADMIN names the company, and a typo must be refused rather than
+            # stored under a company nobody can pick - the same check the X-Nexus-Company header gets.
+            normalized = user_repository.normalize_company(company)
+            if normalized is not None and not nexus_companies.is_known_company(normalized):
+                raise ValidationError(f"Unknown GP company '{normalized}'.", field="company")
         with SessionLocal() as session:
             item_type = custom_items_repository.create_item_type(
                 session,
                 name=name,
                 code=code,
                 sort_order=sort_order,
-                # The catalog is one tenant's own (#637). A scoped caller can only add to theirs; an
-                # A UC NEXUS ADMIN is unscoped and names the company.
-                company=tenant_scope(info) or (company or ""),
+                # The catalog is one tenant's own (#637). A scoped caller can only add to theirs; a
+                # UC NEXUS ADMIN is unscoped and names the company.
+                company=scope or (company or ""),
             )
             session.commit()
             return _item_type_to_type(custom_items_repository.get_item_type(session, item_type.id))

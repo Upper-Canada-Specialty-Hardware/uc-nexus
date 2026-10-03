@@ -201,7 +201,13 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
     A line GP has cancelled to nothing orderable (net <= 0, or a fractional remainder that rounds below
     one whole unit) is skipped when it is NEW - there is nothing to mirror. When it ALREADY exists it is
     ZEROED, not left at its stale ordered_quantity: a line fully cancelled in GP after first mirror would
-    otherwise report phantom pending units in openPosSummary and the receive picker forever."""
+    otherwise report phantom pending units in openPosSummary and the receive picker forever.
+
+    An existing line's schedule ties follow its new quantity (#1227): rows tied beyond what the line can
+    still cover - what GP orders, or what has already arrived when that is more - go back to AVAILABLE,
+    so the units GP will never send resurface as needing a PO."""
+    from app.repositories.po_repository import _release_line_ties_beyond
+
     existing = {li.gp_line_ord: li for li in po.line_items if li.gp_line_ord is not None}
     for ln in gp_lines:
         ord_ = ln["ord"]
@@ -217,12 +223,12 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
 
         if ordered_qty < 1:
             if li is not None:
-                # Zero the outstanding while respecting ck_po_line_items_ordered_quantity_positive
-                # (ordered >= 1): pin ordered to what has already been received (min 1). Pending
-                # (ordered - received) is then 0 whenever anything landed; a never-received cancelled
-                # line lands at ordered=1 / received=0, a single-unit residual the ck floor forces.
+                # Zero the outstanding: ordered becomes what has already been received, so pending
+                # (ordered - received) is 0 and a never-received cancelled line orders nothing (#1228;
+                # the check allows 0 since migration 129). Only the received units keep their ties.
                 li.received_quantity = received_qty
-                li.ordered_quantity = max(1, received_qty)
+                li.ordered_quantity = received_qty
+                _release_line_ties_beyond(session, li.id, keep=received_qty)
                 li.unit_cost = unit_cost
                 _apply_gp_line_identity(li, ln)
                 _apply_gp_line_entry_fields(li, ln)
@@ -246,6 +252,8 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
             session.add(li)
             po.line_items.append(li)
         else:
+            if ordered_qty < li.ordered_quantity:
+                _release_line_ties_beyond(session, li.id, keep=max(ordered_qty, received_qty))
             li.ordered_quantity = ordered_qty
             li.received_quantity = received_qty
             li.unit_cost = unit_cost

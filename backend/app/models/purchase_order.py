@@ -159,7 +159,9 @@ class POLineItem(Base):
     __tablename__ = "po_line_items"
     __table_args__ = (
         Index("ix_po_line_items_po_id", "po_id"),
-        CheckConstraint("ordered_quantity >= 1", name="ck_po_line_items_ordered_quantity_positive"),
+        # >= 0, not >= 1 (#1228): a line GP cancelled before anything arrived orders nothing. Every input
+        # path still refuses a quantity below 1; only the GP sync writes 0.
+        CheckConstraint("ordered_quantity >= 0", name="ck_po_line_items_ordered_quantity_positive"),
         CheckConstraint("received_quantity >= 0", name="ck_po_line_items_received_quantity_nonneg"),
     )
 
@@ -274,6 +276,9 @@ class PODocumentData(Base):
     tax_label: Mapped[str] = mapped_column(String, nullable=False, default="Taxes")
     # Tariff line for the document totals (issue #156). Prefills from PurchaseOrder.tariff_amount.
     tariff_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0"))
+    # GP's trade discount (TRDISAMT), taken off the order total (#1236). Null until the dialog saves
+    # one, so a document saved before it existed still prefills GP's discount instead of a saved 0.
+    trade_discount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     # Overrides the header Required-by date (defaults to PurchaseOrder.expected_delivery_date).
     required_by_override: Mapped[date | None] = mapped_column(Date, nullable=True)
     # Conditional boilerplate toggles (wood-door FSC note, USA tariff note, international customs block).

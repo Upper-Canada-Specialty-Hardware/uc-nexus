@@ -72,6 +72,7 @@ export const PURCHASE_ORDER_DETAIL_FIELDS = gql`
       taxAmount
       taxLabel
       tariffAmount
+      tradeDiscount
       requiredByOverride
       includeFsc
       includeUsaTariff
@@ -268,6 +269,8 @@ export const GET_GP_PO_TOTALS = gql`
       freight
       miscellaneous
       taxAmount
+      # #1236: the trade discount GP holds (0 from an older relay build).
+      tradeDiscount
       # #858: what GP holds on the PO's header, which the document prefills its empty fields from.
       header {
         shippingMethod
@@ -685,6 +688,7 @@ export const SAVE_PO_DOCUMENT_DATA = gql`
         taxAmount
         taxLabel
         tariffAmount
+        tradeDiscount
         requiredByOverride
         includeFsc
         includeUsaTariff
