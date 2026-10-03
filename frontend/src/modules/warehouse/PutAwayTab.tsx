@@ -44,6 +44,7 @@ import { StaggerItem, StaggerList } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
 import { type WarehouseLocationDef, normalizeLocationValue } from './receiveDraftTypes';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
+import { isPutAwaySplitValid } from './putAwaySplit';
 
 // #856: at ~850 px Assign, the row's only action, sat past the right edge of the table's own scroll
 // area. Both tables now fit their width and never scroll sideways, so Assign is always in view; the
@@ -103,6 +104,8 @@ interface InventoryLocation {
   hardwareCategory: string;
   productCode: string;
   quantity: number;
+  /** Condemned units on the row. They stay on it when part of the row is put away (#1130). */
+  deficientQuantity?: number;
   receivedAt: string;
 }
 
@@ -348,12 +351,8 @@ export default function PutAwayTab() {
   );
 
   const splitIsValid = useCallback(
-    (id: string, rowQuantity: number): boolean => {
-      const raw = (splitQty[id] ?? '').trim();
-      if (raw === '') return true;
-      const n = Number(raw);
-      return Number.isInteger(n) && n >= 1 && n <= rowQuantity;
-    },
+    (id: string, rowQuantity: number, deficient: number = 0): boolean =>
+      isPutAwaySplitValid(splitQty[id] ?? '', rowQuantity, deficient),
     [splitQty],
   );
 
@@ -845,7 +844,13 @@ export default function PutAwayTab() {
                             {/* Blank means the whole row. A number under the row quantity
                                 splits it: that many go to this bin, the remainder comes back
                                 to the queue for a shelf of its own. */}
-                            <Tooltip title="Leave blank to put the whole row away here.">
+                            <Tooltip
+                              title={
+                                (item.inventoryLocation.deficientQuantity ?? 0) > 0
+                                  ? `Leave blank to put the whole row away here. ${item.inventoryLocation.deficientQuantity} are deficient and stay with the row, so a part can be at most ${item.inventoryLocation.quantity - (item.inventoryLocation.deficientQuantity ?? 0)}.`
+                                  : 'Leave blank to put the whole row away here.'
+                              }
+                            >
                               <TextField
                                 size="small"
                                 type="number"
@@ -867,7 +872,15 @@ export default function PutAwayTab() {
                             <Button
                               variant="contained"
                               size="small"
-                              disabled={!valid || isAssigning || !splitIsValid(id, item.inventoryLocation.quantity)}
+                              disabled={
+                                !valid ||
+                                isAssigning ||
+                                !splitIsValid(
+                                  id,
+                                  item.inventoryLocation.quantity,
+                                  item.inventoryLocation.deficientQuantity ?? 0,
+                                )
+                              }
                               onClick={() =>
                                 handleAssign(
                                   id,

@@ -15,7 +15,7 @@ from app.models.enums import AuditAction
 from app.models.inventory import InventoryLocation
 from app.repositories import warehouse as warehouse_repository
 
-from .inventory_fixtures import make_il, make_project, make_return_item, wh_id
+from .inventory_fixtures import define_location, make_il, make_project, make_return_item, wh_id
 
 # --- adjust_inventory_quantity floor ------------------------------------------------------------
 
@@ -116,6 +116,7 @@ def test_override_increase_new_location_clones_the_return_origin(db_session):
     project = make_project(db_session)
     ret = make_return_item(db_session, project)
     il = make_il(db_session, project, quantity=5, shipment_return_item_id=ret.id, aisle="A", row="1", bay="1")
+    define_location(db_session, aisle="B", row="2", bay="2")
 
     warehouse_repository.override_inventory_quantity(
         db_session,

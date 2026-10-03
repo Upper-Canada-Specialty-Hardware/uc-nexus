@@ -18,7 +18,7 @@ import { FONT_MONO, microLabelSx, monoSx, tabularSx } from '../../theme';
 import { OVERRIDE_INVENTORY_QUANTITY } from '../../graphql/admin';
 import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED, ASSIGN_INVENTORY_LOCATION } from '../../graphql/shared';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
-import { ReservationNotice, useComboReservation } from '../warehouse/reservationNotice';
+import { ReservationGateNotice, useComboReservation, useReservationGate } from '../warehouse/reservationNotice';
 
 // --- Item types ---
 
@@ -165,6 +165,8 @@ export default function InventoryCorrectionModal({
     skip: correctionType !== 'overrideQuantity',
   });
   const resultingSound = reservation == null ? null : reservation.soundOnHand + delta;
+  // #1124: an override below the reserved claim is recorded only by a Warehouse Manager who confirms it.
+  const gate = useReservationGate(reservation, resultingSound, correctionType === 'overrideQuantity' && delta < 0);
 
   // Destination rows for the added units, defaulting to one location = this row's current location with
   // the whole delta. The default tracks delta until the user edits, then their edits stick.
@@ -200,7 +202,7 @@ export default function InventoryCorrectionModal({
         if (!reason.trim() || reason.length > REASON_MAX_LENGTH) return false;
         if (Number.isNaN(newQtyNum) || newQtyNum < 0) return false;
         if (delta === 0) return false;
-        if (delta < 0) return newQtyNum >= itemDeficient;
+        if (delta < 0) return newQtyNum >= itemDeficient && !gate.blocked;
         // increase: every added unit must be placed in a valid location, summing to the delta
         let sum = 0;
         for (const d of destRows) {
@@ -225,7 +227,7 @@ export default function InventoryCorrectionModal({
       default:
         return false;
     }
-  }, [correctionType, newQtyNum, delta, itemDeficient, destRows, reason, aisle, row, bay]);
+  }, [correctionType, newQtyNum, delta, itemDeficient, destRows, reason, aisle, row, bay, gate.blocked]);
 
   // --- Confirmation message ---
 
@@ -324,6 +326,7 @@ export default function InventoryCorrectionModal({
                       quantity: Number(d.quantity),
                     }))
                   : [],
+              ...(gate.confirmed ? { confirmBelowReserved: true } : {}),
             },
           },
         });
@@ -422,6 +425,9 @@ export default function InventoryCorrectionModal({
                     label={remaining === 0 ? 'all placed' : `${remaining} unplaced`}
                   />
                 </Box>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                  Use this row&apos;s own location or one defined for the warehouse on the Locations tab.
+                </Typography>
                 <Stack spacing={1}>
                   {destRows.map((d, idx) => (
                     <Stack key={idx} direction="row" spacing={1} alignItems="center" sx={{ flexWrap: 'wrap' }}>
@@ -477,7 +483,7 @@ export default function InventoryCorrectionModal({
               </Box>
             )}
             {reservation != null && resultingSound != null && (
-              <ReservationNotice reserved={reservation.reserved} resulting={resultingSound} />
+              <ReservationGateNotice reserved={reservation.reserved} resulting={resultingSound} gate={gate} />
             )}
           </Stack>
         );

@@ -13,6 +13,8 @@ from app.models.stock_item import StockItem
 from app.repositories import warehouse as warehouse_repository
 from app.repositories import warehouse_admin_repository
 
+from .inventory_fixtures import define_location
+
 
 def _make_project(session) -> Project:
     p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test", company="TUBC")
@@ -106,6 +108,7 @@ def test_override_increase_new_location_creates_row(db_session):
     project = _make_project(db_session)
     origin = _make_stock_item(db_session)
     il = _make_il(db_session, project.id, origin.id, quantity=5, aisle="A", row="1", bay="1")
+    define_location(db_session, aisle="B", row="2", bay="2")
 
     warehouse_repository.override_inventory_quantity(
         db_session,
@@ -140,8 +143,9 @@ def test_override_increase_destinations_must_sum_to_delta(db_session):
     project = _make_project(db_session)
     origin = _make_stock_item(db_session)
     il = _make_il(db_session, project.id, origin.id, quantity=5)
+    define_location(db_session, aisle="B", row="2", bay="2")
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="sum"):
         warehouse_repository.override_inventory_quantity(
             db_session,
             inv_id=il.id,
@@ -172,3 +176,40 @@ def test_override_no_change_rejected(db_session):
         warehouse_repository.override_inventory_quantity(
             db_session, inv_id=il.id, new_quantity=5, reason="no change", destinations=[], performed_by="tester"
         )
+
+
+def test_override_increase_to_an_undefined_location_is_refused(db_session):
+    """#1129: found units are put on a shelf the user chose, so the shelf must be one the warehouse
+    defined - like every other user-chosen location - or they land somewhere no picker lists."""
+    project = _make_project(db_session)
+    origin = _make_stock_item(db_session)
+    il = _make_il(db_session, project.id, origin.id, quantity=5)
+
+    with pytest.raises(ValidationError):
+        warehouse_repository.override_inventory_quantity(
+            db_session,
+            inv_id=il.id,
+            new_quantity=8,
+            reason="found three",
+            destinations=[{"aisle": "Z", "row": "99", "bay": "99", "quantity": 3}],
+            performed_by="tester",
+        )
+    assert il.quantity == 5
+    assert len(_rows(db_session, project.id)) == 1
+
+
+def test_override_increase_on_the_rows_own_shelf_needs_no_definition(db_session):
+    """The row's own shelf is inherited, not chosen: a retired or never-defined one still takes a bump."""
+    project = _make_project(db_session)
+    origin = _make_stock_item(db_session)
+    il = _make_il(db_session, project.id, origin.id, quantity=5, aisle="Q", row="9", bay="9")
+
+    warehouse_repository.override_inventory_quantity(
+        db_session,
+        inv_id=il.id,
+        new_quantity=7,
+        reason="recount up",
+        destinations=[{"aisle": "Q", "row": "9", "bay": "9", "quantity": 2}],
+        performed_by="tester",
+    )
+    assert il.quantity == 7
