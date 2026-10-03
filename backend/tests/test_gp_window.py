@@ -218,3 +218,27 @@ def test_every_minute_of_the_day_is_either_open_or_shut_and_reopens_within_a_day
             utc = ZoneInfo("UTC")
             ahead = (window.next_open(now).astimezone(utc) - now.astimezone(utc)).total_seconds()
             assert 0 < ahead <= 24 * 3600
+
+
+# --- the Toronto calendar date of an instant (#1272, #1273) ------------------------------------------
+
+
+def test_local_today_is_the_toronto_date_after_8pm_eastern():
+    # 00:30 UTC on Oct 4 is 8:30pm EDT on Oct 3: still the 3rd for the person at the desk.
+    assert gp_window.local_today(datetime(2026, 10, 4, 0, 30)).isoformat() == "2026-10-03"
+
+
+def test_local_today_follows_est_in_winter():
+    # 04:30 UTC on Jan 15 is 11:30pm EST on Jan 14; 05:30 UTC is already the 15th.
+    assert gp_window.local_today(datetime(2026, 1, 15, 4, 30)).isoformat() == "2026-01-14"
+    assert gp_window.local_today(datetime(2026, 1, 15, 5, 30)).isoformat() == "2026-01-15"
+
+
+def test_local_today_reads_an_aware_instant_as_given():
+    aware = datetime(2026, 10, 4, 0, 30, tzinfo=ZoneInfo("UTC"))
+    assert gp_window.local_today(aware).isoformat() == "2026-10-03"
+
+
+def test_local_date_of_a_stored_naive_utc_timestamp():
+    assert gp_window.local_date(datetime(2026, 10, 4, 0, 30)).isoformat() == "2026-10-03"
+    assert gp_window.local_date(datetime(2026, 10, 3, 15, 0)).isoformat() == "2026-10-03"

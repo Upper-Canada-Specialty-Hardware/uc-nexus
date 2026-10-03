@@ -1,7 +1,13 @@
 import { screen, fireEvent, waitFor, within, configure } from '@testing-library/react';
 import type { MockedResponse } from '@apollo/client/testing';
 import { GraphQLError } from 'graphql';
-import { CREATE_DRAFT_PO, REGISTER_PO_IN_GP, GET_GP_PURCHASE_TAX_SCHEDULES } from '../../../graphql/po';
+import {
+  CREATE_DRAFT_PO,
+  REGISTER_PO_IN_GP,
+  GET_GP_PURCHASE_TAX_SCHEDULES,
+  GET_GP_VENDORS,
+  GET_GP_COST_CODES,
+} from '../../../graphql/po';
 import {
   INFINITE,
   UUID_RE,
@@ -31,7 +37,7 @@ configure({ asyncUtilTimeout: 15_000 });
 
 // Issue #216: the buyer IS the caller's GP identity (Clerk publicMetadata.gpBuyerId). Stub the hook
 // with a mutable slot so individual tests can drop the identity.
-const identity = vi.hoisted(() => ({ gpBuyerId: 'JSMITH' as string | null }));
+const identity = vi.hoisted(() => ({ gpBuyerId: 'JSMITH' as string | null, roles: ['PO User'] as string[] }));
 // The "Add Custom Item" dialog reads the catalog over GraphQL; stand it in with a picker that hands
 // back one fixed item the moment it opens, so a test can add a custom row without the catalog.
 vi.mock('../CustomItemPicker', () => ({
@@ -55,8 +61,8 @@ vi.mock('../CustomItemPicker', () => ({
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
     displayName: 'Test Buyer',
-    roles: [],
-    hasRole: () => false,
+    roles: identity.roles,
+    hasRole: (r: string) => identity.roles.includes(r),
     isNexusAdmin: false,
     isTenantOwner: false,
     ownsTenant: false,
@@ -68,6 +74,7 @@ vi.mock('../../../hooks/useIdentity', () => ({
 
 beforeEach(() => {
   identity.gpBuyerId = 'JSMITH';
+  identity.roles = ['PO User'];
 });
 
 describe('GpPurchaseOrderDialog', () => {
@@ -109,6 +116,43 @@ describe('GpPurchaseOrderDialog', () => {
 
     expect(onSubmitted).not.toHaveBeenCalled();
     expect(screen.getByText(/Your account has no GP buyer identity/)).toBeInTheDocument();
+  });
+
+  // #1219: a buyer identity can only be set on a PO User, so a caller without that role (a tenant
+  // owner, say) is told it needs both, not sent to ask for an id an Admin cannot set.
+  it('tells a caller without po user that registering needs the role and a buyer identity', async () => {
+    identity.gpBuyerId = null;
+    identity.roles = ['Tenant Owner'];
+    renderDialog({ registerPo: stockDraft });
+
+    expect(screen.getByText(/needs the PO User role and a GP buyer identity/)).toBeInTheDocument();
+    expect(screen.queryByText(/Your account has no GP buyer identity/)).not.toBeInTheDocument();
+  });
+
+  // #1287: a failed vendor read says so, not an empty disabled picker with no reason. The failing
+  // mock goes first so it answers the read ahead of the base list.
+  it('says the gp vendor list could not be read when the read fails', async () => {
+    const failing: MockedResponse = {
+      request: { query: GET_GP_VENDORS, variables: { company: 'UCS' } },
+      result: { errors: [new GraphQLError('GP SQL timeout', { extensions: { code: 'GP_ERROR' } })] },
+    };
+    renderDialog({ registerPo: stockDraft }, [failing, ...baseMocks().filter((m) => m.request.query !== GET_GP_VENDORS)]);
+
+    expect(await screen.findByText('The GP vendor list could not be read - refresh to try again')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Refresh GP vendors' })).toBeEnabled();
+  });
+
+  // #1287: a failed cost-code read is not "no cost codes defined for this job".
+  it('says the cost codes could not be read when the read fails', async () => {
+    const failing: MockedResponse = {
+      request: { query: GET_GP_COST_CODES, variables: { company: 'UCS', job: 'JOB-100' } },
+      result: { errors: [new GraphQLError('GP SQL timeout', { extensions: { code: 'GP_ERROR' } })] },
+    };
+    renderDialog({ registerPo: projectDraft }, [...baseMocks(), failing]);
+
+    expect(await screen.findByText('Cost codes could not be read from GP - refresh to try again')).toBeInTheDocument();
+    expect(screen.queryByText('No cost codes defined for this job in GP')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Refresh cost codes' })).toBeEnabled();
   });
 
   it('requires explicit confirmation of a fuzzy vendor guess before registering', async () => {
@@ -713,7 +757,7 @@ describe('GpPurchaseOrderDialog', () => {
 
     expect(
       await screen.findByText(
-        'GP relay not detected on this machine - it must be running to push a PO to GP',
+        'The GP relay (on the GP workstation) is not connected for this company - ask an admin to check it. It must be up to push a PO to GP',
       ),
     ).toBeInTheDocument();
     expect(onSubmitted).not.toHaveBeenCalled();

@@ -509,6 +509,10 @@ class CreateJobResponse(BaseModel):
     # individually through the same lookup a PO uses, so this is not the request counted back at the
     # caller. 0 for a caller that sent none.
     cost_codes_provisioned: int = 0
+    # #1307: GP's full record of the new job, the same shape list_jobs serves (#730), read back from
+    # JC00102 after the create. The backend adopts the project with it, so the project starts with GP's
+    # customer, address, division and dates instead of waiting for the next sync pass.
+    record: dict | None = None
 
 
 # --- create a GP customer address (issue #444) ---

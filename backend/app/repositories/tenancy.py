@@ -39,7 +39,7 @@ from app.models.purchase_order import PODocument, POLineItem, PurchaseOrder
 from app.models.receive_draft import ReceiveDraft
 from app.models.shipment_container import ShipmentContainer
 from app.models.shipment_method import ShipmentMethod
-from app.models.shipping import PackingSlip, ShipmentReturn
+from app.models.shipping import PackingSlip
 from app.models.shipping_out_request import ShippingOutRequest
 from app.models.shop_assembly import ShopAssemblyRequest
 from app.models.stock_item import StockItem
@@ -248,18 +248,6 @@ def require_packing_slip_in_scope(session: Session, packing_slip_id: uuid.UUID, 
         scope,
         "Packing slip",
         packing_slip_id,
-    )
-
-
-def require_shipment_return_in_scope(session: Session, return_id: uuid.UUID, scope: str | None) -> None:
-    _require(
-        session,
-        select(Warehouse.company)
-        .join(ShipmentReturn, ShipmentReturn.warehouse_id == Warehouse.id)
-        .where(ShipmentReturn.id == return_id),
-        scope,
-        "Shipment return",
-        return_id,
     )
 
 

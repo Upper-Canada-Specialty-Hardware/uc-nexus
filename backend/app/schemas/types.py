@@ -203,12 +203,6 @@ class RelayEvent:
 
 
 @strawberry.type
-class GpJob:
-    job_number: str
-    job_name: str | None
-
-
-@strawberry.type
 class GpVendor:
     vendor_id: str
     vendor_name: str
@@ -371,6 +365,10 @@ class CreateGpJobResult:
     project: "Project"
     created: bool
     cost_codes_provisioned: int
+    # #1306: on the adopt path (created false), how many active cost codes GP holds on the job, read
+    # from GP; None when it could not be read, and on a real create. That path is also where a retry
+    # after a lost reply lands, so a flat 0 there would wrongly say the selected codes never landed.
+    cost_codes_in_gp: int | None = None
 
 
 @strawberry.type
@@ -554,6 +552,10 @@ class ReceiveDraft:
     po_id: strawberry.ID
     po_number: str | None
     project_id: strawberry.ID | None
+    # The PO's project by job number and name, read off the project itself (#1196) so an archived
+    # project's drafts still name it. Null on a PO with no project.
+    project_number: str | None
+    project_description: str | None
     # #958: Stock or Overhead, so a PO with no project is named for its kind, not always "Stock PO".
     pool_kind: PoolKind
     warehouse_id: strawberry.ID | None
@@ -598,6 +600,9 @@ class ReceivingHistoryPO:
     status: POStatus
     vendor_name: str | None
     project_id: strawberry.ID | None
+    # Job number and name off the project itself (#1215), archived included. Null with no project.
+    project_number: str | None
+    project_description: str | None
     # #958: Stock or Overhead, so a PO with no project is named for its kind, not always "Stock PO".
     pool_kind: PoolKind
     ordered_total: int
@@ -615,7 +620,15 @@ class PODocumentInfo:
     file_size: int
     document_type: PODocumentType
     uploaded_at: datetime
-    download_url: str
+    s3_key: strawberry.Private[str]
+
+    # #1339: signed only when a query asks for it, rather than for every document on every PO load. The
+    # link expires in an hour, so a page holding it goes stale; poDocumentDownloadUrl mints one on click.
+    @strawberry.field(deprecation_reason="Expires in an hour. Use poDocumentDownloadUrl when the user opens it.")
+    def download_url(self) -> str:
+        from app.services import storage
+
+        return storage.generate_presigned_url(self.s3_key)
 
 
 @strawberry.type
@@ -635,6 +648,8 @@ class PODocumentData:
     tax_amount: float
     tax_label: str
     tariff_amount: float
+    # #1236: null until a document saves one; the dialog then prefills GP's discount.
+    trade_discount: float | None
     required_by_override: date | None
     include_fsc: bool
     include_usa_tariff: bool
@@ -698,6 +713,9 @@ class GpPoTotals:
     freight: float
     miscellaneous: float
     tax_amount: float
+    # #1236: the trade discount PO REGISTRATION wrote (TRDISAMT). 0 from a relay build that predates
+    # the read, which is what such a PO showed before.
+    trade_discount: float = 0.0
     # #858: the header fields the document prints, as GP holds them on the PO. Null when the relay
     # build predates the read or the read failed - the totals still come back either way.
     header: GpPoHeader | None = None
@@ -974,6 +992,8 @@ class PullRequest:
     status: PullRequestStatus
     requested_by: str
     assigned_to: str | None
+    # #1356: who started the pick, by user id. Null on pulls started before it was recorded.
+    assigned_to_user_id: str | None
     created_at: datetime
     updated_at: datetime
     approved_at: datetime | None
@@ -1138,6 +1158,15 @@ class ShippingOutRequestItem:
 
 
 @strawberry.type
+class ShippingOutRequestReservedProduct:
+    """What a request actually holds on stock for one product (#1262)."""
+
+    hardware_category: str
+    product_code: str
+    quantity: int
+
+
+@strawberry.type
 class ShippingOutRequest:
     id: strawberry.ID
     request_number: str
@@ -1159,6 +1188,16 @@ class ShippingOutRequest:
     stage: RequestStage
     # See ShopAssemblyRequest.return_note (#343).
     return_note: str | None
+    # #1260: a fingerprint of the lines. The edit page sends back the one it loaded, and a save over
+    # lines someone else changed in between is refused instead of silently undoing their change.
+    lines_version: str
+    # Resolved only by the single-request read that seeds the edit page; null on list reads.
+    # #1257: the request's own project, archived included, so the edit page can open a request whose
+    # job was archived while it was pending (the projects list leaves archived jobs out).
+    project: Project | None = None
+    # #1262: what the request actually holds on stock, which the edit page adds back as headroom.
+    # Usually the line totals; nothing at all for a request a cancelled pull could not re-reserve.
+    reserved_by_product: list[ShippingOutRequestReservedProduct] | None = None
 
 
 @strawberry.type
@@ -1194,6 +1233,10 @@ class PackingSlip:
     id: strawberry.ID
     packing_slip_number: str
     project_id: strawberry.ID
+    # The project's business number (the job number) and name, read off the project itself (#1173),
+    # so a shipment of an archived project still says whose it is.
+    project_number: str
+    project_description: str | None
     # Where the truck has got to. The header is editable only while SCHEDULED.
     status: ShipmentStatus
     shipped_by: str
@@ -1321,6 +1364,9 @@ class POListRow:
     po_number: str | None
     request_number: str | None
     project_id: strawberry.ID | None
+    # Job number and name off the project itself (#1238), archived included. Null with no project.
+    project_number: str | None
+    project_description: str | None
     # #958: Stock or Overhead, the chip the register shows where a PO with no project has no job.
     pool_kind: PoolKind
     status: POStatus
@@ -1344,6 +1390,11 @@ class POListRow:
 class PurchaseOrderPage:
     rows: list[POListRow]
     total_count: int
+    # The project a `projectId`-scoped page is narrowed to, for its scope chip (#1238). Read here rather
+    # than off a row so an empty page - or an archived project's - still names the scope. Null when
+    # the page is not scoped, or the project is not the caller's company's.
+    scope_project_number: str | None = None
+    scope_project_description: str | None = None
 
 
 @strawberry.type
@@ -1355,6 +1406,9 @@ class OpenPOSummary:
     id: strawberry.ID
     po_number: str | None
     project_id: strawberry.ID | None
+    # Job number and name off the project itself (#1196), archived included. Null with no project.
+    project_number: str | None
+    project_description: str | None
     # #958: Stock or Overhead, so a PO with no project is named for its kind, not always "Stock PO".
     pool_kind: PoolKind
     status: POStatus
@@ -1569,13 +1623,16 @@ class InventoryRow:
 class EmailPoResult:
     """The outcome of sending a PO to its vendor (#500).
 
-    A result rather than an exception, because every refusal is something the user can act on -
-    generate the document, register the PO, ask accounting to put an email on the vendor card - and
-    none of them means something broke."""
+    A result rather than an exception. Most refusals are something the user can act on - generate the
+    document, register the PO, ask accounting to put an email on the vendor card. The ones that mean
+    something broke (the mail server, GP, storage) carry `failed` (#1278)."""
 
     sent: bool
     message: str
     sent_to: str | None = None
+    # #1278: true when something broke (the mail server, GP, storage) rather than a step the user can
+    # take, so the page shows it as an error rather than a passing note.
+    failed: bool = False
 
 
 @strawberry.type
@@ -1683,6 +1740,10 @@ class PickSheet:
 
     pull_request: PullRequest
     sections: list[PickSheetSection]
+    # The pull's project by job number and name, read off the project itself (#1196), so the pick
+    # page and printed sheet still name an archived project.
+    project_number: str | None
+    project_description: str | None
 
 
 @strawberry.type
@@ -1967,6 +2028,9 @@ class DeficientItemRow:
     inventory_location_id: strawberry.ID | None
     stock_item_id: strawberry.ID | None
     project_id: strawberry.ID | None
+    # Job number and name off the project itself (#1252), archived included. Null on a stock-pool row.
+    project_number: str | None
+    project_description: str | None
     hardware_category: str
     product_code: str
     deficient_quantity: int
@@ -2282,6 +2346,9 @@ class SharepointInventoryItem:
     # Cost per unit off the source list. There is no PO line in Nexus for migrated stock, so this is
     # the only cost the units can carry; the migration writes it onto the inventory rows.
     unit_cost: float
+    # The source cell held something that is not a number even after "$", "," and spaces are dropped
+    # (#1370); `unit_cost` then reads 0 and the row migrates with no cost.
+    unit_cost_unreadable: bool
     # What describes a non-schedule product, since no hardware schedule does (#454).
     part_description: str
     finish: str
@@ -2373,6 +2440,9 @@ class MigrationResult:
     catalog_items_created: int = 0
     catalog_items_skipped: int = 0
     catalog_attributes_created: int = 0
+    # Entries whose source cost could not be read as a number (#1370): migrated with no cost, to be
+    # priced by hand.
+    unreadable_unit_costs: int = 0
 
 
 # --- INVENTORY VALUE (#662) ----------------------------------------------------------------------

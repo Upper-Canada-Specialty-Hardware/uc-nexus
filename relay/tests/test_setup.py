@@ -4,6 +4,8 @@ stop-by-pid. Plus the ui.Api wizard-method guards. No real SQL, no window, no re
 import subprocess
 import tomllib
 
+import pytest
+
 from ucnexus_relay import setup, ui
 
 
@@ -71,6 +73,41 @@ def test_write_config_preserves_an_already_enrolled_secret(tmp_path):
     setup.write_config({}, p)
     data = tomllib.loads(p.read_text(encoding="utf-8"))
     assert data["auth"]["shared_secret"] == "enc:dpapi:REAL"
+
+
+def test_write_config_refuses_an_unparseable_file_instead_of_overwriting_it(tmp_path):
+    # #1385: treated as empty, a broken file was rewritten with the placeholder, wiping the enrolled secret.
+    p = tmp_path / "config.toml"
+    broken = '[auth]\nshared_secret = "enc:dpapi:REAL"\n[channel\n'
+    p.write_text(broken, encoding="utf-8")
+
+    r = setup.write_config({}, p)
+
+    assert r["ok"] is False and "not valid TOML" in r["error"] and "fix or remove" in r["error"]
+    assert p.read_text(encoding="utf-8") == broken  # untouched: the secret survives
+
+
+def test_write_config_leaves_no_temp_file_behind(tmp_path):
+    # #1386: written beside the target and replaced over it, so a crash never leaves half a config.
+    p = tmp_path / "config.toml"
+    setup.write_config({"shared_secret": "enc:dpapi:REAL"}, p)
+    assert [f.name for f in tmp_path.iterdir()] == ["config.toml"]
+
+
+def test_atomic_write_keeps_the_old_file_when_the_replace_fails(tmp_path, monkeypatch):
+    from ucnexus_relay import fsutil
+
+    p = tmp_path / "config.toml"
+    p.write_text("old", encoding="utf-8")
+
+    def _boom(src, dst):
+        raise OSError("power cut")
+
+    monkeypatch.setattr(fsutil.os, "replace", _boom)
+    with pytest.raises(OSError):
+        fsutil.atomic_write_text(p, "new")
+    assert p.read_text(encoding="utf-8") == "old"
+    assert [f.name for f in tmp_path.iterdir()] == ["config.toml"]  # the temp file is cleaned up
 
 
 def test_test_gp_connection_uses_baked_sql_when_file_has_none(tmp_path, monkeypatch):

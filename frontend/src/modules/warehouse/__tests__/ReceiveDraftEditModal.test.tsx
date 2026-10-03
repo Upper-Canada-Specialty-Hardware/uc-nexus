@@ -33,6 +33,8 @@ function draft(overrides: Partial<ReceiveDraft> = {}): ReceiveDraft {
     poId: 'po-1',
     poNumber: 'PO-123',
     projectId: 'proj-1',
+    projectNumber: null,
+    projectDescription: null,
     poolKind: 'STOCK',
     warehouseId: 'wh-1',
     createdByUserId: 'u_author',

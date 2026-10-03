@@ -1,8 +1,8 @@
 import { gql } from '@apollo/client/core';
 
 export const GET_PO_STATISTICS = gql`
-  query GetPOStatistics($projectId: ID) {
-    poStatistics(projectId: $projectId) {
+  query GetPOStatistics($projectId: ID, $origin: POOrigin) {
+    poStatistics(projectId: $projectId, origin: $origin) {
       total
       draft
       gpRegistered
@@ -72,6 +72,7 @@ export const PURCHASE_ORDER_DETAIL_FIELDS = gql`
       taxAmount
       taxLabel
       tariffAmount
+      tradeDiscount
       requiredByOverride
       includeFsc
       includeUsaTariff
@@ -126,7 +127,6 @@ export const PURCHASE_ORDER_DETAIL_FIELDS = gql`
       fileSize
       documentType
       uploadedAt
-      downloadUrl
     }
   }
 `;
@@ -167,11 +167,16 @@ export const PURCHASE_ORDERS_PAGE = gql`
       offset: $offset
     ) {
       totalCount
+      # #1238: the scoped project's number and name, for the scope chip, archived included.
+      scopeProjectNumber
+      scopeProjectDescription
       rows {
         id
         poNumber
         requestNumber
         projectId
+        projectNumber
+        projectDescription
         poolKind
         status
         origin
@@ -269,6 +274,8 @@ export const GET_GP_PO_TOTALS = gql`
       freight
       miscellaneous
       taxAmount
+      # #1236: the trade discount GP holds (0 from an older relay build).
+      tradeDiscount
       # #858: what GP holds on the PO's header, which the document prefills its empty fields from.
       header {
         shippingMethod
@@ -477,7 +484,6 @@ export const UPDATE_PO = gql`
         fileSize
         documentType
         uploadedAt
-        downloadUrl
       }
     }
   }
@@ -522,7 +528,6 @@ export const CANCEL_PO = gql`
         fileSize
         documentType
         uploadedAt
-        downloadUrl
       }
     }
   }
@@ -620,7 +625,6 @@ export const UPLOAD_PO_DOCUMENT = gql`
       fileSize
       documentType
       uploadedAt
-      downloadUrl
     }
   }
 `;
@@ -689,6 +693,7 @@ export const SAVE_PO_DOCUMENT_DATA = gql`
         taxAmount
         taxLabel
         tariffAmount
+        tradeDiscount
         requiredByOverride
         includeFsc
         includeUsaTariff
@@ -724,6 +729,7 @@ export const EMAIL_PO_TO_VENDOR = gql`
   mutation EmailPoToVendor($poId: ID!) {
     emailPoToVendor(poId: $poId) {
       sent
+      failed
       message
       sentTo
     }

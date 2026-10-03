@@ -40,6 +40,8 @@ function openPo(overrides: Record<string, unknown> = {}) {
     id: 'po-1',
     poNumber: 'PO-3001',
     projectId: null,
+    projectNumber: null,
+    projectDescription: null,
     status: 'GP_REGISTERED',
     origin: 'GP',
     gpVendorId: null,
@@ -203,8 +205,8 @@ const PROJECTS = [
 ];
 
 const SEARCH_POS = [
-  openPo({ id: 'po-a', poNumber: 'PO-4001', vendorNameSnapshot: 'Ace Hardware Co', projectId: 'proj-1' }),
-  openPo({ id: 'po-b', poNumber: 'PO-4002', vendorNameSnapshot: 'Beacon Locks', projectId: 'proj-2' }),
+  openPo({ id: 'po-a', poNumber: 'PO-4001', vendorNameSnapshot: 'Ace Hardware Co', projectId: 'proj-1', projectNumber: '23094', projectDescription: 'Harbour Tower' }),
+  openPo({ id: 'po-b', poNumber: 'PO-4002', vendorNameSnapshot: 'Beacon Locks', projectId: 'proj-2', projectNumber: '24110', projectDescription: 'Maple School' }),
   openPo({ id: 'po-c', poNumber: 'PO-5003', vendorNameSnapshot: 'Beacon Locks', projectId: null }),
 ];
 

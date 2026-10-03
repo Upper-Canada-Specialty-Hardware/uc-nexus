@@ -115,6 +115,35 @@ describe('NotificationBell', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/app/warehouse/receiving?view=drafts');
   });
 
+  it('still opens the notification when marking it read fails', async () => {
+    const items = [notification({ id: 'n-3' })];
+    render(
+      <MockedProvider
+        mocks={[
+          ...notificationsMocks(items),
+          {
+            request: { query: MARK_NOTIFICATION_AS_READ, variables: () => true },
+            error: new Error('Notification not found'),
+          },
+        ]}
+      >
+        <MemoryRouter initialEntries={['/app']}>
+          <Routes>
+            <Route path="/app" element={<NotificationBell />} />
+            <Route path="/app/warehouse/receiving" element={<div>Receiving</div>} />
+          </Routes>
+          <LocationProbe />
+        </MemoryRouter>
+      </MockedProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }));
+    fireEvent.click(await screen.findByText(/sent back your receive/, undefined, SLOW));
+
+    await screen.findByText('Receiving', undefined, SLOW);
+    expect(screen.getByTestId('location')).toHaveTextContent('/app/warehouse/receiving?view=drafts');
+  });
+
   it('marks every unread notification read with one request', async () => {
     // The popover only lists the latest few, and the badge counts every unread, so one action has to
     // reach the whole backlog. #1112: one bulk mutation, not one request per notification.
@@ -139,12 +168,16 @@ describe('NotificationBell', () => {
 
   it('shows 99+ when more than 99 are unread', async () => {
     // #1112: the count used to be the length of a 99-row fetch, so the badge could never pass 99.
+    // #1224: the server now stops at 100, so 100 is what "a lot" looks like; it must read as 99+
+    // on the badge, the label and the chip, never as an exact 100.
     renderBell([notification({ id: 'n-x', type: 'PULL_REQUEST_COMPLETED', message: 'X' })], [], {
-      unreadCount: 140,
+      unreadCount: 100,
     });
 
-    await screen.findByRole('button', { name: 'Notifications, 140 unread' }, SLOW);
+    const bell = await screen.findByRole('button', { name: 'Notifications, 99+ unread' }, SLOW);
     expect(screen.getByText('99+')).toBeInTheDocument();
+    fireEvent.click(bell);
+    expect(await screen.findByText('99+ new', undefined, SLOW)).toBeInTheDocument();
   });
 
   it('still only marks an audience-wide notification read, without navigating', async () => {

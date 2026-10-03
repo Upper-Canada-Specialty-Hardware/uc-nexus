@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import POModule from '../index';
 import { PURCHASE_ORDERS_PAGE, GET_PO_STATISTICS, GET_PURCHASE_ORDER } from '../../../graphql/po';
-import { GET_PROJECTS, GET_GP_OUTBOX, GET_RELAY_STATUS } from '../../../graphql/shared';
+import { GET_GP_OUTBOX, GET_RELAY_STATUS } from '../../../graphql/shared';
 
 // The register mounts five queries and a full MUI table; jsdom is slow enough at that to trip the
 // 1s async-util default once vitest is running files in parallel.
@@ -61,31 +61,16 @@ const outboxAsked: Record<string, unknown>[] = [];
 /** Every variable set the table page was read with, so a test can say what the table asked for (#851). */
 const pageAsked: Record<string, unknown>[] = [];
 
+/** Every variable set the status strip's counts were read with (#1237). */
+const statsAsked: Record<string, unknown>[] = [];
+
 beforeEach(() => {
   identity.isNexusAdmin = true;
   identity.company = null;
   outboxAsked.length = 0;
   pageAsked.length = 0;
+  statsAsked.length = 0;
 });
-
-// #851: the one project a link can scope the table to.
-const PROJECTS = [
-  {
-    __typename: 'Project',
-    id: 'proj-1',
-    projectId: 'J-23094',
-    description: 'Harbour Tower',
-    client: null,
-    jobSiteName: null,
-    scheduleFilename: null,
-    company: 'TUBC',
-    openingCount: 0,
-    gpSetupOk: null,
-    gpSetupCheckedAt: null,
-    gpSetupIssues: [],
-    gpJobState: null,
-  },
-];
 
 const INFINITE = Number.POSITIVE_INFINITY;
 
@@ -96,6 +81,8 @@ function row(overrides: Record<string, unknown>) {
     poNumber: null,
     requestNumber: null,
     projectId: null,
+    projectNumber: null,
+    projectDescription: null,
     status: 'DRAFT',
     origin: 'NEXUS',
     company: 'TUBC',
@@ -186,15 +173,28 @@ function mocks(heldRegistrations: Record<string, unknown>[] = []): MockedRespons
           return true;
         },
       },
-      result: {
+      // #1238: the scope chip reads the page's own scope label, so a scoped ask answers with it.
+      result: (v: Record<string, unknown>) => ({
         data: {
-          purchaseOrdersPage: { __typename: 'PurchaseOrderPage', rows: ROWS, totalCount: ROWS.length },
+          purchaseOrdersPage: {
+            __typename: 'PurchaseOrderPage',
+            rows: ROWS,
+            totalCount: ROWS.length,
+            scopeProjectNumber: v.projectId === 'proj-1' ? 'J-23094' : null,
+            scopeProjectDescription: v.projectId === 'proj-1' ? 'Harbour Tower' : null,
+          },
         },
-      },
+      }),
       maxUsageCount: INFINITE,
     },
     {
-      request: { query: GET_PO_STATISTICS, variables: () => true },
+      request: {
+        query: GET_PO_STATISTICS,
+        variables: (v: Record<string, unknown>) => {
+          statsAsked.push(v);
+          return true;
+        },
+      },
       result: {
         data: {
           poStatistics: {
@@ -209,11 +209,6 @@ function mocks(heldRegistrations: Record<string, unknown>[] = []): MockedRespons
           },
         },
       },
-      maxUsageCount: INFINITE,
-    },
-    {
-      request: { query: GET_PROJECTS, variables: () => true },
-      result: { data: { projects: PROJECTS } },
       maxUsageCount: INFINITE,
     },
     {
@@ -421,6 +416,32 @@ it('shows the held PO registrations on the PO table', async () => {
   );
 });
 
+// #1223: the queued chip (and the detail's Register/Cancel hold) reads only waiting registrations,
+// asked for by name, so 200 newer writes of other kinds can never push one off the list.
+it('marks a PO whose registration is waiting, asking only for waiting registrations', async () => {
+  renderRegister([
+    {
+      __typename: 'GpOutboxEntry',
+      id: 'queued-1',
+      label: 'PO registration PO-REQ-001',
+      op: 'create_po',
+      company: 'TUBC',
+      status: 'PENDING',
+      attempts: 0,
+      nextAttemptAt: '2026-07-01T12:05:00Z',
+      lastError: null,
+      failureKind: null,
+      entityKey: 'po:po-draft',
+      createdAt: '2026-07-01T12:00:00Z',
+    },
+  ]);
+
+  expect(await screen.findByText('GP registration queued')).toBeInTheDocument();
+  await waitFor(() =>
+    expect(outboxAsked).toContainEqual({ ops: ['create_po'], statuses: ['PENDING', 'IN_FLIGHT'], limit: 200 }),
+  );
+});
+
 // The normal state: nothing is held, and the table looks exactly as it did.
 it('says nothing about held PO registrations while there are none', async () => {
   renderRegister();
@@ -525,6 +546,31 @@ it('shows a link’s project scope as a chip, and removing it lifts the scope', 
 
   await waitFor(() => expect(lastPageAsk()).toMatchObject({ projectId: null }));
   expect(screen.queryByText('J-23094')).toBeNull();
+});
+
+// #1237: the status strip used to count every PO while the table showed one project's.
+it('counts the status strip in the same project scope as the table, and re-counts when it is lifted', async () => {
+  renderRegister([], '/?project=proj-1');
+  await screen.findByText('PO-2001');
+  await waitFor(() => expect(statsAsked).toContainEqual({ projectId: 'proj-1', origin: null }));
+  expect(statsAsked).not.toContainEqual({ projectId: null, origin: null });
+
+  fireEvent.click(screen.getByTestId('CancelIcon'));
+  await waitFor(() => expect(statsAsked).toContainEqual({ projectId: null, origin: null }));
+});
+
+// #1358: the origin filter narrowed the table but not the strip, so the counts disagreed with it.
+it('counts the status strip for the origin the table is filtered to, and re-counts when it changes', async () => {
+  renderRegister();
+  await screen.findByText('PO-2001');
+  await waitFor(() => expect(statsAsked).toContainEqual({ projectId: null, origin: null }));
+
+  fireEvent.click(screen.getByRole('button', { name: 'GP' }));
+  await waitFor(() => expect(statsAsked).toContainEqual({ projectId: null, origin: 'GP' }));
+  await waitFor(() => expect(lastPageAsk()).toMatchObject({ origin: 'GP' }));
+
+  fireEvent.click(screen.getByRole('button', { name: 'Nexus' }));
+  await waitFor(() => expect(statsAsked).toContainEqual({ projectId: null, origin: 'NEXUS' }));
 });
 
 it('tints the purchase orders the link names, and only those', async () => {

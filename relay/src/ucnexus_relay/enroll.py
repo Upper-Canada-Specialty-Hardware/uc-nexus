@@ -17,16 +17,19 @@ in the database.
 
 import argparse
 import json
+import os
 import re
 import secrets
 import socket
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 from . import dpapi
 from .config import DEFAULT_CONFIG_PATH
+from .fsutil import atomic_write_text
 
 _MUTATION = "mutation Enroll($input: EnrollRelayInstallInput!) { enrollRelayInstall(input: $input) { ok installId } }"
 
@@ -38,18 +41,6 @@ def _post_graphql(url: str, query: str, variables: dict) -> dict:
         return json.loads(resp.read().decode())
 
 
-def write_secret_to_config(config_path: Path, secret: str) -> None:
-    """Replace the [auth] shared_secret value in config.toml, preserving the rest of the file. The
-    `secret` written here is the storage form: either a token_urlsafe plaintext (dev) or a DPAPI
-    `enc:dpapi:<base64>` blob. Both contain only TOML-safe chars (URL-safe + standard base64), so there's
-    nothing to escape inside the double-quoted string."""
-    text = config_path.read_text(encoding="utf-8")
-    pattern = re.compile(r'^(\s*shared_secret\s*=\s*)".*?"', re.MULTILINE)
-    if not pattern.search(text):
-        raise SystemExit(f"could not find [auth] shared_secret in {config_path}; set it manually to the new secret")
-    config_path.write_text(pattern.sub(rf'\1"{secret}"', text, count=1), encoding="utf-8")
-
-
 class EnrollError(Exception):
     """Enrollment failed. `detail` carries the backend errors / raw response for logging or the UI."""
 
@@ -57,6 +48,45 @@ class EnrollError(Exception):
         super().__init__(message)
         self.message = message
         self.detail = detail
+
+
+_SECRET_LINE = re.compile(r'^(\s*shared_secret\s*=\s*)".*?"', re.MULTILINE)
+
+_ADOPT_HINT = (
+    "UC Nexus has already accepted this enrollment, so the token is spent. In UC Nexus Admin -> Relay Installs, "
+    "press Adopt next connection on this install: the relay's next connection is then accepted with the "
+    "secret it already holds"
+)
+
+
+def check_config_writable(config_path: Path) -> None:
+    """Refuse up front, before the one-time token is spent (#1384), a config.toml the secret could not be
+    written into: unreadable, with no [auth] shared_secret line, or in a place this process cannot write."""
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise EnrollError(f"cannot read {config_path}: {e}") from e
+    if not _SECRET_LINE.search(text):
+        raise EnrollError(f"could not find [auth] shared_secret in {config_path}; add the line, then enroll again")
+    try:
+        with open(config_path, "a", encoding="utf-8"):
+            pass
+        fd, probe = tempfile.mkstemp(prefix=".enroll-probe.", dir=config_path.parent)
+        os.close(fd)
+        os.unlink(probe)
+    except OSError as e:
+        raise EnrollError(f"{config_path} cannot be written: {e}") from e
+
+
+def write_secret_to_config(config_path: Path, secret: str) -> None:
+    """Replace the [auth] shared_secret value in config.toml, preserving the rest of the file, atomically
+    (#1386). The `secret` written here is the storage form: either a token_urlsafe plaintext (dev) or a DPAPI
+    `enc:dpapi:<base64>` blob. Both contain only TOML-safe chars (URL-safe + standard base64), so there's
+    nothing to escape inside the double-quoted string."""
+    text = config_path.read_text(encoding="utf-8")
+    if not _SECRET_LINE.search(text):
+        raise EnrollError(f"could not find [auth] shared_secret in {config_path}; set it manually to the new secret")
+    atomic_write_text(config_path, _SECRET_LINE.sub(rf'\1"{secret}"', text, count=1))
 
 
 def enroll_relay(*, token: str, backend_url: str, config_path: str | Path, encrypt: bool = True) -> dict:
@@ -67,6 +97,29 @@ def enroll_relay(*, token: str, backend_url: str, config_path: str | Path, encry
     config_path = Path(config_path)
     hostname = socket.gethostname()
     secret = secrets.token_urlsafe(32)
+
+    # Everything that can fail locally happens BEFORE the token is spent (#1384). A workstation may have
+    # no config.toml at all - the installer seeds one from config.example.toml, but a hand-copied exe has
+    # nothing and the Setup tab no longer writes one - so the minimal file (placeholder secret) is created
+    # here. Done only when the file is ABSENT: one that exists without an [auth] shared_secret line was
+    # hand-edited, and is refused rather than rewritten.
+    if not config_path.exists():
+        from . import setup  # lazy: enroll runs as a CLI and should not pull the wizard's helpers in
+
+        try:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            created = setup.write_config({}, config_path)
+        except OSError as e:
+            raise EnrollError(f"cannot create {config_path}: {e}") from e
+        if not created.get("ok"):
+            raise EnrollError(created.get("error") or f"cannot create {config_path}")
+    check_config_writable(config_path)
+    # the backend stores the PLAINTEXT secret (the frontend presents it as the Bearer token); locally we
+    # persist the DPAPI-encrypted form so config.toml holds no plaintext at rest. Protected up front too.
+    try:
+        stored = secret if not encrypt else dpapi.protect(secret)
+    except Exception as e:  # noqa: BLE001
+        raise EnrollError(f"could not encrypt the secret: {e}") from e
 
     variables = {"input": {"enrollmentToken": token, "hostname": hostname, "secret": secret}}
     try:
@@ -80,20 +133,11 @@ def enroll_relay(*, token: str, backend_url: str, config_path: str | Path, encry
     if not data.get("ok"):
         raise EnrollError("enrollment did not succeed", detail=result)
 
-    # A workstation may have no config.toml at all - the installer seeds one from config.example.toml,
-    # but a hand-copied exe has nothing and the Setup tab no longer writes one. Create the minimal file
-    # (placeholder secret) so enrolling is the only step; the write below then replaces that
-    # placeholder. Done only when the file is ABSENT: one that exists without an [auth] shared_secret
-    # line was hand-edited, and write_secret_to_config still refuses it rather than rewriting it.
-    if not config_path.exists():
-        from . import setup  # lazy: enroll runs as a CLI and should not pull the wizard's helpers in
-
-        setup.write_config({}, config_path)
-
-    # the backend stores the PLAINTEXT secret (the frontend presents it as the Bearer token); locally we
-    # persist the DPAPI-encrypted form so config.toml holds no plaintext at rest.
-    stored = secret if not encrypt else dpapi.protect(secret)
-    write_secret_to_config(config_path, stored)
+    try:
+        write_secret_to_config(config_path, stored)
+    except (OSError, EnrollError) as e:
+        reason = e.message if isinstance(e, EnrollError) else str(e)
+        raise EnrollError(f"could not write the secret to {config_path} ({reason}). {_ADOPT_HINT}.") from e
     return {
         "ok": True,
         "install_id": data.get("installId"),

@@ -344,6 +344,33 @@ def test_create_po_persists_shipping_cost_and_tariff(db_session):
     assert po.tariff_amount == Decimal("0")
 
 
+# --- #1207: an order cost too large for its Numeric(12,2) column is a field error -----------------
+
+
+@pytest.mark.parametrize("field", ["shipping_cost", "tariff_amount"])
+def test_an_order_cost_too_large_for_its_column_is_refused_before_anything_is_sent(field):
+    """validate_order_costs is what the register resolver runs before the GP push: no DB, no relay."""
+    with pytest.raises(ValidationError) as exc:
+        po_repository.validate_order_costs(**{field: 25_000_000_000})
+    assert exc.value.field == field
+
+
+def test_the_largest_order_cost_the_column_holds_passes():
+    po_repository.validate_order_costs(shipping_cost=9_999_999_999.99, tariff_amount=0)
+    po_repository.validate_order_costs(shipping_cost=None, tariff_amount=None)
+
+
+def test_create_po_refuses_a_shipping_cost_too_large_for_its_column(db_session):
+    with pytest.raises(ValidationError) as exc:
+        po_repository.create_po(
+            db_session,
+            line_items=[_line_item("ML2010")],
+            shipping_cost=10_000_000_000,
+            company="TUBC",
+        )
+    assert exc.value.field == "shipping_cost"
+
+
 # --- what GP's Purchase Order Entry takes per line ----------------------------------------------------
 
 

@@ -15,11 +15,13 @@ Every line is loose hardware. The assembled-leaf line type went with the door - 
 fungible stock and re-attaches the opening as a tag, the same as every other pull in the system.
 """
 
+import hashlib
 import uuid
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.errors import InvalidStateTransitionError, ValidationError
+from app.errors import ConflictError, InvalidStateTransitionError, ValidationError
 from app.models.enums import ReservationSource, ShippingOutRequestStatus
 from app.models.shipping_out_request import ShippingOutRequest, ShippingOutRequestItem
 
@@ -50,6 +52,9 @@ def create_shipping_out_requests(
                 "A shipping-out request has no items - select at least one line.",
                 field="items",
             )
+
+    # #1258: a line tagged to an opening must name one the project has. Checked once for every draft.
+    _check_openings(session, project_id, [item for draft in drafts for item in draft.get("items", [])])
 
     needs_by_draft = {index: _needs(draft.get("items", [])) for index, draft in enumerate(drafts)}
     all_needs = [need for needs in needs_by_draft.values() for need in needs]
@@ -108,6 +113,8 @@ def replace_shipping_out_request_items(
     session: Session,
     request_id: uuid.UUID,
     items: list[dict],
+    *,
+    expected_lines_version: str | None = None,
 ) -> ShippingOutRequest:
     """Rewrite a PENDING request's lines to exactly `items`, re-gating and re-reserving (#451).
 
@@ -119,6 +126,10 @@ def replace_shipping_out_request_items(
     request is measured against stock that includes what it was already holding - otherwise trimming
     a line from 4 to 3 would be gated as if it wanted 3 *more*. Anything the gate refuses raises, and
     the whole transaction rolls back with the original claim intact.
+
+    `expected_lines_version` (#1260) is the `lines_version` the editor loaded. When it no longer
+    matches, someone else saved the request in between, and replacing would silently undo their
+    change, so the edit is refused and the editor reloads. Omitted, no check is made.
     """
     from app.repositories.shipping_repository import lock_shipping_out_request
 
@@ -135,6 +146,13 @@ def replace_shipping_out_request_items(
             "A shipping-out request needs at least one line. Reject it instead of emptying it.",
             field="items",
         )
+    if expected_lines_version is not None and expected_lines_version != lines_version(req.items):
+        raise ConflictError(
+            f"Shipping-out request {req.request_number} was changed by someone else since you opened it. "
+            "Reload it to see the current lines, then make your change again.",
+            field="items",
+        )
+    _check_openings(session, req.project_id, items, request_number=req.request_number)
 
     from app.repositories import warehouse as warehouse_repository
 
@@ -162,12 +180,88 @@ def replace_shipping_out_request_items(
         req.id,
         needs,
     )
+    # #1174: the edit has just gated and reserved every line against today's stock and schedule, so a
+    # note saying the request holds no claim (a cancelled pull it could not re-reserve) or that the
+    # schedule moved under it is no longer true. Accept leaves the note alone: without an edit first,
+    # the claim really is still missing.
+    req.integrity_note = None
     session.flush()
     # The rows were written by id rather than by appending to the collection, so `req.items` still
     # holds the set that was just deleted. Expiring it makes the returned object tell the truth about
     # what the request now contains, rather than relying on the caller's commit to expire it.
     session.expire(req, ["items"])
     return req
+
+
+def lines_version(items) -> str:
+    """A fingerprint of a request's lines (#1260), so an edit can tell the lines it was composed
+    against from what is stored now. Order-independent: the same lines in another order are the same
+    request."""
+    rows = sorted(
+        (i.opening_number or "", i.hardware_category, i.product_code, int(i.requested_quantity)) for i in items
+    )
+    return hashlib.sha1(repr(rows).encode("utf-8")).hexdigest()[:16]
+
+
+def get_reserved_by_product(session: Session, request_id: uuid.UUID) -> list[tuple[str, str, int]]:
+    """What this request actually holds on stock, per product (#1262).
+
+    Usually the request's line totals, but not always: a request sent back to Pending by a cancelled
+    pull that could not be re-reserved holds nothing. The edit composer adds this back as headroom,
+    so it must be the real claim rather than the lines.
+    """
+    from app.models.inventory_reservation import InventoryReservation
+
+    rows = session.execute(
+        select(
+            InventoryReservation.hardware_category,
+            InventoryReservation.product_code,
+            func.sum(InventoryReservation.quantity),
+        )
+        .where(
+            InventoryReservation.source == ReservationSource.SHIPPING_OUT_REQUEST,
+            InventoryReservation.shipping_out_request_id == request_id,
+        )
+        .group_by(InventoryReservation.hardware_category, InventoryReservation.product_code)
+    ).all()
+    return [(cat, code, int(qty or 0)) for cat, code, qty in rows]
+
+
+def _check_openings(
+    session: Session,
+    project_id: uuid.UUID,
+    items: list[dict],
+    *,
+    request_number: str | None = None,
+) -> None:
+    """Refuse a line tagged to an opening the project does not have (#1258).
+
+    A line raised off loose inventory carries no opening and is not checked. A schedule line keeps
+    the opening it came off, and the pick sheet and the `sent` term both read that tag - so a tag on
+    a door a re-upload has since dropped (a draft saved before the re-upload, or an API call) would
+    reserve stock and misattribute what ships.
+    """
+    wanted = {item.get("opening_number") for item in items if item.get("opening_number")}
+    if not wanted:
+        return
+    from app.models.project import Opening
+
+    known = set(
+        session.scalars(
+            select(Opening.opening_number).where(
+                Opening.project_id == project_id,
+                Opening.opening_number.in_(wanted),
+            )
+        )
+    )
+    missing = sorted(wanted - known)
+    if missing:
+        label = f"Shipping-out request {request_number}: " if request_number else ""
+        raise ValidationError(
+            f"{label}opening {', '.join(missing)} is not on this project's schedule. "
+            "Remove the line or re-add it from the current schedule.",
+            field="opening_number",
+        )
 
 
 def _needs(items: list[dict]) -> list[tuple[str, str, int]]:

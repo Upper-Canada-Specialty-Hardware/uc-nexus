@@ -166,6 +166,43 @@ describe('TransferDialog', () => {
     expect(calls).toBe(2);
   });
 
+  it('a batch that fails partway retries from the failed source, not the drained first one (#1205)', async () => {
+    const sources: TransferSource[] = [
+      { type: 'STOCK_ITEM', id: 's1', productCode: 'LK-200', available: 3, warehouseId: 'wh-1', aisle: 'A1', row: 'R1', bay: 'B1' },
+      { type: 'STOCK_ITEM', id: 's2', productCode: 'LK-300', available: 4, warehouseId: 'wh-1', aisle: 'A2', row: 'R2', bay: 'B2' },
+      { type: 'STOCK_ITEM', id: 's3', productCode: 'LK-400', available: 5, warehouseId: 'wh-1', aisle: 'A3', row: 'R3', bay: 'B3' },
+    ];
+    const calls: string[] = [];
+    const base = { destWarehouseId: 'wh-1', destAisle: 'A9', destRow: 'R9', destBay: 'B9' };
+    const s2Input = { sourceType: 'STOCK_ITEM', sourceId: 's2', quantity: 4, ...base };
+    // s1 has exactly one mock: a retry that re-sent it would find none and fail the batch again.
+    const mocks = [
+      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's1', quantity: 3, ...base }, () => calls.push('s1')),
+      { request: { query: TRANSFER_INVENTORY, variables: { input: s2Input } }, error: new Error('Row is busy') },
+      transferMock(s2Input, () => calls.push('s2')),
+      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's3', quantity: 5, ...base }, () => calls.push('s3')),
+    ];
+    const { onSuccess } = renderDialog(sources, mocks);
+
+    setLocation('A9', 'R9', 'B9');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^transfer$/i })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: /^transfer$/i }));
+
+    // The summary shows in the dialog's alert and in a toast.
+    await waitFor(() => expect(screen.getAllByText(/1 of 3 transferred/).length).toBeGreaterThan(0));
+    expect(calls).toEqual(['s1']);
+    expect(onSuccess).not.toHaveBeenCalled();
+    // The moved source drops out of the list; the two still to go stay.
+    expect(screen.queryByText('LK-200')).not.toBeInTheDocument();
+    expect(screen.getByText('LK-300')).toBeInTheDocument();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /^transfer$/i })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: /^transfer$/i }));
+
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    expect(calls).toEqual(['s1', 's2', 's3']);
+  });
+
   it('keeps Transfer off for a bin not defined in the destination warehouse', async () => {
     const source: TransferSource = {
       type: 'INVENTORY_LOCATION',

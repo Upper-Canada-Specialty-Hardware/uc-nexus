@@ -133,6 +133,20 @@ it('keeps the Shipment methods button off a Shipping Out user’s landing', asyn
   expect(screen.getByRole('button', { name: /Start a Request/i })).toBeInTheDocument();
 });
 
+it('links the scheduled and in-transit gauges to the shipments they count (#1361)', async () => {
+  identity.roles = ['Shipping Out'];
+  renderLanding();
+
+  expect(await screen.findByRole('link', { name: 'Open scheduled shipments' })).toHaveAttribute(
+    'href',
+    '/app/shipping/shipments?status=SCHEDULED',
+  );
+  expect(screen.getByRole('link', { name: 'Open shipments in transit' })).toHaveAttribute(
+    'href',
+    '/app/shipping/shipments?status=PICKED_UP',
+  );
+});
+
 it('gives the Shipping Manager the Shipment methods button', async () => {
   identity.roles = ['Shipping Manager'];
   renderLanding();

@@ -7,6 +7,7 @@ import {
   returnableUnits,
   slipMaterialLines,
   slipNetOfReturns,
+  reprintContents,
   slipOpeningSummary,
   warehouseAddressLines,
   type PackingSlipItem,
@@ -325,6 +326,25 @@ describe('returns on a reprint (#1107)', () => {
   it('leaves manual lines alone', () => {
     const net = slipNetOfReturns([line({ isManual: true, returnedQuantity: 0 })]);
     expect(net.items[0].quantity).toBe(10);
+  });
+
+  it('nets returns on a reprint only while the slip is scheduled (#1304)', () => {
+    const items = [line({ returnedQuantity: 3 })];
+
+    const scheduled = reprintContents({ status: 'SCHEDULED', items });
+    expect(slipMaterialLines(scheduled.items, scheduled.containers)).toEqual([
+      '(7) Units of HG-100 - Hinge (Opening 101)',
+    ]);
+    expect(scheduled.returnedNote).toEqual([]);
+
+    // After pickup the reprint has to match the signed paper; what came back is noted beside it.
+    for (const status of ['PICKED_UP', 'DELIVERED'] as const) {
+      const after = reprintContents({ status, items });
+      expect(slipMaterialLines(after.items, after.containers)).toEqual([
+        '(10) Units of HG-100 - Hinge (Opening 101)',
+      ]);
+      expect(after.returnedNote).toEqual(['HG-100 x 3 returned (opening 101)']);
+    }
   });
 
   it('counts only real lines, net of returns, as returnable', () => {

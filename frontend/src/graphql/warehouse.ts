@@ -55,6 +55,9 @@ export const GET_OPEN_POS_SUMMARY = gql`
       id
       poNumber
       projectId
+      # Off the project itself (#1196), so an archived job's open PO still names it.
+      projectNumber
+      projectDescription
       poolKind
       status
       origin
@@ -131,6 +134,9 @@ export const GET_RECEIVING_HISTORY_POS = gql`
       vendorName
       poolKind
       projectId
+      # Off the project itself (#1215), so an archived job's history still names it.
+      projectNumber
+      projectDescription
       orderedTotal
       receivedTotal
       receiveCount
@@ -194,8 +200,19 @@ export const GET_PULL_REQUESTS = gql`
     $source: PullRequestSource
     $status: PullRequestStatus
     $statuses: [PullRequestStatus!]
+    $limit: Int
+    $offset: Int
+    $newestFinishedFirst: Boolean
   ) {
-    pullRequests(projectId: $projectId, source: $source, status: $status, statuses: $statuses) {
+    pullRequests(
+      projectId: $projectId
+      source: $source
+      status: $status
+      statuses: $statuses
+      limit: $limit
+      offset: $offset
+      newestFinishedFirst: $newestFinishedFirst
+    ) {
       id
       requestNumber
       projectId
@@ -203,6 +220,7 @@ export const GET_PULL_REQUESTS = gql`
       status
       requestedBy
       assignedTo
+      assignedToUserId
       createdAt
       updatedAt
       approvedAt
@@ -342,25 +360,6 @@ export const GET_STOCK_ITEMS = gql`
   }
 `;
 
-export const GET_STOCK_ITEM = gql`
-  query GetStockItem($id: ID!) {
-    stockItem(id: $id) {
-      id
-      hardwareCategory
-      productCode
-      quantity
-      deficientQuantity
-      available
-      aisle
-      row
-      bay
-      receivedAt
-      createdAt
-      updatedAt
-    }
-  }
-`;
-
 export const GET_DEFICIENT_ITEMS = gql`
   query GetDeficientItems($projectId: ID, $source: DeficientItemSource) {
     deficientItems(projectId: $projectId, source: $source) {
@@ -368,6 +367,9 @@ export const GET_DEFICIENT_ITEMS = gql`
       inventoryLocationId
       stockItemId
       projectId
+      # Off the project itself (#1252), archived included; null on a stock-pool row.
+      projectNumber
+      projectDescription
       hardwareCategory
       productCode
       deficientQuantity
@@ -378,26 +380,6 @@ export const GET_DEFICIENT_ITEMS = gql`
   }
 `;
 
-export const GET_DEFICIENCY_REVIEWS = gql`
-  query GetDeficiencyReviews($inventoryLocationId: ID, $stockItemId: ID, $projectId: ID) {
-    deficiencyReviews(
-      inventoryLocationId: $inventoryLocationId
-      stockItemId: $stockItemId
-      projectId: $projectId
-    ) {
-      id
-      inventoryLocationId
-      stockItemId
-      resolution
-      quantity
-      reasonText
-      rmaReference
-      reviewedBy
-      reviewedAt
-      resultingStockItemId
-    }
-  }
-`;
 
 export const ADJUST_INVENTORY_QUANTITY = gql`
   mutation AdjustInventoryQuantity(
@@ -488,6 +470,8 @@ const RECEIVE_DRAFT_FIELDS = `
   poId
   poNumber
   projectId
+  projectNumber
+  projectDescription
   poolKind
   warehouseId
   # The Clerk id and the display name of whoever counted the hardware. The id is what "my drafts"
@@ -606,7 +590,7 @@ export const APPROVE_RECEIVE_DRAFT = gql`
 
 // Shared shape so a pull read from a mutation result is cache-identical to one read from the queue.
 const PULL_REQUEST_FIELDS = `
-  id requestNumber projectId source status requestedBy assignedTo
+  id requestNumber projectId source status requestedBy assignedTo assignedToUserId
   createdAt updatedAt approvedAt completedAt cancelledAt cancelledBy cancellationReason
   pickedAt pickedBy partiallyPicked
   items {
@@ -617,6 +601,8 @@ const PULL_REQUEST_FIELDS = `
 // The pick screen and the printed sheet (#367). Note what is absent: any suggested quantity. The
 // picker decides, and the sheet gives them received dates so they can rotate stock themselves.
 const PICK_SHEET_FIELDS = `
+  projectNumber
+  projectDescription
   pullRequest { ${PULL_REQUEST_FIELDS} }
   sections {
     hardwareCategory productCode requiredQuantity appliedQuantity remainingQuantity
@@ -809,8 +795,8 @@ export const RESOLVE_DEFICIENCY = gql`
 // rejected drafts and booked records. The existing views each cover a slice, and a rejected draft
 // appeared in none of them.
 export const GET_RECEIVES = gql`
-  query GetReceives($limit: Int, $offset: Int, $projectId: ID, $poSearch: String) {
-    receives(limit: $limit, offset: $offset, projectId: $projectId, poSearch: $poSearch) {
+  query GetReceives($limit: Int, $offset: Int, $projectId: ID, $poSearch: String, $status: String) {
+    receives(limit: $limit, offset: $offset, projectId: $projectId, poSearch: $poSearch, status: $status) {
       kind
       id
       occurredAt

@@ -160,6 +160,20 @@ test('the stats come from adminProjectDetail, not from walking the project', asy
   await expectTile('Purchase orders', '9');
 });
 
+test('the open requests tile opens the requests scoped to this project (#1310)', async () => {
+  renderPage([detailMock()]);
+
+  const link = await screen.findByRole('link', { name: "Open this project's shipping requests" });
+  expect(link).toHaveAttribute('href', `/app/shipping/requests?project=${PROJECT_ID}`);
+});
+
+test('the inventory tile opens this project inventory (#1359)', async () => {
+  renderPage([detailMock()]);
+
+  const link = await screen.findByRole('link', { name: "Open this project's inventory" });
+  expect(link).toHaveAttribute('href', `/app/warehouse/inventory?project=${PROJECT_ID}`);
+});
+
 test('every PO status is listed, including the ones this project has none of', async () => {
   // A missing Nexus Draft segment is itself worth seeing - it says nothing is waiting to be registered.
   renderPage([detailMock()]);

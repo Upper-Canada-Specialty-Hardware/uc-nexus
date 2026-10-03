@@ -203,7 +203,6 @@ function uploadMock(): MockedResponse {
           fileSize: 12,
           documentType: 'PACKING_SLIP',
           uploadedAt: '2026-08-06T00:00:00Z',
-          downloadUrl: 'https://example.test/slip.pdf',
         },
       },
       };

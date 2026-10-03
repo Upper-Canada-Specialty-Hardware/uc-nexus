@@ -3,9 +3,13 @@
 import uuid
 
 import strawberry
+from sqlalchemy import func, select
 
 from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
+from app.models.enums import ShipmentStatus as ShipmentStatusDB
+from app.models.project import Opening as OpeningModel
+from app.models.project import Project as ProjectModel
 from app.repositories import (
     request_composer,
     shipment_containers,
@@ -18,16 +22,19 @@ from app.repositories import (
 from .converters import (
     container_to_type,
     packing_slip_to_type,
+    project_to_type,
     shipment_return_to_type,
     shipping_out_request_to_type,
 )
 from .enums import ShipmentContainerType as ShipmentContainerTypeEnum
+from .enums import ShipmentStatus as ShipmentStatusEnum
 from .enums import ShippingOutRequestStatus
 from .inputs import (
     ConfirmShipmentFromContainersInput,
     CreateShipmentReturnInput,
     CreateShippingOutRequestInput,
     EditShippingOutRequestInput,
+    MoveContainerItemsInput,
     SetContainerItemsInput,
     ShippingOutPRDraftItemInput,
     UpdateShipmentDetailsInput,
@@ -40,6 +47,7 @@ from .types import (
     ShipmentMethod,
     ShipmentReturn,
     ShippingOutRequest,
+    ShippingOutRequestReservedProduct,
     ShipReadyItems,
     ShipReadyLooseItem,
     StagedLooseItem,
@@ -119,6 +127,7 @@ class ShippingQueries:
         info: strawberry.Info,
         project_id: strawberry.ID | None = None,
         search: str | None = None,
+        status: ShipmentStatusEnum | None = None,
         limit: int | None = None,
         offset: int = 0,
     ) -> list[PackingSlip]:
@@ -129,7 +138,13 @@ class ShippingQueries:
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
             slips = shipping_repository.list_packing_slips(
-                session, pid, company=scope, search=search, limit=limit, offset=offset
+                session,
+                pid,
+                company=scope,
+                search=search,
+                status=ShipmentStatusDB(status.value) if status is not None else None,
+                limit=limit,
+                offset=offset,
             )
             return [packing_slip_to_type(ps) for ps in slips]
 
@@ -139,13 +154,20 @@ class ShippingQueries:
         info: strawberry.Info,
         project_id: strawberry.ID | None = None,
         search: str | None = None,
+        status: ShipmentStatusEnum | None = None,
     ) -> int:
         """How many shipments `packingSlips` would page through for the same filter (#1107)."""
         with SessionLocal() as session:
             scope = tenant_scope(info)
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
-            return shipping_repository.count_packing_slips(session, pid, company=scope, search=search)
+            return shipping_repository.count_packing_slips(
+                session,
+                pid,
+                company=scope,
+                search=search,
+                status=ShipmentStatusDB(status.value) if status is not None else None,
+            )
 
     @strawberry.field
     def shipping_out_requests(
@@ -180,7 +202,21 @@ class ShippingQueries:
             if req is None:
                 return None
             tenancy.require_shipping_out_request_in_scope(session, req.id, scope)
-            return shipping_out_request_to_type(req)
+            result = shipping_out_request_to_type(req)
+            # #1257: the request's own project, archived or not, so the edit page never depends on the
+            # projects list (which leaves archived jobs out). One request, so two small reads.
+            project = session.get(ProjectModel, req.project_id)
+            if project is not None:
+                opening_count = session.scalar(
+                    select(func.count()).select_from(OpeningModel).where(OpeningModel.project_id == project.id)
+                )
+                result.project = project_to_type(project, include_openings=False, opening_count=opening_count or 0)
+            # #1262: the real claim, which the edit composer adds back as headroom.
+            result.reserved_by_product = [
+                ShippingOutRequestReservedProduct(hardware_category=cat, product_code=code, quantity=qty)
+                for cat, code, qty in shipping_requests.get_reserved_by_product(session, req.id)
+            ]
+            return result
 
     @strawberry.field
     def request_coverage(
@@ -340,6 +376,7 @@ class ShippingMutations:
                 session,
                 uuid.UUID(str(input.id)),
                 _request_items(input.items),
+                expected_lines_version=input.expected_lines_version,
             )
             session.commit()
             refreshed = shipping_repository.get_shipping_out_request(session, req.id)
@@ -405,6 +442,27 @@ class ShippingMutations:
             session.commit()
             session.refresh(updated)
             return container_to_type(updated)
+
+    @strawberry.mutation
+    def move_container_items(self, info: strawberry.Info, input: MoveContainerItemsInput) -> list[ShipmentContainer]:
+        """A move from one container to another as one save (#1178): both rewrites commit together or
+        neither does, so a refused target never leaves the item out of both."""
+        source_id = uuid.UUID(str(input.source.container_id))
+        target_id = uuid.UUID(str(input.target.container_id))
+        with SessionLocal() as session:
+            tenancy.require_container_in_scope(session, source_id, tenant_scope(info))
+            tenancy.require_container_in_scope(session, target_id, tenant_scope(info))
+            source, target = shipment_containers.move_between_containers(
+                session,
+                source_id,
+                _container_items_input(input.source.items),
+                target_id,
+                _container_items_input(input.target.items),
+            )
+            session.commit()
+            session.refresh(source)
+            session.refresh(target)
+            return [container_to_type(source), container_to_type(target)]
 
     @strawberry.mutation
     def confirm_shipment_from_containers(
@@ -566,6 +624,17 @@ class ShippingMutations:
         with SessionLocal() as session:
             tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
             ps = shipping_repository.mark_shipment_picked_up(session, uuid.UUID(str(id)), actor)
+            session.commit()
+            refreshed = shipping_repository.get_packing_slip(session, ps.id)
+            return packing_slip_to_type(refreshed)
+
+    @strawberry.mutation
+    def cancel_shipment(self, info: strawberry.Info, id: strawberry.ID) -> PackingSlip:
+        """Call off a SCHEDULED shipment with nothing left to return (#1176): one made only of manual
+        lines, which a return cannot reach. Moves no inventory."""
+        with SessionLocal() as session:
+            tenancy.require_packing_slip_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
+            ps = shipping_repository.cancel_shipment(session, uuid.UUID(str(id)))
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, ps.id)
             return packing_slip_to_type(refreshed)

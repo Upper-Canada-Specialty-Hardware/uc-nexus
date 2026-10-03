@@ -354,6 +354,7 @@ test('an adopted job does not claim it was created', async () => {
           created: false,
           // #448: an already-existing job is left as GP has it, so nothing was provisioned onto it.
           costCodesProvisioned: 0,
+          costCodesInGp: null,
           project: { id: 'project-1', __typename: 'Project' },
           __typename: 'CreateGpJobResult',
         },
@@ -366,7 +367,7 @@ test('an adopted job does not claim it was created', async () => {
   await waitFor(() => expect(createButton()).toBeEnabled());
   fireEvent.click(createButton());
 
-  expect(await screen.findByText(/already existed in GP and is now a project/)).toBeInTheDocument();
+  expect(await screen.findByText(/GP already held job NEXUS-380-T1; it is now a project/)).toBeInTheDocument();
 });
 
 test('a relay missing only the employees op does not claim jobs cannot be created', async () => {
@@ -437,7 +438,7 @@ test('the employees read is deferred until the optional section is opened', asyn
 test('the whole form is disabled while the relay is down', async () => {
   renderDialog([], { connected: false });
 
-  expect(await screen.findByText(/GP relay is not connected/i)).toBeInTheDocument();
+  expect(await screen.findByText(/GP relay .*GP workstation.* is not connected/i)).toBeInTheDocument();
   expect(screen.getByLabelText(/^Job number/)).toBeDisabled();
   expect(createButton()).toBeDisabled();
 });
@@ -526,6 +527,7 @@ test('a successful submit sends only the optional fields that were filled in', a
         createGpJob: {
           created: true,
           costCodesProvisioned: MAPPED_COST_CODES.length,
+          costCodesInGp: null,
           project: { id: 'project-1', __typename: 'Project' },
           __typename: 'CreateGpJobResult',
         },
@@ -925,7 +927,11 @@ test('a duplicate address code shows the relay detail, stays open, and re-reads 
  */
 function createJobMock(
   costCodes: { costCode: string; costElement: number }[],
-  { created = true, costCodesProvisioned = costCodes.length } = {},
+  {
+    created = true,
+    costCodesProvisioned = costCodes.length,
+    costCodesInGp = null,
+  }: { created?: boolean; costCodesProvisioned?: number; costCodesInGp?: number | null } = {},
 ): MockedResponse {
   return {
     request: {
@@ -958,6 +964,7 @@ function createJobMock(
         createGpJob: {
           created,
           costCodesProvisioned,
+          costCodesInGp,
           project: { id: 'project-1', __typename: 'Project' },
           __typename: 'CreateGpJobResult',
         },
@@ -1120,15 +1127,28 @@ test('a create whose cost codes did not land warns instead of reporting a clean 
   expect(screen.queryByText('Job NEXUS-380-T1 created in GP.')).not.toBeInTheDocument();
 });
 
-test('an adopted job says the cost codes picked here were not applied to it', async () => {
-  // The adopt path leaves the job exactly as GP has it - the selection is not applied to somebody
-  // else's setup. Saying only "already existed" would let the user believe their codes went on it.
-  const adopted = createJobMock(MAPPED_COST_CODES, { created: false, costCodesProvisioned: 0 });
+test('an adopted job says how many cost codes GP holds instead of claiming none landed', async () => {
+  // #1306: the adopt path is also the retry after a create whose reply was lost, where the job and its
+  // codes are ours and already in GP. So it reports what GP holds and asks for a check, rather than
+  // saying the selection was not applied.
+  const adopted = createJobMock(MAPPED_COST_CODES, { created: false, costCodesProvisioned: 0, costCodesInGp: 2 });
 
   renderDialog([adopted]);
   await fillRequired();
   await waitFor(() => expect(createButton()).toBeEnabled());
   fireEvent.click(createButton());
 
-  expect(await screen.findByText(/were not applied to it/i)).toBeInTheDocument();
+  expect(await screen.findByText(/GP holds 2 active cost codes on it/i)).toBeInTheDocument();
+  expect(screen.queryByText(/were not applied/i)).not.toBeInTheDocument();
+});
+
+test('an adopted job whose cost codes could not be read asks for a check in GP', async () => {
+  const adopted = createJobMock(MAPPED_COST_CODES, { created: false, costCodesProvisioned: 0, costCodesInGp: null });
+
+  renderDialog([adopted]);
+  await fillRequired();
+  await waitFor(() => expect(createButton()).toBeEnabled());
+  fireEvent.click(createButton());
+
+  expect(await screen.findByText(/Check its cost codes in GP/i)).toBeInTheDocument();
 });

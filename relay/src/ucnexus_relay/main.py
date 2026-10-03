@@ -244,7 +244,9 @@ def create_app() -> FastAPI:
     def create_po(request: models.CreatePoRequest, _=Depends(auth.verify_token)):
         _check_company(request.company)
         try:
-            with db.get_connection(request.company) as conn:
+            # The same per-company lock the channel create holds (#1214): the idempotency lookup only sees a
+            # committed PO, so a local create and a channel create with one key must not run side by side.
+            with channel._create_po_lock(request.company), db.get_connection(request.company) as conn:
                 try:
                     response = ops.create_po_op(conn, company=request.company, request=request)
                     conn.commit()

@@ -23,6 +23,8 @@ function historyPo(overrides: Record<string, unknown> = {}) {
     status: 'PARTIALLY_RECEIVED',
     vendorName: 'Acme Hardware',
     projectId: 'proj-1',
+    projectNumber: 'P-001',
+    projectDescription: 'Riverside Tower',
     orderedTotal: 10,
     receivedTotal: 6,
     receiveCount: 2,
@@ -85,12 +87,11 @@ function receive(overrides: Record<string, unknown> = {}) {
 }
 
 const PROJECTS = [{ id: 'proj-1', projectId: 'P-001', description: 'Riverside Tower' }];
-const PROJECT_MAP = new Map([['proj-1', 'Riverside Tower']]);
 
 function renderHistory(mocks: MockedResponse[]) {
   return render(
     <MockedProvider mocks={mocks}>
-      <ReceivingHistory projects={PROJECTS} projectMap={PROJECT_MAP} />
+      <ReceivingHistory projects={PROJECTS} />
     </MockedProvider>,
   );
 }
@@ -107,6 +108,14 @@ it('lists a PO with its vendor, project and received-of-ordered totals', async (
   expect(screen.getByText('6 of 10')).toBeInTheDocument();
 });
 
+it('names an archived project, which the project list leaves out (#1215)', async () => {
+  renderHistory([
+    historyMock([historyPo({ projectId: 'proj-gone', projectNumber: 'P-900', projectDescription: 'Old Library' })]),
+  ]);
+
+  expect(await screen.findByText('Old Library')).toBeInTheDocument();
+});
+
 it('keeps a fully received PO in the list', async () => {
   // The whole reason the query exists: openPOs and backOrderedItems drop a PO the moment it closes,
   // and reconciling a delivery is exactly when somebody goes looking for it.
@@ -121,7 +130,7 @@ it('keeps a fully received PO in the list', async () => {
 });
 
 it('labels a PO with no project as a stock PO', async () => {
-  renderHistory([historyMock([historyPo({ projectId: null })])]);
+  renderHistory([historyMock([historyPo({ projectId: null, projectNumber: null, projectDescription: null })])]);
 
   expect(await screen.findByText('Stock PO')).toBeInTheDocument();
 });

@@ -33,7 +33,11 @@ describe('AuditHistoryDrawer pagination', () => {
   it('loads the next page on demand and appends it, then hides Load more at the end', async () => {
     const mocks: MockedResponse[] = [
       { request: { query: GET_AUDIT_LOG, variables: baseVars(0) }, result: { data: { auditLog: makeEntries(1, 50) } } },
-      { request: { query: GET_AUDIT_LOG, variables: baseVars(50) }, result: { data: { auditLog: makeEntries(51, 5) } } },
+      // #1269: the next page is asked for by keyset - older than the last entry shown - not by offset.
+      {
+        request: { query: GET_AUDIT_LOG, variables: { ...baseVars(0), beforeId: '50' } },
+        result: { data: { auditLog: makeEntries(51, 5) } },
+      },
     ];
 
     render(

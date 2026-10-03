@@ -3,13 +3,9 @@
 import httpx
 
 from app.config import CLERK_SECRET_KEY
-from app.errors import AppError, ValidationError
+from app.errors import AppError, ConflictError, ValidationError
 
 CLERK_API_BASE = "https://api.clerk.com/v1"
-
-# Roles that make a user a shop-assembly team member (#330): assignable work in the shop-assembly
-# module. A manager can assign to a plain user or to another manager.
-SHOP_ASSEMBLY_ROLES = ("Shop Assembly User", "Shop Assembly Manager")
 
 # The role a GP buyer identity exists for (#699, #687 gap 6). Only a PO User raises POs, so an
 # identity is refused on any other account and is given back the moment the role goes - enforced
@@ -97,18 +93,6 @@ def list_users() -> list[dict]:
     return users
 
 
-def shop_assembly_members(users: list[dict]) -> list[dict]:
-    """Shop-assembly team members (#330): the subset of a Clerk roster holding a shop-assembly role,
-    for the manager assignment picker. Clerk has no server-side filter on publicMetadata, so this is
-    a client-side filter over the whole roster either way.
-
-    Takes the roster rather than fetching it so the resolver can pass the request-scoped one the auth
-    gate already loaded (#423) - `shopAssemblyMembers` is role-gated, and that check and this answer
-    now come out of the same single call to Clerk."""
-    members = set(SHOP_ASSEMBLY_ROLES)
-    return [u for u in users if members.intersection(u["roles"])]
-
-
 def get_user(user_id: str) -> dict:
     """Fetch one Clerk user's name + email (issue #199: server-side received_by resolution, so a
     receive's acting user comes from the Clerk token, not a client-supplied string).
@@ -153,10 +137,17 @@ def _merge_public_metadata(user_id: str, patch: dict) -> dict:
     return _user_summary(resp.json())
 
 
-def update_user_roles(user_id: str, roles: list[str]) -> dict:
+def update_user_roles(user_id: str, roles: list[str], expected_roles: list[str] | None = None) -> dict:
     """Update a Clerk user's roles in publicMetadata. An account that no longer holds PO_USER_ROLE
     gives its GP buyer identity back in the same write: a null value removes the key under Clerk's
-    metadata merge, exactly as update_user_gp_buyer_id clears it."""
+    metadata merge, exactly as update_user_gp_buyer_id clears it.
+
+    The list replaces the stored one outright, so `expected_roles` (#1321) is the roles the caller
+    loaded: when Clerk holds something else now, somebody changed them in between, and writing this
+    list would silently drop their grants (and could clear a buyer id they just set). Compared as
+    sets, order not mattering. Left out, the write goes through as before."""
+    if expected_roles is not None and set(get_user_roles(user_id)) != set(expected_roles):
+        raise ConflictError("This user's roles changed since you opened them. Reload and try again.")
     patch: dict = {"roles": roles}
     if PO_USER_ROLE not in roles:
         patch["gpBuyerId"] = None
@@ -212,8 +203,17 @@ def normalize_company(company: str | None) -> str | None:
 def update_user_company(user_id: str, company: str | None) -> dict:
     """#637: set (or clear, with None) the GP company this UC Nexus account belongs to. This is the
     account's tenant - every non-admin read and write is filtered on it - so it is admin-only, and the
-    same merge-not-replace metadata write `updateUserGpBuyerId` uses."""
-    return _merge_public_metadata(user_id, {"company": normalize_company(company)})
+    same merge-not-replace metadata write `updateUserGpBuyerId` uses.
+
+    A move away from a company the account already had gives its GP buyer identity back in the same
+    write (#1255), as losing PO User does: a BUYERID belongs to one company's GP buyer master, so the
+    old one is not a buyer in the new company. A first assignment (no company before) keeps it."""
+    cleaned = normalize_company(company)
+    patch: dict = {"company": cleaned}
+    previous = normalize_company(_public_metadata(user_id).get("company"))
+    if previous is not None and previous != cleaned:
+        patch["gpBuyerId"] = None
+    return _merge_public_metadata(user_id, patch)
 
 
 def get_user_company(user_id: str) -> str | None:

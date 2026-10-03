@@ -146,7 +146,8 @@ class _FakeApp:
     def _install_dir(self):
         return self._dir
 
-    def begin_update(self, url, build=None):
+    def begin_update(self, url, build=None, ready_to_hand_off=None):
+        self.ready = ready_to_hand_off
         self.staged.append((url, build))
         return {"ok": True}
 
@@ -195,6 +196,55 @@ def test_run_defers_while_a_gp_job_is_in_flight(monkeypatch, tmp_path):
     update_poller.run(app, _NoWait(2))
 
     assert app.staged == []
+
+
+def test_run_hands_off_under_the_fail_safe_busy_rule(monkeypatch, tmp_path):
+    # #1212: the scheduled path keeps the fail-safe rule, so an unanswered /health holds the handoff back.
+    app = _FakeApp(tmp_path)
+    monkeypatch.setattr(update_poller, "_read_health", lambda: {"channel": {"jobs_in_flight": 0}})
+    monkeypatch.setattr(updater, "check_update", lambda: _check())
+    monkeypatch.setattr(updater, "read_ledger", lambda d: {})
+    monkeypatch.setattr(updater, "cancel_requested", lambda d: False)
+
+    update_poller.run(app, _NoWait(3))
+
+    assert app.ready is update_poller.ready_for_scheduled_handoff
+    monkeypatch.setattr(update_poller, "_read_health", lambda: {})
+    assert update_poller.ready_for_scheduled_handoff() is False
+
+
+def test_manual_handoff_refuses_only_a_job_known_to_be_running(monkeypatch):
+    for health, ready in (
+        ({}, True),  # not answering: a person may be updating precisely to fix that
+        ({"channel": {"jobs_in_flight": 0, "last_job_finished_ago": 5}}, True),
+        ({"channel": {"jobs_in_flight": 2}}, False),
+    ):
+        monkeypatch.setattr(update_poller, "_read_health", lambda h=health: h)
+        assert update_poller.ready_for_manual_handoff() is ready
+
+
+def test_run_keeps_polling_when_the_handoff_was_deferred_as_busy(monkeypatch, tmp_path):
+    # #1212: became busy while staging - nothing was handed off, so the loop must not return (that would
+    # end auto-updating) and the next try comes on the short busy cadence.
+    app = _FakeApp(tmp_path)
+    app.begin_update = lambda url, build=None, ready_to_hand_off=None: (
+        app.staged.append((url, build)) or {"ok": False, "deferred": True}
+    )
+    monkeypatch.setattr(update_poller, "_read_health", lambda: {"channel": {"jobs_in_flight": 0}})
+    monkeypatch.setattr(updater, "check_update", lambda: _check())
+    monkeypatch.setattr(updater, "read_ledger", lambda d: {})
+    monkeypatch.setattr(updater, "cancel_requested", lambda d: False)
+    waits = []
+
+    class _Recording(_NoWait):
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            return super().wait(timeout)
+
+    update_poller.run(app, _Recording(2))
+
+    assert len(app.staged) == 2  # tried again rather than stopping
+    assert waits[1] == update_poller.DEFER_RETRY_SECONDS
 
 
 def test_run_survives_an_exception_and_keeps_polling(monkeypatch, tmp_path):

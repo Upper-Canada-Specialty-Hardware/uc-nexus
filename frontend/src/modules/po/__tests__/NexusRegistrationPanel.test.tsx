@@ -189,6 +189,34 @@ it('keeps a registered line open for the units it still has untied (#1128)', asy
   expect(screen.getByRole('button', { name: 'Register in Nexus' })).toBeEnabled();
 });
 
+it('counts received tied units once when topping up after a delivery (#1371)', async () => {
+  // 10 ordered, 5 tied, and those 5 have arrived: the other 5 are still coming with nothing tied.
+  const po = makePo({ lineItems: [registeredLine({ orderedQuantity: 10, receivedQuantity: 5 })] });
+  renderPanel(po, [tiedMock({ 'li-1': 5 }), scheduleMock([product()])]);
+
+  const tie = await screen.findByLabelText('Tie quantity');
+  await waitFor(() => expect((tie as HTMLInputElement).value).toBe('5'));
+  expect(screen.getByText('max 5')).toBeInTheDocument();
+});
+
+it('shares what the schedule has left among rows for the same product (#1372)', async () => {
+  // Two GP lines for the same hinge, 5 outstanding each, and only 7 units left on the schedule.
+  const po = makePo({ lineItems: [makeLineItem({ id: 'li-1' }), makeLineItem({ id: 'li-2', gpLineOrd: 32768 })] });
+  renderPanel(po, [scheduleMock([product({ availableQuantity: 7 })])]);
+
+  const pickers = await screen.findAllByLabelText('Product');
+  await waitFor(() => expect((pickers[1] as HTMLSelectElement).value).toBe('Hinges :: HG-100'));
+
+  const ties = screen.getAllByLabelText('Tie quantity') as HTMLInputElement[];
+  expect(ties.map((t) => t.value)).toEqual(['5', '2']);
+  expect(screen.getByText('max 5')).toBeInTheDocument();
+  expect(screen.getByText('max 2')).toBeInTheDocument();
+
+  // Typing less on the first row hands the rest to the second.
+  fireEvent.change(ties[0], { target: { value: '3' } });
+  await waitFor(() => expect((screen.getAllByLabelText('Tie quantity')[1] as HTMLInputElement).value).toBe('4'));
+});
+
 it('says so when fewer units were tied than asked (#1128)', async () => {
   const po = makePo();
   const register: MockedResponse = {

@@ -223,7 +223,7 @@ test('a filter that matches no buyer says so instead of showing an empty area', 
 test('picking a tag and pressing Use this identity writes the id on save', async () => {
   let written: string | null = null;
   const rolesMock: MockedResponse = {
-    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: ['PO User'] } },
+    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: ['PO User'], expectedRoles: ['PO User'] } },
     maxUsageCount: INFINITE,
     result: { data: { updateUserRoles: USER } },
   };
@@ -288,7 +288,7 @@ test('Change opens the chooser on the identity the account already holds', async
 test('unchecking PO User warns that Save clears the identity, and Save clears it', async () => {
   let written: string | null | undefined;
   const rolesMock: MockedResponse = {
-    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: [] } },
+    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: [], expectedRoles: ['PO User'] } },
     maxUsageCount: INFINITE,
     result: { data: { updateUserRoles: { ...USER, roles: [] } } },
   };
@@ -318,11 +318,43 @@ test('unchecking PO User warns that Save clears the identity, and Save clears it
   await waitFor(() => expect(written).toBeNull(), GRID_TIMEOUT);
 });
 
+test('a save over roles somebody else changed is refused and says so (#1321)', async () => {
+  // The dialog sends the roles it loaded; the server refuses when Clerk holds something else now.
+  let buyerWrites = 0;
+  const rolesMock: MockedResponse = {
+    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: [], expectedRoles: ['PO User'] } },
+    maxUsageCount: INFINITE,
+    result: {
+      errors: [
+        new GraphQLError("This user's roles changed since you opened them. Reload and try again.", {
+          extensions: { code: 'CONFLICT' },
+        }),
+      ],
+    },
+  };
+  const buyerWriteMock: MockedResponse = {
+    request: { query: UPDATE_USER_GP_BUYER_ID, variables: () => true },
+    maxUsageCount: INFINITE,
+    result: () => {
+      buyerWrites += 1;
+      return { data: { updateUserGpBuyerId: USER } };
+    },
+  };
+  renderPage([relayStatusMock(true), usersMock({ ...USER, gpBuyerId: 'donr' }), buyersMock, rolesMock, buyerWriteMock]);
+
+  await openEditDialog();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'PO User' }));
+  fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+  expect(await screen.findByText(/roles changed since you opened them/i, {}, GRID_TIMEOUT)).toBeInTheDocument();
+  expect(buyerWrites).toBe(0);
+});
+
 test('re-checking PO User before saving keeps the identity and writes nothing', async () => {
   // The clearing decision belongs to Save alone, so a stray click on the checkbox costs nothing.
   let buyerWrites = 0;
   const rolesMock: MockedResponse = {
-    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: ['PO User'] } },
+    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: ['PO User'], expectedRoles: ['PO User'] } },
     maxUsageCount: INFINITE,
     result: { data: { updateUserRoles: { ...USER, gpBuyerId: 'donr' } } },
   };
@@ -359,7 +391,7 @@ test('saving an unchanged identity does not re-write it to Clerk', async () => {
   // The buyer mutation is a Clerk PATCH, and while the relay is down the locked field still holds
   // the stored id - an unconditional write would fire on every unrelated save.
   const rolesMock: MockedResponse = {
-    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: ['PO User', 'Warehouse Staff'] } },
+    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: ['PO User', 'Warehouse Staff'], expectedRoles: ['PO User'] } },
     result: { data: { updateUserRoles: { ...USER, gpBuyerId: 'donr', roles: ['PO User', 'Warehouse Staff'] } } },
   };
   let buyerWrites = 0;
@@ -504,7 +536,7 @@ test('assigning a company writes it through updateUserCompany', async () => {
     },
   };
   const rolesMock: MockedResponse = {
-    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: ['PO User'] } },
+    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: ['PO User'], expectedRoles: ['PO User'] } },
     maxUsageCount: INFINITE,
     result: { data: { updateUserRoles: USER } },
   };
@@ -531,7 +563,7 @@ test('an unchanged company is not re-written to Clerk on save', async () => {
     },
   };
   const rolesMock: MockedResponse = {
-    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: ['PO User', 'Warehouse Staff'] } },
+    request: { query: UPDATE_USER_ROLES, variables: { userId: 'user_1', roles: ['PO User', 'Warehouse Staff'], expectedRoles: ['PO User'] } },
     maxUsageCount: INFINITE,
     result: { data: { updateUserRoles: { ...USER, company: 'TUBC' } } },
   };

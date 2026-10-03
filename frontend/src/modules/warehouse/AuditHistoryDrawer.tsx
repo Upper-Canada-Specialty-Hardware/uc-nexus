@@ -356,8 +356,10 @@ export default function AuditHistoryDrawer({
   const handleLoadMore = async () => {
     setLoadingMore(true);
     try {
+      // Keyset, not offset (#1269): "older than the last entry shown" survives a new entry landing
+      // between pages, where an offset would repeat a row.
       const res = await fetchMore({
-        variables: { offset: entries.length },
+        variables: { offset: 0, beforeId: entries[entries.length - 1]?.id },
         updateQuery: (prev, { fetchMoreResult }) => ({
           auditLog: [...(prev.auditLog ?? []), ...(fetchMoreResult?.auditLog ?? [])],
         }),

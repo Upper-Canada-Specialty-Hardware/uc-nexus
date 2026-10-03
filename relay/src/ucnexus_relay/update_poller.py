@@ -108,6 +108,24 @@ def is_busy(health: dict) -> bool:
     return False
 
 
+def jobs_running(health: dict) -> bool:
+    """Whether a /health that ANSWERED reports GP work in flight. The manual "Update now" rule (#1212):
+    unlike is_busy it is not fail-safe, because a person pressing the button on a relay whose serve child
+    is not answering is exactly the case an update may be needed to fix; only a job known to be running
+    holds it back."""
+    channel = health.get("channel") if isinstance(health, dict) else None
+    return isinstance(channel, dict) and int(channel.get("jobs_in_flight") or 0) > 0
+
+
+def ready_for_scheduled_handoff() -> bool:
+    """The poller's handoff rule, asked again after the download: the fail-safe is_busy over live health."""
+    return not is_busy(_read_health())
+
+
+def ready_for_manual_handoff() -> bool:
+    return not jobs_running(_read_health())
+
+
 def next_delay(rng: random.Random, first: bool = False) -> float:
     if first:
         return FIRST_DELAY_SECONDS + rng.uniform(0, FIRST_JITTER_SECONDS)
@@ -161,7 +179,13 @@ def run(app, stop: threading.Event, rng: random.Random | None = None) -> None:
                 continue
 
             logger.info("update poller: %s; staging", reason)
-            result = app.begin_update(check["url"], check.get("latest"))
+            result = app.begin_update(check["url"], check.get("latest"), ready_to_hand_off=ready_for_scheduled_handoff)
+            if result.get("deferred"):
+                # Became busy while the build downloaded (#1212): nothing was handed off, so retry on the
+                # short busy cadence rather than waiting a whole interval.
+                delay = DEFER_RETRY_SECONDS
+                logger.info("update poller: relay became busy while staging; deferring the handoff")
+                continue
             if not result.get("ok"):
                 logger.warning("update poller: staging failed - %s", result.get("error"))
                 continue
