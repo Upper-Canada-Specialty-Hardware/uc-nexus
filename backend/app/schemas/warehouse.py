@@ -1433,6 +1433,7 @@ class WarehouseMutations:
         reason: str,
         spot_check: bool = False,
         confirm_below_reserved: bool = False,
+        expected_quantity: int | None = None,
     ) -> InventoryLocation:
         """Move a project inventory row's count by a delta, with a reason, writing an ADJUSTMENT
         audit row - or a SPOT_CHECK one when `spot_check` is set (the physical-count reconciliation
@@ -1444,7 +1445,10 @@ class WarehouseMutations:
         record of who altered a count was uniformly wrong.
 
         A decrease below the combo's active reservations needs `confirmBelowReserved` from a Warehouse
-        Manager (#1124); the role is looked up only then."""
+        Manager (#1124); the role is looked up only then.
+
+        `expectedQuantity` is the count the caller showed and computed the delta from; when the row no
+        longer holds it the adjustment is refused instead of applied to a moved count (#1315)."""
         auth = current_user(info)
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
@@ -1460,6 +1464,7 @@ class WarehouseMutations:
                 spot_check=spot_check,
                 caller_is_manager=lambda: _is_warehouse_manager(info),
                 confirm_below_reserved=confirm_below_reserved,
+                expected_quantity=expected_quantity,
             )
             session.commit()
             session.refresh(result)
@@ -1493,6 +1498,7 @@ class WarehouseMutations:
                 performed_by=actor,
                 caller_is_manager=lambda: _is_warehouse_manager(info),
                 confirm_below_reserved=input.confirm_below_reserved,
+                expected_quantity=input.expected_quantity,
             )
             session.commit()
             session.refresh(result)

@@ -10,7 +10,7 @@ import {
   IconButton,
 } from '@mui/material';
 import { Plus, Trash2 } from 'lucide-react';
-import { useMutation } from '@apollo/client/react';
+import { useApolloClient, useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
@@ -250,6 +250,7 @@ export default function InventoryCorrectionModal({
 
   // --- Mutations ---
 
+  const client = useApolloClient();
   const [overrideInventoryQuantity, { loading: overrideLoading }] = useMutation(OVERRIDE_INVENTORY_QUANTITY, {
     refetchQueries: WAREHOUSE_REFETCH_QUERIES,
     awaitRefetchQueries: true,
@@ -260,6 +261,8 @@ export default function InventoryCorrectionModal({
     },
     onError: (error) => {
       showToast(error.message, 'error');
+      // Usually "this row changed from X to Y since you opened it" (#1318): redraw the counts.
+      void client.refetchQueries({ include: WAREHOUSE_REFETCH_QUERIES });
     },
   });
 
@@ -326,6 +329,9 @@ export default function InventoryCorrectionModal({
                       quantity: Number(d.quantity),
                     }))
                   : [],
+              // Decrease vs increase (and the destinations) were decided against this count; the
+              // server refuses, naming both counts, if the row has moved since (#1318).
+              expectedQuantity: item.quantity,
               ...(gate.confirmed ? { confirmBelowReserved: true } : {}),
             },
           },

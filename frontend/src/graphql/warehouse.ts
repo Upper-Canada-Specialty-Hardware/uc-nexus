@@ -406,6 +406,7 @@ export const ADJUST_INVENTORY_QUANTITY = gql`
     $reason: String!
     $spotCheck: Boolean
     $confirmBelowReserved: Boolean
+    $expectedQuantity: Int
   ) {
     adjustInventoryQuantity(
       inventoryLocationId: $inventoryLocationId
@@ -413,6 +414,7 @@ export const ADJUST_INVENTORY_QUANTITY = gql`
       reason: $reason
       spotCheck: $spotCheck
       confirmBelowReserved: $confirmBelowReserved
+      expectedQuantity: $expectedQuantity
     ) {
       id
       projectId

@@ -7,7 +7,7 @@ import {
   Stack,
   Alert,
 } from '@mui/material';
-import { useMutation } from '@apollo/client/react';
+import { useApolloClient, useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import LocationAutocomplete from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
@@ -54,9 +54,19 @@ export default function LocationActionDialog({
   onClose,
   onSuccess,
   mode,
-  targets,
+  targets: allTargets,
 }: Props) {
   const { showToast } = useToast();
+  const client = useApolloClient();
+  // #1317: rows a multi-row move/unlocate already finished drop out, so a retry after a mid-run
+  // failure continues from the row that failed instead of re-sending the ones that went through.
+  const [doneIds, setDoneIds] = useState<ReadonlySet<string>>(() => new Set());
+  const targets = useMemo(() => allTargets.filter((t) => !doneIds.has(t.id)), [allTargets, doneIds]);
+  // Cleared only for a fresh open or a new selection, not when finished rows drop out of `targets`.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the finished rows on a fresh open
+    if (open) setDoneIds(new Set());
+  }, [open, allTargets]);
   const single = targets.length === 1 ? targets[0] : null;
 
   // Move state
@@ -170,6 +180,7 @@ export default function LocationActionDialog({
   const handleConfirm = async () => {
     if (!isValid) return;
     setSubmitting(true);
+    const finished: string[] = [];
     try {
       for (const t of targets) {
         if (mode === 'move') {
@@ -209,6 +220,7 @@ export default function LocationActionDialog({
                 inventoryLocationId: single.id,
                 adjustment: adjustmentNum,
                 reason: reason.trim(),
+                expectedQuantity: single.quantity,
                 ...(gate.confirmed ? { confirmBelowReserved: true } : {}),
               },
             });
@@ -219,11 +231,14 @@ export default function LocationActionDialog({
                   stockItemId: single.id,
                   newQuantity: newQuantity,
                   reasonText: reason.trim(),
+                  // newQuantity was built from this count; a row that moved since is refused (#1316).
+                  expectedQuantity: single.quantity,
                 },
               },
             });
           }
         }
+        finished.push(t.id);
       }
       const verb = mode === 'move' ? 'moved' : mode === 'unlocate' ? 'unlocated' : 'adjusted';
       showToast(
@@ -236,7 +251,22 @@ export default function LocationActionDialog({
       onClose();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : `Failed to ${mode}`;
-      showToast(message, 'error');
+      if (finished.length > 0) {
+        // Part of the batch went through: say how much, drop those rows, and refresh so the grid
+        // shows them where they now are (#1317).
+        const verb = mode === 'move' ? 'moved' : 'unlocated';
+        showToast(
+          `${finished.length} of ${targets.length} ${verb}. The next one failed: ${message} Confirm again to do the rest.`,
+          'error',
+        );
+        setDoneIds((prev) => new Set([...prev, ...finished]));
+        void client.refetchQueries({ include: 'active' });
+      } else {
+        showToast(message, 'error');
+        // A refused adjust is usually a row that changed under the dialog: refresh so the grid shows
+        // the current count before the next try (#1316).
+        if (mode === 'adjust') void client.refetchQueries({ include: 'active' });
+      }
     } finally {
       setSubmitting(false);
     }

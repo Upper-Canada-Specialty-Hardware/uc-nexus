@@ -8,6 +8,7 @@ import {
 } from '../../../graphql/shared';
 import {
   ADJUST_INVENTORY_QUANTITY,
+  ADJUST_STOCK_QUANTITY,
   GET_PROJECT_INVENTORY_AVAILABILITY,
   GET_WAREHOUSE_LOCATIONS,
   MOVE_STOCK_LOCATION,
@@ -234,7 +235,7 @@ describe('LocationActionDialog', () => {
       {
         request: {
           query: ADJUST_INVENTORY_QUANTITY,
-          variables: { inventoryLocationId: 'inv-1', adjustment: -3, reason: 'damaged in transit' },
+          variables: { inventoryLocationId: 'inv-1', adjustment: -3, reason: 'damaged in transit', expectedQuantity: 10 },
         },
         result: (vars) => {
           calledVariables = vars as Record<string, unknown>;
@@ -263,7 +264,92 @@ describe('LocationActionDialog', () => {
       inventoryLocationId: 'inv-1',
       adjustment: -3,
       reason: 'damaged in transit',
+      expectedQuantity: 10,
     });
+  });
+
+  it('a pool adjust sends the count it was built from (#1316)', async () => {
+    let calledVariables: Record<string, unknown> | null = null;
+    const mocks: MockedResponse[] = [
+      {
+        request: {
+          query: ADJUST_STOCK_QUANTITY,
+          variables: { input: { stockItemId: 'stock-1', newQuantity: 2, reasonText: 'recount', expectedQuantity: 4 } },
+        },
+        result: (vars) => {
+          calledVariables = vars as Record<string, unknown>;
+          return {
+            data: {
+              adjustStockQuantity: {
+                id: 'stock-1',
+                hardwareCategory: 'LOCK',
+                productCode: 'LK-200',
+                quantity: 2,
+                deficientQuantity: 0,
+                available: 2,
+                __typename: 'StockItem',
+              },
+            },
+          };
+        },
+      },
+    ];
+    const { onSuccess } = renderDialog({ mode: 'adjust', targets: [stockTarget] }, mocks);
+
+    fireEvent.change(screen.getByLabelText('Adjustment (+/-)'), { target: { value: '-2' } });
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'recount' } });
+    fireEvent.click(confirmButton());
+
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    expect(calledVariables).toEqual({
+      input: { stockItemId: 'stock-1', newQuantity: 2, reasonText: 'recount', expectedQuantity: 4 },
+    });
+  });
+
+  it('a multi-row unlocate that fails partway says how far it got and retries only the rest (#1317)', async () => {
+    const second: LocationActionTarget = { ...invTarget, id: 'inv-2', productCode: 'HG-200' };
+    const unlocated = (id: string) => ({
+      data: { markInventoryUnlocated: { id, aisle: null, row: null, bay: null, __typename: 'InventoryLocation' } },
+    });
+    let firstCalls = 0;
+    let secondCalls = 0;
+    const mocks: MockedResponse[] = [
+      {
+        request: { query: MARK_INVENTORY_UNLOCATED, variables: { inventoryLocationId: 'inv-1' } },
+        maxUsageCount: Number.POSITIVE_INFINITY,
+        result: () => {
+          firstCalls += 1;
+          return unlocated('inv-1');
+        },
+      },
+      {
+        request: { query: MARK_INVENTORY_UNLOCATED, variables: { inventoryLocationId: 'inv-2' } },
+        error: new Error('picked meanwhile'),
+      },
+      {
+        request: { query: MARK_INVENTORY_UNLOCATED, variables: { inventoryLocationId: 'inv-2' } },
+        result: () => {
+          secondCalls += 1;
+          return unlocated('inv-2');
+        },
+      },
+    ];
+    const { onSuccess, onClose } = renderDialog({ mode: 'unlocate', targets: [invTarget, second] }, mocks);
+
+    fireEvent.click(confirmButton());
+
+    await waitFor(() => expect(screen.getByText(/1 of 2 unlocated/)).toBeInTheDocument());
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    // The row that went through has dropped out; only the failed one is left to do.
+    await waitFor(() => expect(screen.getAllByText(/qty 10 — at/)).toHaveLength(1));
+    expect(screen.getAllByText(/qty 10 — at/)[0]).toHaveTextContent('HG-200');
+
+    fireEvent.click(confirmButton());
+
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    expect(firstCalls).toBe(1);
+    expect(secondCalls).toBe(1);
   });
 
   it('unlocate mode warns and fires MARK_INVENTORY_UNLOCATED on confirm', async () => {
@@ -341,7 +427,13 @@ describe('LocationActionDialog', () => {
       const adjustMock: MockedResponse = {
         request: {
           query: ADJUST_INVENTORY_QUANTITY,
-          variables: { inventoryLocationId: 'inv-1', adjustment: -8, reason: 'counted short', confirmBelowReserved: true },
+          variables: {
+            inventoryLocationId: 'inv-1',
+            adjustment: -8,
+            reason: 'counted short',
+            expectedQuantity: 10,
+            confirmBelowReserved: true,
+          },
         },
         result: (vars) => {
           calledVariables = vars as Record<string, unknown>;

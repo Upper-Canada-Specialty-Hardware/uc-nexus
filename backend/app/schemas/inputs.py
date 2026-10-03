@@ -859,6 +859,8 @@ class AdjustStockQuantityInput:
     stock_item_id: strawberry.ID
     new_quantity: int
     reason_text: str
+    # The count the dialog showed and built new_quantity from; a changed row is refused (#1316).
+    expected_quantity: int | None = None
 
 
 @strawberry.input
@@ -914,6 +916,8 @@ class OverrideInventoryQuantityInput:
     # A decrease below the combo's active reservations is recorded only when a Warehouse Manager sets
     # this, having been shown the shortfall (#1124).
     confirm_below_reserved: bool = False
+    # The count the modal showed; a row that moved since is refused rather than mis-corrected (#1318).
+    expected_quantity: int | None = None
 
 
 @strawberry.input

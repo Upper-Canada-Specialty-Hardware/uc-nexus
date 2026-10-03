@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { Box, Typography, TextField, Button, Stack, Alert } from '@mui/material';
-import { useMutation } from '@apollo/client/react';
+import { useApolloClient, useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
@@ -36,6 +36,7 @@ function formatLocation(aisle: string | null, row: string | null, bay: string | 
 
 export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotCheckModalProps) {
   const { showToast } = useToast();
+  const client = useApolloClient();
   const [physicalCount, setPhysicalCount] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -74,7 +75,12 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
       onSuccess();
       onClose();
     },
-    onError: (err) => showToast(err.message, 'error'),
+    onError: (err) => {
+      showToast(err.message, 'error');
+      // A refusal is usually "this row changed since you opened it" (#1315): redraw the counts so the
+      // next try is against what the shelf now holds.
+      void client.refetchQueries({ include: WAREHOUSE_REFETCH_QUERIES });
+    },
   });
 
   const handleConfirm = () => {
@@ -86,6 +92,8 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
         adjustment: discrepancy,
         reason: `Spot check: system=${item.quantity}, physical=${physicalNum}`,
         spotCheck: true,
+        // The count the delta was taken from; the server refuses if the row has moved since (#1315).
+        expectedQuantity: item.quantity,
         ...(gate.confirmed ? { confirmBelowReserved: true } : {}),
       },
     });

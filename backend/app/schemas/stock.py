@@ -219,6 +219,7 @@ class StockMutations:
                 new_quantity=input.new_quantity,
                 reason_text=input.reason_text,
                 performed_by=actor,
+                expected_quantity=input.expected_quantity,
             )
             session.commit()
             session.refresh(result)
