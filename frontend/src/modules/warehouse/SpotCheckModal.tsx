@@ -1,11 +1,12 @@
 import { useState, useMemo, useRef } from 'react';
 import { Box, Typography, TextField, Button, Stack, Alert } from '@mui/material';
-import { useMutation } from '@apollo/client/react';
+import { useApolloClient, useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
 import { ADJUST_INVENTORY_QUANTITY } from '../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
+import { isStaleRowRefusal } from '../../graphql/staleRow';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { ReservationGateNotice, useComboReservation, useReservationGate } from './reservationNotice';
 import { Appear } from '../../motion';
@@ -36,6 +37,7 @@ function formatLocation(aisle: string | null, row: string | null, bay: string | 
 
 export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotCheckModalProps) {
   const { showToast } = useToast();
+  const client = useApolloClient();
   const [physicalCount, setPhysicalCount] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
   // #1204: the adjustment is a delta, so sending it twice applies the discrepancy twice. Set
@@ -83,6 +85,12 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
       adjustInFlight.current = false;
       setConfirmOpen(false);
       showToast(err.message, 'error');
+      if (isStaleRowRefusal(err)) {
+        // The row moved since this opened (#1315). The count shown here is the parent's snapshot, so
+        // close: the refetch redraws the grid and reopening counts against what the shelf now holds.
+        void client.refetchQueries({ include: WAREHOUSE_REFETCH_QUERIES });
+        onClose();
+      }
     },
   });
 
@@ -101,6 +109,8 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
         adjustment: discrepancy,
         reason: `Spot check: system=${item.quantity}, physical=${physicalNum}`,
         spotCheck: true,
+        // The count the delta was taken from; the server refuses if the row has moved since (#1315).
+        expectedQuantity: item.quantity,
         ...(gate.confirmed ? { confirmBelowReserved: true } : {}),
       },
     });

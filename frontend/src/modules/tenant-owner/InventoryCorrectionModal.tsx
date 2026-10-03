@@ -10,7 +10,7 @@ import {
   IconButton,
 } from '@mui/material';
 import { Plus, Trash2 } from 'lucide-react';
-import { useMutation } from '@apollo/client/react';
+import { useApolloClient, useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import { useToast } from '../../components/Toast';
@@ -18,6 +18,7 @@ import { FONT_MONO, microLabelSx, monoSx, tabularSx } from '../../theme';
 import { OVERRIDE_INVENTORY_QUANTITY } from '../../graphql/admin';
 import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED, ASSIGN_INVENTORY_LOCATION } from '../../graphql/shared';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
+import { isStaleRowRefusal } from '../../graphql/staleRow';
 import { ReservationGateNotice, useComboReservation, useReservationGate } from '../warehouse/reservationNotice';
 
 // --- Item types ---
@@ -250,6 +251,7 @@ export default function InventoryCorrectionModal({
 
   // --- Mutations ---
 
+  const client = useApolloClient();
   const [overrideInventoryQuantity, { loading: overrideLoading }] = useMutation(OVERRIDE_INVENTORY_QUANTITY, {
     refetchQueries: WAREHOUSE_REFETCH_QUERIES,
     awaitRefetchQueries: true,
@@ -260,6 +262,12 @@ export default function InventoryCorrectionModal({
     },
     onError: (error) => {
       showToast(error.message, 'error');
+      if (isStaleRowRefusal(error)) {
+        // "This row changed from X to Y" (#1318): the count here is the parent's snapshot, so close;
+        // the refetch redraws the grid and reopening works from the current count.
+        void client.refetchQueries({ include: WAREHOUSE_REFETCH_QUERIES });
+        onClose();
+      }
     },
   });
 
@@ -326,6 +334,9 @@ export default function InventoryCorrectionModal({
                       quantity: Number(d.quantity),
                     }))
                   : [],
+              // Decrease vs increase (and the destinations) were decided against this count; the
+              // server refuses, naming both counts, if the row has moved since (#1318).
+              expectedQuantity: item.quantity,
               ...(gate.confirmed ? { confirmBelowReserved: true } : {}),
             },
           },
