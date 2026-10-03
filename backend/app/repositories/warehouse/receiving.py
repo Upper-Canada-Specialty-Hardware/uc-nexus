@@ -626,6 +626,7 @@ def get_all_receives(
     project_id: uuid.UUID | None = None,
     po_search: str | None = None,
     company: str | None = None,
+    status: str | None = None,
 ) -> list[dict]:
     """Every receive entity, drafts and booked records interleaved, newest first (#505).
 
@@ -639,6 +640,13 @@ def get_all_receives(
 
     Line counts and quantities come off the already-loaded line collections, which are selectinloaded
     here - the #-N+1 rule: no per-row lazy loads.
+
+    `status` filters in SQL, and each read is ordered newest first and cut at `offset + limit` before
+    the merge (#1267): the merged page can only hold rows from the top `offset + limit` of either side,
+    so nothing older is ever loaded. Filtering status in the browser over a capped page missed older
+    matches, and reading every draft and record to sort them in Python grew with the whole history.
+    A status narrows drafts to that status; APPROVED also brings in the booked records, which is how an
+    approved delivery shows.
     """
     from app.models.project import Project as ProjectModel
     from app.models.receive_draft import ReceiveDraft as ReceiveDraftModel
@@ -648,21 +656,42 @@ def get_all_receives(
             stmt = stmt.where(po_alias.project_id == project_id)
         if company is not None:
             stmt = stmt.where(po_alias.company == company)
-        if po_search:
-            stmt = stmt.where(po_alias.po_number.ilike(f"%{po_search.strip()}%"))
+        needle = (po_search or "").strip()
+        if needle:
+            # Escaped (#1270): a `_` or `%` in the box is a character, not a wildcard.
+            escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            stmt = stmt.where(po_alias.po_number.ilike(f"%{escaped}%", escape="\\"))
         return stmt
 
+    window = offset + limit
+    want_records = status is None or status == "APPROVED"
+
+    # An approved draft is shown through its record (see below), so it is left out in SQL too - a
+    # skip after the LIMIT would leave the page short.
     draft_stmt = (
         select(ReceiveDraftModel, POModel)
         .join(POModel, ReceiveDraftModel.po_id == POModel.id)
         .options(selectinload(ReceiveDraftModel.line_items))
+        .where(ReceiveDraftModel.receive_record_id.is_(None))
+        .order_by(ReceiveDraftModel.created_at.desc(), ReceiveDraftModel.id.desc())
+        .limit(window)
     )
+    if status is not None:
+        from app.models.enums import ReceiveDraftStatus
+
+        try:
+            draft_status = ReceiveDraftStatus(status)
+        except ValueError as exc:
+            raise ValidationError(f"Unknown receive status '{status}'.", field="status") from exc
+        draft_stmt = draft_stmt.where(ReceiveDraftModel.status == draft_status)
     draft_stmt = _po_filters(draft_stmt, POModel)
 
     record_stmt = (
         select(ReceiveRecordModel, POModel)
         .join(POModel, ReceiveRecordModel.po_id == POModel.id)
         .options(selectinload(ReceiveRecordModel.line_items))
+        .order_by(ReceiveRecordModel.received_at.desc(), ReceiveRecordModel.id.desc())
+        .limit(window)
     )
     record_stmt = _po_filters(record_stmt, POModel)
 
@@ -671,8 +700,6 @@ def get_all_receives(
     # keeps one physical delivery from appearing twice.
     rows: list[dict] = []
     for draft, po in session.execute(draft_stmt).unique().all():
-        if draft.receive_record_id is not None:
-            continue
         rows.append(
             {
                 "kind": "DRAFT",
@@ -693,7 +720,8 @@ def get_all_receives(
             }
         )
 
-    for record, po in session.execute(record_stmt).unique().all():
+    record_rows = session.execute(record_stmt).unique().all() if want_records else []
+    for record, po in record_rows:
         rows.append(
             {
                 "kind": "RECORD",
@@ -729,5 +757,5 @@ def get_all_receives(
     for r in rows:
         r["project_name"] = names.get(r["project_id"])
 
-    rows.sort(key=lambda r: r["occurred_at"], reverse=True)
+    rows.sort(key=lambda r: (r["occurred_at"], str(r["id"])), reverse=True)
     return rows[offset : offset + limit]

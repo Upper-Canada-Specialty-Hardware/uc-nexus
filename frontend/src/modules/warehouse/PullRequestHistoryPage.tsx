@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { Alert, Box, Chip, Stack, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
+import { useEffect, useMemo, useState } from 'react';
+import { Alert, Box, Button, Chip, Stack, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
 import { ChevronRight } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
@@ -19,6 +19,10 @@ import { parseServerDate } from '../../utils/serverDate';
 // the same all-projects read the queue does). Held at module scope so the reference is stable and
 // the query is not re-issued on every render.
 const TERMINAL_STATUSES = ['COMPLETED', 'CANCELLED'];
+
+// One server page of finished pulls, newest finished first (#1268). Terminal pulls only accumulate, so
+// the page reads a page at a time; a full page means older ones exist and Load more is offered.
+const PAGE_SIZE = 200;
 
 type SourceFilter = 'ALL' | 'SHOP_ASSEMBLY' | 'SHIPPING_OUT';
 type StatusFilter = 'ALL' | 'COMPLETED' | 'CANCELLED';
@@ -163,19 +167,44 @@ export default function PullRequestHistoryPage() {
   // would pin its view to the pre-refetch snapshot.
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const { data, loading, error } = useQuery<{ pullRequests: PullRequest[] }>(GET_PULL_REQUESTS, {
-    variables: { statuses: TERMINAL_STATUSES },
+  // Both toggles are sent to the server (#1268), so a filter reaches past the first page instead of
+  // narrowing only what was already loaded.
+  const { data, loading, error, fetchMore } = useQuery<{ pullRequests: PullRequest[] }>(GET_PULL_REQUESTS, {
+    variables: {
+      statuses: statusFilter === 'ALL' ? TERMINAL_STATUSES : [statusFilter],
+      source: sourceFilter === 'ALL' ? undefined : sourceFilter,
+      limit: PAGE_SIZE,
+      offset: 0,
+      newestFinishedFirst: true,
+    },
     fetchPolicy: 'cache-and-network',
   });
 
-  // Both filters are applied client-side over the single fetched list, so the on-screen count agrees
-  // with what the toggles narrowed rather than a second round trip.
-  const rows = useMemo(() => {
-    let list = data?.pullRequests ?? [];
-    if (sourceFilter !== 'ALL') list = list.filter((pr) => pr.source === sourceFilter);
-    if (statusFilter !== 'ALL') list = list.filter((pr) => pr.status === statusFilter);
-    return list;
-  }, [data, sourceFilter, statusFilter]);
+  const rows = useMemo(() => data?.pullRequests ?? [], [data]);
+
+  // A changed toggle starts a fresh first page, so the end-of-list flag resets with it.
+  const [reachedEnd, setReachedEnd] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset paging when the toggles change
+    setReachedEnd(false);
+  }, [sourceFilter, statusFilter]);
+  const hasMore = !reachedEnd && rows.length > 0 && rows.length % PAGE_SIZE === 0;
+
+  const handleLoadMore = async () => {
+    setLoadingMore(true);
+    try {
+      const res = await fetchMore({
+        variables: { offset: rows.length },
+        updateQuery: (prev, { fetchMoreResult }) => ({
+          pullRequests: [...(prev.pullRequests ?? []), ...(fetchMoreResult?.pullRequests ?? [])],
+        }),
+      });
+      if ((res.data?.pullRequests?.length ?? 0) < PAGE_SIZE) setReachedEnd(true);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const selected = useMemo(
     () => (data?.pullRequests ?? []).find((pr) => pr.id === selectedId) ?? null,
@@ -260,6 +289,17 @@ export default function PullRequestHistoryPage() {
         }}
         getRowId={(row) => row.id}
       />
+
+      {hasMore && (
+        <Box sx={{ mt: 1.5, display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
+          <Typography variant="body2" color="text.secondary" sx={tabularSx}>
+            Showing the newest {rows.length} - older finished pulls exist.
+          </Typography>
+          <Button size="small" variant="outlined" onClick={handleLoadMore} disabled={loadingMore}>
+            {loadingMore ? 'Loading…' : 'Load more'}
+          </Button>
+        </Box>
+      )}
 
       {selected && (
         <PullRequestDetailModal
