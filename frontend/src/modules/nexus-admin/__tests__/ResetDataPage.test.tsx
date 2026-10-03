@@ -125,6 +125,29 @@ test('cancelling the confirm sends nothing', async () => {
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
+test('a double click on the confirm sends one reset (#1319)', async () => {
+  let finish: () => void = () => {};
+  fetchMock.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ ok: true, json: async () => ({ status: 'ok', message: 'Schema dropped and rebuilt' }) });
+      }),
+  );
+  renderPage();
+
+  fireEvent.change(screen.getByLabelText('Confirmation phrase'), { target: { value: PHRASE } });
+  fireEvent.click(resetButton());
+
+  const confirm = within(await screen.findByRole('dialog')).getByRole('button', { name: 'Reset data' });
+  fireEvent.click(confirm);
+  fireEvent.click(confirm);
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  finish();
+  await screen.findByText('Reset finished');
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
 test('the reset mints a fresh token rather than reusing a cached one (#1331)', async () => {
   // An idle admin tab's cached token can be expired, and this raw fetch is outside the Apollo replay
   // that would re-mint it - so the page asks Clerk to skip its cache.

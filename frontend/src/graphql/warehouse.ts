@@ -55,6 +55,9 @@ export const GET_OPEN_POS_SUMMARY = gql`
       id
       poNumber
       projectId
+      # Off the project itself (#1196), so an archived job's open PO still names it.
+      projectNumber
+      projectDescription
       poolKind
       status
       origin
@@ -131,6 +134,9 @@ export const GET_RECEIVING_HISTORY_POS = gql`
       vendorName
       poolKind
       projectId
+      # Off the project itself (#1215), so an archived job's history still names it.
+      projectNumber
+      projectDescription
       orderedTotal
       receivedTotal
       receiveCount
@@ -203,6 +209,7 @@ export const GET_PULL_REQUESTS = gql`
       status
       requestedBy
       assignedTo
+      assignedToUserId
       createdAt
       updatedAt
       approvedAt
@@ -368,6 +375,9 @@ export const GET_DEFICIENT_ITEMS = gql`
       inventoryLocationId
       stockItemId
       projectId
+      # Off the project itself (#1252), archived included; null on a stock-pool row.
+      projectNumber
+      projectDescription
       hardwareCategory
       productCode
       deficientQuantity
@@ -488,6 +498,8 @@ const RECEIVE_DRAFT_FIELDS = `
   poId
   poNumber
   projectId
+  projectNumber
+  projectDescription
   poolKind
   warehouseId
   # The Clerk id and the display name of whoever counted the hardware. The id is what "my drafts"
@@ -606,7 +618,7 @@ export const APPROVE_RECEIVE_DRAFT = gql`
 
 // Shared shape so a pull read from a mutation result is cache-identical to one read from the queue.
 const PULL_REQUEST_FIELDS = `
-  id requestNumber projectId source status requestedBy assignedTo
+  id requestNumber projectId source status requestedBy assignedTo assignedToUserId
   createdAt updatedAt approvedAt completedAt cancelledAt cancelledBy cancellationReason
   pickedAt pickedBy partiallyPicked
   items {
@@ -617,6 +629,8 @@ const PULL_REQUEST_FIELDS = `
 // The pick screen and the printed sheet (#367). Note what is absent: any suggested quantity. The
 // picker decides, and the sheet gives them received dates so they can rotate stock themselves.
 const PICK_SHEET_FIELDS = `
+  projectNumber
+  projectDescription
   pullRequest { ${PULL_REQUEST_FIELDS} }
   sections {
     hardwareCategory productCode requiredQuantity appliedQuantity remainingQuantity

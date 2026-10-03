@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Alert, AlertTitle, Box, Button, Paper, Stack, TextField, Typography } from '@mui/material';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import PageHeader from '../../components/PageHeader';
@@ -34,7 +34,14 @@ export default function ResetDataPage() {
 
   const phraseMatches = phrase === CONFIRMATION_PHRASE;
 
+  // #1319: one reset per click. The confirm closes on this call but its button takes clicks through the
+  // exit transition; set synchronously, before `resetting` re-renders. The server refuses an overlapping
+  // reset too (409), this keeps the page from asking twice.
+  const resetInFlight = useRef(false);
+
   const handleReset = useCallback(async () => {
+    if (resetInFlight.current) return;
+    resetInFlight.current = true;
     setConfirmOpen(false);
     setResetting(true);
     setOutcome(null);
@@ -76,6 +83,7 @@ export default function ResetDataPage() {
       setOutcome({ ok: false, text });
       showToast(text, 'error');
     } finally {
+      resetInFlight.current = false;
       setResetting(false);
     }
   }, [showToast]);
@@ -179,6 +187,7 @@ export default function ResetDataPage() {
         confirmLabel="Reset data"
         confirmColor="error"
         cancelLabel="Cancel"
+        busy={resetting}
         onConfirm={handleReset}
         onCancel={() => setConfirmOpen(false)}
       />
