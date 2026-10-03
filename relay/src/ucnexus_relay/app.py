@@ -142,8 +142,14 @@ class RelayApp:
             return {"ok": False, "error": "no download URL"}
         from . import updater
 
+        # #1212: the busy check before staging is seconds stale by the time the download and extract
+        # finish, so ask again right before committing to the handoff.
         result = updater.stage_update(
-            url.strip(), self._install_dir(), os.getpid(), target_build=(build or "").strip() or None
+            url.strip(),
+            self._install_dir(),
+            os.getpid(),
+            target_build=(build or "").strip() or None,
+            ready_to_hand_off=lambda: not update_poller.is_busy(update_poller._read_health()),
         )
         if result.get("ok"):
             # Mark this teardown as the update handoff so it is NOT treated as a user cancel

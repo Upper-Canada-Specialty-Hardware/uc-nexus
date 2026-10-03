@@ -193,6 +193,28 @@ def test_run_defers_while_a_gp_job_is_in_flight(monkeypatch, tmp_path):
     assert app.staged == []
 
 
+def test_run_keeps_polling_when_the_handoff_was_deferred_as_busy(monkeypatch, tmp_path):
+    # #1212: became busy while staging - nothing was handed off, so the loop must not return (that would
+    # end auto-updating) and the next try comes on the short busy cadence.
+    app = _FakeApp(tmp_path)
+    app.begin_update = lambda url, build=None: app.staged.append((url, build)) or {"ok": False, "deferred": True}
+    monkeypatch.setattr(update_poller, "_read_health", lambda: {"channel": {"jobs_in_flight": 0}})
+    monkeypatch.setattr(updater, "check_update", lambda: _check())
+    monkeypatch.setattr(updater, "read_ledger", lambda d: {})
+    monkeypatch.setattr(updater, "cancel_requested", lambda d: False)
+    waits = []
+
+    class _Recording(_NoWait):
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            return super().wait(timeout)
+
+    update_poller.run(app, _Recording(2))
+
+    assert len(app.staged) == 2  # tried again rather than stopping
+    assert waits[1] == update_poller.DEFER_RETRY_SECONDS
+
+
 def test_run_survives_an_exception_and_keeps_polling(monkeypatch, tmp_path):
     # A GitHub blip must not kill the thread: that would silently end auto-updating with no signal.
     app = _FakeApp(tmp_path)

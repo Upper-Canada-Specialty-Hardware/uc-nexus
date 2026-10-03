@@ -160,6 +160,12 @@ def run(app, stop: threading.Event, rng: random.Random | None = None) -> None:
 
             logger.info("update poller: %s; staging", reason)
             result = app.begin_update(check["url"], check.get("latest"))
+            if result.get("deferred"):
+                # Became busy while the build downloaded (#1212): nothing was handed off, so retry on the
+                # short busy cadence rather than waiting a whole interval.
+                delay = DEFER_RETRY_SECONDS
+                logger.info("update poller: relay became busy while staging; deferring the handoff")
+                continue
             if not result.get("ok"):
                 logger.warning("update poller: staging failed - %s", result.get("error"))
                 continue

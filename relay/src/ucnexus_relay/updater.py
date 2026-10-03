@@ -545,16 +545,31 @@ def _download_and_extract(url: str, install_dir: Path, target_build: str | None)
     return ver, None
 
 
-def stage_update(url: str, install_dir: str | Path, app_pid: int, target_build: str | None = None) -> dict:
+def stage_update(
+    url: str,
+    install_dir: str | Path,
+    app_pid: int,
+    target_build: str | None = None,
+    ready_to_hand_off=None,
+) -> dict:
     """Download + extract the new version alongside the current one, seed the ledger, and spawn the detached
     windowless helper from the CURRENT (settled) exe, by its REAL path. The caller (ui.apply_update) then
-    shuts the app down so the helper can repoint the junction and relaunch."""
+    shuts the app down so the helper can repoint the junction and relaunch.
+
+    `ready_to_hand_off`, when given, is asked once more after the download and extract, which can take
+    seconds, and before anything commits to the handoff (#1212). A GP write that arrived in that gap would
+    otherwise be killed with the serve child: GP rolls it back, but the backend sees a dispatched job whose
+    socket died and marks it ambiguous. Returning False defers: no ledger, no helper (it would force the app
+    down at its deadline anyway), and the caller tries again later."""
     from . import single_instance
 
     install_dir = Path(install_dir)
     ver, error = _download_and_extract(url, install_dir, target_build)
     if ver is None:
         return {"ok": False, "error": error}
+
+    if ready_to_hand_off is not None and not ready_to_hand_off():
+        return {"ok": False, "deferred": True, "error": "the relay is busy with GP work; the update will wait"}
 
     _clear_cancel(install_dir)
     _stage_ledger(install_dir, target_build or "", url, str(ver))
