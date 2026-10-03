@@ -172,11 +172,25 @@ def clone_origin_fields(source: InventoryLocationModel) -> dict:
     }
 
 
+# A location part the caller did not give at all, as against one given as null (#1251). An aisle-only
+# shelf (row and bay null) is a place of its own: its panel must list what sits there, not every row
+# in the aisle. So null matches NULL, and only an omitted part matches anything.
+ANY_LOCATION_PART = object()
+
+
+def _part_filter(column, value):
+    if value is ANY_LOCATION_PART:
+        return None
+    if value is None:
+        return column.is_(None)
+    return column == value
+
+
 def get_location_contents(
     session: Session,
     aisle: str,
-    row_name: str | None = None,
-    bay: str | None = None,
+    row_name: str | None | object = ANY_LOCATION_PART,
+    bay: str | None | object = ANY_LOCATION_PART,
     warehouse_id: uuid.UUID | None = None,
     *,
     company: str | None = None,
@@ -191,10 +205,12 @@ def get_location_contents(
         .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
         .where(InventoryLocationModel.aisle == aisle, InventoryLocationModel.quantity > 0)
     )
-    if row_name is not None:
-        inv_stmt = inv_stmt.where(InventoryLocationModel.row == row_name)
-    if bay is not None:
-        inv_stmt = inv_stmt.where(InventoryLocationModel.bay == bay)
+    for clause in (
+        _part_filter(InventoryLocationModel.row, row_name),
+        _part_filter(InventoryLocationModel.bay, bay),
+    ):
+        if clause is not None:
+            inv_stmt = inv_stmt.where(clause)
     if warehouse_id is not None:
         inv_stmt = inv_stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
     if company is not None:
@@ -206,10 +222,9 @@ def get_location_contents(
         StockItemModel.aisle == aisle,
         StockItemModel.quantity + StockItemModel.deficient_quantity > 0,
     )
-    if row_name is not None:
-        si_stmt = si_stmt.where(StockItemModel.row == row_name)
-    if bay is not None:
-        si_stmt = si_stmt.where(StockItemModel.bay == bay)
+    for clause in (_part_filter(StockItemModel.row, row_name), _part_filter(StockItemModel.bay, bay)):
+        if clause is not None:
+            si_stmt = si_stmt.where(clause)
     if warehouse_id is not None:
         si_stmt = si_stmt.where(StockItemModel.warehouse_id == warehouse_id)
     if company is not None:
@@ -309,8 +324,8 @@ def get_location_utilization(
 def get_location_audit_history(
     session: Session,
     aisle: str,
-    row_name: str | None = None,
-    bay: str | None = None,
+    row_name: str | None | object = ANY_LOCATION_PART,
+    bay: str | None | object = ANY_LOCATION_PART,
     limit: int = 10,
     warehouse_id: uuid.UUID | None = None,
     *,
@@ -325,10 +340,12 @@ def get_location_audit_history(
     # Build the matching predicate via JSONB containment. Postgres-only — matches the JSONB column.
     from_match: dict = {"aisle": aisle}
     to_match: dict = {"aisle": aisle}
-    if row_name is not None:
+    # A null part is written into the location object as JSON null (location_detail), so containment
+    # on {"row": None} matches exactly the aisle-only entries (#1251); an omitted part matches any.
+    if row_name is not ANY_LOCATION_PART:
         from_match["row"] = row_name
         to_match["row"] = row_name
-    if bay is not None:
+    if bay is not ANY_LOCATION_PART:
         from_match["bay"] = bay
         to_match["bay"] = bay
     if warehouse_id is not None:

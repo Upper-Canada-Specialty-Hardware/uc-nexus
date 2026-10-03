@@ -89,6 +89,12 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
+def _location_part(value):
+    """A row or bay argument as the location queries read it (#1251): omitted matches any, an explicit
+    null matches an empty part, so an aisle-only shelf shows only what sits on it."""
+    return warehouse_repository.ANY_LOCATION_PART if value is strawberry.UNSET else value
+
+
 def _pick_lines_from_input(lines: list[PickLineInput]) -> list[warehouse_repository.PickLine]:
     """GraphQL input -> the repository's `PickLine`. The id parse is the only conversion."""
     return [
@@ -803,16 +809,16 @@ class WarehouseQueries:
         self,
         info: strawberry.Info,
         aisle: str,
-        row: str | None = None,
-        bay: str | None = None,
+        row: str | None = strawberry.UNSET,
+        bay: str | None = strawberry.UNSET,
         warehouse_id: strawberry.ID | None = None,
     ) -> LocationContents:
         with SessionLocal() as session:
             data = warehouse_repository.get_location_contents(
                 session,
                 aisle,
-                row,
-                bay,
+                _location_part(row),
+                _location_part(bay),
                 uuid.UUID(str(warehouse_id)) if warehouse_id else None,
                 company=tenant_scope(info),
             )
@@ -834,8 +840,8 @@ class WarehouseQueries:
         self,
         info: strawberry.Info,
         aisle: str,
-        row: str | None = None,
-        bay: str | None = None,
+        row: str | None = strawberry.UNSET,
+        bay: str | None = strawberry.UNSET,
         limit: int = 10,
         warehouse_id: strawberry.ID | None = None,
     ) -> list[AuditLogEntry]:
@@ -843,8 +849,8 @@ class WarehouseQueries:
             entries = warehouse_repository.get_location_audit_history(
                 session,
                 aisle,
-                row,
-                bay,
+                _location_part(row),
+                _location_part(bay),
                 limit=cap_limit(limit),
                 warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
                 company=tenant_scope(info),
