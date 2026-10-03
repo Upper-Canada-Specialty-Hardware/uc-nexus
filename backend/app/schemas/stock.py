@@ -16,6 +16,7 @@ from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
 from app.repositories import stock as stock_repository
 from app.repositories import tenancy
+from app.repositories.project_labels import project_labels
 
 from .converters import (
     deficiency_review_to_type,
@@ -103,7 +104,9 @@ class StockQueries:
                 source=source,
                 company=scope,
             )
-            return [deficient_item_row_to_type(r) for r in rows]
+            # #1252: every row's project in one read, archived included; stock-pool rows have none.
+            labels = project_labels(session, (r["project_id"] for r in rows))
+            return [deficient_item_row_to_type(r, labels) for r in rows]
 
     @strawberry.field
     def deficiency_reviews(
