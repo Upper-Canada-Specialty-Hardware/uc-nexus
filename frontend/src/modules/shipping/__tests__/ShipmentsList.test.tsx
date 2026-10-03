@@ -78,6 +78,7 @@ function slip(overrides: Record<string, unknown> = {}) {
         hardwareCategory: 'Door',
         quantity: 1,
         isManual: false,
+        returnedQuantity: 0,
       },
       {
         __typename: 'PackingSlipItem',
@@ -90,6 +91,7 @@ function slip(overrides: Record<string, unknown> = {}) {
         hardwareCategory: 'Silentia Folding Screen Caster w/Brake',
         quantity: 37,
         isManual: false,
+        returnedQuantity: 0,
       },
     ],
     // How the load was arranged (#451). Every slip read carries it now, so the fixture does too.
@@ -98,11 +100,19 @@ function slip(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function packingSlipsMock(slips: Record<string, unknown>[]): MockedResponse {
+// #1107: the list is paged and searched on the server, so a mock answers one exact page.
+function packingSlipsMock(
+  slips: Record<string, unknown>[],
+  {
+    search = null,
+    limit = 25,
+    count = slips.length,
+  }: { search?: string | null; limit?: number; count?: number } = {},
+): MockedResponse {
   return {
-    request: { query: GET_PACKING_SLIPS, variables: { projectId: null } },
+    request: { query: GET_PACKING_SLIPS, variables: { projectId: null, search, limit } },
     maxUsageCount: INFINITE,
-    result: { data: { packingSlips: slips } },
+    result: { data: { packingSlips: slips, packingSlipCount: count } },
   };
 }
 
@@ -179,15 +189,8 @@ async function expandRow(packingSlipNumber: string) {
 
 describe('ShipmentsList', () => {
   it('opens on the slip a link names, searched to it and expanded (#859)', async () => {
-    renderList(
-      [
-        packingSlipsMock([
-          slip(),
-          slip({ id: 'ps-2', packingSlipNumber: 'PS-0020', status: 'PICKED_UP' }),
-        ]),
-      ],
-      '/app/shipping/shipments?slip=PS-0019',
-    );
+    // The server answers the search; only the named slip comes back.
+    renderList([packingSlipsMock([slip()], { search: 'PS-0019' })], '/app/shipping/shipments?slip=PS-0019');
 
     expect(await screen.findByText('SIL-40002-228')).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Search packing slip #' })).toHaveValue('PS-0019');
@@ -375,7 +378,7 @@ describe('ShipmentsList', () => {
     // somebody reconciling paperwork.
     renderList([
       {
-        request: { query: GET_PACKING_SLIPS, variables: { projectId: null } },
+        request: { query: GET_PACKING_SLIPS, variables: { projectId: null, search: null, limit: 25 } },
         maxUsageCount: INFINITE,
         error: new Error('backend unreachable'),
       },
@@ -428,5 +431,77 @@ describe('ShipmentsList', () => {
     expect(within(dialog).getByLabelText(/Weight \(lbs\)/i)).toHaveValue(420);
     // The items and the slip number are not editable: changing what shipped is a return.
     expect(within(dialog).queryByLabelText(/Packing Slip Number/i)).not.toBeInTheDocument();
+  });
+
+  it('shows what is still out on each line after a return (#1107)', async () => {
+    const partly = slip();
+    (partly.items as Record<string, unknown>[])[1] = {
+      ...(partly.items as Record<string, unknown>[])[1],
+      returnedQuantity: 4,
+    };
+    renderList([packingSlipsMock([partly])]);
+    await expandRow('PS-0019');
+
+    expect(await screen.findByText('33')).toBeInTheDocument();
+    expect(screen.getByText('of 37, 4 returned')).toBeInTheDocument();
+    // Something is still out, so it can still come back.
+    expect(screen.getByRole('button', { name: 'Return' })).toBeEnabled();
+  });
+
+  it('turns Return off when nothing on the shipment can come back (#1107)', async () => {
+    const returned = slip({
+      items: (slip().items as Record<string, unknown>[]).map((item) => ({
+        ...item,
+        returnedQuantity: item.quantity,
+      })),
+    });
+    const manualOnly = slip({
+      id: 'ps-2',
+      packingSlipNumber: 'PS-0020',
+      status: 'DELIVERED',
+      items: [{ ...(slip().items as Record<string, unknown>[])[0], id: 'psi-9', isManual: true }],
+    });
+    renderList([packingSlipsMock([{ ...returned, status: 'DELIVERED' }, manualOnly])]);
+
+    await expandRow('PS-0019');
+    await expandRow('PS-0020');
+
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Return' })).toHaveLength(2));
+    for (const button of screen.getAllByRole('button', { name: 'Return' })) {
+      expect(button).toBeDisabled();
+    }
+  });
+
+  it('pages on the server and asks for the next page on Show more (#1107)', async () => {
+    const page = Array.from({ length: 25 }, (_, i) =>
+      slip({ id: `ps-${i}`, packingSlipNumber: `PS-${String(100 + i)}` }),
+    );
+    const next = [...page, ...Array.from({ length: 5 }, (_, i) =>
+      slip({ id: `ps-x${i}`, packingSlipNumber: `PS-${String(200 + i)}` }),
+    )];
+    renderList([
+      packingSlipsMock(page, { count: 30 }),
+      packingSlipsMock(next, { limit: 50, count: 30 }),
+    ]);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Show 5 more of 5' }));
+
+    expect(await screen.findByText('PS-204')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Show \d+ more/ })).not.toBeInTheDocument();
+  });
+
+  it('searches on the server once typing pauses (#1107)', async () => {
+    renderList([
+      packingSlipsMock([slip(), slip({ id: 'ps-2', packingSlipNumber: 'PS-0020' })]),
+      packingSlipsMock([slip({ id: 'ps-2', packingSlipNumber: 'PS-0020' })], { search: 'PS-0020' }),
+    ]);
+    await screen.findByText('PS-0019');
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search packing slip #' }), {
+      target: { value: 'PS-0020' },
+    });
+
+    await waitFor(() => expect(screen.queryByText('PS-0019')).not.toBeInTheDocument());
+    expect(screen.getByText('PS-0020')).toBeInTheDocument();
   });
 });

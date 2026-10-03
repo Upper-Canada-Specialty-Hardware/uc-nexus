@@ -51,6 +51,8 @@ export interface PackingSlipItem {
   quantity: number;
   /** A free-text, off-inventory line: on the truck, never in inventory. Not returnable. */
   isManual: boolean;
+  /** What has come back off this line so far, every disposition (#1107). `quantity` stays what was cut. */
+  returnedQuantity?: number;
 }
 
 /** One placement inside a shipped container, as the slip stored it (#451). */
@@ -199,6 +201,72 @@ export function buildMaterialLines(items: MaterialItem[]): string[] {
       `${opening}${where ? ` - ${where}` : ''}`
     );
   });
+}
+
+/** What is still out on a slip line: what was cut, less what has come back off it (#1107). */
+export function netQuantity(item: PackingSlipItem): number {
+  return Math.max(0, item.quantity - (item.returnedQuantity ?? 0));
+}
+
+/**
+ * Units on a slip that a return could still bring back (#1107): every real line net of what has
+ * already come back. A manual line never entered inventory, so it is never returnable and does not
+ * count - a slip of only manual lines, or one already fully returned, has nothing to return.
+ */
+export function returnableUnits(items: PackingSlipItem[]): number {
+  return items.filter((i) => !i.isManual).reduce((sum, i) => sum + netQuantity(i), 0);
+}
+
+function stockKey(i: { openingNumber: string | null; hardwareCategory: string | null; productCode: string | null }) {
+  return `${i.openingNumber ?? ''}\u0000${i.hardwareCategory ?? ''}\u0000${i.productCode ?? ''}`;
+}
+
+/**
+ * The shipment as it stands after returns, for a reprint (#1107). A partial return before pickup used
+ * to leave the reprint saying the original quantity, so the driver carried - and the site signed for -
+ * hardware that was back on the shelf.
+ *
+ * Slip lines net directly. Container lines carry no link to the slip line they became, so what came
+ * back is taken off the matching (opening, category, product) placements in load order; the skid it
+ * came off is not recorded, and the earliest placement is as good a guess as any. Lines that net to
+ * nothing drop out, and so does a container left empty. Manual lines are never returned and pass
+ * through untouched.
+ */
+export function slipNetOfReturns(
+  items: PackingSlipItem[],
+  containers?: SlipContainer[],
+): { items: PackingSlipItem[]; containers: SlipContainer[] } {
+  const returned = new Map<string, number>();
+  for (const item of items) {
+    if (item.isManual || !item.returnedQuantity) continue;
+    const key = stockKey(item);
+    returned.set(key, (returned.get(key) ?? 0) + item.returnedQuantity);
+  }
+
+  const netItems = items
+    .map((i) => ({ ...i, quantity: netQuantity(i), returnedQuantity: 0 }))
+    .filter((i) => i.quantity > 0);
+
+  const netContainers: SlipContainer[] = [];
+  for (const container of containers ?? []) {
+    const ordered = [...container.items].sort((a, b) => a.position - b.position);
+    const kept: SlipContainerItem[] = [];
+    for (const item of ordered) {
+      let quantity = item.quantity;
+      if (!item.isManual) {
+        const key = stockKey(item);
+        const owed = returned.get(key) ?? 0;
+        const taken = Math.min(owed, quantity);
+        if (taken > 0) returned.set(key, owed - taken);
+        quantity -= taken;
+      }
+      if (quantity > 0) kept.push({ ...item, quantity });
+    }
+    if (kept.length > 0 || container.items.length === 0) {
+      netContainers.push({ ...container, items: kept });
+    }
+  }
+  return { items: netItems, containers: netContainers };
 }
 
 /**

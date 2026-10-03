@@ -115,13 +115,38 @@ class ShippingQueries:
             )
 
     @strawberry.field
-    def packing_slips(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> list[PackingSlip]:
+    def packing_slips(
+        self,
+        info: strawberry.Info,
+        project_id: strawberry.ID | None = None,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[PackingSlip]:
+        """One page of shipments, newest first (#1107). `search` matches the slip number; `limit`
+        defaults to 25 and is capped at 200. `packingSlipCount` answers how many the filter matches."""
         with SessionLocal() as session:
             scope = tenant_scope(info)
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
-            slips = shipping_repository.list_packing_slips(session, pid, company=scope)
+            slips = shipping_repository.list_packing_slips(
+                session, pid, company=scope, search=search, limit=limit, offset=offset
+            )
             return [packing_slip_to_type(ps) for ps in slips]
+
+    @strawberry.field
+    def packing_slip_count(
+        self,
+        info: strawberry.Info,
+        project_id: strawberry.ID | None = None,
+        search: str | None = None,
+    ) -> int:
+        """How many shipments `packingSlips` would page through for the same filter (#1107)."""
+        with SessionLocal() as session:
+            scope = tenant_scope(info)
+            pid = uuid.UUID(str(project_id)) if project_id else None
+            tenancy.require_project_in_scope(session, pid, scope)
+            return shipping_repository.count_packing_slips(session, pid, company=scope, search=search)
 
     @strawberry.field
     def shipping_out_requests(

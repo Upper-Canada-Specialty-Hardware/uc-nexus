@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Alert,
@@ -51,10 +51,13 @@ import ReturnShipmentDialog, { type ReturnSlip } from './ReturnShipmentDialog';
 import EditShipmentDialog from './EditShipmentDialog';
 import DeliveryRequestDocument from './DeliveryRequestDocument';
 import {
+  netQuantity,
   primaryWarehouse,
+  returnableUnits,
   SHIPMENT_SLIP_PARAM,
   shipmentStatusDisplay,
   slipMaterialLines,
+  slipNetOfReturns,
   slipOpeningSummary,
   valuesFromSlip,
   warehouseAddressLines,
@@ -81,15 +84,14 @@ interface Props {
   heading?: string;
 }
 
-/** How many shipments the table paints before the "show more" tail. */
+/** How many shipments one page asks the server for, and each "show more" adds (#1107). */
 const PAGE = 25;
+/** The server's ceiling on one read. Past it, the search is how an older shipment is found. */
+const MAX_SHOWN = 200;
+/** How long typing has to pause before the search goes to the server. */
+const SEARCH_DEBOUNCE_MS = 250;
 
 const LONG_DATE: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'long', day: 'numeric' };
-
-/** Everything the slip carried, which is everything a return can bring back. */
-function shippedUnits(slip: PackingSlip): number {
-  return slip.items.reduce((sum, i) => sum + i.quantity, 0);
-}
 
 /** A calendar date the way the Delivery Request carries it, or a dash when it was left blank. */
 function formatDay(value: string | null | undefined): string {
@@ -188,6 +190,14 @@ export default function ShipmentsList({ projectId, heading }: Props) {
   const [searchParams, setSearchParams] = useSearchParams();
   const linkedSlip = searchParams.get(SHIPMENT_SLIP_PARAM);
   const [search, setSearch] = useState(() => linkedSlip ?? '');
+  // What the server is asked for: the search box once typing has paused, so a slip number typed
+  // character by character is one read rather than nine.
+  const [query, setQuery] = useState(() => linkedSlip ?? '');
+  useEffect(() => {
+    if (search === query) return undefined;
+    const timer = window.setTimeout(() => setQuery(search), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [search, query]);
   const [projectFilter, setProjectFilter] = useState('');
   const [shown, setShown] = useState(PAGE);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -198,10 +208,22 @@ export default function ShipmentsList({ projectId, heading }: Props) {
   );
   const [generatingFor, setGeneratingFor] = useState<string | null>(null);
 
-  const { data, loading, error, refetch } = useQuery<{ packingSlips: PackingSlip[] }>(
-    GET_PACKING_SLIPS,
-    { variables: { projectId: projectId ?? null }, fetchPolicy: 'cache-and-network' },
-  );
+  // #1107: paged, searched and project-filtered on the server. The list used to read every slip
+  // the company had ever cut, with items and containers, and filter it here.
+  const { data, previousData, loading, error, refetch } = useQuery<{
+    packingSlips: PackingSlip[];
+    packingSlipCount: number;
+  }>(GET_PACKING_SLIPS, {
+    variables: {
+      projectId: projectId ?? (projectFilter || null),
+      search: query.trim() || null,
+      limit: shown,
+    },
+    fetchPolicy: 'cache-and-network',
+  });
+  // The page already on screen stays there while the next one (a search, "show more") loads, rather
+  // than the table dropping to skeletons between keystrokes.
+  const current = data ?? previousData;
 
   // Read in both modes, not just the global one: the project column and filter only matter to the
   // all-projects view, but the Delivery Request PDF prints PROJECT and JOB NUMBER either way, and
@@ -238,20 +260,14 @@ export default function ShipmentsList({ projectId, heading }: Props) {
   const [markDelivered, { loading: markingDelivered }] = useMutation(MARK_SHIPMENT_DELIVERED);
   const marking = markingPickedUp || markingDelivered;
 
-  const slips = useMemo(() => {
-    const all = data?.packingSlips ?? [];
-    const needle = search.trim().toLowerCase();
-    return all
-      .filter((s) => (projectFilter ? s.projectId === projectFilter : true))
-      .filter((s) => (needle ? s.packingSlipNumber.toLowerCase().includes(needle) : true));
-  }, [data, projectFilter, search]);
-
-  const visible = useMemo(() => slips.slice(0, shown), [slips, shown]);
+  const visible = useMemo(() => current?.packingSlips ?? [], [current]);
+  const total = current?.packingSlipCount ?? visible.length;
+  const more = total - visible.length;
 
   // The linked slip reads as expanded while the parameter stands, rather than being copied into
   // `expanded` by an effect; collapsing it by hand drops the parameter (see `toggle`).
   const linkedSlipId = linkedSlip
-    ? data?.packingSlips.find((s) => s.packingSlipNumber === linkedSlip)?.id
+    ? visible.find((s) => s.packingSlipNumber === linkedSlip)?.id
     : undefined;
 
   const toggle = useCallback(
@@ -287,6 +303,9 @@ export default function ShipmentsList({ projectId, heading }: Props) {
       setGeneratingFor(slip.id);
       try {
         const project = projectsById.get(slip.projectId);
+        // #1107: a reprint says what is still on the shipment, not what was first cut - a partial
+        // return before pickup used to leave the driver's copy carrying hardware that was back here.
+        const net = slipNetOfReturns(slip.items, slip.containers);
         const blob = await pdf(
           <DeliveryRequestDocument
             packingSlipNumber={slip.packingSlipNumber}
@@ -294,8 +313,8 @@ export default function ShipmentsList({ projectId, heading }: Props) {
             jobNumber={project?.projectId ?? ''}
             date={parseServerDate(slip.shippedAt).toLocaleDateString(undefined, LONG_DATE)}
             shipper={slip.shippedBy}
-            openings={slipOpeningSummary(slip.items, slip.containers)}
-            materialLines={slipMaterialLines(slip.items, slip.containers)}
+            openings={slipOpeningSummary(net.items, net.containers)}
+            materialLines={slipMaterialLines(net.items, net.containers)}
             divisionAddress={divisionAddress}
             values={valuesFromSlip(slip)}
           />,
@@ -380,13 +399,13 @@ export default function ShipmentsList({ projectId, heading }: Props) {
       {/* A failed load is not an empty list. Without this branch the table falls straight through to
           "No shipments match this search.", which reads as "this project has never shipped" - the
           one answer that is never safe to give somebody reconciling paperwork. */}
-      {loading && !data ? (
+      {loading && !current ? (
         <Stack spacing={0.5}>
           {Array.from({ length: 5 }).map((_, i) => (
             <Skeleton key={i} height={38} />
           ))}
         </Stack>
-      ) : error && !data ? (
+      ) : error && !current ? (
         <Alert severity="error">Error loading shipments: {error.message}</Alert>
       ) : (
         <FitTable storageKey="shipments-list" columns={shipmentColumns(isGlobal)}>
@@ -402,7 +421,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
           {visible.map((slip) => {
             const isOpen = expanded.has(slip.id) || slip.id === linkedSlipId;
             const status = shipmentStatusDisplay(slip.status);
-            const returnable = shippedUnits(slip);
+            const returnable = returnableUnits(slip.items);
             return (
               <Fragment key={slip.id}>
                 <TableRow
@@ -485,7 +504,17 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                                 <TableCell sx={monoSx}>{item.productCode || '-'}</TableCell>
                                 <TableCell>{item.hardwareCategory || '-'}</TableCell>
                                 <TableCell align="right" sx={tabularSx}>
-                                  {item.quantity}
+                                  {netQuantity(item)}
+                                  {(item.returnedQuantity ?? 0) > 0 && (
+                                    <Typography
+                                      component="span"
+                                      variant="caption"
+                                      color="text.secondary"
+                                      sx={{ display: 'block' }}
+                                    >
+                                      of {item.quantity}, {item.returnedQuantity} returned
+                                    </Typography>
+                                  )}
                                 </TableCell>
                               </TableRow>
                             ))}
@@ -608,6 +637,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                             variant="outlined"
                             startIcon={<CornerUpLeft size={18} strokeWidth={1.75} />}
                             disabled={returnable === 0}
+                            title={returnable === 0 ? 'Nothing on this shipment can come back' : undefined}
                             onClick={() =>
                               setActiveSlip({
                                 id: slip.id,
@@ -630,11 +660,21 @@ export default function ShipmentsList({ projectId, heading }: Props) {
         </FitTable>
       )}
 
-      {slips.length > visible.length && (
-        <Button size="small" variant="text" onClick={() => setShown((n) => n + PAGE)} sx={{ mt: 1 }}>
-          Show {Math.min(PAGE, slips.length - visible.length)} more of{' '}
-          {slips.length - visible.length}
+      {more > 0 && shown < MAX_SHOWN && (
+        <Button
+          size="small"
+          variant="text"
+          onClick={() => setShown((n) => Math.min(n + PAGE, MAX_SHOWN))}
+          disabled={loading}
+          sx={{ mt: 1 }}
+        >
+          Show {Math.min(PAGE, more, MAX_SHOWN - shown)} more of {more}
         </Button>
+      )}
+      {more > 0 && shown >= MAX_SHOWN && (
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+          Showing the newest {MAX_SHOWN}. Search by packing slip number to find an older shipment.
+        </Typography>
       )}
 
       {activeSlip && (
