@@ -74,3 +74,78 @@ def test_limit_still_caps_the_page(db_session):
     page = warehouse_repository.get_audit_log(db_session, project_id=project.id, limit=3, offset=0)
 
     assert len(page) == 3
+
+
+def _seed_same_instant(session, project, n):
+    """n audit rows written at one instant, as one loop's writes are. Returns their ids in query order
+    (created_at desc, then id desc)."""
+    at = datetime(2026, 1, 2, 9, 0, 0)
+    ids = []
+    for i in range(n):
+        entry = InventoryAuditLog(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            entity_type=AuditEntityType.INVENTORY_LOCATION,
+            entity_id=uuid.uuid4(),
+            action=AuditAction.ADJUSTMENT,
+            detail={"i": i},
+            performed_by="tester",
+            created_at=at,
+        )
+        session.add(entry)
+        ids.append(entry.id)
+    session.flush()
+    return sorted(ids, reverse=True)
+
+
+def test_before_id_pages_by_keyset(db_session):
+    """#1269: the next page is everything strictly older than the last entry shown."""
+    project = make_project(db_session)
+    newest_first = _seed(db_session, project, 6)
+
+    page1 = warehouse_repository.get_audit_log(db_session, project_id=project.id, limit=2)
+    page2 = warehouse_repository.get_audit_log(db_session, project_id=project.id, limit=2, before_id=page1[-1].id)
+    page3 = warehouse_repository.get_audit_log(db_session, project_id=project.id, limit=2, before_id=page2[-1].id)
+
+    assert [e.id for e in page1 + page2 + page3] == newest_first
+
+
+def test_a_new_entry_between_pages_does_not_repeat_a_row(db_session):
+    """#1269: an entry written after the first page shifted an offset by one; the keyset does not."""
+    project = make_project(db_session)
+    newest_first = _seed(db_session, project, 4)
+    page1 = warehouse_repository.get_audit_log(db_session, project_id=project.id, limit=2)
+
+    db_session.add(
+        InventoryAuditLog(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            entity_type=AuditEntityType.INVENTORY_LOCATION,
+            entity_id=uuid.uuid4(),
+            action=AuditAction.ADJUSTMENT,
+            detail={"late": True},
+            performed_by="tester",
+            created_at=datetime(2026, 6, 1, 12, 0, 0),
+        )
+    )
+    db_session.flush()
+    page2 = warehouse_repository.get_audit_log(db_session, project_id=project.id, limit=2, before_id=page1[-1].id)
+
+    assert [e.id for e in page2] == newest_first[2:4]
+
+
+def test_equal_timestamps_page_without_repeats_or_gaps(db_session):
+    """#1269: rows written at one instant are ordered by id, so a page boundary between them is stable."""
+    project = make_project(db_session)
+    ordered = _seed_same_instant(db_session, project, 5)
+
+    seen = []
+    cursor = None
+    for _ in range(3):
+        page = warehouse_repository.get_audit_log(db_session, project_id=project.id, limit=2, before_id=cursor)
+        if not page:
+            break
+        seen.extend(e.id for e in page)
+        cursor = page[-1].id
+
+    assert seen == ordered

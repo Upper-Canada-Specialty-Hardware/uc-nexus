@@ -194,8 +194,19 @@ export const GET_PULL_REQUESTS = gql`
     $source: PullRequestSource
     $status: PullRequestStatus
     $statuses: [PullRequestStatus!]
+    $limit: Int
+    $offset: Int
+    $newestFinishedFirst: Boolean
   ) {
-    pullRequests(projectId: $projectId, source: $source, status: $status, statuses: $statuses) {
+    pullRequests(
+      projectId: $projectId
+      source: $source
+      status: $status
+      statuses: $statuses
+      limit: $limit
+      offset: $offset
+      newestFinishedFirst: $newestFinishedFirst
+    ) {
       id
       requestNumber
       projectId
@@ -809,8 +820,8 @@ export const RESOLVE_DEFICIENCY = gql`
 // rejected drafts and booked records. The existing views each cover a slice, and a rejected draft
 // appeared in none of them.
 export const GET_RECEIVES = gql`
-  query GetReceives($limit: Int, $offset: Int, $projectId: ID, $poSearch: String) {
-    receives(limit: $limit, offset: $offset, projectId: $projectId, poSearch: $poSearch) {
+  query GetReceives($limit: Int, $offset: Int, $projectId: ID, $poSearch: String, $status: String) {
+    receives(limit: $limit, offset: $offset, projectId: $projectId, poSearch: $poSearch, status: $status) {
       kind
       id
       occurredAt

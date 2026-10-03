@@ -53,6 +53,9 @@ def get_pull_requests(
     statuses=None,
     *,
     company: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+    newest_finished_first: bool = False,
 ) -> list[PullRequestModel]:
     """
     Query PullRequest WHERE deleted_at IS NULL, optionally filtered by project_id.
@@ -63,6 +66,10 @@ def get_pull_requests(
     `status` filters to one status; `statuses` filters to any of a set - the active queue passes
     [PENDING, IN_PROGRESS] so completed and cancelled pulls leave it the moment they land, and the
     history page passes [COMPLETED, CANCELLED]. The two are additive when both are given.
+
+    The history page pages here (#1268): terminal pulls only accumulate, so it reads newest finished
+    first (completed or cancelled at, id as the tiebreak) a page at a time instead of every finished
+    pull and its items on each visit. `limit` None keeps the unpaged read the live queue relies on.
     """
     stmt = (
         select(PullRequestModel)
@@ -81,7 +88,15 @@ def get_pull_requests(
         from app.repositories import tenancy
 
         stmt = stmt.where(PullRequestModel.project_id.in_(tenancy.project_ids_for(company)))
-    stmt = stmt.order_by(PullRequestModel.created_at.asc())
+    if newest_finished_first:
+        finished_at = func.coalesce(
+            PullRequestModel.completed_at, PullRequestModel.cancelled_at, PullRequestModel.created_at
+        )
+        stmt = stmt.order_by(finished_at.desc(), PullRequestModel.id.desc())
+    else:
+        stmt = stmt.order_by(PullRequestModel.created_at.asc())
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
     return list(session.scalars(stmt).unique().all())
 
 

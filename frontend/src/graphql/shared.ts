@@ -154,8 +154,22 @@ export const GET_WAREHOUSES = gql`
 `;
 
 export const GET_AUDIT_LOG = gql`
-  query GetAuditLog($entityId: ID, $entityType: AuditEntityType, $projectId: ID, $limit: Int, $offset: Int) {
-    auditLog(entityId: $entityId, entityType: $entityType, projectId: $projectId, limit: $limit, offset: $offset) {
+  query GetAuditLog(
+    $entityId: ID
+    $entityType: AuditEntityType
+    $projectId: ID
+    $limit: Int
+    $offset: Int
+    $beforeId: ID
+  ) {
+    auditLog(
+      entityId: $entityId
+      entityType: $entityType
+      projectId: $projectId
+      limit: $limit
+      offset: $offset
+      beforeId: $beforeId
+    ) {
       id
       projectId
       entityType
