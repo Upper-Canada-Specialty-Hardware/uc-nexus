@@ -9,6 +9,9 @@ import {
   UPDATE_PO_LINE_ITEM_ORDER_AS,
   UPDATE_PO_LINE_ITEM_UNIT_COST,
   DELETE_PO_DOCUMENT,
+  EMAIL_PO_TO_VENDOR,
+  GET_PO_DOCUMENT_DOWNLOAD_URL,
+  UPLOAD_PO_DOCUMENT,
 } from '../../../graphql/po';
 import { GET_PROJECTS } from '../../../graphql/shared';
 
@@ -440,7 +443,6 @@ describe('PODetailModal', () => {
           fileSize: 12,
           documentType: 'VENDOR_ACKNOWLEDGEMENT',
           uploadedAt: '2026-10-01T00:00:00Z',
-          downloadUrl: 'https://example.test/ack.pdf',
         },
       ],
     };
@@ -524,6 +526,190 @@ describe('PODetailModal', () => {
     renderModal(registeredPo, []);
 
     expect(screen.queryByRole('button', { name: 'Cancel PO' })).not.toBeInTheDocument();
+  });
+
+  // #1165 / #1166: a queued registration is still a Draft until the queue posts it. Registering again
+  // would queue a second GP PO, and cancelling would drop a PO GP is about to hold.
+  it('offers neither Register in GP nor Cancel PO while the registration is queued', () => {
+    renderModal(draftPo, [], true, true);
+
+    expect(screen.queryByRole('button', { name: 'Register in GP' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cancel PO' })).toBeNull();
+  });
+
+  // #1194: only a PO that is still a live order goes to the vendor; a cancelled or closed one would
+  // reach them as a live-looking PO for something nobody wants delivered.
+  it('offers Email to vendor on a live order only, not once it is cancelled or closed', () => {
+    const withDocument = (status: PurchaseOrder['status']): PurchaseOrder => ({
+      ...registeredPo,
+      status,
+      gpVendorId: 'ACME',
+      documents: [
+        {
+          id: 'doc-po',
+          poId: 'po-1',
+          fileName: 'po.pdf',
+          contentType: 'application/pdf',
+          fileSize: 12,
+          documentType: 'GENERATED_PO',
+          uploadedAt: '2026-10-01T00:00:00Z',
+        },
+      ],
+    });
+
+    const live = renderModal(withDocument('GP_REGISTERED'));
+    expect(screen.getByRole('button', { name: 'Email to vendor' })).toBeInTheDocument();
+    live.unmount();
+
+    const cancelled = renderModal(withDocument('CANCELLED'));
+    expect(screen.queryByRole('button', { name: 'Email to vendor' })).toBeNull();
+    cancelled.unmount();
+
+    renderModal(withDocument('CLOSED'));
+    expect(screen.queryByRole('button', { name: 'Email to vendor' })).toBeNull();
+  });
+
+  // #1278: a real failure (mail server, GP, storage) is an error toast that stays and can be copied; a
+  // step the buyer can take stays a passing note.
+  it.each([
+    [true, 'Sending failed: connection refused', true],
+    [false, 'GP has no email on file for vendor ACME. Ask accounting to add one.', false],
+  ])('shows an email outcome with failed=%s as an error only when something broke', async (failed, message, isError) => {
+    const emailMock: MockedResponse = {
+      request: { query: EMAIL_PO_TO_VENDOR, variables: () => true },
+      result: {
+        data: { emailPoToVendor: { __typename: 'EmailPoResult', sent: false, failed, message, sentTo: null } },
+      },
+    };
+    renderModal(
+      {
+        ...registeredPo,
+        gpVendorId: 'ACME',
+        documents: [
+          {
+            id: 'doc-po',
+            poId: 'po-1',
+            fileName: 'po.pdf',
+            contentType: 'application/pdf',
+            fileSize: 12,
+            documentType: 'GENERATED_PO',
+            uploadedAt: '2026-10-01T00:00:00Z',
+          },
+        ],
+      },
+      [emailMock],
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Email to vendor' }));
+
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    // The toast sits outside the open dialog, which MUI hides from the accessibility tree.
+    const copy = screen.queryByRole('button', { name: 'Copy message', hidden: true });
+    if (isError) {
+      expect(copy).toBeInTheDocument();
+    } else {
+      expect(copy).toBeNull();
+    }
+  });
+
+  // #1339: the link is signed when Download is pressed, so one left open past the link's hour still
+  // works. The tab opens inside the click and is pointed at the link when it arrives.
+  it('signs a document link on click and opens it in the tab it opened', async () => {
+    const asked: unknown[] = [];
+    const linkMock: MockedResponse = {
+      request: { query: GET_PO_DOCUMENT_DOWNLOAD_URL, variables: () => true },
+      result: (vars) => {
+        asked.push(vars);
+        return { data: { poDocumentDownloadUrl: 'https://signed.test/quote.pdf' } };
+      },
+    };
+    const tab = { opener: {} as unknown, location: { href: '' }, close: vi.fn() };
+    const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window);
+    try {
+      renderModal(
+        {
+          ...registeredPo,
+          documents: [
+            {
+              id: 'doc-q',
+              poId: 'po-1',
+              fileName: 'quote.pdf',
+              contentType: 'application/pdf',
+              fileSize: 12,
+              documentType: 'MISCELLANEOUS',
+              uploadedAt: '2026-10-01T00:00:00Z',
+            },
+          ],
+        },
+        [linkMock],
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Download quote.pdf' }));
+      expect(open).toHaveBeenCalledWith('', '_blank'); // inside the click, before any await
+      await waitFor(() => expect(tab.location.href).toBe('https://signed.test/quote.pdf'));
+      expect(asked).toEqual([{ documentId: 'doc-q' }]);
+      expect(tab.opener).toBeNull();
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('closes the tab and says so when the link cannot be signed', async () => {
+    const failMock: MockedResponse = {
+      request: { query: GET_PO_DOCUMENT_DOWNLOAD_URL, variables: () => true },
+      error: new Error('Document not found'),
+    };
+    const tab = { opener: {} as unknown, location: { href: '' }, close: vi.fn() };
+    const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window);
+    try {
+      renderModal(
+        {
+          ...registeredPo,
+          documents: [
+            {
+              id: 'doc-gone',
+              poId: 'po-1',
+              fileName: 'gone.pdf',
+              contentType: 'application/pdf',
+              fileSize: 12,
+              documentType: 'MISCELLANEOUS',
+              uploadedAt: '2026-10-01T00:00:00Z',
+            },
+          ],
+        },
+        [failMock],
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Download gone.pdf' }));
+      await waitFor(() => expect(tab.close).toHaveBeenCalled());
+      expect(await screen.findByText('Document not found')).toBeInTheDocument();
+      expect(tab.location.href).toBe('');
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  // #1233: the server caps a document at 20 MB; the dialog says so before reading and sending the file.
+  it('refuses a document over 20 MB without uploading it', async () => {
+    const uploads: unknown[] = [];
+    const uploadMock: MockedResponse = {
+      request: { query: UPLOAD_PO_DOCUMENT, variables: () => true },
+      result: (vars) => {
+        uploads.push(vars);
+        return { data: { uploadPoDocument: { id: 'doc-new' } } };
+      },
+    };
+    renderModal(registeredPo, [uploadMock]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Upload Document' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Upload Document' });
+    const big = new File(['x'], 'scan.pdf', { type: 'application/pdf' });
+    Object.defineProperty(big, 'size', { value: 21 * 1024 * 1024 });
+    fireEvent.change(dialog.querySelector('input[type="file"]') as HTMLInputElement, { target: { files: [big] } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Upload' }));
+
+    expect(await screen.findByText('The file is larger than 20 MB')).toBeInTheDocument();
+    expect(uploads).toEqual([]);
   });
 
   // Order As translates a hardware schedule item's name into the vendor's. A line added from the

@@ -394,26 +394,6 @@ SCHEDULE_CHANGED_DROPPED_NOTE = (
 )
 
 
-def _gate_on_available_inventory(
-    session: Session,
-    project_id: uuid.UUID,
-    needs: list[tuple[str, str, int]],
-    *,
-    label: str,
-    request_number: str | None,
-) -> None:
-    """The creation-time inventory gate (#342), which now lives beside the arithmetic it applies.
-
-    Kept as a name here because the shop-assembly finalize below reads better calling it, and
-    because every test that pins the gate's behaviour names it.
-    """
-    from app.repositories import warehouse as warehouse_repository
-
-    warehouse_repository.gate_on_available_inventory(
-        session, project_id, needs, label=label, request_number=request_number
-    )
-
-
 def _live_shop_assembly_requests(session: Session, project_id: uuid.UUID) -> list[SARModel]:
     """Shop-assembly requests in a project that are still in flight (#646).
 

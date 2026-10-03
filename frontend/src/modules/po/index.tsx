@@ -39,7 +39,7 @@ import CreatePOChooser from './CreatePOChooser';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import GpCompanyLabel from '../../relay/GpCompanyLabel';
 import { useActingCompany } from '../../company/ActingCompanyContext';
-import { useRelayStatus } from '../../relay/useRelayStatus';
+import { useRelayFor } from '../../relay/useRelayStatus';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
 import { isAwaitingGpReadBack } from './poDocumentGate';
 import { isStatusCardActive, toggleStatusCard } from './statusCardFilter';
@@ -116,7 +116,6 @@ export interface PODocumentInfo {
   fileSize: number;
   documentType: string;
   uploadedAt: string;
-  downloadUrl: string;
 }
 
 export interface PODocumentData {
@@ -523,14 +522,23 @@ function POListPage() {
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  const relay = useRelayStatus();
-  const relayConnected = relay.connected;
+  // #1336: the PO table works in the acting company, so GP actions need the relay to serve it - a relay
+  // connected for another company reads as down for Sync, Register and the dialogs fed from here.
+  const relay = useRelayFor();
+  const relayConnected = relay.connected === true ? relay.servesCompany : relay.connected;
 
   // #353 PR E: which POs have a GP write still on the outbox, joined onto rows client-side on
-  // entityKey (`po:<id>`) rather than as a per-row resolver (which would be an N+1).
+  // entityKey (`po:<id>`) rather than as a per-row resolver (which would be an N+1). Narrowed on the
+  // server to registrations still waiting (#1223): the newest 200 of every kind used to push an older
+  // waiting registration off the list, and the PO lost its queued chip and its Register/Cancel hold.
+  // A queued receipt is keyed on its PO too, but it is not a registration, so it no longer lights the chip.
   const { data: outboxData } = useQuery<{ gpOutbox: { id: string; entityKey: string; status: string }[] }>(
     GET_GP_OUTBOX,
-    { variables: { limit: 200 }, fetchPolicy: 'cache-and-network', pollInterval: 15_000 },
+    {
+      variables: { ops: ['create_po'], statuses: ['PENDING', 'IN_FLIGHT'], limit: 200 },
+      fetchPolicy: 'cache-and-network',
+      pollInterval: 15_000,
+    },
   );
   const queuedPoIds = useMemo(() => {
     const ids = new Set<string>();
@@ -541,9 +549,13 @@ function POListPage() {
     return ids;
   }, [outboxData]);
 
+  // #1237: the status strip counts the same scope the table shows, so a ?project= view counts that
+  // project's POs, and changing the scope re-asks. The origin filter narrows it the same way (#1358).
   const { data: statsData, loading: statsLoading, refetch: refetchStats } = useQuery<{
     poStatistics: POStatistics;
-  }>(GET_PO_STATISTICS);
+  }>(GET_PO_STATISTICS, {
+    variables: { projectId: projectId || null, origin: origin === 'ALL' ? null : origin },
+  });
 
   // #851: a search spans every status. Someone looking up a PO by number should find it whichever
   // segment happens to be pressed; clearing the search returns to that segment's narrowing.
@@ -746,7 +758,12 @@ function POListPage() {
             {company && <GpCompanyLabel code={company} gpCompanies={relay.gpCompanies} />}
           </Typography>
         </Box>
-        <RelayStatusChip connected={relayConnected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
+        <RelayStatusChip
+          connected={relay.connected}
+          unreachable={relay.unreachable}
+          companies={relay.companies}
+          gpCompanies={relay.gpCompanies}
+        />
         {/* #744: everyone who works the PO table may bring the mirror up to date. The server scopes
             the pass to the caller's own company, so this is never a cross-company action. */}
         <Button

@@ -155,8 +155,22 @@ export const GET_WAREHOUSES = gql`
 `;
 
 export const GET_AUDIT_LOG = gql`
-  query GetAuditLog($entityId: ID, $entityType: AuditEntityType, $projectId: ID, $limit: Int, $offset: Int) {
-    auditLog(entityId: $entityId, entityType: $entityType, projectId: $projectId, limit: $limit, offset: $offset) {
+  query GetAuditLog(
+    $entityId: ID
+    $entityType: AuditEntityType
+    $projectId: ID
+    $limit: Int
+    $offset: Int
+    $beforeId: ID
+  ) {
+    auditLog(
+      entityId: $entityId
+      entityType: $entityType
+      projectId: $projectId
+      limit: $limit
+      offset: $offset
+      beforeId: $beforeId
+    ) {
       id
       projectId
       entityType
@@ -220,22 +234,5 @@ export const MARK_NOTIFICATION_AS_READ = gql`
 export const MARK_ALL_NOTIFICATIONS_AS_READ = gql`
   mutation MarkAllNotificationsAsRead {
     markAllNotificationsAsRead
-  }
-`;
-
-// Per-opening door-leaf rollup (#313). No projectId -> all projects (global shop-assembly view);
-// rows carry project identity so colliding opening numbers stay distinct.
-export const GET_OPENING_LEAF_STATUS = gql`
-  query GetOpeningLeafStatus($projectId: ID) {
-    openingLeafStatus(projectId: $projectId) {
-      projectId
-      projectName
-      openingNumber
-      leafCount
-      leaves {
-        leaf
-        status
-      }
-    }
   }
 `;

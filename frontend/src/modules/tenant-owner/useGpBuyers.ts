@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { useQuery } from '@apollo/client/react';
 import { GET_GP_BUYERS_DETAILED } from '../../graphql/admin';
 import { isRelayOpUnsupported } from '../../graphql/gpError';
-import { useRelayStatus, type GpCompany } from '../../relay/useRelayStatus';
+import { relayServes, useRelayStatus, type GpCompany } from '../../relay/useRelayStatus';
 import { useActingCompany } from '../../company/ActingCompanyContext';
 
 export interface GpBuyerOption {
@@ -51,7 +51,8 @@ export function useGpBuyers(options?: { skip?: boolean; company?: string | null 
   // #637: the buyer master is per company. A caller that knows which one it means - the company of
   // the user being edited - says so; otherwise the company the caller is working in (#845).
   const company = options?.company || actingCompany || '';
-  const relayConnected = relay.connected === true;
+  // #1336: the buyer master is read for `company`, so the relay must serve it, not just be connected.
+  const relayConnected = relayServes(relay, company || null);
 
   const { data, loading, error, refetch } = useQuery<{ gpBuyersDetailed: GpBuyerOption[] }>(
     GET_GP_BUYERS_DETAILED,

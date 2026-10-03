@@ -288,3 +288,32 @@ describe('ProjectPicker with repeated project names (#853)', () => {
     expect(options[0]).toHaveTextContent('JOB-301');
   });
 });
+
+// #1347: an empty project list is not a search miss - say where projects come from.
+describe('ProjectPicker with no projects (#1347)', () => {
+  it('explains that projects come from the GP job sync', async () => {
+    const emptyMock: MockedResponse = {
+      request: { query: GET_PROJECTS },
+      maxUsageCount: INFINITE,
+      result: { data: { projects: [] } },
+    };
+    render(
+      <MockedProvider mocks={[emptyMock]}>
+        <ProjectPicker value={null} onChange={vi.fn()} />
+      </MockedProvider>,
+    );
+    typeInto(screen.getByLabelText('Project'), 'a');
+
+    expect(await screen.findByText(/No projects yet - projects appear for every job in GP/)).toBeInTheDocument();
+  });
+
+  it('says no match when typing misses existing projects', async () => {
+    renderPicker();
+    // Wait for the list, so the empty result below is a miss and not the loading state.
+    typeInto(screen.getByLabelText('Project'), 'Job');
+    await screen.findByText('Main St Job');
+
+    typeInto(screen.getByRole('combobox'), 'zzz-nothing');
+    expect(await screen.findByText('No matching project')).toBeInTheDocument();
+  });
+});

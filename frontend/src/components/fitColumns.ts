@@ -22,6 +22,10 @@ export interface FitColumn {
   weight?: number;
   /** A fixed pixel width instead of a share: an action or icon column. Never resizable. */
   fixed?: number;
+  /** A column holding a control (an input, a select, a button) that clips rather than reads when
+   *  squeezed (#1322). When even the minimums do not fit, the unprotected (text) columns give way
+   *  first and a protected column keeps its minimum for as long as the others have width to give. */
+  protect?: boolean;
 }
 
 type Weights = Record<string, number>;
@@ -76,12 +80,29 @@ export function resolveWeights(columns: FitColumn[], stored: Weights): number[] 
 
 /** Share `total` px among the columns by weight, freezing any column whose share falls under its
  *  minimum at that minimum and re-sharing the rest. When even the minimums do not fit, every column
- *  scales down in proportion to its minimum so the table still fits. */
-function distribute(total: number, weights: number[], mins: number[]): number[] {
+ *  scales down in proportion to its minimum so the table still fits; protected columns (#1322) keep
+ *  their minimum first and only the others scale, unless the protected minimums alone do not fit. */
+export function distribute(total: number, weights: number[], mins: number[], protect: boolean[] = []): number[] {
   const out = new Array<number>(weights.length).fill(0);
   const minSum = mins.reduce((a, b) => a + b, 0);
   if (minSum >= total) {
-    return mins.map((m) => (minSum > 0 ? (m / minSum) * total : total / mins.length));
+    const scale = (idx: number[], room: number) => {
+      const sum = idx.reduce((a, i) => a + mins[i], 0);
+      for (const i of idx) out[i] = sum > 0 ? (mins[i] / sum) * room : room / idx.length;
+    };
+    const kept = mins.map((_, i) => i).filter((i) => protect[i]);
+    const giving = mins.map((_, i) => i).filter((i) => !protect[i]);
+    const keptSum = kept.reduce((a, i) => a + mins[i], 0);
+    if (kept.length > 0 && giving.length > 0 && keptSum < total) {
+      for (const i of kept) out[i] = mins[i];
+      scale(giving, total - keptSum);
+    } else {
+      scale(
+        mins.map((_, i) => i),
+        total,
+      );
+    }
+    return out;
   }
   const open = new Set(weights.map((_, i) => i));
   let remaining = total;
@@ -111,6 +132,7 @@ export function layoutColumns(columns: FitColumn[], weights: number[], width: nu
     free,
     flexIdx.map((i) => weights[i]),
     flexIdx.map((i) => columns[i].min),
+    flexIdx.map((i) => columns[i].protect === true),
   );
   const out = columns.map((c) => c.fixed ?? 0);
   flexIdx.forEach((i, k) => {

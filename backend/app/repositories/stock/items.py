@@ -49,7 +49,9 @@ def get_stock_items(
         )
     )
     if product_code_contains:
-        stmt = stmt.where(StockItem.product_code.ilike(f"%{product_code_contains}%"))
+        # Escaped (#1270): product codes carry `_`, which LIKE reads as "any character".
+        escaped = product_code_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        stmt = stmt.where(StockItem.product_code.ilike(f"%{escaped}%", escape="\\"))
     if hardware_category:
         stmt = stmt.where(StockItem.hardware_category == hardware_category)
     if aisle:

@@ -136,6 +136,10 @@ class PurchaseOrder(Base):
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     deleted_at: Mapped[datetime | None] = mapped_column(nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # #1274: the registration attempt currently on its way to GP, by its idempotency key, and since
+    # when. One attempt per draft at a time; a claim older than the relay can take is stale.
+    registering_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    registering_since: Mapped[datetime | None] = mapped_column(nullable=True)
 
     line_items: Mapped[list["POLineItem"]] = relationship(back_populates="purchase_order")
     documents: Mapped[list["PODocument"]] = relationship(back_populates="purchase_order")

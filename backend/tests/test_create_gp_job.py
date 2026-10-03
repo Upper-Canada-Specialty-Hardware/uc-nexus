@@ -203,6 +203,62 @@ def test_a_job_already_in_gp_is_adopted_rather_than_dead_ending(monkeypatch):
     # to tell the user the selection was not applied rather than let it look like it was (#448)
     assert result.cost_codes_provisioned == 0
     assert synced == [True]  # the sync pass is what gives the project GP's own job name
+    # every relay call raises in this test, the cost-code read included: no count rather than a 0
+    assert result.cost_codes_in_gp is None
+
+
+def _relay_by_op(monkeypatch, answers: dict, *, company="TUBC"):
+    """A relay that answers per op: a value is returned, an exception raised."""
+    calls: list[tuple] = []
+
+    async def _call(_company, op, payload=None, timeout=None):
+        calls.append((_company, op, payload))
+        answer = answers[op]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(
+        type(project_module.relay_gateway), "companies", property(lambda self: [company] if company else [])
+    )
+    monkeypatch.setattr(project_module.relay_gateway, "relay_call", _call)
+    return calls
+
+
+def test_the_adopt_path_reports_the_cost_codes_gp_holds(monkeypatch):
+    """#1306: the adopt path is also the retry after a create whose reply was lost - the job and its
+    codes are ours and already in GP. Reporting what GP holds, not a flat 0, stops the dialog claiming
+    the selected codes were never applied."""
+    calls = _relay_by_op(
+        monkeypatch,
+        {
+            "create_job": RelayCallError("already exists", detail={"error": "job_already_exists"}),
+            "list_cost_codes": {"cost_codes": [{"cost_code": "210-200"}, {"cost_code": "310-000"}]},
+        },
+    )
+
+    async def _fake_sync():
+        return (1, 1)
+
+    monkeypatch.setattr(project_module.gp_job_sync, "run_once", _fake_sync)
+    monkeypatch.setattr(project_module, "_load_project", lambda job_number, company: f"project:{job_number}")
+
+    result = _create()
+
+    assert result.created is False
+    assert result.cost_codes_provisioned == 0
+    assert result.cost_codes_in_gp == 2
+    assert ("TUBC", "list_cost_codes", {"job": "NEXUS-380-T1"}) in calls
+
+
+def test_a_real_create_carries_no_gp_cost_code_count(monkeypatch):
+    _no_persist(monkeypatch)
+    _relay(monkeypatch, result={"job_number": "NEXUS-380-T1", "job_name": "Test job", "cost_codes_provisioned": 1})
+
+    result = _create()
+
+    assert result.created is True
+    assert result.cost_codes_in_gp is None
 
 
 def test_sends_every_required_field_and_omits_unset_optionals(monkeypatch):
@@ -325,6 +381,59 @@ def test_the_sync_winning_the_race_is_not_an_error(monkeypatch):
     assert result.created is True
 
 
+def test_the_sync_winning_the_insert_race_at_commit_is_not_an_error(monkeypatch):
+    """#1306: when both inserts get past adopt_gp_job's pre-check, the loser hits the (company,
+    project_id) unique constraint at commit - an IntegrityError, not a ConflictError. It is the same
+    benign race, so it lands on the adopted-by-the-sync branch instead of failing the create."""
+    from sqlalchemy.exc import IntegrityError
+
+    _relay(monkeypatch)
+    _no_persist(monkeypatch)
+
+    def _lost_the_race(session, **kwargs):
+        raise IntegrityError("INSERT INTO projects", {}, Exception("uq_projects_company_project_id"))
+
+    monkeypatch.setattr(project_module.project_repository, "adopt_gp_job", _lost_the_race)
+    monkeypatch.setattr(project_module, "_load_project", lambda job_number, company: f"existing:{job_number}")
+
+    result = _create()
+    assert result.project == "existing:NEXUS-380-T1"
+    assert result.created is True
+
+
+def test_the_project_is_adopted_with_gps_full_record_when_the_reply_carries_it(monkeypatch):
+    """#1307: the relay's create reply carries GP's full job record, and the project is adopted with
+    it - the same call the mirror makes - so it starts with GP's customer, address and dates."""
+    _no_persist(monkeypatch)
+    record = {"job_number": "NEXUS-380-T1", "job_name": "Test job", "city": "Toronto"}
+    _relay(monkeypatch, result={"job_number": "NEXUS-380-T1", "job_name": "Test job", "record": record})
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        project_module.project_repository,
+        "adopt_gp_job",
+        lambda session, **kwargs: seen.append(kwargs) or object(),
+    )
+
+    _create()
+
+    assert seen[0]["record"] == record
+
+
+def test_an_older_relay_without_the_record_adopts_with_the_name_alone(monkeypatch):
+    _no_persist(monkeypatch)
+    _relay(monkeypatch, result={"job_number": "NEXUS-380-T1", "job_name": "Test job"})
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        project_module.project_repository,
+        "adopt_gp_job",
+        lambda session, **kwargs: seen.append(kwargs) or object(),
+    )
+
+    _create()
+
+    assert "record" not in seen[0]
+
+
 def test_persists_the_project_from_gps_own_answer(monkeypatch, _clean_up_test_projects):
     # GP's reply, not the input, is what the project is built from
     _relay(monkeypatch, result={"job_number": "NEXUS-380-T9", "job_name": "Name GP Kept"})
@@ -334,3 +443,16 @@ def test_persists_the_project_from_gps_own_answer(monkeypatch, _clean_up_test_pr
     assert result.created is True
     assert result.project.project_id == "NEXUS-380-T9"
     assert result.project.description == "Name GP Kept"
+
+
+def test_persists_gps_full_record_on_the_new_project(monkeypatch, _clean_up_test_projects):
+    # #1307: GP-held fields land with the project, not a sync pass later
+    record = {"job_number": "NEXUS-380-T9", "job_name": "Name GP Kept", "city": "Toronto", "customer_name": "Acme"}
+    _relay(monkeypatch, result={"job_number": "NEXUS-380-T9", "job_name": "Name GP Kept", "record": record})
+
+    _create(job_number="NEXUS-380-T9")
+
+    with SessionLocal() as session:
+        project = session.query(ProjectModel).filter_by(project_id="NEXUS-380-T9", company="TUBC").one()
+        assert project.city == "Toronto"
+        assert project.client == "Acme"

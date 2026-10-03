@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { TableCell, TableRow } from '@mui/material';
-import { layoutColumns, resizeColumn, resolveWeights, type FitColumn } from '../fitColumns';
+import { distribute, layoutColumns, resizeColumn, resolveWeights, type FitColumn } from '../fitColumns';
 import FitTable, { type FitTableColumn } from '../FitTable';
 
 const COLUMNS: FitColumn[] = [
@@ -178,5 +178,77 @@ describe('FitTable options (#909)', () => {
     expect(getComputedStyle(box).overflowX).toBe('hidden');
     expect(getComputedStyle(box).overflowY).toBe('auto');
     expect(screen.getAllByRole('separator')).toHaveLength(2);
+  });
+});
+
+describe('fitColumns protected columns (#1322)', () => {
+  const close = (a: number, b: number) => expect(a).toBeCloseTo(b, 6);
+
+  it('without a protected column, an overfull table scales every column by its minimum (unchanged)', () => {
+    const px = distribute(300, [1, 1, 1], [200, 100, 100]);
+    close(sum(px), 300);
+    close(px[0], 150);
+    close(px[1], 75);
+    close(px[2], 75);
+    expect(distribute(300, [1, 1, 1], [200, 100, 100], [false, false, false])).toEqual(px);
+  });
+
+  it('keeps a protected column at its minimum and takes the shortfall from the others', () => {
+    // The receive lines at 768px: 184 protected + 532 of text minimums into 622.
+    const mins = [112, 100, 100, 72, 80, 68, 184];
+    const px = distribute(
+      622,
+      mins.map(() => 1),
+      mins,
+      [false, false, false, false, false, false, true],
+    );
+    close(sum(px), 622);
+    close(px[6], 184);
+    for (let i = 0; i < 6; i += 1) close(px[i], (mins[i] / 532) * 438);
+  });
+
+  it('keeps several protected columns whole while the others still have width to give', () => {
+    const px = distribute(
+      460,
+      [1, 1, 1, 1, 1, 1],
+      [80, 56, 80, 88, 248, 72],
+      [false, false, false, false, true, true],
+    );
+    close(sum(px), 460);
+    close(px[4], 248);
+    close(px[5], 72);
+    close(px[0] + px[1] + px[2] + px[3], 140);
+  });
+
+  it('falls back to proportional scaling when the protected minimums alone do not fit', () => {
+    const px = distribute(200, [1, 1, 1], [50, 150, 100], [false, true, true]);
+    close(sum(px), 200);
+    close(px[0], (50 / 300) * 200);
+    close(px[1], (150 / 300) * 200);
+    close(px[2], (100 / 300) * 200);
+  });
+
+  it('falls back to proportional scaling when every column is protected', () => {
+    const px = distribute(150, [1, 1], [100, 100], [true, true]);
+    close(px[0], 75);
+    close(px[1], 75);
+  });
+
+  it('changes nothing while the minimums fit', () => {
+    const plain = distribute(600, [2, 1, 1], [100, 50, 50]);
+    expect(distribute(600, [2, 1, 1], [100, 50, 50], [false, true, false])).toEqual(plain);
+  });
+
+  it('layoutColumns passes the protect flag through beside fixed columns and still fills the width', () => {
+    const cols: FitColumn[] = [
+      { id: 'text', label: 'Text', min: 200, weight: 1 },
+      { id: 'qty', label: 'Qty', min: 120, weight: 1, protect: true },
+      { id: 'act', label: 'Actions', min: 40, fixed: 40 },
+    ];
+    const px = layoutColumns(cols, resolveWeights(cols, {}), 260);
+    close(sum(px), 260);
+    close(px[1], 120);
+    close(px[0], 100);
+    expect(px[2]).toBe(40);
   });
 });

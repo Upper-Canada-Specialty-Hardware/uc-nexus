@@ -63,12 +63,26 @@ def get_audit_log(
     offset: int = 0,
     *,
     company: str | None = None,
+    before_id: uuid.UUID | None = None,
 ) -> list[InventoryAuditLog]:
     """Query audit log entries, optionally filtered by entity, type, or project. `offset` pages.
 
     A scoped caller (#637) sees only their own company's rows: job rows through the project, stock
-    rows through the stock item's warehouse (see audit_scope)."""
-    stmt = select(InventoryAuditLog).order_by(InventoryAuditLog.created_at.desc())
+    rows through the stock item's warehouse (see audit_scope).
+
+    Ordered newest first with the id as a tiebreak, and `before_id` pages by keyset (#1269): the next
+    page is everything strictly older than the last entry shown. An offset shifted when a new entry
+    landed between pages (the last row repeated), and equal timestamps from one loop's writes could
+    swap across a page boundary (one repeated, one never shown)."""
+    stmt = select(InventoryAuditLog).order_by(InventoryAuditLog.created_at.desc(), InventoryAuditLog.id.desc())
+    if before_id is not None:
+        cursor_at = select(InventoryAuditLog.created_at).where(InventoryAuditLog.id == before_id).scalar_subquery()
+        stmt = stmt.where(
+            or_(
+                InventoryAuditLog.created_at < cursor_at,
+                and_(InventoryAuditLog.created_at == cursor_at, InventoryAuditLog.id < before_id),
+            )
+        )
     if entity_id is not None:
         stmt = stmt.where(InventoryAuditLog.entity_id == entity_id)
     if entity_type is not None:

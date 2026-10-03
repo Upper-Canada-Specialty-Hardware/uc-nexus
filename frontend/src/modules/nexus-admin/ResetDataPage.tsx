@@ -52,7 +52,9 @@ export default function ResetDataPage() {
       // The endpoint sits behind require_admin_request (#422), and this is a raw fetch the Apollo
       // auth link never sees (it only covers /graphql) - so the Clerk token is attached by hand
       // here, off the same bridge the link reads.
-      const token = (await readAuthBridge().getToken?.()) ?? null;
+      // skipCache (#1331): an idle admin tab's cached token may already be expired, and this raw fetch
+      // is outside the Apollo replay that would otherwise re-mint it.
+      const token = (await readAuthBridge().getToken?.({ skipCache: true })) ?? null;
       if (!token) {
         const text = 'Clerk produced no session token. Sign in again as a UC Nexus Admin and retry.';
         setOutcome({ ok: false, text });

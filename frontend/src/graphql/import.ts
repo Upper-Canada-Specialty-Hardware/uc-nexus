@@ -65,17 +65,6 @@ export const GET_PROJECT_HARDWARE_SCHEDULE = gql`
   }
 `;
 
-export const GET_PROJECT_BY_SCHEDULE_ID = gql`
-  query GetProjectByScheduleId($projectId: String!) {
-    projectByScheduleId(projectId: $projectId) {
-      id
-      projectId
-      description
-      jobSiteName
-    }
-  }
-`;
-
 export const GET_PROJECT_EXCLUDED_ITEMS = gql`
   query GetProjectExcludedItems($projectId: ID!) {
     projectExcludedItems(projectId: $projectId) {
@@ -219,6 +208,8 @@ export const CREATE_GP_JOB = gql`
       # the unknown costCodes key without a word and answers a perfectly successful create, so a zero
       # against a non-empty selection is the only way to detect the bare, quarantined job it just made.
       costCodesProvisioned
+      # #1306: on the adopt path, the active cost codes GP holds on the job (null when unread).
+      costCodesInGp
       # id only: the dialog reads created, and the list is refreshed by refetchQueries, so the rest
       # of the project would be fetched and thrown away.
       project {
