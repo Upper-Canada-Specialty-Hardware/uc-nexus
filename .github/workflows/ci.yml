@@ -81,6 +81,10 @@ jobs:
         if: steps.node-modules.outputs.cache-hit != 'true'
       - run: npm run lint
       - run: npm run build
+      # The app tsconfig excludes tests, and vitest strips types without checking them, so test
+      # mocks could drift from the GraphQL types and component props they stand in for.
+      - name: Type-check tests
+        run: npx tsc -p tsconfig.test.json --noEmit
 
   frontend-tests:
     name: Frontend tests (${{ matrix.shard }}/4)
@@ -203,6 +207,9 @@ jobs:
 
       - name: Ruff lint
         run: poetry run ruff check src tests
+
+      - name: Ruff format
+        run: poetry run ruff format --check src tests
 
       - name: Run tests
         run: poetry run pytest
