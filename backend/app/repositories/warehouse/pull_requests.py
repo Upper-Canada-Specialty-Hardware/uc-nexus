@@ -1547,6 +1547,14 @@ def cancel_pull_request(
             "This pull is already complete and its hardware has been handed over - it can no longer be cancelled."
         )
 
+    # A shop-assembly pull's request is locked here, before any inventory row (#1156). Its batch is
+    # returned to the request further down under that request's lock, and batch creation takes the
+    # request first and inventory second; taking them the other way round here would deadlock against a
+    # batch landing at the same moment. With the lock already held, the re-lock below is a no-op.
+    batch = session.scalar(select(ShopAssemblyBatchModel).where(ShopAssemblyBatchModel.pull_request_id == pr.id))
+    if batch is not None:
+        lock_rows(session, ShopAssemblyRequestModel, [batch.shop_assembly_request_id])
+
     now = datetime.utcnow()
 
     # 1. Inverse inventory write.

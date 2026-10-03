@@ -18,6 +18,7 @@ from app.models.shop_assembly import ShopAssemblyRequest
 from app.models.stock_item import StockItem
 from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
 from app.services import locking
+from tests.pick_helpers import pick_pull
 from tests.shop_assembly_helpers import batch_lines
 
 _HINGE = {"opening_number": "A01", "hardware_category": "HINGE", "product_code": "HG-100"}
@@ -189,6 +190,33 @@ def test_returning_a_cancelled_batch_locks_the_request(db_session, locks_taken):
     shop_assembly_repository.return_batch_to_pending(db_session, first)
 
     assert locks_taken[:1] == ["ShopAssemblyRequest"]
+
+
+def test_cancelling_a_batch_pull_locks_the_request_before_inventory(db_session, monkeypatch):
+    """#1156: batch creation takes the request lock and then inventory rows. The cancel returns the
+    batch under the request lock too, so it takes the request first as well - the other way round, a
+    cancel and a batch landing together would deadlock."""
+    from app.repositories import warehouse as warehouse_repository
+    from app.repositories.warehouse import pull_requests
+
+    _sar, first = _two_openings_both_batched(db_session)
+    # Picked, so the cancel has rows to restock and locks inventory on the way.
+    pick_pull(db_session, first.pull_request_id)
+    db_session.flush()
+    seen: list[str] = []
+    real = pull_requests.lock_rows
+
+    def spy(session, model_class, ids):
+        seen.append(model_class.__name__)
+        return real(session, model_class, ids)
+
+    monkeypatch.setattr(pull_requests, "lock_rows", spy)
+    monkeypatch.setattr(locking, "lock_rows", spy)
+
+    warehouse_repository.cancel_pull_request(db_session, first.pull_request_id, "manager", "wrong pull")
+
+    assert "InventoryLocation" in seen
+    assert seen.index("ShopAssemblyRequest") < seen.index("InventoryLocation")
 
 
 def test_a_request_closed_under_a_cancel_is_reopened_with_its_returned_opening(db_session):
