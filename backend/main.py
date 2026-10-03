@@ -526,6 +526,52 @@ async def relay_link(websocket: WebSocket):
         relay_gateway.unregister(websocket)
 
 
+# Key for the session-level advisory lock one reset holds from snapshot to restore (#1319). Any constant
+# works; it only has to be the same in every caller and not shared with another lock.
+_RESET_DATA_LOCK_KEY = 1_319_001
+
+
+def _acquire_reset_lock():
+    """A dedicated connection holding the reset lock, or None when another reset already holds it.
+
+    Session-level (pg_try_advisory_lock), not transaction-scoped: the reset spans several connections
+    and commits - the drop, alembic's upgrade, the restore - so the lock lives on a connection of its
+    own that stays open for the whole reset. It is committed straight away so that connection is never
+    left idle in a transaction while the schema is dropped under it. The lock is not in any schema, so
+    DROP SCHEMA public does not take it away. The caller releases it and closes the connection."""
+    from sqlalchemy import text
+
+    from app.database import engine
+
+    conn = engine.connect()
+    try:
+        got = conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": _RESET_DATA_LOCK_KEY}).scalar()
+        conn.commit()
+    except Exception:
+        conn.close()
+        raise
+    if not got:
+        conn.close()
+        return None
+    return conn
+
+
+def _release_reset_lock(conn) -> None:
+    from sqlalchemy import text
+
+    # Closing returns the connection to the pool without ending its session, so the explicit unlock is
+    # what frees the lock. If the unlock itself fails, the connection is invalidated instead: that closes
+    # the session, and Postgres drops every session-level lock with it, so a reset is never left locked.
+    try:
+        conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _RESET_DATA_LOCK_KEY})
+        conn.commit()
+    except Exception:
+        logger.exception("reset-data: advisory unlock failed; dropping the connection to release it")
+        conn.invalidate()
+    finally:
+        conn.close()
+
+
 @app.post("/admin/reset-data")
 def reset_data(request: Request):
     """Drop and rebuild the entire public schema via alembic. Dev use only.
@@ -560,21 +606,33 @@ def reset_data(request: Request):
         status = 403 if e.code == "FORBIDDEN" else 401
         return JSONResponse(status_code=status, content={"error": str(e), "code": e.code})
 
-    with engine.connect() as conn:
-        snap = reset_preservation.snapshot(conn)
+    # #1319: one reset at a time. Two overlapping resets interleaved their snapshot, drop, upgrade and
+    # restore: the second snapshot could read a half-rebuilt schema, and its drop could land under the
+    # first's alembic upgrade. The lock is held from the snapshot until the restore has committed.
+    lock_conn = _acquire_reset_lock()
+    if lock_conn is None:
+        return JSONResponse(
+            status_code=409,
+            content={"error": "Another data reset is already running. Wait for it to finish.", "code": "CONFLICT"},
+        )
+    try:
+        with engine.connect() as conn:
+            snap = reset_preservation.snapshot(conn)
 
-    with engine.connect() as conn:
-        conn.execute(text("DROP SCHEMA public CASCADE"))
-        conn.execute(text("CREATE SCHEMA public"))
-        conn.commit()
+        with engine.connect() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
+            conn.commit()
 
-    # Rebuild via alembic
-    alembic_cfg = Config("alembic.ini")
-    command.upgrade(alembic_cfg, "head")
+        # Rebuild via alembic
+        alembic_cfg = Config("alembic.ini")
+        command.upgrade(alembic_cfg, "head")
 
-    with engine.connect() as conn:
-        preserved = reset_preservation.restore(conn, snap)
-        conn.commit()
+        with engine.connect() as conn:
+            preserved = reset_preservation.restore(conn, snap)
+            conn.commit()
+    finally:
+        _release_reset_lock(lock_conn)
 
     # Re-adopt every GP job straight after the rebuild, since GP owns them. Skipped silently when no
     # relay is connected - see run_once_blocking - and the background poll re-adopts them later.

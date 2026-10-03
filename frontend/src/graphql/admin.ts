@@ -87,6 +87,21 @@ export const GET_ADMIN_PROJECTS = gql`
   }
 `;
 
+// The project pickers on the tenant-owner reports (#1200). The admin list rather than `projects`,
+// because it keeps archived jobs: a finished job is archived and its final figures must still open.
+// Only what a picker option needs, not the whole admin row.
+export const GET_REPORT_PROJECT_OPTIONS = gql`
+  query GetReportProjectOptions {
+    adminProjects {
+      id
+      projectId
+      description
+      archived
+      openingCount
+    }
+  }
+`;
+
 // One project's at-a-glance state for the admin detail page (#637). The counts are computed
 // server-side - the page must not walk relationships to add them up.
 export const GET_ADMIN_PROJECT_DETAIL = gql`
@@ -295,8 +310,8 @@ export const SET_PROJECT_ARCHIVED = gql`
 `;
 
 export const UPDATE_USER_ROLES = gql`
-  mutation UpdateUserRoles($userId: String!, $roles: [String!]!) {
-    updateUserRoles(userId: $userId, roles: $roles) {
+  mutation UpdateUserRoles($userId: String!, $roles: [String!]!, $expectedRoles: [String!]) {
+    updateUserRoles(userId: $userId, roles: $roles, expectedRoles: $expectedRoles) {
       ${CLERK_USER_FIELDS}
     }
   }
@@ -475,6 +490,7 @@ export const GET_SHAREPOINT_INVENTORY_SNAPSHOT = gql`
         projectNumber
         projectName
         unitCost
+        unitCostUnreadable
         partDescription
         finish
         rating
@@ -544,6 +560,7 @@ export const MIGRATE_SHAREPOINT_INVENTORY = gql`
       catalogItemsCreated
       catalogItemsSkipped
       catalogAttributesCreated
+      unreadableUnitCosts
     }
   }
 `;

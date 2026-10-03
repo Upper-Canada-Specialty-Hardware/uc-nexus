@@ -28,6 +28,8 @@ export default function DeficientItemsReview() {
   const { data, loading, error, refetch } = useQuery<{
     deficientItems: (DeficientRow & {
       projectId: string | null;
+      projectNumber: string | null;
+      projectDescription: string | null;
       aisle: string | null;
       row: string | null;
       bay: string | null;
@@ -52,6 +54,20 @@ export default function DeficientItemsReview() {
           color={row.source === 'PROJECT_INVENTORY' ? 'primary' : 'default'}
         />
       ),
+    },
+    // #1252: whose deficient hardware this is. Blank on a stock-pool row, which belongs to no job.
+    {
+      field: 'project',
+      headerName: 'Project',
+      flex: 1,
+      minWidth: 140,
+      valueGetter: (_v, row) => (row.projectId ? row.projectDescription || row.projectNumber || '' : ''),
+      renderCell: ({ value, row }) =>
+        value ? (
+          <Typography component="span" variant="body2" noWrap title={row.projectNumber ?? undefined}>
+            {value as string}
+          </Typography>
+        ) : null,
     },
     { field: 'hardwareCategory', headerName: 'Item Number', flex: 1, minWidth: 140 },
     {
