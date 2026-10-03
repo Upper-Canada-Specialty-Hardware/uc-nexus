@@ -554,3 +554,31 @@ def test_a_skipped_empty_draft_does_not_burn_a_request_number(db_session):
     )
 
     assert [po.request_number for po in pos] == [expected]
+
+
+def test_reload_pos_returns_the_pos_in_the_order_asked_in_one_read(db_session):
+    """#1225: finalize's response reloads its POs in one select, in creation order."""
+    from app.repositories import po_repository
+
+    project = _make_project(db_session)
+    db_session.commit()
+
+    result = import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=3)],
+            "po_drafts": [
+                _po_draft([_ref("A01", "HG-100", 2)], po_number="PO-A"),
+                _po_draft([_ref("A01", "HG-100", 1)], po_number="PO-B"),
+            ],
+        },
+    )
+    db_session.flush()
+    ids = [po.id for po in result["purchase_orders"]]
+
+    pos = po_repository.reload_pos(db_session, list(reversed(ids)))
+    assert [po.id for po in pos] == list(reversed(ids))
+    assert [po.line_items[0].ordered_quantity for po in pos] == [1, 2]
+    assert po_repository.reload_pos(db_session, []) == []
