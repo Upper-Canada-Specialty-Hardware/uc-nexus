@@ -209,6 +209,7 @@ export const GET_PULL_REQUESTS = gql`
       status
       requestedBy
       assignedTo
+      assignedToUserId
       createdAt
       updatedAt
       approvedAt
@@ -617,7 +618,7 @@ export const APPROVE_RECEIVE_DRAFT = gql`
 
 // Shared shape so a pull read from a mutation result is cache-identical to one read from the queue.
 const PULL_REQUEST_FIELDS = `
-  id requestNumber projectId source status requestedBy assignedTo
+  id requestNumber projectId source status requestedBy assignedTo assignedToUserId
   createdAt updatedAt approvedAt completedAt cancelledAt cancelledBy cancellationReason
   pickedAt pickedBy partiallyPicked
   items {

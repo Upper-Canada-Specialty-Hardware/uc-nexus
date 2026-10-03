@@ -59,6 +59,10 @@ export default function PickPage() {
 
   const [entries, setEntries] = useState<PickEntries>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // #1203: set synchronously on the first confirm click, before `confirming` re-renders. confirmPick is
+  // incremental - a short pick leaves the pull open and a second call deducts again - so a double click
+  // must never send it twice.
+  const confirmInFlight = useRef(false);
   const [shortfalls, setShortfalls] = useState<Shortfall[]>([]);
   const [printing, setPrinting] = useState(false);
 
@@ -114,6 +118,7 @@ export default function PickPage() {
       const payload = (
         result as { confirmPick?: { outcome?: string; appliedQuantity?: number; shortfalls?: Shortfall[] } }
       )?.confirmPick;
+      confirmInFlight.current = false;
       setConfirmOpen(false);
       if (payload?.outcome === 'SHORT') {
         setShortfalls(payload.shortfalls ?? []);
@@ -130,6 +135,7 @@ export default function PickPage() {
       showToast(`Pick confirmed. ${payload?.appliedQuantity ?? 0} unit(s) came off the shelf.`, 'success');
     },
     onError: (e) => {
+      confirmInFlight.current = false;
       setConfirmOpen(false);
       showToast(e.message, 'error');
     },
@@ -171,10 +177,12 @@ export default function PickPage() {
   }, [saveDraft, id, sections, entries]);
 
   const handleConfirm = useCallback(() => {
+    if (confirmInFlight.current || confirming) return;
+    confirmInFlight.current = true;
     confirmPick({
       variables: { pullRequestId: id, lines: toPickLines(sections, entries) },
     });
-  }, [confirmPick, id, sections, entries]);
+  }, [confirmPick, confirming, id, sections, entries]);
 
   const handleMarkAsPulled = useCallback(() => {
     completePull({ variables: { id } });
@@ -250,7 +258,7 @@ export default function PickPage() {
                 variant="outlined"
                 startIcon={<Save size={16} strokeWidth={1.75} />}
                 onClick={handleSaveDraft}
-                disabled={saving || confirming}
+                disabled={saving || confirming || totals.invalid}
               >
                 {saving ? 'Saving...' : 'Save draft'}
               </Button>
@@ -348,8 +356,9 @@ export default function PickPage() {
 
       {totals.over && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          Some rows ask for more than is there, or more than this request is owed. A pull never takes
-          more than it asked for - fix the highlighted boxes before confirming.
+          {totals.invalid
+            ? 'Some boxes are not a whole number of units. Fix the highlighted boxes before saving or confirming.'
+            : 'Some rows ask for more than is there, or more than this request is owed. A pull never takes more than it asked for - fix the highlighted boxes before confirming.'}
         </Alert>
       )}
 
@@ -396,6 +405,7 @@ export default function PickPage() {
         confirmLabel={confirmIsShort ? 'Confirm short pick' : 'Confirm pick'}
         cancelLabel="Keep entering"
         confirmColor={confirmIsShort ? 'warning' : 'primary'}
+        busy={confirming}
         onConfirm={handleConfirm}
         onCancel={() => setConfirmOpen(false)}
       />
