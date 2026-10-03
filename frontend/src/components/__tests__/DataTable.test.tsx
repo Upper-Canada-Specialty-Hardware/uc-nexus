@@ -62,4 +62,48 @@ describe('DataTable', () => {
     expect(onColumnWidthChange).toHaveBeenCalledTimes(1);
     expect(JSON.parse(localStorage.getItem('uc-nexus:grid-column-widths:test.table')!)).toEqual({ name: 250 });
   });
+
+  // #1283: a clickable row opens from the keyboard - Enter on the focused cell itself.
+  describe('Enter on a cell', () => {
+    type KeyHandler = (params: unknown, event: unknown, details: unknown) => void;
+    const cell = () => {
+      const el = document.createElement('div');
+      el.setAttribute('role', 'gridcell');
+      return el;
+    };
+    const keyEvent = (key: string, target: HTMLElement) => ({
+      key,
+      target,
+      defaultMuiPrevented: false,
+      preventDefault: vi.fn(),
+    });
+    const params = { id: 'r1', row: { id: 'r1', name: 'x' }, cellMode: 'view', isEditable: false };
+
+    it('opens the row', () => {
+      const onRowClick = vi.fn();
+      render(<DataTable columns={COLUMNS} rows={[]} onRowClick={onRowClick} />);
+      const handler = gridProps.last!.onCellKeyDown as KeyHandler;
+      act(() => handler(params, keyEvent('Enter', cell()), {}));
+      expect(onRowClick).toHaveBeenCalledTimes(1);
+      expect(onRowClick.mock.calls[0][0]).toMatchObject({ id: 'r1', row: { id: 'r1' } });
+    });
+
+    it('leaves other keys, inner controls and editing cells alone, and still calls the caller', () => {
+      const onRowClick = vi.fn();
+      const onCellKeyDown = vi.fn();
+      render(<DataTable columns={COLUMNS} rows={[]} onRowClick={onRowClick} onCellKeyDown={onCellKeyDown} />);
+      const handler = gridProps.last!.onCellKeyDown as KeyHandler;
+      act(() => handler(params, keyEvent('a', cell()), {}));
+      act(() => handler(params, keyEvent('Enter', document.createElement('input')), {}));
+      act(() => handler({ ...params, cellMode: 'edit' }, keyEvent('Enter', cell()), {}));
+      expect(onRowClick).not.toHaveBeenCalled();
+      expect(onCellKeyDown).toHaveBeenCalledTimes(3);
+    });
+
+    it('does nothing on a grid without onRowClick', () => {
+      render(<DataTable columns={COLUMNS} rows={[]} />);
+      const handler = gridProps.last!.onCellKeyDown as KeyHandler;
+      expect(() => act(() => handler(params, keyEvent('Enter', cell()), {}))).not.toThrow();
+    });
+  });
 });

@@ -20,6 +20,7 @@ export default function DataTable({
   storageKey,
   sx,
   onColumnWidthChange,
+  onCellKeyDown,
   ...props
 }: DataTableProps) {
   // #909: the columns fit the grid's width (flex down to each column's minimum) and never scroll
@@ -50,6 +51,21 @@ export default function DataTable({
         onColumnWidthChange={(params, event, details) => {
           fit.onColumnWidthChange(params);
           onColumnWidthChange?.(params, event, details);
+        }}
+        // #1283: the grid fires onRowClick for a pointer only, so a row that opens something was
+        // mouse-only. Enter on a focused cell opens it too - only on the cell itself, never from a
+        // control inside it (an input's Enter is its own), and never on a cell being edited.
+        onCellKeyDown={(params, event, details) => {
+          onCellKeyDown?.(params, event, details);
+          if (!props.onRowClick || event.defaultMuiPrevented || event.key !== 'Enter') return;
+          if (params.cellMode !== 'view' || params.isEditable) return;
+          if ((event.target as HTMLElement).getAttribute('role') !== 'gridcell') return;
+          event.preventDefault();
+          props.onRowClick(
+            { id: params.id, row: params.row, columns: fit.columns },
+            event as unknown as Parameters<NonNullable<DataGridProps['onRowClick']>>[1],
+            details,
+          );
         }}
         pageSizeOptions={[10, 25, 50]}
         initialState={{

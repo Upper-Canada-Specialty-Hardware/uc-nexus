@@ -369,6 +369,8 @@ describe('PODetailModal', () => {
     fireEvent.change(screen.getAllByPlaceholderText('Order as')[0], {
       target: { value: 'ML-9000' },
     });
+    // #1284: each unit-cost field names the line it edits.
+    expect(screen.getByDisplayValue('2.5')).toHaveAttribute('aria-label', expect.stringMatching(/^Unit cost of /));
     fireEvent.change(screen.getByDisplayValue('2.5'), { target: { value: '3.75' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
 

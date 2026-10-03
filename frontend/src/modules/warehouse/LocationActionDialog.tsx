@@ -245,14 +245,22 @@ export default function LocationActionDialog({
   const actions = (
     <Stack direction="row" spacing={1}>
       <Button onClick={onClose} disabled={submitting}>Cancel</Button>
-      <Button variant="contained" onClick={handleConfirm} disabled={!isValid || submitting}>
+      <Button type="submit" variant="contained" disabled={!isValid || submitting}>
         {submitting ? 'Working…' : 'Confirm'}
       </Button>
     </Stack>
   );
 
+  // #1285: Enter in a field confirms, refused whenever the button is.
   return (
-    <Modal title={title} open={open} onClose={onClose} actions={actions}>
+    <Modal
+      title={title}
+      open={open}
+      onClose={onClose}
+      actions={actions}
+      onSubmit={handleConfirm}
+      submitDisabled={!isValid || submitting}
+    >
       {targets.length > 0 && (
         <Box
           sx={{

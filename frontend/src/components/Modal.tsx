@@ -7,7 +7,7 @@ import {
   type DialogProps,
 } from '@mui/material';
 import { X } from 'lucide-react';
-import type { ReactNode } from 'react';
+import type { ReactNode, SyntheticEvent } from 'react';
 
 interface ModalProps extends Omit<DialogProps, 'title' | 'onClose'> {
   title: string;
@@ -25,9 +25,35 @@ interface ModalProps extends Omit<DialogProps, 'title' | 'onClose'> {
    * reads as a broken button, so the honest thing is not to offer one.
    */
   hideCloseButton?: boolean;
+  /**
+   * #1285: make the dialog a form, so Enter in a field submits it. The primary action becomes a
+   * `type="submit"` button with no onClick of its own; `submitDisabled` mirrors that button's
+   * disabled state, so Enter can never fire what a click could not. Without onSubmit nothing changes.
+   */
+  onSubmit?: () => void;
+  submitDisabled?: boolean;
 }
 
-export default function Modal({ title, children, actions, onClose, hideCloseButton, ...props }: ModalProps) {
+export default function Modal({
+  title,
+  children,
+  actions,
+  onClose,
+  hideCloseButton,
+  onSubmit,
+  submitDisabled,
+  ...props
+}: ModalProps) {
+  const formPaper = onSubmit
+    ? {
+        component: 'form' as const,
+        noValidate: true,
+        onSubmit: (event: SyntheticEvent) => {
+          event.preventDefault();
+          if (!submitDisabled) onSubmit();
+        },
+      }
+    : undefined;
   return (
     <Dialog
       onClose={onClose}
@@ -37,6 +63,11 @@ export default function Modal({ title, children, actions, onClose, hideCloseButt
       // gesture that runs past the end of the dialog stops there instead of reaching the page.
       sx={{ '& .MuiDialog-container': { overscrollBehavior: 'contain' } }}
       {...props}
+      slotProps={
+        formPaper
+          ? { ...props.slotProps, paper: { ...(props.slotProps?.paper as object | undefined), ...formPaper } }
+          : props.slotProps
+      }
     >
       <DialogTitle sx={{ fontWeight: 700, pr: hideCloseButton ? 3 : 6, py: 1.75 }}>
         {title}
