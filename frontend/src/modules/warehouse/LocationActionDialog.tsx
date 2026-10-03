@@ -7,12 +7,13 @@ import {
   Stack,
   Alert,
 } from '@mui/material';
-import { useMutation } from '@apollo/client/react';
+import { useApolloClient, useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
 import LocationAutocomplete, { NO_DEFINED_LOCATIONS_TEXT } from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
 import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED } from '../../graphql/shared';
 import { ADJUST_INVENTORY_QUANTITY, MOVE_STOCK_LOCATION, MARK_STOCK_ITEM_UNLOCATED, ADJUST_STOCK_QUANTITY } from '../../graphql/warehouse';
+import { isStaleRowRefusal } from '../../graphql/staleRow';
 import { microLabelSx, monoSx } from '../../theme';
 import { ReservationGateNotice, useComboReservation, useReservationGate } from './reservationNotice';
 import { useDefinedLocationPick } from './useDefinedLocationPick';
@@ -54,9 +55,19 @@ export default function LocationActionDialog({
   onClose,
   onSuccess,
   mode,
-  targets,
+  targets: allTargets,
 }: Props) {
   const { showToast } = useToast();
+  const client = useApolloClient();
+  // #1317: rows a multi-row move/unlocate already finished drop out, so a retry after a mid-run
+  // failure continues from the row that failed instead of re-sending the ones that went through.
+  const [doneIds, setDoneIds] = useState<ReadonlySet<string>>(() => new Set());
+  const targets = useMemo(() => allTargets.filter((t) => !doneIds.has(t.id)), [allTargets, doneIds]);
+  // Cleared only for a fresh open or a new selection, not when finished rows drop out of `targets`.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset the finished rows on a fresh open
+    if (open) setDoneIds(new Set());
+  }, [open, allTargets]);
   const single = targets.length === 1 ? targets[0] : null;
 
   // Move state
@@ -170,6 +181,7 @@ export default function LocationActionDialog({
   const handleConfirm = async () => {
     if (!isValid) return;
     setSubmitting(true);
+    const finished: string[] = [];
     try {
       for (const t of targets) {
         if (mode === 'move') {
@@ -209,6 +221,7 @@ export default function LocationActionDialog({
                 inventoryLocationId: single.id,
                 adjustment: adjustmentNum,
                 reason: reason.trim(),
+                expectedQuantity: single.quantity,
                 ...(gate.confirmed ? { confirmBelowReserved: true } : {}),
               },
             });
@@ -219,11 +232,14 @@ export default function LocationActionDialog({
                   stockItemId: single.id,
                   newQuantity: newQuantity,
                   reasonText: reason.trim(),
+                  // newQuantity was built from this count; a row that moved since is refused (#1316).
+                  expectedQuantity: single.quantity,
                 },
               },
             });
           }
         }
+        finished.push(t.id);
       }
       const verb = mode === 'move' ? 'moved' : mode === 'unlocate' ? 'unlocated' : 'adjusted';
       showToast(
@@ -236,7 +252,25 @@ export default function LocationActionDialog({
       onClose();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : `Failed to ${mode}`;
-      showToast(message, 'error');
+      if (finished.length > 0) {
+        // Part of the batch went through: say how much, drop those rows, and refresh so the grid
+        // shows them where they now are (#1317).
+        const verb = mode === 'move' ? 'moved' : 'unlocated';
+        showToast(
+          `${finished.length} of ${targets.length} ${verb}. The next one failed: ${message} Confirm again to do the rest.`,
+          'error',
+        );
+        setDoneIds((prev) => new Set([...prev, ...finished]));
+        void client.refetchQueries({ include: 'active' });
+      } else {
+        showToast(message, 'error');
+        if (isStaleRowRefusal(err)) {
+          // The row moved since this opened (#1316). The count here is the parent's snapshot, so a
+          // retry would be refused again: refresh the grid and close; reopening reads the fresh row.
+          void client.refetchQueries({ include: 'active' });
+          onClose();
+        }
+      }
     } finally {
       setSubmitting(false);
     }
@@ -245,14 +279,22 @@ export default function LocationActionDialog({
   const actions = (
     <Stack direction="row" spacing={1}>
       <Button onClick={onClose} disabled={submitting}>Cancel</Button>
-      <Button variant="contained" onClick={handleConfirm} disabled={!isValid || submitting}>
+      <Button type="submit" variant="contained" disabled={!isValid || submitting}>
         {submitting ? 'Working…' : 'Confirm'}
       </Button>
     </Stack>
   );
 
+  // #1285: Enter in a field confirms, refused whenever the button is.
   return (
-    <Modal title={title} open={open} onClose={onClose} actions={actions}>
+    <Modal
+      title={title}
+      open={open}
+      onClose={onClose}
+      actions={actions}
+      onSubmit={handleConfirm}
+      submitDisabled={!isValid || submitting}
+    >
       {targets.length > 0 && (
         <Box
           sx={{

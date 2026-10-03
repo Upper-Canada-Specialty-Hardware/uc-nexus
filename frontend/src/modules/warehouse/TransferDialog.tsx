@@ -183,12 +183,15 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
       onClose={onClose}
       title={title}
       disableEscapeKeyDown={hasTypedDestination}
+      // #1285: Enter in a field transfers, refused whenever the button is.
+      onSubmit={handleSubmit}
+      submitDisabled={!valid || submitting}
       actions={
         <>
           <Button onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button variant="contained" onClick={handleSubmit} disabled={!valid || submitting}>
+          <Button type="submit" variant="contained" disabled={!valid || submitting}>
             {submitting ? 'Transferring...' : 'Transfer'}
           </Button>
         </>
@@ -247,6 +250,8 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
           <Select
             labelId="transfer-dest-warehouse"
             label="Destination warehouse"
+            // #1285: the dialog opens ready to pick, not waiting for a click into it.
+            autoFocus
             value={destWarehouseId}
             onChange={(e) => setDestWarehouseId(e.target.value)}
           >

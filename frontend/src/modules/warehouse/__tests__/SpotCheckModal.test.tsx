@@ -35,6 +35,7 @@ describe('SpotCheckModal', () => {
           adjustment: -3,
           reason: 'Spot check: system=10, physical=7',
           spotCheck: true,
+          expectedQuantity: 10,
         },
       },
       delay: 50,

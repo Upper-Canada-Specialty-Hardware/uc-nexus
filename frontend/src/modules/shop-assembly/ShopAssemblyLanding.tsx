@@ -34,13 +34,15 @@ export default function ShopAssemblyLanding() {
   const { data, loading, error } = useQuery<ShopAssemblyStatsData>(GET_SHOP_ASSEMBLY_STATS, {
     fetchPolicy: 'cache-and-network',
   });
-  // Ids and rungs only, read cache-first: landing on the module after visiting it costs nothing.
-  // Deliberately not the requests page's own document - that one carries every request's lines,
-  // openings and batches, and none of it is on this screen. Deliberately not cache-and-network
-  // either: the landing page must never race the page it is about to hand off to.
+  // Ids and rungs only. Deliberately not the requests page's own document - that one carries every
+  // request's lines, openings and batches, and none of it is on this screen. Shown from the cache at
+  // once, then checked against the network once (#1156): read cache-first, requests raised by somebody
+  // else never reached the count, so it disagreed with the Pending tab it links to. The no-race rule
+  // this replaced dates from when the landing ran that tab's own query; this document only writes ids
+  // and rungs, and nextFetchPolicy keeps it from re-firing on every cache write during the hand-off.
   const { data: pendingData, error: pendingError } = useQuery<{ shopAssemblyRequests: LandingRequest[] }>(
     GET_SHOP_ASSEMBLY_REQUEST_STAGES,
-    { variables: { status: 'PENDING' }, fetchPolicy: 'cache-first' },
+    { variables: { status: 'PENDING' }, fetchPolicy: 'cache-and-network', nextFetchPolicy: 'cache-first' },
   );
 
   const s = data?.shopAssemblyStats;

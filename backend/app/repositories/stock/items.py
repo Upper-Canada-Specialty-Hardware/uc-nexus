@@ -10,6 +10,7 @@ from app.errors import NotFoundError, ValidationError
 from app.models.enums import AuditAction, AuditEntityType, PoolKind
 from app.models.stock_item import StockItem
 from app.repositories.warehouse import ensure_registered_location, location_detail, normalize_location_value
+from app.repositories.warehouse.inventory import check_expected_quantity
 
 from .common import (
     _find_or_create_stock_row,
@@ -105,14 +106,21 @@ def adjust_stock_quantity(
     new_quantity: int,
     reason_text: str,
     performed_by: str,
+    expected_quantity: int | None = None,
 ) -> StockItem:
-    """Set stock_item.quantity to an absolute value (recount / write-off). reason required."""
+    """Set stock_item.quantity to an absolute value (recount / write-off). reason required.
+
+    The pool row is locked and read fresh, and `expected_quantity` (the count the dialog showed and
+    built `new_quantity` from) must still hold, or the write is refused (#1316): an allocation landing
+    in between would otherwise be undone and its units brought back."""
     if not reason_text or len(reason_text) > 500:
         raise ValidationError("reason_text must be 1-500 characters", field="reason_text")
     if new_quantity < 0:
         raise ValidationError("new_quantity must be >= 0", field="new_quantity")
 
     si = lock_stock_item(session, stock_item_id)
+    # Must follow the lock directly: the count compared is the locked, fresh one.
+    check_expected_quantity(si.quantity, expected_quantity)
 
     # Honor the deficient_quantity <= quantity invariant by clamping if needed
     if new_quantity < si.deficient_quantity:

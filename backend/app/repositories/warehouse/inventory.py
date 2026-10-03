@@ -7,7 +7,7 @@ from datetime import datetime
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from app.errors import NotFoundError, ValidationError
+from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models.enums import AuditAction, AuditEntityType, Classification, HardwareItemState, NotificationType
 from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.inventory import InventoryLocation as InventoryLocationModel
@@ -97,6 +97,19 @@ def _lock_row(session: Session, inv_id: uuid.UUID) -> InventoryLocationModel:
     if il is None:
         raise NotFoundError(f"Inventory location {inv_id} not found")
     return il
+
+
+def check_expected_quantity(current: int, expected: int | None) -> None:
+    """Refuse a write built from a count the row no longer holds (#1315, #1316, #1318).
+
+    The correction dialogs compute their write from the quantity they displayed. A pick, receive or
+    allocation landing in between moves the row, and applying the stale write would double-count or
+    resurrect units. `expected` is that displayed count; None (an older client) skips the check."""
+    if expected is not None and current != expected:
+        raise ConflictError(
+            f"This row changed from {expected} to {current} since you opened it. Reload and try again.",
+            field="expected_quantity",
+        )
 
 
 def _gate_reservation_shortfall(
@@ -213,6 +226,7 @@ def adjust_inventory_quantity(
     spot_check: bool = False,
     caller_is_manager: Callable[[], bool] = lambda: False,
     confirm_below_reserved: bool = False,
+    expected_quantity: int | None = None,
 ) -> InventoryLocationModel:
     """Adjust the quantity of an InventoryLocation by a positive or negative amount.
 
@@ -233,6 +247,8 @@ def adjust_inventory_quantity(
         raise ValidationError("reason must be 1-500 characters", field="reason")
 
     il = _lock_row(session, inv_id)
+    # A spot check sends the count it was shown; the delta is only meaningful against that count (#1315).
+    check_expected_quantity(il.quantity, expected_quantity)
 
     new_quantity = il.quantity + adjustment
     if new_quantity < 0:
@@ -293,6 +309,7 @@ def override_inventory_quantity(
     performed_by: str,
     caller_is_manager: Callable[[], bool] = lambda: False,
     confirm_below_reserved: bool = False,
+    expected_quantity: int | None = None,
 ) -> InventoryLocationModel:
     """Set an InventoryLocation row to an absolute new_quantity. Reason always required, audit-logged.
 
@@ -313,6 +330,8 @@ def override_inventory_quantity(
     if new_quantity < 0:
         raise ValidationError("new_quantity must be >= 0", field="new_quantity")
     il = _lock_row(session, inv_id)
+    # The modal chose decrease vs increase (and its destinations) against the count it showed (#1318).
+    check_expected_quantity(il.quantity, expected_quantity)
 
     old_quantity = il.quantity
     delta = new_quantity - old_quantity

@@ -42,6 +42,8 @@ export interface ReceiveLinesEditorProps {
   onQuantityChange: (lineId: string, value: number) => void;
   /** Name each PO above its table. On for a multi-PO batch, off when there is only one. */
   showPoHeaders: boolean;
+  /** #1285: focus the first Receive Now field on mount, so a count can be typed straight away. */
+  autoFocusFirst?: boolean;
   /** Show the quantities without letting them change: a draft already being posted to GP (#1353). */
   readOnly?: boolean;
 }
@@ -74,8 +76,13 @@ export default function ReceiveLinesEditor({
   receiveQuantities,
   onQuantityChange,
   showPoHeaders,
+  autoFocusFirst = false,
   readOnly = false,
 }: ReceiveLinesEditorProps) {
+  // The first line still pending, across every PO in the batch - the one field that takes focus.
+  const firstOpenLineId = autoFocusFirst
+    ? poDetailsList.flatMap((d) => d.lineItems).find((li) => li.orderedQuantity - li.receivedQuantity > 0)?.id
+    : undefined;
   const renderPOSection = (details: PODetails) => {
     const rows = details.lineItems.map((li) => ({
       id: li.id,
@@ -156,6 +163,7 @@ export default function ReceiveLinesEditor({
                         size="small"
                         value={currentValue}
                         error={hasError}
+                        autoFocus={row.id === firstOpenLineId}
                         helperText={belowZero ? 'Whole units, 0 or more' : hasError ? `Max: ${row.pending}` : undefined}
                         slotProps={{
                           htmlInput: {

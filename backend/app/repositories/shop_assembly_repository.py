@@ -848,20 +848,26 @@ def return_batch_to_pending(session: Session, batch: ShopAssemblyBatch) -> bool:
     cancel just restocked go back to the free pool, and the next batch competes for them like
     anybody else. That is the whole difference from the shipping-out path, which does re-reserve
     because a returned shipping request is still a live claim.
+
+    The request is locked and read fresh first, like every other decision on it (#1121, #1156). Read
+    unlocked, a new batch on a sibling opening could close the request out from under this cancel: the
+    batch saw this batch's openings still BATCHED, closed the request to APPROVED, and the cancel - which
+    had read the request while it was still PENDING - flipped its openings back without reopening it,
+    leaving a closed request holding a pending opening no screen can reach. Under the lock one of the two
+    waits, and the request's status is then derived from its openings as they now stand.
     """
+    request = _locked_request(session, batch.shop_assembly_request_id)
+    session.refresh(batch)
     if batch.status != ShopAssemblyBatchStatus.ACTIVE:
         return False
 
     batch.status = ShopAssemblyBatchStatus.CANCELLED
-    openings = session.scalars(
-        select(ShopAssemblyRequestOpening).where(ShopAssemblyRequestOpening.batch_id == batch.id)
-    ).all()
-    for opening in openings:
-        opening.status = ShopAssemblyOpeningStatus.PENDING
-        opening.batch_id = None
+    for opening in request.openings:
+        if opening.batch_id == batch.id:
+            opening.status = ShopAssemblyOpeningStatus.PENDING
+            opening.batch_id = None
 
-    request = session.get(ShopAssemblyRequest, batch.shop_assembly_request_id)
-    if request is not None:
+    if any(o.status == ShopAssemblyOpeningStatus.PENDING for o in request.openings):
         _reopen_to_pending(request)
     session.flush()
     return True
