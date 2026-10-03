@@ -45,6 +45,10 @@ class PullRequest(Base):
     )
     requested_by: Mapped[str] = mapped_column(String, nullable=False)
     assigned_to: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The Clerk user id of whoever started the pick (#1356). assigned_to is a display name, which two
+    # people can share and one person can change; who the pull is locked to is decided by this id.
+    # Null on pulls started before it existed - readers fall back to the name there.
+    assigned_to_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     approved_at: Mapped[datetime | None] = mapped_column(nullable=True)

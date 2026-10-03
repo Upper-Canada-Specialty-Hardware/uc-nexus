@@ -31,7 +31,7 @@ def test_write_secret_replaces_shared_secret(tmp_path):
 def test_write_secret_errors_when_no_shared_secret(tmp_path):
     cfg = tmp_path / "config.toml"
     cfg.write_text('[gp]\nmode = "sql"\n', encoding="utf-8")
-    with pytest.raises(SystemExit):
+    with pytest.raises(enroll.EnrollError):
         write_secret_to_config(cfg, "NEW")
 
 
@@ -58,7 +58,52 @@ def test_enroll_still_refuses_a_config_that_has_no_secret_line(tmp_path, monkeyp
     cfg = tmp_path / "config.toml"
     cfg.write_text('[gp]\nmode = "sql"\n', encoding="utf-8")
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(enroll.EnrollError):
         enroll.enroll_relay(token="one-time", backend_url="https://backend/graphql", config_path=cfg, encrypt=False)
 
     assert cfg.read_text(encoding="utf-8") == '[gp]\nmode = "sql"\n'  # left exactly as it was
+
+
+def test_enroll_refuses_before_spending_the_token_when_the_file_has_no_secret_line(tmp_path, monkeypatch):
+    # #1384: the one-time token is spent by the backend call, so every local failure must come first.
+    called = []
+    monkeypatch.setattr(enroll, "_post_graphql", lambda *a: called.append(1) or {})
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[gp]\nmode = "sql"\n', encoding="utf-8")
+
+    with pytest.raises(enroll.EnrollError, match="shared_secret"):
+        enroll.enroll_relay(token="one-time", backend_url="https://backend/graphql", config_path=cfg, encrypt=False)
+
+    assert called == []  # the token was never sent
+
+
+def test_enroll_refuses_before_spending_the_token_when_the_file_cannot_be_written(tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(enroll, "_post_graphql", lambda *a: called.append(1) or {})
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[auth]\nshared_secret = "OLD"\n', encoding="utf-8")
+
+    def _deny(*a, **k):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(enroll.tempfile, "mkstemp", _deny)
+    with pytest.raises(enroll.EnrollError, match="cannot be written"):
+        enroll.enroll_relay(token="one-time", backend_url="https://backend/graphql", config_path=cfg, encrypt=False)
+
+    assert called == []
+
+
+def test_a_write_failure_after_the_backend_accepted_points_at_adopt(tmp_path, monkeypatch):
+    _enrolled_ok(monkeypatch)
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('[auth]\nshared_secret = "OLD"\n', encoding="utf-8")
+
+    def _fail(path, text, encoding="utf-8"):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(enroll, "atomic_write_text", _fail)
+    with pytest.raises(enroll.EnrollError, match="Adopt next connection") as e:
+        enroll.enroll_relay(token="one-time", backend_url="https://backend/graphql", config_path=cfg, encrypt=False)
+
+    assert "disk full" in e.value.message
+    assert cfg.read_text(encoding="utf-8") == '[auth]\nshared_secret = "OLD"\n'  # untouched, not truncated

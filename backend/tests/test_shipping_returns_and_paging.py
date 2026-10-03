@@ -184,6 +184,22 @@ def test_the_list_searches_the_slip_number_on_the_server(db_session):
     assert shipping_repository.count_packing_slips(db_session, project.id, search=wanted) == 1
 
 
+def test_the_list_filters_by_status_for_the_landing_gauges(db_session):
+    # #1361: "In transit 2" links to exactly those two slips.
+    project = _project(db_session)
+    slips = _slips(db_session, project, 3)
+    db_session.flush()
+    for slip in slips[:2]:
+        shipping_repository.mark_shipment_picked_up(db_session, slip.id, "driver")
+    db_session.flush()
+
+    in_transit = shipping_repository.list_packing_slips(db_session, project.id, status=ShipmentStatus.PICKED_UP)
+
+    assert {s.id for s in in_transit} == {s.id for s in slips[:2]}
+    assert shipping_repository.count_packing_slips(db_session, project.id, status=ShipmentStatus.PICKED_UP) == 2
+    assert shipping_repository.count_packing_slips(db_session, project.id, status=ShipmentStatus.SCHEDULED) == 1
+
+
 def test_a_search_for_a_like_wildcard_matches_it_literally(db_session):
     project = _project(db_session)
     _slips(db_session, project, 1)

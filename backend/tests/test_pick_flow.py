@@ -215,6 +215,18 @@ def test_starting_a_pick_moves_nothing(db_session):
     assert _audits(db_session, AuditAction.PULL_DEDUCTION) == []
 
 
+def test_starting_a_pick_records_the_starter_by_user_id(db_session):
+    """#1356: who the pull is locked to is decided by user id, not by the display name beside it."""
+    project = _make_project(db_session)
+    pr = _pending_pull(db_session, project.id, needs=[(*HINGE, 4, "A01")])
+
+    warehouse_repository.start_pull_request_pick(db_session, pr.id, "Sam Lee", started_by_user_id="user_abc")
+    db_session.flush()
+
+    assert pr.assigned_to == "Sam Lee"
+    assert pr.assigned_to_user_id == "user_abc"
+
+
 def test_starting_a_pick_does_not_gate_on_availability(db_session):
     """The old approve refused a pull it could not fill, before anybody had looked at a rack. Now
     scarcity is discovered where it is visible, and a pull with nothing on the shelf still opens."""

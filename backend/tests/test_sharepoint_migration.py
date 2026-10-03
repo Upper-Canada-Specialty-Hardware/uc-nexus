@@ -1208,3 +1208,157 @@ def test_the_po_lookup_is_admin_only():
     from app.auth_policy import ROOT_FIELD_POLICY
 
     assert ROOT_FIELD_POLICY["mirroredPosByNumber"] == NEXUS_ADMIN_ROLE
+
+
+# --- #1156 bug bash: re-run guard, one company, the PO's own project, defined shelves, costs ----
+
+
+def _warehouse_company(session, warehouse_id) -> str:
+    from app.models.warehouse import Warehouse
+
+    return session.get(Warehouse, warehouse_id).company
+
+
+def _project_in(session, company: str) -> Project:
+    p = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:8]}", description="Test", company=company)
+    session.add(p)
+    session.flush()
+    return p
+
+
+def _another_company(company: str) -> str:
+    return "ZZOTH" if company != "ZZOTH" else "ZZOT2"
+
+
+def test_a_second_run_is_refused_unless_asked_for(db_session):
+    """#1366: a run is not idempotent, so after one the guard refuses until the caller says so."""
+    from app.errors import ConflictError
+
+    migration_repo.guard_rerun(db_session, allow_rerun=False)  # nothing has run yet
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    migration_repo.migrate_inventory(db_session, [_entry(wh)], ACTOR)
+    db_session.flush()
+
+    with pytest.raises(ConflictError) as e:
+        migration_repo.guard_rerun(db_session, allow_rerun=False)
+    assert "already been run" in e.value.message
+    migration_repo.guard_rerun(db_session, allow_rerun=True)
+
+
+def test_a_batch_inside_one_company_passes(db_session):
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    company = _warehouse_company(db_session, wh)
+    project = _project_in(db_session, company)
+    entries = [_entry(wh), _entry(wh, destination="PROJECT", project_id=project.id)]
+
+    assert migration_repo.validate_batch_company(db_session, company=company, entries=entries) == company
+    # With no acting company the batch has to agree with itself, and does.
+    assert migration_repo.validate_batch_company(db_session, company=None, entries=entries) == company
+
+
+def test_a_project_of_another_company_is_refused_by_name(db_session):
+    """#1367: a mis-mapped row would land one company's units on another company's job."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    company = _warehouse_company(db_session, wh)
+    other = _project_in(db_session, _another_company(company))
+    entries = [_entry(wh, destination="PROJECT", project_id=other.id)]
+
+    with pytest.raises(ValidationError) as e:
+        migration_repo.validate_batch_company(db_session, company=company, entries=entries)
+    assert f"project {other.project_id}" in e.value.message
+
+    with pytest.raises(ValidationError) as e:
+        migration_repo.validate_batch_company(db_session, company=None, entries=entries)
+    assert "spans 2" in e.value.message
+
+
+def test_a_po_line_of_another_company_is_refused_by_number(db_session):
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    company = _warehouse_company(db_session, wh)
+    po, line = _mirrored_po(db_session, project=None, company=_another_company(company))
+
+    with pytest.raises(ValidationError) as e:
+        migration_repo.validate_batch_company(
+            db_session, company=company, entries=[_entry(wh, po_line_item_id=line.id)]
+        )
+    assert f"purchase order {po.po_number}" in e.value.message
+
+
+def test_a_project_entry_on_another_projects_po_is_refused_naming_both(db_session):
+    """#1368: the receipt lands on the entry's project, so the PO has to be that project's."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    ours = _make_project(db_session)
+    theirs = _make_project(db_session)
+    _po, line = _mirrored_po(db_session, project=theirs)
+
+    with pytest.raises(ValidationError) as e:
+        migration_repo.migrate_inventory(
+            db_session,
+            [_entry(wh, destination="PROJECT", project_id=ours.id, po_line_item_id=line.id)],
+            ACTOR,
+        )
+    assert ours.project_id in e.value.message and theirs.project_id in e.value.message
+    assert db_session.query(ReceiveRecord).count() == 0
+    db_session.refresh(line)
+    assert line.nexus_registered is False
+
+
+def test_a_project_less_po_takes_stock_rows_only(db_session):
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    project = _make_project(db_session)
+    _po, line = _mirrored_po(db_session, project=None)
+
+    with pytest.raises(ValidationError) as e:
+        migration_repo.migrate_inventory(
+            db_session,
+            [_entry(wh, destination="PROJECT", project_id=project.id, po_line_item_id=line.id)],
+            ACTOR,
+        )
+    assert "can only take stock rows" in e.value.message
+
+
+def test_a_stock_row_on_a_partial_shelf_is_refused_before_any_write(db_session):
+    """#1369: the stock branch used to write an aisle-only shelf without a word."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    with pytest.raises(ValidationError) as e:
+        migration_repo.migrate_inventory(
+            db_session, [_entry(wh, product_code="GOOD-1"), _entry(wh, row=None, bay=None)], ACTOR
+        )
+    assert "Entry 2" in e.value.message and "all be given together" in e.value.message
+    assert db_session.query(StockItem).count() == 0
+
+
+def test_a_stock_row_on_an_undefined_shelf_is_refused_before_any_write(db_session):
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    with pytest.raises(ValidationError) as e:
+        migration_repo.migrate_inventory(
+            db_session, [_entry(wh, product_code="GOOD-1"), _entry(wh, aisle="Q", row="99", bay="Z")], ACTOR
+        )
+    assert "Entry 2" in e.value.message and "not a defined location" in e.value.message
+    assert db_session.query(StockItem).count() == 0
+
+
+def test_a_stock_shelf_is_matched_and_written_in_canonical_form(db_session):
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    migration_repo.migrate_inventory(db_session, [_entry(wh, aisle=" a ", product_code="CANON-1")], ACTOR)
+    assert db_session.query(StockItem).filter_by(product_code="CANON-1").one().aisle == "A"
+
+
+@pytest.mark.parametrize(
+    "raw, cost, unreadable",
+    [
+        (None, 0.0, False),
+        ("", 0.0, False),
+        (12.5, 12.5, False),
+        ("$1,234.50", 1234.5, False),
+        (" 1 234.50 ", 1234.5, False),
+        ("call vendor", 0.0, True),
+        ("$", 0.0, False),
+    ],
+)
+def test_source_costs_drop_symbols_and_separators(raw, cost, unreadable):
+    """#1370: "$1,234.50" used to read as no cost at all, silently."""
+    from app.schemas.sharepoint_migration import _cost_unreadable, _to_float
+
+    assert _to_float(raw) == cost
+    assert _cost_unreadable(raw) is unreadable

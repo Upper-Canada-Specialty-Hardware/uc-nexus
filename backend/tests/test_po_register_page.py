@@ -378,3 +378,37 @@ def test_the_detail_read_publishes_a_drafts_company(signed_in, db_session):
 
     assert result.errors is None, result.errors
     assert result.data["purchaseOrder"] == {"company": project.company, "gpCompany": None}
+
+
+_SCOPED_PAGE = """query($projectId: ID){
+  purchaseOrdersPage(projectId: $projectId){
+    scopeProjectNumber scopeProjectDescription
+    rows{ id projectNumber projectDescription }
+  }
+}"""
+
+
+def test_an_archived_projects_pos_and_scope_are_named_off_the_project(signed_in, db_session):
+    # #1238: the page used to join names client-side against the projects list, which leaves
+    # archived projects out - the column went blank and the scope chip read just "Project".
+    project, po = _make_draft(db_session)
+    project.archived = True
+    db_session.flush()
+
+    result = _execute(_SCOPED_PAGE, {"projectId": str(project.id)})
+
+    assert result.errors is None, result.errors
+    page = result.data["purchaseOrdersPage"]
+    assert (page["scopeProjectNumber"], page["scopeProjectDescription"]) == (project.project_id, "TUBC job")
+    assert page["rows"] == [{"id": str(po.id), "projectNumber": project.project_id, "projectDescription": "TUBC job"}]
+
+
+def test_another_companys_project_is_not_named_in_the_scope(signed_in, db_session):
+    other, _po = _make_draft(db_session, company="UBC")
+
+    result = _execute(_SCOPED_PAGE, {"projectId": str(other.id)})
+
+    assert result.errors is None, result.errors
+    page = result.data["purchaseOrdersPage"]
+    assert (page["scopeProjectNumber"], page["scopeProjectDescription"]) == (None, None)
+    assert page["rows"] == []
