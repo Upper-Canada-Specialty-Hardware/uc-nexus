@@ -8,10 +8,13 @@ import uuid
 from datetime import datetime
 
 import pytest
+from sqlalchemy import update
 
 from app.errors import InvalidStateTransitionError, ValidationError
+from app.models.enums import ShopAssemblyOpeningStatus, ShopAssemblyRequestStatus
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
+from app.models.shop_assembly import ShopAssemblyRequest
 from app.models.stock_item import StockItem
 from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
 from app.services import locking
@@ -150,6 +153,77 @@ def test_dismiss_and_reject_lock_the_request(db_session, locks_taken, action):
         shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "manager", None)
 
     assert locks_taken[:1] == ["ShopAssemblyRequest"]
+
+
+def _two_openings_both_batched(session):
+    """A request for A01 and A02, each on its own batch: closed out (APPROVED), nothing pending."""
+    project = _project(session)
+    _stock(session, project)
+    sar = import_repository.finalize_import_session(
+        session,
+        {
+            "project_id": str(project.id),
+            "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
+            "hardware_items": [
+                {**_HINGE, "item_quantity": 2},
+                {**_HINGE, "opening_number": "A02", "item_quantity": 2},
+            ],
+            "include_shop_assembly_request": True,
+            "shop_assembly_items": [{**_HINGE, "quantity": 2}, {**_HINGE, "opening_number": "A02", "quantity": 2}],
+        },
+    )["shop_assembly_request"]
+    first = shop_assembly_repository.create_shop_assembly_batch(
+        session, sar.id, batch_lines(session, sar.id, openings=["A01"]), created_by="manager"
+    )
+    shop_assembly_repository.create_shop_assembly_batch(
+        session, sar.id, batch_lines(session, sar.id, openings=["A02"]), created_by="manager"
+    )
+    session.flush()
+    return sar, first
+
+
+def test_returning_a_cancelled_batch_locks_the_request(db_session, locks_taken):
+    _sar, first = _two_openings_both_batched(db_session)
+    locks_taken.clear()
+
+    shop_assembly_repository.return_batch_to_pending(db_session, first)
+
+    assert locks_taken[:1] == ["ShopAssemblyRequest"]
+
+
+def test_a_request_closed_under_a_cancel_is_reopened_with_its_returned_opening(db_session):
+    """#1156: the cancel used to read the request unlocked. When a sibling batch closed it out after
+    the cancel had read it as PENDING, the cancel flipped its opening back without reopening it, and the
+    request sat APPROVED holding a pending opening nothing could reach. Read fresh under the lock, the
+    request is seen closed and is reopened."""
+    sar, first = _two_openings_both_batched(db_session)
+    # The session still believes what it read before the sibling batch closed the request out.
+    db_session.execute(
+        update(ShopAssemblyRequest)
+        .where(ShopAssemblyRequest.id == sar.id)
+        .values(status=ShopAssemblyRequestStatus.PENDING)
+        .execution_options(synchronize_session=False)
+    )
+    db_session.expire_all()
+    stale = db_session.get(ShopAssemblyRequest, sar.id)
+    assert stale.status == ShopAssemblyRequestStatus.PENDING
+    db_session.execute(
+        update(ShopAssemblyRequest)
+        .where(ShopAssemblyRequest.id == sar.id)
+        .values(status=ShopAssemblyRequestStatus.APPROVED)
+        .execution_options(synchronize_session=False)
+    )
+
+    assert shop_assembly_repository.return_batch_to_pending(db_session, first) is True
+    db_session.flush()
+    db_session.expire_all()
+
+    request = shop_assembly_repository.get_shop_assembly_request(db_session, sar.id)
+    assert request.status == ShopAssemblyRequestStatus.PENDING
+    assert {o.opening_number: o.status for o in request.openings} == {
+        "A01": ShopAssemblyOpeningStatus.PENDING,
+        "A02": ShopAssemblyOpeningStatus.BATCHED,
+    }
 
 
 def test_a_decision_made_while_waiting_on_the_lock_is_met_as_a_state_error(db_session):

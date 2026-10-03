@@ -35,6 +35,7 @@ import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { plural } from '../../utils/plural';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
 import BatchReviewPanel from './BatchReviewPanel';
+import { dismissalLines } from './dismissals';
 import {
   PULL_STATUS_COLOR,
   PULL_STATUS_LABEL,
@@ -483,12 +484,11 @@ export default function ShopAssemblyRequestsPage() {
                       {dismissedOpenings.length > 0 && (
                         <Box>
                           <Typography sx={{ ...microLabelSx, mb: 0.5 }}>Dismissed</Typography>
-                          <Typography variant="body2" color="text.secondary">
-                            {dismissedOpenings.map((o) => o.openingNumber).join(', ')}
-                            {dismissedOpenings[0]?.dismissalReason
-                              ? ` - ${dismissedOpenings[0].dismissalReason}`
-                              : ''}
-                          </Typography>
+                          {dismissalLines(dismissedOpenings).map((line) => (
+                            <Typography key={line} variant="body2" color="text.secondary">
+                              {line}
+                            </Typography>
+                          ))}
                         </Box>
                       )}
                     </Stack>
