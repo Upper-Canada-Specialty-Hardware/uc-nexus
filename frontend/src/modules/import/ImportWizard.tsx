@@ -225,6 +225,7 @@ export default function ImportWizard({
 
   // Finalize state
   const [finalizeLoading, setFinalizeLoading] = useState(false);
+  const finalizeInFlight = useRef(false);
   const [finalizeResult, setFinalizeResult] = useState<FinalizeResultData | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   // #736: the over-buying confirm that stands in for the generic one when the drafts would over-buy.
@@ -1236,6 +1237,12 @@ export default function ImportWizard({
   }, [parsed, project.id, purpose, poDraftBuild, unitCostOverrides, classifications, siteShopClassifications, requestLines, canStartFromLatest, hydratedFromPersisted, uploadedFileName]);
 
   const handleFinalize = useCallback(async () => {
+    // #1313: one finalize per click. The confirm closes on this call but its button still takes clicks
+    // through the exit transition, and a second finalize raised a second request for the same openings.
+    // Set synchronously, before finalizeLoading re-renders; cleared only when a finalize fails, so a
+    // successful one cannot be sent again from this wizard.
+    if (finalizeInFlight.current) return;
+    finalizeInFlight.current = true;
     setConfirmOpen(false);
     setOverBuyOpen(false);
     setMutationError(null);
@@ -1244,6 +1251,7 @@ export default function ImportWizard({
     // nothing to send, and an early return after the flag left the finalize spinning until close.
     const input = buildFinalizeInput();
     if (!input) {
+      finalizeInFlight.current = false;
       setMutationError('The schedule is no longer loaded. Go back to Upload and load it again.');
       return;
     }
@@ -1309,6 +1317,7 @@ export default function ImportWizard({
       const message = err instanceof Error ? err.message : 'An unknown error occurred';
       setMutationError(message);
       setFinalizeLoading(false);
+      finalizeInFlight.current = false;
     }
   }, [buildFinalizeInput, finalizeImport, showToast, poDraftBuild, draftGroups, uploadPoDocument, returnTo, onClose, navigate]);
 
@@ -1980,6 +1989,7 @@ export default function ImportWizard({
                 : 'This will create the selected purchase orders. Continue?'
         }
         confirmLabel={canStartFromLatest && !hydratedFromPersisted ? 'Replace Schedule' : 'Finalize'}
+        busy={finalizeLoading}
         onConfirm={handleFinalize}
         onCancel={() => setConfirmOpen(false)}
       />
@@ -1988,6 +1998,7 @@ export default function ImportWizard({
         open={overBuyOpen}
         risks={finalizeOverBuy}
         productCodeOf={(pk) => poProductCatalog.get(pk)?.productCode ?? pk}
+        busy={finalizeLoading}
         onGoBack={() => setOverBuyOpen(false)}
         onConfirm={handleFinalize}
       />

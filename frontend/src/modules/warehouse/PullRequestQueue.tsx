@@ -32,6 +32,8 @@ export interface PullRequest {
   status: string;
   requestedBy: string;
   assignedTo: string | null;
+  /** #1356: who started the pick, by user id; null on pulls started before it was recorded. */
+  assignedToUserId?: string | null;
   createdAt: string;
   updatedAt: string;
   approvedAt: string | null;

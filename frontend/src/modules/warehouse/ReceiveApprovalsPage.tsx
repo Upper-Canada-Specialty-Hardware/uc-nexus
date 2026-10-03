@@ -1,4 +1,4 @@
-import { useState, useMemo, type KeyboardEvent } from 'react';
+import { useState, type KeyboardEvent } from 'react';
 import {
   Alert,
   Box,
@@ -15,7 +15,6 @@ import { Link as RouterLink } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import { useIdentity } from '../../hooks/useIdentity';
 import { GET_RECEIVE_DRAFTS } from '../../graphql/warehouse';
-import { GET_PROJECTS } from '../../graphql/shared';
 import { monoSx, tabularSx } from '../../theme';
 import { noProjectPoLabel } from '../../types/poolKind';
 import { parseServerDate } from '../../utils/serverDate';
@@ -76,16 +75,6 @@ export default function ReceiveApprovalsPage() {
     fetchPolicy: 'cache-and-network',
     skip: !canReview,
   });
-  const { data: projectsData } = useQuery<{
-    projects: { id: string; projectId: string; description: string | null }[];
-  }>(GET_PROJECTS, { skip: !canReview });
-
-  // Description first, falling back to the job number - the same label the Receiving page and every
-  // other warehouse list shows, so one project reads the same way wherever it appears.
-  const projectMap = useMemo(
-    () => new Map((projectsData?.projects ?? []).map((p) => [p.id, p.description || p.projectId])),
-    [projectsData],
-  );
 
   const drafts = data?.receiveDrafts ?? [];
 
@@ -173,8 +162,12 @@ export default function ReceiveApprovalsPage() {
               })}
             >
               <TableCell sx={monoSx}>{draft.poNumber ?? DASH}</TableCell>
-              <TableCell title={draft.projectId ? projectMap.get(draft.projectId) : undefined}>
-                {draft.projectId ? (projectMap.get(draft.projectId) ?? DASH) : noProjectPoLabel(draft.poolKind)}
+              {/* Description first, falling back to the job number - the label every warehouse list
+                  shows - read off the draft (#1196) so an archived project is still named. */}
+              <TableCell title={draft.projectId ? (draft.projectDescription || draft.projectNumber || undefined) : undefined}>
+                {draft.projectId
+                  ? draft.projectDescription || draft.projectNumber || DASH
+                  : noProjectPoLabel(draft.poolKind)}
               </TableCell>
               <TableCell title={draft.createdBy}>{draft.createdBy}</TableCell>
               <TableCell sx={tabularSx}>

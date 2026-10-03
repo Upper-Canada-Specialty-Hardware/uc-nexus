@@ -394,6 +394,8 @@ class RelayQueries:
             freight=float(t["freight"]),
             miscellaneous=float(t["miscellaneous"]),
             tax_amount=float(t["tax_amount"]),
+            # #1236: an older relay build sends no trade_discount; it reads as none.
+            trade_discount=float(t.get("trade_discount") or 0),
             header=_gp_po_header(result.get("header")),
         )
 

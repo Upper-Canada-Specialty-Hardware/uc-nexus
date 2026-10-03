@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import { Box, Typography, TextField, Button, Stack, Alert } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
@@ -38,6 +38,9 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
   const { showToast } = useToast();
   const [physicalCount, setPhysicalCount] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // #1204: the adjustment is a delta, so sending it twice applies the discrepancy twice. Set
+  // synchronously on the first confirm click, before `loading` re-renders.
+  const adjustInFlight = useRef(false);
 
   const physicalNum = parseInt(physicalCount, 10);
   const discrepancy = isNaN(physicalNum) ? null : physicalNum - item.quantity;
@@ -70,16 +73,28 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
     refetchQueries: WAREHOUSE_REFETCH_QUERIES,
     awaitRefetchQueries: true,
     onCompleted: () => {
+      adjustInFlight.current = false;
+      setConfirmOpen(false);
       showToast('Spot check adjustment applied', 'success');
       onSuccess();
       onClose();
     },
-    onError: (err) => showToast(err.message, 'error'),
+    onError: (err) => {
+      adjustInFlight.current = false;
+      setConfirmOpen(false);
+      showToast(err.message, 'error');
+    },
   });
 
+  // The confirm stays open, busy, until the adjustment lands: closing it first left its button
+  // clickable through the exit transition.
   const handleConfirm = () => {
-    setConfirmOpen(false);
-    if (discrepancy === null || discrepancy === 0) return;
+    if (adjustInFlight.current || loading) return;
+    if (discrepancy === null || discrepancy === 0) {
+      setConfirmOpen(false);
+      return;
+    }
+    adjustInFlight.current = true;
     adjustQuantity({
       variables: {
         inventoryLocationId: item.id,
@@ -198,6 +213,7 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
         message={`Adjust quantity by ${discrepancy !== null && discrepancy > 0 ? '+' : ''}${discrepancy} (system: ${item.quantity} → physical: ${physicalNum})?`}
         confirmLabel="Apply"
         cancelLabel="Cancel"
+        busy={loading}
         onConfirm={handleConfirm}
         onCancel={() => setConfirmOpen(false)}
       />

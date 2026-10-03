@@ -4,7 +4,6 @@ import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import ReceiveApprovalsPage from '../ReceiveApprovalsPage';
 import { GET_RECEIVE_DRAFTS } from '../../../graphql/warehouse';
-import { GET_PROJECTS } from '../../../graphql/shared';
 
 // Approving a drafted receive posts a GP receipt and credits inventory, so who may open this queue
 // is a real gate rather than navigation tidiness. The role check is on the page (routes in this app
@@ -36,6 +35,8 @@ function draft(overrides: Record<string, unknown> = {}) {
     poId: 'po-1',
     poNumber: 'PO-123',
     projectId: 'proj-1',
+    projectNumber: 'JOB-1',
+    projectDescription: 'Riverside Tower',
     warehouseId: 'wh-1',
     createdByUserId: 'u_author',
     createdBy: 'Wendy Warehouse',
@@ -62,36 +63,9 @@ function draftsMock(status: string, drafts: Record<string, unknown>[]): MockedRe
   };
 }
 
-function projectsMock(): MockedResponse {
-  return {
-    request: { query: GET_PROJECTS },
-    result: {
-      data: {
-        projects: [
-          {
-            __typename: 'Project',
-            id: 'proj-1',
-            projectId: 'JOB-1',
-            description: 'Riverside Tower',
-            client: null,
-            jobSiteName: null,
-            scheduleFilename: null,
-            company: 'TUBC',
-            openingCount: 4,
-            gpSetupOk: true,
-            gpSetupIssues: null,
-            gpSetupCheckedAt: null,
-          },
-        ],
-      },
-    },
-    maxUsageCount: Number.POSITIVE_INFINITY,
-  };
-}
-
 function renderPage(mocks: MockedResponse[] = []) {
   render(
-    <MockedProvider mocks={[projectsMock(), ...mocks]}>
+    <MockedProvider mocks={mocks}>
       <MemoryRouter>
         <ToastProvider>
           <ReceiveApprovalsPage />
@@ -124,6 +98,7 @@ describe('ReceiveApprovalsPage', () => {
 
     expect(await screen.findByText('PO-123', undefined, SLOW)).toBeInTheDocument();
     expect(screen.getByText('Wendy Warehouse')).toBeInTheDocument();
+    // Named off the draft itself (#1196): no projects query, so an archived project still shows.
     expect(screen.getByText('Riverside Tower')).toBeInTheDocument();
     // #1283: a pending draft's row takes keyboard focus, so review is not mouse-only.
     expect(screen.getByText('PO-123').closest('tr')).toHaveAttribute('tabindex', '0');
