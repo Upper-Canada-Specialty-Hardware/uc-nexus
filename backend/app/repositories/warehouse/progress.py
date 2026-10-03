@@ -3,10 +3,17 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.enums import HardwareItemState, POStatus, PullRequestSource, PullRequestStatus, ReturnDisposition
+from app.models.enums import (
+    HardwareItemState,
+    POStatus,
+    PullRequestSource,
+    PullRequestStatus,
+    ReturnDisposition,
+    ShipmentStatus,
+)
 from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.pull_request import PullRequest as PullRequestModel
@@ -233,7 +240,10 @@ def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> 
       (status in PLACED_PO_STATUSES, deleted_at IS NULL)
     - back_ordered: sum of (ordered - received) on placed POs that are NOT yet CLOSED
       (i.e. GP_REGISTERED, VENDOR_CONFIRMED, PARTIALLY_RECEIVED)
-    - shipped_out: sum of packing_slip_items.quantity for the project
+    - shipped_out: packing_slip_items.quantity for the project, net of what came back. Manual lines
+      are left out (free text that never came off inventory), and units returned to the project or
+      off a cancelled slip come off again - the same netting as request_composer._sent_quantities,
+      so this column and the request workspace's Shipped out agree (#1198)
     """
     required_subq = (
         select(
@@ -295,8 +305,29 @@ def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> 
             func.sum(PackingSlipItemModel.quantity).label("shipped_out"),
         )
         .join(PackingSlipModel, PackingSlipItemModel.packing_slip_id == PackingSlipModel.id)
-        .where(PackingSlipModel.project_id == project_id)
+        .where(PackingSlipModel.project_id == project_id, PackingSlipItemModel.is_manual.is_(False))
         .group_by(PackingSlipItemModel.hardware_category, PackingSlipItemModel.product_code)
+        .subquery()
+    )
+
+    # #1198: what came back is owed again - a return to the project, or anything off a cancelled slip
+    # (everything came back before pickup), as request_composer._sent_quantities nets it.
+    came_back_subq = (
+        select(
+            ShipmentReturnItemModel.hardware_category.label("hardware_category"),
+            ShipmentReturnItemModel.product_code.label("product_code"),
+            func.sum(ShipmentReturnItemModel.quantity).label("came_back"),
+        )
+        .join(ShipmentReturnModel, ShipmentReturnItemModel.shipment_return_id == ShipmentReturnModel.id)
+        .join(PackingSlipModel, ShipmentReturnModel.packing_slip_id == PackingSlipModel.id)
+        .where(
+            PackingSlipModel.project_id == project_id,
+            or_(
+                ShipmentReturnItemModel.disposition == ReturnDisposition.RETURN_TO_PROJECT,
+                PackingSlipModel.status == ShipmentStatus.CANCELLED,
+            ),
+        )
+        .group_by(ShipmentReturnItemModel.hardware_category, ShipmentReturnItemModel.product_code)
         .subquery()
     )
 
@@ -309,7 +340,9 @@ def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> 
             func.coalesce(placed_subq.c.ordered_quantity, 0).label("ordered_quantity"),
             func.coalesce(placed_subq.c.received_quantity, 0).label("received_quantity"),
             func.coalesce(placed_subq.c.back_ordered, 0).label("back_ordered"),
-            func.coalesce(shipped_subq.c.shipped_out, 0).label("shipped_out"),
+            func.greatest(
+                func.coalesce(shipped_subq.c.shipped_out, 0) - func.coalesce(came_back_subq.c.came_back, 0), 0
+            ).label("shipped_out"),
         )
         .select_from(required_subq)
         .outerjoin(
@@ -331,6 +364,13 @@ def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> 
             and_(
                 required_subq.c.hardware_category == shipped_subq.c.hardware_category,
                 required_subq.c.product_code == shipped_subq.c.product_code,
+            ),
+        )
+        .outerjoin(
+            came_back_subq,
+            and_(
+                required_subq.c.hardware_category == came_back_subq.c.hardware_category,
+                required_subq.c.product_code == came_back_subq.c.product_code,
             ),
         )
         .order_by(required_subq.c.hardware_category, required_subq.c.product_code)
@@ -366,7 +406,11 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
     - staged_for_shipping: the staging pool - completed SHIPPING_OUT pulls minus what packing slips
       carried out, positive part per (project, opening, category, product) to mirror
       shipping_repository.get_ship_ready_items, then summed per product.
-    - shipped_out: sum of packing_slip_items.quantity - GROSS, returns never decrement it
+    - shipped_out: sum of packing_slip_items.quantity - GROSS, returns never decrement it. Manual
+      lines are left out (#1198): free text that never came off inventory, so counting it inflated
+      Shipped out and, netted against the pulls, read Staged low. A cancelled slip stays in the gross
+      sum on purpose: what came back off it is in returned_to_project (back on the shelf) or left the
+      project for stock, the same as any other return, so dropping the slip would count it twice
     - returned_to_project: RETURN_TO_PROJECT shipment-return units. These are simultaneously back in
       on_hand AND still inside the gross shipped_out, so any reader summing "where the units are"
       across those columns must subtract this or count every returned unit twice (the re-import
@@ -493,7 +537,7 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
             func.sum(PackingSlipItemModel.quantity).label("shipped"),
         )
         .join(PackingSlipModel, PackingSlipItemModel.packing_slip_id == PackingSlipModel.id)
-        .where(PackingSlipModel.project_id.in_(project_ids))
+        .where(PackingSlipModel.project_id.in_(project_ids), PackingSlipItemModel.is_manual.is_(False))
         .group_by(
             PackingSlipModel.project_id,
             PackingSlipItemModel.opening_number,

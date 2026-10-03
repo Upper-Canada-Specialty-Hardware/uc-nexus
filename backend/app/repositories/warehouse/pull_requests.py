@@ -1048,8 +1048,15 @@ def confirm_pick(
     shortfalls = _pick_shortfalls(session, pr, required, covered, short_combos, holder)
     notif = None
     # One open signal per pull, not one per confirmation: a picker keying a big sheet in three
-    # sittings would otherwise raise three identical backfill notifications for the same gap.
-    if not notification_service.has_unread_notification_for_pull(session, pr.id, NotificationType.INVENTORY_SHORTFALL):
+    # sittings would otherwise raise three identical backfill notifications for the same gap. Only
+    # purchasing's own signal counts: a warehouse manager's count-below-reserved notice on this pull
+    # (#1124) is the same type and must not stand in for it (#1241).
+    if not notification_service.has_unread_notification_for_pull(
+        session,
+        pr.id,
+        NotificationType.INVENTORY_SHORTFALL,
+        recipient_role=notification_service.PO_RECIPIENT_ROLE,
+    ):
         notif = notification_service.notify_po_shortfall(
             session,
             project_id=pr.project_id,

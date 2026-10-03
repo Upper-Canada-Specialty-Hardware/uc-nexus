@@ -31,7 +31,7 @@ import {
   GET_SHOP_ASSEMBLY_REQUESTS,
   REJECT_SHOP_ASSEMBLY_REQUEST,
 } from '../../graphql/shop-assembly';
-import { RESERVATION_STALE_ROOT_FIELDS } from '../../graphql/refetch';
+import { PULL_MINTED_STALE_ROOT_FIELDS, RESERVATION_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
@@ -97,7 +97,7 @@ function groupByOpening(items: RequestItem[]): [string, RequestItem[]][] {
   return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
 }
 
-/** Evict what a batch, dismissal, rejection or discard makes stale everywhere else in the app. */
+/** Evict what a dismissal or rejection makes stale everywhere else in the app. */
 const evictReservationReads = {
   update(cache: { evict: (o: { id: string; fieldName: string }) => void; gc: () => void }) {
     for (const fieldName of RESERVATION_STALE_ROOT_FIELDS) {
@@ -109,6 +109,16 @@ const evictReservationReads = {
 
 /** Matches the backend's MAX_DISMISSAL_REASON_LENGTH (shop_assembly_repository.py). */
 const MAX_DISMISSAL_REASON_LENGTH = 500;
+
+/** A batch mints a warehouse pull and a discard deletes it, so the pull queue goes stale too (#1232). */
+const evictReservationAndPullReads = {
+  update(cache: { evict: (o: { id: string; fieldName: string }) => void; gc: () => void }) {
+    for (const fieldName of [...RESERVATION_STALE_ROOT_FIELDS, ...PULL_MINTED_STALE_ROOT_FIELDS]) {
+      cache.evict({ id: 'ROOT_QUERY', fieldName });
+    }
+    cache.gc();
+  },
+};
 
 export default function ShopAssemblyRequestsPage() {
   const [view, setView] = useState<View>('PENDING');
@@ -169,7 +179,7 @@ export default function ShopAssemblyRequestsPage() {
   );
 
   const [createBatch, { loading: batching }] = useMutation(CREATE_SHOP_ASSEMBLY_BATCH, {
-    ...evictReservationReads,
+    ...evictReservationAndPullReads,
     onCompleted: () => settle('Batch created - the warehouse pull is on the floor', 'success'),
     onError: (e) => settle(e.message, 'error'),
   });
@@ -184,7 +194,7 @@ export default function ShopAssemblyRequestsPage() {
     onError: (e) => settle(e.message, 'error'),
   });
   const [discardBatch, { loading: discarding }] = useMutation(DISCARD_SHOP_ASSEMBLY_BATCH, {
-    ...evictReservationReads,
+    ...evictReservationAndPullReads,
     onCompleted: () => settle('Batch discarded - its openings are back on the board', 'success'),
     onError: (e) => settle(e.message, 'error'),
   });
