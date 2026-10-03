@@ -309,9 +309,16 @@ def delete_warehouse(session: Session, warehouse_id: uuid.UUID) -> None:
     if wh.is_primary:
         raise ConflictError("Cannot delete the primary warehouse")
 
+    # Every table whose warehouse_id points here without a cascade (#1229): a receive draft has no
+    # ondelete and a shipment return is RESTRICT, so either used to fail the delete at flush as a
+    # masked server error instead of saying what is in the way.
+    from app.models.shipping import ShipmentReturn as ShipmentReturnModel
+
     for model, label in (
         (InventoryLocationModel, "inventory location"),
         (StockItemModel, "stock"),
+        (ReceiveDraftModel, "receive draft"),
+        (ShipmentReturnModel, "shipment return"),
     ):
         count = session.scalar(select(func.count()).select_from(model).where(model.warehouse_id == warehouse_id))
         if count and count > 0:

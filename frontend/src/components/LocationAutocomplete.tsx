@@ -13,7 +13,14 @@ interface LocationAutocompleteProps {
   /** #632: false makes this a strict pick from the defined-locations registry - typing still
    *  filters, but only a listed value validates (the caller gates its action on an exact match). */
   freeSolo?: boolean;
+  /** What the open list says when it has nothing to offer. Strict picks default to pointing at the
+   *  Locations tab, since an empty list there means no bin is defined for this warehouse (#1345). */
+  noOptionsText?: string;
 }
+
+/** #1345: shown when a warehouse has no defined locations, so a strict pick can never validate. */
+export const NO_DEFINED_LOCATIONS_TEXT =
+  'No locations are defined in this warehouse yet - add them on the Locations tab.';
 
 export default function LocationAutocomplete({
   label,
@@ -25,7 +32,11 @@ export default function LocationAutocomplete({
   fullWidth = true,
   autoFocus = false,
   freeSolo = true,
+  noOptionsText,
 }: LocationAutocompleteProps) {
+  const emptyText =
+    noOptionsText ??
+    (freeSolo ? undefined : options.length === 0 ? NO_DEFINED_LOCATIONS_TEXT : 'No matching defined location');
   return (
     <Autocomplete
       freeSolo={freeSolo}
@@ -34,6 +45,7 @@ export default function LocationAutocomplete({
       size={size}
       fullWidth={fullWidth}
       options={options}
+      noOptionsText={emptyText}
       // Strict mode: only surface a matching option as the value, so MUI never warns about a
       // typed-but-unlisted string (the input text still shows through inputValue).
       value={freeSolo ? value || null : options.includes(value) ? value : null}

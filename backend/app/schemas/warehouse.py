@@ -90,6 +90,12 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
+def _location_part(value):
+    """A row or bay argument as the location queries read it (#1251): omitted matches any, an explicit
+    null matches an empty part, so an aisle-only shelf shows only what sits on it."""
+    return warehouse_repository.ANY_LOCATION_PART if value is strawberry.UNSET else value
+
+
 def _pick_lines_from_input(lines: list[PickLineInput]) -> list[warehouse_repository.PickLine]:
     """GraphQL input -> the repository's `PickLine`. The id parse is the only conversion."""
     return [
@@ -449,11 +455,13 @@ class WarehouseQueries:
         offset: int = 0,
         project_id: strawberry.ID | None = None,
         po_search: str | None = None,
+        status: str | None = None,
     ) -> list[ReceiveRow]:
         """Every receive entity, drafts and booked records interleaved, newest first (#505).
 
         The existing views each cover a slice and a rejected draft appeared in none of them, so a
-        disputed count vanished from the product entirely."""
+        disputed count vanished from the product entirely. `status` (a draft status, or APPROVED) is
+        filtered on the server (#1267), so it reaches past the first page."""
         with SessionLocal() as session:
             return [
                 ReceiveRow(
@@ -481,6 +489,7 @@ class WarehouseQueries:
                     project_id=uuid.UUID(str(project_id)) if project_id else None,
                     po_search=po_search,
                     company=tenant_scope(info),
+                    status=status or None,
                 )
             ]
 
@@ -623,11 +632,15 @@ class WarehouseQueries:
         source: PullRequestSource | None = None,
         status: PullRequestStatus | None = None,
         statuses: list[PullRequestStatus] | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        newest_finished_first: bool = False,
     ) -> list[PullRequest]:
         """The warehouse pull queue and its history read this. `statuses` filters to a set - the
         active queue passes [PENDING, IN_PROGRESS] so a pull leaves the moment it completes or is
         cancelled, the history page passes [COMPLETED, CANCELLED]. `status` (single) stays for
-        compat."""
+        compat. The history pages with `limit`/`offset` and `newestFinishedFirst` (#1268); without a
+        limit the read is unpaged, as the queue wants."""
         with SessionLocal() as session:
             prs = warehouse_repository.get_pull_requests(
                 session,
@@ -636,6 +649,9 @@ class WarehouseQueries:
                 status,
                 statuses,
                 company=tenant_scope(info),
+                limit=cap_limit(limit) if limit is not None else None,
+                offset=cap_offset(offset),
+                newest_finished_first=newest_finished_first,
             )
             # One grouped read for the whole page, never one query per row (#367 / CLAUDE.md perf
             # rules): the queue draws a phase cell on every row. Narrowed to un-picked pulls, which
@@ -812,16 +828,16 @@ class WarehouseQueries:
         self,
         info: strawberry.Info,
         aisle: str,
-        row: str | None = None,
-        bay: str | None = None,
+        row: str | None = strawberry.UNSET,
+        bay: str | None = strawberry.UNSET,
         warehouse_id: strawberry.ID | None = None,
     ) -> LocationContents:
         with SessionLocal() as session:
             data = warehouse_repository.get_location_contents(
                 session,
                 aisle,
-                row,
-                bay,
+                _location_part(row),
+                _location_part(bay),
                 uuid.UUID(str(warehouse_id)) if warehouse_id else None,
                 company=tenant_scope(info),
             )
@@ -843,8 +859,8 @@ class WarehouseQueries:
         self,
         info: strawberry.Info,
         aisle: str,
-        row: str | None = None,
-        bay: str | None = None,
+        row: str | None = strawberry.UNSET,
+        bay: str | None = strawberry.UNSET,
         limit: int = 10,
         warehouse_id: strawberry.ID | None = None,
     ) -> list[AuditLogEntry]:
@@ -852,8 +868,8 @@ class WarehouseQueries:
             entries = warehouse_repository.get_location_audit_history(
                 session,
                 aisle,
-                row,
-                bay,
+                _location_part(row),
+                _location_part(bay),
                 limit=cap_limit(limit),
                 warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
                 company=tenant_scope(info),
@@ -929,7 +945,9 @@ class WarehouseQueries:
         project_id: strawberry.ID | None = None,
         limit: int = 50,
         offset: int = 0,
+        before_id: strawberry.ID | None = None,
     ) -> list[AuditLogEntry]:
+        """`beforeId` pages by keyset (#1269): the entries strictly older than that one."""
         with SessionLocal() as session:
             entries = warehouse_repository.get_audit_log(
                 session,
@@ -939,6 +957,7 @@ class WarehouseQueries:
                 limit=cap_limit(limit),
                 offset=cap_offset(offset),
                 company=tenant_scope(info),
+                before_id=uuid.UUID(str(before_id)) if before_id else None,
             )
             return [
                 AuditLogEntry(

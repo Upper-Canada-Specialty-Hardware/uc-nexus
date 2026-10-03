@@ -371,6 +371,10 @@ class CreateGpJobResult:
     project: "Project"
     created: bool
     cost_codes_provisioned: int
+    # #1306: on the adopt path (created false), how many active cost codes GP holds on the job, read
+    # from GP; None when it could not be read, and on a real create. That path is also where a retry
+    # after a lost reply lands, so a flat 0 there would wrongly say the selected codes never landed.
+    cost_codes_in_gp: int | None = None
 
 
 @strawberry.type
@@ -2337,6 +2341,9 @@ class SharepointInventoryItem:
     # Cost per unit off the source list. There is no PO line in Nexus for migrated stock, so this is
     # the only cost the units can carry; the migration writes it onto the inventory rows.
     unit_cost: float
+    # The source cell held something that is not a number even after "$", "," and spaces are dropped
+    # (#1370); `unit_cost` then reads 0 and the row migrates with no cost.
+    unit_cost_unreadable: bool
     # What describes a non-schedule product, since no hardware schedule does (#454).
     part_description: str
     finish: str
@@ -2428,6 +2435,9 @@ class MigrationResult:
     catalog_items_created: int = 0
     catalog_items_skipped: int = 0
     catalog_attributes_created: int = 0
+    # Entries whose source cost could not be read as a number (#1370): migrated with no cost, to be
+    # priced by hand.
+    unreadable_unit_costs: int = 0
 
 
 # --- INVENTORY VALUE (#662) ----------------------------------------------------------------------

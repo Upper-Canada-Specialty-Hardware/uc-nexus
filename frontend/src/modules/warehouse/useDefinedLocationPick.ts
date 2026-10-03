@@ -9,6 +9,9 @@ export interface DefinedLocationPick {
   bayOptions: string[];
   /** The aisle / row / bay triple matches a defined, active location exactly. */
   isDefinedPick: boolean;
+  /** #1345: the registry has loaded and defines no location in the given warehouse(s), so no pick
+   *  can ever validate - the caller says so instead of "pick a defined aisle". */
+  registryEmpty: boolean;
 }
 
 /**
@@ -68,5 +71,7 @@ export function useDefinedLocationPick(
     return !!a && !!r && !!b && definedHere.some((d) => d.aisle === a && d.row === r && d.bay === b);
   }, [definedHere, aisle, row, bay]);
 
-  return { ...options, isDefinedPick };
+  const registryEmpty = !!data && definedHere.length === 0;
+
+  return { ...options, isDefinedPick, registryEmpty };
 }

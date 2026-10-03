@@ -208,6 +208,21 @@ def test_op_answers_with_gps_stored_job_not_the_request(monkeypatch):
     assert response.job_name == "What GP Actually Kept"
 
 
+def test_op_answers_with_gps_full_job_record(monkeypatch):
+    # #1307: the backend adopts the new project with GP's whole record (the list_jobs shape), so the
+    # reply carries the read-back row itself, not just the number and name.
+    conn = _FakeConn()
+    record = {"job_number": "NEXUS-380-T1", "job_name": "Test job", "customer_number": "C100", "city": "Toronto"}
+    monkeypatch.setattr(econnect, "job_exists", lambda c, j: False)
+    monkeypatch.setattr(econnect, "create_job", lambda c, **k: None)
+    monkeypatch.setattr(econnect, "get_job", lambda c, j: record)
+
+    response = ops.create_job_op(conn, company="TUBC", request=_request())
+
+    assert response.record == record
+    assert response.model_dump(mode="json")["record"]["city"] == "Toronto"
+
+
 def test_op_raises_when_the_proc_reports_success_but_no_row_landed(monkeypatch):
     # taPoLine has a known err=0-but-no-row mode; guard the job proc the same way.
     conn = _FakeConn()
