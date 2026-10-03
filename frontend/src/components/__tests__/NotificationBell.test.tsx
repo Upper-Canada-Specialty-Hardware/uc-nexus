@@ -114,6 +114,35 @@ describe('NotificationBell', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/app/warehouse/receiving?view=drafts');
   });
 
+  it('still opens the notification when marking it read fails', async () => {
+    const items = [notification({ id: 'n-3' })];
+    render(
+      <MockedProvider
+        mocks={[
+          ...notificationsMocks(items),
+          {
+            request: { query: MARK_NOTIFICATION_AS_READ, variables: () => true },
+            error: new Error('Notification not found'),
+          },
+        ]}
+      >
+        <MemoryRouter initialEntries={['/app']}>
+          <Routes>
+            <Route path="/app" element={<NotificationBell />} />
+            <Route path="/app/warehouse/receiving" element={<div>Receiving</div>} />
+          </Routes>
+          <LocationProbe />
+        </MemoryRouter>
+      </MockedProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }));
+    fireEvent.click(await screen.findByText(/sent back your receive/, undefined, SLOW));
+
+    await screen.findByText('Receiving', undefined, SLOW);
+    expect(screen.getByTestId('location')).toHaveTextContent('/app/warehouse/receiving?view=drafts');
+  });
+
   it('marks every unread notification read with one request', async () => {
     // The popover only lists the latest few, and the badge counts every unread, so one action has to
     // reach the whole backlog. #1112: one bulk mutation, not one request per notification.

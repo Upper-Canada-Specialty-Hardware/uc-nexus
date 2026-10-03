@@ -101,16 +101,20 @@ export default function NotificationBell() {
 
   const handleNotificationClick = async (notification: Notification) => {
     if (!notification.isRead) {
-      await markAsRead({
-        variables: { id: notification.id },
-        refetchQueries: [
-          {
-            query: GET_NOTIFICATIONS,
-            variables: { limit: 5 },
-          },
-          { query: GET_NOTIFICATION_UNREAD_COUNT },
-        ],
-      });
+      try {
+        await markAsRead({
+          variables: { id: notification.id },
+          refetchQueries: [
+            {
+              query: GET_NOTIFICATIONS,
+              variables: { limit: 5 },
+            },
+            { query: GET_NOTIFICATION_UNREAD_COUNT },
+          ],
+        });
+      } catch {
+        // A failed read must not cost the click its navigation; the next poll reconciles the badge.
+      }
     }
     const to = NOTIFICATION_LINKS[notification.type];
     if (to) {

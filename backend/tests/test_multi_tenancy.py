@@ -30,7 +30,7 @@ from app.auth_policy import ROOT_FIELD_POLICY
 from app.errors import NotFoundError, ValidationError
 from app.models.enums import POStatus, PullRequestSource, PullRequestStatus, ShippingOutRequestStatus
 from app.models.inventory import InventoryLocation
-from app.models.project import Project
+from app.models.project import Opening, Project
 from app.models.pull_request import PullRequest
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.shipping_out_request import ShippingOutRequest
@@ -399,6 +399,21 @@ def test_the_project_picker_shows_only_the_callers_company(db_session, two_compa
 
     assert two_companies["mine"].id in ids
     assert two_companies["theirs"].id not in ids
+
+
+def test_the_picker_counts_only_its_own_projects_openings(db_session):
+    """The grouped count is limited to the listed projects (#1181), and still counts them right."""
+    mine = _project(db_session, "TUBC")
+    theirs = _project(db_session, "UCSH")
+    for project, n in ((mine, 2), (theirs, 3)):
+        for i in range(n):
+            db_session.add(Opening(id=uuid.uuid4(), project_id=project.id, opening_number=f"{i + 1:03d}"))
+    db_session.flush()
+
+    counts = {p.id: c for p, c in project_repository.list_projects_with_opening_counts(db_session, company="TUBC")}
+
+    assert counts[mine.id] == 2
+    assert theirs.id not in counts
 
 
 def test_an_admin_sees_every_company(db_session, two_companies):

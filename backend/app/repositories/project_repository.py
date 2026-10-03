@@ -33,13 +33,20 @@ def list_projects_with_opening_counts(
     `company` is the caller's tenant scope (#637); None means unscoped, which is the admin answer.
     `include_archived` is False for the picker every module reads and True for the admin page, which
     has to keep showing an archived project to un-archive it."""
-    stmt = select(ProjectModel).order_by(ProjectModel.created_at.desc())
+    filters = []
     if company is not None:
-        stmt = stmt.where(ProjectModel.company == company)
+        filters.append(ProjectModel.company == company)
     if not include_archived:
-        stmt = stmt.where(ProjectModel.archived.is_(False))
+        filters.append(ProjectModel.archived.is_(False))
+    stmt = select(ProjectModel).where(*filters).order_by(ProjectModel.created_at.desc())
     projects = list(session.scalars(stmt).unique().all())
-    count_rows = session.execute(select(OpeningModel.project_id, func.count()).group_by(OpeningModel.project_id)).all()
+    # The count reads only the listed projects' openings, not every company's.
+    count_rows = session.execute(
+        select(OpeningModel.project_id, func.count())
+        .join(ProjectModel, ProjectModel.id == OpeningModel.project_id)
+        .where(*filters)
+        .group_by(OpeningModel.project_id)
+    ).all()
     counts: dict[uuid.UUID, int] = {pid: c for pid, c in count_rows}
     return [(p, counts.get(p.id, 0)) for p in projects]
 
