@@ -352,19 +352,24 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
           variables: { userId: selectedUser.id, firstName: editFirstName.trim(), lastName: editLastName.trim() },
         });
       }
+      // #637: same only-when-changed rule as the name above. While the relay is down the field is
+      // read-only and still holds the stored company, so an unconditional write would re-PATCH Clerk on
+      // every save. Written BEFORE the buyer id (#1255): moving an account off a company clears its
+      // buyer id server-side, so a buyer picked for the new company has to land after that.
+      const companyChanged = (editCompany || null) !== (selectedUser.company ?? null);
+      if (companyChanged) {
+        await updateCompany({ variables: { userId: selectedUser.id, company: editCompany || null } });
+      }
       // #699: an account that is not a PO User gives its GP identity back. The decision is made here
       // and nowhere else, so unchecking PO User and checking it again before Save keeps the id.
       const gpBuyerIdToSave = editRoles.includes(PO_USER_ROLE) ? editGpBuyerId : null;
-      // Same only-when-changed rule as the name above, which #409 makes load-bearing rather than
-      // merely tidy: while the relay is down the buyer field is disabled and holds the stored id, and
-      // an unconditional write would re-PATCH Clerk on every unrelated save.
-      if (gpBuyerIdToSave !== (selectedUser.gpBuyerId ?? null)) {
+      // What Clerk holds now: a move off a company it already had has just cleared the id (#1255).
+      const storedGpBuyerId = companyChanged && selectedUser.company ? null : (selectedUser.gpBuyerId ?? null);
+      // Same only-when-changed rule, which #409 makes load-bearing rather than merely tidy: while the
+      // relay is down the buyer field is disabled and holds the stored id, and an unconditional write
+      // would re-PATCH Clerk on every unrelated save.
+      if (gpBuyerIdToSave !== storedGpBuyerId) {
         await updateGpBuyerId({ variables: { userId: selectedUser.id, gpBuyerId: gpBuyerIdToSave } });
-      }
-      // #637: same only-when-changed rule. While the relay is down the field is read-only and still
-      // holds the stored company, so an unconditional write would re-PATCH Clerk on every save.
-      if ((editCompany || null) !== (selectedUser.company ?? null)) {
-        await updateCompany({ variables: { userId: selectedUser.id, company: editCompany || null } });
       }
       showToast('User updated successfully', 'success');
       closeDialog();
@@ -401,10 +406,15 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
   // With no company there is no buyer master to open, and with the list unreadable there is nothing
   // to choose from; either way the stored id still shows, read-only, rather than looking unset.
   const identityLocked = !editCompany || gpBuyers.unavailable;
+  // #1255: a move off a company gives the old buyer id back, so say it needs picking again.
+  const buyerNeedsRepick =
+    !!selectedUser?.company && !!selectedUser.gpBuyerId && (editCompany || null) !== selectedUser.company;
   const identityHelper = gpBuyers.unavailable
     ? buyerListUnavailableReason(gpBuyers)
     : editCompany
-      ? `GP buyers registered in ${editCompany}. This account creates POs as this buyer; blank means it cannot create POs.`
+      ? buyerNeedsRepick
+        ? `The company changed, so the buyer from ${selectedUser?.company} is cleared. Pick this account's buyer in ${editCompany}.`
+        : `GP buyers registered in ${editCompany}. This account creates POs as this buyer; blank means it cannot create POs.`
       : 'Choose the company first. The list is that company’s GP buyer master.';
   const editUserTitle = selectedUser
     ? [selectedUser.firstName, selectedUser.lastName].filter(Boolean).join(' ') || selectedUser.email

@@ -212,8 +212,17 @@ def normalize_company(company: str | None) -> str | None:
 def update_user_company(user_id: str, company: str | None) -> dict:
     """#637: set (or clear, with None) the GP company this UC Nexus account belongs to. This is the
     account's tenant - every non-admin read and write is filtered on it - so it is admin-only, and the
-    same merge-not-replace metadata write `updateUserGpBuyerId` uses."""
-    return _merge_public_metadata(user_id, {"company": normalize_company(company)})
+    same merge-not-replace metadata write `updateUserGpBuyerId` uses.
+
+    A move away from a company the account already had gives its GP buyer identity back in the same
+    write (#1255), as losing PO User does: a BUYERID belongs to one company's GP buyer master, so the
+    old one is not a buyer in the new company. A first assignment (no company before) keeps it."""
+    cleaned = normalize_company(company)
+    patch: dict = {"company": cleaned}
+    previous = normalize_company(_public_metadata(user_id).get("company"))
+    if previous is not None and previous != cleaned:
+        patch["gpBuyerId"] = None
+    return _merge_public_metadata(user_id, patch)
 
 
 def get_user_company(user_id: str) -> str | None:
