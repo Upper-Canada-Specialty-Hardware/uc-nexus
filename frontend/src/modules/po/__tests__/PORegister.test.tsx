@@ -60,11 +60,15 @@ const outboxAsked: Record<string, unknown>[] = [];
 /** Every variable set the table page was read with, so a test can say what the table asked for (#851). */
 const pageAsked: Record<string, unknown>[] = [];
 
+/** Every variable set the status strip's counts were read with (#1237). */
+const statsAsked: Record<string, unknown>[] = [];
+
 beforeEach(() => {
   identity.isNexusAdmin = true;
   identity.company = null;
   outboxAsked.length = 0;
   pageAsked.length = 0;
+  statsAsked.length = 0;
 });
 
 // #851: the one project a link can scope the table to.
@@ -193,7 +197,13 @@ function mocks(heldRegistrations: Record<string, unknown>[] = []): MockedRespons
       maxUsageCount: INFINITE,
     },
     {
-      request: { query: GET_PO_STATISTICS, variables: () => true },
+      request: {
+        query: GET_PO_STATISTICS,
+        variables: (v: Record<string, unknown>) => {
+          statsAsked.push(v);
+          return true;
+        },
+      },
       result: {
         data: {
           poStatistics: {
@@ -550,6 +560,17 @@ it('shows a link’s project scope as a chip, and removing it lifts the scope', 
 
   await waitFor(() => expect(lastPageAsk()).toMatchObject({ projectId: null }));
   expect(screen.queryByText('J-23094')).toBeNull();
+});
+
+// #1237: the status strip used to count every PO while the table showed one project's.
+it('counts the status strip in the same project scope as the table, and re-counts when it is lifted', async () => {
+  renderRegister([], '/?project=proj-1');
+  await screen.findByText('PO-2001');
+  await waitFor(() => expect(statsAsked).toContainEqual({ projectId: 'proj-1' }));
+  expect(statsAsked).not.toContainEqual({ projectId: null });
+
+  fireEvent.click(screen.getByTestId('CancelIcon'));
+  await waitFor(() => expect(statsAsked).toContainEqual({ projectId: null }));
 });
 
 it('tints the purchase orders the link names, and only those', async () => {

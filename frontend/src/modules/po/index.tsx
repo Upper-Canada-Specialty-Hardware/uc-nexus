@@ -545,9 +545,11 @@ function POListPage() {
     return ids;
   }, [outboxData]);
 
+  // #1237: the status strip counts the same scope the table shows, so a ?project= view counts that
+  // project's POs, and changing the scope re-asks.
   const { data: statsData, loading: statsLoading, refetch: refetchStats } = useQuery<{
     poStatistics: POStatistics;
-  }>(GET_PO_STATISTICS);
+  }>(GET_PO_STATISTICS, { variables: { projectId: projectId || null } });
 
   // #851: a search spans every status. Someone looking up a PO by number should find it whichever
   // segment happens to be pressed; clearing the search returns to that segment's narrowing.
