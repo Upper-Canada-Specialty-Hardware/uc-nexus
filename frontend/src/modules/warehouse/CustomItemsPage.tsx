@@ -330,6 +330,7 @@ function TypePanel({
           label="New attribute"
           placeholder="Fire Rating"
           value={newAttribute}
+          slotProps={{ htmlInput: { maxLength: 100 } }}
           onChange={(e) => setNewAttribute(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') submitAttribute();
@@ -505,6 +506,7 @@ function TypeForm({
         label="Name"
         placeholder="Gaskets"
         value={name}
+        slotProps={{ htmlInput: { maxLength: 100 } }}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter') submit();
@@ -644,6 +646,7 @@ function ItemForm({
         size="small"
         label="Product code"
         value={productCode}
+        slotProps={{ htmlInput: { maxLength: 100 } }}
         onChange={(e) => setProductCode(e.target.value)}
         disabled={Boolean(item)}
         helperText={item ? 'Fixed - inventory already received carries this code.' : undefined}
@@ -654,6 +657,7 @@ function ItemForm({
         size="small"
         label="Description"
         value={description}
+        slotProps={{ htmlInput: { maxLength: 255 } }}
         onChange={(e) => setDescription(e.target.value)}
         fullWidth
       />

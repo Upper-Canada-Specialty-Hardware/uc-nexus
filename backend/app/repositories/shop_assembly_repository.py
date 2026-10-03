@@ -55,6 +55,7 @@ STAGE_DONE = "DONE"
 STAGE_REJECTED = "REJECTED"
 
 MAX_DISMISSAL_REASON_LENGTH = 500
+MAX_REJECTION_REASON_LENGTH = 500
 
 
 # ---------------------------------------------------------------------------
@@ -762,9 +763,18 @@ def reject_shop_assembly_request(
             "batch's pull to undo it, and dismiss whatever is left."
         )
 
+    # #1208: the column is String(500); an over-long reason is a field error, not an overflow at
+    # flush. Same limit and wording as a dismissal reason.
+    reason = (reason or "").strip() or None
+    if reason is not None and len(reason) > MAX_REJECTION_REASON_LENGTH:
+        raise ValidationError(
+            f"Rejection reason must be {MAX_REJECTION_REASON_LENGTH} characters or fewer",
+            field="reason",
+        )
+
     request.status = ShopAssemblyRequestStatus.REJECTED
     request.rejected_by = rejected_by
-    request.rejection_reason = (reason or "").strip() or None
+    request.rejection_reason = reason
     request.rejected_at = datetime.utcnow()
     session.flush()
     return request

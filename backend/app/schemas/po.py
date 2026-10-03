@@ -861,6 +861,8 @@ class POMutations:
             po = await asyncio.to_thread(_load_po_type, uuid.UUID(state.result_id))
             return RegisterPOResult(queued=False, outbox_entry_id=None, purchase_order=po)
 
+        # #1207: the costs the persist writes are checked before anything reaches GP.
+        po_repository.validate_order_costs(shipping_cost=input.shipping_cost, tariff_amount=input.tariff_amount)
         tax_detail_ids = _fold_tax_detail_ids(input)
         tax_schedule_id = _tax_schedule_id(input, tax_detail_ids)
         payload = await asyncio.to_thread(

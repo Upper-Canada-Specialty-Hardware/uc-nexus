@@ -165,6 +165,23 @@ def test_a_decision_made_while_waiting_on_the_lock_is_met_as_a_state_error(db_se
         shop_assembly_repository.create_shop_assembly_batch(db_session, sar.id, lines, created_by="second manager")
 
 
+def test_a_rejection_reason_longer_than_the_column_is_a_field_error(db_session):
+    """#1208: refused cleanly, with the request left pending, instead of overflowing at flush."""
+    project = _project(db_session)
+    sar = _finalize(db_session, project, [{**_HINGE, "quantity": 2}])
+
+    with pytest.raises(ValidationError) as exc:
+        shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "manager", "x" * 501)
+    assert exc.value.field == "reason"
+    db_session.refresh(sar)
+    assert sar.status.value == "PENDING"
+
+    shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "manager", "  " + "x" * 500 + "  ")
+    db_session.refresh(sar)
+    assert sar.status.value == "REJECTED"
+    assert sar.rejection_reason == "x" * 500
+
+
 def test_a_second_batch_takes_the_next_sequence(db_session):
     project = _project(db_session)
     _stock(db_session, project)

@@ -181,15 +181,31 @@ def _assert_po_number_available(
         raise ValidationError(f"PO number '{po_number}' already exists", field="po_number")
 
 
+# The order-time cost columns are Numeric(12,2), so anything at or above this overflows at flush.
+_MAX_ORDER_COST = Decimal("10000000000")
+
+
 def _coerce_order_cost(value, field: str) -> Decimal | None:
     """Issue #156: coerce an optional order-time dollar cost (shipping_cost / tariff_amount) to
-    Decimal. Null passes through ("not entered"); a negative value is a clean field error."""
+    Decimal. Null passes through ("not entered"); a negative value, or one too large for the column
+    (#1207), is a clean field error rather than an overflow at flush."""
     if value is None:
         return None
     amount = Decimal(str(value))
+    label = field.replace("_", " ").capitalize()
     if amount < 0:
-        raise ValidationError(f"{field.replace('_', ' ').capitalize()} must be zero or greater", field=field)
+        raise ValidationError(f"{label} must be zero or greater", field=field)
+    if amount >= _MAX_ORDER_COST:
+        raise ValidationError(f"{label} must be less than {_MAX_ORDER_COST:,}", field=field)
     return amount
+
+
+def validate_order_costs(*, shipping_cost=None, tariff_amount=None) -> None:
+    """#1207: the order-cost checks the persist makes, run on their own so the register resolver can
+    refuse a bad cost BEFORE the GP push. Refused only at the persist, GP would already hold the PO
+    while Nexus kept the draft, and a retry would push a second one."""
+    _coerce_order_cost(shipping_cost, "shipping_cost")
+    _coerce_order_cost(tariff_amount, "tariff_amount")
 
 
 def _effective_pool_kind(project_id: uuid.UUID | None, pool_kind: PoolKind | None) -> PoolKind:

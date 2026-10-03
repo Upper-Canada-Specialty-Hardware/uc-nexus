@@ -167,6 +167,34 @@ def test_a_blank_name_is_refused(db_session):
         catalog.create_item_type(db_session, name="   ", company="TUBC")
 
 
+def test_names_codes_and_descriptions_longer_than_their_columns_are_field_errors(db_session):
+    """#1210: each catalog text is refused by name before the flush, instead of overflowing there."""
+    frames = _type(db_session)
+    attribute = catalog.create_attribute(db_session, type_id=frames.id, name="Finish")
+    item = catalog.create_item(db_session, type_id=frames.id, product_code=f"FR-{uuid.uuid4().hex[:6]}")
+
+    refused = [
+        (lambda: catalog.create_item_type(db_session, name="T" * 101, company="TUBC"), "name"),
+        (lambda: catalog.update_item_type(db_session, frames.id, name="T" * 101), "name"),
+        (lambda: catalog.create_attribute(db_session, type_id=frames.id, name="A" * 101), "name"),
+        (lambda: catalog.update_attribute(db_session, attribute.id, name="A" * 101), "name"),
+        (lambda: catalog.create_item(db_session, type_id=frames.id, product_code="P" * 101), "product_code"),
+        (
+            lambda: catalog.create_item(db_session, type_id=frames.id, product_code="FR-LONG", description="D" * 256),
+            "description",
+        ),
+        (lambda: catalog.update_item(db_session, item.id, description="D" * 256), "description"),
+    ]
+    for call, field in refused:
+        with pytest.raises(ValidationError) as exc:
+            call()
+        assert exc.value.field == field
+
+    # At the limit is fine.
+    catalog.update_item(db_session, item.id, description="D" * 255)
+    assert item.description == "D" * 255
+
+
 # --- attributes -------------------------------------------------------------------------------
 
 

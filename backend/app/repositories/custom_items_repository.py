@@ -33,6 +33,18 @@ from app.models.inventory_item_type import (
 from app.models.purchase_order import POLineItem
 from app.models.stock_item import StockItem
 
+# Column widths (#1210). An over-long value is a field error here, not an overflow at flush.
+MAX_TYPE_NAME_LENGTH = 100
+MAX_ATTRIBUTE_NAME_LENGTH = 100
+MAX_PRODUCT_CODE_LENGTH = 100
+MAX_DESCRIPTION_LENGTH = 255
+
+
+def _check_length(value: str | None, limit: int, label: str, field: str) -> None:
+    if value is not None and len(value) > limit:
+        raise ValidationError(f"{label} must be {limit} characters or fewer.", field=field)
+
+
 # --- types ---------------------------------------------------------------------------------
 
 
@@ -92,6 +104,7 @@ def create_item_type(session: Session, *, name: str, code: str | None = None, so
     company = (company or "").strip().upper()
     if not name:
         raise ValidationError("An inventory item type needs a name.", field="name")
+    _check_length(name, MAX_TYPE_NAME_LENGTH, "A type name", "name")
     if not company:
         raise ValidationError("A GP company is required for an inventory item type.", field="company")
 
@@ -137,6 +150,7 @@ def update_item_type(
         name = name.strip()
         if not name:
             raise ValidationError("An inventory item type needs a name.", field="name")
+        _check_length(name, MAX_TYPE_NAME_LENGTH, "A type name", "name")
         if name.lower() != item_type.name.lower():
             _check_type_name_free(session, name, item_type.company)
         item_type.name = name
@@ -156,6 +170,7 @@ def create_attribute(session: Session, *, type_id: uuid.UUID, name: str, sort_or
     name = (name or "").strip()
     if not name:
         raise ValidationError("An attribute needs a name.", field="name")
+    _check_length(name, MAX_ATTRIBUTE_NAME_LENGTH, "An attribute name", "name")
     _require_active_type(session, type_id)
     _check_attribute_name_free(session, type_id, name)
 
@@ -192,6 +207,7 @@ def update_attribute(
         name = name.strip()
         if not name:
             raise ValidationError("An attribute needs a name.", field="name")
+        _check_length(name, MAX_ATTRIBUTE_NAME_LENGTH, "An attribute name", "name")
         if name.lower() != attribute.name.lower():
             _check_attribute_name_free(session, attribute.type_id, name)
         attribute.name = name
@@ -277,6 +293,9 @@ def create_item(
     product_code = (product_code or "").strip()
     if not product_code:
         raise ValidationError("An item needs a product code.", field="product_code")
+    _check_length(product_code, MAX_PRODUCT_CODE_LENGTH, "A product code", "product_code")
+    description = (description or "").strip() or None
+    _check_length(description, MAX_DESCRIPTION_LENGTH, "A description", "description")
     _require_active_type(session, type_id)
 
     existing = session.scalars(
@@ -295,7 +314,7 @@ def create_item(
         id=uuid.uuid4(),
         type_id=type_id,
         product_code=product_code,
-        description=(description or "").strip() or None,
+        description=description,
         is_active=True,
     )
     session.add(item)
@@ -323,7 +342,9 @@ def update_item(
     item = get_item(session, item_id)
 
     if description is not None:
-        item.description = description.strip() or None
+        description = description.strip() or None
+        _check_length(description, MAX_DESCRIPTION_LENGTH, "A description", "description")
+        item.description = description
     if is_active is not None:
         item.is_active = is_active
     if values is not None:
