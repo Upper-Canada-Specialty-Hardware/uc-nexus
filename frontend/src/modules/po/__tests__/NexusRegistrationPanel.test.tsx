@@ -3,6 +3,7 @@ import { MockedProvider, type MockedResponse } from '@apollo/client/testing/reac
 import { ToastProvider } from '../../../components/Toast';
 import NexusRegistrationPanel from '../NexusRegistrationPanel';
 import { GET_PROJECT_SCHEDULE_PRODUCTS } from '../../../graphql/admin';
+import { GET_PO_LINE_TIED_QUANTITIES, NEXUS_REGISTER_PO_LINES } from '../../../graphql/po';
 import type { PurchaseOrder } from '../index';
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -89,9 +90,28 @@ function product(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** #1128: the units already tied to each line. Lines left out have nothing tied. */
+function tiedMock(tied: Record<string, number> = {}): MockedResponse {
+  return {
+    request: { query: GET_PO_LINE_TIED_QUANTITIES, variables: { poId: 'po-1' } },
+    result: {
+      data: {
+        poLineTiedQuantities: Object.entries(tied).map(([poLineItemId, tiedQuantity]) => ({
+          __typename: 'PoLineTiedQuantity',
+          poLineItemId,
+          tiedQuantity,
+        })),
+      },
+    },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+  };
+}
+
 function renderPanel(po: PurchaseOrder, mocks: MockedResponse[]) {
+  // Every project PO asks what is already tied; a test that cares passes its own tiedMock first.
+  const withTied = po.projectId ? [...mocks, tiedMock()] : mocks;
   return render(
-    <MockedProvider mocks={mocks}>
+    <MockedProvider mocks={withTied}>
       <ToastProvider>
         <NexusRegistrationPanel po={po} onRefetch={vi.fn()} />
       </ToastProvider>
@@ -140,23 +160,69 @@ it('asks for a typed identity and no tie at all on a PO with no project', async 
   expect(screen.queryByText('Tie qty')).not.toBeInTheDocument();
 });
 
-it('shows an already registered line read-only', async () => {
-  const po = makePo({
-    lineItems: [
-      makeLineItem({
-        id: 'li-1',
-        hardwareCategory: 'Hinges',
-        productCode: 'HG-100',
-        nexusRegistered: true,
-      }),
-    ],
-  });
-  renderPanel(po, [scheduleMock([product()])]);
+const registeredLine = (overrides: Partial<LineItem> = {}) =>
+  makeLineItem({ id: 'li-1', hardwareCategory: 'Hinges', productCode: 'HG-100', nexusRegistered: true, ...overrides });
+
+it('shows a fully tied registered line read-only', async () => {
+  const po = makePo({ lineItems: [registeredLine()] });
+  // All 5 outstanding units are tied.
+  renderPanel(po, [tiedMock({ 'li-1': 5 }), scheduleMock([product()])]);
 
   expect(await screen.findByText('Registered')).toBeInTheDocument();
   expect(screen.queryByLabelText('Product')).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('Tie quantity')).not.toBeInTheDocument();
   // Nothing to send, so the save button has nothing to do.
   expect(screen.getByRole('button', { name: 'Register in Nexus' })).toBeDisabled();
+});
+
+it('keeps a registered line open for the units it still has untied (#1128)', async () => {
+  const po = makePo({ lineItems: [registeredLine({ orderedQuantity: 10 })] });
+  // 10 outstanding, 9 tied: one unit is still untied.
+  renderPanel(po, [tiedMock({ 'li-1': 9 }), scheduleMock([product()])]);
+
+  const tie = await screen.findByLabelText('Tie quantity');
+  await waitFor(() => expect((tie as HTMLInputElement).value).toBe('1'));
+  expect(screen.getByText('max 1')).toBeInTheDocument();
+  // The identity is fixed: no product picker on a registered line.
+  expect(screen.queryByLabelText('Product')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Register in Nexus' })).toBeEnabled();
+});
+
+it('says so when fewer units were tied than asked (#1128)', async () => {
+  const po = makePo();
+  const register: MockedResponse = {
+    request: {
+      query: NEXUS_REGISTER_PO_LINES,
+      variables: {
+        input: {
+          poId: 'po-1',
+          lines: [{ poLineItemId: 'li-1', hardwareCategory: 'Hinges', productCode: 'HG-100', tieQuantity: 5 }],
+        },
+      },
+    },
+    result: {
+      data: {
+        nexusRegisterPoLines: {
+          __typename: 'NexusRegisterPoLinesResult',
+          tiedUnits: 3,
+          purchaseOrder: {
+            __typename: 'PurchaseOrder',
+            id: 'po-1',
+            nexusRegistered: true,
+            lineItems: [],
+          },
+        },
+      },
+    },
+  };
+  renderPanel(po, [scheduleMock([product()]), register]);
+
+  const picker = await screen.findByLabelText('Product');
+  await waitFor(() => expect((picker as HTMLSelectElement).value).toBe('Hinges :: HG-100'));
+  fireEvent.click(screen.getByRole('button', { name: 'Register in Nexus' }));
+
+  expect(await screen.findByText(/3 units of 5 tied to the schedule/)).toBeInTheDocument();
+  expect(screen.getByText(/2 units could not be tied/)).toBeInTheDocument();
 });
 
 // #909: the grid fits the panel with resizable columns instead of scrolling sideways.

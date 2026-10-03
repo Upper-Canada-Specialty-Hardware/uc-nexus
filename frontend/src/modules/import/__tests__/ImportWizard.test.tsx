@@ -837,6 +837,30 @@ describe('ImportWizard AppBar nav', () => {
     expect(screen.queryByRole('button', { name: 'Next' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Finish Import Session/i })).toBeInTheDocument();
   });
+
+  // #1138: with no parsed schedule there is nothing to finalize. The loading flag used to be raised
+  // before that early return, leaving the spinner up and Finish disabled until the wizard closed.
+  it('does not leave the finalize spinning when the schedule is gone', async () => {
+    renderWizard({
+      project: reimportProject,
+      mocks: [...reimportBaseMocks, requestCoverageMock],
+      purpose: 'assembly',
+    });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+
+    mockedUseParser.mockReturnValue(makeParser({ parseResult: null }));
+    fireEvent.click(screen.getByRole('button', { name: /Finish Import Session/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Finalize' }));
+    await flushApollo();
+
+    expect(screen.queryByText('Finalizing import session...')).not.toBeInTheDocument();
+    expect(screen.getByText(/The schedule is no longer loaded/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Finish Import Session/i })).toBeEnabled();
+  });
 });
 
 // A module's "Start a Request" link into shop assembly lands here: the project is chosen and the

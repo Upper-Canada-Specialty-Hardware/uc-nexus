@@ -18,6 +18,8 @@ from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.shop_assembly import ShopAssemblyRequestItem
 from app.models.stock_item import StockItem
 from app.repositories import import_repository, warehouse_admin_repository
+from app.repositories import warehouse as warehouse_repository
+from tests.shop_assembly_helpers import with_schedule
 
 
 def _seed_inventory(session, project_id, *, hardware_category="HINGE", product_code="HG-100", quantity=10):
@@ -216,8 +218,98 @@ def test_resume_does_not_duplicate_in_po_items(db_session):
     assert items[0].state == HardwareItemState.IN_PO
 
 
-def test_replace_schedule_wipes_all_hardware_items(db_session):
-    """replace_schedule=True wipes all HardwareItems including IN_PO, then recreates from new input."""
+def _po_draft(*refs: dict) -> dict:
+    return {"po_number": None, "notes": None, "hardware_item_refs": list(refs), "line_item_aliases": []}
+
+
+def _ref(opening_number: str, product_code: str, quantity: int | None = None) -> dict:
+    ref = {"opening_number": opening_number, "product_code": product_code, "hardware_category": "HINGE"}
+    if quantity is not None:
+        ref["quantity"] = quantity
+    return ref
+
+
+def _rows(session, project_id) -> dict[tuple[str, str, HardwareItemState], int]:
+    """(opening, product, state) -> summed item_quantity for the project's hardware rows."""
+    out: dict[tuple[str, str, HardwareItemState], int] = {}
+    stmt = (
+        select(Opening.opening_number, HardwareItem.product_code, HardwareItem.state, HardwareItem.item_quantity)
+        .join(Opening, HardwareItem.opening_id == Opening.id)
+        .where(HardwareItem.project_id == project_id)
+    )
+    for number, code, state, qty in session.execute(stmt).all():
+        out[(number, code, state)] = out.get((number, code, state), 0) + qty
+    return out
+
+
+def _status(session, project_id, product_code: str) -> dict:
+    rows = warehouse_repository.get_hardware_status_by_product(session, [project_id])
+    return next(r for r in rows if r["product_code"] == product_code)
+
+
+def test_refinalize_keeps_unordered_remainder_of_partly_ordered_product(db_session):
+    """#1122: a PO that took 2 of 4 units leaves an IN_PO row of 2 and an AVAILABLE row of 2. A later
+    finalize from the saved schedule sends one merged row of 4 for that key; the unordered 2 must be
+    persisted again, not dropped because the key already has an IN_PO row."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=4)],
+            "po_drafts": [_po_draft(_ref("A01", "HG-100", quantity=2))],
+        },
+    )
+    db_session.flush()
+    assert _rows(db_session, project.id) == {
+        ("A01", "HG-100", HardwareItemState.IN_PO): 2,
+        ("A01", "HG-100", HardwareItemState.AVAILABLE): 2,
+    }
+
+    # Hydrate-from-persisted: the wizard sums the persisted IN_PO and AVAILABLE rows into one row of 4.
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=4)],
+        },
+    )
+    db_session.flush()
+    assert _rows(db_session, project.id) == {
+        ("A01", "HG-100", HardwareItemState.IN_PO): 2,
+        ("A01", "HG-100", HardwareItemState.AVAILABLE): 2,
+    }
+    status = _status(db_session, project.id, "HG-100")
+    assert status["required_quantity"] == 4
+    assert status["not_purchased"] == 2
+
+
+def test_refinalize_ordering_the_remainder_leaves_nothing_available(db_session):
+    """#1122: the remainder ordered on the second pass becomes IN_PO, and nothing is left AVAILABLE."""
+    project = _make_project(db_session)
+    db_session.commit()
+    base = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01")],
+        "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=4)],
+    }
+    import_repository.finalize_import_session(db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100", 2))]})
+    db_session.flush()
+    import_repository.finalize_import_session(db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100", 2))]})
+    db_session.flush()
+
+    assert _rows(db_session, project.id) == {("A01", "HG-100", HardwareItemState.IN_PO): 4}
+    assert _status(db_session, project.id, "HG-100")["not_purchased"] == 0
+
+
+def test_replace_schedule_keeps_ordered_hardware(db_session):
+    """#1123: replace_schedule rebuilds the unordered rows from the new input, but ordered (IN_PO) rows
+    are kept with their PO line. A matching row in the new schedule only adds the unordered remainder,
+    and openings the new schedule dropped are deleted unless they still hold ordered hardware."""
     project = _make_project(db_session)
     db_session.commit()
 
@@ -227,28 +319,74 @@ def test_replace_schedule_wipes_all_hardware_items(db_session):
             "project_id": str(project.id),
             "openings": [_opening_input("A01"), _opening_input("A02")],
             "hardware_items": [
-                _hardware_item_input("A01", "HG-100"),
+                _hardware_item_input("A01", "HG-100", item_quantity=2),
                 _hardware_item_input("A02", "HG-200"),
             ],
-            "po_drafts": [
-                {
-                    "po_number": "PO-1",
-                    "notes": None,
-                    "hardware_item_refs": [
-                        {"opening_number": "A01", "product_code": "HG-100", "hardware_category": "HINGE"},
-                    ],
-                    "line_item_aliases": [],
-                },
+            "po_drafts": [_po_draft(_ref("A01", "HG-100"))],
+        },
+    )
+    db_session.flush()
+    in_po_before = db_session.scalars(
+        select(HardwareItem).where(HardwareItem.project_id == project.id, HardwareItem.state == HardwareItemState.IN_PO)
+    ).all()
+    line_ids_before = {hi.po_line_item_id for hi in in_po_before}
+
+    # The new schedule still has A01/HG-100 (now 5 needed), drops A02, adds A03.
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01"), _opening_input("A03")],
+            "hardware_items": [
+                _hardware_item_input("A01", "HG-100", item_quantity=5),
+                _hardware_item_input("A03", "HG-999"),
             ],
+            "replace_schedule": True,
         },
     )
     db_session.flush()
 
-    # PO and its line items should exist
-    po_count_before = db_session.scalars(select(PurchaseOrder).where(PurchaseOrder.project_id == project.id)).all()
-    assert len(po_count_before) == 1
+    assert _rows(db_session, project.id) == {
+        ("A01", "HG-100", HardwareItemState.IN_PO): 2,
+        ("A01", "HG-100", HardwareItemState.AVAILABLE): 3,
+        ("A03", "HG-999", HardwareItemState.AVAILABLE): 1,
+    }
+    in_po_after = db_session.scalars(
+        select(HardwareItem).where(HardwareItem.project_id == project.id, HardwareItem.state == HardwareItemState.IN_PO)
+    ).all()
+    assert {hi.po_line_item_id for hi in in_po_after} == line_ids_before
 
-    # Re-upload a different schedule with replace_schedule=True
+    # PO is preserved (downstream aggregate untouched)
+    pos = db_session.scalars(select(PurchaseOrder).where(PurchaseOrder.project_id == project.id)).all()
+    assert len(pos) == 1
+
+    # A02 held nothing ordered and is gone from the new XML, so it is deleted.
+    openings = db_session.scalars(select(Opening).where(Opening.project_id == project.id)).all()
+    assert {o.opening_number for o in openings} == {"A01", "A03"}
+
+    status = _status(db_session, project.id, "HG-100")
+    assert status["required_quantity"] == 5
+    assert status["not_purchased"] == 3
+
+
+def test_replace_schedule_keeps_ordered_hardware_the_new_schedule_dropped(db_session):
+    """#1123 ruling: a new schedule does not undo an order. Ordered hardware with no match in the new
+    schedule stays IN_PO on its opening, and the opening stays for it. Hardware Status never counts
+    it as not purchased, and the per-opening reconcile still sees it as ordered, not NOT_COVERED."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=3)],
+            "po_drafts": [_po_draft(_ref("A01", "HG-100"))],
+        },
+    )
+    db_session.flush()
+
     import_repository.finalize_import_session(
         db_session,
         {
@@ -260,19 +398,24 @@ def test_replace_schedule_wipes_all_hardware_items(db_session):
     )
     db_session.flush()
 
-    items = db_session.scalars(select(HardwareItem).where(HardwareItem.project_id == project.id)).all()
-    assert len(items) == 1
-    assert items[0].product_code == "HG-999"
-    assert items[0].state == HardwareItemState.AVAILABLE
-
-    # PO is preserved (downstream aggregate untouched)
-    po_count_after = db_session.scalars(select(PurchaseOrder).where(PurchaseOrder.project_id == project.id)).all()
-    assert len(po_count_after) == 1
-
-    # Openings missing from new XML are deleted
+    assert _rows(db_session, project.id) == {
+        ("A01", "HG-100", HardwareItemState.IN_PO): 3,
+        ("A03", "HG-999", HardwareItemState.AVAILABLE): 1,
+    }
     openings = db_session.scalars(select(Opening).where(Opening.project_id == project.id)).all()
-    opening_numbers = {o.opening_number for o in openings}
-    assert opening_numbers == {"A03"}
+    assert {o.opening_number for o in openings} == {"A01", "A03"}
+
+    status = _status(db_session, project.id, "HG-100")
+    assert status["not_purchased"] == 0
+    assert status["po_drafted"] == 3
+
+    recon = import_repository.reconcile_schedule(
+        db_session,
+        project.id,
+        [{"opening_number": "A01", "hardware_category": "HINGE", "product_code": "HG-100", "quantity_needed": 3}],
+    )
+    assert all(r["status"] != "NOT_COVERED" for r in recon)
+    assert sum(r["quantity"] for r in recon) == 3
 
 
 def test_shop_assembly_request_created_pending(db_session):
@@ -285,20 +428,22 @@ def test_shop_assembly_request_created_pending(db_session):
 
     result = import_repository.finalize_import_session(
         db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [_opening_input("A01", building="B1", floor="F2", location="Lobby")],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_items": [
-                {
-                    "opening_number": "A01",
-                    "hardware_category": "HINGE",
-                    "product_code": "HG-100",
-                    "quantity": 2,
-                },
-            ],
-        },
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [_opening_input("A01", building="B1", floor="F2", location="Lobby")],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": [
+                    {
+                        "opening_number": "A01",
+                        "hardware_category": "HINGE",
+                        "product_code": "HG-100",
+                        "quantity": 2,
+                    },
+                ],
+            }
+        ),
         created_by="Dana Planner",
     )
     db_session.flush()

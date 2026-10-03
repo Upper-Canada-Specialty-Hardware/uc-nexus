@@ -14,7 +14,12 @@ import {
 import { Bell, BellOff, CheckCheck } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation } from '@apollo/client/react';
-import { GET_NOTIFICATIONS, MARK_NOTIFICATION_AS_READ } from '../graphql/shared';
+import {
+  GET_NOTIFICATIONS,
+  GET_NOTIFICATION_UNREAD_COUNT,
+  MARK_ALL_NOTIFICATIONS_AS_READ,
+  MARK_NOTIFICATION_AS_READ,
+} from '../graphql/shared';
 import { microLabelSx } from '../theme';
 import { parseServerDate } from '../utils/serverDate';
 
@@ -39,7 +44,7 @@ const NOTIFICATION_LINKS: Record<string, string> = {
 interface Notification {
   id: string;
   projectId: string;
-  recipientRole: string;
+  recipientRole: string | null;
   type: string;
   message: string;
   isRead: boolean;
@@ -73,18 +78,17 @@ export default function NotificationBell() {
     },
   );
 
-  const { data: unreadData, refetch: refetchUnread } = useQuery<{ notifications: Notification[] }>(
-    GET_NOTIFICATIONS,
-    {
-      variables: { unreadOnly: true, limit: 99 },
-      pollInterval: 30000,
-    },
+  // #1112: one scalar, so the badge is not capped at the length of a fetched list.
+  const { data: unreadData, refetch: refetchUnread } = useQuery<{ notificationUnreadCount: number }>(
+    GET_NOTIFICATION_UNREAD_COUNT,
+    { pollInterval: 30000 },
   );
 
   const [markAsRead] = useMutation(MARK_NOTIFICATION_AS_READ);
+  const [markAllAsRead] = useMutation(MARK_ALL_NOTIFICATIONS_AS_READ);
 
   const notifications = data?.notifications ?? [];
-  const unreadCount = unreadData?.notifications?.length ?? 0;
+  const unreadCount = unreadData?.notificationUnreadCount ?? 0;
   const open = Boolean(anchorEl);
 
   const handleClick = (event: React.MouseEvent<HTMLElement>) => {
@@ -104,10 +108,7 @@ export default function NotificationBell() {
             query: GET_NOTIFICATIONS,
             variables: { limit: 5 },
           },
-          {
-            query: GET_NOTIFICATIONS,
-            variables: { unreadOnly: true, limit: 99 },
-          },
+          { query: GET_NOTIFICATION_UNREAD_COUNT },
         ],
       });
     }
@@ -119,15 +120,12 @@ export default function NotificationBell() {
   };
 
   const handleMarkAllRead = async () => {
-    const unread = unreadData?.notifications ?? [];
-    if (unread.length === 0 || markingAll) return;
+    if (unreadCount === 0 || markingAll) return;
     setMarkingAll(true);
     try {
-      // Clear each off the existing single mutation, then reconcile both lists once at the end. The
-      // unreadOnly query is a filtered list Apollo will not re-derive from cache when a row's isRead
-      // flips, so it needs an explicit refetch to drop what we cleared and reset the badge - doing it
-      // per row (as the single-click path does) would refetch dozens of times.
-      await Promise.all(unread.map((n) => markAsRead({ variables: { id: n.id } })));
+      // One mutation clears the whole backlog (#1112), then the list and the count refetch once: the
+      // count is a scalar Apollo cannot re-derive from the rows it has cached.
+      await markAllAsRead();
       await Promise.all([refetchRecent(), refetchUnread()]);
     } catch {
       // A read that fails, or a refetch the browser aborts because this unmounted or a poll

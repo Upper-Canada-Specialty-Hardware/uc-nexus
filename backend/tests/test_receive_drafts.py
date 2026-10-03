@@ -388,7 +388,7 @@ def test_rejecting_returns_the_draft_to_its_author_with_the_reason(db_session):
     assert draft.rejection_reason == "Count is short a box"
     raised = _notifications(db_session, project.id, NotificationType.RECEIVE_DRAFT_REJECTED)
     assert len(raised) == 1
-    assert raised[0].recipient_role == AUTHOR, "a rejection is owed to the person who has to act on it"
+    assert raised[0].recipient_user_id == AUTHOR, "a rejection is owed to the person who has to act on it"
     assert "Count is short a box" in raised[0].message
 
 
@@ -1039,6 +1039,107 @@ def test_a_receive_record_with_no_remark_stores_null(db_session):
     )
 
     assert record.notes is None
+
+
+# --- over-receive (#1120) ---------------------------------------------------------------------------
+
+
+def _twice(li, quantity):
+    """The same PO line sent as two entries - each within pending on its own."""
+    entry = {"po_line_item_id": li.id, "quantity_received": quantity, "locations": []}
+    return [entry, dict(entry)]
+
+
+def test_a_line_sent_twice_is_checked_on_its_total_before_gp(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id, ordered=5)
+
+    with pytest.raises(ValidationError) as excinfo:
+        warehouse_repository.validate_receive_eligibility(db_session, po.id, AUTHOR_NAME, _twice(li, 3))
+
+    assert "(6) exceeds the 5 still pending" in excinfo.value.message
+
+
+def test_a_line_sent_twice_is_checked_on_its_total_at_persist(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id, ordered=5)
+
+    with pytest.raises(ValidationError):
+        warehouse_repository.create_receive(db_session, po.id, AUTHOR_NAME, _twice(li, 3))
+
+    db_session.refresh(li)
+    assert li.received_quantity == 0
+
+
+def test_a_line_sent_twice_within_pending_receives_both_and_closes_the_po(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id, ordered=6)
+
+    warehouse_repository.create_receive(db_session, po.id, AUTHOR_NAME, _twice(li, 3))
+
+    assert li.received_quantity == 6
+    assert po.status == POStatus.CLOSED
+
+
+def test_the_persist_reads_the_received_quantity_as_it_is_now(db_session):
+    """The lines are re-read under the lock, so a receive that landed after this session first loaded
+    them is counted - here simulated by moving received_quantity behind the session's back."""
+    from sqlalchemy import update
+
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id, ordered=5)
+    assert li.received_quantity == 0
+    db_session.execute(
+        update(POLineItem)
+        .where(POLineItem.id == li.id)
+        .values(received_quantity=4)
+        .execution_options(synchronize_session=False)
+    )
+
+    with pytest.raises(ValidationError):
+        warehouse_repository.create_receive(
+            db_session, po.id, AUTHOR_NAME, [{"po_line_item_id": li.id, "quantity_received": 2, "locations": []}]
+        )
+
+
+def test_a_po_closes_when_every_line_is_at_or_above_ordered(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id, ordered=5)
+    li.received_quantity = 6  # an over-received line from before the guard
+    other = POLineItem(
+        id=uuid.uuid4(),
+        po_id=po.id,
+        hardware_category="LOCK",
+        product_code="LK-200",
+        ordered_quantity=2,
+        received_quantity=0,
+        unit_cost=Decimal("1.00"),
+        gp_line_ord=32768,
+    )
+    db_session.add(other)
+    db_session.flush()
+
+    warehouse_repository.create_receive(
+        db_session, po.id, AUTHOR_NAME, [{"po_line_item_id": other.id, "quantity_received": 2, "locations": []}]
+    )
+
+    assert po.status == POStatus.CLOSED
+
+
+def test_a_draft_is_refused_at_claim_when_a_receive_landed_since_it_was_written(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id, ordered=5)
+    draft = _draft(db_session, po, li, 3)
+    # Another receive books 3 of the 5 after the draft was written.
+    warehouse_repository.create_receive(
+        db_session, po.id, AUTHOR_NAME, [{"po_line_item_id": li.id, "quantity_received": 3, "locations": []}]
+    )
+
+    with pytest.raises(AppError) as excinfo:
+        warehouse_repository.claim_for_approval(db_session, draft.id, MANAGER, MANAGER_NAME, "key-late")
+
+    assert excinfo.value.code == "CONFLICT"
+    assert "only 2 units are still outstanding" in excinfo.value.message
 
 
 def test_approving_copies_the_drafts_remark_onto_the_receive(committed, monkeypatch, approve_env):

@@ -51,6 +51,7 @@ from .inputs import (
     UpdateReceiveDraftInput,
     UpdateWarehouseInput,
 )
+from .limits import cap_limit, cap_offset
 from .types import (
     ApproveReceiveDraftResult,
     AuditLogEntry,
@@ -473,8 +474,8 @@ class WarehouseQueries:
                 )
                 for r in warehouse_repository.get_all_receives(
                     session,
-                    limit=limit,
-                    offset=offset,
+                    limit=cap_limit(limit),
+                    offset=cap_offset(offset),
                     project_id=uuid.UUID(str(project_id)) if project_id else None,
                     po_search=po_search,
                     company=tenant_scope(info),
@@ -564,7 +565,9 @@ class WarehouseQueries:
     @strawberry.field
     def recent_receive_records(self, info: strawberry.Info, limit: int = 10) -> list[RecentReceiveRecord]:
         with SessionLocal() as session:
-            rows = warehouse_repository.get_recent_receive_records(session, limit, company=tenant_scope(info))
+            rows = warehouse_repository.get_recent_receive_records(
+                session, cap_limit(limit), company=tenant_scope(info)
+            )
             return [
                 RecentReceiveRecord(
                     receive_record=receive_record_to_type(rr),
@@ -842,7 +845,7 @@ class WarehouseQueries:
                 aisle,
                 row,
                 bay,
-                limit=limit,
+                limit=cap_limit(limit),
                 warehouse_id=uuid.UUID(str(warehouse_id)) if warehouse_id else None,
                 company=tenant_scope(info),
             )
@@ -924,8 +927,8 @@ class WarehouseQueries:
                 entity_id=uuid.UUID(str(entity_id)) if entity_id else None,
                 entity_type=entity_type.value if entity_type else None,
                 project_id=uuid.UUID(str(project_id)) if project_id else None,
-                limit=limit,
-                offset=offset,
+                limit=cap_limit(limit),
+                offset=cap_offset(offset),
                 company=tenant_scope(info),
             )
             return [

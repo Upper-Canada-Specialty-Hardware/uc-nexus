@@ -39,7 +39,7 @@ There are two separate enum files: `app/models/enums.py` (DB-level Python enums)
 src/main.tsx          → App entry (Apollo, MUI theme, context providers)
 src/App.tsx           → Routes, lazy-loaded modules
 src/modules/          → Feature modules (import, po, warehouse, shop-assembly, shipping, admin)
-src/components/       → Shared UI (DataTable, Modal, Wizard, Toast, etc.)
+src/components/       → Shared UI (DataTable, Modal, Toast, etc.)
 src/contexts/         → React contexts (Role, Project, Wizard, Cart)
 src/graphql/          → queries.ts + mutations.ts (Apollo gql documents)
 src/hooks/            → Custom hooks (useHardwareScheduleParser)
@@ -144,6 +144,13 @@ Two laws govern every screen. They outrank visual preference and apply to all UI
 2. **No horizontal scroll, ever - not on the page, and not inside a table or grid.** The viewport never scrolls sideways to reveal primary content. `html, body { overflow-x: hidden }` in `frontend/src/index.css` is the enforced guard - it clips rather than scrolls, so a layout that overflows gets a clipped (invisible) control, which is a bug, not an acceptable state. Layouts MUST fit. Tables and grids fit their width too: no `overflow-x` scroll box around a table, no `minWidth` that pushes one past its container. Where columns compete for width, make them user-resizable with the shared fit-columns piece - `useFitColumns` in `frontend/src/components/fitColumns.ts` (a CSS grid or a `table-layout: fixed` table), `FitTable` in `frontend/src/components/FitTable.tsx` (an outlined MUI table), and `ColumnResizeHandle` for the header edge. An MUI data grid takes `useGridColumnFit` in `frontend/src/components/useGridColumnFit.ts` instead (spread its `gridProps` onto the `DataGrid` and pass `setContainer` as its `ref`; `DataTable` already does, given a `storageKey`): columns flex to the grid's width down to their minimums, resize with the grid's own header-edge drag, and never scroll sideways. Each column gets a minimum that keeps its value whole; the others give way down to theirs, text columns ellipsize with the full value on hover, and widths are remembered per person. Only a genuinely non-tabular strip (a horizontal carousel) may scroll sideways inside its own bounds. Put `minWidth: 0` on flex/grid children so they shrink to fit instead of forcing overflow - a missing `minWidth: 0` is the most common cause of accidental page-width blowout.
 
 Both laws are read every session and weighed on review.
+
+## Ruled Business Logic
+
+Some behaviour that looks like a gap has been ruled intentional by the product owner. Each such spot carries an `INTENTIONAL BUSINESS LOGIC - DO NOT CHANGE` comment at the code, naming the ruling and its issue. Before reporting or changing behaviour in an audit or review, search for that marker; a marked behaviour is not a finding. Current rulings (#1107 / #1142):
+
+- Shipment returns are allowed from a picked-up (in-transit) shipment (`create_shipment_return` in `backend/app/repositories/shipping_repository.py`).
+- PO document settings are one row shared by every GP company (`backend/app/repositories/po_document_settings_repository.py`).
 
 ## Testing
 

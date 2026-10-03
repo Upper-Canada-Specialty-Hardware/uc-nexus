@@ -614,9 +614,10 @@ def mark_purchased_rows(
 def reapply_migration_marks(session: Session, project_id: uuid.UUID) -> int:
     """Re-mark a project's schedule rows from the recorded migration coverage, after a re-import.
 
-    A `replace_schedule` finalize wipes every HardwareItem - the IN_PO marking included - and
-    regenerates from the new input as AVAILABLE, so without this the project reads as never-purchased
-    the moment its schedule is re-uploaded. For each recorded (category, code, PO line) target N,
+    A `replace_schedule` finalize used to wipe every HardwareItem - the IN_PO marking included - and
+    regenerate from the new input as AVAILABLE, so without this the project read as never-purchased
+    the moment its schedule was re-uploaded. Since #1123 IN_PO rows survive every finalize, so this is
+    normally a no-op backstop. For each recorded (category, code, PO line) target N,
     whatever IN_PO rows carrying that same line survived count first (a normal re-import preserves
     them), and the remainder is marked greedily by the same rule the migration used. A no-migration
     project has no marks and pays one indexed SELECT.

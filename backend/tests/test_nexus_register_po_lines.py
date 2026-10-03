@@ -261,6 +261,79 @@ def test_a_registered_line_accepts_the_same_identity_again(db_session, project):
     assert _tied_units(db_session, line) == 3
 
 
+def _schedule_rows(session, project, sizes: list[int]) -> list[HardwareItem]:
+    """One AVAILABLE schedule row per opening, of the given sizes."""
+    rows = []
+    for n, size in enumerate(sizes):
+        opening = Opening(id=uuid.uuid4(), project_id=project.id, opening_number=f"{n + 1:03d}")
+        session.add(opening)
+        session.flush()
+        hi = HardwareItem(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            opening_id=opening.id,
+            hardware_category=CATEGORY,
+            product_code=CODE,
+            item_quantity=size,
+            leaf=1,
+            state=HardwareItemState.AVAILABLE,
+        )
+        session.add(hi)
+        rows.append(hi)
+    session.flush()
+    return rows
+
+
+def test_the_row_that_would_overshoot_is_split_so_the_exact_quantity_ties(db_session, project):
+    # #1128: rows of 3 and a line wanting 10. Whole rows only tied 9 and left the last unit untieable.
+    rows = _schedule_rows(db_session, project, [3, 3, 3, 3])
+    po, line = _mirrored_po(db_session, project=project, ordered=10)
+
+    _po, tied = po_repository.nexus_register_po_lines(db_session, po.id, [_entry(line, tie_quantity=10)])
+    db_session.flush()
+
+    assert tied == 10
+    assert _tied_units(db_session, line) == 10
+    # The fourth opening's row gave 1 to the line; the other 2 stay behind, AVAILABLE, on that opening.
+    leftover = db_session.scalars(
+        select(HardwareItem).where(
+            HardwareItem.opening_id == rows[3].opening_id, HardwareItem.state == HardwareItemState.AVAILABLE
+        )
+    ).all()
+    assert [(hi.item_quantity, hi.leaf, hi.po_line_item_id) for hi in leftover] == [(2, 1, None)]
+    assert rows[3].item_quantity == 1 and rows[3].state == HardwareItemState.IN_PO
+    total = sum(
+        hi.item_quantity
+        for hi in db_session.scalars(select(HardwareItem).where(HardwareItem.project_id == project.id)).all()
+    )
+    assert total == 12
+
+
+def test_a_registered_line_can_be_topped_up_to_what_is_untied_and_no_further(db_session, project):
+    _schedule_rows(db_session, project, [1] * 10)
+    po, line = _mirrored_po(db_session, project=project, ordered=10)
+    po_repository.nexus_register_po_lines(db_session, po.id, [_entry(line, tie_quantity=9)])
+
+    with pytest.raises(ValidationError) as exc:
+        po_repository.nexus_register_po_lines(db_session, po.id, [_entry(line, tie_quantity=2)])
+    assert "At most 1" in str(exc.value)
+
+    _po, tied = po_repository.nexus_register_po_lines(db_session, po.id, [_entry(line, tie_quantity=1)])
+    assert tied == 1
+    assert _tied_units(db_session, line) == 10
+
+
+def test_tied_units_by_line_sums_each_line_in_one_read(db_session, project):
+    _schedule_rows(db_session, project, [2, 2, 2])
+    po, line = _mirrored_po(db_session, project=project, ordered=6)
+    po_repository.nexus_register_po_lines(db_session, po.id, [_entry(line, tie_quantity=5)])
+    db_session.flush()
+
+    other = uuid.uuid4()
+    assert po_repository.tied_units_by_line(db_session, [line.id, other]) == {line.id: 5}
+    assert po_repository.tied_units_by_line(db_session, []) == {}
+
+
 # --- what the schema publishes -----------------------------------------------------------------------
 
 
@@ -342,3 +415,20 @@ def test_the_mutation_registers_and_reports_what_it_tied(signed_in, db_session, 
     assert payload["purchaseOrder"]["lineItems"] == [
         {"hardwareCategory": CATEGORY, "productCode": CODE, "nexusRegistered": True}
     ]
+
+
+_TIED_QUERY = """
+query($poId: ID!) { poLineTiedQuantities(poId: $poId) { poLineItemId tiedQuantity } }
+"""
+
+
+def test_the_tied_quantities_query_reports_each_tied_line(signed_in, db_session, project):
+    _schedule_units(db_session, project, quantity=5)
+    po, line = _mirrored_po(db_session, project=project, ordered=5)
+    po_repository.nexus_register_po_lines(db_session, po.id, [_entry(line, tie_quantity=4)])
+    db_session.flush()
+
+    result = _execute(_TIED_QUERY, {"poId": str(po.id)})
+
+    assert result.errors is None, result.errors
+    assert result.data["poLineTiedQuantities"] == [{"poLineItemId": str(line.id), "tiedQuantity": 4}]
