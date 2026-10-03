@@ -207,6 +207,17 @@ export const SYNC_GP_POS = gql`
 // becomes a NEXUS REGISTERED LINE and the GP sync stops overwriting those two fields. On a PO with a
 // project this also ties the schedule's hardware to the lines; tiedUnits is how many units that came
 // to, so a request that matched nothing available reads as the no-op it was.
+// #1128: schedule units already tied to each line, so a registered line with untied outstanding
+// units stays open in the registration panel. Lines with nothing tied are absent.
+export const GET_PO_LINE_TIED_QUANTITIES = gql`
+  query GetPoLineTiedQuantities($poId: ID!) {
+    poLineTiedQuantities(poId: $poId) {
+      poLineItemId
+      tiedQuantity
+    }
+  }
+`;
+
 export const NEXUS_REGISTER_PO_LINES = gql`
   mutation NexusRegisterPoLines($input: NexusRegisterPoLinesInput!) {
     nexusRegisterPoLines(input: $input) {
