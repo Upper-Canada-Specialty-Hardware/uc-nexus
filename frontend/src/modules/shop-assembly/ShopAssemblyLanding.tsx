@@ -1,4 +1,4 @@
-import { Box, Button, Typography } from '@mui/material';
+import { Alert, Box, Button, Typography } from '@mui/material';
 import { ClipboardCheck, ClipboardPlus, Truck, ChevronRight, CircleDollarSign } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
@@ -31,7 +31,7 @@ export default function ShopAssemblyLanding() {
   // here as well as on the Tenant Owner landing - but a plain bench user must not see it.
   const { ownsTenant, hasRole } = useIdentity();
   const showInventoryValue = ownsTenant || hasRole('Shop Assembly Manager');
-  const { data, loading } = useQuery<ShopAssemblyStatsData>(GET_SHOP_ASSEMBLY_STATS, {
+  const { data, loading, error } = useQuery<ShopAssemblyStatsData>(GET_SHOP_ASSEMBLY_STATS, {
     fetchPolicy: 'cache-and-network',
   });
   // Ids and rungs only. Deliberately not the requests page's own document - that one carries every
@@ -40,7 +40,7 @@ export default function ShopAssemblyLanding() {
   // else never reached the count, so it disagreed with the Pending tab it links to. The no-race rule
   // this replaced dates from when the landing ran that tab's own query; this document only writes ids
   // and rungs, and nextFetchPolicy keeps it from re-firing on every cache write during the hand-off.
-  const { data: pendingData } = useQuery<{ shopAssemblyRequests: LandingRequest[] }>(
+  const { data: pendingData, error: pendingError } = useQuery<{ shopAssemblyRequests: LandingRequest[] }>(
     GET_SHOP_ASSEMBLY_REQUEST_STAGES,
     { variables: { status: 'PENDING' }, fetchPolicy: 'cache-and-network', nextFetchPolicy: 'cache-first' },
   );
@@ -79,6 +79,12 @@ export default function ShopAssemblyLanding() {
           column keeps them sized to their figures rather than stretching a two-digit count across a
           1400px viewport - which is the space law's failure case, not a smaller warehouse dashboard. */}
       <Box sx={{ maxWidth: COLUMN }}>
+        {/* A failed read says so instead of leaving the gauges silently missing. */}
+        {((error && !s) || (pendingError && waiting === null)) && (
+          <Alert severity="error" sx={{ mb: 2 }}>
+            Error loading shop assembly stats: {(error ?? pendingError)?.message}
+          </Alert>
+        )}
         <StaggerList count={2} style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
           {loading && !s ? (
             <StaggerItem style={{ flex: '1 1 0', minWidth: 160 }}>

@@ -300,7 +300,9 @@ def find_reservation_holder(session: Session, pr: PullRequestModel) -> tuple[Res
 # confirmed short and the un-picked remainder is still owed.
 
 
-def start_pull_request_pick(session: Session, pr_id: uuid.UUID, started_by: str) -> PullRequestModel:
+def start_pull_request_pick(
+    session: Session, pr_id: uuid.UUID, started_by: str, started_by_user_id: str | None = None
+) -> PullRequestModel:
     """Claim a PENDING pull and open it for picking (#367). **Nothing moves in inventory.**
 
     This is what `approve_pull_request` used to be, minus everything that touched stock: no
@@ -333,6 +335,9 @@ def start_pull_request_pick(session: Session, pr_id: uuid.UUID, started_by: str)
 
     pr.status = PullRequestStatus.IN_PROGRESS
     pr.assigned_to = started_by
+    # #1356: the id is what the pick page compares to decide who the pull is locked to; the name is
+    # only shown.
+    pr.assigned_to_user_id = started_by_user_id
     pr.approved_at = datetime.utcnow()
     session.flush()
     return pr
@@ -1312,10 +1317,15 @@ def _return_units_to_project_inventory(
         .order_by(InventoryLocationModel.received_at.desc())
     ).first()
     if il is None:
+        from app.models.project import Project as ProjectModel
+
         from .inventory import resolve_project_combo_cost
 
         now = datetime.utcnow()
-        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
+        # Scoped to the project's own company (#1253): unscoped, the lookup picks the oldest primary
+        # building across every tenant, and the restored row would sit in another company's warehouse.
+        company = session.scalar(select(ProjectModel.company).where(ProjectModel.id == project_id))
+        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session, company=company)
         # Every prior row for the combo is gone (that is why this one exists), so the cost is
         # re-resolved from the schedule. It is also the anchor stock row's price key (#942), so the
         # anchor is a pool row at the restored units' own price, never one at some other price.

@@ -151,7 +151,7 @@ def test_dismiss_and_reject_lock_the_request(db_session, locks_taken, action):
             db_session, sar.id, None, dismissed_by="manager", reason=None
         )
     else:
-        shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "manager", None)
+        shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "manager", "not needed")
 
     assert locks_taken[:1] == ["ShopAssemblyRequest"]
 
@@ -262,10 +262,62 @@ def test_a_decision_made_while_waiting_on_the_lock_is_met_as_a_state_error(db_se
     _stock(db_session, project)
     sar = _finalize(db_session, project, [{**_HINGE, "quantity": 2}])
     lines = batch_lines(db_session, sar.id)
-    shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "first manager", None)
+    shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "first manager", "not needed")
 
     with pytest.raises(InvalidStateTransitionError):
         shop_assembly_repository.create_shop_assembly_batch(db_session, sar.id, lines, created_by="second manager")
+
+
+def test_a_rejection_reason_longer_than_the_column_is_a_field_error(db_session):
+    """#1208: refused cleanly, with the request left pending, instead of overflowing at flush."""
+    project = _project(db_session)
+    sar = _finalize(db_session, project, [{**_HINGE, "quantity": 2}])
+
+    with pytest.raises(ValidationError) as exc:
+        shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "manager", "x" * 501)
+    assert exc.value.field == "reason"
+    db_session.refresh(sar)
+    assert sar.status.value == "PENDING"
+
+    shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "manager", "  " + "x" * 500 + "  ")
+    db_session.refresh(sar)
+    assert sar.status.value == "REJECTED"
+    assert sar.rejection_reason == "x" * 500
+
+
+@pytest.mark.parametrize("reason", [None, "", "   "])
+def test_a_rejection_needs_a_reason(db_session, reason):
+    """#1242: as a shipping rejection does (#972), the request stays pending without one."""
+    sar = _finalize(db_session, _project(db_session), [{**_HINGE, "quantity": 2}])
+
+    with pytest.raises(ValidationError) as exc:
+        shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "manager", reason)
+    assert exc.value.field == "reason"
+    db_session.refresh(sar)
+    assert sar.status.value == "PENDING"
+
+
+def test_a_rejection_tells_the_shop_why(db_session):
+    """#1242: the shop assembly audience gets a notice carrying the request number and the reason."""
+    from sqlalchemy import select
+
+    from app.models.enums import NotificationType
+    from app.models.notification import Notification
+    from app.services import notification_service
+
+    sar = _finalize(db_session, _project(db_session), [{**_HINGE, "quantity": 2}])
+    shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "manager", "frames not ready")
+
+    notices = db_session.scalars(
+        select(Notification).where(Notification.type == NotificationType.SHOP_ASSEMBLY_REQUEST_REJECTED)
+    ).all()
+    assert len(notices) == 1
+    notice = notices[0]
+    assert notice.project_id == sar.project_id
+    assert notice.recipient_role == notification_service.SHOP_ASSEMBLY_RECIPIENT_ROLE
+    assert notice.recipient_user_id is None
+    assert sar.request_number in notice.message
+    assert "frames not ready" in notice.message
 
 
 def test_a_second_batch_takes_the_next_sequence(db_session):

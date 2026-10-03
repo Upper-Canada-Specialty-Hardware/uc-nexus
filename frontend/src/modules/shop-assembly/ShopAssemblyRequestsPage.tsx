@@ -33,6 +33,7 @@ import {
 } from '../../graphql/shop-assembly';
 import { RESERVATION_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import ConfirmDialog from '../../components/ConfirmDialog';
+import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import PageHeader from '../../components/PageHeader';
@@ -119,6 +120,8 @@ export default function ShopAssemblyRequestsPage() {
     | { kind: 'discard'; batchId: string; batchNumber: string }
     | null
   >(null);
+  // #1242: a rejection says why, and the shop is told - the same dialog shipping's reject uses (#972).
+  const [rejectReason, setRejectReason] = useState('');
   const { showToast } = useToast();
   const { ownsTenant, hasRole } = useIdentity();
   // The four writes are the Shop Assembly Manager's, with the TENANT OWNER beside them - the same
@@ -200,11 +203,19 @@ export default function ShopAssemblyRequestsPage() {
         variables: { requestId: pending.requestId, openingNumbers: null, reason: dismissReason.trim() || null },
       });
     } else if (pending.kind === 'reject') {
-      rejectRequest({ variables: { id: pending.requestId, reason: null } });
+      const reason = rejectReason.trim();
+      if (!reason) return;
+      setRejectReason('');
+      rejectRequest({ variables: { id: pending.requestId, reason } });
     } else {
       discardBatch({ variables: { batchId: pending.batchId } });
     }
-  }, [confirm, createBatch, dismissOpenings, rejectRequest, discardBatch, dismissReason]);
+  }, [confirm, rejectReason, createBatch, dismissOpenings, rejectRequest, discardBatch, dismissReason]);
+
+  const closeReject = () => {
+    setConfirm(null);
+    setRejectReason('');
+  };
 
   const confirmCopy = useMemo(() => {
     if (!confirm) return { title: '', message: '', label: 'Confirm', color: 'primary' as const };
@@ -546,8 +557,38 @@ export default function ShopAssemblyRequestsPage() {
         </DialogActions>
       </Dialog>
 
+      <Modal
+        open={confirm?.kind === 'reject'}
+        title={confirmCopy.title}
+        onClose={closeReject}
+        maxWidth="sm"
+        actions={
+          <>
+            <Button onClick={closeReject}>Keep request</Button>
+            <Button variant="contained" color="error" disabled={!rejectReason.trim()} onClick={runConfirmed}>
+              {confirmCopy.label}
+            </Button>
+          </>
+        }
+      >
+        <Stack spacing={2}>
+          <Typography variant="body2">{confirmCopy.message} The shop is told, with your reason.</Typography>
+          <TextField
+            label="Reason"
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            required
+            fullWidth
+            multiline
+            minRows={2}
+            autoFocus
+            slotProps={{ htmlInput: { maxLength: 500 } }}
+          />
+        </Stack>
+      </Modal>
+
       <ConfirmDialog
-        open={confirm !== null && confirm.kind !== 'dismiss'}
+        open={confirm !== null && confirm.kind !== 'dismiss' && confirm.kind !== 'reject'}
         title={confirmCopy.title}
         message={confirmCopy.message}
         confirmLabel={confirmCopy.label}

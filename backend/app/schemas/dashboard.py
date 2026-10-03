@@ -59,9 +59,13 @@ class DashboardQueries:
         comparing, the same way `caller_company` normalizes it, so a company saved with different
         casing cannot land on the wrong side of the count."""
         company = tenant_scope(info)
+        # The user count follows the users list's own scope (#1357): a UC NEXUS ADMIN's list holds
+        # every company's accounts whatever the switcher names, so the card counts the same set the
+        # page it links to shows. The hardware and opening counts stay with the acting company.
+        user_company = tenant_scope(info, cross_tenant=True)
         users = user_roster(info.context)
-        if company is not None:
-            users = [u for u in users if user_repository.normalize_company(u.get("company")) == company]
+        if user_company is not None:
+            users = [u for u in users if user_repository.normalize_company(u.get("company")) == user_company]
         with SessionLocal() as session:
             d = dashboard_repository.get_admin_stats(session, user_count=len(users), company=company)
             return AdminStats(

@@ -33,9 +33,11 @@ interface RowState {
   category: string;
   code: string;
   tieQuantity: string;
+  /** Whether somebody typed the tie quantity. Until then it follows what the row can tie (#1372). */
+  tieEdited: boolean;
 }
 
-const BLANK_ROW: RowState = { productKey: '', category: '', code: '', tieQuantity: '0' };
+const BLANK_ROW: RowState = { productKey: '', category: '', code: '', tieQuantity: '0', tieEdited: false };
 
 /** #909: the space each grid cell keeps on its right, standing in for a grid gap. */
 const CELL_GAP_PX = 8;
@@ -83,9 +85,11 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
     return map;
   }, [tiedData]);
 
-  /** What a line still has coming with nothing tied to it. An unregistered line has no tie yet. */
+  /** What a line still has coming with nothing tied to it. An unregistered line has no tie yet. A tied
+   *  row keeps its tie once its units arrive, so received and tied overlap: the line's untied
+   *  outstanding is ordered less the larger of the two, not less both (#1371). */
   const untiedOf = useCallback(
-    (li: POLine) => Math.max(outstandingOf(li) - (tiedByLine.get(li.id) ?? 0), 0),
+    (li: POLine) => Math.max(li.orderedQuantity - Math.max(li.receivedQuantity, tiedByLine.get(li.id) ?? 0), 0),
     [tiedByLine],
   );
 
@@ -108,13 +112,12 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
   // Only what has actually been edited. Everything else falls through to `suggested` below.
   const [rows, setRows] = useState<Record<string, RowState>>({});
 
-  // What each row says before anybody touches it: the suggested product, and a tie quantity of
-  // everything that suggestion can cover. Derived rather than seeded into state, so the suggestion
-  // simply appears when the schedule products arrive, and an edit always wins over it.
+  // What each row says before anybody touches it: the suggested product. Its tie quantity follows
+  // `allocation` below until somebody types one. Derived rather than seeded into state, so the
+  // suggestion simply appears when the schedule products arrive, and an edit always wins over it.
   const suggested = useMemo(() => {
     const map: Record<string, RowState> = {};
     for (const li of openLines) {
-      const outstanding = untiedOf(li);
       // On an unregistered line both fields still hold GP's own: the item number in
       // hardwareCategory, the item description in productCode. A registered line already names its
       // schedule product.
@@ -123,15 +126,10 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
         : li.nexusRegistered
           ? (productsByKey.get(productKeyOf(li)) ?? null)
           : suggestScheduleProduct(li.productCode, products);
-      const cap = suggestion ? Math.min(outstanding, suggestion.availableQuantity) : outstanding;
-      map[li.id] = {
-        ...BLANK_ROW,
-        productKey: suggestion ? productKeyOf(suggestion) : '',
-        tieQuantity: String(cap),
-      };
+      map[li.id] = { ...BLANK_ROW, productKey: suggestion ? productKeyOf(suggestion) : '' };
     }
     return map;
-  }, [openLines, isProjectPo, products, productsByKey, untiedOf]);
+  }, [openLines, isProjectPo, products, productsByKey]);
 
   const [registerLines, { loading }] = useMutation<{
     nexusRegisterPoLines: { tiedUnits: number; purchaseOrder: { id: string } };
@@ -151,16 +149,29 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
     [suggested],
   );
 
-  /** The most a line may tie: no more than it still has coming, and no more of the schedule than is
-   *  still unpurchased. */
-  const capFor = useCallback(
-    (li: POLine, row: RowState) => {
+  /** Each open line's cap and the units it will tie. The cap is no more than the line still has coming,
+   *  and no more of the schedule than is still unpurchased - shared, in row order, among the rows that
+   *  picked the same product (#1372), so the caps of two rows for one product add up to what is
+   *  available rather than each claiming all of it. An untyped quantity is the whole cap. */
+  const allocation = useMemo(() => {
+    const used = new Map<string, number>();
+    const map = new Map<string, { cap: number; tie: number }>();
+    for (const li of openLines) {
+      const row = rowFor(li.id);
       const picked = productsByKey.get(row.productKey);
-      if (!picked) return 0;
-      return Math.min(untiedOf(li), picked.availableQuantity);
-    },
-    [productsByKey, untiedOf],
-  );
+      if (!picked) {
+        map.set(li.id, { cap: 0, tie: 0 });
+        continue;
+      }
+      const taken = used.get(row.productKey) ?? 0;
+      const cap = Math.min(untiedOf(li), Math.max(picked.availableQuantity - taken, 0));
+      const typed = parseInt(row.tieQuantity, 10);
+      const tie = !row.tieEdited ? cap : Number.isNaN(typed) ? 0 : Math.max(0, Math.min(typed, cap));
+      used.set(row.productKey, taken + tie);
+      map.set(li.id, { cap, tie });
+    }
+    return map;
+  }, [openLines, rowFor, productsByKey, untiedOf]);
 
   /** The lines to send: the ones somebody has actually named a product for. */
   const pendingLines = useMemo(
@@ -171,9 +182,7 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
           if (isProjectPo) {
             const picked = productsByKey.get(row.productKey);
             if (!picked) return null;
-            const cap = Math.min(untiedOf(li), picked.availableQuantity);
-            const typed = parseInt(row.tieQuantity, 10);
-            const tie = Number.isNaN(typed) ? 0 : Math.max(0, Math.min(typed, cap));
+            const tie = allocation.get(li.id)?.tie ?? 0;
             // A registered line is only here to tie more; re-sending it with nothing to tie is a no-op.
             if (li.nexusRegistered && tie === 0) return null;
             return {
@@ -190,7 +199,7 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
           return { poLineItemId: li.id, hardwareCategory: category, productCode: code, tieQuantity: 0 };
         })
         .filter((line): line is NonNullable<typeof line> => line !== null),
-    [openLines, rowFor, isProjectPo, productsByKey, untiedOf],
+    [openLines, rowFor, isProjectPo, productsByKey, allocation],
   );
 
   const handleSave = async () => {
@@ -299,15 +308,15 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
         {po.lineItems.map((li) => {
           const row = rowFor(li.id);
           const outstanding = outstandingOf(li);
-          const cap = capFor(li, row);
+          const { cap, tie } = allocation.get(li.id) ?? { cap: 0, tie: 0 };
           const toppable = isToppable(li);
           const tieBox = (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, minWidth: 0 }}>
               <TextField
                 size="small"
                 type="number"
-                value={row.tieQuantity}
-                onChange={(e) => setRow(li.id, { tieQuantity: e.target.value })}
+                value={row.tieEdited ? row.tieQuantity : String(tie)}
+                onChange={(e) => setRow(li.id, { tieQuantity: e.target.value, tieEdited: true })}
                 disabled={!row.productKey}
                 slotProps={{ htmlInput: { min: 0, max: cap, 'aria-label': 'Tie quantity' } }}
                 // Gives way before the note does when the column is scaled down (#909).
@@ -369,12 +378,8 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
                     id={`nexus-registration-product-${li.id}`}
                     size="small"
                     value={row.productKey}
-                    onChange={(e) => {
-                      const key = e.target.value;
-                      const picked = productsByKey.get(key);
-                      const nextCap = picked ? Math.min(outstanding, picked.availableQuantity) : outstanding;
-                      setRow(li.id, { productKey: key, tieQuantity: String(nextCap) });
-                    }}
+                    // A new product starts from everything the row can tie of it (#1372).
+                    onChange={(e) => setRow(li.id, { productKey: e.target.value, tieEdited: false })}
                     // Native, so the row stays one line high and the picker reads as the column it
                     // sits in. The column heading is its visible label; the select carries its own.
                     slotProps={{ select: { native: true, inputProps: { 'aria-label': 'Product' } } }}
