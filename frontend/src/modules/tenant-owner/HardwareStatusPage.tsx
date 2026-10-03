@@ -10,14 +10,13 @@ import {
 import { Search } from 'lucide-react';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
-import { GET_HARDWARE_STATUS_BY_PRODUCT } from '../../graphql/admin';
-import { GET_PROJECTS } from '../../graphql/shared';
+import { GET_HARDWARE_STATUS_BY_PRODUCT, GET_REPORT_PROJECT_OPTIONS } from '../../graphql/admin';
 import { infoHeader } from '../../components/InfoColumnHeader';
 import PageHeader from '../../components/PageHeader';
 import { monoSx } from '../../theme';
 import { FadeIn, Reveal, useHadLoading } from '../../motion';
 import { useGridColumnFit } from '../../components/useGridColumnFit';
-import type { Project } from '../../types/project';
+import { liveFirst, reportProjectLabel, type ReportProject } from './reportProjects';
 
 interface StatusRow {
   hardwareCategory: string;
@@ -142,10 +141,10 @@ interface ProjectOption {
   hasSchedule: boolean;
 }
 
-function projectToOption(p: Project): ProjectOption {
+function projectToOption(p: ReportProject): ProjectOption {
   return {
     id: p.id,
-    label: p.description || p.projectId,
+    label: reportProjectLabel(p),
     projectId: p.projectId,
     hasSchedule: p.openingCount > 0,
   };
@@ -159,10 +158,10 @@ export default function HardwareStatusPage() {
     data: projectsData,
     loading: projectsLoading,
     error: projectsError,
-  } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
+  } = useQuery<{ adminProjects: ReportProject[] }>(GET_REPORT_PROJECT_OPTIONS);
 
   const options = useMemo<ProjectOption[]>(
-    () => (projectsData?.projects ?? []).map(projectToOption),
+    () => liveFirst(projectsData?.adminProjects ?? []).map(projectToOption),
     [projectsData],
   );
 
