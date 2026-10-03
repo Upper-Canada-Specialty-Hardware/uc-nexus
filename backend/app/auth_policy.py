@@ -302,7 +302,6 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     # board - is the SHIPPING MANAGER's (#729). Raising one and confirming a truck are not: anybody
     # in the company may ask for a load and anybody loading it records what left.
     "acceptShippingOutRequest": SHIPPING_MANAGERS,
-    "confirmShipment": SIGNED_IN,
     "createShipmentReturn": SIGNED_IN,
     # Raising and correcting a request from the Shipping module (#451). SIGNED_IN: the same people
     # work this board, and both are gated on request state, not role.
@@ -310,7 +309,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "editShippingOutRequest": SIGNED_IN,
     "rejectShippingOutRequest": SHIPPING_MANAGERS,
     "reopenShippingOutRequest": SHIPPING_MANAGERS,
-    # The Delivery Request lifecycle (#447), SIGNED_IN for the same reason confirmShipment is: the
+    # The Delivery Request lifecycle (#447), SIGNED_IN for the same reason the confirm is: the
     # shipping department, the warehouse and the office all work the same Shipments page, so no one
     # role's module owns the callers. The lifecycle mutations move nothing - they record where the
     # truck got to - and the edit is refused on state rather than on role.
