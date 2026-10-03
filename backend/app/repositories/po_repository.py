@@ -5,7 +5,7 @@ import binascii
 import logging
 import re
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -1303,6 +1303,11 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
             "This PO's registration is queued for GP, so it cannot be cancelled until it posts. "
             "Once it is in GP, cancel it there."
         )
+    # #1274: the same goes for a registration on its way to GP right now.
+    if _registration_claim_is_live(po, datetime.utcnow()):
+        raise InvalidStateTransitionError(
+            "This PO is being registered in GP right now, so it cannot be cancelled. Once it is in GP, cancel it there."
+        )
 
     po.status = POStatus.CANCELLED
     po.deleted_at = datetime.utcnow()
@@ -1321,6 +1326,62 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
         )
 
     return po
+
+
+# #1274: how long a registration attempt holds its draft. The attempt makes two relay round trips at
+# most (the live job check, then create_po), each given up after 30 seconds; past this, the attempt is
+# taken for dead (a crash, a lost request) and the claim no longer blocks anyone.
+REGISTRATION_CLAIM_SECONDS = 120
+
+
+def _registration_claim_is_live(po: PurchaseOrder, now: datetime) -> bool:
+    return (
+        po.registering_key is not None
+        and po.registering_since is not None
+        and po.registering_since > now - timedelta(seconds=REGISTRATION_CLAIM_SECONDS)
+    )
+
+
+def claim_po_registration(session: Session, po_id: uuid.UUID, key: str) -> None:
+    """Take the draft for one registration attempt, under the PO's row lock (#1274).
+
+    Two windows registering the same draft with the relay up each pushed create_po under their own
+    key, and the relay's per-key protection cannot tell two keys apart, so GP made two POs. The claim
+    is committed before the push, so a second attempt is refused before it sends anything. The same
+    key may take it again: that is the same attempt retried after a timeout, which the relay already
+    recognises."""
+    from app.repositories import gp_outbox_repository
+
+    po = session.scalars(
+        select(PurchaseOrder)
+        .where(PurchaseOrder.id == po_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+    if po is None or po.deleted_at is not None:
+        raise NotFoundError(f"Purchase order {po_id} not found")
+    if po.status != POStatus.DRAFT:
+        raise InvalidStateTransitionError(f"Only a Draft PO can be registered in GP; this one is {po.status.value}")
+    if gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=key) is not None:
+        raise InvalidStateTransitionError(
+            "This PO's registration is already queued and will post to GP when the relay is back"
+        )
+    now = datetime.utcnow()
+    if _registration_claim_is_live(po, now) and po.registering_key != key:
+        raise InvalidStateTransitionError(
+            "This PO is being registered in GP from another window. Wait a moment, then reopen it."
+        )
+    po.registering_key = key
+    po.registering_since = now
+
+
+def release_po_registration(session: Session, po_id: uuid.UUID, key: str) -> None:
+    """Let go of this attempt's claim; a claim another attempt has since taken is left alone."""
+    session.execute(
+        update(PurchaseOrder)
+        .where(PurchaseOrder.id == po_id, PurchaseOrder.registering_key == key)
+        .values(registering_key=None, registering_since=None)
+    )
 
 
 def update_line_item_order_as(

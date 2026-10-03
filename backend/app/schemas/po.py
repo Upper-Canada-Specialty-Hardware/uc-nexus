@@ -408,6 +408,21 @@ def _prepare_register_po(
     return payload
 
 
+def _claim_registration(po_id, key) -> None:
+    with SessionLocal() as session:
+        po_repository.claim_po_registration(session, po_id, key)
+        session.commit()
+
+
+def _release_registration(po_id, key) -> None:
+    try:
+        with SessionLocal() as session:
+            po_repository.release_po_registration(session, po_id, key)
+            session.commit()
+    except Exception:  # noqa: BLE001 - a claim not released goes stale on its own
+        logger.warning("po registration claim not released", extra={"po_id": str(po_id)}, exc_info=True)
+
+
 def _persist_register_po(
     *,
     key,
@@ -911,118 +926,140 @@ class POMutations:
             idempotency_key=key,
         )
 
-        # #425 live re-check. The job number is read back off the payload rather than returned
-        # separately, because the payload is the thing actually being pushed - checking anything else
-        # could check a job this PO is not going to GP under. Only job-cost lines carry one; a
-        # non-inventoried PO has no job and nothing to check.
-        job_number = next((line["job_number"] for line in payload["lines"] if line.get("job_number")), None)
-        if job_number:
-            verdict = await gp_job_sync.check_job_setup_live(input.gp_company, job_number)
-            if verdict is not None and not verdict.get("ok"):
-                issues = [
-                    {"cost_code": str(i.get("cost_code") or ""), "account_index": int(i.get("account_index") or 0)}
-                    for i in (verdict.get("issues") or [])
-                    if isinstance(i, dict)
-                ]
-                named = ", ".join(f"{i['cost_code']} -> GL account index {i['account_index']}" for i in issues[:3])
-                raise GpSetupInvalidError(
-                    f"GP job {job_number} is not set up correctly in {input.gp_company}, so this PO "
-                    f"cannot be registered: "
-                    + (
-                        f"these cost codes point at general ledger accounts that do not exist in this company: {named}"
-                        if named
-                        else "the job has no usable cost codes"
+        # #1274: one registration attempt per draft at a time. Taken under the PO's row lock and
+        # committed before anything goes to GP, so a second window is refused instead of pushing a
+        # second create_po under its own key. Released when the attempt settles: refused before the
+        # push, refused by GP, queued, or persisted. When GP may hold the write but Nexus did not
+        # record it, the claim is kept and goes stale after REGISTRATION_CLAIM_SECONDS.
+        await asyncio.to_thread(_claim_registration, pid, key)
+        release = True
+        try:
+            # #425 live re-check. The job number is read back off the payload rather than returned
+            # separately, because the payload is the thing actually being pushed - checking anything else
+            # could check a job this PO is not going to GP under. Only job-cost lines carry one; a
+            # non-inventoried PO has no job and nothing to check.
+            job_number = next((line["job_number"] for line in payload["lines"] if line.get("job_number")), None)
+            if job_number:
+                verdict = await gp_job_sync.check_job_setup_live(input.gp_company, job_number)
+                if verdict is not None and not verdict.get("ok"):
+                    issues = [
+                        {"cost_code": str(i.get("cost_code") or ""), "account_index": int(i.get("account_index") or 0)}
+                        for i in (verdict.get("issues") or [])
+                        if isinstance(i, dict)
+                    ]
+                    named = ", ".join(f"{i['cost_code']} -> GL account index {i['account_index']}" for i in issues[:3])
+                    raise GpSetupInvalidError(
+                        f"GP job {job_number} is not set up correctly in {input.gp_company}, so this PO "
+                        f"cannot be registered: "
+                        + (
+                            "these cost codes point at general ledger accounts that do not exist in this "
+                            f"company: {named}"
+                            if named
+                            else "the job has no usable cost codes"
+                        )
+                        + ". The PO would register but could never be received. Accounting has to correct "
+                        "the job's cost-code accounts in GP first.",
+                        issues=issues,
                     )
-                    + ". The PO would register but could never be received. Accounting has to correct "
-                    "the job's cost-code accounts in GP first.",
-                    issues=issues,
-                )
 
-        persist_context = {
-            "po_id": str(pid),
-            "gp_vendor_id": input.gp_vendor_id,
-            "vendor_name_snapshot": input.gp_vendor_name,
-            "line_items_data": line_items_data,
-            "cost_code": input.cost_code,
-            "buyer_id": input.buyer_id,
-            "shipping_cost": input.shipping_cost,
-            "tariff_amount": input.tariff_amount,
-            "project_id": str(register_project_id) if register_project_id else None,
-        }
+            persist_context = {
+                "po_id": str(pid),
+                "gp_vendor_id": input.gp_vendor_id,
+                "vendor_name_snapshot": input.gp_vendor_name,
+                "line_items_data": line_items_data,
+                "cost_code": input.cost_code,
+                "buyer_id": input.buyer_id,
+                "shipping_cost": input.shipping_cost,
+                "tariff_amount": input.tariff_amount,
+                "project_id": str(register_project_id) if register_project_id else None,
+            }
 
-        if state is not None and state.relay_result is not None:
-            gp_result = state.relay_result
-        else:
-            # Refused before anything is sent: a relay that does not recognise the key cannot tell a
-            # retry of this registration from a second order, and the queueing below assumes it can.
-            # Only asked of a relay that is actually there - a disconnected one advertises nothing,
-            # and turning that into "update the relay" would break the case the queue exists for.
-            # Nothing is lost by waiting: the worker asks the same question before it drains the row,
-            # so an out-of-date relay still never gets the push.
-            if relay_gateway.connected:
-                relay_gateway.require_feature(CREATE_PO_IDEMPOTENCY_FEATURE, "create_po")
-                # #762: the detail list only means anything to a relay that writes the tax rows. An
-                # older build ignores it and would register a CAD PO with no tax, so a taxed
-                # registration is turned away with the same update-the-relay message. An untaxed one
-                # (no pick, or a USD vendor) has nothing for that build to ignore and goes through.
-                if tax_detail_ids or tax_schedule_id:
-                    relay_gateway.require_feature(CREATE_PO_TAX_ROWS_FEATURE, "create_po")
-                # #763: likewise a schedule, which only a relay that expands it will read.
-                if tax_schedule_id:
-                    relay_gateway.require_feature(CREATE_PO_TAX_SCHEDULE_FEATURE, "create_po")
-            try:
-                gp_result = await relay_gateway.relay_call(input.gp_company, "create_po", payload)
-            except (RelayUnavailableError, RelayTimeoutError):
-                # #353 PR E: the relay did not come back with a PO number, so queue the write and tell
-                # the user it will post itself. All three ways that can happen are queued now - the
-                # relay is not there, the socket died with the job on the wire, or the relay did not
-                # answer in time. The last two used to surface to the user, because a retry might have
-                # reserved a second PO number in GP; the relay recognises the attempt's key now and
-                # answers with the PO it already made, so asking again cannot double-order.
-                project_id, label = await asyncio.to_thread(_po_outbox_identity, pid)
-                entry_id = await asyncio.to_thread(
-                    gp_outbox_enqueue.enqueue,
-                    idempotency_key=key,
-                    op="register_po_in_gp",
-                    relay_op="create_po",
-                    company=input.gp_company,
-                    payload=payload,
-                    persist_context=persist_context,
-                    entity_key=f"po:{pid}",
-                    label=label,
-                    project_id=project_id,
-                    requested_by=auth["user_id"],
-                )
-                # The PO is still DRAFT; the list shows it as queued until the worker drains it.
-                po = await asyncio.to_thread(_load_po_type, pid)
-                return RegisterPOResult(queued=True, outbox_entry_id=strawberry.ID(entry_id), purchase_order=po)
-            except RelayCallError as e:
-                # #730: GP's live answer on the job is the same refusal the mirrored check gives, and
-                # it reads the same. Every other refusal passes through untouched.
-                refusal = project_repository.gp_job_refusal(e, job_number)
-                if refusal is not None:
-                    raise refusal from e
-                raise
-            await asyncio.to_thread(gp_idempotency.record_relay_result, key, "register_po_in_gp", gp_result)
+            if state is not None and state.relay_result is not None:
+                # GP already holds this attempt's PO; only the persist below may let the claim go.
+                release = False
+                gp_result = state.relay_result
+            else:
+                # Refused before anything is sent: a relay that does not recognise the key cannot tell a
+                # retry of this registration from a second order, and the queueing below assumes it can.
+                # Only asked of a relay that is actually there - a disconnected one advertises nothing,
+                # and turning that into "update the relay" would break the case the queue exists for.
+                # Nothing is lost by waiting: the worker asks the same question before it drains the row,
+                # so an out-of-date relay still never gets the push.
+                if relay_gateway.connected:
+                    relay_gateway.require_feature(CREATE_PO_IDEMPOTENCY_FEATURE, "create_po")
+                    # #762: the detail list only means anything to a relay that writes the tax rows. An
+                    # older build ignores it and would register a CAD PO with no tax, so a taxed
+                    # registration is turned away with the same update-the-relay message. An untaxed one
+                    # (no pick, or a USD vendor) has nothing for that build to ignore and goes through.
+                    if tax_detail_ids or tax_schedule_id:
+                        relay_gateway.require_feature(CREATE_PO_TAX_ROWS_FEATURE, "create_po")
+                    # #763: likewise a schedule, which only a relay that expands it will read.
+                    if tax_schedule_id:
+                        relay_gateway.require_feature(CREATE_PO_TAX_SCHEDULE_FEATURE, "create_po")
+                try:
+                    # From here GP may hold the write, so a failure that is not settled below leaves
+                    # the claim to go stale rather than letting another window push a second PO.
+                    release = False
+                    gp_result = await relay_gateway.relay_call(input.gp_company, "create_po", payload)
+                except (RelayUnavailableError, RelayTimeoutError):
+                    # #353 PR E: the relay did not come back with a PO number, so queue the write and tell
+                    # the user it will post itself. All three ways that can happen are queued now - the
+                    # relay is not there, the socket died with the job on the wire, or the relay did not
+                    # answer in time. The last two used to surface to the user, because a retry might have
+                    # reserved a second PO number in GP; the relay recognises the attempt's key now and
+                    # answers with the PO it already made, so asking again cannot double-order.
+                    project_id, label = await asyncio.to_thread(_po_outbox_identity, pid)
+                    entry_id = await asyncio.to_thread(
+                        gp_outbox_enqueue.enqueue,
+                        idempotency_key=key,
+                        op="register_po_in_gp",
+                        relay_op="create_po",
+                        company=input.gp_company,
+                        payload=payload,
+                        persist_context=persist_context,
+                        entity_key=f"po:{pid}",
+                        label=label,
+                        project_id=project_id,
+                        requested_by=auth["user_id"],
+                    )
+                    # The PO is still DRAFT; the list shows it as queued until the worker drains it.
+                    # The queued row guards the draft from here on.
+                    release = True
+                    po = await asyncio.to_thread(_load_po_type, pid)
+                    return RegisterPOResult(queued=True, outbox_entry_id=strawberry.ID(entry_id), purchase_order=po)
+                except RelayCallError as e:
+                    # #730: GP's live answer on the job is the same refusal the mirrored check gives, and
+                    # it reads the same. Every other refusal passes through untouched.
+                    release = True  # GP refused it, so nothing reached GP
+                    refusal = project_repository.gp_job_refusal(e, job_number)
+                    if refusal is not None:
+                        raise refusal from e
+                    raise
+                await asyncio.to_thread(gp_idempotency.record_relay_result, key, "register_po_in_gp", gp_result)
 
-        po = await asyncio.to_thread(
-            _persist_register_po,
-            key=key,
-            po_id=pid,
-            gp_vendor_id=input.gp_vendor_id,
-            vendor_name_snapshot=input.gp_vendor_name,
-            gp_result=gp_result,
-            line_items_data=line_items_data,
-            cost_code=input.cost_code,
-            buyer_id=input.buyer_id,
-            shipping_cost=input.shipping_cost,
-            tariff_amount=input.tariff_amount,
-            # #691: a draft with no project, registered with one chosen in the dialog, must land ON
-            # that project. This was omitted, so the online path dropped the choice while the outbox
-            # replay - which reads the same value out of persist_context - kept it.
-            project_id=register_project_id,
-        )
-        return RegisterPOResult(queued=False, outbox_entry_id=None, purchase_order=po)
+            po = await asyncio.to_thread(
+                _persist_register_po,
+                key=key,
+                po_id=pid,
+                gp_vendor_id=input.gp_vendor_id,
+                vendor_name_snapshot=input.gp_vendor_name,
+                gp_result=gp_result,
+                line_items_data=line_items_data,
+                cost_code=input.cost_code,
+                buyer_id=input.buyer_id,
+                shipping_cost=input.shipping_cost,
+                tariff_amount=input.tariff_amount,
+                # #691: a draft with no project, registered with one chosen in the dialog, must land ON
+                # that project. This was omitted, so the online path dropped the choice while the outbox
+                # replay - which reads the same value out of persist_context - kept it.
+                project_id=register_project_id,
+            )
+            release = True
+            return RegisterPOResult(queued=False, outbox_entry_id=None, purchase_order=po)
+        finally:
+            if release:
+                # Synchronous on purpose: it must also run when the request is being cancelled.
+                _release_registration(pid, key)
 
     @strawberry.mutation
     async def run_gp_processing(self, info: strawberry.Info, po_id: strawberry.ID) -> PurchaseOrder:
