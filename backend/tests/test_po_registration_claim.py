@@ -119,3 +119,78 @@ def test_the_same_attempt_may_retry_and_a_stale_claim_does_not_block(db_session)
     po_repository.release_po_registration(db_session, draft.id, "attempt-2")
     db_session.refresh(draft)
     assert draft.registering_key is None
+
+
+# --- review: a claim whose attempt GP already answered never goes stale ------------------------------
+
+
+def _ledger(session, key, *, po_number="0009999", result_id=None):
+    from app.models.gp_write import GpWriteIdempotency
+
+    session.add(
+        GpWriteIdempotency(
+            key=key,
+            op="register_po_in_gp",
+            relay_result={"po_number": po_number, "company": "TUBC"},
+            result_id=result_id,
+        )
+    )
+    session.flush()
+
+
+def test_a_stale_claim_gp_already_answered_still_refuses_another_window(db_session):
+    draft = _stock_draft_po(db_session)
+    first = str(uuid.uuid4())
+    po_repository.claim_po_registration(db_session, draft.id, first)
+    _ledger(db_session, first, po_number="0001290")  # GP made the PO; the persist then failed
+    draft.registering_since = datetime.utcnow() - timedelta(seconds=po_repository.REGISTRATION_CLAIM_SECONDS * 10)
+    db_session.flush()
+
+    with pytest.raises(InvalidStateTransitionError, match="0001290") as e:
+        po_repository.claim_po_registration(db_session, draft.id, str(uuid.uuid4()))
+    assert "second PO in GP" in e.value.message
+    with pytest.raises(InvalidStateTransitionError, match="0001290"):
+        po_repository.cancel_po(db_session, draft.id)
+
+    # The attempt itself may take it again and resume through the ledger.
+    po_repository.claim_po_registration(db_session, draft.id, first)
+    assert draft.registering_key == first
+
+
+def test_once_the_answer_is_recorded_the_stale_claim_no_longer_blocks(db_session):
+    draft = _stock_draft_po(db_session)
+    first = str(uuid.uuid4())
+    po_repository.claim_po_registration(db_session, draft.id, first)
+    _ledger(db_session, first, result_id=str(draft.id))
+    draft.registering_since = datetime.utcnow() - timedelta(seconds=po_repository.REGISTRATION_CLAIM_SECONDS + 1)
+    db_session.flush()
+    po_repository.claim_po_registration(db_session, draft.id, "later")
+    assert draft.registering_key == "later"
+
+
+def test_the_original_attempt_resumes_from_the_ledger_without_pushing_again(monkeypatch, db_session):
+    from app.services.gp_idempotency import IdempotencyState
+
+    draft = _stock_draft_po(db_session)
+    key = str(uuid.uuid4())
+    pushes: list[str] = []
+
+    async def _relay_call(company, op, payload=None, timeout=None):
+        pushes.append(op)
+        return {"po_number": "unused", "company": "TUBC"}
+
+    _stub_the_register_resolvers_world(monkeypatch, db_session, relay_call=_relay_call)
+    answered = IdempotencyState(
+        op="register_po_in_gp", relay_result={"po_number": "0001291", "company": "TUBC"}, result_id=None
+    )
+    # GP answered this attempt earlier; its persist failed then.
+    monkeypatch.setattr(po_schema.gp_idempotency, "load", lambda k: answered if k == key else None)
+    po_repository.claim_po_registration(db_session, draft.id, key)
+    _ledger(db_session, key, po_number="0001291")
+
+    result = _run_register(draft, key)
+    assert pushes == []  # nothing sent to GP again
+    assert result.purchase_order.po_number == "0001291"
+    po = po_repository.reload_po(db_session, draft.id)
+    assert po.status == POStatus.GP_REGISTERED
+    assert po.registering_key is None

@@ -1303,7 +1303,14 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
             "This PO's registration is queued for GP, so it cannot be cancelled until it posts. "
             "Once it is in GP, cancel it there."
         )
-    # #1274: the same goes for a registration on its way to GP right now.
+    # #1274: the same goes for a registration on its way to GP right now, or one GP already took
+    # that was never recorded here.
+    gp_number = _unrecorded_gp_po_number(session, po)
+    if gp_number is not None:
+        raise InvalidStateTransitionError(
+            f"GP already created PO {gp_number} for this draft, but it was not recorded here, so the draft "
+            "cannot be cancelled. Retry the registration from the window that started it, or have it reconciled."
+        )
     if _registration_claim_is_live(po, datetime.utcnow()):
         raise InvalidStateTransitionError(
             "This PO is being registered in GP right now, so it cannot be cancelled. Once it is in GP, cancel it there."
@@ -1342,6 +1349,22 @@ def _registration_claim_is_live(po: PurchaseOrder, now: datetime) -> bool:
     )
 
 
+def _unrecorded_gp_po_number(session: Session, po: PurchaseOrder) -> str | None:
+    """The GP PO number the claiming attempt already made, when GP took it but Nexus never recorded it.
+
+    The ledger holds the relay's answer under the attempt's key from the moment GP replies, and the
+    created record's id once the persist lands. An answer with no record means GP holds a PO for this
+    draft that Nexus does not know about - whatever the claim's age, a second push would make another."""
+    from app.models.gp_write import GpWriteIdempotency
+
+    if po.registering_key is None:
+        return None
+    row = session.get(GpWriteIdempotency, po.registering_key)
+    if row is None or row.relay_result is None or row.result_id is not None:
+        return None
+    return str((row.relay_result or {}).get("po_number") or "") or "(number not recorded)"
+
+
 def claim_po_registration(session: Session, po_id: uuid.UUID, key: str) -> None:
     """Take the draft for one registration attempt, under the PO's row lock (#1274).
 
@@ -1367,6 +1390,18 @@ def claim_po_registration(session: Session, po_id: uuid.UUID, key: str) -> None:
             "This PO's registration is already queued and will post to GP when the relay is back"
         )
     now = datetime.utcnow()
+    # A claim whose attempt GP already answered never goes stale (#1274 review). Another window is not
+    # let to resume it either: saving needs the lines, vendor and costs that were pushed, which the
+    # ledger does not hold, and that window's own could differ from what GP has. The attempt itself,
+    # retried with its key, resumes through the ledger.
+    if po.registering_key is not None and po.registering_key != key:
+        gp_number = _unrecorded_gp_po_number(session, po)
+        if gp_number is not None:
+            raise InvalidStateTransitionError(
+                f"GP already created PO {gp_number} for this draft, but it was not recorded here. Retry the "
+                "registration from the window that started it, or have it reconciled; registering again "
+                "would create a second PO in GP."
+            )
     if _registration_claim_is_live(po, now) and po.registering_key != key:
         raise InvalidStateTransitionError(
             "This PO is being registered in GP from another window. Wait a moment, then reopen it."
