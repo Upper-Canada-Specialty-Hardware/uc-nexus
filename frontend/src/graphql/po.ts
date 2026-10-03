@@ -126,7 +126,6 @@ export const PURCHASE_ORDER_DETAIL_FIELDS = gql`
       fileSize
       documentType
       uploadedAt
-      downloadUrl
     }
   }
 `;
@@ -477,7 +476,6 @@ export const UPDATE_PO = gql`
         fileSize
         documentType
         uploadedAt
-        downloadUrl
       }
     }
   }
@@ -522,7 +520,6 @@ export const CANCEL_PO = gql`
         fileSize
         documentType
         uploadedAt
-        downloadUrl
       }
     }
   }
@@ -620,7 +617,6 @@ export const UPLOAD_PO_DOCUMENT = gql`
       fileSize
       documentType
       uploadedAt
-      downloadUrl
     }
   }
 `;

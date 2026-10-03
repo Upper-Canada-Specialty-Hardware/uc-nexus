@@ -10,6 +10,7 @@ import {
   UPDATE_PO_LINE_ITEM_UNIT_COST,
   DELETE_PO_DOCUMENT,
   EMAIL_PO_TO_VENDOR,
+  GET_PO_DOCUMENT_DOWNLOAD_URL,
   UPLOAD_PO_DOCUMENT,
 } from '../../../graphql/po';
 import { GET_PROJECTS } from '../../../graphql/shared';
@@ -442,7 +443,6 @@ describe('PODetailModal', () => {
           fileSize: 12,
           documentType: 'VENDOR_ACKNOWLEDGEMENT',
           uploadedAt: '2026-10-01T00:00:00Z',
-          downloadUrl: 'https://example.test/ack.pdf',
         },
       ],
     };
@@ -553,7 +553,6 @@ describe('PODetailModal', () => {
           fileSize: 12,
           documentType: 'GENERATED_PO',
           uploadedAt: '2026-10-01T00:00:00Z',
-          downloadUrl: 'https://example.test/po.pdf',
         },
       ],
     });
@@ -595,7 +594,6 @@ describe('PODetailModal', () => {
             fileSize: 12,
             documentType: 'GENERATED_PO',
             uploadedAt: '2026-10-01T00:00:00Z',
-            downloadUrl: 'https://example.test/po.pdf',
           },
         ],
       },
@@ -611,6 +609,83 @@ describe('PODetailModal', () => {
       expect(copy).toBeInTheDocument();
     } else {
       expect(copy).toBeNull();
+    }
+  });
+
+  // #1339: the link is signed when Download is pressed, so one left open past the link's hour still
+  // works. The tab opens inside the click and is pointed at the link when it arrives.
+  it('signs a document link on click and opens it in the tab it opened', async () => {
+    const asked: unknown[] = [];
+    const linkMock: MockedResponse = {
+      request: { query: GET_PO_DOCUMENT_DOWNLOAD_URL, variables: () => true },
+      result: (vars) => {
+        asked.push(vars);
+        return { data: { poDocumentDownloadUrl: 'https://signed.test/quote.pdf' } };
+      },
+    };
+    const tab = { opener: {} as unknown, location: { href: '' }, close: vi.fn() };
+    const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window);
+    try {
+      renderModal(
+        {
+          ...registeredPo,
+          documents: [
+            {
+              id: 'doc-q',
+              poId: 'po-1',
+              fileName: 'quote.pdf',
+              contentType: 'application/pdf',
+              fileSize: 12,
+              documentType: 'MISCELLANEOUS',
+              uploadedAt: '2026-10-01T00:00:00Z',
+            },
+          ],
+        },
+        [linkMock],
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Download quote.pdf' }));
+      expect(open).toHaveBeenCalledWith('', '_blank'); // inside the click, before any await
+      await waitFor(() => expect(tab.location.href).toBe('https://signed.test/quote.pdf'));
+      expect(asked).toEqual([{ documentId: 'doc-q' }]);
+      expect(tab.opener).toBeNull();
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('closes the tab and says so when the link cannot be signed', async () => {
+    const failMock: MockedResponse = {
+      request: { query: GET_PO_DOCUMENT_DOWNLOAD_URL, variables: () => true },
+      error: new Error('Document not found'),
+    };
+    const tab = { opener: {} as unknown, location: { href: '' }, close: vi.fn() };
+    const open = vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window);
+    try {
+      renderModal(
+        {
+          ...registeredPo,
+          documents: [
+            {
+              id: 'doc-gone',
+              poId: 'po-1',
+              fileName: 'gone.pdf',
+              contentType: 'application/pdf',
+              fileSize: 12,
+              documentType: 'MISCELLANEOUS',
+              uploadedAt: '2026-10-01T00:00:00Z',
+            },
+          ],
+        },
+        [failMock],
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Download gone.pdf' }));
+      await waitFor(() => expect(tab.close).toHaveBeenCalled());
+      expect(await screen.findByText('Document not found')).toBeInTheDocument();
+      expect(tab.location.href).toBe('');
+    } finally {
+      open.mockRestore();
     }
   });
 

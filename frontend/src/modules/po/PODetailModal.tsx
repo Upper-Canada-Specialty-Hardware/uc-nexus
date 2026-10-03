@@ -22,7 +22,7 @@ import {
   Tooltip,
 } from '@mui/material';
 import { Trash2, Download, Upload, FileText, Mail, Pencil } from 'lucide-react';
-import { useMutation, useQuery } from '@apollo/client/react';
+import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import type { GridColDef } from '@mui/x-data-grid';
 import Modal from '../../components/Modal';
@@ -31,7 +31,7 @@ import ConfirmDialog from '../../components/ConfirmDialog';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
 import { useToast } from '../../components/Toast';
 import GpCompanyTag from '../../components/GpCompanyTag';
-import { UPDATE_PO, UPDATE_PO_NOTES, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM_UNIT_COST, UPLOAD_PO_DOCUMENT, DELETE_PO_DOCUMENT, EMAIL_PO_TO_VENDOR } from '../../graphql/po';
+import { UPDATE_PO, UPDATE_PO_NOTES, CANCEL_PO, UPDATE_PO_LINE_ITEM_ORDER_AS, UPDATE_PO_LINE_ITEM_UNIT_COST, UPLOAD_PO_DOCUMENT, DELETE_PO_DOCUMENT, EMAIL_PO_TO_VENDOR, GET_PO_DOCUMENT_DOWNLOAD_URL } from '../../graphql/po';
 import { GET_PRIOR_ORDER_AS_VALUES, GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
 import type { PurchaseOrder } from './index';
@@ -112,6 +112,7 @@ export default function PODetailModal({
   registrationQueued = false,
 }: PODetailModalProps) {
   const { showToast } = useToast();
+  const apollo = useApolloClient();
 
   // Edit mode state
   const [editing, setEditing] = useState(false);
@@ -366,6 +367,31 @@ export default function PODetailModal({
       setEmailing(false);
     }
   }, [emailPoToVendor, po.id, showToast]);
+
+  // #1339: the link is signed on click, not carried on the PO, so a modal left open past the link's
+  // hour still downloads. The tab is opened inside the click (a popup blocker allows that, not one
+  // opened after an await) and pointed at the link once it arrives.
+  const handleDownloadDocument = useCallback(
+    async (documentId: string) => {
+      const tab = window.open('', '_blank');
+      if (tab) tab.opener = null;
+      try {
+        const res = await apollo.query<{ poDocumentDownloadUrl: string }>({
+          query: GET_PO_DOCUMENT_DOWNLOAD_URL,
+          variables: { documentId },
+          fetchPolicy: 'network-only',
+        });
+        const url = res.data?.poDocumentDownloadUrl;
+        if (!url) throw new Error('Could not open the document.');
+        if (tab) tab.location.href = url;
+        else window.open(url, '_blank', 'noopener,noreferrer');
+      } catch (err) {
+        tab?.close();
+        showToast(err instanceof Error ? err.message : 'Could not open the document.', 'error');
+      }
+    },
+    [apollo, showToast],
+  );
 
   const handleDeleteDocument = (documentId: string) => {
     deleteDocument({ variables: { documentId } });
@@ -1004,9 +1030,7 @@ export default function PODetailModal({
                     <IconButton
                       size="small"
                       aria-label={`Download ${doc.fileName}`}
-                      href={doc.downloadUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                      onClick={() => handleDownloadDocument(doc.id)}
                     >
                       <Download {...ICON} />
                     </IconButton>

@@ -117,7 +117,6 @@ export interface PODocumentInfo {
   fileSize: number;
   documentType: string;
   uploadedAt: string;
-  downloadUrl: string;
 }
 
 export interface PODocumentData {

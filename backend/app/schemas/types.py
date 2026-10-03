@@ -615,7 +615,15 @@ class PODocumentInfo:
     file_size: int
     document_type: PODocumentType
     uploaded_at: datetime
-    download_url: str
+    s3_key: strawberry.Private[str]
+
+    # #1339: signed only when a query asks for it, rather than for every document on every PO load. The
+    # link expires in an hour, so a page holding it goes stale; poDocumentDownloadUrl mints one on click.
+    @strawberry.field(deprecation_reason="Expires in an hour. Use poDocumentDownloadUrl when the user opens it.")
+    def download_url(self) -> str:
+        from app.services import storage
+
+        return storage.generate_presigned_url(self.s3_key)
 
 
 @strawberry.type
