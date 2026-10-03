@@ -12,10 +12,7 @@ import {
   Stepper,
   Step,
   StepLabel,
-  Table,
-  TableBody,
   TableCell,
-  TableHead,
   TableRow,
   TextField,
   MenuItem,
@@ -35,6 +32,7 @@ import {
 import { GET_PROJECTS, GET_WAREHOUSES } from '../../graphql/shared';
 import { useToast } from '../../components/Toast';
 import PageHeader from '../../components/PageHeader';
+import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import { useInventoryItemTypes } from '../../hooks/useCustomItems';
@@ -114,6 +112,44 @@ const PO_LINK_STEP = 6;
 const REVIEW_STEP = 7;
 
 const UNCATEGORIZED = 'Uncategorized';
+
+// Every table on this page fits its card and never scrolls sideways (UI law 2): fixed layout through
+// FitTable, a minimum per column that keeps its value whole, and text that ellipsizes with the full
+// value on hover. The control column in each takes the largest share of the slack.
+const LOCATION_COLUMNS: FitTableColumn[] = [
+  { id: 'raw', label: 'Location value', min: 140, weight: 2 },
+  { id: 'rows', label: 'Rows', min: 56, weight: 0.3, align: 'right' },
+  { id: 'warehouse', label: 'Warehouse', min: 104, weight: 0.8, dense: true },
+  { id: 'aisle', label: 'Aisle', min: 64, weight: 0.5, dense: true },
+  { id: 'row', label: 'Row', min: 64, weight: 0.5, dense: true },
+  { id: 'bay', label: 'Bay', min: 64, weight: 0.5, dense: true },
+  { id: 'include', label: 'Include', min: 104, weight: 0.4, dense: true },
+];
+const PROJECT_COLUMNS: FitTableColumn[] = [
+  { id: 'number', label: 'Number', min: 80, weight: 0.6 },
+  { id: 'name', label: 'Name', min: 120, weight: 1.4 },
+  { id: 'rows', label: 'Rows', min: 56, weight: 0.3, align: 'right' },
+  { id: 'project', label: 'Nexus project', min: 200, weight: 2, dense: true },
+];
+const TYPE_COLUMNS: FitTableColumn[] = [
+  { id: 'spType', label: 'SharePoint type', min: 160, weight: 1.6 },
+  { id: 'rows', label: 'Rows', min: 56, weight: 0.3, align: 'right' },
+  { id: 'entityType', label: 'Nexus entity type', min: 200, weight: 1.6, dense: true },
+];
+const CLASSIFICATION_COLUMNS: FitTableColumn[] = [
+  { id: 'project', label: 'Project', min: 80, weight: 0.6 },
+  { id: 'category', label: 'Category', min: 120, weight: 1.2 },
+  { id: 'productCode', label: 'Product code', min: 120, weight: 1.2 },
+  { id: 'classification', label: 'Classification', min: 160, weight: 1, dense: true },
+];
+const REVIEW_COLUMNS: FitTableColumn[] = [
+  { id: 'destination', label: 'Destination', min: 96, weight: 0.8 },
+  { id: 'category', label: 'Category', min: 120, weight: 1.2 },
+  { id: 'productCode', label: 'Product code', min: 120, weight: 1.2 },
+  { id: 'qty', label: 'Qty', min: 56, weight: 0.3, align: 'right' },
+  { id: 'unitCost', label: 'Unit cost', min: 80, weight: 0.4, align: 'right' },
+  { id: 'location', label: 'Location', min: 88, weight: 0.6 },
+];
 
 export default function SharePointMigrationPage() {
   const navigate = useNavigate();
@@ -548,26 +584,13 @@ export default function SharePointMigrationPage() {
                   {locations.filter((l) => l.autoParsed).length} of {locations.length} location
                   values were read automatically. The rest need a warehouse and shelf, or excluding.
                 </Typography>
-                <Box sx={{ maxHeight: 480, overflow: 'auto' }}>
-                  <Table size="small" stickyHeader>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Location value</TableCell>
-                        <TableCell align="right">Rows</TableCell>
-                        <TableCell>Warehouse</TableCell>
-                        <TableCell>Aisle</TableCell>
-                        <TableCell>Row</TableCell>
-                        <TableCell>Bay</TableCell>
-                        <TableCell>Include</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
+                <FitTable storageKey="sharepoint-migration-locations" columns={LOCATION_COLUMNS} maxHeight={480}>
                       {locations.map((loc) => {
                         const r = locationResolutions.get(loc.raw);
                         const included = !!r && !r.excluded;
                         return (
                           <TableRow key={loc.raw || '(blank)'} hover>
-                            <TableCell sx={monoSx}>
+                            <TableCell sx={monoSx} title={loc.raw || undefined}>
                               {loc.raw || <em>(no location)</em>}
                               {loc.autoParsed && (
                                 <Chip size="small" label="parsed" sx={{ ml: 1 }} variant="outlined" />
@@ -585,17 +608,17 @@ export default function SharePointMigrationPage() {
                             <TableCell align="right" sx={tabularSx}>
                               {loc.rowCount}
                             </TableCell>
-                            <TableCell>
+                            <TableCell sx={{ px: 1 }}>
                               <Select
                                 size="small"
                                 displayEmpty
+                                fullWidth
                                 value={r?.warehouseId ?? defaultWarehouseId}
                                 onChange={(e) =>
                                   // Inclusion is the Include button's job alone - see the note on
                                   // the aisle/row/bay fields below.
                                   setLocation(loc.raw, { warehouseId: e.target.value as string })
                                 }
-                                sx={{ minWidth: 130 }}
                               >
                                 {warehouses.map((w) => (
                                   <MenuItem key={w.id} value={w.id}>
@@ -605,9 +628,10 @@ export default function SharePointMigrationPage() {
                               </Select>
                             </TableCell>
                             {(['aisle', 'row', 'bay'] as const).map((field) => (
-                              <TableCell key={field}>
+                              <TableCell key={field} sx={{ px: 1 }}>
                                 <TextField
                                   size="small"
+                                  fullWidth
                                   value={r?.[field] ?? ''}
                                   inputProps={{ maxLength: 20 }}
                                   onChange={(e) =>
@@ -618,13 +642,13 @@ export default function SharePointMigrationPage() {
                                       [field]: e.target.value || null,
                                     } as Partial<LocationResolution>)
                                   }
-                                  sx={{ width: 72 }}
                                 />
                               </TableCell>
                             ))}
-                            <TableCell>
+                            <TableCell sx={{ px: 1 }}>
                               <Button
                                 size="small"
+                                fullWidth
                                 variant={included ? 'contained' : 'outlined'}
                                 color={included ? 'primary' : 'inherit'}
                                 onClick={() =>
@@ -640,9 +664,7 @@ export default function SharePointMigrationPage() {
                           </TableRow>
                         );
                       })}
-                    </TableBody>
-                  </Table>
-                </Box>
+                </FitTable>
                 {unresolvedLocations.length > 0 && (
                   <Alert severity="info" sx={{ mt: 2 }}>
                     {unresolvedLocations.length} location values are still unset and their rows will
@@ -661,34 +683,26 @@ export default function SharePointMigrationPage() {
                   already exist in Nexus can be picked - create one through the normal project flow
                   first if it is missing.
                 </Typography>
-                <Box sx={{ maxHeight: 480, overflow: 'auto' }}>
-                  <Table size="small" stickyHeader>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Number</TableCell>
-                        <TableCell>Name</TableCell>
-                        <TableCell align="right">Rows</TableCell>
-                        <TableCell>Nexus project</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
+                <FitTable storageKey="sharepoint-migration-projects" columns={PROJECT_COLUMNS} maxHeight={480}>
                       {spProjects.map((sp) => (
                         <TableRow key={sp.key} hover>
-                          <TableCell sx={monoSx}>{sp.projectNumber || '—'}</TableCell>
-                          <TableCell>{sp.projectName || '—'}</TableCell>
+                          <TableCell sx={monoSx} title={sp.projectNumber || undefined}>
+                            {sp.projectNumber || '—'}
+                          </TableCell>
+                          <TableCell title={sp.projectName || undefined}>{sp.projectName || '—'}</TableCell>
                           <TableCell align="right" sx={tabularSx}>
                             {sp.rowCount}
                           </TableCell>
-                          <TableCell>
+                          <TableCell sx={{ px: 1 }}>
                             <Select
                               size="small"
                               displayEmpty
+                              fullWidth
                               value={projectResolutions.get(sp.key) ?? ''}
                               onChange={(e) => {
                                 const v = e.target.value as string;
                                 setProjectOverrides((prev) => new Map(prev).set(sp.key, v || null));
                               }}
-                              sx={{ minWidth: 280 }}
                             >
                               <MenuItem value="">
                                 <em>Exclude these rows</em>
@@ -702,9 +716,7 @@ export default function SharePointMigrationPage() {
                           </TableCell>
                         </TableRow>
                       ))}
-                    </TableBody>
-                  </Table>
-                </Box>
+                </FitTable>
                 {unresolvedProjects.length > 0 && (
                   <Alert severity="info" sx={{ mt: 2 }}>
                     {unresolvedProjects.length} projects are unset and their rows will be skipped.
@@ -742,15 +754,7 @@ export default function SharePointMigrationPage() {
                     SharePoint and re-fetch rather than filing them under the wrong type here.
                   </Alert>
                 )}
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>SharePoint type</TableCell>
-                      <TableCell align="right">Rows</TableCell>
-                      <TableCell>Nexus entity type</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
+                <FitTable storageKey="sharepoint-migration-types" columns={TYPE_COLUMNS}>
                     {spItemTypes.map((t) => {
                       const resolution = itemTypeResolutions.get(t.spType);
                       const mapped = isMappedType(resolution) ? resolution : null;
@@ -758,7 +762,7 @@ export default function SharePointMigrationPage() {
                       const undecided = t.isNonSchedule && !mapped && !excluded;
                       return (
                         <TableRow key={t.spType} hover>
-                          <TableCell>
+                          <TableCell title={t.spType}>
                             {t.spType}
                             {!t.isNonSchedule && (
                               <Chip
@@ -781,10 +785,11 @@ export default function SharePointMigrationPage() {
                           <TableCell align="right" sx={tabularSx}>
                             {t.rowCount}
                           </TableCell>
-                          <TableCell>
+                          <TableCell sx={{ px: 1 }}>
                             <Select
                               size="small"
                               displayEmpty
+                              fullWidth
                               error={undecided}
                               value={excluded ? EXCLUDE_ITEM_TYPE : (mapped?.id ?? '')}
                               onChange={(e) => {
@@ -798,7 +803,6 @@ export default function SharePointMigrationPage() {
                                   ),
                                 );
                               }}
-                              sx={{ minWidth: 260 }}
                             >
                               {/* Keeping the part category is only an answer for schedule hardware.
                                   A non-schedule type has to be named or dropped, so offering the
@@ -821,8 +825,7 @@ export default function SharePointMigrationPage() {
                         </TableRow>
                       );
                     })}
-                  </TableBody>
-                </Table>
+                </FitTable>
                 <Alert severity="info" sx={{ mt: 2 }}>
                   {catalogItems.length} non-schedule products will be catalogued with their
                   description, finish, rating, mounting and size where SharePoint records them.
@@ -881,27 +884,25 @@ export default function SharePointMigrationPage() {
                   </Alert>
                 ) : (
                   <>
-                    <Box sx={{ maxHeight: 480, overflow: 'auto' }}>
-                      <Table size="small" stickyHeader>
-                        <TableHead>
-                          <TableRow>
-                            <TableCell>Project</TableCell>
-                            <TableCell>Category</TableCell>
-                            <TableCell>Product code</TableCell>
-                            <TableCell>Classification</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
+                    <FitTable
+                      storageKey="sharepoint-migration-classifications"
+                      columns={CLASSIFICATION_COLUMNS}
+                      maxHeight={480}
+                    >
                           {classificationRows.map((row) => {
                             const key = classificationStepKey(row.projectId, row.hardwareCategory, row.productCode);
                             const project = projects.find((p) => p.id === row.projectId);
                             const pick = classificationPicks.get(key);
                             return (
                               <TableRow key={key} hover>
-                                <TableCell sx={monoSx}>{project?.projectId ?? '—'}</TableCell>
-                                <TableCell>{row.hardwareCategory}</TableCell>
-                                <TableCell sx={monoSx}>{row.productCode}</TableCell>
-                                <TableCell>
+                                <TableCell sx={monoSx} title={project?.projectId}>
+                                  {project?.projectId ?? '—'}
+                                </TableCell>
+                                <TableCell title={row.hardwareCategory}>{row.hardwareCategory}</TableCell>
+                                <TableCell sx={monoSx} title={row.productCode}>
+                                  {row.productCode}
+                                </TableCell>
+                                <TableCell sx={{ px: 1 }}>
                                   {row.inherited ? (
                                     <Chip
                                       size="small"
@@ -913,6 +914,7 @@ export default function SharePointMigrationPage() {
                                     <Select
                                       size="small"
                                       displayEmpty
+                                      fullWidth
                                       error={!pick}
                                       value={pick ?? ''}
                                       onChange={(e) =>
@@ -920,7 +922,6 @@ export default function SharePointMigrationPage() {
                                           new Map(prev).set(key, e.target.value as MigrationClassification),
                                         )
                                       }
-                                      sx={{ minWidth: 160 }}
                                     >
                                       <MenuItem value="">
                                         <em>Choose Site or Shop…</em>
@@ -933,9 +934,7 @@ export default function SharePointMigrationPage() {
                               </TableRow>
                             );
                           })}
-                        </TableBody>
-                      </Table>
-                    </Box>
+                    </FitTable>
                     {unclassifiedRequired.length > 0 && (
                       <Alert severity="warning" sx={{ mt: 2 }}>
                         {unclassifiedRequired.length} matched product
@@ -1015,24 +1014,14 @@ export default function SharePointMigrationPage() {
                 <Typography variant="subtitle2" sx={{ ...microLabelSx, mb: 1 }}>
                   First 25 entries
                 </Typography>
-                <Box sx={{ maxHeight: 360, overflow: 'auto' }}>
-                  <Table size="small" stickyHeader>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Destination</TableCell>
-                        <TableCell>Category</TableCell>
-                        <TableCell>Product code</TableCell>
-                        <TableCell align="right">Qty</TableCell>
-                        <TableCell align="right">Unit cost</TableCell>
-                        <TableCell>Location</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
+                <FitTable storageKey="sharepoint-migration-review" columns={REVIEW_COLUMNS} maxHeight={360}>
                       {built.entries.slice(0, 25).map((e, i) => (
                         <TableRow key={i}>
-                          <TableCell>{e.destination}</TableCell>
-                          <TableCell>{e.hardwareCategory}</TableCell>
-                          <TableCell sx={monoSx}>{e.productCode}</TableCell>
+                          <TableCell title={e.destination}>{e.destination}</TableCell>
+                          <TableCell title={e.hardwareCategory}>{e.hardwareCategory}</TableCell>
+                          <TableCell sx={monoSx} title={e.productCode}>
+                            {e.productCode}
+                          </TableCell>
                           <TableCell align="right" sx={tabularSx}>
                             {e.quantity}
                           </TableCell>
@@ -1044,9 +1033,7 @@ export default function SharePointMigrationPage() {
                           </TableCell>
                         </TableRow>
                       ))}
-                    </TableBody>
-                  </Table>
-                </Box>
+                </FitTable>
                 {undecidedTypes.length > 0 && (
                   <Alert severity="warning" sx={{ mt: 2 }}>
                     <AlertTitle>Go back to Types first</AlertTitle>
