@@ -25,7 +25,8 @@ from collections import defaultdict
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
@@ -53,6 +54,10 @@ _CENTS = Decimal("0.01")
 _ZERO = Decimal("0")
 
 
+# inventory_value_settings.average_door_cost is Numeric(12, 2) (#1211).
+_MAX_DOOR_COST = Decimal(10) ** 10
+
+
 def _cents(value: Decimal | None) -> Decimal:
     return (value or _ZERO).quantize(_CENTS, rounding=ROUND_HALF_UP)
 
@@ -69,10 +74,15 @@ def get_settings(session: Session, company: str) -> InventoryValueSettings:
     settings = session.get(InventoryValueSettings, company)
     if settings is not None:
         return settings
-    settings = InventoryValueSettings(company=company, average_door_cost=_ZERO)
-    session.add(settings)
-    session.flush()
-    return settings
+    # #1201: insert-if-absent, not check-then-insert. Two first reads at once (two tabs, two people)
+    # both found nothing, both inserted, and the loser hit the primary key as a masked server error
+    # on a plain page load.
+    session.execute(
+        pg_insert(InventoryValueSettings)
+        .values(company=company, average_door_cost=_ZERO)
+        .on_conflict_do_nothing(index_elements=["company"])
+    )
+    return session.get(InventoryValueSettings, company, populate_existing=True)
 
 
 def get_general_row(session: Session, company: str) -> DoorsOnHand:
@@ -82,15 +92,18 @@ def get_general_row(session: Session, company: str) -> DoorsOnHand:
     of the table rather than as something you add. A company with no general row would render a table
     whose first row is missing and whose GENERAL STOCK figure silently omits doors.
     """
-    row = session.scalars(
-        select(DoorsOnHand).where(DoorsOnHand.company == company, DoorsOnHand.project_id.is_(None))
-    ).first()
+    stmt = select(DoorsOnHand).where(DoorsOnHand.company == company, DoorsOnHand.project_id.is_(None))
+    row = session.scalars(stmt).first()
     if row is not None:
         return row
-    row = DoorsOnHand(company=company, project_id=None, quantity=0)
-    session.add(row)
-    session.flush()
-    return row
+    # #1201: the same insert-if-absent as get_settings, against the partial unique index that allows
+    # one general row per company.
+    session.execute(
+        pg_insert(DoorsOnHand)
+        .values(id=uuid.uuid4(), company=company, project_id=None, quantity=0)
+        .on_conflict_do_nothing(index_elements=["company"], index_where=text("project_id IS NULL"))
+    )
+    return session.scalars(stmt.execution_options(populate_existing=True)).one()
 
 
 # --- the computed halves --------------------------------------------------------------------------
@@ -436,8 +449,14 @@ def remove_doors_on_hand(session: Session, row_id: uuid.UUID) -> DoorsOnHand:
 def set_average_door_cost(session: Session, company: str, amount: Decimal, actor: str | None) -> InventoryValueSettings:
     if amount < 0:
         raise ValidationError("Average door cost cannot be negative.", field="amount")
+    cents = _cents(Decimal(amount))
+    # #1211: the column is Numeric(12, 2), ten digits ahead of the point. Checked after rounding, so a
+    # figure that rounds up past the column is refused here rather than overflowing at commit as a
+    # masked server error.
+    if cents >= _MAX_DOOR_COST:
+        raise ValidationError("Average door cost must be less than $10,000,000,000.", field="amount")
     settings = get_settings(session, company)
-    settings.average_door_cost = _cents(Decimal(amount))
+    settings.average_door_cost = cents
     settings.updated_by = actor
     # `onupdate` only fires when some other column changed; re-saving the same figure is still a
     # deliberate act by a named person, and the caption on the page says when it last happened.

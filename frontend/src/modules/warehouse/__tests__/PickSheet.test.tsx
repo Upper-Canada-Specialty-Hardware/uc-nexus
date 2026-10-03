@@ -4,6 +4,7 @@ import PickSection from '../PickSection';
 import {
   entriesFromDraft,
   entryKey,
+  isValidEntry,
   locationLabel,
   parseEntry,
   pickTotals,
@@ -72,13 +73,26 @@ const NEW = entryKey({ hardwareCategory: 'HINGE', productCode: 'HG-100' }, 'loc-
 
 // --- entry arithmetic --------------------------------------------------------------------------
 
-it('treats an empty or nonsense box as nothing entered', () => {
+it('reads a whole number, and an empty box as nothing entered', () => {
   expect(parseEntry('')).toBe(0);
   expect(parseEntry(undefined)).toBe(0);
-  expect(parseEntry('abc')).toBe(0);
-  expect(parseEntry('-3')).toBe(0);
-  expect(parseEntry('2.7')).toBe(2);
   expect(parseEntry('12')).toBe(12);
+  expect(isValidEntry('')).toBe(true);
+  expect(isValidEntry(undefined)).toBe(true);
+  expect(isValidEntry('0')).toBe(true);
+  expect(isValidEntry('12')).toBe(true);
+});
+
+it('never reads a decimal, a negative or a stray character as a different count (#1382)', () => {
+  for (const raw of ['2.7', '-3', 'abc', '1e2', '3x']) {
+    expect(isValidEntry(raw)).toBe(false);
+    // Counted as nothing, not floored to 2 - and flagged below, so it is never sent either.
+    expect(parseEntry(raw)).toBe(0);
+  }
+  const s = section();
+  expect(sectionTotals(s, { [OLD]: '2', [NEW]: '1.5' })).toMatchObject({ anyRowInvalid: true });
+  expect(pickTotals([s], { [OLD]: '2', [NEW]: '1.5' })).toMatchObject({ invalid: true, over: true, balanced: false });
+  expect(pickTotals([s], { [OLD]: '2', [NEW]: '2' })).toMatchObject({ invalid: false, over: false });
 });
 
 it('counts a section against what it needs and what its rows hold', () => {
@@ -171,6 +185,14 @@ it('flags a row entered past what that row holds', () => {
   fireEvent.change(screen.getByLabelText(/Pulled from A-1-1/), { target: { value: '3' } });
 
   expect(screen.getByText('Only 2 here')).toBeInTheDocument();
+});
+
+it('flags a box that is not a whole number on its own row (#1382)', () => {
+  render(<Harness />);
+  fireEvent.change(screen.getByLabelText(/Pulled from A-1-1/), { target: { value: '1.5' } });
+
+  expect(screen.getByText('Whole units only')).toBeInTheDocument();
+  expect(screen.getByLabelText(/Pulled from A-1-1/)).toHaveAttribute('aria-invalid', 'true');
 });
 
 it('flags a code entered past what the pull asked for', () => {

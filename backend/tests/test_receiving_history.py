@@ -283,3 +283,19 @@ def test_the_project_filter_still_totals_correctly(db_session):
     assert (scoped["ordered_total"], scoped["received_total"], scoped["receive_count"]) == (10, 6, 2)
     # The other project's receives are not counted in, and dropping them did not lose any of ours.
     assert scoped == unscoped
+
+
+def test_an_archived_projects_po_is_labelled_off_the_project(db_session):
+    """#1215: the history row names its project from the project itself, so archiving the job (which
+    takes it out of the projects list the page used to read) does not blank the column."""
+    from app.repositories.project_labels import project_labels
+
+    project = _make_project(db_session)
+    project.archived = True
+    po, _li = _make_po_with_line(db_session, project.id)
+    db_session.flush()
+
+    row = _row_for(db_session, po, project.id)
+    labels = project_labels(db_session, [row["project_id"]])
+
+    assert labels[row["project_id"]] == (project.project_id, "Test")

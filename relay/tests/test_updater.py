@@ -208,6 +208,32 @@ def test_stage_update_spawns_the_helper_from_the_resolved_real_folder(tmp_path, 
     assert ".." not in calls[0][0][0]
 
 
+def test_stage_update_defers_when_the_relay_got_busy_during_the_download(tmp_path, monkeypatch):
+    """#1212: a GP write that arrived while the build downloaded must not be killed by the handoff. No
+    ledger is written and no helper spawned - the helper would force the app down at its deadline."""
+    monkeypatch.setattr(updater.urllib.request, "urlretrieve", lambda url, dest: _bundle_zip(dest))
+
+    def _no_spawn(*a, **k):
+        raise AssertionError("must not spawn the helper while the relay is busy")
+
+    monkeypatch.setattr(updater, "_spawn_detached", _no_spawn)
+    r = updater.stage_update("u", tmp_path, 1, target_build="relay-v0.1.0-build.13", ready_to_hand_off=lambda: False)
+
+    assert r["ok"] is False and r["deferred"] is True
+    assert updater.read_ledger(tmp_path).get("status") is None  # nothing staged, the poller may try again
+
+
+def test_stage_update_hands_off_when_still_ready_after_the_download(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater.urllib.request, "urlretrieve", lambda url, dest: _bundle_zip(dest))
+    monkeypatch.setattr(single_instance, "installed_exe_path", lambda d: tmp_path / "app-old" / "ucnexus-relay.exe")
+    calls = []
+    monkeypatch.setattr(updater, "_spawn_detached", lambda args, cwd: calls.append(args))
+
+    r = updater.stage_update("u", tmp_path, 1, target_build="relay-v0.1.0-build.13", ready_to_hand_off=lambda: True)
+
+    assert r["ok"] is True and len(calls) == 1
+
+
 def test_stage_update_rejects_a_tiny_download_and_does_not_spawn(tmp_path, monkeypatch):
     monkeypatch.setattr(updater.urllib.request, "urlretrieve", lambda url, dest: Path(dest).write_bytes(b"tiny"))
 

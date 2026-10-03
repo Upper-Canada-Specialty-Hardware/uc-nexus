@@ -128,3 +128,10 @@ it('invalidates both request queues when a pull is cancelled', () => {
   expect(refetch.PULL_CANCEL_STALE_ROOT_FIELDS).toContain('shopAssemblyRequests');
   expect(refetch.PULL_CANCEL_STALE_ROOT_FIELDS).toContain('shippingOutRequests');
 });
+
+it('takes the pull queue with it when a request mints or deletes a pull (#1232)', () => {
+  // Accepting a shipping request and batching a shop assembly one mint a pull; reopening and
+  // discarding delete it. The queue reads pullRequests cache-first on another route, so it is
+  // evicted - and nothing paired refetches GetPullRequests by name, so the disjointness rule holds.
+  expect(refetch.PULL_MINTED_STALE_ROOT_FIELDS).toContain('pullRequests');
+});

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, Index, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
@@ -27,8 +27,11 @@ class ShipmentMethod(Base):
 
     __tablename__ = "shipment_methods"
     # Unique per company (#637): the list is one shipping department's own, so two tenants both
-    # running "Our truck" is two rows, not a collision.
-    __table_args__ = (UniqueConstraint("company", "name", name="uq_shipment_methods_company_name"),)
+    # running "Our truck" is two rows, not a collision. Case-insensitive (#1388): "Flatbed" and
+    # "flatbed" are one carrier, and the database holds that rule, not only the repository's check.
+    __table_args__ = (
+        Index("uq_shipment_methods_company_lower_name", "company", func.lower(text("name")), unique=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     # The GP company that owns this method - the tenant (#637).

@@ -1,4 +1,6 @@
-import { useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { useQuery } from '@apollo/client/react';
 import { Box, Button } from '@mui/material';
 import { LayoutGrid } from 'lucide-react';
 import HardwareItemsTab from './HardwareItemsTab';
@@ -6,26 +8,49 @@ import ProjectLandingPage from '../../components/ProjectLandingPage';
 import PageHeader from '../../components/PageHeader';
 import GpCompanyTag from '../../components/GpCompanyTag';
 import { FadeIn } from '../../motion';
+import { GET_PROJECTS } from '../../graphql/shared';
 import type { Project } from '../../types/project';
 
 const WAREHOUSE_PARENT = { label: 'Warehouse', to: '/app/warehouse' };
 
 export default function InventoryView() {
-  const [selectedProject, setSelectedProject] = useState<Project | 'all' | null>('all');
+  // The scoped project lives in the URL (#1359), so a project's page can link straight to its
+  // inventory and a reload keeps it. No param is every project. The list scopes by the id alone; the
+  // project itself is read only for the header's name and company.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const projectId = searchParams.get('project') || undefined;
+  const [picking, setPicking] = useState(false);
+  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !projectId });
+  const selectedProject = useMemo(
+    () => (projectId ? (projectsData?.projects.find((p) => p.id === projectId) ?? null) : null),
+    [projectsData, projectId],
+  );
 
-  if (selectedProject === null) {
-    return (
-      <ProjectLandingPage
-        title="Inventory"
-        parent={WAREHOUSE_PARENT}
-        onSelect={(p) => setSelectedProject(p === null ? 'all' : p)}
-      />
-    );
+  const choose = useCallback(
+    (next: Project | null) => {
+      setSearchParams(
+        (prev) => {
+          const params = new URLSearchParams(prev);
+          if (next) params.set('project', next.id);
+          else params.delete('project');
+          return params;
+        },
+        { replace: true },
+      );
+      setPicking(false);
+    },
+    [setSearchParams],
+  );
+
+  if (picking) {
+    return <ProjectLandingPage title="Inventory" parent={WAREHOUSE_PARENT} onSelect={choose} />;
   }
 
-  const projectId = selectedProject !== 'all' ? selectedProject.id : undefined;
-  const projectLabel =
-    selectedProject === 'all' ? 'All Projects' : (selectedProject.description || selectedProject.projectId);
+  const projectLabel = !projectId
+    ? 'All Projects'
+    : selectedProject
+      ? selectedProject.description || selectedProject.projectId
+      : 'Project';
 
   return (
     <Box>
@@ -35,7 +60,7 @@ export default function InventoryView() {
         title="Inventory"
         parent={WAREHOUSE_PARENT}
         description={
-          selectedProject === 'all' ? (
+          !selectedProject ? (
             projectLabel
           ) : (
             // #831: the project's GP company, inline after its name.
@@ -50,7 +75,7 @@ export default function InventoryView() {
             size="small"
             variant="outlined"
             startIcon={<LayoutGrid size={18} strokeWidth={1.75} />}
-            onClick={() => setSelectedProject(null)}
+            onClick={() => setPicking(true)}
           >
             Projects
           </Button>
