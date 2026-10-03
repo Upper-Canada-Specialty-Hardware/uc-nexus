@@ -10,6 +10,13 @@ import {
   SAVE_PO_DOCUMENT_DATA,
 } from '../../../graphql/po';
 
+// #1288: the relay's connected flag, which gates the buyer read. Null (unknown) by default, which is
+// what every test before #1288 ran with.
+const relayState: { connected: boolean | null } = { connected: null };
+vi.mock('../../../relay/useRelayStatus', () => ({
+  useRelayStatus: () => ({ connected: relayState.connected }),
+}));
+
 // MUI dialogs render slowly under jsdom, slower still when the whole suite runs in parallel - lift
 // both the per-test budget and testing-library's 1s async-util default.
 vi.setConfig({ testTimeout: 60_000 });
@@ -127,6 +134,7 @@ function totalsMock(): MockedResponse {
           freight: 0,
           miscellaneous: 0,
           taxAmount: 0,
+          tradeDiscount: 0,
           header: null,
         },
       },
@@ -161,6 +169,7 @@ function saveMock(calls: Record<string, unknown>[]): MockedResponse {
               taxAmount: 0,
               taxLabel: 'Taxes',
               tariffAmount: 0,
+              tradeDiscount: null,
               requiredByOverride: null,
               includeFsc: false,
               includeUsaTariff: false,
@@ -312,6 +321,7 @@ function gpTotalsWithHeader(delay = 0): MockedResponse {
           freight: 7.5,
           miscellaneous: 0,
           taxAmount: 4.23,
+          tradeDiscount: 2.5,
           header: {
             __typename: 'GpPoHeader',
             shippingMethod: 'UPS GROUND',
@@ -342,6 +352,8 @@ describe('POGenerateDialog prefill from GP (#858)', () => {
     );
     expect(screen.getByRole('spinbutton', { name: 'Freight' })).toHaveValue(7.5);
     expect(screen.getByRole('spinbutton', { name: 'Tax amount' })).toHaveValue(4.23);
+    // #1236: GP's trade discount prefills too, so the document's total matches what GP holds.
+    expect(screen.getByRole('spinbutton', { name: 'Trade discount' })).toHaveValue(2.5);
   });
 
   it('keeps what the buyer saved and lets GP fill only what is empty', async () => {
@@ -360,6 +372,7 @@ describe('POGenerateDialog prefill from GP (#858)', () => {
         taxAmount: 1.11,
         taxLabel: 'Taxes',
         tariffAmount: 0,
+        tradeDiscount: null,
         requiredByOverride: null,
         includeFsc: false,
         includeUsaTariff: false,
@@ -408,5 +421,43 @@ describe('POGenerateDialog prefill from GP (#858)', () => {
     const method = screen.getByRole('textbox', { name: 'Shipping method' });
     fireEvent.change(method, { target: { value: 'Courier' } });
     expect(method).toHaveValue('Courier');
+  });
+});
+
+describe('POGenerateDialog buyer list (#1288)', () => {
+  afterEach(() => {
+    relayState.connected = null;
+  });
+
+  it('says the buyer list could not be read when the read fails', async () => {
+    const failed: MockedResponse = {
+      request: { query: GET_GP_BUYERS, variables: { company: 'TUBC' } },
+      error: new Error('buyer read failed'),
+    };
+    renderDialog([settingsMock(), failed, totalsMock()]);
+    expect(await screen.findByText(/buyer list could not be read: buyer read failed/)).toBeInTheDocument();
+  });
+
+  it('does not read the buyers while the relay is offline, and says so', async () => {
+    relayState.connected = false;
+    // No buyers mock: a read would fail with "no more mocked responses" instead of the offline note.
+    renderDialog([settingsMock(), totalsMock()]);
+    expect(await screen.findByText(/relay is offline, so the buyer list could not be read/)).toBeInTheDocument();
+    expect(screen.queryByText(/buyer list could not be read:/)).not.toBeInTheDocument();
+  });
+});
+
+describe('POGenerateDialog settings read failure (#1279)', () => {
+  it('says the settings could not be loaded instead of spinning, and retries', async () => {
+    const failed: MockedResponse = {
+      request: { query: GET_PO_DOCUMENT_SETTINGS },
+      error: new Error('settings read failed'),
+    };
+    renderDialog([failed, settingsMock(), buyersMock(), totalsMock()]);
+
+    expect(await screen.findByText(/settings read failed/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByText(/settings read failed/)).not.toBeInTheDocument());
   });
 });

@@ -130,8 +130,18 @@ export default function LocationCleanupPage() {
       });
       const counts = (result.data as { mergeLocations: { inventoryLocations: number; stockItems: number } } | null | undefined)
         ?.mergeLocations;
-      const total = counts ? counts.inventoryLocations + counts.stockItems : 0;
-      showToast(`Merged ${total} rows to ${dialog.toAisle}-${dialog.toRow}-${dialog.toBay}`, 'success');
+      if (!counts) {
+        showToast('Merge failed: the server returned no result', 'error');
+        return;
+      }
+      const total = counts.inventoryLocations + counts.stockItems;
+      if (total === 0) {
+        // Nothing sat at the variant, so nothing moved (#1199). Saying "Merged 0 rows" as a success
+        // hid a merge that never matched its rows.
+        showToast(`No rows were at ${fmt(dialog.from)}, so nothing moved`, 'warning');
+      } else {
+        showToast(`Merged ${total} rows to ${dialog.toAisle}-${dialog.toRow}-${dialog.toBay}`, 'success');
+      }
       setDialog(null);
       refetch();
     } catch (err: unknown) {

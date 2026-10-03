@@ -295,8 +295,8 @@ export const SET_PROJECT_ARCHIVED = gql`
 `;
 
 export const UPDATE_USER_ROLES = gql`
-  mutation UpdateUserRoles($userId: String!, $roles: [String!]!) {
-    updateUserRoles(userId: $userId, roles: $roles) {
+  mutation UpdateUserRoles($userId: String!, $roles: [String!]!, $expectedRoles: [String!]) {
+    updateUserRoles(userId: $userId, roles: $roles, expectedRoles: $expectedRoles) {
       ${CLERK_USER_FIELDS}
     }
   }
