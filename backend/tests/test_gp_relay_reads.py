@@ -61,6 +61,34 @@ def test_gp_jobs_maps_relay_result_to_type(monkeypatch):
     assert fake.calls == [("TUBC", "list_jobs", None)]
 
 
+def test_gp_po_totals_carries_the_trade_discount(monkeypatch):
+    # #1236: the document takes GP's trade discount off its total, so the read passes it through.
+    _install_fake_gateway(
+        monkeypatch,
+        {
+            "totals": {
+                "po_number": "PO1",
+                "subtotal": 1000,
+                "freight": 0,
+                "miscellaneous": 0,
+                "tax_amount": 117,
+                "trade_discount": 100,
+            }
+        },
+    )
+    totals = asyncio.run(Query().gp_po_totals(FakeInfo(), company="TUBC", po_number="PO1"))
+    assert totals.trade_discount == 100.0
+
+
+def test_gp_po_totals_from_a_relay_too_old_to_send_a_discount_reads_none(monkeypatch):
+    _install_fake_gateway(
+        monkeypatch,
+        {"totals": {"po_number": "PO1", "subtotal": 10, "freight": 0, "miscellaneous": 0, "tax_amount": 0}},
+    )
+    totals = asyncio.run(Query().gp_po_totals(FakeInfo(), company="TUBC", po_number="PO1"))
+    assert totals.trade_discount == 0.0
+
+
 def test_gp_vendors_maps_relay_result_to_type(monkeypatch):
     fake = _install_fake_gateway(
         monkeypatch,

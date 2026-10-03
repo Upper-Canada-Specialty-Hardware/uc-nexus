@@ -900,6 +900,44 @@ def test_a_resumed_approval_does_not_re_validate_what_gp_has_already_run(committ
     assert result.draft.status.value == "APPROVED"
 
 
+def test_a_persist_failure_after_gp_posted_keeps_the_claim_and_resumes_without_reposting(
+    committed, monkeypatch, approve_env
+):
+    """#1348: GP posted the receipt and only the Nexus persist failed. Releasing the claim here would
+    let a fresh approval, under a new key, post a second GP receipt - receipts carry no key of their
+    own on the GP side (#1213). So the draft stays APPROVING under its key, the ledger keeps GP's
+    answer, and the retry with that key persists from the ledger without calling GP again."""
+    from app.services import gp_idempotency
+
+    f = committed()
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+    real_persist = warehouse_module._persist_create_receive
+
+    def _failing_persist(**kwargs):
+        raise ValidationError("Receive quantity exceeds pending quantity", field="quantity_received")
+
+    monkeypatch.setattr(warehouse_module, "_persist_create_receive", _failing_persist)
+    key = str(uuid.uuid4())
+    with pytest.raises(ValidationError):
+        _approve(f.draft_id, key=key)
+
+    parked = _read_draft(f.draft_id)
+    assert parked.status == ReceiveDraftStatus.APPROVING, "the claim must survive a post-GP persist failure"
+    assert parked.approval_idempotency_key == key
+    state = gp_idempotency.load(key)
+    assert state is not None and state.relay_result is not None, "GP's answer is kept for the resume"
+    assert len(relay.calls) == 1
+
+    monkeypatch.setattr(warehouse_module, "_persist_create_receive", real_persist)
+    result = _approve(f.draft_id, key=key)
+
+    assert len(relay.calls) == 1, "the resume must not post to GP again"
+    assert result.receive_record is not None
+    assert result.receive_record.receipt_number == "RCT000123"
+    assert result.draft.status.value == "APPROVED"
+
+
 def test_a_stock_po_draft_works_end_to_end(committed, monkeypatch, approve_env):
     """A project-less PO routes to the stock pool. Drafts apply to it and approve unchanged."""
     f = committed(with_project=False, quantity=2)

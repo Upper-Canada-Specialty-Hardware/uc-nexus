@@ -132,7 +132,7 @@ export default function PullRequestDetailModal({
   onClose,
   onRefetch,
 }: PullRequestDetailModalProps) {
-  const { displayName } = useIdentity();
+  const { displayName, userId } = useIdentity();
   const { showToast } = useToast();
   const navigate = useNavigate();
   const client = useApolloClient();
@@ -268,8 +268,11 @@ export default function PullRequestDetailModal({
   const isCancelled = pr.status === 'CANCELLED';
 
   const isPicked = Boolean(pr.pickedAt);
-  const isAssignedToCurrentUser = isInProgress && pr.assignedTo === displayName;
-  const isLockedToOtherUser = isInProgress && pr.assignedTo !== displayName;
+  // #1356: decided by user id - two people can share a display name and one person can change theirs.
+  // A pull started before the id was recorded has only the name, so it falls back to that.
+  const isMine = pr.assignedToUserId ? pr.assignedToUserId === userId : pr.assignedTo === displayName;
+  const isAssignedToCurrentUser = isInProgress && isMine;
+  const isLockedToOtherUser = isInProgress && !isMine;
 
   // #343: the staging checklist is the shop-assembly pull's execution view. Since #367 it appears
   // only once the pick is confirmed - staging is a claim that a cart is built, and before the pick

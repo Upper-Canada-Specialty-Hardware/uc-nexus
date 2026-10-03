@@ -7,8 +7,10 @@ retired method that still reads correctly on the shipments it carried.
 """
 
 import uuid
+from contextlib import contextmanager
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.errors import ConflictError, NotFoundError, ValidationError
@@ -32,17 +34,29 @@ def get_shipment_methods(
     return list(session.scalars(stmt).all())
 
 
-def create_shipment_method(session: Session, *, name: str, sort_order: int = 0, company: str) -> ShipmentMethod:
+# The column is String(100) (#1175). Longer failed at flush as a masked "unexpected error".
+NAME_MAX = 100
+
+
+def _clean_name(name: str | None) -> str:
     name = (name or "").strip()
-    company = (company or "").strip().upper()
     if not name:
         raise ValidationError("A shipment method needs a name.", field="name")
+    if len(name) > NAME_MAX:
+        raise ValidationError(f"A shipment method name can be at most {NAME_MAX} characters.", field="name")
+    return name
+
+
+def create_shipment_method(session: Session, *, name: str, sort_order: int = 0, company: str) -> ShipmentMethod:
+    name = _clean_name(name)
+    company = (company or "").strip().upper()
     if not company:
         raise ValidationError("A GP company is required for a shipment method.", field="company")
     _check_name_free(session, name, company)
     method = ShipmentMethod(id=uuid.uuid4(), company=company, name=name, is_active=True, sort_order=sort_order)
-    session.add(method)
-    session.flush()
+    with _name_race(session, name):
+        session.add(method)
+        session.flush()
     return method
 
 
@@ -65,12 +79,12 @@ def update_shipment_method(
         raise NotFoundError(f"Shipment method {method_id} not found")
 
     if name is not None:
-        name = name.strip()
-        if not name:
-            raise ValidationError("A shipment method needs a name.", field="name")
+        name = _clean_name(name)
         if name != method.name:
-            _check_name_free(session, name, method.company)
-            method.name = name
+            _check_name_free(session, name, method.company, except_id=method.id)
+            with _name_race(session, name):
+                method.name = name
+                session.flush()
     if is_active is not None:
         method.is_active = is_active
     if sort_order is not None:
@@ -94,11 +108,29 @@ def delete_shipment_method(session: Session, method_id: uuid.UUID) -> None:
     session.flush()
 
 
-def _check_name_free(session: Session, name: str, company: str) -> None:
+def _check_name_free(session: Session, name: str, company: str, *, except_id: uuid.UUID | None = None) -> None:
     """One spelling per carrier within a company, case-insensitively - "Flatbed" and "flatbed" are
-    the same answer, and two companies each running their own "Our truck" are two rows (#637)."""
-    existing = session.scalars(
-        select(ShipmentMethod).where(func.lower(ShipmentMethod.name) == name.lower(), ShipmentMethod.company == company)
-    ).first()
+    the same answer, and two companies each running their own "Our truck" are two rows (#637). A
+    method re-cased on rename ("flatbed" to "Flatbed") is not a clash with itself."""
+    stmt = select(ShipmentMethod).where(
+        func.lower(ShipmentMethod.name) == name.lower(), ShipmentMethod.company == company
+    )
+    if except_id is not None:
+        stmt = stmt.where(ShipmentMethod.id != except_id)
+    existing = session.scalars(stmt).first()
     if existing is not None:
         raise ConflictError(f"A shipment method named {existing.name} already exists", field="name")
+
+
+@contextmanager
+def _name_race(session: Session, name: str):
+    """The write, under a savepoint, with the unique index's refusal turned into the same conflict
+    `_check_name_free` raises (#1388). The check is a read before the write, so two people adding the
+    same carrier at once both pass it; the index stops the second, and without this it would reach the
+    user as a masked server error and take the rest of the transaction with it.
+    """
+    try:
+        with session.begin_nested():
+            yield
+    except IntegrityError as exc:
+        raise ConflictError(f"A shipment method named {name} already exists", field="name") from exc

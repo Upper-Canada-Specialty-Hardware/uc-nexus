@@ -49,6 +49,8 @@ interface OpenPO {
   id: string;
   poNumber: string | null;
   projectId: string | null;
+  projectNumber: string | null;
+  projectDescription: string | null;
   poolKind: PoolKind;
   status: string;
   origin: string;
@@ -298,18 +300,9 @@ export default function ReceivingPage() {
   }, [pendingDraftsData]);
   const pendingDraftCount = pendingDraftsData?.receiveDrafts?.length ?? 0;
 
-  // Project lookup
+  // The history tab's project filter. Rows name their project off the server (#1196, #1215), since
+  // this list leaves archived projects out.
   const projects = useMemo(() => projectsData?.projects ?? [], [projectsData]);
-  const projectMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const p of projects) {
-      map.set(p.id, p.description || p.projectId);
-    }
-    return map;
-  }, [projects]);
-  // #857: the search matches a PO's project by job number as well as by name, and the grid prints
-  // only one of them, so the lookup keeps the job number too.
-  const jobNumberById = useMemo(() => new Map(projects.map((p) => [p.id, p.projectId])), [projects]);
 
   // PO rows
   const poColumns: GridColDef[] = useMemo(
@@ -428,15 +421,18 @@ export default function ReceivingPage() {
         id: po.id,
         poNumber: po.poNumber ?? '\u2014',
         vendorName: poVendorLabel(po) || '\u2014',
-        projectName: po.projectId ? (projectMap.get(po.projectId) ?? '\u2014') : noProjectPoLabel(po.poolKind),
-        jobNumber: po.projectId ? (jobNumberById.get(po.projectId) ?? '') : '',
+        // Off the row itself (#1196): the projects list leaves archived projects out.
+        projectName: po.projectId
+          ? po.projectDescription || po.projectNumber || '\u2014'
+          : noProjectPoLabel(po.poolKind),
+        jobNumber: po.projectNumber ?? '',
         expectedDeliveryDate: po.expectedDeliveryDate,
         pendingLines: po.pendingLineCount,
         pendingQty: po.pendingQuantity,
         status: po.status,
         pendingDraftCount: pendingDraftsByPoId.get(po.id)?.length ?? 0,
       })),
-    [openPOsData, projectMap, jobNumberById, pendingDraftsByPoId],
+    [openPOsData, pendingDraftsByPoId],
   );
 
   // #857: the list runs to hundreds of POs, so a receiver with a delivery in hand narrows it as they
@@ -546,7 +542,7 @@ export default function ReceivingPage() {
       <GpWriteQueuePanel ops={HELD_GP_RECEIVE_ENTRY_OPS} compact heading="Held GP receive entries" />
 
       {view === 'drafts' && <MyReceiveDraftsView />}
-      {view === 'history' && <ReceivingHistory projects={projects} projectMap={projectMap} />}
+      {view === 'history' && <ReceivingHistory projects={projects} />}
 
       {showReceive && (
         <>

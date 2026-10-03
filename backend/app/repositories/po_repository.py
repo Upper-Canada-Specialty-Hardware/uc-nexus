@@ -55,6 +55,31 @@ def _coerce_custom_inventory_item_id(raw) -> uuid.UUID | None:
     return raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))
 
 
+def _checked_custom_inventory_item_id(session: Session, raw, company: str) -> uuid.UUID | None:
+    """#1379: the catalog entry a line names, refused when it does not exist or belongs to another
+    company's catalog. The line stores the id unchecked otherwise, and a dangling or cross-tenant id
+    surfaces later as a line described by a product nobody can see."""
+    from app.models.inventory_item_type import CustomInventoryItem, InventoryItemType
+
+    item_id = _coerce_custom_inventory_item_id(raw)
+    if item_id is None:
+        return None
+    item_company = session.execute(
+        select(InventoryItemType.company)
+        .join(CustomInventoryItem, CustomInventoryItem.type_id == InventoryItemType.id)
+        .where(CustomInventoryItem.id == item_id)
+    ).scalar_one_or_none()
+    if item_company is None or item_company != company:
+        raise ValidationError(f"Custom item {item_id} is not in this company's catalog", field="line_items")
+    return item_id
+
+
+def validate_line_catalog_items(session: Session, line_items: list[dict], company: str) -> None:
+    """#1379: the catalog check on its own, so the register resolver can refuse before the GP push."""
+    for li_data in line_items:
+        _checked_custom_inventory_item_id(session, li_data.get("custom_inventory_item_id"), company)
+
+
 def _learn_manufacturer_vendor_mappings(
     session: Session,
     *,
@@ -181,15 +206,31 @@ def _assert_po_number_available(
         raise ValidationError(f"PO number '{po_number}' already exists", field="po_number")
 
 
+# The order-time cost columns are Numeric(12,2), so anything at or above this overflows at flush.
+_MAX_ORDER_COST = Decimal("10000000000")
+
+
 def _coerce_order_cost(value, field: str) -> Decimal | None:
     """Issue #156: coerce an optional order-time dollar cost (shipping_cost / tariff_amount) to
-    Decimal. Null passes through ("not entered"); a negative value is a clean field error."""
+    Decimal. Null passes through ("not entered"); a negative value, or one too large for the column
+    (#1207), is a clean field error rather than an overflow at flush."""
     if value is None:
         return None
     amount = Decimal(str(value))
+    label = field.replace("_", " ").capitalize()
     if amount < 0:
-        raise ValidationError(f"{field.replace('_', ' ').capitalize()} must be zero or greater", field=field)
+        raise ValidationError(f"{label} must be zero or greater", field=field)
+    if amount >= _MAX_ORDER_COST:
+        raise ValidationError(f"{label} must be less than {_MAX_ORDER_COST:,}", field=field)
     return amount
+
+
+def validate_order_costs(*, shipping_cost=None, tariff_amount=None) -> None:
+    """#1207: the order-cost checks the persist makes, run on their own so the register resolver can
+    refuse a bad cost BEFORE the GP push. Refused only at the persist, GP would already hold the PO
+    while Nexus kept the draft, and a retry would push a second one."""
+    _coerce_order_cost(shipping_cost, "shipping_cost")
+    _coerce_order_cost(tariff_amount, "tariff_amount")
 
 
 def _effective_pool_kind(project_id: uuid.UUID | None, pool_kind: PoolKind | None) -> PoolKind:
@@ -296,7 +337,7 @@ def create_po(
         if isinstance(classification_val, str):
             classification_val = Classification(classification_val)
 
-        catalog_item_id = _coerce_custom_inventory_item_id(li_data.get("custom_inventory_item_id"))
+        catalog_item_id = _checked_custom_inventory_item_id(session, li_data.get("custom_inventory_item_id"), company)
         order_as_raw = li_data.get("order_as")
         # #563: Hardware Category and Product Code are the line's identity and are both required; they
         # are what a PO REGISTRATION sends GP as the item number and the description. Order As is the
@@ -479,7 +520,10 @@ def register_po_in_gp(
     # is GP POP10110.ORD = line index * 16384, assigned in the order the lines were sent to the relay
     # (== this payload order), which is what a relay /receipt targets per line.
     for idx, li_data in enumerate(line_items, start=1):
-        catalog_item_id = _coerce_custom_inventory_item_id(li_data.get("custom_inventory_item_id"))
+        # #1379: checked first, ahead of the kept-line handling and its schedule ties.
+        catalog_item_id = _checked_custom_inventory_item_id(
+            session, li_data.get("custom_inventory_item_id"), po.company
+        )
         order_as_raw = li_data.get("order_as")
         # #563: Hardware Category and Product Code are the line's identity and are both required; they
         # are what a PO REGISTRATION sends GP as the item number and the description. Order As is the
@@ -519,6 +563,13 @@ def register_po_in_gp(
             if poli is None:
                 raise ValidationError(f"Line item {lid} does not belong to this PO", field="line_items")
             seen_ids.add(lid)
+            # #1167: the schedule rows tied to this line must still describe it. A changed category or
+            # product leaves every tied row describing other hardware, so all of it goes back; a lower
+            # quantity leaves the units over it never ordered, so the excess goes back.
+            identity_changed = (
+                poli.hardware_category != li_data["hardware_category"] or poli.product_code != li_data["product_code"]
+            )
+            _release_line_ties_beyond(session, poli.id, keep=0 if identity_changed else qty)
             poli.hardware_category = li_data["hardware_category"]
             poli.product_code = li_data["product_code"]
             poli.ordered_quantity = qty
@@ -749,6 +800,10 @@ def _link_available_items(
                 HardwareItem.state == HardwareItemState.AVAILABLE,
             )
             .order_by(Opening.opening_number, HardwareItem.id)
+            # #1373: the rows about to be tied or split are locked, so two ties of one combo cannot both
+            # split the same AVAILABLE row and grow the schedule.
+            .with_for_update(of=HardwareItem)
+            .execution_options(populate_existing=True)
         )
         .scalars()
         .all()
@@ -766,6 +821,45 @@ def _link_available_items(
         if remaining <= 0:
             break
     return linked
+
+
+def _release_line_ties_beyond(session: Session, po_line_item_id: uuid.UUID, *, keep: int) -> int:
+    """Release the schedule rows tied to a PO line beyond its first `keep` units back to AVAILABLE
+    (#1167), the reverse of `_link_available_items`: rows are kept in its order (oldest opening first)
+    and the row that straddles `keep` is split, its kept part staying IN_PO and the rest going back as an
+    AVAILABLE row on the same opening. Returns the units released."""
+    from app.models.hardware import HardwareItem
+    from app.models.project import Opening
+
+    rows = (
+        session.execute(
+            select(HardwareItem)
+            .join(Opening, HardwareItem.opening_id == Opening.id)
+            .where(HardwareItem.po_line_item_id == po_line_item_id)
+            .order_by(Opening.opening_number, HardwareItem.id)
+        )
+        .scalars()
+        .all()
+    )
+    released = 0
+    remaining = max(keep, 0)
+    for hi in rows:
+        if remaining >= hi.item_quantity:
+            remaining -= hi.item_quantity
+            continue
+        if remaining > 0:
+            excess = _split_off_hardware_row(hi, hi.item_quantity - remaining)
+            excess.state = HardwareItemState.AVAILABLE
+            excess.po_line_item_id = None
+            session.add(excess)
+            hi.item_quantity = remaining
+            released += excess.item_quantity
+            remaining = 0
+            continue
+        hi.state = HardwareItemState.AVAILABLE
+        hi.po_line_item_id = None
+        released += hi.item_quantity
+    return released
 
 
 def _available_schedule_units(
@@ -804,6 +898,13 @@ def tied_units_by_line(session: Session, line_ids: list[uuid.UUID]) -> dict[uuid
         .group_by(HardwareItem.po_line_item_id)
     ).all()
     return {line_id: int(total) for line_id, total in rows}
+
+
+def untied_outstanding(ordered: int, received: int, tied: int) -> int:
+    """Units a line still has coming that no schedule row is tied to yet (#1371). Tied rows keep their
+    tie once their units arrive, so the received and tied counts overlap; subtracting both counted the
+    received tied units twice and left a topped-up line unable to tie what was still on its way."""
+    return max(ordered - max(received, tied), 0)
 
 
 # The PO stages a GP-born PO may be given a schedule identity in: it is still open, so the hardware it
@@ -845,8 +946,25 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
             f"Only an open GP-owned purchase order can be registered in Nexus; this one is {po.status.value}"
         )
 
-    by_id = {li.id: li for li in po.line_items}
+    # #1373: ties on one project run one at a time, and never inside a finalize. The project is locked
+    # in the mode finalize takes (FOR NO KEY UPDATE, so inserts referencing it are not blocked), then the
+    # PO's lines in id order, re-read so the caps below are computed from quantities nobody can move.
+    if po.project_id is not None:
+        from app.models.project import Project as ProjectModel
+
+        session.execute(select(ProjectModel.id).where(ProjectModel.id == po.project_id).with_for_update(key_share=True))
+    locked_lines = session.scalars(
+        select(POLineItem)
+        .where(POLineItem.po_id == po.id)
+        .order_by(POLineItem.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+
+    by_id = {li.id: li for li in locked_lines}
     tied = 0
+    # Units each schedule product has given earlier entries of this same save, for the refusal below.
+    tied_here: dict[tuple[str, str], int] = {}
     for entry in lines:
         line = by_id.get(entry["po_line_item_id"])
         if line is None:
@@ -882,9 +1000,11 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
 
         if po.project_id is not None and quantity:
             # What is already tied counts against what is outstanding, so a registered line can be
-            # topped up later (#1128) without tying more than it still has coming.
+            # topped up later (#1128) without tying more than it still has coming. A tied row stays IN_PO
+            # after its units arrive, so received and tied overlap: the untied outstanding is ordered less
+            # the larger of the two, not less both (#1371).
             already_tied = tied_units_by_line(session, [line.id]).get(line.id, 0)
-            outstanding = max(line.ordered_quantity - line.received_quantity - already_tied, 0)
+            outstanding = untied_outstanding(line.ordered_quantity, line.received_quantity, already_tied)
             available = _available_schedule_units(
                 session,
                 project_id=po.project_id,
@@ -893,10 +1013,19 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
             )
             cap = min(outstanding, available)
             if quantity > cap:
+                # #1372: two lines for one product draw on one schedule. Say when earlier lines of this
+                # save are what used it up, so the fix (split the quantity between them) is obvious.
+                earlier = tied_here.get((hardware_category, product_code), 0)
+                shared = (
+                    f"; {earlier} went to earlier lines for the same product in this save, so split what is "
+                    "left between them"
+                    if earlier
+                    else ""
+                )
                 raise ValidationError(
                     f"At most {cap} units of {hardware_category} / {product_code} can be tied to this "
                     f"line ({outstanding} still outstanding and untied, {available} still available on the "
-                    "schedule)",
+                    f"schedule{shared})",
                     field="tie_quantity",
                 )
 
@@ -905,7 +1034,7 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
         line.nexus_registered = True
 
         if po.project_id is not None and quantity:
-            tied += _link_available_items(
+            linked = _link_available_items(
                 session,
                 project_id=po.project_id,
                 hardware_category=hardware_category,
@@ -913,6 +1042,9 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
                 quantity=quantity,
                 po_line_item_id=line.id,
             )
+            tied += linked
+            key = (hardware_category, product_code)
+            tied_here[key] = tied_here.get(key, 0) + linked
 
     session.flush()
     return po, tied
@@ -983,6 +1115,23 @@ def reload_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder | None:
         .where(PurchaseOrder.id == po_id)
     )
     return session.scalars(stmt).unique().first()
+
+
+def reload_pos(session: Session, po_ids: list[uuid.UUID]) -> list[PurchaseOrder]:
+    """reload_po for several POs in one statement per relationship (#1225), returned in the order of
+    `po_ids`. An id with no row is left out. No deleted_at filter, as in reload_po."""
+    if not po_ids:
+        return []
+    stmt = (
+        select(PurchaseOrder)
+        .options(
+            selectinload(PurchaseOrder.line_items),
+            selectinload(PurchaseOrder.documents),
+        )
+        .where(PurchaseOrder.id.in_(po_ids))
+    )
+    by_id = {po.id: po for po in session.scalars(stmt).unique().all()}
+    return [by_id[po_id] for po_id in po_ids if po_id in by_id]
 
 
 def get_receive_records_for_po(session: Session, po_id: uuid.UUID) -> list[ReceiveRecord]:
@@ -1540,6 +1689,14 @@ def upsert_po_document_data(session: Session, po_id: uuid.UUID, **fields) -> POD
         if key in fields:
             value = fields[key]
             setattr(data, key, Decimal(str(value)) if value is not None else Decimal("0"))
+
+    # #1236: the trade discount stays null until a value is sent, so a document saved before it existed
+    # still prefills GP's discount; a sent value is stored as given (0 included).
+    if fields.get("trade_discount") is not None:
+        discount = Decimal(str(fields["trade_discount"]))
+        if discount < 0:
+            raise ValidationError("Trade discount cannot be negative", field="trade_discount")
+        data.trade_discount = discount
 
     for key in _DOC_DATA_BOOL_FIELDS:
         if key in fields and fields[key] is not None:
