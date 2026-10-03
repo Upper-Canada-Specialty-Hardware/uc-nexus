@@ -22,7 +22,7 @@ import {
 import { ChevronDown } from 'lucide-react';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { useToast } from '../../components/Toast';
-import LocationAutocomplete from '../../components/LocationAutocomplete';
+import LocationAutocomplete, { NO_DEFINED_LOCATIONS_TEXT } from '../../components/LocationAutocomplete';
 import {
   GET_PROJECTS,
   GET_WAREHOUSES,
@@ -641,6 +641,13 @@ export default function PutAwayTab() {
         description="Received hardware with no rack location yet. Pick a defined aisle, row and bay for each row, or tick several rows from one warehouse and put them all in one bin — locations are defined on the Locations tab."
       />
 
+      {/* #1345: with nothing in the registry no row can ever be put away - say what to set up. */}
+      {registryData && registry.length === 0 && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          {NO_DEFINED_LOCATIONS_TEXT}
+        </Alert>
+      )}
+
       {/* Filters */}
       <Box sx={{ display: 'flex', gap: 2, mb: 3, flexWrap: 'wrap' }}>
         <FormControl size="small" sx={{ minWidth: 250 }}>
@@ -1045,7 +1052,13 @@ export default function PutAwayTab() {
             }
             onClick={handleBulkPutAway}
             disabled={!bulkValid || bulkRunning}
-            reason={bulkRunning ? undefined : 'Pick a defined aisle, row and bay first.'}
+            reason={
+              bulkRunning
+                ? undefined
+                : bulkOptions.aisles.length === 0 && registryData
+                  ? NO_DEFINED_LOCATIONS_TEXT
+                  : 'Pick a defined aisle, row and bay first.'
+            }
           />
         </SelectionActionBar>
       </Box>

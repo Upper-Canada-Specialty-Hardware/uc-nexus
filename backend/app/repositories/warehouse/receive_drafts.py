@@ -24,6 +24,7 @@ from app.models.purchase_order import POLineItem as POLineItemModel
 from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.receive_draft import ReceiveDraft as ReceiveDraftModel
 from app.models.receive_draft import ReceiveDraftLineItem as ReceiveDraftLineItemModel
+from app.models.warehouse import Warehouse
 from app.services import notification_service
 from app.services.locking import lock_rows
 
@@ -247,6 +248,20 @@ def create_receive_draft(
         .unique()
         .first()
     )
+
+    # #1344: a draft with no warehouse falls back to the company's default building at approval;
+    # with no active building at all that approval can never succeed, so refuse the draft now,
+    # in front of the person counting, rather than after.
+    if warehouse_id is None and po is not None:
+        has_active_warehouse = session.scalar(
+            select(Warehouse.id).where(Warehouse.company == po.company, Warehouse.is_active.is_(True)).limit(1)
+        )
+        if has_active_warehouse is None:
+            raise ValidationError(
+                "No active warehouse to receive into. A Tenant Owner must add one under Tenant Owner -> "
+                "Warehouses before hardware can be received.",
+                field="warehouse_id",
+            )
 
     draft = ReceiveDraftModel(
         id=uuid.uuid4(),
