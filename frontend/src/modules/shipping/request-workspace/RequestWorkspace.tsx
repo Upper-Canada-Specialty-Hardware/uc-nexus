@@ -10,7 +10,7 @@ import {
   Typography,
 } from '@mui/material';
 import { ShoppingCart } from 'lucide-react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link as RouterLink, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery } from '@apollo/client/react';
 import ProjectPicker from '../../../components/ProjectPicker';
 import PageHeader from '../../../components/PageHeader';
@@ -30,7 +30,7 @@ import type { InventoryAvailabilityRow } from '../../import/types';
 import {
   buildRequestItems,
   headroomByProduct,
-  heldByRequest,
+  heldFromReservations,
   productKey,
   totalUnits,
   type CartLine,
@@ -53,6 +53,12 @@ interface SeededRequest {
   projectId: string;
   status: string;
   items: SeededItem[];
+  /** #1260: sent back on save, so a save over someone else's change is refused rather than undoing it. */
+  linesVersion?: string | null;
+  /** #1257: the request's own project, archived included. */
+  project?: Project | null;
+  /** #1262: what the request really holds on stock; null from a backend that does not say. */
+  reservedByProduct?: { hardwareCategory: string; productCode: string; quantity: number }[] | null;
 }
 
 const REQUESTS_PARENT = { label: 'Requests', to: '/app/shipping/requests' };
@@ -76,7 +82,7 @@ export default function RequestWorkspace({ mode }: { mode: 'create' | 'edit' }) 
 }
 
 function CreateRoute() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const preselectId = searchParams.get('projectId');
   const { data } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const [project, setProject] = useState<Project | null>(null);
@@ -104,6 +110,17 @@ function CreateRoute() {
           onChange={(p) => {
             setTouched(true);
             setProject(p);
+            // #1308: the URL always carries the picked project, so the schedule tab's "upload a newer
+            // schedule" hand-off (which returns to this URL) comes back to the same project.
+            setSearchParams(
+              (prev) => {
+                const next = new URLSearchParams(prev);
+                if (p) next.set('projectId', p.id);
+                else next.delete('projectId');
+                return next;
+              },
+              { replace: true },
+            );
           }}
           sx={{ maxWidth: 420 }}
         />
@@ -128,8 +145,13 @@ function EditRoute() {
   );
 
   const request = data?.shippingOutRequest ?? null;
+  // #1257: the request carries its own project, archived or not. The projects list (which leaves
+  // archived jobs out) is only the fallback for a backend that does not send it.
   const project = useMemo(
-    () => (request ? projectsData?.projects.find((p) => p.id === request.projectId) ?? null : null),
+    () =>
+      request
+        ? (request.project ?? projectsData?.projects.find((p) => p.id === request.projectId) ?? null)
+        : null,
     [request, projectsData],
   );
 
@@ -146,6 +168,21 @@ function EditRoute() {
   if (!request) {
     return <Alert severity="warning">This request no longer exists.</Alert>;
   }
+  if (request.status === 'REJECTED') {
+    // #1309: say what actually happened to it.
+    return (
+      <Alert
+        severity="warning"
+        action={
+          <Button color="inherit" size="small" component={RouterLink} to="/app/shipping/requests?view=REJECTED">
+            Rejected requests
+          </Button>
+        }
+      >
+        Request {request.requestNumber} was rejected, so it can no longer be edited.
+      </Alert>
+    );
+  }
   if (request.status !== 'PENDING') {
     return (
       <Alert severity="warning">
@@ -154,10 +191,12 @@ function EditRoute() {
     );
   }
   if (!project) {
+    // Never an endless spinner (#1257): the project is on the request, so missing it is an answer.
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>
-        <CircularProgress />
-      </Box>
+      <Alert severity="warning">
+        Request {request.requestNumber} belongs to a project that could not be loaded, so it cannot be edited
+        here.
+      </Alert>
     );
   }
 
@@ -295,7 +334,12 @@ function Composer({
   const headroom = useMemo(() => {
     const available = new Map<string, number>();
     for (const row of availabilityRows) available.set(productKey(row), row.availableQuantity);
-    const held = mode === 'edit' ? heldByRequest(request?.items ?? []) : new Map<string, number>();
+    // #1262: what the request really holds, not its lines - a request with no claim has no headroom to
+    // give back, and counting its lines would offer stock the server then refuses.
+    const held =
+      mode === 'edit'
+        ? heldFromReservations(request?.reservedByProduct, request?.items ?? [])
+        : new Map<string, number>();
     return headroomByProduct(available, held);
   }, [availabilityRows, mode, request]);
 
@@ -339,7 +383,12 @@ function Composer({
     const items = buildRequestItems(cart);
     if (items.length === 0) return;
     if (mode === 'edit' && request) {
-      editRequest({ variables: { input: { id: request.id, items } } });
+      // #1260: the lines this edit was composed against, so a save over someone else's change is refused.
+      editRequest({
+        variables: {
+          input: { id: request.id, items, expectedLinesVersion: request.linesVersion ?? null },
+        },
+      });
     } else {
       createRequest({ variables: { input: { projectId: project.id, items } } });
     }
@@ -387,7 +436,7 @@ function Composer({
   return (
     <Box sx={{ minWidth: 0, pb: 8 /* room for the last rows to scroll clear of the launcher */ }}>
       {/* On md+ the tables yield the drawer's width instead of losing their right edge - the Add
-          column - under it; a lane too wide for what is left scrolls inside its own container.
+          column - under it; the lanes are fit-column tables, so they shrink to what is left.
           Below md the drawer overlays, as the old temporary drawer did. */}
       <Stack
         spacing={3}

@@ -30,6 +30,9 @@ interface AddCustomerAddressDialogProps {
    * submit that then fails takes a whole re-keyed address with it.
    */
   relayConnected: boolean;
+  // #1334/#1336: why GP work is off, from relayBlockedReason. When given, it replaces the generic alert,
+  // and a null (first check still running) shows no alert at all.
+  relayReason?: string | null;
   /** The row GP stored, ready to be offered and selected by the picker that opened this. */
   onCreated: (address: CreatedGpCustomerAddress) => void;
   /**
@@ -62,6 +65,7 @@ export default function AddCustomerAddressDialog({
   onClose,
   customer,
   relayConnected,
+  relayReason,
   onCreated,
   onDuplicate,
 }: AddCustomerAddressDialogProps) {
@@ -176,10 +180,10 @@ export default function AddCustomerAddressDialog({
             address added here cannot be undone or edited from Nexus.
           </Alert>
 
-          {!relayConnected && (
+          {(relayReason !== undefined ? Boolean(relayReason) : !relayConnected) && (
             <Alert severity="warning">
-              The GP relay is not connected. An address can only be created against live GP data, so this form
-              stays disabled until the relay is running.
+              {relayReason ?? 'The GP relay is not connected.'} An address can only be created against live GP
+              data, so this form stays disabled until then.
             </Alert>
           )}
 

@@ -13,16 +13,6 @@ export const GET_SHIPPING_STATS = gql`
   }
 `;
 
-export const GET_SHIP_READY_ITEMS = gql`
-  query GetShipReadyItems($projectId: ID) {
-    shipReadyItems(projectId: $projectId) {
-      looseItems {
-        openingNumber hardwareCategory productCode availableQuantity
-      }
-    }
-  }
-`;
-
 // The staging workspace (#451): what is staged, and which container it has been put in. One query
 // for both halves so they can never disagree about whether something has been loaded.
 const CONTAINER_FIELDS = `
@@ -46,12 +36,6 @@ export const CREATE_SHIPMENT_CONTAINER = gql`
     createShipmentContainer(projectId: $projectId, containerType: $containerType, name: $name) {
       ${CONTAINER_FIELDS}
     }
-  }
-`;
-
-export const RENAME_SHIPMENT_CONTAINER = gql`
-  mutation RenameShipmentContainer($id: ID!, $name: String!) {
-    renameShipmentContainer(id: $id, name: $name) { ${CONTAINER_FIELDS} }
   }
 `;
 
@@ -116,6 +100,7 @@ const SHIPPING_OUT_REQUEST_FIELDS = `
   createdBy
   createdAt
   integrityNote
+  linesVersion
   items { id openingNumber hardwareCategory productCode requestedQuantity }
 `;
 
@@ -140,10 +125,31 @@ export const EDIT_SHIPPING_OUT_REQUEST = gql`
 // full-page route (/shipping/requests/:id/edit), so it reads the request it is editing directly
 // rather than relying on the accept-queue list having been mounted first - a cold deep-link or a
 // refresh has no such list in the cache. Null when the id matches nothing (already deleted).
+// `project` is the request's own job, archived included (#1257), and `reservedByProduct` is what the
+// request really holds on stock, which edit mode adds back as headroom (#1262). Both are resolved only
+// by this single-request read.
 export const GET_SHIPPING_OUT_REQUEST = gql`
   query GetShippingOutRequest($id: ID!) {
     shippingOutRequest(id: $id) {
       ${SHIPPING_OUT_REQUEST_FIELDS}
+      project {
+        id
+        projectId
+        description
+        client
+        jobSiteName
+        scheduleFilename
+        company
+        openingCount
+        gpSetupOk
+        gpSetupCheckedAt
+        gpSetupIssues {
+          costCode
+          accountIndex
+        }
+        gpJobState
+      }
+      reservedByProduct { hardwareCategory productCode quantity }
     }
   }
 `;

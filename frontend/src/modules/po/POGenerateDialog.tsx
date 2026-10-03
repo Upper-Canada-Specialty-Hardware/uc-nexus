@@ -15,6 +15,7 @@ import PurchaseOrderDocument, { type PurchaseOrderDocumentProps } from './Purcha
 import type { PurchaseOrder } from './index';
 import { monoSx, microLabelSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
+import { openPdfWindow } from '../../utils/openPdf';
 import { documentCurrencyFromGp, formatGpAddress, type GpPoHeader } from './gpPoHeader';
 
 /** Section separator for this form: a 2px ink rule under a micro-label. */
@@ -331,12 +332,15 @@ function GenerateForm({
   }, [saveDocData, po.id, docInput, onRefetch]);
 
   const handlePreview = useCallback(async () => {
+    // #1338: the tab opens inside the click; a tab opened after the save and render was blocked.
+    const tab = openPdfWindow(showToast);
     setBusy(true);
     try {
       await persist();
       const blob = await pdf(<PurchaseOrderDocument {...buildDocProps()} />).toBlob();
-      window.open(URL.createObjectURL(blob), '_blank');
+      tab.show(blob);
     } catch (err) {
+      tab.cancel();
       showToast(err instanceof Error ? err.message : 'Failed to generate document', 'error');
     } finally {
       setBusy(false);

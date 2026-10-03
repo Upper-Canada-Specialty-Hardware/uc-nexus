@@ -432,3 +432,21 @@ it('says the connection log is empty rather than rendering an empty table', asyn
   renderPage([statusMock, installsMock, windowMock(null)]);
   expect(await screen.findByText(/no connection events recorded yet/i, {}, GRID_TIMEOUT)).toBeTruthy();
 });
+
+// #1320: a failed read is not an empty list - the page says the installs or the log could not be
+// loaded instead of showing an empty grid and "no connection events recorded yet".
+it('says the installs could not be loaded when the read fails', async () => {
+  renderPage([statusMock, { request: { query: RELAY_INSTALLS }, error: new Error('backend down') }, windowMock(null)]);
+  expect(await screen.findByText(/relay installs could not be loaded: backend down/i, {}, GRID_TIMEOUT)).toBeTruthy();
+});
+
+it('says the connection log could not be loaded when the read fails', async () => {
+  renderPage([
+    statusMock,
+    installsMock,
+    windowMock(null),
+    { request: { query: RELAY_EVENTS, variables: { limit: 50 } }, error: new Error('backend down') },
+  ]);
+  expect(await screen.findByText(/connection events could not be loaded: backend down/i, {}, GRID_TIMEOUT)).toBeTruthy();
+  expect(screen.queryByText(/no connection events recorded yet/i)).toBeNull();
+});

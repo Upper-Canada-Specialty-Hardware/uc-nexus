@@ -3,10 +3,13 @@
 import uuid
 
 import strawberry
+from sqlalchemy import func, select
 
 from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
 from app.models.enums import ShipmentStatus as ShipmentStatusDB
+from app.models.project import Opening as OpeningModel
+from app.models.project import Project as ProjectModel
 from app.repositories import (
     request_composer,
     shipment_containers,
@@ -19,6 +22,7 @@ from app.repositories import (
 from .converters import (
     container_to_type,
     packing_slip_to_type,
+    project_to_type,
     shipment_return_to_type,
     shipping_out_request_to_type,
 )
@@ -43,6 +47,7 @@ from .types import (
     ShipmentMethod,
     ShipmentReturn,
     ShippingOutRequest,
+    ShippingOutRequestReservedProduct,
     ShipReadyItems,
     ShipReadyLooseItem,
     StagedLooseItem,
@@ -197,7 +202,21 @@ class ShippingQueries:
             if req is None:
                 return None
             tenancy.require_shipping_out_request_in_scope(session, req.id, scope)
-            return shipping_out_request_to_type(req)
+            result = shipping_out_request_to_type(req)
+            # #1257: the request's own project, archived or not, so the edit page never depends on the
+            # projects list (which leaves archived jobs out). One request, so two small reads.
+            project = session.get(ProjectModel, req.project_id)
+            if project is not None:
+                opening_count = session.scalar(
+                    select(func.count()).select_from(OpeningModel).where(OpeningModel.project_id == project.id)
+                )
+                result.project = project_to_type(project, include_openings=False, opening_count=opening_count or 0)
+            # #1262: the real claim, which the edit composer adds back as headroom.
+            result.reserved_by_product = [
+                ShippingOutRequestReservedProduct(hardware_category=cat, product_code=code, quantity=qty)
+                for cat, code, qty in shipping_requests.get_reserved_by_product(session, req.id)
+            ]
+            return result
 
     @strawberry.field
     def request_coverage(
@@ -357,6 +376,7 @@ class ShippingMutations:
                 session,
                 uuid.UUID(str(input.id)),
                 _request_items(input.items),
+                expected_lines_version=input.expected_lines_version,
             )
             session.commit()
             refreshed = shipping_repository.get_shipping_out_request(session, req.id)
