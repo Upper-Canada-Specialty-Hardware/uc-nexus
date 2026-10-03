@@ -192,7 +192,8 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
   const hasQuantityErrors = useMemo(() => {
     if (!poDetails) return false;
     return poDetails.lineItems.some(
-      (li) => (receiveQuantities[li.id] ?? 0) > li.orderedQuantity - li.receivedQuantity,
+      (li) =>
+        (receiveQuantities[li.id] ?? 0) < 0 || (receiveQuantities[li.id] ?? 0) > li.orderedQuantity - li.receivedQuantity,
     );
   }, [poDetails, receiveQuantities]);
 

@@ -111,7 +111,9 @@ export default function ReceiveLinesEditor({
           {rows.map((row) => {
             const fullyReceived = row.pending === 0;
             const currentValue = receiveQuantities[row.id] ?? 0;
-            const hasError = currentValue > row.pending;
+            // #1383: below zero is as wrong as over pending; the caller drops such a line silently.
+            const belowZero = currentValue < 0;
+            const hasError = belowZero || currentValue > row.pending;
             return (
               <TableRow
                 key={row.id}
@@ -153,7 +155,7 @@ export default function ReceiveLinesEditor({
                         size="small"
                         value={currentValue}
                         error={hasError}
-                        helperText={hasError ? `Max: ${row.pending}` : undefined}
+                        helperText={belowZero ? 'Whole units, 0 or more' : hasError ? `Max: ${row.pending}` : undefined}
                         slotProps={{
                           htmlInput: {
                             min: 0,

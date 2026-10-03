@@ -465,6 +465,15 @@ describe('ReceiveDraftReviewModal', () => {
     expect(screen.queryByText(/Inventory updates immediately/)).toBeNull();
   });
 
+  it('flags a negative count as a line error and blocks approval (#1383)', async () => {
+    await openModal();
+
+    fireEvent.change(within(screen.getByRole('table')).getByRole('spinbutton'), { target: { value: '-3' } });
+
+    expect(screen.getByText('Whole units, 0 or more')).toBeInTheDocument();
+    expect(approveButton()).toBeDisabled();
+  });
+
   it('blocks approval when the reviewer raises the count past what the PO still owes', async () => {
     // The reviewer is deciding against what the PO owes NOW, which another receive may have moved
     // since the count was written - hence the live read this validates against.
