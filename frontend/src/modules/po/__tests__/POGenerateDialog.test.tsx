@@ -416,3 +416,18 @@ describe('POGenerateDialog prefill from GP (#858)', () => {
     expect(method).toHaveValue('Courier');
   });
 });
+
+describe('POGenerateDialog settings read failure (#1279)', () => {
+  it('says the settings could not be loaded instead of spinning, and retries', async () => {
+    const failed: MockedResponse = {
+      request: { query: GET_PO_DOCUMENT_SETTINGS },
+      error: new Error('settings read failed'),
+    };
+    renderDialog([failed, settingsMock(), buyersMock(), totalsMock()]);
+
+    expect(await screen.findByText(/settings read failed/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByText(/settings read failed/)).not.toBeInTheDocument());
+  });
+});

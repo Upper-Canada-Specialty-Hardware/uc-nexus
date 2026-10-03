@@ -95,9 +95,9 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
   const company = po.gpCompany ?? '';
   const poNumber = po.poNumber ?? '';
 
-  const { data: settingsData, loading: sLoading } = useQuery<{ poDocumentSettings: PODocumentSettings }>(
-    GET_PO_DOCUMENT_SETTINGS, { skip: !open },
-  );
+  const {
+    data: settingsData, loading: sLoading, error: sError, refetch: refetchSettings,
+  } = useQuery<{ poDocumentSettings: PODocumentSettings }>(GET_PO_DOCUMENT_SETTINGS, { skip: !open });
   const { data: buyersData } = useQuery<{ gpBuyers: string[] }>(GET_GP_BUYERS, {
     variables: { company }, skip: !open || !company,
   });
@@ -133,6 +133,21 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
           onClose={onClose}
           onRefetch={onRefetch}
         />
+      ) : open && sError && !settings && !sLoading ? (
+        // #1279: the document cannot be built without the boilerplate, so say why instead of spinning.
+        <>
+          <DialogContent dividers>
+            <Alert severity="error">
+              The PO document settings could not be loaded, so the document cannot be generated. {sError.message}
+            </Alert>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={onClose}>Close</Button>
+            <Button variant="contained" onClick={() => { void refetchSettings().catch(() => undefined); }}>
+              Retry
+            </Button>
+          </DialogActions>
+        </>
       ) : (
         <DialogContent dividers>
           <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
