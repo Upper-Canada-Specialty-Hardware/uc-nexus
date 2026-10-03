@@ -65,7 +65,7 @@ import {
 } from './types';
 import { buildPoDrafts, toPoDraftInput } from './poDrafts';
 import * as draftOps from './draftOps';
-import { mergeAddedProducts } from './draftOps';
+import { carryDraftEdits, mergeAddedProducts } from './draftOps';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { plural } from '../../utils/plural';
@@ -724,8 +724,9 @@ export default function ImportWizard({
     // that changed, the new products are folded into the buyer's drafts instead of re-seeding them.
     const seeded = seedDraftGroups(vendorGroups, orderQtyOverrides);
     const merged = draftGroups.length > 0 ? mergeAddedProducts(draftGroups, seeded) : null;
+    // #1314: a real re-seed still keeps each draft's info and attachments (see carryDraftEdits).
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot re-seed keyed off the selection signature, same pattern as the composer
-    setDraftGroups(merged ?? seeded);
+    setDraftGroups(merged ?? carryDraftEdits(draftGroups, seeded));
     setSeededDraftSignature(draftSeedSig);
   }, [purpose, draftSeedSig, vendorGroups, orderQtyOverrides, seededDraftSignature, draftGroups]);
 
