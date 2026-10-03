@@ -211,14 +211,27 @@ it('saves a changed quantity on blur', async () => {
 });
 
 it('does not save a quantity that was not changed', async () => {
-  renderPage();
+  // A save for the unchanged row is mocked and counted, so a fired mutation is seen, not just
+  // left to surface (or not) as an error toast.
+  let saves = 0;
+  const saveMock: MockedResponse = {
+    request: {
+      query: SAVE_DOORS_ON_HAND,
+      variables: { input: { company: COMPANY, projectId: 'p2', quantity: 2 } },
+    },
+    maxUsageCount: INFINITE,
+    result: () => {
+      saves += 1;
+      return { data: { saveDoorsOnHand: PAGE } };
+    },
+  };
+  renderPage([saveMock]);
 
   const input = await screen.findByLabelText('Doors on hand for JOB-002');
   fireEvent.blur(input);
 
-  // No SAVE_DOORS_ON_HAND mock is supplied, so a fired mutation would surface as an error toast.
-  await waitFor(() => expect(screen.getByText('Total door inventory')).toBeInTheDocument());
-  expect(screen.queryByText(/No more mocked responses/i)).not.toBeInTheDocument();
+  await new Promise((r) => setTimeout(r, 50));
+  expect(saves).toBe(0);
 });
 
 it('saves the average door cost', async () => {

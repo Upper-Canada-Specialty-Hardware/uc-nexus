@@ -319,25 +319,34 @@ def test_create_po_refuses_a_cost_code_whose_account_does_not_exist(monkeypatch)
     assert error.context["account_index"] == 1617
 
 
+class _ReachedNextStep(Exception):
+    """Raised by the step right after the cost-code guard, proving the op got past the guard."""
+
+
+def _stop_after_cost_code_guard(monkeypatch):
+    # plan_po_tax is the first call made once every line's cost code has been checked, whatever the
+    # PO's tax setup, so reaching it means the guard let the lines through.
+    def reached(**_kwargs):
+        raise _ReachedNextStep
+
+    monkeypatch.setattr(ops.po_tax, "plan_po_tax", reached)
+
+
 def test_create_po_allows_a_cost_code_whose_account_resolves(monkeypatch):
-    """The guard passing must not be provable by the op simply never reaching it, so this asserts the
-    op got PAST the guard - it fails on the next unstubbed step, not on cost_code_account_invalid."""
     _stub_create_po_prechecks(monkeypatch, account_index=96, index_exists=True)
+    _stop_after_cost_code_guard(monkeypatch)
 
-    with pytest.raises(Exception) as excinfo:  # noqa: B017 - anything but the guard's own error
+    with pytest.raises(_ReachedNextStep):
         ops.create_po_op(_FakeConn(), company="TUBC", request=_job_cost_po())
-
-    assert getattr(excinfo.value, "code", None) != "cost_code_account_invalid"
 
 
 def test_create_po_allows_index_zero(monkeypatch):
     # 0 is "GP defaults the account", not a dangling index, so account_index_exists says True for it.
     _stub_create_po_prechecks(monkeypatch, account_index=0, index_exists=True)
+    _stop_after_cost_code_guard(monkeypatch)
 
-    with pytest.raises(Exception) as excinfo:  # noqa: B017
+    with pytest.raises(_ReachedNextStep):
         ops.create_po_op(_FakeConn(), company="TUBC", request=_job_cost_po())
-
-    assert getattr(excinfo.value, "code", None) != "cost_code_account_invalid"
 
 
 # --- the create_receipt pre-flight (po_line_account_invalid) ---
