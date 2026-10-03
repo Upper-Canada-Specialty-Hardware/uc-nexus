@@ -11,7 +11,17 @@ with engine.connect() as conn:
     tables = inspector.get_table_names()
     has_version = 'alembic_version' in tables
     if not has_version and tables:
-        print('Dirty state from failed migration - resetting schema')
+        # Tables without alembic_version can hold real data (a hand-dropped version table, a
+        # partial restore), so the schema is never dropped on its own. Set ALLOW_SCHEMA_RESET=1
+        # for one deploy to recover from a failed first migration.
+        if os.environ.get('ALLOW_SCHEMA_RESET') != '1':
+            print(
+                'Refusing to start: the database has %d table(s) but no alembic_version table. '
+                'Nothing was dropped. If this is a failed first migration, set ALLOW_SCHEMA_RESET=1 '
+                'for one deploy to reset the schema; otherwise restore alembic_version.' % len(tables)
+            )
+            raise SystemExit(1)
+        print('ALLOW_SCHEMA_RESET=1 and no alembic_version - resetting schema')
         conn.execute(text('DROP SCHEMA public CASCADE'))
         conn.execute(text('CREATE SCHEMA public'))
         conn.commit()
@@ -22,7 +32,8 @@ with engine.connect() as conn:
             \"AND typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public') LIMIT 1\"
         ))
         if result.fetchone():
-            print('Leftover enums detected - resetting schema')
+            # No tables at all, so only a failed first migration's enum types are dropped.
+            print('Leftover enums with no tables - resetting schema')
             conn.execute(text('DROP SCHEMA public CASCADE'))
             conn.execute(text('CREATE SCHEMA public'))
             conn.commit()
