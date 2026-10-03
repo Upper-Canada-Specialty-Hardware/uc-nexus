@@ -13,16 +13,6 @@ export const GET_SHIPPING_STATS = gql`
   }
 `;
 
-export const GET_SHIP_READY_ITEMS = gql`
-  query GetShipReadyItems($projectId: ID) {
-    shipReadyItems(projectId: $projectId) {
-      looseItems {
-        openingNumber hardwareCategory productCode availableQuantity
-      }
-    }
-  }
-`;
-
 // The staging workspace (#451): what is staged, and which container it has been put in. One query
 // for both halves so they can never disagree about whether something has been loaded.
 const CONTAINER_FIELDS = `
@@ -46,12 +36,6 @@ export const CREATE_SHIPMENT_CONTAINER = gql`
     createShipmentContainer(projectId: $projectId, containerType: $containerType, name: $name) {
       ${CONTAINER_FIELDS}
     }
-  }
-`;
-
-export const RENAME_SHIPMENT_CONTAINER = gql`
-  mutation RenameShipmentContainer($id: ID!, $name: String!) {
-    renameShipmentContainer(id: $id, name: $name) { ${CONTAINER_FIELDS} }
   }
 `;
 

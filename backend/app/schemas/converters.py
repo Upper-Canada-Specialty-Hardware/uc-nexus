@@ -26,7 +26,6 @@ from .types import (
     GpCustomer,
     GpCustomerAddress,
     GpEmployee,
-    GpJob,
     GpOutboxEntry,
     GpOutboxSummary,
     GpPoEntryOptions,
@@ -260,10 +259,6 @@ def relay_event_to_type(e) -> RelayEvent:
         companies=list(e.companies) if e.companies is not None else None,
         reason=e.reason,
     )
-
-
-def gp_job_to_type(j: dict) -> GpJob:
-    return GpJob(job_number=j["job_number"], job_name=j.get("job_name"))
 
 
 def gp_vendor_to_type(v: dict) -> GpVendor:
