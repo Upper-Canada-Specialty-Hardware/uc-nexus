@@ -214,6 +214,24 @@ def test_non_schedule_type_codes_are_never_flagged(db_session, monkeypatch):
     assert flat[("Washroom", "GRAB-42")] is False
 
 
+def test_a_retired_types_stock_is_still_not_flagged(db_session, monkeypatch):
+    """#1340: retiring a type hides it from pickers; its shelf stock is still non-schedule inventory."""
+    from app.repositories import custom_items_repository
+    from app.schemas.warehouse import WarehouseQueries
+
+    item_type = custom_items_repository.create_item_type(
+        db_session, name=f"Retired {uuid.uuid4().hex[:6]}", company="TUBC"
+    )
+    custom_items_repository.update_item_type(db_session, item_type.id, is_active=False)
+    project = _make_project(db_session)
+    _add_schedule_item(db_session, project, category="Hinge", code="BB1279")
+    _add_inventory(db_session, project, category=item_type.code, code="RT-1")
+    _borrow(monkeypatch, db_session)
+
+    flat = _flat(WarehouseQueries().inventory_rows(_AdminInfo(), project_id=str(project.id)))
+    assert flat[(item_type.code, "RT-1")] is True
+
+
 # --- the per-product dominant classification the extras lane reads (#610) -----------------------
 
 

@@ -180,6 +180,11 @@ def replace_shipping_out_request_items(
         req.id,
         needs,
     )
+    # #1174: the edit has just gated and reserved every line against today's stock and schedule, so a
+    # note saying the request holds no claim (a cancelled pull it could not re-reserve) or that the
+    # schedule moved under it is no longer true. Accept leaves the note alone: without an edit first,
+    # the claim really is still missing.
+    req.integrity_note = None
     session.flush()
     # The rows were written by id rather than by appending to the collection, so `req.items` still
     # holds the set that was just deleted. Expiring it makes the returned object tell the truth about

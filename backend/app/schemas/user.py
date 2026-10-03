@@ -148,7 +148,9 @@ class UserQueries:
 @strawberry.type
 class UserMutations:
     @strawberry.mutation
-    def update_user_roles(self, info: strawberry.Info, user_id: str, roles: list[str]) -> ClerkUser:
+    def update_user_roles(
+        self, info: strawberry.Info, user_id: str, roles: list[str], expected_roles: list[str] | None = None
+    ) -> ClerkUser:
         """Set a user's roles outright. Role-gated: this is the privilege-escalation path, so the
         gate plus the two body checks are the whole protection - nothing downstream re-checks who
         asked.
@@ -160,10 +162,15 @@ class UserMutations:
 
         A roles list without PO User also gives the account's GP buyer identity back, in the same
         write - the repository keeps that pairing (#687 gap 6), so a demotion made anywhere clears
-        the identity registerPoInGp gates on."""
+        the identity registerPoInGp gates on.
+
+        `expected_roles` (#1321) is the roles the caller's dialog loaded; a write over roles somebody
+        else changed in the meantime is refused rather than replacing their grants."""
         _enforce_tenant_owner_grant_rules(info, target_user_id=user_id, new_roles=roles)
         _enforce_db_admin_grant_rules(info, target_user_id=user_id, new_roles=roles)
-        return clerk_user_to_type(user_repository.update_user_roles(user_id, roles))
+        if expected_roles is None:
+            return clerk_user_to_type(user_repository.update_user_roles(user_id, roles))
+        return clerk_user_to_type(user_repository.update_user_roles(user_id, roles, expected_roles=expected_roles))
 
     @strawberry.mutation
     def update_user_name(self, info: strawberry.Info, user_id: str, first_name: str, last_name: str) -> ClerkUser:

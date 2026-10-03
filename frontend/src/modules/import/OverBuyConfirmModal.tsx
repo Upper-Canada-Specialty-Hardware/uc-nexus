@@ -10,6 +10,8 @@ interface OverBuyConfirmModalProps {
   productCodeOf: (pk: string) => string;
   onGoBack: () => void;
   onConfirm: () => void;
+  /** Finalize is running (#1313): "Finalize anyway" is off so a second click cannot finalize again. */
+  busy?: boolean;
 }
 
 /**
@@ -17,7 +19,14 @@ interface OverBuyConfirmModalProps {
  * risk - the product, what the schedule needs, what ordering would make it, and which drafts order
  * it - and finalize runs only from "Finalize anyway". A warning, not a refusal, the same as #567.
  */
-export default function OverBuyConfirmModal({ open, risks, productCodeOf, onGoBack, onConfirm }: OverBuyConfirmModalProps) {
+export default function OverBuyConfirmModal({
+  open,
+  risks,
+  productCodeOf,
+  onGoBack,
+  onConfirm,
+  busy = false,
+}: OverBuyConfirmModalProps) {
   return (
     <Dialog open={open} onClose={onGoBack} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1, fontWeight: 700, pb: 1 }}>
@@ -54,7 +63,7 @@ export default function OverBuyConfirmModal({ open, risks, productCodeOf, onGoBa
         <Button onClick={onGoBack} autoFocus>
           Go back
         </Button>
-        <Button onClick={onConfirm} variant="contained" color="warning">
+        <Button onClick={onConfirm} variant="contained" color="warning" disabled={busy}>
           Finalize anyway
         </Button>
       </DialogActions>

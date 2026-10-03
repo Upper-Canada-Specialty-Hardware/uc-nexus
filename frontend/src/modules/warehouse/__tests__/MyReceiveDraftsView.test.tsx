@@ -16,6 +16,8 @@ function draft(overrides: Record<string, unknown> = {}) {
     poId: 'po-1',
     poNumber: 'PO-123',
     projectId: 'proj-1',
+    projectNumber: 'JOB-1',
+    projectDescription: 'Riverside Tower',
     warehouseId: 'wh-1',
     createdByUserId: 'u_author',
     createdBy: 'Wendy Warehouse',

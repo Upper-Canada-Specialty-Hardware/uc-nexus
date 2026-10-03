@@ -68,6 +68,14 @@ export const SET_CONTAINER_ITEMS = gql`
   }
 `;
 
+// A move from one container to another as one save (#1178): both rewrites commit together, so a
+// refused target never leaves the item in neither.
+export const MOVE_CONTAINER_ITEMS = gql`
+  mutation MoveContainerItems($input: MoveContainerItemsInput!) {
+    moveContainerItems(input: $input) { ${CONTAINER_FIELDS} }
+  }
+`;
+
 // The shipping department's list of how a load can travel (#451). `activeOnly` is what the Delivery
 // Request form passes; the management screen leaves it off so a retired method stays visible.
 const SHIPMENT_METHOD_FIELDS = 'id name isActive sortOrder createdAt updatedAt';
@@ -218,6 +226,8 @@ const SLIP_IDENTITY_FIELDS = [
   'id',
   'packingSlipNumber',
   'projectId',
+  'projectNumber',
+  'projectDescription',
   'status',
   'shippedBy',
   'shippedAt',
@@ -256,8 +266,8 @@ const PACKING_SLIP_FIELDS =
 // One page of the Shipments list (#1107): paged and searched on the server, with the count of
 // everything the filter matches so the list can say how many more there are.
 export const GET_PACKING_SLIPS = gql`
-  query GetPackingSlips($projectId: ID, $search: String, $limit: Int) {
-    packingSlips(projectId: $projectId, search: $search, limit: $limit) {
+  query GetPackingSlips($projectId: ID, $search: String, $status: ShipmentStatus, $limit: Int) {
+    packingSlips(projectId: $projectId, search: $search, status: $status, limit: $limit) {
       ${PACKING_SLIP_FIELDS}
       items {
         id
@@ -272,7 +282,7 @@ export const GET_PACKING_SLIPS = gql`
         returnedQuantity
       }
     }
-    packingSlipCount(projectId: $projectId, search: $search)
+    packingSlipCount(projectId: $projectId, search: $search, status: $status)
   }
 `;
 
@@ -327,6 +337,15 @@ export const UPDATE_SHIPMENT_DETAILS = gql`
 export const MARK_SHIPMENT_PICKED_UP = gql`
   mutation MarkShipmentPickedUp($id: ID!) {
     markShipmentPickedUp(id: $id) {
+      ${PACKING_SLIP_FIELDS}
+    }
+  }
+`;
+
+// Calls off a scheduled shipment nothing can be returned from - one of only manual lines (#1176).
+export const CANCEL_SHIPMENT = gql`
+  mutation CancelShipment($id: ID!) {
+    cancelShipment(id: $id) {
       ${PACKING_SLIP_FIELDS}
     }
   }

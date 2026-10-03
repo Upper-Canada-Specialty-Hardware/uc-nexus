@@ -82,6 +82,16 @@ def test_a_blank_name_is_refused(db_session):
         _container(db_session, project, name="   ")
 
 
+def test_a_name_over_100_characters_is_refused_on_create_and_rename(db_session):
+    # #1175: the column is String(100); past it the flush failed as a masked server error.
+    project = _project(db_session)
+    with pytest.raises(ValidationError):
+        _container(db_session, project, name="x" * 101)
+    container = _container(db_session, project, name="x" * 100)
+    with pytest.raises(ValidationError):
+        containers.rename_container(db_session, container.id, "y" * 101)
+
+
 def test_breaking_down_a_container_returns_its_contents_to_the_pool(db_session):
     project = _project(db_session)
     _staged_loose(db_session, project, qty=4)
@@ -257,6 +267,49 @@ def test_a_container_from_another_project_cannot_join_the_shipment(db_session):
             shipped_by="shipper",
             details=None,
         )
+
+
+def test_a_move_between_containers_is_one_save(db_session):
+    # #1178: the whole staged quantity sits in Skid 1, so the target is gated against stock the
+    # source has just given up - the reason the screen used to empty the source first, as its own save.
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4)
+    source = _container(db_session, project, name="Skid 1")
+    target = _container(db_session, project, name="Skid 2")
+    containers.set_container_items(db_session, source.id, [_loose_item(4)])
+
+    moved_from, moved_to = containers.move_between_containers(db_session, source.id, [], target.id, [_loose_item(4)])
+
+    assert moved_from.items == []
+    assert [(i.product_code, i.quantity) for i in moved_to.items] == [("HG-100", 4)]
+
+
+def test_a_refused_move_leaves_the_item_where_it_was(db_session):
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4)
+    source = _container(db_session, project, name="Skid 1")
+    target = _container(db_session, project, name="Skid 2")
+    containers.set_container_items(db_session, source.id, [_loose_item(4)])
+
+    with pytest.raises(ValidationError):
+        with db_session.begin_nested():
+            # More than is staged: the target is refused after the source was already rewritten.
+            containers.move_between_containers(db_session, source.id, [], target.id, [_loose_item(5)])
+
+    db_session.expire_all()
+    assert [(i.product_code, i.quantity) for i in containers._open_container(db_session, source.id).items] == [
+        ("HG-100", 4)
+    ]
+
+
+def test_a_move_across_projects_is_refused(db_session):
+    project = _project(db_session)
+    other = _project(db_session)
+    source = _container(db_session, project, name="Skid 1")
+    target = _container(db_session, other, name="Skid 1")
+
+    with pytest.raises(ValidationError):
+        containers.move_between_containers(db_session, source.id, [], target.id, [])
 
 
 def test_a_missing_container_is_a_not_found(db_session):
@@ -446,6 +499,41 @@ def test_a_manual_line_needs_no_staged_stock(db_session):
     box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
     result = containers.set_container_items(db_session, box.id, [_manual_item(3)])
     assert [(i.product_code, i.is_manual, i.quantity) for i in result.items] == [("MAN-1", True, 3)]
+
+
+def test_the_new_slip_notice_says_scheduled_and_counts_only_real_hardware(db_session):
+    # #1244: the slip is only scheduled when it is cut, and a manual line was never Nexus hardware.
+    from sqlalchemy import select
+
+    from app.models.notification import Notification
+
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4)
+    box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
+    containers.set_container_items(db_session, box.id, [_loose_item(2), _manual_item(5)])
+    slip = containers.confirm_shipment_from_containers(
+        db_session, project.id, [box.id], shipped_by="shipper", details=None
+    )
+    db_session.flush()
+
+    messages = db_session.scalars(select(Notification.message).where(Notification.project_id == project.id)).all()
+    assert f"Shipment {slip.packing_slip_number} scheduled for pickup. 2 items on it." in messages
+
+
+def test_a_manual_line_in_the_box_does_not_free_real_stock_keyed_the_same(db_session):
+    # #1301: 4 staged, and the box already holds a manual 5 keyed the same. Re-saving the box with
+    # the manual line plus 6 real units used to count the manual 5 as held here and allow 9.
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=4)
+    box = _container(db_session, project, kind=ShipmentContainerType.BOX, name="Box 1")
+    manual = _manual_item(5, code="HG-100", cat="HINGE", opening="101")
+    containers.set_container_items(db_session, box.id, [manual])
+
+    with pytest.raises(ValidationError, match="only 4 staged"):
+        containers.set_container_items(db_session, box.id, [manual, _loose_item(6)])
+
+    result = containers.set_container_items(db_session, box.id, [manual, _loose_item(4)])
+    assert sorted((i.is_manual, i.quantity) for i in result.items) == [(False, 4), (True, 5)]
 
 
 def test_a_manual_line_missing_its_product_or_category_is_refused(db_session):
