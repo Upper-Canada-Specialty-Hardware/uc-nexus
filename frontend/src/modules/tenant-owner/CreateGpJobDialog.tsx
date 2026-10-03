@@ -32,7 +32,7 @@ import { useToast } from '../../components/Toast';
 import GpErrorAlert from '../../components/GpErrorAlert';
 import { extractGpError, isRelayOpUnsupported, type GpError } from '../../graphql/gpError';
 import RelayStatusChip from '../../relay/RelayStatusChip';
-import { useRelayStatus } from '../../relay/useRelayStatus';
+import { relayBlockedReason, relayFor, useRelayStatus } from '../../relay/useRelayStatus';
 import { useActingCompany } from '../../company/ActingCompanyContext';
 import GpCompanyTag from '../../components/GpCompanyTag';
 import type { Project } from '../../types/project';
@@ -140,11 +140,13 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
 
   // #845: the job is created in the company the user is working in. skip: !open so a hidden dialog
   // doesn't poll.
-  const relay = useRelayStatus({ skip: !open });
   const company = useActingCompany().company ?? '';
-  const relayConnected = relay.connected === true;
+  // #1336: GP work needs the relay to serve this company, not just to be connected.
+  const relay = relayFor(useRelayStatus({ skip: !open }), company || null);
+  const relayConnected = relay.servesCompany;
+  const relayReason = relayBlockedReason(relay);
   // #444: the "+ Add new address" round trip, shared with the project edit dialog.
-  const addAddress = useAddCustomerAddress(company, relayConnected);
+  const addAddress = useAddCustomerAddress(company, relayConnected, relayReason);
   const { open: startAddAddress, close: closeAddAddress } = addAddress;
 
   const readsSkipped = !open || !relayConnected || !company;
@@ -572,7 +574,12 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
             {/* #637: which company the job is created in. #845: always the company the user is
                 working in - a UC NEXUS ADMIN changes it with the app bar switcher, not a pick here. */}
             <GpCompanyTag code={company} gpCompanies={relay.gpCompanies} caption="GP company" />
-            <RelayStatusChip connected={relayConnected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
+            <RelayStatusChip
+              connected={relay.connected}
+              unreachable={relay.unreachable}
+              companies={relay.companies}
+              gpCompanies={relay.gpCompanies}
+            />
             <IconButton
               size="small"
               aria-label="Refresh GP data"
@@ -584,10 +591,10 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
             </IconButton>
           </Stack>
 
-          {!relayConnected && (
+          {relayReason && (
             <Alert severity="warning">
-              The GP relay is not connected. A job can only be created against live GP data, so this form stays
-              disabled until the relay is running.
+              {relayReason} A job can only be created against live GP data, so this form stays disabled until
+              then.
             </Alert>
           )}
 

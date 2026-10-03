@@ -436,7 +436,7 @@ test('the employees read is deferred until the optional section is opened', asyn
 test('the whole form is disabled while the relay is down', async () => {
   renderDialog([], { connected: false });
 
-  expect(await screen.findByText(/GP relay is not connected/i)).toBeInTheDocument();
+  expect(await screen.findByText(/GP relay .*GP workstation.* is not connected/i)).toBeInTheDocument();
   expect(screen.getByLabelText(/^Job number/)).toBeDisabled();
   expect(createButton()).toBeDisabled();
 });

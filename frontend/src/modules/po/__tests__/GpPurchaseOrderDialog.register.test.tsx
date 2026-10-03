@@ -713,7 +713,7 @@ describe('GpPurchaseOrderDialog', () => {
 
     expect(
       await screen.findByText(
-        'GP relay not detected on this machine - it must be running to push a PO to GP',
+        'The GP relay (on the GP workstation) is not connected for this company - ask an admin to check it. It must be up to push a PO to GP',
       ),
     ).toBeInTheDocument();
     expect(onSubmitted).not.toHaveBeenCalled();

@@ -39,7 +39,7 @@ import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import GpJobNotOpenBanner from '../../components/GpJobStateTag';
 import type { PurchaseOrder } from './index';
 import RelayStatusChip from '../../relay/RelayStatusChip';
-import { useRelayStatus } from '../../relay/useRelayStatus';
+import { relayServes, useRelayStatus } from '../../relay/useRelayStatus';
 import { useActingCompany } from '../../company/ActingCompanyContext';
 import GpCompanyTag from '../../components/GpCompanyTag';
 import { PoolKindToggle } from '../../components/PoolKind';
@@ -437,7 +437,14 @@ export default function GpPurchaseOrderDialog({
   const actingCompany = useActingCompany().company;
   const company =
     projects.find((p) => p.id === projectId)?.company || registerPo?.company || actingCompany || '';
-  const relayStatus: boolean | null = relayConnectedProp !== undefined ? relayConnectedProp : relay.connected;
+  // #1336: standalone, the relay must serve this PO's company, not just be connected; a connected relay
+  // that does not reads as down here, so every GP read and the register button wait for one that does.
+  const relayStatus: boolean | null =
+    relayConnectedProp !== undefined
+      ? relayConnectedProp
+      : relay.connected === true
+        ? relayServes(relay, company || null)
+        : relay.connected;
   const relayConnected = relayStatus === true;
 
   const selectedProject = useMemo(() => projects.find((p) => p.id === projectId) ?? null, [projects, projectId]);
@@ -1006,7 +1013,7 @@ export default function GpPurchaseOrderDialog({
     // Issue #256: only register mode talks to GP - draft creation has no relay/vendor/buyer/cost-code
     // requirements at all.
     if (isRegister) {
-      if (!relayConnected) errs.gp = 'GP relay not detected on this machine - it must be running to push a PO to GP';
+      if (!relayConnected) errs.gp = 'The GP relay (on the GP workstation) is not connected for this company - ask an admin to check it. It must be up to push a PO to GP';
       if (!gpVendorId) errs.vendor = 'Select a GP vendor';
       else if (!vendorConfirmed) errs.vendor = 'Confirm the suggested GP vendor before registering';
       // Issue #216: the PO is pushed as the caller's own GP buyer identity.
@@ -1296,7 +1303,7 @@ export default function GpPurchaseOrderDialog({
   // #316: say WHY these dropdowns are dead. They are all live GP reads, so they disable themselves
   // whenever the relay is down - which, with no explanation, reads as a half-built form denying the PO
   // user fields they should control, rather than as a relay that needs starting.
-  const RELAY_DOWN_HELPER = 'GP relay not connected - start it to choose from GP';
+  const RELAY_DOWN_HELPER = 'GP relay (on the GP workstation) not connected - ask an admin to check it';
 
   // #490: the code seeded off the draft, still untouched. Named under the field so the pre-filled
   // pick reads as a confirmation rather than a fresh question being asked twice.
