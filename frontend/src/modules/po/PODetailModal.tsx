@@ -219,7 +219,7 @@ export default function PODetailModal({
   });
 
   const [emailPoToVendor] = useMutation<{
-    emailPoToVendor: { sent: boolean; message: string; sentTo: string | null };
+    emailPoToVendor: { sent: boolean; failed: boolean; message: string; sentTo: string | null };
   }>(EMAIL_PO_TO_VENDOR);
 
   const [deleteDocument] = useMutation(DELETE_PO_DOCUMENT, {
@@ -357,7 +357,9 @@ export default function PODetailModal({
     try {
       const res = await emailPoToVendor({ variables: { poId: po.id } });
       const result = res.data?.emailPoToVendor;
-      showToast(result?.message ?? 'Sent', result?.sent ? 'success' : 'info');
+      // #1278: a step the buyer can take (generate the document, ask accounting) is a note; a real
+      // failure (mail server, GP, storage) is an error, which stays until it is dismissed.
+      showToast(result?.message ?? 'Sent', result?.sent ? 'success' : result?.failed ? 'error' : 'info');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Could not send the purchase order', 'error');
     } finally {

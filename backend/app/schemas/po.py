@@ -408,6 +408,36 @@ def _prepare_register_po(
     return payload
 
 
+def _email_po_context(po_id: uuid.UUID, scope: str | None) -> EmailPoResult | dict:
+    """What sending a PO to its vendor needs from the database, or the refusal that stops it there.
+    Every refusal here is a step the buyer can take, so none is flagged as a failure (#1278)."""
+    with SessionLocal() as session:
+        po = po_repository.get_purchase_order(session, po_id, company=scope)
+        if po is None:
+            raise NotFoundError(f"Purchase order {po_id} not found")
+        if po.status == POStatus.DRAFT.value or po.gp_vendor_id is None or not po.gp_company:
+            return EmailPoResult(sent=False, message="Register the PO in GP before sending it to the vendor.")
+        # #1194: a cancelled or closed PO is not an order any more, and sending it would put a
+        # live-looking PO in front of the vendor for something nobody wants delivered.
+        if po.status not in _EMAILABLE_PO_STATUSES:
+            status_word = "cancelled" if po.status == POStatus.CANCELLED.value else "closed"
+            return EmailPoResult(sent=False, message=f"This PO is {status_word}, so it is not sent to the vendor.")
+        document = next(
+            (d for d in (po.documents or []) if d.document_type == PODocumentTypeDB.GENERATED_PO),
+            None,
+        )
+        if document is None:
+            return EmailPoResult(sent=False, message="Generate the PO document before sending it to the vendor.")
+        return {
+            "po_number": po.po_number or po.request_number,
+            "company": po.gp_company,
+            "vendor_id": po.gp_vendor_id,
+            "s3_key": document.s3_key,
+            "file_name": document.file_name,
+            "content_type": document.content_type,
+        }
+
+
 def _claim_registration(po_id, key) -> None:
     with SessionLocal() as session:
         po_repository.claim_po_registration(session, po_id, key)
@@ -774,43 +804,27 @@ class POMutations:
         vendors (#509) and Nexus keeps no contact records of its own, so a stale address here is a
         class of bug that cannot happen.
 
-        Every refusal is a plain outcome rather than an exception, because all of them are things
-        the user can act on - generate the document, register the PO, ask accounting to put an email
-        on the vendor card - and none of them is an error in the sense of "something broke".
+        Every refusal is a plain outcome rather than an exception. Most are things the user can act
+        on - generate the document, register the PO, ask accounting to put an email on the vendor card.
+        The ones where something broke (mail server, GP, storage) are flagged `failed` (#1278).
         """
         current_user(info)
 
-        with SessionLocal() as session:
-            po = po_repository.get_purchase_order(session, uuid.UUID(str(po_id)), company=tenant_scope(info))
-            if po is None:
-                raise NotFoundError(f"Purchase order {po_id} not found")
-            if po.status == POStatus.DRAFT.value or po.gp_vendor_id is None or not po.gp_company:
-                return EmailPoResult(sent=False, message="Register the PO in GP before sending it to the vendor.")
-            # #1194: a cancelled or closed PO is not an order any more, and sending it would put a
-            # live-looking PO in front of the vendor for something nobody wants delivered.
-            if po.status not in _EMAILABLE_PO_STATUSES:
-                status_word = "cancelled" if po.status == POStatus.CANCELLED.value else "closed"
-                return EmailPoResult(sent=False, message=f"This PO is {status_word}, so it is not sent to the vendor.")
-            document = next(
-                (d for d in (po.documents or []) if d.document_type == PODocumentTypeDB.GENERATED_PO),
-                None,
-            )
-            if document is None:
-                return EmailPoResult(sent=False, message="Generate the PO document before sending it to the vendor.")
-            po_number = po.po_number or po.request_number
-            company = po.gp_company
-            vendor_id = po.gp_vendor_id
-            s3_key = document.s3_key
-            file_name = document.file_name
-            content_type = document.content_type
+        # #1277: every blocking step (the database read, the file download, the SMTP send) runs off the
+        # event loop. Held on it, a slow mail server stalled every other request and the relay socket.
+        ctx = await asyncio.to_thread(_email_po_context, uuid.UUID(str(po_id)), tenant_scope(info))
+        if isinstance(ctx, EmailPoResult):
+            return ctx
+        po_number, company, vendor_id = ctx["po_number"], ctx["company"], ctx["vendor_id"]
 
         if not email_service.is_configured():
-            return EmailPoResult(sent=False, message="Email is not configured on this deployment.")
+            # #1278: not something the buyer can fix from here, so it reads as a failure.
+            return EmailPoResult(sent=False, failed=True, message="Email is not configured on this deployment.")
 
         try:
             contact = await relay_gateway.relay_call(company, "get_vendor_contact", {"vendor_id": vendor_id})
         except Exception as exc:  # relay unavailable / timeout / op unsupported
-            return EmailPoResult(sent=False, message=f"Could not reach GP for the vendor's email: {exc}")
+            return EmailPoResult(sent=False, failed=True, message=f"Could not reach GP for the vendor's email: {exc}")
 
         address = (contact or {}).get("email")
         if not address:
@@ -829,15 +843,24 @@ class POMutations:
         )
 
         try:
-            content = storage.download_file(s3_key)
-            email_service.send_email(
+            content = await asyncio.to_thread(storage.download_file, ctx["s3_key"])
+        except Exception as exc:  # noqa: BLE001 - the bucket's own error type; reported, not raised
+            logger.warning("po email: document not read from storage", exc_info=True)
+            return EmailPoResult(sent=False, failed=True, message=f"Could not read the PO document: {exc}")
+        try:
+            await asyncio.to_thread(
+                email_service.send_email,
                 to=address,
                 subject=f"Purchase Order {po_number}",
                 body=body,
-                attachments=[email_service.Attachment(file_name=file_name, content_type=content_type, content=content)],
+                attachments=[
+                    email_service.Attachment(
+                        file_name=ctx["file_name"], content_type=ctx["content_type"], content=content
+                    )
+                ],
             )
         except email_service.EmailError as exc:
-            return EmailPoResult(sent=False, message=f"Sending failed: {exc}")
+            return EmailPoResult(sent=False, failed=True, message=f"Sending failed: {exc}")
 
         return EmailPoResult(sent=True, message=f"Purchase order {po_number} sent to {address}.", sent_to=address)
 

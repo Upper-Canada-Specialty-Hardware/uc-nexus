@@ -9,6 +9,7 @@ import {
   UPDATE_PO_LINE_ITEM_ORDER_AS,
   UPDATE_PO_LINE_ITEM_UNIT_COST,
   DELETE_PO_DOCUMENT,
+  EMAIL_PO_TO_VENDOR,
   UPLOAD_PO_DOCUMENT,
 } from '../../../graphql/po';
 import { GET_PROJECTS } from '../../../graphql/shared';
@@ -567,6 +568,50 @@ describe('PODetailModal', () => {
 
     renderModal(withDocument('CLOSED'));
     expect(screen.queryByRole('button', { name: 'Email to vendor' })).toBeNull();
+  });
+
+  // #1278: a real failure (mail server, GP, storage) is an error toast that stays and can be copied; a
+  // step the buyer can take stays a passing note.
+  it.each([
+    [true, 'Sending failed: connection refused', true],
+    [false, 'GP has no email on file for vendor ACME. Ask accounting to add one.', false],
+  ])('shows an email outcome with failed=%s as an error only when something broke', async (failed, message, isError) => {
+    const emailMock: MockedResponse = {
+      request: { query: EMAIL_PO_TO_VENDOR, variables: () => true },
+      result: {
+        data: { emailPoToVendor: { __typename: 'EmailPoResult', sent: false, failed, message, sentTo: null } },
+      },
+    };
+    renderModal(
+      {
+        ...registeredPo,
+        gpVendorId: 'ACME',
+        documents: [
+          {
+            id: 'doc-po',
+            poId: 'po-1',
+            fileName: 'po.pdf',
+            contentType: 'application/pdf',
+            fileSize: 12,
+            documentType: 'GENERATED_PO',
+            uploadedAt: '2026-10-01T00:00:00Z',
+            downloadUrl: 'https://example.test/po.pdf',
+          },
+        ],
+      },
+      [emailMock],
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Email to vendor' }));
+
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    // The toast sits outside the open dialog, which MUI hides from the accessibility tree.
+    const copy = screen.queryByRole('button', { name: 'Copy message', hidden: true });
+    if (isError) {
+      expect(copy).toBeInTheDocument();
+    } else {
+      expect(copy).toBeNull();
+    }
   });
 
   // #1233: the server caps a document at 20 MB; the dialog says so before reading and sending the file.

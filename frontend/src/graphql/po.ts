@@ -724,6 +724,7 @@ export const EMAIL_PO_TO_VENDOR = gql`
   mutation EmailPoToVendor($poId: ID!) {
     emailPoToVendor(poId: $poId) {
       sent
+      failed
       message
       sentTo
     }

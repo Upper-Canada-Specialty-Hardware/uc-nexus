@@ -1569,13 +1569,16 @@ class InventoryRow:
 class EmailPoResult:
     """The outcome of sending a PO to its vendor (#500).
 
-    A result rather than an exception, because every refusal is something the user can act on -
-    generate the document, register the PO, ask accounting to put an email on the vendor card - and
-    none of them means something broke."""
+    A result rather than an exception. Most refusals are something the user can act on - generate the
+    document, register the PO, ask accounting to put an email on the vendor card. The ones that mean
+    something broke (the mail server, GP, storage) carry `failed` (#1278)."""
 
     sent: bool
     message: str
     sent_to: str | None = None
+    # #1278: true when something broke (the mail server, GP, storage) rather than a step the user can
+    # take, so the page shows it as an error rather than a passing note.
+    failed: bool = False
 
 
 @strawberry.type
