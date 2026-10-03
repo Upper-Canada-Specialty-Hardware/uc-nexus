@@ -156,8 +156,11 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "removeDoorsOnHand": SHOP_ASSEMBLY_MANAGERS,
     "setAverageDoorCost": SHOP_ASSEMBLY_MANAGERS,
     # --- notification.py ------------------------------------------------------------------
+    # Scoped in the body to the caller's company, audiences and own read state (#1111).
     "notifications": SIGNED_IN,
+    "notificationUnreadCount": SIGNED_IN,
     "markNotificationAsRead": SIGNED_IN,
+    "markAllNotificationsAsRead": SIGNED_IN,
     # --- po.py ----------------------------------------------------------------------------
     "openPOs": SIGNED_IN,
     # Lean company-scale receiving picker list (gp-owned-po mirror).

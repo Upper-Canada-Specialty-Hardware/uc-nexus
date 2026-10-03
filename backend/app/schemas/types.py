@@ -1276,7 +1276,8 @@ class ShipmentReturn:
 class Notification:
     id: strawberry.ID
     project_id: strawberry.ID
-    recipient_role: str
+    # The audience it is for, or null when it is for one person (#1111).
+    recipient_role: str | None
     type: NotificationType
     message: str
     is_read: bool

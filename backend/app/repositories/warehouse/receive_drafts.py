@@ -444,7 +444,8 @@ def reject_receive_draft(
         notification_service.create_notification(
             session,
             project_id=po.project_id,
-            recipient_role=draft.created_by_user_id,
+            recipient_role=None,
+            recipient_user_id=draft.created_by_user_id,
             notification_type=NotificationType.RECEIVE_DRAFT_REJECTED,
             message=(
                 f"For {draft.created_by_name}: {reviewer_name} sent back your receive against "

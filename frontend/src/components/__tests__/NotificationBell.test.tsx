@@ -2,18 +2,23 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
 import NotificationBell from '../NotificationBell';
-import { GET_NOTIFICATIONS, MARK_NOTIFICATION_AS_READ } from '../../graphql/shared';
+import {
+  GET_NOTIFICATIONS,
+  GET_NOTIFICATION_UNREAD_COUNT,
+  MARK_ALL_NOTIFICATIONS_AS_READ,
+  MARK_NOTIFICATION_AS_READ,
+} from '../../graphql/shared';
 
-// The bell shows every notification to everybody (recipient_role is an audience tag, not access
-// control), so only the person-targeted types name one place to go. Navigating on the rest would be
-// a guess, and this file is the regression guard on that split.
+// An audience-wide notification is read by several people from several places, so only the
+// person-targeted types name one place to go. Navigating on the rest would be a guess, and this file
+// is the regression guard on that split.
 
 function notification(overrides: Record<string, unknown> = {}) {
   return {
     __typename: 'Notification',
     id: 'n-1',
     projectId: 'proj-1',
-    recipientRole: 'u_creator',
+    recipientRole: null,
     type: 'RECEIVE_DRAFT_REJECTED',
     message: 'For Wendy Warehouse: Manny sent back your receive against PO-123 - recount.',
     isRead: false,
@@ -22,7 +27,7 @@ function notification(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function notificationsMocks(items: Record<string, unknown>[]): MockedResponse[] {
+function notificationsMocks(items: Record<string, unknown>[], unreadCount?: number): MockedResponse[] {
   return [
     {
       request: { query: GET_NOTIFICATIONS, variables: { limit: 5 } },
@@ -30,11 +35,24 @@ function notificationsMocks(items: Record<string, unknown>[]): MockedResponse[] 
       maxUsageCount: Number.POSITIVE_INFINITY,
     },
     {
-      request: { query: GET_NOTIFICATIONS, variables: { unreadOnly: true, limit: 99 } },
-      result: { data: { notifications: items.filter((n) => !n.isRead) } },
+      request: { query: GET_NOTIFICATION_UNREAD_COUNT },
+      result: {
+        data: { notificationUnreadCount: unreadCount ?? items.filter((n) => !n.isRead).length },
+      },
       maxUsageCount: Number.POSITIVE_INFINITY,
     },
   ];
+}
+
+function markAllMock(calls: { count: number }): MockedResponse {
+  return {
+    request: { query: MARK_ALL_NOTIFICATIONS_AS_READ },
+    maxUsageCount: Number.POSITIVE_INFINITY,
+    result: () => {
+      calls.count += 1;
+      return { data: { markAllNotificationsAsRead: 3 } };
+    },
+  };
 }
 
 function markReadMock(seen: string[]): MockedResponse<Record<string, unknown>, { id: string }> {
@@ -57,9 +75,13 @@ function LocationProbe() {
   return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
 }
 
-function renderBell(items: Record<string, unknown>[], seen: string[] = []) {
+function renderBell(
+  items: Record<string, unknown>[],
+  seen: string[] = [],
+  { unreadCount, markAll = { count: 0 } }: { unreadCount?: number; markAll?: { count: number } } = {},
+) {
   render(
-    <MockedProvider mocks={[...notificationsMocks(items), markReadMock(seen)]}>
+    <MockedProvider mocks={[...notificationsMocks(items, unreadCount), markReadMock(seen), markAllMock(markAll)]}>
       <MemoryRouter initialEntries={['/app']}>
         <Routes>
           <Route path="/app" element={<NotificationBell />} />
@@ -92,11 +114,11 @@ describe('NotificationBell', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/app/warehouse/receiving?view=drafts');
   });
 
-  it('marks every unread notification read from one action', async () => {
-    // The popover only lists the latest few, and the badge counts every unread, so before this the
-    // tail of the pile could neither be seen nor cleared. One action has to reach all of them - the
-    // full unread set, not just the handful the popover shows.
+  it('marks every unread notification read with one request', async () => {
+    // The popover only lists the latest few, and the badge counts every unread, so one action has to
+    // reach the whole backlog. #1112: one bulk mutation, not one request per notification.
     const seen: string[] = [];
+    const markAll = { count: 0 };
     renderBell(
       [
         notification({ id: 'n-a', type: 'PULL_REQUEST_COMPLETED', message: 'Pull A fulfilled.' }),
@@ -104,12 +126,24 @@ describe('NotificationBell', () => {
         notification({ id: 'n-c', type: 'PULL_REQUEST_COMPLETED', message: 'Pull C fulfilled.' }),
       ],
       seen,
+      { markAll },
     );
 
     fireEvent.click(screen.getByRole('button', { name: /Notifications/ }));
     fireEvent.click(await screen.findByRole('button', { name: /Mark all read/ }, SLOW));
 
-    await vi.waitFor(() => expect([...seen].sort()).toEqual(['n-a', 'n-b', 'n-c']), SLOW);
+    await vi.waitFor(() => expect(markAll.count).toBe(1), SLOW);
+    expect(seen).toEqual([]);
+  });
+
+  it('shows 99+ when more than 99 are unread', async () => {
+    // #1112: the count used to be the length of a 99-row fetch, so the badge could never pass 99.
+    renderBell([notification({ id: 'n-x', type: 'PULL_REQUEST_COMPLETED', message: 'X' })], [], {
+      unreadCount: 140,
+    });
+
+    await screen.findByRole('button', { name: 'Notifications, 140 unread' }, SLOW);
+    expect(screen.getByText('99+')).toBeInTheDocument();
   });
 
   it('still only marks an audience-wide notification read, without navigating', async () => {
