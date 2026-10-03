@@ -505,9 +505,10 @@ class WarehouseQueries:
             # CODE in hardware_category and are absent from every hardware schedule by design, so
             # measuring them against one would flag all of it forever. One small query, and it is
             # what makes the flag mean "should be on a schedule and is not" rather than "is not on
-            # a schedule".
+            # a schedule". Retired types included (#1340): retiring hides a type from pickers, but the
+            # stock already on the shelf under its code is still non-schedule inventory.
             non_schedule_codes = {
-                t.code for t in custom_items_repository.get_item_types(session, active_only=True, company=scope)
+                t.code for t in custom_items_repository.get_item_types(session, active_only=False, company=scope)
             }
 
             def _matches(category: str, code: str) -> bool:
