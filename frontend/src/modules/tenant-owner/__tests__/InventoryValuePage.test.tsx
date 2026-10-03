@@ -20,6 +20,12 @@ const currency = (value: number) =>
     value,
   );
 
+// #1218: the back link depends on who is looking; every test but that one runs as an admin.
+const viewer = { ownsTenant: true };
+beforeEach(() => {
+  viewer.ownsTenant = true;
+});
+
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
     displayName: 'Admin',
@@ -28,7 +34,7 @@ vi.mock('../../../hooks/useIdentity', () => ({
     hasRole: () => true,
     isNexusAdmin: true,
     isTenantOwner: false,
-    ownsTenant: true,
+    ownsTenant: viewer.ownsTenant,
     isDbAdmin: false,
     gpBuyerId: null,
     company: COMPANY,
@@ -240,4 +246,29 @@ it('saves the average door cost', async () => {
 
   await waitFor(() => expect(savedAmount).toBe(275));
   expect(screen.getByText(/updated .* by Greg/)).toBeInTheDocument();
+});
+
+it('reads the updated time as the utc instant the server stored (#1271)', async () => {
+  renderPage();
+  // The fixture's '2026-09-08T12:00:00' is naive UTC; read as local time it prints the wrong hour.
+  const expected = new Date(Date.UTC(2026, 8, 8, 12, 0, 0)).toLocaleString();
+  const escaped = expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  expect(await screen.findByText(new RegExp(`updated ${escaped}`))).toBeInTheDocument();
+});
+
+// #1218: a shop assembly manager reaches this page from the Shop Assembly landing and cannot use the
+// Tenant Owner module, so the way back leads to Shop Assembly.
+it('leads a shop assembly manager back to shop assembly', async () => {
+  viewer.ownsTenant = false;
+  renderPage();
+
+  const back = await screen.findByRole('link', { name: /Shop Assembly/ });
+  expect(back).toHaveAttribute('href', '/app/shop-assembly');
+  expect(screen.queryByRole('link', { name: /Tenant Owner/ })).not.toBeInTheDocument();
+});
+
+it('leads a tenant owner back to the tenant owner module', async () => {
+  renderPage();
+
+  expect(await screen.findByRole('link', { name: /Tenant Owner/ })).toHaveAttribute('href', '/app/tenant-owner');
 });

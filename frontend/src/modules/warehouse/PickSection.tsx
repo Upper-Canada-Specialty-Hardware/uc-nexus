@@ -4,6 +4,7 @@ import { parseServerDate } from '../../utils/serverDate';
 import {
   entryKey,
   locationLabel,
+  isValidEntry,
   parseEntry,
   sectionTotals,
   type PickEntries,
@@ -85,7 +86,7 @@ export default function PickSection({ section, entries, onChange, editable }: Pi
           <Count
             label="Entered"
             value={section.appliedQuantity + totals.entered}
-            tone={totals.over || totals.anyRowOver ? 'error' : undefined}
+            tone={totals.over || totals.anyRowOver || totals.anyRowInvalid ? 'error' : undefined}
           />
           <Count
             label="Remaining"
@@ -162,6 +163,8 @@ export default function PickSection({ section, entries, onChange, editable }: Pi
               const value = entries[key] ?? '';
               const entered = parseEntry(value);
               const rowOver = entered > loc.available;
+              // #1382: a decimal, a negative or a stray character is an error on its row, not a 0.
+              const rowInvalid = !isValidEntry(value);
               const label = locationLabel(loc);
               return (
                 <Box
@@ -218,8 +221,10 @@ export default function PickSection({ section, entries, onChange, editable }: Pi
                       type="number"
                       value={value}
                       disabled={!editable}
-                      error={rowOver}
-                      helperText={rowOver ? `Only ${loc.available} here` : undefined}
+                      error={rowOver || rowInvalid}
+                      helperText={
+                        rowInvalid ? 'Whole units only' : rowOver ? `Only ${loc.available} here` : undefined
+                      }
                       onChange={(e) => onChange(key, e.target.value)}
                       slotProps={{ htmlInput: { min: 0, max: loc.available, 'aria-label': `Pulled from ${label ?? 'unlocated'}` } }}
                       sx={{ width: 110, '& input': { textAlign: 'right', ...tabularSx } }}

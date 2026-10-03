@@ -33,13 +33,20 @@ def list_projects_with_opening_counts(
     `company` is the caller's tenant scope (#637); None means unscoped, which is the admin answer.
     `include_archived` is False for the picker every module reads and True for the admin page, which
     has to keep showing an archived project to un-archive it."""
-    stmt = select(ProjectModel).order_by(ProjectModel.created_at.desc())
+    filters = []
     if company is not None:
-        stmt = stmt.where(ProjectModel.company == company)
+        filters.append(ProjectModel.company == company)
     if not include_archived:
-        stmt = stmt.where(ProjectModel.archived.is_(False))
+        filters.append(ProjectModel.archived.is_(False))
+    stmt = select(ProjectModel).where(*filters).order_by(ProjectModel.created_at.desc())
     projects = list(session.scalars(stmt).unique().all())
-    count_rows = session.execute(select(OpeningModel.project_id, func.count()).group_by(OpeningModel.project_id)).all()
+    # The count reads only the listed projects' openings, not every company's.
+    count_rows = session.execute(
+        select(OpeningModel.project_id, func.count())
+        .join(ProjectModel, ProjectModel.id == OpeningModel.project_id)
+        .where(*filters)
+        .group_by(OpeningModel.project_id)
+    ).all()
     counts: dict[uuid.UUID, int] = {pid: c for pid, c in count_rows}
     return [(p, counts.get(p.id, 0)) for p in projects]
 
@@ -535,7 +542,9 @@ def get_admin_project_detail(session: Session, project_id: uuid.UUID) -> dict | 
     # "Open" is the request AND the pull it minted: a rejected request is finished, and so is an
     # accepted one whose pull has been completed or cancelled - counting those would make the number
     # grow forever and say nothing about what is still in flight. One LEFT JOIN rather than a second
-    # query, so the whole detail is still four reads.
+    # query, so the whole detail is still four reads. A PENDING request is open on its own status: a
+    # cancelled pull sends its request back to PENDING but leaves pull_request_id pointing at the
+    # cancelled pull until a re-accept overwrites it (#1197).
     open_requests = session.scalar(
         select(func.count())
         .select_from(ShippingOutRequest)
@@ -543,7 +552,8 @@ def get_admin_project_detail(session: Session, project_id: uuid.UUID) -> dict | 
         .where(
             ShippingOutRequest.project_id == project_id,
             ShippingOutRequest.status != ShippingOutRequestStatus.REJECTED,
-            (PullRequest.id.is_(None))
+            (ShippingOutRequest.status == ShippingOutRequestStatus.PENDING)
+            | (PullRequest.id.is_(None))
             | (PullRequest.status.notin_([PullRequestStatus.COMPLETED, PullRequestStatus.CANCELLED])),
         )
     )

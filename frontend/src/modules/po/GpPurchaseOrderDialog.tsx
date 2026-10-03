@@ -334,7 +334,13 @@ export default function GpPurchaseOrderDialog({
   const { showToast } = useToast();
   // Issue #216: a PO is REGISTERED as the CALLER's GP buyer identity (Clerk publicMetadata.gpBuyerId),
   // not a free pick - enforced again server-side. Drafting (issue #256) involves no buyer at all.
-  const { gpBuyerId } = useIdentity();
+  const { gpBuyerId, hasRole } = useIdentity();
+  // #1219: a buyer identity can only be set on a PO User (user_repository.update_user_gp_buyer_id), so
+  // for anyone else "ask for a buyer id" is advice an Admin cannot follow. Say what is really needed.
+  const isPoUser = hasRole('PO User');
+  const noBuyerMessage = isPoUser
+    ? 'Your account has no GP buyer identity - an Admin must set it in User Management before you can register purchase orders.'
+    : 'Registering a purchase order needs the PO User role and a GP buyer identity - ask an Admin to give your account both in User Management.';
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const projects = useMemo(() => projectsData?.projects ?? [], [projectsData]);
 
@@ -453,12 +459,20 @@ export default function GpPurchaseOrderDialog({
 
   // Live GP vendor list (PM00200), per company - issue #200 replaces the locally-synced vendor mirror
   // with a direct pick from this list, snapshotted onto the PO.
-  const { data: gpVendorsData, refetch: refetchVendors } = useQuery<{ gpVendors: GpVendorOption[] }>(GET_GP_VENDORS, {
+  const {
+    data: gpVendorsData,
+    error: gpVendorsError,
+    refetch: refetchVendors,
+  } = useQuery<{ gpVendors: GpVendorOption[] }>(GET_GP_VENDORS, {
     variables: { company },
     skip: !open || !isRegister || !relayConnected || !company,
     fetchPolicy: 'cache-first',
   });
   const gpVendors = useMemo(() => gpVendorsData?.gpVendors ?? [], [gpVendorsData]);
+  // #1287: a failed vendor read is not an empty vendor list. Said apart so the picker never sits
+  // empty and disabled with no reason; the refresh control stays live to try again.
+  const gpVendorsReadError = gpVendorsError ? extractGpError(gpVendorsError) : null;
+  const gpVendorsUnsupported = isRelayOpUnsupported(gpVendorsError);
   // The vendor card behind the current pick: its shipping method, purchase address and contact are
   // what the header fields default to.
   const selectedVendor = useMemo(
@@ -657,6 +671,7 @@ export default function GpPurchaseOrderDialog({
   // different job re-queries; the refresh control re-pulls the current job's codes.
   const {
     data: costCodesData,
+    error: costCodesError,
     loading: costCodesLoading,
     refetch: refetchCostCodes,
   } = useQuery<{ gpCostCodes: GpCostCode[] }>(GET_GP_COST_CODES, {
@@ -1017,7 +1032,7 @@ export default function GpPurchaseOrderDialog({
       if (!gpVendorId) errs.vendor = 'Select a GP vendor';
       else if (!vendorConfirmed) errs.vendor = 'Confirm the suggested GP vendor before registering';
       // Issue #216: the PO is pushed as the caller's own GP buyer identity.
-      if (!gpBuyerId) errs.buyer = 'Your account has no GP buyer identity - ask an Admin to set it in User Management';
+      if (!gpBuyerId) errs.buyer = noBuyerMessage;
       // The site GP stocks every line at. It has no default - a site code only exists in the company
       // that set it up - so a registration that names none is refused here, before it reaches GP,
       // which would refuse it as an unregistered site.
@@ -1067,7 +1082,7 @@ export default function GpPurchaseOrderDialog({
       errs.tradeDiscount = 'Must be >= 0';
     setErrors(errs);
     return Object.keys(errs).length === 0;
-  }, [lineItems, lineErrors, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, effectiveSite, sites.length, effectiveContact, comment, isJob, costCode, costCodes, shippingCost, tariffAmount, isForeignCurrency, pickedTaxScheduleId, gpTaxSchedules.length, taxSchedulesOpUnsupported, taxSchedulesFailed, miscellaneous, tradeDiscount]);
+  }, [lineItems, lineErrors, relayConnected, gpVendorId, isRegister, vendorConfirmed, gpBuyerId, noBuyerMessage, effectiveSite, sites.length, effectiveContact, comment, isJob, costCode, costCodes, shippingCost, tariffAmount, isForeignCurrency, pickedTaxScheduleId, gpTaxSchedules.length, taxSchedulesOpUnsupported, taxSchedulesFailed, miscellaneous, tradeDiscount]);
 
   /**
    * Stage two: read the PO back out of GP and hand the finished PO to the caller. Also what "Try
@@ -1314,7 +1329,12 @@ export default function GpPurchaseOrderDialog({
     ? ''
     : !relayConnected
       ? RELAY_DOWN_HELPER
-      : costCodesLoading
+      : costCodesError && costCodes.length === 0
+        ? // #1287: a failed read, not a job without codes - so it does not read as a reason to stop.
+          isRelayOpUnsupported(costCodesError)
+          ? 'Relay out of date - cost codes cannot be read from GP'
+          : 'Cost codes could not be read from GP - refresh to try again'
+        : costCodesLoading
         ? 'Loading cost codes from GP…'
         : costCodes.length === 0
           ? 'No cost codes defined for this job in GP'
@@ -1379,6 +1399,11 @@ export default function GpPurchaseOrderDialog({
   const vendorHelper =
     errors.vendor ||
     (isRegister && !relayConnected ? RELAY_DOWN_HELPER : '') ||
+    (isRegister && gpVendorsError && gpVendors.length === 0
+      ? gpVendorsUnsupported
+        ? 'Relay out of date - the GP vendor list cannot be read'
+        : 'The GP vendor list could not be read - refresh to try again'
+      : '') ||
     (isRegister && importedVendorName ? `Imported as: ${importedVendorName} - confirm the GP vendor` : '');
 
   // Issue #232: the manufacturer-driven vendor suggestion, shown under the vendor picker once every
@@ -1558,8 +1583,7 @@ export default function GpPurchaseOrderDialog({
           to everyone, so this gates register mode only. */}
       {isRegister && !gpBuyerId && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          Your account has no GP buyer identity - an Admin must set it in User Management before you can
-          register purchase orders.
+          {noBuyerMessage}
         </Alert>
       )}
       {/* Header Fields */}
@@ -1652,6 +1676,11 @@ export default function GpPurchaseOrderDialog({
                 <RefreshCw {...ICON} />
               </IconButton>
             </Stack>
+            {gpVendorsReadError && !gpVendorsUnsupported && gpVendors.length === 0 && (
+              <Box sx={{ mt: 1 }}>
+                <GpErrorAlert error={gpVendorsReadError} title="The GP vendor list could not be read" />
+              </Box>
+            )}
             {gpVendorId && !vendorConfirmed && (
               <FormControlLabel
                 sx={{ mt: 0.5 }}

@@ -431,7 +431,7 @@ def test_a_batched_request_cannot_be_rejected_whole(db_session):
     db_session.flush()
 
     with pytest.raises(InvalidStateTransitionError, match="already been batched"):
-        shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "rejector", None)
+        shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "rejector", "not needed")
 
 
 # --- discarding a batch (the #325 reopen, at batch granularity) -------------------------------
@@ -801,7 +801,7 @@ def test_a_rejected_request_is_off_the_ladder(db_session):
     sar = _finalize_shop_assembly(db_session, project, qty=2)["shop_assembly_request"]
     db_session.flush()
 
-    shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "rejector", None)
+    shop_assembly_repository.reject_shop_assembly_request(db_session, sar.id, "rejector", "not needed")
     db_session.flush()
 
     fresh = shop_assembly_repository.get_shop_assembly_request(db_session, sar.id)

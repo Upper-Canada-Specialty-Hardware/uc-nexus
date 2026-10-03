@@ -136,4 +136,14 @@ describe('ReconcileGpPoLinkStep', () => {
       screen.getByText('Every row naming a purchase order matched exactly one line on its own.'),
     ).toBeInTheDocument();
   });
+
+  it('fits its width: a fixed-layout fit table, long values ellipsized with the full value on hover', () => {
+    const long = 'PO501788 / PO501789 / PO501790 / PO501791';
+    renderStep({ resolutions: [resolution({ poCell: long })] });
+    const box = document.querySelector('[data-fit-table="sharepoint-migration-po-link"]') as HTMLElement;
+    expect(box).not.toBeNull();
+    expect(box.querySelector('table')).toHaveStyle({ tableLayout: 'fixed' });
+    expect(screen.getByTitle(long)).toBeInTheDocument();
+    expect(screen.getByRole('separator', { name: 'Resize PO line column' })).toBeInTheDocument();
+  });
 });

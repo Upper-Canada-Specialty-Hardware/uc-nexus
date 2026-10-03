@@ -621,3 +621,72 @@ def test_a_roleless_signed_in_caller_is_refused(query, monkeypatch):
     assert result.errors
     assert result.errors[0].extensions["code"] == "FORBIDDEN"
     assert result.errors[0].message == f"{' or '.join(sorted(SHOP_ASSEMBLY_MANAGERS))} role required"
+
+
+# --- #1201: the first read is insert-if-absent ------------------------------------------------------
+
+
+def test_first_read_that_loses_the_race_returns_the_winners_rows(db_session):
+    """Two first reads at once both find nothing. The one inserting second must get the row the other
+    made, not a unique violation: simulate the loser by making both rows exist before it inserts."""
+    from sqlalchemy import insert
+
+    from app.models.inventory_value import DoorsOnHand, InventoryValueSettings
+
+    company = _company()
+    # The winner's rows, written underneath the session's identity map.
+    db_session.execute(insert(InventoryValueSettings).values(company=company, average_door_cost=Decimal("7.50")))
+    winner_id = uuid.uuid4()
+    db_session.execute(insert(DoorsOnHand).values(id=winner_id, company=company, project_id=None, quantity=3))
+
+    # The loser checked before those landed: its check finds nothing, then it inserts.
+    real_get, real_scalars = db_session.get, db_session.scalars
+    misses = {"get": 1, "scalars": 1}
+
+    def stale_get(*args, **kwargs):
+        if misses["get"]:
+            misses["get"] -= 1
+            return None
+        return real_get(*args, **kwargs)
+
+    class _Empty:
+        def first(self):
+            return None
+
+    def stale_scalars(*args, **kwargs):
+        if misses["scalars"]:
+            misses["scalars"] -= 1
+            return _Empty()
+        return real_scalars(*args, **kwargs)
+
+    db_session.get = stale_get
+    db_session.scalars = stale_scalars
+    try:
+        settings = inventory_value_repository.get_settings(db_session, company)
+        general = inventory_value_repository.get_general_row(db_session, company)
+    finally:
+        db_session.get, db_session.scalars = real_get, real_scalars
+
+    assert settings.average_door_cost == Decimal("7.50")
+    assert general.id == winner_id
+    assert general.quantity == 3
+
+
+def test_first_read_creates_each_row_once(db_session):
+    company = _company()
+    first = inventory_value_repository.get_general_row(db_session, company)
+    again = inventory_value_repository.get_general_row(db_session, company)
+    assert first.id == again.id
+    assert inventory_value_repository.get_settings(db_session, company).average_door_cost == Decimal("0")
+
+
+def test_average_door_cost_past_the_column_is_a_field_error(db_session):
+    """#1211: Numeric(12, 2) holds under 10^10. A larger figure, or one that rounds up to it, is refused
+    on the field instead of overflowing at commit."""
+    company = _company()
+    for amount in (Decimal("10000000000"), Decimal("9999999999.995")):
+        with pytest.raises(ValidationError) as exc:
+            inventory_value_repository.set_average_door_cost(db_session, company, amount, "tester")
+        assert exc.value.field == "amount"
+    saved = inventory_value_repository.set_average_door_cost(db_session, company, Decimal("9999999999.99"), "tester")
+    assert saved.average_door_cost == Decimal("9999999999.99")

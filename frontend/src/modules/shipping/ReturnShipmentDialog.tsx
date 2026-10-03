@@ -147,8 +147,15 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
     }[] = [];
     for (const line of lines) {
       const draft = getDraft(line.packingSlipItemId);
-      const qty = Number(draft.quantity);
-      if (!draft.quantity || !Number.isInteger(qty) || qty <= 0) continue;
+      const raw = draft.quantity.trim();
+      if (!raw) continue;
+      const qty = Number(raw);
+      // #1177: a quantity that is there but not a whole number used to be skipped, so the other
+      // lines went through and the success toast said the return was done. A 0 is "not this line".
+      if (!Number.isInteger(qty) || qty < 0) {
+        return { error: `${line.productCode}: return quantity must be a whole number` };
+      }
+      if (qty === 0) continue;
       if (qty > line.returnableQuantity) {
         return { error: `${line.productCode}: cannot return more than ${line.returnableQuantity}` };
       }

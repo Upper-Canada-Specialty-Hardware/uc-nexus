@@ -345,7 +345,12 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
   ]);
 
   const [createGpJob, { loading }] = useMutation<{
-    createGpJob: { created: boolean; costCodesProvisioned: number; project: Pick<Project, 'id'> };
+    createGpJob: {
+      created: boolean;
+      costCodesProvisioned: number;
+      costCodesInGp: number | null;
+      project: Pick<Project, 'id'>;
+    };
   }>(CREATE_GP_JOB, { refetchQueries: [{ query: GET_PROJECTS }] });
 
   // #448: the selection is derived from a master that is not there yet while the read is in flight, so
@@ -497,14 +502,21 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
       const asked = selectedCostCodeEntries.length;
       const job = jobNumber.trim();
       if (!created) {
-        // The job is somebody else's setup, left exactly as GP has it - the picked codes were not
-        // added to it, so the selection the user made here has gone nowhere.
-        showToast(
-          asked === 0
-            ? `Job ${job} already existed in GP and is now a project.`
-            : `Job ${job} already existed in GP and is now a project. The cost codes selected here were not applied to it.`,
-          asked === 0 ? 'success' : 'warning',
-        );
+        // #1306: GP already held the job - either somebody else's setup, or ours from an earlier
+        // attempt whose reply was lost. This call added nothing, so it says what GP holds rather
+        // than claiming the selection never landed (on a lost reply it did).
+        const inGp = response.data?.createGpJob?.costCodesInGp;
+        const base = `GP already held job ${job}; it is now a project.`;
+        if (asked === 0) {
+          showToast(base, 'success');
+        } else if (typeof inGp === 'number') {
+          showToast(
+            `${base} GP holds ${inGp} active cost code${inGp === 1 ? '' : 's'} on it - check they match the ones selected here.`,
+            inGp === 0 ? 'warning' : 'info',
+          );
+        } else {
+          showToast(`${base} Check its cost codes in GP.`, 'warning');
+        }
       } else if (asked > 0 && provisioned === 0) {
         showToast(
           `Job ${job} was created in GP, but its cost codes were not provisioned - the relay on that workstation is ` +
