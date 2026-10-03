@@ -1119,6 +1119,23 @@ def reload_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder | None:
     return session.scalars(stmt).unique().first()
 
 
+def reload_pos(session: Session, po_ids: list[uuid.UUID]) -> list[PurchaseOrder]:
+    """reload_po for several POs in one statement per relationship (#1225), returned in the order of
+    `po_ids`. An id with no row is left out. No deleted_at filter, as in reload_po."""
+    if not po_ids:
+        return []
+    stmt = (
+        select(PurchaseOrder)
+        .options(
+            selectinload(PurchaseOrder.line_items),
+            selectinload(PurchaseOrder.documents),
+        )
+        .where(PurchaseOrder.id.in_(po_ids))
+    )
+    by_id = {po.id: po for po in session.scalars(stmt).unique().all()}
+    return [by_id[po_id] for po_id in po_ids if po_id in by_id]
+
+
 def get_receive_records_for_po(session: Session, po_id: uuid.UUID) -> list[ReceiveRecord]:
     """Get all ReceiveRecords for a PO, eagerly load their line_items.
     NOTE: PurchaseOrder model has NO receive_records relationship -- must query ReceiveRecord.po_id directly."""

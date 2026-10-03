@@ -1,10 +1,10 @@
 import { useState, useCallback } from 'react';
 import { Button, Stack, TextField, FormControlLabel, Checkbox, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
+import type { ApolloCache } from '@apollo/client/core';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { CREATE_WAREHOUSE, UPDATE_WAREHOUSE } from '../../graphql/admin';
-import { GET_WAREHOUSES } from '../../graphql/shared';
 import { useActingCompany } from '../../company/ActingCompanyContext';
 import { FONT_MONO, microLabelSx } from '../../theme';
 
@@ -72,6 +72,16 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
   const actingCompany = useActingCompany().company;
   const company = form.company || actingCompany || '';
 
+  // #1206: every `warehouses` read goes - the includeInactive list on this page and the active-only one
+  // the receive, transfer and return pickers read cache-first. A refetch by name reaches only mounted
+  // instances, and those pickers live in closed dialogs, so a new warehouse stayed missing and a
+  // deactivated one stayed offered until a reload. Evicting is enough on its own: the mounted list
+  // re-reads the missing field, and a refetch beside it would run the query twice.
+  const evictWarehouseLists = (cache: ApolloCache) => {
+    cache.evict({ id: 'ROOT_QUERY', fieldName: 'warehouses' });
+    cache.gc();
+  };
+
   const onError = (err: { message: string }) => {
     if (err.message.toLowerCase().includes('already exists')) {
       setFieldError(err.message);
@@ -83,7 +93,7 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
   const [createWarehouse, { loading: creating }] = useMutation<{ createWarehouse: { id: string; name: string } }>(
     CREATE_WAREHOUSE,
     {
-      refetchQueries: [{ query: GET_WAREHOUSES, variables: { includeInactive: true } }],
+      update: evictWarehouseLists,
       onCompleted: (data) => {
         showToast('Warehouse created', 'success');
         onSaved?.(data.createWarehouse);
@@ -96,7 +106,7 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
   const [updateWarehouse, { loading: updating }] = useMutation<{ updateWarehouse: { id: string; name: string } }>(
     UPDATE_WAREHOUSE,
     {
-      refetchQueries: [{ query: GET_WAREHOUSES, variables: { includeInactive: true } }],
+      update: evictWarehouseLists,
       onCompleted: (data) => {
         showToast('Warehouse updated', 'success');
         onSaved?.(data.updateWarehouse);

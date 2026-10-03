@@ -305,7 +305,7 @@ class ImportMutations:
 
             # Re-load everything with the relationships the response types walk
             project = project_repository.get_project_with_openings(session, result["project"].id)
-            pos = [po_repository.reload_po(session, po_obj.id) for po_obj in result["purchase_orders"]]
+            pos = po_repository.reload_pos(session, [po_obj.id for po_obj in result["purchase_orders"]])
             shipping_requests = [
                 shipping_repository.get_shipping_out_request(session, req_obj.id)
                 for req_obj in result["shipping_out_requests"]

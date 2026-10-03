@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, waitFor, configure } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import ShippingRequestsPage from '../ShippingRequestsPage';
 import { GET_SHIPPING_OUT_REQUESTS, REJECT_SHIPPING_OUT_REQUEST } from '../../../graphql/shipping';
@@ -143,4 +143,38 @@ it('says who rejected a request, when and why, and offers no Reopen', async () =
   const note = await screen.findByText(/Rejected by Rita Rejector/);
   expect(note).toHaveTextContent('raised against the wrong job');
   expect(screen.queryByRole('button', { name: 'Reopen' })).not.toBeInTheDocument();
+});
+
+it('scopes the list to the project the url names (#1310)', async () => {
+  const scoped: MockedResponse = {
+    ...requestsMock,
+    request: { query: GET_SHIPPING_OUT_REQUESTS, variables: { projectId: 'proj-1', status: 'PENDING' } },
+  };
+  renderRequests([scoped], '/app/shipping/requests?project=proj-1');
+
+  // Only the scoped read is mocked, so the request showing proves the page asked for proj-1.
+  expect(await screen.findByRole('button', { name: 'Reject' })).toBeInTheDocument();
+});
+
+it('follows the url to the rejected tab while the page is already open (#1243)', async () => {
+  // The bell's link changes the url without remounting the page; the tab has to move with it.
+  function GoToRejected() {
+    const navigate = useNavigate();
+    return <button onClick={() => navigate('/app/shipping/requests?view=REJECTED')}>open rejected notice</button>;
+  }
+  render(
+    <MockedProvider mocks={[requestsMock, rejectedMock, projectsMock]}>
+      <ToastProvider>
+        <MemoryRouter initialEntries={['/app/shipping/requests']}>
+          <GoToRejected />
+          <ShippingRequestsPage />
+        </MemoryRouter>
+      </ToastProvider>
+    </MockedProvider>,
+  );
+
+  await screen.findByRole('button', { name: 'Reject' });
+  fireEvent.click(screen.getByRole('button', { name: 'open rejected notice' }));
+
+  expect(await screen.findByText(/Rejected by Rita Rejector/)).toBeInTheDocument();
 });

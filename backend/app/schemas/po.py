@@ -27,6 +27,7 @@ from app.repositories import (
     tenancy,
     user_repository,
 )
+from app.repositories.project_labels import project_labels
 from app.services import email as email_service
 from app.services import (
     gp_idempotency,
@@ -596,9 +597,22 @@ class POQueries:
                     return names.get(r.created_by_user_id)
                 return r.buyer_id or None
 
+            # #1238: every row's project, and the scoped one, in one read - archived projects included,
+            # which the projects list the page used to join against leaves out.
+            scope_pid = uuid.UUID(str(project_id)) if project_id else None
+            if scope_pid is not None:
+                try:
+                    tenancy.require_project_in_scope(session, scope_pid, scope)
+                except NotFoundError:
+                    scope_pid = None
+            labels = project_labels(session, [*(r.project_id for r in rows), scope_pid])
+            scope_number, scope_description = labels.get(scope_pid, (None, None))
+
             return PurchaseOrderPage(
-                rows=[po_list_row_to_type(r, counts.get(r.id, 0), _created_by(r)) for r in rows],
+                rows=[po_list_row_to_type(r, counts.get(r.id, 0), _created_by(r), labels) for r in rows],
                 total_count=total,
+                scope_project_number=scope_number,
+                scope_project_description=scope_description,
             )
 
     @strawberry.field
@@ -685,7 +699,8 @@ class POQueries:
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
             rows, pending = po_repository.get_open_pos_summary(session, pid, company=scope)
-            return [open_po_summary_to_type(r, *(pending.get(r.id, (0, 0)))) for r in rows]
+            labels = project_labels(session, (r.project_id for r in rows))
+            return [open_po_summary_to_type(r, *(pending.get(r.id, (0, 0))), labels=labels) for r in rows]
 
     @strawberry.field
     def po_document_settings(self, info: strawberry.Info) -> PODocumentSettings:

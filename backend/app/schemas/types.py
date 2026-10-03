@@ -554,6 +554,10 @@ class ReceiveDraft:
     po_id: strawberry.ID
     po_number: str | None
     project_id: strawberry.ID | None
+    # The PO's project by job number and name, read off the project itself (#1196) so an archived
+    # project's drafts still name it. Null on a PO with no project.
+    project_number: str | None
+    project_description: str | None
     # #958: Stock or Overhead, so a PO with no project is named for its kind, not always "Stock PO".
     pool_kind: PoolKind
     warehouse_id: strawberry.ID | None
@@ -598,6 +602,9 @@ class ReceivingHistoryPO:
     status: POStatus
     vendor_name: str | None
     project_id: strawberry.ID | None
+    # Job number and name off the project itself (#1215), archived included. Null with no project.
+    project_number: str | None
+    project_description: str | None
     # #958: Stock or Overhead, so a PO with no project is named for its kind, not always "Stock PO".
     pool_kind: PoolKind
     ordered_total: int
@@ -987,6 +994,8 @@ class PullRequest:
     status: PullRequestStatus
     requested_by: str
     assigned_to: str | None
+    # #1356: who started the pick, by user id. Null on pulls started before it was recorded.
+    assigned_to_user_id: str | None
     created_at: datetime
     updated_at: datetime
     approved_at: datetime | None
@@ -1207,6 +1216,10 @@ class PackingSlip:
     id: strawberry.ID
     packing_slip_number: str
     project_id: strawberry.ID
+    # The project's business number (the job number) and name, read off the project itself (#1173),
+    # so a shipment of an archived project still says whose it is.
+    project_number: str
+    project_description: str | None
     # Where the truck has got to. The header is editable only while SCHEDULED.
     status: ShipmentStatus
     shipped_by: str
@@ -1334,6 +1347,9 @@ class POListRow:
     po_number: str | None
     request_number: str | None
     project_id: strawberry.ID | None
+    # Job number and name off the project itself (#1238), archived included. Null with no project.
+    project_number: str | None
+    project_description: str | None
     # #958: Stock or Overhead, the chip the register shows where a PO with no project has no job.
     pool_kind: PoolKind
     status: POStatus
@@ -1357,6 +1373,11 @@ class POListRow:
 class PurchaseOrderPage:
     rows: list[POListRow]
     total_count: int
+    # The project a `projectId`-scoped page is narrowed to, for its scope chip (#1238). Read here rather
+    # than off a row so an empty page - or an archived project's - still names the scope. Null when
+    # the page is not scoped, or the project is not the caller's company's.
+    scope_project_number: str | None = None
+    scope_project_description: str | None = None
 
 
 @strawberry.type
@@ -1368,6 +1389,9 @@ class OpenPOSummary:
     id: strawberry.ID
     po_number: str | None
     project_id: strawberry.ID | None
+    # Job number and name off the project itself (#1196), archived included. Null with no project.
+    project_number: str | None
+    project_description: str | None
     # #958: Stock or Overhead, so a PO with no project is named for its kind, not always "Stock PO".
     pool_kind: PoolKind
     status: POStatus
@@ -1699,6 +1723,10 @@ class PickSheet:
 
     pull_request: PullRequest
     sections: list[PickSheetSection]
+    # The pull's project by job number and name, read off the project itself (#1196), so the pick
+    # page and printed sheet still name an archived project.
+    project_number: str | None
+    project_description: str | None
 
 
 @strawberry.type
@@ -1983,6 +2011,9 @@ class DeficientItemRow:
     inventory_location_id: strawberry.ID | None
     stock_item_id: strawberry.ID | None
     project_id: strawberry.ID | None
+    # Job number and name off the project itself (#1252), archived included. Null on a stock-pool row.
+    project_number: str | None
+    project_description: str | None
     hardware_category: str
     product_code: str
     deficient_quantity: int
