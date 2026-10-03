@@ -42,6 +42,8 @@ export interface ReceiveLinesEditorProps {
   onQuantityChange: (lineId: string, value: number) => void;
   /** Name each PO above its table. On for a multi-PO batch, off when there is only one. */
   showPoHeaders: boolean;
+  /** Show the quantities without letting them change: a draft already being posted to GP (#1353). */
+  readOnly?: boolean;
 }
 
 /** Headers in the micro-label face; FitTable's header cell already holds them to one line. */
@@ -71,6 +73,7 @@ export default function ReceiveLinesEditor({
   receiveQuantities,
   onQuantityChange,
   showPoHeaders,
+  readOnly = false,
 }: ReceiveLinesEditorProps) {
   const renderPOSection = (details: PODetails) => {
     const rows = details.lineItems.map((li) => ({
@@ -138,6 +141,10 @@ export default function ReceiveLinesEditor({
                   {fullyReceived ? (
                     <Typography variant="body2" color="text.disabled">
                       Fully Received
+                    </Typography>
+                  ) : readOnly ? (
+                    <Typography variant="body2" sx={tabularSx}>
+                      {currentValue}
                     </Typography>
                   ) : (
                     <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.75 }}>

@@ -96,6 +96,9 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
   const [posted, setPosted] = useState<PostedReceipt | null>(null);
   const [queued, setQueued] = useState(false);
   const [approvedCount, setApprovedCount] = useState(0);
+  // #1353: an approve that failed after its call went out may have left the draft claimed (APPROVING)
+  // and GP holding the receipt, whatever the cached draft still says. Only a same-key retry is safe.
+  const [approveFailed, setApproveFailed] = useState(false);
 
   const [approveDraft] = useMutation<{
     approveReceiveDraft: {
@@ -146,6 +149,7 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
     setGpError(null);
     setPosted(null);
     setQueued(false);
+    setApproveFailed(false);
     setRejectReason('');
     // An approval that died ambiguously left the draft claimed under a key the browser no longer
     // holds - a reload, or a different manager picking it up. Resuming with the SAME key is the only
@@ -198,6 +202,11 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
     [receiveQuantities, warehouseId, initialSignature],
   );
 
+  // #1353: a draft already being posted - claimed by an approval that died, here or earlier - is
+  // retried, not edited or rejected. The backend refuses both on APPROVING, and an edit sent first
+  // would stop the same-key approve, the only way to finish the post, from ever being reached.
+  const retrying = draft?.status === 'APPROVING' || approveFailed;
+
   // ---- Actions ----
 
   const handleApprove = useCallback(async () => {
@@ -206,6 +215,7 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
     setMutationError(null);
     setGpError(null);
     setSubmitting(true);
+    let approveSent = false;
 
     try {
       // Save the edits FIRST, so what gets approved is what is on screen. A failure here stops
@@ -216,7 +226,7 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
       // approval is APPROVING, which the backend refuses to edit. Leaving it dirty would make every
       // retry re-send the update, fail on that refusal, and never reach the same-key approve that is
       // the actual way out.
-      if (isDirty) {
+      if (isDirty && !retrying) {
         await updateDraft({
           variables: {
             input: {
@@ -230,6 +240,7 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
       }
 
       const idempotencyKey = (idempotencyKeyRef.current[draft.id] ??= crypto.randomUUID());
+      approveSent = true;
       const res = await approveDraft({
         variables: { input: { draftId: draft.id, idempotencyKey } },
       });
@@ -260,7 +271,9 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
       await client.refetchQueries({ include: RECEIVE_APPROVE_REFETCH_QUERIES });
     } catch (err: unknown) {
       // Key kept: GP may have committed even if the mutation reported failure, so the retry must
-      // carry the same key.
+      // carry the same key. A failed edit never reached GP, so the draft stays editable; a failed
+      // approve may have claimed it, so from here on it is only retried (#1353).
+      if (approveSent) setApproveFailed(true);
       const captured = extractGpError(err);
       if (captured?.code === GP_JOB_NOT_OPEN) {
         // #730: the server's refusal names the job and its state; there is no GP detail to show and
@@ -280,6 +293,7 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
   }, [
     draft,
     isDirty,
+    retrying,
     updateDraft,
     warehouseId,
     lineItemsToReceive,
@@ -341,23 +355,37 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
   ) : (
     <>
       <Button onClick={onClose}>Cancel</Button>
-      <Button color="error" variant="outlined" disabled={submitting} onClick={() => setRejectOpen(true)}>
-        Reject
-      </Button>
+      {/* #1353: only a draft still waiting on a manager can be sent back; one being posted may already
+          be a receipt in GP. */}
+      {draft.status === 'PENDING_APPROVAL' && !retrying && (
+        <Button color="error" variant="outlined" disabled={submitting} onClick={() => setRejectOpen(true)}>
+          Reject
+        </Button>
+      )}
       {/* #425 is a hard blocker here, unlike at draft time: an offline relay means "later", a broken
           GP job means "never, until accounting fixes it". Queuing would not help - the outbox would
           drain into the same eConnect rejection. */}
       <Button
         variant="contained"
-        disabled={totalUnits === 0 || hasQuantityErrors || quarantined || jobNotOpen || submitting}
+        disabled={
+          totalUnits === 0 || (hasQuantityErrors && !retrying) || quarantined || jobNotOpen || submitting
+        }
         onClick={() => setConfirmOpen(true)}
       >
-        {submitting ? <CircularProgress size={24} /> : 'Approve & Post to GP'}
+        {submitting ? <CircularProgress size={24} /> : retrying ? 'Retry posting' : 'Approve & Post to GP'}
       </Button>
     </>
   );
 
   const lastChanged = draftLastChanged(draft)?.toLocaleString() ?? null;
+
+  // #1354: inventory moves when GP accepts the receipt, which is now only while the relay is up.
+  const inventoryNote =
+    relayStatus === true
+      ? 'Inventory updates as soon as GP accepts it.'
+      : relayStatus === false
+        ? 'The GP relay is offline, so the receipt queues; inventory updates once it posts.'
+        : 'Inventory updates once GP accepts it: immediately when the relay is connected, otherwise it queues.';
 
   return (
     <>
@@ -484,6 +512,7 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
                 labelId="review-warehouse-label"
                 label="Receive into warehouse"
                 value={warehouseId}
+                disabled={retrying}
                 onChange={(e) => setWarehouseId(e.target.value)}
               >
                 {warehouses.map((w) => (
@@ -499,6 +528,7 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
                 receiveQuantities={receiveQuantities}
                 onQuantityChange={handleQuantityChange}
                 showPoHeaders={false}
+                readOnly={retrying}
               />
             )}
           </>
@@ -507,9 +537,9 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
 
       <ConfirmDialog
         open={confirmOpen}
-        title="Approve and post to GP"
-        message={`Approve and post ${totalUnits} items to GP as a receipt against ${draft.poNumber ?? 'this PO'}? Inventory updates immediately.`}
-        confirmLabel="Approve"
+        title={retrying ? 'Retry posting to GP' : 'Approve and post to GP'}
+        message={`${retrying ? 'Retry posting' : 'Approve and post'} ${totalUnits} items to GP as a receipt against ${draft.poNumber ?? 'this PO'}? ${inventoryNote}`}
+        confirmLabel={retrying ? 'Retry' : 'Approve'}
         onConfirm={handleApprove}
         onCancel={() => setConfirmOpen(false)}
       />
