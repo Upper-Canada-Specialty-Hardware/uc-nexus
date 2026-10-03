@@ -244,7 +244,10 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
             control={
               <Checkbox
                 checked={form.isPrimary}
-                onChange={(e) => setForm((f) => ({ ...f, isPrimary: e.target.checked }))}
+                // #1254: the primary building is always active, so making one primary activates it.
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, isPrimary: e.target.checked, isActive: e.target.checked || f.isActive }))
+                }
               />
             }
             label="Primary (default for new inventory)"
@@ -253,10 +256,12 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
             control={
               <Checkbox
                 checked={form.isActive}
+                disabled={form.isPrimary}
                 onChange={(e) => setForm((f) => ({ ...f, isActive: e.target.checked }))}
               />
             }
             label="Active"
+            title={form.isPrimary ? 'The primary warehouse stays active. Make another warehouse primary first.' : undefined}
           />
         </Stack>
       </Stack>
