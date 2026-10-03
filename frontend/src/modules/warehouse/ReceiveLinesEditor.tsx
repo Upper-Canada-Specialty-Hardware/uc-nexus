@@ -44,6 +44,8 @@ export interface ReceiveLinesEditorProps {
   showPoHeaders: boolean;
   /** #1285: focus the first Receive Now field on mount, so a count can be typed straight away. */
   autoFocusFirst?: boolean;
+  /** Show the quantities without letting them change: a draft already being posted to GP (#1353). */
+  readOnly?: boolean;
 }
 
 /** Headers in the micro-label face; FitTable's header cell already holds them to one line. */
@@ -74,6 +76,7 @@ export default function ReceiveLinesEditor({
   onQuantityChange,
   showPoHeaders,
   autoFocusFirst = false,
+  readOnly = false,
 }: ReceiveLinesEditorProps) {
   // The first line still pending, across every PO in the batch - the one field that takes focus.
   const firstOpenLineId = autoFocusFirst
@@ -115,7 +118,9 @@ export default function ReceiveLinesEditor({
           {rows.map((row) => {
             const fullyReceived = row.pending === 0;
             const currentValue = receiveQuantities[row.id] ?? 0;
-            const hasError = currentValue > row.pending;
+            // #1383: below zero is as wrong as over pending; the caller drops such a line silently.
+            const belowZero = currentValue < 0;
+            const hasError = belowZero || currentValue > row.pending;
             return (
               <TableRow
                 key={row.id}
@@ -146,6 +151,10 @@ export default function ReceiveLinesEditor({
                     <Typography variant="body2" color="text.disabled">
                       Fully Received
                     </Typography>
+                  ) : readOnly ? (
+                    <Typography variant="body2" sx={tabularSx}>
+                      {currentValue}
+                    </Typography>
                   ) : (
                     <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.75 }}>
                       <TextField
@@ -154,7 +163,7 @@ export default function ReceiveLinesEditor({
                         value={currentValue}
                         error={hasError}
                         autoFocus={row.id === firstOpenLineId}
-                        helperText={hasError ? `Max: ${row.pending}` : undefined}
+                        helperText={belowZero ? 'Whole units, 0 or more' : hasError ? `Max: ${row.pending}` : undefined}
                         slotProps={{
                           htmlInput: {
                             min: 0,

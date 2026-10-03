@@ -27,7 +27,7 @@ from .common import (
     _validate_location_fields,
     destock_unit_cost,
 )
-from .items import get_stock_item
+from .items import lock_stock_item
 
 
 def destock_inventory(
@@ -55,7 +55,9 @@ def destock_inventory(
         raise ValidationError("performed_by is required", field="performed_by")
     _validate_location_fields(target_aisle, target_row, target_bay)
 
-    il = session.get(InventoryLocationModel, inventory_location_id)
+    # Locked and re-read (#1156): the checks below and the write read il.quantity, and a pick confirmed
+    # after a plain read would be undone by writing back a count computed off the stale copy.
+    il = lock_inventory_combo(session, inventory_location_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inventory_location_id} not found")
     pool_cost = destock_unit_cost(session, il, destock_cost)
@@ -220,7 +222,8 @@ def allocate_stock_to_project(
     if provided and len(provided) != 3:
         raise ValidationError("target aisle, row, and bay must all be provided together", field="target_location")
 
-    si = get_stock_item(session, stock_item_id)
+    # Locked and re-read (#1156): two allocations off one pool row would otherwise both pass the check.
+    si = lock_stock_item(session, stock_item_id)
     if provided:
         ensure_registered_location(session, si.warehouse_id, target_aisle, target_row, target_bay)
     available = si.quantity - (si.deficient_quantity or 0)

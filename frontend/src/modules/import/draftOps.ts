@@ -207,3 +207,38 @@ export function mergeAddedProducts(existing: DraftGroup[], seeded: DraftGroup[])
   }
   return next;
 }
+
+// ---- #1314: a re-seed keeps what the buyer typed and attached ----
+
+function hasEdits(g: DraftGroup): boolean {
+  const { notes, preferredDeliveryDate, costCode, vendorQuoteNumber } = g.info;
+  return (
+    (g.attachments?.length ?? 0) > 0 ||
+    [notes, preferredDeliveryDate, costCode, vendorQuoteNumber ?? ''].some((v) => v.trim() !== '')
+  );
+}
+
+/**
+ * Carry the buyer's draft info (cost code, notes, quote number, date) and attachments from the drafts
+ * being replaced onto a fresh seed. A seed draft takes them from the old draft with its id, else from
+ * one with its vendor label. An old draft that matched nothing but holds info or attachments stays on
+ * as an empty card, so its documents are still on screen to move lines into or remove - never dropped
+ * without the buyer seeing it. Lines always come from the seed.
+ */
+export function carryDraftEdits(previous: DraftGroup[], seeded: DraftGroup[]): DraftGroup[] {
+  const used = new Set<string>();
+  const next = seeded.map((seed) => {
+    const match =
+      previous.find((g) => !used.has(g.id) && g.id === seed.id) ??
+      previous.find((g) => !used.has(g.id) && g.label === seed.label);
+    if (!match) return seed;
+    used.add(match.id);
+    return { ...seed, info: { ...match.info }, ...(match.attachments ? { attachments: match.attachments } : {}) };
+  });
+  const seedIds = new Set(next.map((g) => g.id));
+  for (const g of previous) {
+    if (used.has(g.id) || !hasEdits(g)) continue;
+    next.push({ ...g, id: seedIds.has(g.id) ? `${g.id}:kept` : g.id, lines: new Map() });
+  }
+  return next;
+}
