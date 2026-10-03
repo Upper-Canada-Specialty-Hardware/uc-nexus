@@ -68,6 +68,8 @@ export interface ReceivingHistoryPO {
   status: string;
   vendorName: string | null;
   projectId: string | null;
+  projectNumber: string | null;
+  projectDescription: string | null;
   poolKind: PoolKind;
   orderedTotal: number;
   receivedTotal: number;
@@ -102,7 +104,6 @@ interface ProjectOption {
 
 interface ReceivingHistoryProps {
   projects: ProjectOption[];
-  projectMap: Map<string, string>;
 }
 
 // ---- Helpers ----
@@ -297,7 +298,7 @@ function HistoryRow({ po, projectName, expanded, onToggle }: HistoryRowProps) {
  * the moment it is complete. Reconciling a delivery against GP - "which receipt was this, and who
  * booked it" - needs the finished ones, so this is the one surface where CLOSED POs are in scope.
  */
-export default function ReceivingHistory({ projects, projectMap }: ReceivingHistoryProps) {
+export default function ReceivingHistory({ projects }: ReceivingHistoryProps) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState('');
@@ -409,7 +410,10 @@ export default function ReceivingHistory({ projects, projectMap }: ReceivingHist
             <HistoryRow
               key={po.id}
               po={po}
-              projectName={po.projectId ? (projectMap.get(po.projectId) ?? DASH) : noProjectPoLabel(po.poolKind)}
+              // Off the row (#1215): the projects list leaves archived projects out.
+              projectName={
+                po.projectId ? po.projectDescription || po.projectNumber || DASH : noProjectPoLabel(po.poolKind)
+              }
               expanded={expandedIds.has(po.id)}
               onToggle={() => toggle(po.id)}
             />

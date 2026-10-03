@@ -134,6 +134,9 @@ export const GET_RECEIVING_HISTORY_POS = gql`
       vendorName
       poolKind
       projectId
+      # Off the project itself (#1215), so an archived job's history still names it.
+      projectNumber
+      projectDescription
       orderedTotal
       receivedTotal
       receiveCount

@@ -300,15 +300,9 @@ export default function ReceivingPage() {
   }, [pendingDraftsData]);
   const pendingDraftCount = pendingDraftsData?.receiveDrafts?.length ?? 0;
 
-  // Project lookup
+  // The history tab's project filter. Rows name their project off the server (#1196, #1215), since
+  // this list leaves archived projects out.
   const projects = useMemo(() => projectsData?.projects ?? [], [projectsData]);
-  const projectMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const p of projects) {
-      map.set(p.id, p.description || p.projectId);
-    }
-    return map;
-  }, [projects]);
 
   // PO rows
   const poColumns: GridColDef[] = useMemo(
@@ -548,7 +542,7 @@ export default function ReceivingPage() {
       <GpWriteQueuePanel ops={HELD_GP_RECEIVE_ENTRY_OPS} compact heading="Held GP receive entries" />
 
       {view === 'drafts' && <MyReceiveDraftsView />}
-      {view === 'history' && <ReceivingHistory projects={projects} projectMap={projectMap} />}
+      {view === 'history' && <ReceivingHistory projects={projects} />}
 
       {showReceive && (
         <>

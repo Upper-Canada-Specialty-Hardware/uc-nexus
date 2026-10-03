@@ -592,6 +592,9 @@ class WarehouseQueries:
         `poReceivingDetails` when a row is expanded, not from here."""
         with SessionLocal() as session:
             pid = uuid.UUID(str(project_id)) if project_id else None
+            rows = warehouse_repository.get_receiving_history_pos(session, pid, company=tenant_scope(info))
+            # One batched read for every row's project name (#1215), archived projects included.
+            labels = project_labels(session, (row["project_id"] for row in rows))
             return [
                 ReceivingHistoryPO(
                     id=strawberry.ID(str(row["id"])),
@@ -600,13 +603,15 @@ class WarehouseQueries:
                     status=row["status"],
                     vendor_name=row["vendor_name"],
                     project_id=strawberry.ID(str(row["project_id"])) if row["project_id"] else None,
+                    project_number=labels.get(row["project_id"], (None, None))[0],
+                    project_description=labels.get(row["project_id"], (None, None))[1],
                     pool_kind=row["pool_kind"],
                     ordered_total=row["ordered_total"],
                     received_total=row["received_total"],
                     receive_count=row["receive_count"],
                     last_received_at=row["last_received_at"],
                 )
-                for row in warehouse_repository.get_receiving_history_pos(session, pid, company=tenant_scope(info))
+                for row in rows
             ]
 
     @strawberry.field

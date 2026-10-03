@@ -602,6 +602,9 @@ class ReceivingHistoryPO:
     status: POStatus
     vendor_name: str | None
     project_id: strawberry.ID | None
+    # Job number and name off the project itself (#1215), archived included. Null with no project.
+    project_number: str | None
+    project_description: str | None
     # #958: Stock or Overhead, so a PO with no project is named for its kind, not always "Stock PO".
     pool_kind: PoolKind
     ordered_total: int
