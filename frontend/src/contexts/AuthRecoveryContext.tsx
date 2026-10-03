@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 import ConfirmDialog from '../components/ConfirmDialog';
-import { onAuthFailure, publishAuthBridge } from '../authBridge';
+import { markAuthRecovered, onAuthFailure, publishAuthBridge } from '../authBridge';
 
 interface AuthRecoveryContextType {
   /** Raise the re-authentication prompt. The Apollo auth link reaches this through authBridge. */
@@ -24,8 +24,14 @@ const AuthRecoveryContext = createContext<AuthRecoveryContextType | undefined>(u
  * It is mounted once, at the root, inside ClerkProvider (for `useAuth`) and the theme (for the dialog).
  */
 export function AuthRecoveryProvider({ children }: { children: ReactNode }) {
-  const { isLoaded, isSignedIn, getToken } = useAuth();
+  const { isLoaded, isSignedIn, getToken, sessionId } = useAuth();
   const [promptOpen, setPromptOpen] = useState(false);
+
+  // A new session (the user signed in again after a reload, or Clerk restored one) ends the
+  // lapse, so the polls the auth link has been holding back resume on their next tick (#1329).
+  useEffect(() => {
+    if (sessionId) markAuthRecovered();
+  }, [sessionId]);
 
   useEffect(() => {
     publishAuthBridge({ isLoaded, isSignedIn: isSignedIn === true, getToken });
@@ -59,13 +65,26 @@ export function AuthRecoveryProvider({ children }: { children: ReactNode }) {
       <ConfirmDialog
         open={promptOpen && !signedOut}
         title="Your session needs a refresh"
-        message="We could not renew your sign-in, so this page cannot load its data. Reload to sign in again - anything you have already saved is unaffected."
+        message="We could not renew your sign-in, so this page cannot load its data. Sign in again to carry on. If your sign-in can be renewed in place, this page and anything you have typed stay as they are; otherwise the page reloads - anything already saved is unaffected."
         confirmLabel="Sign in again"
         cancelLabel="Not now"
-        // A full reload is the recovery that covers every case: it re-runs Clerk's handshake from
-        // scratch, so a repairable session comes back on the same route, and a genuinely expired one
-        // falls through to the sign-in redirect App already does.
-        onConfirm={() => window.location.reload()}
+        // #1329: renew in place first - a fresh mint past Clerk's cache - so a half-filled receive or
+        // pick draft survives a session Clerk can still repair. Only when that fails does it fall back
+        // to the full reload, which re-runs Clerk's handshake and lands a genuinely expired session on
+        // the sign-in redirect App already does. (Clerk's sign-in modal cannot open here: Clerk still
+        // counts the user as signed in while the token is unrenewable.)
+        onConfirm={async () => {
+          setPromptOpen(false);
+          try {
+            if (await getToken({ skipCache: true })) {
+              markAuthRecovered();
+              return;
+            }
+          } catch {
+            // Same as no token: fall through to the reload.
+          }
+          window.location.reload();
+        }}
         onCancel={() => setPromptOpen(false)}
       />
     </AuthRecoveryContext.Provider>
