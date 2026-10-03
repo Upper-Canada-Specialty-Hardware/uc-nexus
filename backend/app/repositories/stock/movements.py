@@ -290,8 +290,14 @@ def receive_into_stock(
     po_number: str | None,
     unit_cost: Decimal | None = None,
     kind: PoolKind = PoolKind.STOCK,
+    company: str | None = None,
 ) -> StockItem:
     """Receive vendor PO directly into the stock pool. Used when PO has no project_id.
+
+    `warehouse_id` is where the units land. Without one, `company` names whose primary building takes
+    them (#1282): a pool row carries no company of its own, so there is nothing else to scope the
+    fallback by, and an unscoped lookup picks the oldest primary across every tenant. With neither,
+    the receive is refused rather than placed in some company's building.
 
     `kind` is the PO's own Stock / Overhead choice (#832); every off-PO caller (the SharePoint
     migration) takes the STOCK default.
@@ -311,7 +317,9 @@ def receive_into_stock(
     if warehouse_id is None:
         from app.repositories import warehouse_admin_repository
 
-        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
+        if not company:
+            raise ValidationError("A warehouse or a GP company is required to receive into stock", field="warehouse_id")
+        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session, company=company)
 
     stock_row = _find_or_create_stock_row(
         session,

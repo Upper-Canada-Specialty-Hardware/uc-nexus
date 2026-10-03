@@ -183,3 +183,43 @@ def test_a_restored_inventory_row_lands_in_the_projects_company(db_session):
     row = _return_units_to_project_inventory(db_session, project.id, "Hinges", "HG-100", 2)
 
     assert row.warehouse_id == home_primary.id
+
+
+# --- #1282: a stock receive with no warehouse stays in a named company --------------------------------
+
+
+def _receive(session, **kw):
+    from datetime import datetime
+
+    from app.repositories import stock as stock_repository
+
+    return stock_repository.receive_into_stock(
+        session,
+        hardware_category="HINGE",
+        product_code=f"SR-{uuid.uuid4().hex[:6]}",
+        quantity=2,
+        deficient_quantity=0,
+        aisle=None,
+        row=None,
+        bay=None,
+        received_at=datetime.utcnow(),
+        received_by="warehouse",
+        po_number=None,
+        **kw,
+    )
+
+
+def test_a_stock_receive_with_no_warehouse_lands_in_the_named_companys_primary(db_session):
+    home, elsewhere = _company(), _company()
+    _warehouse(db_session, elsewhere, primary=True)
+    home_primary = _warehouse(db_session, home, primary=True)
+
+    row = _receive(db_session, company=home)
+
+    assert row.warehouse_id == home_primary.id
+
+
+def test_a_stock_receive_with_no_warehouse_and_no_company_is_refused(db_session):
+    with pytest.raises(ValidationError) as exc:
+        _receive(db_session)
+    assert exc.value.field == "warehouse_id"
