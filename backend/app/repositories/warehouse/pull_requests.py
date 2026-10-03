@@ -300,7 +300,9 @@ def find_reservation_holder(session: Session, pr: PullRequestModel) -> tuple[Res
 # confirmed short and the un-picked remainder is still owed.
 
 
-def start_pull_request_pick(session: Session, pr_id: uuid.UUID, started_by: str) -> PullRequestModel:
+def start_pull_request_pick(
+    session: Session, pr_id: uuid.UUID, started_by: str, started_by_user_id: str | None = None
+) -> PullRequestModel:
     """Claim a PENDING pull and open it for picking (#367). **Nothing moves in inventory.**
 
     This is what `approve_pull_request` used to be, minus everything that touched stock: no
@@ -333,6 +335,9 @@ def start_pull_request_pick(session: Session, pr_id: uuid.UUID, started_by: str)
 
     pr.status = PullRequestStatus.IN_PROGRESS
     pr.assigned_to = started_by
+    # #1356: the id is what the pick page compares to decide who the pull is locked to; the name is
+    # only shown.
+    pr.assigned_to_user_id = started_by_user_id
     pr.approved_at = datetime.utcnow()
     session.flush()
     return pr

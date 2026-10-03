@@ -1260,7 +1260,9 @@ class WarehouseMutations:
         actor = resolve_display_name(auth["user_id"])
         with SessionLocal() as session:
             tenancy.require_pull_request_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
-            pr = warehouse_repository.start_pull_request_pick(session, uuid.UUID(str(id)), actor)
+            pr = warehouse_repository.start_pull_request_pick(
+                session, uuid.UUID(str(id)), actor, started_by_user_id=auth["user_id"]
+            )
             session.commit()
             pr = warehouse_repository.get_pull_request_details(session, pr.id)
             return pull_request_to_type(pr, partially_picked=False)
