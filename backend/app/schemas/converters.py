@@ -179,15 +179,19 @@ def receive_draft_line_item_to_type(li) -> ReceiveDraftLineItem:
     )
 
 
-def receive_draft_to_type(draft, po) -> ReceiveDraft:
+def receive_draft_to_type(draft, po, labels: dict | None = None) -> ReceiveDraft:
     """The draft plus the PO fields every consumer renders beside it. `po` is passed in rather than
-    walked off a relationship so a list read stays one query."""
+    walked off a relationship so a list read stays one query. `labels` is the caller's batched
+    `project_labels` read (#1196), so the project name costs one query per list, not one per row."""
+    number, description = (labels or {}).get(po.project_id if po is not None else None, (None, None))
     return ReceiveDraft(
         id=strawberry.ID(str(draft.id)),
         status=draft.status,
         po_id=strawberry.ID(str(draft.po_id)),
         po_number=po.po_number if po is not None else None,
         project_id=strawberry.ID(str(po.project_id)) if po is not None and po.project_id else None,
+        project_number=number,
+        project_description=description,
         pool_kind=(getattr(po, "pool_kind", None) if po is not None else None) or PoolKindDB.STOCK,
         warehouse_id=strawberry.ID(str(draft.warehouse_id)) if draft.warehouse_id else None,
         created_by_user_id=draft.created_by_user_id,
@@ -492,13 +496,18 @@ def po_to_type(po, receive_records=None) -> PurchaseOrder:
     )
 
 
-def open_po_summary_to_type(po, pending_quantity: int, pending_line_count: int) -> OpenPOSummary:
+def open_po_summary_to_type(
+    po, pending_quantity: int, pending_line_count: int, labels: dict | None = None
+) -> OpenPOSummary:
     """A lean receiving-picker row (gp-owned-po mirror). Pending scalars come from the caller's grouped
-    query, never from po.line_items."""
+    query, never from po.line_items; `labels` from its batched `project_labels` read (#1196)."""
+    number, description = (labels or {}).get(po.project_id, (None, None))
     return OpenPOSummary(
         id=strawberry.ID(str(po.id)),
         po_number=po.po_number,
         project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
+        project_number=number,
+        project_description=description,
         pool_kind=getattr(po, "pool_kind", None) or PoolKindDB.STOCK,
         status=po.status,
         origin=po.origin,
@@ -922,14 +931,17 @@ def pull_request_to_type(pr, partially_picked=None) -> PullRequest:
     )
 
 
-def pick_sheet_to_type(sheet, partially_picked=None) -> PickSheet:
+def pick_sheet_to_type(sheet, partially_picked=None, project_label=None) -> PickSheet:
     """`warehouse.PickSheet` -> the GraphQL type (#367).
 
     The repository has already done every read this needs in a fixed number of queries, so this is a
     pure shape change - nothing here touches the session. `remainingQuantity` is exposed rather than
     left to the client to subtract, because the pick screen, the PDF and the confirm gate must all
     agree on one definition of "still to pick"."""
+    number, description = project_label or (None, None)
     return PickSheet(
+        project_number=number,
+        project_description=description,
         pull_request=pull_request_to_type(sheet.pull_request, partially_picked),
         sections=[
             PickSheetSection(

@@ -55,6 +55,9 @@ export const GET_OPEN_POS_SUMMARY = gql`
       id
       poNumber
       projectId
+      # Off the project itself (#1196), so an archived job's open PO still names it.
+      projectNumber
+      projectDescription
       poolKind
       status
       origin
@@ -488,6 +491,8 @@ const RECEIVE_DRAFT_FIELDS = `
   poId
   poNumber
   projectId
+  projectNumber
+  projectDescription
   poolKind
   warehouseId
   # The Clerk id and the display name of whoever counted the hardware. The id is what "my drafts"
@@ -617,6 +622,8 @@ const PULL_REQUEST_FIELDS = `
 // The pick screen and the printed sheet (#367). Note what is absent: any suggested quantity. The
 // picker decides, and the sheet gives them received dates so they can rotate stock themselves.
 const PICK_SHEET_FIELDS = `
+  projectNumber
+  projectDescription
   pullRequest { ${PULL_REQUEST_FIELDS} }
   sections {
     hardwareCategory productCode requiredQuantity appliedQuantity remainingQuantity

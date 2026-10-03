@@ -51,6 +51,9 @@ export interface PickSheetSection {
 }
 
 export interface PickSheet {
+  /** The pull's project, read off the project itself (#1196) so an archived job is still named. */
+  projectNumber: string | null;
+  projectDescription: string | null;
   pullRequest: PullRequest;
   sections: PickSheetSection[];
 }

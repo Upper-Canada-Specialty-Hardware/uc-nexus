@@ -49,6 +49,8 @@ interface OpenPO {
   id: string;
   poNumber: string | null;
   projectId: string | null;
+  projectNumber: string | null;
+  projectDescription: string | null;
   poolKind: PoolKind;
   status: string;
   origin: string;
@@ -307,9 +309,6 @@ export default function ReceivingPage() {
     }
     return map;
   }, [projects]);
-  // #857: the search matches a PO's project by job number as well as by name, and the grid prints
-  // only one of them, so the lookup keeps the job number too.
-  const jobNumberById = useMemo(() => new Map(projects.map((p) => [p.id, p.projectId])), [projects]);
 
   // PO rows
   const poColumns: GridColDef[] = useMemo(
@@ -428,15 +427,18 @@ export default function ReceivingPage() {
         id: po.id,
         poNumber: po.poNumber ?? '\u2014',
         vendorName: poVendorLabel(po) || '\u2014',
-        projectName: po.projectId ? (projectMap.get(po.projectId) ?? '\u2014') : noProjectPoLabel(po.poolKind),
-        jobNumber: po.projectId ? (jobNumberById.get(po.projectId) ?? '') : '',
+        // Off the row itself (#1196): the projects list leaves archived projects out.
+        projectName: po.projectId
+          ? po.projectDescription || po.projectNumber || '\u2014'
+          : noProjectPoLabel(po.poolKind),
+        jobNumber: po.projectNumber ?? '',
         expectedDeliveryDate: po.expectedDeliveryDate,
         pendingLines: po.pendingLineCount,
         pendingQty: po.pendingQuantity,
         status: po.status,
         pendingDraftCount: pendingDraftsByPoId.get(po.id)?.length ?? 0,
       })),
-    [openPOsData, projectMap, jobNumberById, pendingDraftsByPoId],
+    [openPOsData, pendingDraftsByPoId],
   );
 
   // #857: the list runs to hundreds of POs, so a receiver with a delivery in hand narrows it as they
