@@ -13,16 +13,6 @@ export const GET_SHIPPING_STATS = gql`
   }
 `;
 
-export const GET_SHIP_READY_ITEMS = gql`
-  query GetShipReadyItems($projectId: ID) {
-    shipReadyItems(projectId: $projectId) {
-      looseItems {
-        openingNumber hardwareCategory productCode availableQuantity
-      }
-    }
-  }
-`;
-
 // The staging workspace (#451): what is staged, and which container it has been put in. One query
 // for both halves so they can never disagree about whether something has been loaded.
 const CONTAINER_FIELDS = `
@@ -49,12 +39,6 @@ export const CREATE_SHIPMENT_CONTAINER = gql`
   }
 `;
 
-export const RENAME_SHIPMENT_CONTAINER = gql`
-  mutation RenameShipmentContainer($id: ID!, $name: String!) {
-    renameShipmentContainer(id: $id, name: $name) { ${CONTAINER_FIELDS} }
-  }
-`;
-
 export const DELETE_SHIPMENT_CONTAINER = gql`
   mutation DeleteShipmentContainer($id: ID!) {
     deleteShipmentContainer(id: $id)
@@ -65,6 +49,14 @@ export const DELETE_SHIPMENT_CONTAINER = gql`
 export const SET_CONTAINER_ITEMS = gql`
   mutation SetContainerItems($input: SetContainerItemsInput!) {
     setContainerItems(input: $input) { ${CONTAINER_FIELDS} }
+  }
+`;
+
+// A move from one container to another as one save (#1178): both rewrites commit together, so a
+// refused target never leaves the item in neither.
+export const MOVE_CONTAINER_ITEMS = gql`
+  mutation MoveContainerItems($input: MoveContainerItemsInput!) {
+    moveContainerItems(input: $input) { ${CONTAINER_FIELDS} }
   }
 `;
 
@@ -108,6 +100,7 @@ const SHIPPING_OUT_REQUEST_FIELDS = `
   createdBy
   createdAt
   integrityNote
+  linesVersion
   items { id openingNumber hardwareCategory productCode requestedQuantity }
 `;
 
@@ -132,10 +125,31 @@ export const EDIT_SHIPPING_OUT_REQUEST = gql`
 // full-page route (/shipping/requests/:id/edit), so it reads the request it is editing directly
 // rather than relying on the accept-queue list having been mounted first - a cold deep-link or a
 // refresh has no such list in the cache. Null when the id matches nothing (already deleted).
+// `project` is the request's own job, archived included (#1257), and `reservedByProduct` is what the
+// request really holds on stock, which edit mode adds back as headroom (#1262). Both are resolved only
+// by this single-request read.
 export const GET_SHIPPING_OUT_REQUEST = gql`
   query GetShippingOutRequest($id: ID!) {
     shippingOutRequest(id: $id) {
       ${SHIPPING_OUT_REQUEST_FIELDS}
+      project {
+        id
+        projectId
+        description
+        client
+        jobSiteName
+        scheduleFilename
+        company
+        openingCount
+        gpSetupOk
+        gpSetupCheckedAt
+        gpSetupIssues {
+          costCode
+          accountIndex
+        }
+        gpJobState
+      }
+      reservedByProduct { hardwareCategory productCode quantity }
     }
   }
 `;
@@ -196,6 +210,8 @@ const SLIP_IDENTITY_FIELDS = [
   'id',
   'packingSlipNumber',
   'projectId',
+  'projectNumber',
+  'projectDescription',
   'status',
   'shippedBy',
   'shippedAt',
@@ -234,8 +250,8 @@ const PACKING_SLIP_FIELDS =
 // One page of the Shipments list (#1107): paged and searched on the server, with the count of
 // everything the filter matches so the list can say how many more there are.
 export const GET_PACKING_SLIPS = gql`
-  query GetPackingSlips($projectId: ID, $search: String, $limit: Int) {
-    packingSlips(projectId: $projectId, search: $search, limit: $limit) {
+  query GetPackingSlips($projectId: ID, $search: String, $status: ShipmentStatus, $limit: Int) {
+    packingSlips(projectId: $projectId, search: $search, status: $status, limit: $limit) {
       ${PACKING_SLIP_FIELDS}
       items {
         id
@@ -250,7 +266,7 @@ export const GET_PACKING_SLIPS = gql`
         returnedQuantity
       }
     }
-    packingSlipCount(projectId: $projectId, search: $search)
+    packingSlipCount(projectId: $projectId, search: $search, status: $status)
   }
 `;
 
@@ -305,6 +321,15 @@ export const UPDATE_SHIPMENT_DETAILS = gql`
 export const MARK_SHIPMENT_PICKED_UP = gql`
   mutation MarkShipmentPickedUp($id: ID!) {
     markShipmentPickedUp(id: $id) {
+      ${PACKING_SLIP_FIELDS}
+    }
+  }
+`;
+
+// Calls off a scheduled shipment nothing can be returned from - one of only manual lines (#1176).
+export const CANCEL_SHIPMENT = gql`
+  mutation CancelShipment($id: ID!) {
+    cancelShipment(id: $id) {
       ${PACKING_SLIP_FIELDS}
     }
   }

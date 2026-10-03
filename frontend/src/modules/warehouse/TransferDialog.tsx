@@ -13,7 +13,7 @@ import {
 } from '@mui/material';
 import { useQuery, useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
-import LocationAutocomplete from '../../components/LocationAutocomplete';
+import LocationAutocomplete, { NO_DEFINED_LOCATIONS_TEXT } from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { TRANSFER_INVENTORY } from '../../graphql/warehouse';
@@ -79,7 +79,7 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
   const [quantity, setQuantity] = useState<string>(single ? String(single.available) : '');
   // #1046: the destination is a strict pick from the destination warehouse's defined locations - the
   // server refuses any bin not on the Locations tab - with the same cascading picks put away makes.
-  const { aisleOptions, rowOptions, bayOptions, isDefinedPick } = useDefinedLocationPick(
+  const { aisleOptions, rowOptions, bayOptions, isDefinedPick, registryEmpty } = useDefinedLocationPick(
     [destWarehouseId],
     aisle,
     row,
@@ -87,6 +87,11 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
   );
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // #1205: sources already moved in an earlier attempt. A batch that fails partway leaves the dialog
+  // open; a retry sends only what is still here, so it continues from the failed source instead of
+  // re-sending a drained first row (refused every time as exceeding what is available).
+  const [doneIds, setDoneIds] = useState<ReadonlySet<string>>(() => new Set());
+  const pending = useMemo(() => sources.filter((s) => !doneIds.has(s.id)), [sources, doneIds]);
 
   // Each mutation refetches the warehouse + location + inventory queries so a partially-completed
   // batch still leaves the grids honest about what actually moved.
@@ -102,8 +107,8 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
   });
 
   const totalAvailable = useMemo(
-    () => sources.reduce((sum, s) => sum + s.available, 0),
-    [sources],
+    () => pending.reduce((sum, s) => sum + s.available, 0),
+    [pending],
   );
 
   const q = Number(quantity);
@@ -118,17 +123,17 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
   const singleQtyValid = single
     ? Number.isInteger(q) && q >= 1 && q <= single.available && !sameLocationSingle
     : true;
-  const valid = destComplete && (single ? singleQtyValid : sources.length > 0);
+  const valid = destComplete && (single ? singleQtyValid : pending.length > 0);
 
   const handleSubmit = async () => {
     if (!valid || submitting) return;
     setSubmitting(true);
     setErrorMsg(null);
-    let completed = 0;
+    const done = new Set(doneIds);
     try {
       // Sequential so a mid-loop failure stops cleanly (the mutate promise rejects on error) and we
       // can report exactly how many landed.
-      for (const s of sources) {
+      for (const s of pending) {
         const qtyForSource = single ? q : s.available;
         await transfer({
           variables: {
@@ -143,11 +148,12 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
             },
           },
         });
-        completed += 1;
+        done.add(s.id);
+        setDoneIds(new Set(done));
       }
       showToast(
         multi
-          ? `Transferred ${completed} item${completed === 1 ? '' : 's'}`
+          ? `Transferred ${done.size} item${done.size === 1 ? '' : 's'}`
           : `Transferred ${q} ${single!.productCode}`,
         'success',
       );
@@ -155,13 +161,11 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
       onClose();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Transfer failed';
-      setErrorMsg(
-        multi ? `${message} — ${completed} of ${sources.length} transferred` : message,
-      );
-      showToast(
-        multi ? `${message} — ${completed} of ${sources.length} transferred` : message,
-        'error',
-      );
+      const summary = multi
+        ? `${message} — ${done.size} of ${sources.length} transferred. Transfer again to move the rest.`
+        : message;
+      setErrorMsg(summary);
+      showToast(summary, 'error');
     } finally {
       setSubmitting(false);
     }
@@ -214,10 +218,11 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
         ) : (
           <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
             <Typography component="div" sx={{ ...microLabelSx, mb: 0.75 }}>
-              {sources.length} sources · {totalAvailable} total to transfer
+              {pending.length} source{pending.length === 1 ? '' : 's'} · {totalAvailable} total to transfer
+              {doneIds.size > 0 && ` · ${doneIds.size} already moved`}
             </Typography>
             <Stack spacing={0.5}>
-              {sources.map((s) => (
+              {pending.map((s) => (
                 <Box
                   key={s.id}
                   sx={{ display: 'flex', alignItems: 'baseline', gap: 1, minWidth: 0 }}
@@ -257,10 +262,18 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
           <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} />
           <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} />
         </Stack>
-        {destWarehouseId && hasTypedDestination && !isDefinedPick && (
+        {destWarehouseId && registryEmpty ? (
           <Typography variant="caption" color="text.secondary">
-            Pick an aisle, row and bay defined in the destination warehouse on the Locations tab.
+            {NO_DEFINED_LOCATIONS_TEXT}
           </Typography>
+        ) : (
+          destWarehouseId &&
+          hasTypedDestination &&
+          !isDefinedPick && (
+            <Typography variant="caption" color="text.secondary">
+              Pick an aisle, row and bay defined in the destination warehouse on the Locations tab.
+            </Typography>
+          )
         )}
 
         {single && (

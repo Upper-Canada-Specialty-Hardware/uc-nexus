@@ -1,7 +1,14 @@
 import { ApolloClient, ApolloLink, InMemoryCache, HttpLink, Observable, from } from '@apollo/client/core';
 import { ErrorLink } from '@apollo/client/link/error';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
-import { isSessionExpected, notifyAuthFailure, readAuthBridge } from './authBridge';
+import {
+  isAuthLapsed,
+  isSessionExpected,
+  markAuthRecovered,
+  notifyAuthFailure,
+  readAuthBridge,
+  shouldSuspendQuery,
+} from './authBridge';
 import { ACTING_COMPANY_HEADER, readActingCompanyHeader } from './company/actingCompany';
 
 const httpLink = new HttpLink({
@@ -24,6 +31,28 @@ class MissingAuthTokenError extends Error {
     super('Could not obtain a session token for this request');
     this.name = 'MissingAuthTokenError';
   }
+}
+
+/**
+ * Raised instead of sending a background query while the session is lapsed (#1329): no token mint,
+ * no network. Deliberately not UNAUTHENTICATED, so it is neither replayed nor announced again - the
+ * lapse was announced once already, and the poll that hit it simply waits for the next tick.
+ */
+export class AuthSuspendedError extends Error {
+  constructor() {
+    super('Your sign-in has lapsed. Sign in again to keep working.');
+    this.name = 'AuthSuspendedError';
+  }
+}
+
+function isMutation(operation: ApolloLink.Operation): boolean {
+  return operation.query.definitions.some(
+    (d) => d.kind === 'OperationDefinition' && d.operation === 'mutation',
+  );
+}
+
+function carriesUnauthenticated(result: ApolloLink.Result): boolean {
+  return (result.errors ?? []).some((e) => e.extensions?.code === UNAUTHENTICATED);
 }
 
 /** Context keys this file writes onto an in-flight operation while recovering from a token gap. */
@@ -54,6 +83,13 @@ const authLink = new ApolloLink((operation, forward) => {
   return new Observable<ApolloLink.Result>((observer) => {
     let inner: { unsubscribe: () => void } | undefined;
     let cancelled = false;
+    // #1329: a lapsed session stops background queries here, before they mint a token or reach the
+    // backend. Mutations are the user acting, so they always go; the replay of an attempt that was
+    // let through is already past this point.
+    if (!authTokenRefresh && !isMutation(operation) && shouldSuspendQuery()) {
+      observer.error(new AuthSuspendedError());
+      return () => {};
+    }
     void (async () => {
       const { getToken } = readAuthBridge();
       let token: string | null = null;
@@ -83,7 +119,15 @@ const authLink = new ApolloLink((operation, forward) => {
         if (actingCompany) headers[ACTING_COMPANY_HEADER] = actingCompany;
         return { ...prev, headers };
       });
-      inner = forward(operation).subscribe(observer);
+      inner = forward(operation).subscribe({
+        next: (result) => {
+          // Any answer that is not a sign-in refusal proves the session works again (#1329).
+          if (isAuthLapsed() && !carriesUnauthenticated(result)) markAuthRecovered();
+          observer.next(result);
+        },
+        error: (e) => observer.error(e),
+        complete: () => observer.complete(),
+      });
     })();
     return () => {
       cancelled = true;
@@ -121,7 +165,7 @@ const authRetryLink = new ErrorLink(({ error, operation, forward }) => {
 const authFailureLink = new ErrorLink(({ error, operation }) => {
   if (!isUnauthenticated(error)) return;
   if (!(operation.getContext() as AuthRetryContext).authRetryAttempted) return;
-  notifyAuthFailure();
+  notifyAuthFailure({ userAction: isMutation(operation) });
 });
 
 /**
@@ -131,6 +175,8 @@ const authFailureLink = new ErrorLink(({ error, operation }) => {
 export const authLinks: ApolloLink[] = [authFailureLink, authRetryLink, authLink];
 
 const errorLink = new ErrorLink(({ error }) => {
+  // A poll held back by a lapsed session is expected, once per tick; it is not worth a console line.
+  if (error instanceof AuthSuspendedError) return;
   if (CombinedGraphQLErrors.is(error)) {
     error.errors.forEach((err) => {
       console.error(`[GraphQL error]: ${err.message}`, err.extensions);

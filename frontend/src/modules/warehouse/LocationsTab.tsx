@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useLayoutEffect } from 'react';
 import {
   Box,
   Typography,
@@ -650,9 +650,38 @@ function ContentsPanel({ selected, warehouseLabel, onClose }: ContentsPanelProps
 
 // ----- main tab -----
 
+// #1324: the rail beside the contents panel. A wide row gets the full 340px rail; a row too narrow for
+// rail + gap + panel (340 + 16 + 380 = 736px, a tablet, or 900-1007px with the nav rail open) gets a
+// 240px rail and a 360px panel basis instead of wrapping the contents 600px down, off screen.
+const RAIL_WIDE = 340;
+const RAIL_NARROW = 240;
+const PANEL_BASIS_WIDE = 380;
+const PANEL_BASIS_NARROW = 360;
+const MASTER_DETAIL_GAP = 16;
+
+/** Width of the master-detail row, so the rail can narrow before the panel would wrap. */
+function useRowWidth(): [(el: HTMLElement | null) => void, number] {
+  const [el, setEl] = useState<HTMLElement | null>(null);
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      if (w > 0) setWidth(w);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [el]);
+  return [setEl, width];
+}
+
 export default function LocationsTab() {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<LocationEntry | null>(null);
+  const [setRowEl, rowWidth] = useRowWidth();
+  const narrowRow = rowWidth > 0 && rowWidth < RAIL_WIDE + MASTER_DETAIL_GAP + PANEL_BASIS_WIDE;
+  const railWidth = narrowRow ? RAIL_NARROW : RAIL_WIDE;
+  const panelBasis = narrowRow ? PANEL_BASIS_NARROW : PANEL_BASIS_WIDE;
   const [warehouseFilter, setWarehouseFilter] = useState('');
   const { showToast } = useToast();
   const { ownsTenant, hasRole } = useIdentity();
@@ -924,13 +953,13 @@ export default function LocationsTab() {
           </Alert>
         )
       ) : (
-        <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <Box ref={setRowEl} sx={{ display: 'flex', gap: 2, alignItems: 'flex-start', flexWrap: 'wrap' }}>
           {/* Master-detail: picking a location collapses the full table into a narrow rail and hands
               the width to the contents panel. The rail's own width is animated (rather than a
               transform-based layout animation, which would visibly squash the table mid-flight), so
               the hand-off reads as one surface resizing. */}
           <motion.div
-            animate={{ width: selected ? 340 : '100%' }}
+            animate={{ width: selected ? railWidth : '100%' }}
             transition={springs.slow}
             style={{ minWidth: 0, height: 600, flexShrink: 0 }}
           >
@@ -962,7 +991,7 @@ export default function LocationsTab() {
               initial={{ opacity: 0, x: 16 }}
               animate={{ opacity: 1, x: 0 }}
               transition={springs.slow}
-              style={{ flex: '1 1 380px', minWidth: 0 }}
+              style={{ flex: `1 1 ${panelBasis}px`, minWidth: 0 }}
             >
               <ContentsPanel
                 selected={selected}

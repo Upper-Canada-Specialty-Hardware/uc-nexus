@@ -282,6 +282,14 @@ class SetContainerItemsInput:
 
 
 @strawberry.input
+class MoveContainerItemsInput:
+    """Both containers' new contents for a move between them, saved in one transaction (#1178)."""
+
+    source: SetContainerItemsInput
+    target: SetContainerItemsInput
+
+
+@strawberry.input
 class CreateShippingOutRequestInput:
     """Raise a shipping-out request from the Shipping module rather than from Start a Request (#451).
 
@@ -313,6 +321,9 @@ class EditShippingOutRequestInput:
 
     id: strawberry.ID
     items: list[ShippingOutPRDraftItemInput] = strawberry.field(default_factory=list)
+    # #1260: the request's linesVersion when the editor loaded it. A save over lines someone else has
+    # changed since is refused. Omitted, no check is made.
+    expected_lines_version: str | None = None
 
 
 @strawberry.input
@@ -598,6 +609,8 @@ class SavePODocumentDataInput:
     tax_amount: float = 0
     tax_label: str = "Taxes"
     tariff_amount: float = 0
+    # #1236: GP's trade discount, taken off the document's order total. Omitted leaves the saved one.
+    trade_discount: float | None = None
     required_by_override: date | None = None
     include_fsc: bool = False
     include_usa_tariff: bool = False
@@ -960,6 +973,8 @@ class MigrationEntryInput:
     # The GP PO LINE ITEM this row's units were bought on, when the wizard's Reconcile GP PO link step
     # found one. Absent is the ordinary case and migrates exactly as it always has.
     po_line_item_id: strawberry.ID | None = None
+    # The source cost cell was not a number (#1370). Counted in the result, nothing else.
+    unit_cost_unreadable: bool = False
 
 
 @strawberry.input
@@ -1001,6 +1016,12 @@ class MigrateSharepointInventoryInput:
     catalog_items: list[MigrationCatalogItemInput] | None = None
     # The classification step's decisions, one per matched-but-unclassified (project, product).
     classifications: list[MigrationClassificationInput] | None = None
+    # A second run adds every row again, so it is refused unless asked for on purpose (#1366). The
+    # wizard sets it only from its "already run" warning.
+    allow_rerun: bool = False
+    # The GP company the batch writes into when the request carries no acting company (#1367). Every
+    # warehouse, project, PO and item type in the batch must belong to it.
+    company: str | None = None
 
 
 @strawberry.input

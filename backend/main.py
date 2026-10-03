@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from graphql import GraphQLError, GraphQLResolveInfo
-from strawberry.extensions import SchemaExtension
+from strawberry.extensions import MaxAliasesLimiter, MaxTokensLimiter, QueryDepthLimiter, SchemaExtension
 from strawberry.fastapi import GraphQLRouter
 
 from app.auth import get_context, require_admin_request
@@ -184,13 +184,45 @@ class ResolverGuardExtension(SchemaExtension):
             raise self._mask(e, info) from e
 
 
+# #1234: request-shape limits, checked at validation before any resolver runs. Without them one
+# signed-in request could alias an expensive list resolver hundreds of times, each alias taking its
+# own DB work off the shared pool. Measured against every gql document in frontend/src (2026-10-03):
+# deepest is 4, none uses an alias, the largest is 135 tokens; the standard introspection query is
+# ~160 tokens and its fields are skipped by the depth limiter. The limits leave wide headroom.
+MAX_QUERY_DEPTH = 10
+MAX_QUERY_ALIASES = 15
+MAX_QUERY_TOKENS = 2000
+
 schema = strawberry.Schema(
     query=Query,
     mutation=Mutation,
-    extensions=[ResolverGuardExtension],
+    extensions=[
+        lambda: QueryDepthLimiter(max_depth=MAX_QUERY_DEPTH),
+        lambda: MaxAliasesLimiter(max_alias_count=MAX_QUERY_ALIASES),
+        lambda: MaxTokensLimiter(max_token_count=MAX_QUERY_TOKENS),
+        ResolverGuardExtension,
+    ],
 )
 
 graphql_app = GraphQLRouter(schema, context_getter=get_context)
+
+
+async def drain_before_shutdown() -> None:
+    """Let a GP write already on the wire finish before the relay socket goes (#1292).
+
+    A receipt dispatched when the SIGTERM landed used to fail with the socket and be marked FAILED
+    ambiguous while GP may still have committed it. In order: the outbox claims nothing new, the drain
+    in flight gets up to OUTBOX_DRAIN_SECONDS (the relay call gives up at 30s) to finish, then the relay
+    socket is closed cleanly (#353 PR F: the relay knows it is a restart and reconnects at once to the
+    new instance). A drain still running after that is left in flight for the new instance's stale sweep."""
+    gp_outbox_worker.request_stop()
+    await gp_outbox_worker.wait_idle(OUTBOX_DRAIN_SECONDS)
+    await relay_gateway.close_for_shutdown()
+
+
+# Above the relay's 30s call timeout. uvicorn's graceful shutdown (serve.py) and Railway's draining time
+# (railway.toml) are set above this, so the wait is never cut short by the platform.
+OUTBOX_DRAIN_SECONDS = 35.0
 
 
 @asynccontextmanager
@@ -202,6 +234,7 @@ async def lifespan(_app: FastAPI):
     TestClient(app) this runs too, and is harmless: with no relay registered neither loop queries."""
     tasks: list[asyncio.Task] = []
     if gp_outbox_worker.enabled():
+        gp_outbox_worker.reset_for_start()  # a stop from an earlier lifespan must not carry in (#1292)
         tasks.append(asyncio.create_task(gp_outbox_worker.run_forever()))
     if gp_job_sync.enabled():
         tasks.append(asyncio.create_task(gp_job_sync.run_forever()))
@@ -215,10 +248,10 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
-        # Close the relay socket cleanly BEFORE stopping the workers (#353 PR F). The relay then knows
-        # this is a restart rather than a blip and reconnects at once; anything it was about to send
-        # will queue on the outbox and drain when it does.
-        await relay_gateway.close_for_shutdown()
+        # The serve.py launcher has normally done this already, before uvicorn closed the relay socket
+        # with the other connections; under a plain `uvicorn main:app` it happens here. Both steps are
+        # safe to repeat.
+        await drain_before_shutdown()
         for task in tasks:
             task.cancel()
         for task in tasks:
@@ -526,6 +559,52 @@ async def relay_link(websocket: WebSocket):
         relay_gateway.unregister(websocket)
 
 
+# Key for the session-level advisory lock one reset holds from snapshot to restore (#1319). Any constant
+# works; it only has to be the same in every caller and not shared with another lock.
+_RESET_DATA_LOCK_KEY = 1_319_001
+
+
+def _acquire_reset_lock():
+    """A dedicated connection holding the reset lock, or None when another reset already holds it.
+
+    Session-level (pg_try_advisory_lock), not transaction-scoped: the reset spans several connections
+    and commits - the drop, alembic's upgrade, the restore - so the lock lives on a connection of its
+    own that stays open for the whole reset. It is committed straight away so that connection is never
+    left idle in a transaction while the schema is dropped under it. The lock is not in any schema, so
+    DROP SCHEMA public does not take it away. The caller releases it and closes the connection."""
+    from sqlalchemy import text
+
+    from app.database import engine
+
+    conn = engine.connect()
+    try:
+        got = conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": _RESET_DATA_LOCK_KEY}).scalar()
+        conn.commit()
+    except Exception:
+        conn.close()
+        raise
+    if not got:
+        conn.close()
+        return None
+    return conn
+
+
+def _release_reset_lock(conn) -> None:
+    from sqlalchemy import text
+
+    # Closing returns the connection to the pool without ending its session, so the explicit unlock is
+    # what frees the lock. If the unlock itself fails, the connection is invalidated instead: that closes
+    # the session, and Postgres drops every session-level lock with it, so a reset is never left locked.
+    try:
+        conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _RESET_DATA_LOCK_KEY})
+        conn.commit()
+    except Exception:
+        logger.exception("reset-data: advisory unlock failed; dropping the connection to release it")
+        conn.invalidate()
+    finally:
+        conn.close()
+
+
 @app.post("/admin/reset-data")
 def reset_data(request: Request):
     """Drop and rebuild the entire public schema via alembic. Dev use only.
@@ -560,21 +639,33 @@ def reset_data(request: Request):
         status = 403 if e.code == "FORBIDDEN" else 401
         return JSONResponse(status_code=status, content={"error": str(e), "code": e.code})
 
-    with engine.connect() as conn:
-        snap = reset_preservation.snapshot(conn)
+    # #1319: one reset at a time. Two overlapping resets interleaved their snapshot, drop, upgrade and
+    # restore: the second snapshot could read a half-rebuilt schema, and its drop could land under the
+    # first's alembic upgrade. The lock is held from the snapshot until the restore has committed.
+    lock_conn = _acquire_reset_lock()
+    if lock_conn is None:
+        return JSONResponse(
+            status_code=409,
+            content={"error": "Another data reset is already running. Wait for it to finish.", "code": "CONFLICT"},
+        )
+    try:
+        with engine.connect() as conn:
+            snap = reset_preservation.snapshot(conn)
 
-    with engine.connect() as conn:
-        conn.execute(text("DROP SCHEMA public CASCADE"))
-        conn.execute(text("CREATE SCHEMA public"))
-        conn.commit()
+        with engine.connect() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
+            conn.commit()
 
-    # Rebuild via alembic
-    alembic_cfg = Config("alembic.ini")
-    command.upgrade(alembic_cfg, "head")
+        # Rebuild via alembic
+        alembic_cfg = Config("alembic.ini")
+        command.upgrade(alembic_cfg, "head")
 
-    with engine.connect() as conn:
-        preserved = reset_preservation.restore(conn, snap)
-        conn.commit()
+        with engine.connect() as conn:
+            preserved = reset_preservation.restore(conn, snap)
+            conn.commit()
+    finally:
+        _release_reset_lock(lock_conn)
 
     # Re-adopt every GP job straight after the rebuild, since GP owns them. Skipped silently when no
     # relay is connected - see run_once_blocking - and the background poll re-adopts them later.

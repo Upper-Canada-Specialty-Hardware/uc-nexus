@@ -26,6 +26,34 @@ def may_enqueue(error: RelayUnavailableError) -> bool:
     return not error.dispatched
 
 
+def _guard_registration(session, persist_context: dict, idempotency_key: str) -> None:
+    """Queue a registration only for a live Draft with no other registration waiting (#1165, #1166).
+
+    The register pre-flight checks the same thing, but in its own short session, and the relay call
+    sits between it and this one. Two tabs could both pass it and both queue. Taken here under the PO's
+    row lock, in the transaction that queues, so the second waits for the first, then sees its row; a
+    cancel takes the same lock, so a cancel and a queue cannot cross either."""
+    from sqlalchemy import select
+
+    from app.errors import InvalidStateTransitionError
+    from app.models.enums import POStatus
+    from app.models.purchase_order import PurchaseOrder
+
+    po_id = uuid.UUID(str(persist_context["po_id"]))
+    po = session.scalars(
+        select(PurchaseOrder)
+        .where(PurchaseOrder.id == po_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+    if po is None or po.deleted_at is not None or po.status != POStatus.DRAFT:
+        raise InvalidStateTransitionError("This PO is no longer a Draft, so its registration was not queued")
+    if gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=idempotency_key) is not None:
+        raise InvalidStateTransitionError(
+            "This PO's registration is already queued and will post to GP when the relay is back"
+        )
+
+
 def enqueue(
     *,
     idempotency_key: str,
@@ -84,5 +112,7 @@ def enqueue(
 
 
 def _enqueue_in(session: Session, **kwargs) -> str:
+    if kwargs["op"] == "register_po_in_gp":
+        _guard_registration(session, kwargs["persist_context"], kwargs["idempotency_key"])
     row = gp_outbox_repository.enqueue(session, **kwargs)
     return str(row.id)

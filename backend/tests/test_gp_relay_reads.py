@@ -1,4 +1,4 @@
-"""Query.gp_jobs/gp_vendors/gp_buyers/gp_cost_codes/relay_status: relay_call wiring + dict->type mapping.
+"""Query.gp_vendors/gp_buyers/gp_cost_codes/relay_status: relay_call wiring + dict->type mapping.
 
 Plain `def test_...(): asyncio.run(...)` (matches test_relay_gateway.py) - resolvers are exercised
 directly against a Query instance. Since #423 that needs no auth setup at all: the gate is a schema
@@ -47,18 +47,32 @@ def _install_fake_gateway(monkeypatch, result):
     return fake
 
 
-def test_gp_jobs_maps_relay_result_to_type(monkeypatch):
-    fake = _install_fake_gateway(
+def test_gp_po_totals_carries_the_trade_discount(monkeypatch):
+    # #1236: the document takes GP's trade discount off its total, so the read passes it through.
+    _install_fake_gateway(
         monkeypatch,
-        {"jobs": [{"job_number": "1001", "job_name": "Test Job"}, {"job_number": "1002", "job_name": None}]},
+        {
+            "totals": {
+                "po_number": "PO1",
+                "subtotal": 1000,
+                "freight": 0,
+                "miscellaneous": 0,
+                "tax_amount": 117,
+                "trade_discount": 100,
+            }
+        },
     )
+    totals = asyncio.run(Query().gp_po_totals(FakeInfo(), company="TUBC", po_number="PO1"))
+    assert totals.trade_discount == 100.0
 
-    async def run():
-        return await Query().gp_jobs(FakeInfo(), company="TUBC")
 
-    jobs = asyncio.run(run())
-    assert [(j.job_number, j.job_name) for j in jobs] == [("1001", "Test Job"), ("1002", None)]
-    assert fake.calls == [("TUBC", "list_jobs", None)]
+def test_gp_po_totals_from_a_relay_too_old_to_send_a_discount_reads_none(monkeypatch):
+    _install_fake_gateway(
+        monkeypatch,
+        {"totals": {"po_number": "PO1", "subtotal": 10, "freight": 0, "miscellaneous": 0, "tax_amount": 0}},
+    )
+    totals = asyncio.run(Query().gp_po_totals(FakeInfo(), company="TUBC", po_number="PO1"))
+    assert totals.trade_discount == 0.0
 
 
 def test_gp_vendors_maps_relay_result_to_type(monkeypatch):
@@ -361,10 +375,10 @@ def test_relay_status_resolver_reads_gateway_connected(monkeypatch):
 def test_a_read_for_a_company_the_relay_does_not_serve_is_refused(monkeypatch):
     """#637: a relay serving TUBC cannot answer for UCSH, so the request is refused here naming what
     IS available rather than after a 30-second round trip."""
-    _install_fake_gateway(monkeypatch, {"jobs": []})
+    _install_fake_gateway(monkeypatch, {"vendors": []})
 
     async def run():
-        return await Query().gp_jobs(FakeInfo(), company="UCSH")
+        return await Query().gp_vendors(FakeInfo(), company="UCSH")
 
     with pytest.raises(ValidationError) as e:
         asyncio.run(run())
@@ -373,14 +387,14 @@ def test_a_read_for_a_company_the_relay_does_not_serve_is_refused(monkeypatch):
 
 def test_a_scoped_caller_cannot_read_another_companys_gp(monkeypatch):
     """#637: the relay serving a company is not enough - a non-admin may only ask for their own."""
-    fake = FakeGateway({"jobs": []}, companies=("TUBC", "UCSH"))
+    fake = FakeGateway({"vendors": []}, companies=("TUBC", "UCSH"))
     monkeypatch.setattr(relay_module, "relay_gateway", fake)
 
     class ScopedInfo:
         context = {"request": None, "_auth_roles": ["Warehouse Manager"], "_auth_company": "TUBC"}
 
     async def run():
-        return await Query().gp_jobs(ScopedInfo(), company="UCSH")
+        return await Query().gp_vendors(ScopedInfo(), company="UCSH")
 
     with pytest.raises(ValidationError):
         asyncio.run(run())
@@ -541,11 +555,11 @@ def test_a_read_is_refused_with_the_relays_own_reason_when_it_serves_nothing(mon
     # Connected but with no company master: the relay's reason is the only thing that names the fix,
     # so it rides the error instead of the generic "the relay is not connected".
     monkeypatch.setattr(
-        relay_module, "relay_gateway", FakeGateway({"jobs": []}, companies=(), companies_error="GP is unreachable")
+        relay_module, "relay_gateway", FakeGateway({"vendors": []}, companies=(), companies_error="GP is unreachable")
     )
 
     async def run():
-        return await Query().gp_jobs(FakeInfo(), company="TUBC")
+        return await Query().gp_vendors(FakeInfo(), company="TUBC")
 
     with pytest.raises(RelayUnavailableError) as e:
         asyncio.run(run())

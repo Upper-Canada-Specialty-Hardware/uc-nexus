@@ -29,7 +29,6 @@ from .converters import (
     gp_customer_address_to_type,
     gp_customer_to_type,
     gp_employee_to_type,
-    gp_job_to_type,
     gp_po_entry_options_to_type,
     gp_purchase_tax_schedule_to_type,
     gp_tax_detail_to_type,
@@ -48,7 +47,6 @@ from .types import (
     GpCustomer,
     GpCustomerAddress,
     GpEmployee,
-    GpJob,
     GpPoAddress,
     GpPoEntryOptions,
     GpPoHeader,
@@ -117,8 +115,8 @@ def resolve_gp_company(info: strawberry.Info, company: str) -> str:
 
     Two gates, and both matter. The relay one is old: a company the live relay does not serve fails
     every read anyway, so refusing here turns a 30s round trip into a message naming what IS available.
-    The tenant one is new: `gpJobs(company: "UCSH")` is a read of another company's job master, and
-    nothing about the relay stops a UCSH-less user asking for it - only the caller's own scope does.
+    The tenant one is new: `gpVendors(company: "UCSH")` is a read of another company's vendor master,
+    and nothing about the relay stops a UCSH-less user asking for it - only the caller's own scope does.
     A UC NEXUS ADMIN is unscoped and may ask for any company the relay serves."""
     requested = relay_gateway_module.normalize_company(company)
     if not requested:
@@ -240,12 +238,6 @@ class RelayQueries:
         capped = max(1, min(limit, 500))
         with SessionLocal() as session:
             return [relay_event_to_type(e) for e in relay_event_repository.list_events(session, capped)]
-
-    @strawberry.field
-    async def gp_jobs(self, info: strawberry.Info, company: str) -> list[GpJob]:
-        """Live job master (JC00102) via the connected relay."""
-        result = await relay_gateway.relay_call(resolve_gp_company(info, company), "list_jobs")
-        return [gp_job_to_type(j) for j in result["jobs"]]
 
     @strawberry.field
     async def gp_vendors(self, info: strawberry.Info, company: str) -> list[GpVendor]:
@@ -394,6 +386,8 @@ class RelayQueries:
             freight=float(t["freight"]),
             miscellaneous=float(t["miscellaneous"]),
             tax_amount=float(t["tax_amount"]),
+            # #1236: an older relay build sends no trade_discount; it reads as none.
+            trade_discount=float(t.get("trade_discount") or 0),
             header=_gp_po_header(result.get("header")),
         )
 

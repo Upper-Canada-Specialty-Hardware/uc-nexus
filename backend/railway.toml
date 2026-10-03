@@ -6,3 +6,6 @@ healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
+# SIGTERM to SIGKILL. Above serve.py's 45s graceful shutdown, which waits out a GP write already on the
+# wire before the relay socket closes (#1292).
+drainingSeconds = 60

@@ -442,6 +442,49 @@ def test_deleting_is_open_to_the_author_and_a_manager_but_not_after_approval(db_
     assert excinfo.value.code == "INVALID_STATE_TRANSITION"
 
 
+def _claim_behind_the_session(session, draft) -> None:
+    """Flip a draft to APPROVING without touching the session's copy of it - what an approval claim
+    committed by another request looks like to a session that loaded the draft before it landed."""
+    from sqlalchemy import update
+
+    session.execute(
+        update(ReceiveDraft)
+        .where(ReceiveDraft.id == draft.id)
+        .values(status=ReceiveDraftStatus.APPROVING)
+        .execution_options(synchronize_session=False)
+    )
+    assert draft.status == ReceiveDraftStatus.PENDING_APPROVAL, "the session's copy must still be stale"
+
+
+def test_an_edit_reads_the_draft_under_its_lock_and_refuses_a_claimed_one(db_session):
+    """#1195: an edit checks the status it locked, not the copy the session loaded earlier, so a claim
+    that landed in between refuses the edit instead of rewriting lines GP was already handed."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li, 3)
+    _claim_behind_the_session(db_session, draft)
+
+    with pytest.raises(AppError) as excinfo:
+        warehouse_repository.update_receive_draft(db_session, draft.id, _lines(li, 5), AUTHOR, actor_is_manager=False)
+
+    assert excinfo.value.code == "INVALID_STATE_TRANSITION"
+
+
+def test_a_delete_reads_the_draft_under_its_lock_and_refuses_a_claimed_one(db_session):
+    """#1195: a delete landing behind an approval claim is refused - the draft is the record of what a
+    GP receipt is being posted for."""
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li, 3)
+    _claim_behind_the_session(db_session, draft)
+
+    with pytest.raises(AppError) as excinfo:
+        warehouse_repository.delete_receive_draft(db_session, draft.id, AUTHOR, actor_is_manager=False)
+
+    assert excinfo.value.code == "INVALID_STATE_TRANSITION"
+    assert db_session.get(ReceiveDraft, draft.id) is not None
+
+
 def test_deleting_a_draft_takes_its_unshared_packing_slip_off_the_po(db_session):
     """#1048: a deleted count's slip goes with it, and the stored file's key is handed back for removal
     once the delete commits."""
@@ -884,6 +927,44 @@ def test_a_resumed_approval_does_not_re_validate_what_gp_has_already_run(committ
 
     assert relay.calls == [], "GP already ran under this key; calling again is the duplicate receipt"
     assert result.receive_record.receipt_number == "RCT000777"
+    assert result.draft.status.value == "APPROVED"
+
+
+def test_a_persist_failure_after_gp_posted_keeps_the_claim_and_resumes_without_reposting(
+    committed, monkeypatch, approve_env
+):
+    """#1348: GP posted the receipt and only the Nexus persist failed. Releasing the claim here would
+    let a fresh approval, under a new key, post a second GP receipt - receipts carry no key of their
+    own on the GP side (#1213). So the draft stays APPROVING under its key, the ledger keeps GP's
+    answer, and the retry with that key persists from the ledger without calling GP again."""
+    from app.services import gp_idempotency
+
+    f = committed()
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+    real_persist = warehouse_module._persist_create_receive
+
+    def _failing_persist(**kwargs):
+        raise ValidationError("Receive quantity exceeds pending quantity", field="quantity_received")
+
+    monkeypatch.setattr(warehouse_module, "_persist_create_receive", _failing_persist)
+    key = str(uuid.uuid4())
+    with pytest.raises(ValidationError):
+        _approve(f.draft_id, key=key)
+
+    parked = _read_draft(f.draft_id)
+    assert parked.status == ReceiveDraftStatus.APPROVING, "the claim must survive a post-GP persist failure"
+    assert parked.approval_idempotency_key == key
+    state = gp_idempotency.load(key)
+    assert state is not None and state.relay_result is not None, "GP's answer is kept for the resume"
+    assert len(relay.calls) == 1
+
+    monkeypatch.setattr(warehouse_module, "_persist_create_receive", real_persist)
+    result = _approve(f.draft_id, key=key)
+
+    assert len(relay.calls) == 1, "the resume must not post to GP again"
+    assert result.receive_record is not None
+    assert result.receive_record.receipt_number == "RCT000123"
     assert result.draft.status.value == "APPROVED"
 
 

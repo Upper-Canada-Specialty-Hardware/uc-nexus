@@ -4,6 +4,17 @@ import { ToastProvider } from '../Toast';
 import GpWriteQueuePanel from '../GpWriteQueuePanel';
 import { GET_GP_OUTBOX } from '../../graphql/shared';
 
+// #1216: who is looking decides whether Retry/Cancel are live. Every test but the gating ones runs as
+// a tenant owner, who holds every op.
+const identity = { roles: ['Tenant Owner'] as string[], ownsTenant: true };
+vi.mock('../../hooks/useIdentity', () => ({
+  useIdentity: () => ({
+    roles: identity.roles,
+    hasRole: (r: string) => identity.roles.includes(r),
+    ownsTenant: identity.ownsTenant,
+  }),
+}));
+
 // A DataGrid assertion in jsdom is slow, and the grid here is deliberately un-virtualized.
 vi.setConfig({ testTimeout: 60_000 });
 configure({ asyncUtilTimeout: 15_000 });
@@ -31,6 +42,7 @@ function entry(overrides: Record<string, unknown> = {}) {
     id: 'queued-1',
     label: 'PO registration PO-REQ-001',
     op: 'create_po',
+    relayOp: 'create_po',
     company: 'TUBC',
     status: 'PENDING',
     attempts: 1,
@@ -48,6 +60,8 @@ const asked: Record<string, unknown>[] = [];
 
 beforeEach(() => {
   asked.length = 0;
+  identity.roles = ['Tenant Owner'];
+  identity.ownsTenant = true;
 });
 
 function mocks(entries: Record<string, unknown>[]): MockedResponse[] {
@@ -148,4 +162,61 @@ it('warns that an ambiguous write may already have posted before retrying it', a
   fireEvent.click(await screen.findByRole('button', { name: 'Retry' }));
 
   expect(await screen.findByText(/may already have posted in GP/)).toBeInTheDocument();
+});
+
+// #1216: the backend lets only warehouse managers (and tenant owners) act on a held GP receive entry,
+// so warehouse staff see the buttons disabled with the reason, not a FORBIDDEN after confirming.
+it('disables retry and cancel on a held receive entry for warehouse staff', async () => {
+  identity.roles = ['Warehouse Staff'];
+  identity.ownsTenant = false;
+  renderPanel(
+    { ops: ['create_receipt'], compact: true },
+    [entry({ op: 'create_receive', relayOp: 'create_receipt', label: 'GP receive entry', status: 'FAILED' })],
+  );
+
+  const retry = await screen.findByRole('button', { name: 'Retry' });
+  expect(retry).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+  expect(screen.getByLabelText('Only a Warehouse Manager can retry or cancel this write.')).toBeInTheDocument();
+});
+
+it('lets a warehouse manager act on a held receive entry', async () => {
+  identity.roles = ['Warehouse Manager'];
+  identity.ownsTenant = false;
+  renderPanel(
+    { ops: ['create_receipt'], compact: true },
+    [entry({ op: 'create_receive', relayOp: 'create_receipt', label: 'GP receive entry', status: 'FAILED' })],
+  );
+
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled();
+});
+
+it('lets a po user act on a held po registration', async () => {
+  identity.roles = ['PO User'];
+  identity.ownsTenant = false;
+  renderPanel({ ops: ['create_po'], compact: true }, [entry({ status: 'FAILED' })]);
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeEnabled();
+});
+
+it('keeps a held po registration out of a warehouse manager hands', async () => {
+  identity.roles = ['Warehouse Manager'];
+  identity.ownsTenant = false;
+  renderPanel({ ops: ['create_po'], compact: true }, [entry({ status: 'FAILED' })]);
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeDisabled();
+});
+
+// #1280: a failed outbox read inside a module says so instead of rendering nothing.
+it('warns inside a module when the held writes cannot be loaded', async () => {
+  render(
+    <MockedProvider
+      mocks={[{ request: { query: GET_GP_OUTBOX, variables: () => true }, error: new Error('backend down') }]}
+    >
+      <ToastProvider>
+        <GpWriteQueuePanel ops={['create_receipt']} compact />
+      </ToastProvider>
+    </MockedProvider>,
+  );
+
+  expect(await screen.findByText(/Could not load held GP writes/)).toBeInTheDocument();
 });

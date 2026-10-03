@@ -14,7 +14,7 @@ from app.errors import NotFoundError
 from app.models.enums import NotificationType
 from app.models.project import Project
 from app.repositories import notification_repository as repo
-from app.repositories.notification_repository import MAX_NOTIFICATIONS_LIMIT, Reader
+from app.repositories.notification_repository import MAX_NOTIFICATIONS_LIMIT, UNREAD_COUNT_CAP, Reader
 from app.services import notification_service as svc
 
 OTHER = "TFAKE"
@@ -160,14 +160,16 @@ def test_the_unread_count_counts_only_what_the_caller_can_see_and_has_not_read(d
     assert repo.count_unread(db_session, reader) == before + 1
 
 
-def test_the_count_is_not_capped_at_99(db_session):
+def test_the_count_passes_99_and_stops_at_the_cap(db_session):
+    """#1112 let the badge pass 99; #1224 stops the count at UNREAD_COUNT_CAP (100) so a 30s poll never
+    walks a reader's whole unread history. 100 is enough for the bell to say 99+."""
     project = _project(db_session, "TUBC")
     reader = _warehouse_staff()
-    before = repo.count_unread(db_session, reader)
     for _ in range(120):
         _raise(db_session, project, role=svc.WAREHOUSE_RECIPIENT_ROLE)
 
-    assert repo.count_unread(db_session, reader) == before + 120
+    assert UNREAD_COUNT_CAP == 100
+    assert repo.count_unread(db_session, reader) == UNREAD_COUNT_CAP
 
 
 def test_mark_all_read_clears_the_callers_whole_backlog_and_nobody_elses(db_session):

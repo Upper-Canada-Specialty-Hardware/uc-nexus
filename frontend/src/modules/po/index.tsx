@@ -29,8 +29,7 @@ import {
   GET_PURCHASE_ORDER,
   SYNC_GP_POS,
 } from '../../graphql/po';
-import { GET_GP_OUTBOX, GET_PROJECTS } from '../../graphql/shared';
-import type { Project } from '../../types/project';
+import { GET_GP_OUTBOX } from '../../graphql/shared';
 import Modal from '../../components/Modal';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import GpWriteQueuePanel from '../../components/GpWriteQueuePanel';
@@ -40,7 +39,7 @@ import CreatePOChooser from './CreatePOChooser';
 import RelayStatusChip from '../../relay/RelayStatusChip';
 import GpCompanyLabel from '../../relay/GpCompanyLabel';
 import { useActingCompany } from '../../company/ActingCompanyContext';
-import { useRelayStatus } from '../../relay/useRelayStatus';
+import { useRelayFor } from '../../relay/useRelayStatus';
 import { formatPoStatus, poStatusChipColor } from './poStatus';
 import { isAwaitingGpReadBack } from './poDocumentGate';
 import { isStatusCardActive, toggleStatusCard } from './statusCardFilter';
@@ -117,7 +116,6 @@ export interface PODocumentInfo {
   fileSize: number;
   documentType: string;
   uploadedAt: string;
-  downloadUrl: string;
 }
 
 export interface PODocumentData {
@@ -134,6 +132,8 @@ export interface PODocumentData {
   taxAmount: number;
   taxLabel: string;
   tariffAmount: number;
+  /** #1236: GP's trade discount, taken off the order total. Null until a document saves one. */
+  tradeDiscount: number | null;
   requiredByOverride: string | null;
   includeFsc: boolean;
   includeUsaTariff: boolean;
@@ -187,6 +187,9 @@ interface POListRow {
   poNumber: string | null;
   requestNumber: string | null;
   projectId: string | null;
+  // Off the project itself (#1238), so an archived project's POs still name it.
+  projectNumber: string | null;
+  projectDescription: string | null;
   // #958: Stock or Overhead, shown as a chip where a PO with no project has no job.
   poolKind: PoolKind;
   status: string;
@@ -296,9 +299,8 @@ function poDisplayId(po: POListRow): string {
   return po.poNumber ?? po.requestNumber ?? '';
 }
 
-// Project columns: POs carry only projectId (a UUID); the human number + name come from the projects
-// list, joined client-side via this map.
-type ProjectsById = Map<string, Project>;
+// Project columns: each row carries its project's number and name from the server (#1238). Joining
+// against the projects list left an archived project's POs with an empty column.
 
 // --- Columns ---
 
@@ -520,14 +522,23 @@ function POListPage() {
     return () => clearTimeout(t);
   }, [searchInput]);
 
-  const relay = useRelayStatus();
-  const relayConnected = relay.connected;
+  // #1336: the PO table works in the acting company, so GP actions need the relay to serve it - a relay
+  // connected for another company reads as down for Sync, Register and the dialogs fed from here.
+  const relay = useRelayFor();
+  const relayConnected = relay.connected === true ? relay.servesCompany : relay.connected;
 
   // #353 PR E: which POs have a GP write still on the outbox, joined onto rows client-side on
-  // entityKey (`po:<id>`) rather than as a per-row resolver (which would be an N+1).
+  // entityKey (`po:<id>`) rather than as a per-row resolver (which would be an N+1). Narrowed on the
+  // server to registrations still waiting (#1223): the newest 200 of every kind used to push an older
+  // waiting registration off the list, and the PO lost its queued chip and its Register/Cancel hold.
+  // A queued receipt is keyed on its PO too, but it is not a registration, so it no longer lights the chip.
   const { data: outboxData } = useQuery<{ gpOutbox: { id: string; entityKey: string; status: string }[] }>(
     GET_GP_OUTBOX,
-    { variables: { limit: 200 }, fetchPolicy: 'cache-and-network', pollInterval: 15_000 },
+    {
+      variables: { ops: ['create_po'], statuses: ['PENDING', 'IN_FLIGHT'], limit: 200 },
+      fetchPolicy: 'cache-and-network',
+      pollInterval: 15_000,
+    },
   );
   const queuedPoIds = useMemo(() => {
     const ids = new Set<string>();
@@ -538,9 +549,13 @@ function POListPage() {
     return ids;
   }, [outboxData]);
 
+  // #1237: the status strip counts the same scope the table shows, so a ?project= view counts that
+  // project's POs, and changing the scope re-asks. The origin filter narrows it the same way (#1358).
   const { data: statsData, loading: statsLoading, refetch: refetchStats } = useQuery<{
     poStatistics: POStatistics;
-  }>(GET_PO_STATISTICS);
+  }>(GET_PO_STATISTICS, {
+    variables: { projectId: projectId || null, origin: origin === 'ALL' ? null : origin },
+  });
 
   // #851: a search spans every status. Someone looking up a PO by number should find it whichever
   // segment happens to be pressed; clearing the search returns to that segment's narrowing.
@@ -564,12 +579,18 @@ function POListPage() {
     data: pageData,
     loading: pageLoading,
     refetch: refetchPage,
-  } = useQuery<{ purchaseOrdersPage: { rows: POListRow[]; totalCount: number } }>(PURCHASE_ORDERS_PAGE, {
+  } = useQuery<{
+    purchaseOrdersPage: {
+      rows: POListRow[];
+      totalCount: number;
+      scopeProjectNumber: string | null;
+      scopeProjectDescription: string | null;
+    };
+  }>(PURCHASE_ORDERS_PAGE, {
     variables: pageVariables,
     fetchPolicy: 'cache-and-network',
   });
 
-  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
 
   // The selected PO's full detail (lines/documents/receives) for the modal, fetched on open. The
   // modal opens immediately on a row click; loading/error drive its placeholder until this resolves.
@@ -591,8 +612,10 @@ function POListPage() {
   const stats = statsData?.poStatistics;
   const rows = useMemo(() => pageData?.purchaseOrdersPage.rows ?? [], [pageData]);
   const totalCount = pageData?.purchaseOrdersPage.totalCount ?? 0;
-  const projects = useMemo(() => projectsData?.projects ?? [], [projectsData?.projects]);
-  const projectsById = useMemo<ProjectsById>(() => new Map(projects.map((p) => [p.id, p])), [projects]);
+  // The scope chip's label, read off the page (#1238) so an archived project - or one with no POs on
+  // this page - still names the scope.
+  const scopeNumber = pageData?.purchaseOrdersPage.scopeProjectNumber ?? null;
+  const scopeDescription = pageData?.purchaseOrdersPage.scopeProjectDescription ?? null;
   const selectedPO = selectedData?.purchaseOrder ?? null;
 
   // #858: while the open PO's registration is queued or GP's copy has not been read back yet, the
@@ -606,12 +629,9 @@ function POListPage() {
     return () => stopPollingSelected();
   }, [selectedAwaitingGp, startPollingSelected, stopPollingSelected]);
 
-  const projectNumberOf = (po: POListRow) => (po.projectId ? projectsById.get(po.projectId)?.projectId ?? '' : '');
-  const projectNameOf = (po: POListRow) => {
-    if (!po.projectId) return '';
-    const p = projectsById.get(po.projectId);
-    return p?.description || p?.projectId || '';
-  };
+  const projectNumberOf = (po: POListRow) => (po.projectId ? po.projectNumber ?? '' : '');
+  const projectNameOf = (po: POListRow) =>
+    po.projectId ? po.projectDescription || po.projectNumber || '' : '';
 
   // #851: once the highlighted rows have rendered, bring the first into view, then drop the link's
   // highlight when the tint has faded so a reload or a later refetch does not tint them again.
@@ -738,7 +758,12 @@ function POListPage() {
             {company && <GpCompanyLabel code={company} gpCompanies={relay.gpCompanies} />}
           </Typography>
         </Box>
-        <RelayStatusChip connected={relayConnected} companies={relay.companies} gpCompanies={relay.gpCompanies} />
+        <RelayStatusChip
+          connected={relay.connected}
+          unreachable={relay.unreachable}
+          companies={relay.companies}
+          gpCompanies={relay.gpCompanies}
+        />
         {/* #744: everyone who works the PO table may bring the mirror up to date. The server scopes
             the pass to the caller's own company, so this is never a cross-company action. */}
         <Button
@@ -914,16 +939,16 @@ function POListPage() {
             label={
               <Box component="span" sx={{ display: 'flex', gap: 0.75, minWidth: 0 }}>
                 <Box component="span" sx={monoSx}>
-                  {projectsById.get(projectId)?.projectId ?? 'Project'}
+                  {scopeNumber ?? 'Project'}
                 </Box>
-                {projectsById.get(projectId)?.description && (
+                {scopeDescription && (
                   <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {projectsById.get(projectId)?.description}
+                    {scopeDescription}
                   </Box>
                 )}
               </Box>
             }
-            title={projectsById.get(projectId)?.description ?? undefined}
+            title={scopeDescription ?? undefined}
             onDelete={clearProjectScope}
             sx={{ maxWidth: 320, minWidth: 0 }}
           />

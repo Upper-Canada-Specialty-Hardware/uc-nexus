@@ -71,6 +71,25 @@ def enqueue(
     return row
 
 
+def queued_po_registration(
+    session: Session, po_id: uuid.UUID, *, exclude_key: str | None = None
+) -> GpWriteOutbox | None:
+    """The PO's registration that is still waiting for GP (PENDING or IN_FLIGHT), if there is one.
+
+    While it waits the PO is still a Draft, so the Draft check alone let a second registration through
+    under a fresh key (a second GP PO on drain) and let a cancel drop a PO the queue then created in GP.
+    `exclude_key` leaves out the caller's own attempt: a resubmit under the same key is the no-op
+    `enqueue` already makes it, not a second registration."""
+    stmt = select(GpWriteOutbox).where(
+        GpWriteOutbox.entity_key == f"po:{po_id}",
+        GpWriteOutbox.op == "register_po_in_gp",
+        GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT")),
+    )
+    if exclude_key is not None:
+        stmt = stmt.where(GpWriteOutbox.idempotency_key != exclude_key)
+    return session.scalars(stmt.limit(1)).first()
+
+
 def claim_next(session: Session, company: str) -> GpWriteOutbox | None:
     """Take the oldest due PENDING row for `company`, marking it IN_FLIGHT.
 
@@ -155,6 +174,15 @@ def mark_failed(session: Session, row: GpWriteOutbox, *, kind: str, error: str, 
     _release_receive_draft(session, row)
 
 
+def mark_skipped(session: Session, row: GpWriteOutbox, *, error: str) -> None:
+    """Close a row the worker refused to send, because what it would write no longer applies. Nothing
+    reached GP, so it is CANCELLED (an admin can still put it back with retry), not FAILED."""
+    row.status = "CANCELLED"
+    row.last_error = error
+    row.last_error_code = None
+    session.flush()
+
+
 def list_entries(
     session: Session,
     status: str | None = None,
@@ -190,6 +218,61 @@ def get_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     return session.get(GpWriteOutbox, entry_id)
 
 
+def get_entry_locked(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
+    """The row under FOR UPDATE, re-read from the database rather than the session's copy, so every
+    writer of a row's status (cancel, retry, the worker's finish) decides on the status it will change."""
+    return session.get(GpWriteOutbox, entry_id, with_for_update=True, populate_existing=True)
+
+
+# A row is only taken for abandoned once it has sat IN_FLIGHT far longer than any live drain can: the
+# relay call gives up at 30 seconds and the persist after it is a handful of queries. During a deploy
+# the old instance can still be mid-call while the new one starts, and its claim has already committed,
+# so a row lock cannot tell the two apart - only its age can.
+STALE_IN_FLIGHT_SECONDS = 600
+
+
+def recover_in_flight(session: Session, *, older_than_seconds: float = STALE_IN_FLIGHT_SECONDS) -> list[GpWriteOutbox]:
+    """Settle rows a stopped worker left IN_FLIGHT (#1192).
+
+    The claim commits IN_FLIGHT before the relay call, so a worker stopped mid-call (every deploy
+    restarts it) left the row there for good: cancel and retry refuse IN_FLIGHT, and the per-entity
+    guard holds every later write for the same PO behind it. Only a row whose claim (its last update)
+    is older than `older_than_seconds` is touched, so a drain still running on another instance is left
+    alone; the worker sweeps periodically, so such a row is still recovered once it is truly stuck.
+
+    A PO registration goes back on the queue: the relay recognises the attempt's key and hands back the
+    PO it already made, so asking again cannot order twice. Anything else (a receipt) carries no such
+    key, so it may already be in GP and fails as ambiguous for a person to check there. Returns the
+    rows it failed, so the caller can tell somebody."""
+    rows = list(
+        session.scalars(
+            select(GpWriteOutbox)
+            .where(
+                GpWriteOutbox.status == "IN_FLIGHT",
+                GpWriteOutbox.updated_at < datetime.utcnow() - timedelta(seconds=older_than_seconds),
+            )
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+    failed = []
+    for row in rows:
+        if row.relay_op == "create_po":
+            row.status = "PENDING"
+            row.next_attempt_at = datetime.utcnow()
+            row.last_error = "The worker stopped while this was being sent; it is asked again"
+        else:
+            row.status = "FAILED"
+            row.failure_kind = "ambiguous"
+            row.last_error = (
+                "The worker stopped while this was being sent to GP; check GP before retrying, it may already be there"
+            )
+            row.last_error_code = None
+            failed.append(row)
+    session.flush()
+    return failed
+
+
 def summary(session: Session, company: str | None = None) -> dict:
     """Scalar aggregates only - this is polled by every browser with the app open, so it must never
     load rows (see the GraphQL/SQLAlchemy performance rules in CLAUDE.md).
@@ -218,8 +301,10 @@ def summary(session: Session, company: str | None = None) -> dict:
 
 
 def retry_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
-    """Admin: put a FAILED row back on the queue immediately, with a fresh attempt budget."""
-    row = session.get(GpWriteOutbox, entry_id)
+    """Admin: put a FAILED row back on the queue immediately, with a fresh attempt budget.
+
+    Locked and re-read (#1193), so the status checked is the one the worker's own locked finish sees."""
+    row = get_entry_locked(session, entry_id)
     if row is None or row.status not in ("FAILED", "CANCELLED"):
         return None
     _assert_receive_draft_still_queued(session, row)
@@ -233,8 +318,9 @@ def retry_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
 
 def cancel_entry(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | None:
     """Admin: abandon a queued write. Only a row that is not currently on the wire may be cancelled -
-    cancelling an IN_FLIGHT row would leave the worker writing to a row a human believes is dead."""
-    row = session.get(GpWriteOutbox, entry_id)
+    cancelling an IN_FLIGHT row would leave the worker writing to a row a human believes is dead.
+    Locked and re-read (#1193): a plain read let a cancel overwrite a claim that landed in between."""
+    row = get_entry_locked(session, entry_id)
     if row is None or row.status not in ("PENDING", "FAILED"):
         return None
     row.status = "CANCELLED"

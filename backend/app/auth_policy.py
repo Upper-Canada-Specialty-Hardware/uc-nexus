@@ -50,9 +50,9 @@ logger = logging.getLogger(__name__)
 # them can contain a leading "@" the way this sentinel does.
 SIGNED_IN = "@signed-in"
 
-# Root fields whose bodies enumerate the whole Clerk roster anyway (`list_users`, or
-# `list_shop_assembly_members` which wraps it). For these the gate answers "what roles does the
-# caller hold" out of that one roster call instead of adding its own `GET /users/{id}` - which is the
+# Root fields whose bodies enumerate the whole Clerk roster anyway (`list_users`). For these the
+# gate answers "what roles does the caller hold" out of that one roster call instead of adding its
+# own `GET /users/{id}` - which is the
 # `adminStats` double round trip: `require_admin`'s role lookup, then the `list_users` the resolver
 # was always going to make, which already carries roles for every user including the caller.
 #
@@ -238,7 +238,6 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "gpCustomers": SIGNED_IN,
     "gpDivisions": SIGNED_IN,
     "gpEmployees": TENANT_OWNERS,
-    "gpJobs": SIGNED_IN,
     "gpPoEntryOptions": SIGNED_IN,
     "gpPoTotals": SIGNED_IN,
     "gpTaxDetails": SIGNED_IN,
@@ -289,6 +288,8 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "renameShipmentContainer": SIGNED_IN,
     "deleteShipmentContainer": SIGNED_IN,
     "setContainerItems": SIGNED_IN,
+    # The same two rewrites as one transaction (#1178); same callers as setContainerItems.
+    "moveContainerItems": SIGNED_IN,
     "confirmShipmentFromContainers": SIGNED_IN,
     # The shipping department's own list of how a load travels (#451). The read stays SIGNED_IN -
     # every screen that books a load offers the list - but maintaining it is the SHIPPING MANAGER's
@@ -322,6 +323,9 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "updateShipmentDetails": SIGNED_IN,
     "markShipmentPickedUp": SIGNED_IN,
     "markShipmentDelivered": SIGNED_IN,
+    # Calling off a scheduled shipment nothing can be returned from (#1176). Same callers as the
+    # return that would otherwise cancel it, and refused on state, not role.
+    "cancelShipment": SIGNED_IN,
     # --- shop_assembly.py -----------------------------------------------------------------
     # The reads are SIGNED_IN: they are the same availability and request-state arithmetic every
     # other screen shows, and the PM raising a request has to be able to watch it.

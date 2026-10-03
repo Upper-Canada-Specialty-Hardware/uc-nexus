@@ -5,6 +5,7 @@ import logging
 import uuid
 
 import strawberry
+from sqlalchemy.exc import IntegrityError
 
 from app.auth import tenant_scope
 from app.database import SessionLocal
@@ -33,6 +34,21 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _gp_cost_code_count(company: str, job_number: str) -> int | None:
+    """How many active cost codes GP holds on a job (JC00701), or None when it could not be read.
+
+    The adopt path reports this instead of a flat 0 (#1306): that path is also where a retry lands
+    after a create whose reply was lost, and there the job and its codes are ours and already in GP.
+    Best effort - a failed read must not fail the adopt, it just leaves the dialog without a count."""
+    try:
+        result = await relay_gateway.relay_call(company, "list_cost_codes", {"job": job_number.strip()})
+    except Exception:
+        logger.warning("create_gp_job: could not read cost codes for %s", job_number, exc_info=True)
+        return None
+    codes = (result or {}).get("cost_codes")
+    return len(codes) if isinstance(codes, list) else None
 
 
 def _load_project(job_number: str, company: str) -> Project:
@@ -208,9 +224,16 @@ class ProjectMutations:
                 # amount of retrying can clear.
                 logger.info("create_gp_job: %s already in GP; adopting instead", input.job_number)
                 project = await _adopt_existing(input.job_number, company)
-                # Nothing was provisioned: the create never ran, and this path deliberately does not
-                # go on to write cost codes onto a job somebody else's setup already owns.
-                return CreateGpJobResult(project=project, created=False, cost_codes_provisioned=0)
+                # Nothing was provisioned on this call: the create never ran, and this path deliberately
+                # does not go on to write cost codes onto the job. But it can't tell "somebody else's
+                # job" from "ours, reply lost" (#1306), so it reports what GP actually holds rather
+                # than letting a flat 0 read as "your codes were not applied".
+                return CreateGpJobResult(
+                    project=project,
+                    created=False,
+                    cost_codes_provisioned=0,
+                    cost_codes_in_gp=await _gp_cost_code_count(company, input.job_number),
+                )
             # GP said no - a closed fiscal period, an address code that isn't on the customer, a
             # division without accounts. The proc words those better than we could, so the message is
             # passed through to the dialog rather than replaced with a generic failure.
@@ -225,11 +248,16 @@ class ProjectMutations:
         # as 0 - which is exactly what happened in GP, and how a silently dropped selection surfaces to
         # the dialog instead of being reported as a provisioned job.
         cost_codes_provisioned = int((result or {}).get("cost_codes_provisioned") or 0)
+        # #1307: GP's full record of the new job (the list_jobs shape), so the project starts with its
+        # customer, address, division and dates instead of waiting for the next sync pass. A relay
+        # older than #1307 answers without it, and the project is adopted with the name alone, as before.
+        record = (result or {}).get("record")
+        extra = {"record": record} if isinstance(record, dict) else {}
 
         def _persist() -> Project:
             with SessionLocal() as session:
                 project = project_repository.adopt_gp_job(
-                    session, job_number=job_number, job_name=job_name, company=company
+                    session, job_number=job_number, job_name=job_name, company=company, **extra
                 )
                 session.commit()
                 session.refresh(project)
@@ -242,8 +270,10 @@ class ProjectMutations:
                 created=True,
                 cost_codes_provisioned=cost_codes_provisioned,
             )
-        except ConflictError:
-            # The sync adopted this job between GP committing and us persisting. Benign race, same as
+        except (ConflictError, IntegrityError):
+            # The sync adopted this job between GP committing and us persisting - seen by
+            # adopt_gp_job's pre-check (ConflictError) or, when the two inserts race past it, by the
+            # (company, project_id) unique constraint at commit (IntegrityError, #1306). Benign race, same as
             # the one _persist_missing swallows from the other side - the row we wanted exists.
             # GP still created the job on this call, so this is a real creation - only the Nexus row
             # was written by someone else first.

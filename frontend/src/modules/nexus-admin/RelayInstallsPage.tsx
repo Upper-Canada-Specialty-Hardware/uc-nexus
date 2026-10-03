@@ -171,13 +171,13 @@ export default function RelayInstallsPage() {
   const [label, setLabel] = useState('');
   const [provisioned, setProvisioned] = useState<Provisioned | null>(null);
 
-  const { data, loading } = useQuery<{ relayInstalls: RelayInstall[] }>(RELAY_INSTALLS, {
+  const { data, loading, error: installsError } = useQuery<{ relayInstalls: RelayInstall[] }>(RELAY_INSTALLS, {
     skip: !isNexusAdmin,
     fetchPolicy: 'cache-and-network',
   });
   const installs = useMemo(() => data?.relayInstalls ?? [], [data]);
 
-  const { data: eventsData } = useQuery<{ relayEvents: RelayEvent[] }>(RELAY_EVENTS, {
+  const { data: eventsData, error: eventsError } = useQuery<{ relayEvents: RelayEvent[] }>(RELAY_EVENTS, {
     skip: !isNexusAdmin,
     variables: { limit: EVENT_LIMIT },
     fetchPolicy: 'cache-and-network',
@@ -599,6 +599,12 @@ export default function RelayInstallsPage() {
       <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
         Installs
       </Typography>
+      {/* #1320: a failed read is not "no installs" - say so above the grid rather than leave it empty. */}
+      {installsError && !data && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          The relay installs could not be loaded: {installsError.message}
+        </Alert>
+      )}
       <DataGrid
         ref={setContainer}
         {...gridProps}
@@ -624,12 +630,17 @@ export default function RelayInstallsPage() {
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
           The last {EVENT_LIMIT} relay-link connections, refusals included, newest first.
         </Typography>
+        {eventsError && !eventsData && (
+          <Alert severity="error" sx={{ mb: 1 }}>
+            The connection events could not be loaded: {eventsError.message}
+          </Alert>
+        )}
         <FitTable storageKey="relay-connection-events" columns={EVENT_COLUMNS} maxHeight={320}>
           {events.length === 0 ? (
             <TableRow>
               <TableCell colSpan={6}>
                 <Typography variant="body2" color="text.secondary">
-                  No connection events recorded yet.
+                  {eventsError && !eventsData ? 'Not loaded.' : 'No connection events recorded yet.'}
                 </Typography>
               </TableCell>
             </TableRow>
