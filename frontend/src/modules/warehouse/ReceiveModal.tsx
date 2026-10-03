@@ -261,7 +261,9 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
     for (const details of receivablePoDetailsList) {
       for (const li of details.lineItems) {
         const pending = li.orderedQuantity - li.receivedQuantity;
-        if ((receiveQuantities[li.id] ?? 0) > pending) return true;
+        // #1383: a negative count is an error too, not a line to drop quietly while Submit stays live.
+        const receiveNow = receiveQuantities[li.id] ?? 0;
+        if (receiveNow < 0 || receiveNow > pending) return true;
       }
     }
     return false;

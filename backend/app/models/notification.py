@@ -26,6 +26,9 @@ class Notification(Base):
             "type",
             postgresql_where=text("pull_request_id IS NOT NULL AND is_read = false"),
         ),
+        # The bell's newest-first read (#1224): the company scope filters on project_id and the read
+        # orders by created_at, so one index serves both and a LIMIT 5 stops early.
+        Index("ix_notifications_project_created_at", "project_id", "created_at"),
         # A person-targeted notification is looked up by its one recipient (#1111).
         Index("ix_notifications_recipient_user_id", "recipient_user_id"),
         # Every notification is for exactly one of: an audience, or a person (#1111).

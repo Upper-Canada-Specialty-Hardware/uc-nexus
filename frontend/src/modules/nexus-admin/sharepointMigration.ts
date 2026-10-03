@@ -25,6 +25,8 @@ export interface SharepointInventoryItem {
   projectName: string;
   /** Cost per unit off the source list. Written onto the inventory rows since there is no PO line. */
   unitCost: number;
+  /** The cost cell held text that is not a number even without "$" and ","; unitCost then reads 0. */
+  unitCostUnreadable?: boolean;
   // Descriptive columns. Meaningless for schedule hardware (the schedule describes that), but for a
   // frame or a specialty they are the whole description - and #454's attribute values are where
   // they belong. Optional so a caller that does not select them still type-checks.
@@ -238,6 +240,8 @@ export interface MigrationEntry {
   quantity: number;
   /** Off-PO cost per unit, or null when the source list records none. */
   unitCost: number | null;
+  /** The source cost could not be read, so the entry carries none; counted in the result. */
+  unitCostUnreadable?: boolean;
   projectId: string | null;
   aisle: string | null;
   row: string | null;
@@ -472,6 +476,7 @@ export function buildEntries({
       warehouseId: resolution.warehouseId || defaultWarehouseId,
       productCode,
       unitCost: c.item.unitCost > 0 ? c.item.unitCost : null,
+      unitCostUnreadable: !!c.item.unitCostUnreadable,
       projectId,
       aisle: resolution.aisle,
       row: resolution.row,

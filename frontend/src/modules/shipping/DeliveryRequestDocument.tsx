@@ -184,6 +184,11 @@ export interface DeliveryRequestDocumentProps {
    */
   divisionAddress: string;
   values: DeliveryRequestValues;
+  /**
+   * What has come back off a shipment already picked up (#1304), printed under the material block
+   * rather than netted out of it, so the lines still match the signed paper.
+   */
+  returnedNote?: string[];
 }
 
 export default function DeliveryRequestDocument({
@@ -196,6 +201,7 @@ export default function DeliveryRequestDocument({
   materialLines,
   divisionAddress,
   values,
+  returnedNote = [],
 }: DeliveryRequestDocumentProps) {
   const divisionLines = divisionAddress.split('\n').filter((l) => l.trim() !== '');
   // The material block keeps a few spare lines: a partial ship gets items added at the dock.
@@ -277,6 +283,18 @@ export default function DeliveryRequestDocument({
             ))}
           </View>
         </View>
+        {returnedNote.length > 0 && (
+          <View style={styles.sectionRow} wrap={false}>
+            <Text style={styles.sectionLabel}>RETURNED:</Text>
+            <View style={styles.sectionBody}>
+              {returnedNote.map((line, i) => (
+                <Text key={i} style={styles.lineText}>
+                  {line}
+                </Text>
+              ))}
+            </View>
+          </View>
+        )}
 
         <View style={styles.weightRow}>
           <Text style={styles.weightLabel}>WEIGHT:</Text>

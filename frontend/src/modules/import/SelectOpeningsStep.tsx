@@ -100,7 +100,7 @@ export default function SelectOpeningsStep({
             );
 
             return (
-              <Accordion key={manufacturer} defaultExpanded={false}>
+              <Accordion key={manufacturer} defaultExpanded={false} TransitionProps={{ unmountOnExit: true }}>
                 <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%', flexWrap: 'wrap' }}>
                     <Typography variant="subtitle2" sx={{ fontWeight: 700, ...monoSx }}>
@@ -122,7 +122,7 @@ export default function SelectOpeningsStep({
                     const [category, productCode] = groupKey.split('|');
 
                     return (
-                      <Accordion key={groupKey} defaultExpanded={false} disableGutters>
+                      <Accordion key={groupKey} defaultExpanded={false} disableGutters TransitionProps={{ unmountOnExit: true }}>
                         <AccordionSummary expandIcon={<ChevronDown size={18} strokeWidth={1.75} />}>
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%', flexWrap: 'wrap' }}>
                             <Typography variant="subtitle2" sx={{ fontWeight: 600, ...monoSx }}>

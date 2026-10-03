@@ -8,6 +8,7 @@ import { useQuery, useMutation } from '@apollo/client/react';
 import { pdf } from '@react-pdf/renderer';
 import { GET_PO_DOCUMENT_SETTINGS, GET_GP_BUYERS, GET_GP_PO_TOTALS, GET_PROJECT_SHIP_TO, SAVE_PO_DOCUMENT_DATA, UPLOAD_PO_DOCUMENT } from '../../graphql/po';
 import { useToast } from '../../components/Toast';
+import { useRelayStatus } from '../../relay/useRelayStatus';
 import { poVendorName } from './poVendorName';
 import { isGpEmptyDate } from './poOrderDate';
 import PurchaseOrderDocument, { type PurchaseOrderDocumentProps } from './PurchaseOrderDocument';
@@ -55,6 +56,8 @@ interface GpPoTotals {
   freight: number;
   miscellaneous: number;
   taxAmount: number;
+  /** #1236: GP's trade discount (TRDISAMT); 0 from a relay build older than the read. */
+  tradeDiscount?: number | null;
   // Null from a relay build older than #858, or when GP's header could not be read.
   header: GpPoHeader | null;
 }
@@ -94,12 +97,21 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
   const company = po.gpCompany ?? '';
   const poNumber = po.poNumber ?? '';
 
-  const { data: settingsData, loading: sLoading } = useQuery<{ poDocumentSettings: PODocumentSettings }>(
-    GET_PO_DOCUMENT_SETTINGS, { skip: !open },
-  );
-  const { data: buyersData } = useQuery<{ gpBuyers: string[] }>(GET_GP_BUYERS, {
-    variables: { company }, skip: !open || !company,
+  const {
+    data: settingsData, loading: sLoading, error: sError, refetch: refetchSettings,
+  } = useQuery<{ poDocumentSettings: PODocumentSettings }>(GET_PO_DOCUMENT_SETTINGS, { skip: !open });
+  // #1288: the buyer list is a live GP read, so it is not asked for while the relay is known to be down
+  // (the register dialog gates its reads the same way), and a failed read says so under the field.
+  const relay = useRelayStatus({ skip: !open });
+  const relayDown = relay.connected === false;
+  const { data: buyersData, error: buyersError } = useQuery<{ gpBuyers: string[] }>(GET_GP_BUYERS, {
+    variables: { company }, skip: !open || !company || relayDown,
   });
+  const buyersNote = relayDown
+    ? 'The GP relay is offline, so the buyer list could not be read.'
+    : buyersError
+      ? `The GP buyer list could not be read: ${buyersError.message}`
+      : null;
   const { data: totalsData, loading: tLoading, error: tError } = useQuery<{ gpPoTotals: GpPoTotals | null }>(
     GET_GP_PO_TOTALS,
     { variables: { company, poNumber }, skip: !open || !company || !poNumber, fetchPolicy: 'network-only' },
@@ -125,6 +137,7 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
           po={po}
           settings={settings}
           buyers={buyersData?.gpBuyers ?? []}
+          buyersNote={buyersNote}
           gpTotals={totalsData?.gpPoTotals ?? null}
           gpLoading={tLoading}
           gpError={tError ? tError.message : null}
@@ -132,6 +145,21 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
           onClose={onClose}
           onRefetch={onRefetch}
         />
+      ) : open && sError && !settings && !sLoading ? (
+        // #1279: the document cannot be built without the boilerplate, so say why instead of spinning.
+        <>
+          <DialogContent dividers>
+            <Alert severity="error">
+              The PO document settings could not be loaded, so the document cannot be generated. {sError.message}
+            </Alert>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={onClose}>Close</Button>
+            <Button variant="contained" onClick={() => { void refetchSettings().catch(() => undefined); }}>
+              Retry
+            </Button>
+          </DialogActions>
+        </>
       ) : (
         <DialogContent dividers>
           <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
@@ -147,6 +175,8 @@ interface GenerateFormProps {
   po: PurchaseOrder;
   settings: PODocumentSettings;
   buyers: string[];
+  /** Why the GP buyer list is missing (relay offline or the read failed), when it is. */
+  buyersNote: string | null;
   gpTotals: GpPoTotals | null;
   /** GP's totals and header are still being read. */
   gpLoading: boolean;
@@ -158,7 +188,7 @@ interface GenerateFormProps {
 }
 
 function GenerateForm({
-  po, settings, buyers, gpTotals, gpLoading, gpError, projectNumber, onClose, onRefetch,
+  po, settings, buyers, buyersNote, gpTotals, gpLoading, gpError, projectNumber, onClose, onRefetch,
 }: GenerateFormProps) {
   const { showToast } = useToast();
   const dd = po.documentData;
@@ -192,6 +222,11 @@ function GenerateForm({
   );
   const [taxAmount, setTaxAmount] = useGpPrefilled(
     dd ? String(dd.taxAmount) : null, gpAmount(gpTotals?.taxAmount), '0',
+  );
+  // #1236: GP's trade discount comes off the order total. A document saved before the field existed
+  // holds null, so it takes GP's figure rather than a saved 0.
+  const [tradeDiscount, setTradeDiscount] = useGpPrefilled(
+    dd?.tradeDiscount != null ? String(dd.tradeDiscount) : null, gpAmount(gpTotals?.tradeDiscount ?? undefined), '0',
   );
   const [taxLabel, setTaxLabel] = useState(dd?.taxLabel ?? 'Taxes');
   const [tariffAmount, setTariffAmount] = useState(String(dd?.tariffAmount ?? po.tariffAmount ?? 0));
@@ -229,13 +264,15 @@ function GenerateForm({
       taxAmount: num(taxAmount),
       taxLabel: taxLabel || 'Taxes',
       tariffAmount: num(tariffAmount),
+      tradeDiscount: num(tradeDiscount),
       requiredByOverride: requiredBy || null,
       includeFsc,
       includeUsaTariff,
       includeCustoms,
     }),
     [vendorAddress, buyerName, currency, shipTo, shippingMethod, quotationNumber, freight,
-      miscellaneous, taxAmount, taxLabel, tariffAmount, requiredBy, includeFsc, includeUsaTariff, includeCustoms],
+      miscellaneous, taxAmount, taxLabel, tariffAmount, tradeDiscount, requiredBy, includeFsc, includeUsaTariff,
+      includeCustoms],
   );
 
   const buildDocProps = useCallback((): PurchaseOrderDocumentProps => {
@@ -272,6 +309,7 @@ function GenerateForm({
       taxAmount: num(taxAmount),
       taxLabel: taxLabel || 'Taxes',
       tariffAmount: num(tariffAmount),
+      tradeDiscount: num(tradeDiscount),
       taxNumbers: settings.taxNumbers,
       mandatoryBullets: settings.mandatoryBullets,
       shippingAccounts: settings.shippingAccounts,
@@ -285,7 +323,8 @@ function GenerateForm({
       includeCustoms,
     };
   }, [po, quotationNumber, settings, vendorAddress, shipTo, shippingMethod, buyerName, currency, projectNumber,
-    requiredBy, freight, miscellaneous, taxAmount, taxLabel, tariffAmount, includeFsc, includeUsaTariff, includeCustoms]);
+    requiredBy, freight, miscellaneous, taxAmount, taxLabel, tariffAmount, tradeDiscount, includeFsc, includeUsaTariff,
+    includeCustoms]);
 
   const persist = useCallback(async () => {
     await saveDocData({ variables: { poId: po.id, input: docInput() } });
@@ -380,7 +419,11 @@ function GenerateForm({
                   <MenuItem key={b} value={b}>{b}</MenuItem>
                 ))}
               </Select>
-              <FormHelperText>{gpHelper(dd?.buyerName, 'Registered GP buyer for this PO.')}</FormHelperText>
+              {buyersNote ? (
+                <FormHelperText sx={{ color: 'warning.main' }}>{buyersNote}</FormHelperText>
+              ) : (
+                <FormHelperText>{gpHelper(dd?.buyerName, 'Registered GP buyer for this PO.')}</FormHelperText>
+              )}
             </FormControl>
             <FormControl size="small" sx={{ minWidth: 140 }}>
               <InputLabel>Currency</InputLabel>
@@ -447,6 +490,12 @@ function GenerateForm({
             <TextField
               label="Tax label" value={taxLabel} onChange={(e) => setTaxLabel(e.target.value)}
               fullWidth size="small" placeholder="Taxes / HST"
+            />
+            <TextField
+              label="Trade discount" type="number" value={tradeDiscount}
+              onChange={(e) => setTradeDiscount(e.target.value)}
+              fullWidth size="small" helperText={gpHelper(dd?.tradeDiscount)}
+              slotProps={{ htmlInput: { min: 0, step: 0.01 }, input: gpAdornment(dd?.tradeDiscount) }}
             />
           </Stack>
 

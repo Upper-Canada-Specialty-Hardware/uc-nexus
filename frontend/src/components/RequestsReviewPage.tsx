@@ -19,7 +19,7 @@ import { useToast } from './Toast';
 import ConfirmDialog from './ConfirmDialog';
 import Modal from './Modal';
 import { parseServerDate } from '../utils/serverDate';
-import { RESERVATION_STALE_ROOT_FIELDS } from '../graphql/refetch';
+import { PULL_MINTED_STALE_ROOT_FIELDS, RESERVATION_STALE_ROOT_FIELDS } from '../graphql/refetch';
 import { monoSx } from '../theme';
 import { FadeIn, StaggerList, StaggerItem } from '../motion';
 
@@ -135,7 +135,17 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
     onChanged();
   };
 
+  // Accepting mints a warehouse pull and reopening deletes it (#1232). The pull queue reads that list
+  // cache-first on another route, so it is evicted here rather than refetched.
+  const evictPullQueue = (cache: { evict: (o: { id: string; fieldName: string }) => void; gc: () => void }) => {
+    for (const fieldName of PULL_MINTED_STALE_ROOT_FIELDS) {
+      cache.evict({ id: 'ROOT_QUERY', fieldName });
+    }
+    cache.gc();
+  };
+
   const [acceptRequest] = useMutation(acceptMutation, {
+    update: evictPullQueue,
     onCompleted: () => settle('Request accepted - pull request created', 'success'),
     onError: (e) => settle(e.message, 'error'),
   });
@@ -157,6 +167,7 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   // Falls back to acceptMutation so the hook always has a valid document; only fired in approved mode,
   // where reopenMutation is supplied.
   const [reopenRequest] = useMutation(reopenMutation ?? acceptMutation, {
+    update: evictPullQueue,
     onCompleted: () => settle('Request reopened - back to pending', 'success'),
     onError: (e) => settle(e.message, 'error'),
   });

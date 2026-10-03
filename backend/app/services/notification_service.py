@@ -102,8 +102,14 @@ def has_unread_notification_for_pull(
     session: Session,
     pull_request_id: uuid.UUID,
     notification_type: NotificationType,
+    recipient_role: str | None = None,
 ) -> bool:
     """Whether this pull already has an *open* (unread) notification of this type.
+
+    `recipient_role` narrows it to one audience (#1241). INVENTORY_SHORTFALL is raised to two: the
+    PO backfill signal to purchasing, and the count-below-reserved notice to warehouse managers
+    (#1124), both keyed to the pull. Unfiltered, an unread manager notice suppressed purchasing's
+    backfill signal for the very short pick it predicted.
 
     The dedupe primitive behind the pick-time PO backfill signal (`INVENTORY_SHORTFALL`, #367): a
     short pick is resumable, so a picker keying a big sheet in three sittings would otherwise raise
@@ -116,17 +122,14 @@ def has_unread_notification_for_pull(
 
     One EXISTS against the partial index; no rows are loaded.
     """
-    return bool(
-        session.scalar(
-            select(
-                exists().where(
-                    Notification.pull_request_id == pull_request_id,
-                    Notification.type == notification_type,
-                    Notification.is_read == False,
-                )
-            )
-        )
-    )
+    conditions = [
+        Notification.pull_request_id == pull_request_id,
+        Notification.type == notification_type,
+        Notification.is_read == False,
+    ]
+    if recipient_role is not None:
+        conditions.append(Notification.recipient_role == recipient_role)
+    return bool(session.scalar(select(exists().where(*conditions))))
 
 
 def format_shortfall_lines(shortfalls) -> str:

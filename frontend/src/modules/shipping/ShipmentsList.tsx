@@ -37,6 +37,7 @@ import {
   Pencil,
   Search,
   Truck,
+  XCircle,
 } from 'lucide-react';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { pdf } from '@react-pdf/renderer';
@@ -44,6 +45,7 @@ import { GET_PROJECTS, GET_WAREHOUSES } from '../../graphql/shared';
 import {
   GET_PACKING_SLIPS,
   MARK_SHIPMENT_DELIVERED,
+  CANCEL_SHIPMENT,
   MARK_SHIPMENT_PICKED_UP,
 } from '../../graphql/shipping';
 import { useToast } from '../../components/Toast';
@@ -55,13 +57,15 @@ import {
   primaryWarehouse,
   returnableUnits,
   SHIPMENT_SLIP_PARAM,
+  SHIPMENT_STATUS_DISPLAY,
   shipmentStatusDisplay,
   slipMaterialLines,
-  slipNetOfReturns,
+  reprintContents,
   slipOpeningSummary,
   valuesFromSlip,
   warehouseAddressLines,
   type PackingSlip,
+  type ShipmentStatus,
   type WarehouseAddress,
 } from './deliveryRequest';
 import { CONTAINER_TYPE_LABEL, isStacked } from './staging';
@@ -72,6 +76,11 @@ import { FIT_CELL_WRAP_SX } from '../../components/fitColumns';
 import { FadeIn } from '../../motion';
 import { parseServerDate, parseServerDay } from '../../utils/serverDate';
 import { openPdfWindow } from '../../utils/openPdf';
+
+// UI law 1 (#1231): a short value hugs its column, and the one text column takes the slack. A long
+// product code wraps inside its cell rather than pushing the table wider.
+const HUG_SX = { width: '1%', whiteSpace: 'nowrap' as const };
+const SLACK_SX = { overflowWrap: 'anywhere' as const };
 
 interface Project {
   id: string;
@@ -95,6 +104,11 @@ const SEARCH_DEBOUNCE_MS = 250;
 const LONG_DATE: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'long', day: 'numeric' };
 
 /** A calendar date the way the Delivery Request carries it, or a dash when it was left blank. */
+/** The project a shipment belongs to, by name, falling back to its number (#1173). */
+function slipProjectLabel(slip: Pick<PackingSlip, 'projectNumber' | 'projectDescription'>): string {
+  return slip.projectDescription || slip.projectNumber;
+}
+
 function formatDay(value: string | null | undefined): string {
   return value ? parseServerDay(value).toLocaleDateString() : '-';
 }
@@ -159,7 +173,7 @@ function shipmentColumns(isGlobal: boolean): FitTableColumn[] {
   ];
 }
 
-type LifecycleAction = 'PICKED_UP' | 'DELIVERED';
+type LifecycleAction = 'PICKED_UP' | 'DELIVERED' | 'CANCELLED';
 
 const LIFECYCLE_PROMPT: Record<LifecycleAction, { title: string; body: string; confirm: string }> = {
   PICKED_UP: {
@@ -172,6 +186,19 @@ const LIFECYCLE_PROMPT: Record<LifecycleAction, { title: string; body: string; c
     body: 'The site has taken delivery and signed off on the Delivery Request.',
     confirm: 'Mark delivered',
   },
+  // #1176: only offered once nothing on the shipment can come back - a return is how hardware gets
+  // back into inventory, and returning the last of it cancels the shipment on its own.
+  CANCELLED: {
+    title: 'Cancel this shipment?',
+    body: 'Nothing on it can be returned, so no inventory moves. Its Delivery Request is withdrawn and it can no longer be picked up.',
+    confirm: 'Cancel shipment',
+  },
+};
+
+const LIFECYCLE_DONE: Record<LifecycleAction, string> = {
+  PICKED_UP: 'marked picked up',
+  DELIVERED: 'marked delivered',
+  CANCELLED: 'cancelled',
 };
 
 /**
@@ -190,6 +217,23 @@ export default function ShipmentsList({ projectId, heading }: Props) {
   // searched to it and, once the list has it, with its row expanded - the slip is what was asked for.
   const [searchParams, setSearchParams] = useSearchParams();
   const linkedSlip = searchParams.get(SHIPMENT_SLIP_PARAM);
+  // #1361: the Shipping landing's gauges link here filtered to the slips they count.
+  const paramStatus = searchParams.get('status');
+  const statusFilter = (Object.keys(SHIPMENT_STATUS_DISPLAY) as ShipmentStatus[]).includes(
+    paramStatus as ShipmentStatus,
+  )
+    ? (paramStatus as ShipmentStatus)
+    : null;
+  const clearStatusFilter = useCallback(() => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('status');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [setSearchParams]);
   const [search, setSearch] = useState(() => linkedSlip ?? '');
   // What the server is asked for: the search box once typing has paused, so a slip number typed
   // character by character is one read rather than nine.
@@ -218,6 +262,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
     variables: {
       projectId: projectId ?? (projectFilter || null),
       search: query.trim() || null,
+      status: statusFilter,
       limit: shown,
     },
     fetchPolicy: 'cache-and-network',
@@ -226,15 +271,10 @@ export default function ShipmentsList({ projectId, heading }: Props) {
   // than the table dropping to skeletons between keystrokes.
   const current = data ?? previousData;
 
-  // Read in both modes, not just the global one: the project column and filter only matter to the
-  // all-projects view, but the Delivery Request PDF prints PROJECT and JOB NUMBER either way, and
-  // the job number is the project's business id rather than the uuid the shipment is keyed on.
-  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
-  const projectsById = useMemo(() => {
-    const map = new Map<string, Project>();
-    for (const p of projectsData?.projects ?? []) map.set(p.id, p);
-    return map;
-  }, [projectsData]);
+  // Only the all-projects view's filter reads this. The project column, the Delivery Request's
+  // PROJECT and JOB NUMBER and the return dialog take the project off the slip itself (#1173): this
+  // list leaves archived projects out, and their shipments still have to say whose they are.
+  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !isGlobal });
 
   // The letterhead's Division Address, which is UC Hardware's own address rather than anything the
   // shipment stores - a reprint years later still has to carry it, and the slip only remembers where
@@ -247,19 +287,13 @@ export default function ShipmentsList({ projectId, heading }: Props) {
     [warehousesData],
   );
 
-  const projectLabel = useCallback(
-    (id: string) => {
-      const p = projectsById.get(id);
-      return p ? p.description || p.projectId : '-';
-    },
-    [projectsById],
-  );
 
   // Both mutations answer with the whole PackingSlip, so Apollo's normalised cache moves the row on
   // its own - there is nothing to refetch and nothing that could show the old status for a beat.
   const [markPickedUp, { loading: markingPickedUp }] = useMutation(MARK_SHIPMENT_PICKED_UP);
   const [markDelivered, { loading: markingDelivered }] = useMutation(MARK_SHIPMENT_DELIVERED);
-  const marking = markingPickedUp || markingDelivered;
+  const [cancelShipment, { loading: cancelling }] = useMutation(CANCEL_SHIPMENT);
+  const marking = markingPickedUp || markingDelivered || cancelling;
 
   const visible = useMemo(() => current?.packingSlips ?? [], [current]);
   const total = current?.packingSlipCount ?? visible.length;
@@ -305,21 +339,21 @@ export default function ShipmentsList({ projectId, heading }: Props) {
       const tab = openPdfWindow(showToast);
       setGeneratingFor(slip.id);
       try {
-        const project = projectsById.get(slip.projectId);
-        // #1107: a reprint says what is still on the shipment, not what was first cut - a partial
-        // return before pickup used to leave the driver's copy carrying hardware that was back here.
-        const net = slipNetOfReturns(slip.items, slip.containers);
+        // #1107 / #1304: before pickup a reprint is net of returns (it is the copy the driver takes);
+        // after pickup it prints what the driver was handed, with returns noted beside it.
+        const net = reprintContents(slip);
         const blob = await pdf(
           <DeliveryRequestDocument
             packingSlipNumber={slip.packingSlipNumber}
-            projectName={project ? project.description || project.projectId : ''}
-            jobNumber={project?.projectId ?? ''}
+            projectName={slipProjectLabel(slip)}
+            jobNumber={slip.projectNumber}
             date={parseServerDate(slip.shippedAt).toLocaleDateString(undefined, LONG_DATE)}
             shipper={slip.shippedBy}
             openings={slipOpeningSummary(net.items, net.containers)}
             materialLines={slipMaterialLines(net.items, net.containers)}
             divisionAddress={divisionAddress}
             values={valuesFromSlip(slip)}
+            returnedNote={net.returnedNote}
           />,
         ).toBlob();
         tab.show(blob);
@@ -330,24 +364,21 @@ export default function ShipmentsList({ projectId, heading }: Props) {
         setGeneratingFor(null);
       }
     },
-    [projectsById, divisionAddress, showToast],
+    [divisionAddress, showToast],
   );
 
   const handleLifecycle = useCallback(async () => {
     if (!lifecycle) return;
     const { slip, action } = lifecycle;
     try {
-      const run = action === 'PICKED_UP' ? markPickedUp : markDelivered;
+      const run = { PICKED_UP: markPickedUp, DELIVERED: markDelivered, CANCELLED: cancelShipment }[action];
       await run({ variables: { id: slip.id } });
-      showToast(
-        `${slip.packingSlipNumber} marked ${action === 'PICKED_UP' ? 'picked up' : 'delivered'}`,
-        'success',
-      );
+      showToast(`${slip.packingSlipNumber} ${LIFECYCLE_DONE[action]}`, 'success');
       setLifecycle(null);
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Failed to update the shipment', 'error');
     }
-  }, [lifecycle, markPickedUp, markDelivered, showToast]);
+  }, [lifecycle, markPickedUp, markDelivered, cancelShipment, showToast]);
 
   // Slip #, [project], status, shipped by, created, pick-up, delivery, method, carrier. The
   // expansion row spans all of them plus the chevron, so this has to move with the header.
@@ -378,6 +409,14 @@ export default function ShipmentsList({ projectId, heading }: Props) {
             },
           }}
         />
+        {statusFilter && (
+          <Chip
+            size="small"
+            variant="outlined"
+            label={`Status: ${SHIPMENT_STATUS_DISPLAY[statusFilter].label}`}
+            onDelete={clearStatusFilter}
+          />
+        )}
         {isGlobal && (
           <FormControl size="small" sx={{ minWidth: 220 }}>
             <InputLabel>Project</InputLabel>
@@ -449,7 +488,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                   <TableCell sx={{ ...monoSx, fontWeight: 600 }}>
                     {slip.packingSlipNumber}
                   </TableCell>
-                  {isGlobal && <TableCell title={projectLabel(slip.projectId)}>{projectLabel(slip.projectId)}</TableCell>}
+                  {isGlobal && <TableCell title={slipProjectLabel(slip)}>{slipProjectLabel(slip)}</TableCell>}
                   <TableCell>
                     <Chip size="small" label={status.label} color={status.color} />
                   </TableCell>
@@ -495,19 +534,21 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                         <Table size="small" sx={{ mb: 2 }}>
                           <TableHead>
                             <TableRow>
-                              <TableCell>Opening</TableCell>
+                              <TableCell sx={HUG_SX}>Opening</TableCell>
                               <TableCell>Product code</TableCell>
-                              <TableCell>Hardware category</TableCell>
-                              <TableCell align="right">Qty</TableCell>
+                              <TableCell sx={HUG_SX}>Hardware category</TableCell>
+                              <TableCell align="right" sx={HUG_SX}>
+                                Qty
+                              </TableCell>
                             </TableRow>
                           </TableHead>
                           <TableBody>
                             {slip.items.map((item) => (
                               <TableRow key={item.id}>
-                                <TableCell sx={monoSx}>{item.openingNumber || '-'}</TableCell>
-                                <TableCell sx={monoSx}>{item.productCode || '-'}</TableCell>
-                                <TableCell>{item.hardwareCategory || '-'}</TableCell>
-                                <TableCell align="right" sx={tabularSx}>
+                                <TableCell sx={{ ...monoSx, ...HUG_SX }}>{item.openingNumber || '-'}</TableCell>
+                                <TableCell sx={{ ...monoSx, ...SLACK_SX }}>{item.productCode || '-'}</TableCell>
+                                <TableCell sx={HUG_SX}>{item.hardwareCategory || '-'}</TableCell>
+                                <TableCell align="right" sx={{ ...HUG_SX, ...tabularSx }}>
                                   {netQuantity(item)}
                                   {(item.returnedQuantity ?? 0) > 0 && (
                                     <Typography
@@ -587,12 +628,13 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                           </Box>
                         )}
 
-                        {/* #973: every line came back before a truck took it, so there is nothing
-                            left to print, pick up or return. */}
+                        {/* #973: every line came back before a truck took it, or (#1176) it was
+                            called off with nothing on it to return, so there is nothing left to
+                            print, pick up or return. */}
                         {slip.status === 'CANCELLED' && (
                           <Alert severity="info">
-                            Every line came back to inventory before pickup, so this shipment is
-                            cancelled. Its Delivery Request is withdrawn.
+                            This shipment was cancelled before pickup. Anything returnable on it came
+                            back to inventory, and its Delivery Request is withdrawn.
                           </Alert>
                         )}
                         {slip.status !== 'CANCELLED' && (
@@ -646,12 +688,23 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                               setActiveSlip({
                                 id: slip.id,
                                 packingSlipNumber: slip.packingSlipNumber,
-                                projectName: projectLabel(slip.projectId),
+                                projectName: slipProjectLabel(slip),
                               })
                             }
                           >
                             Return
                           </Button>
+                          {slip.status === 'SCHEDULED' && returnable === 0 && (
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              color="error"
+                              startIcon={<XCircle size={18} strokeWidth={1.75} />}
+                              onClick={() => setLifecycle({ slip, action: 'CANCELLED' })}
+                            >
+                              Cancel Shipment
+                            </Button>
+                          )}
                         </Stack>
                         )}
                       </Box>
