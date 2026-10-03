@@ -2231,6 +2231,15 @@ class NexusRegisterPoLinesResult:
 
 
 @strawberry.type
+class PoLineTiedQuantity:
+    """How many schedule units are tied to one PO line (#1128). The registration panel keeps a line
+    open while it still has outstanding units with nothing tied to them."""
+
+    po_line_item_id: strawberry.ID
+    tied_quantity: int
+
+
+@strawberry.type
 class ApproveReceiveDraftResult:
     """What approving a draft did.
 

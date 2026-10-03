@@ -174,6 +174,8 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "createDraftPo": SIGNED_IN,
     # Give a GP-born PO's lines their schedule identity - the NEXUS REGISTERED LINE write.
     "nexusRegisterPoLines": SIGNED_IN,
+    # The units already tied to each line, so the registration panel can top a line up (#1128).
+    "poLineTiedQuantities": SIGNED_IN,
     "deletePoDocument": SIGNED_IN,
     # Signed-in, not admin: raising and registering a PO is ordinary purchasing work, and the PO is
     # pushed as the caller's own GP buyer identity, which the resolver enforces.

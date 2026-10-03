@@ -7,7 +7,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import BigInteger, case, cast, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
@@ -127,17 +127,28 @@ def _learn_manufacturer_vendor_mappings(
         logger.warning("Failed to learn manufacturer -> vendor mappings for project %s", project_id, exc_info=True)
 
 
+# Key for the transaction-scoped advisory lock that serializes PO-REQ minting (#1118). Any constant
+# works; it only has to be the same in every caller and not shared with another lock.
+_PO_REQUEST_NUMBER_LOCK_KEY = 1_118_001
+
+
 def generate_next_request_number(session: Session) -> str:
-    """Generate the next PO-REQ-XXX request number."""
-    max_req_stmt = select(func.max(PurchaseOrder.request_number)).where(PurchaseOrder.request_number.like("PO-REQ-%"))
-    max_req = session.scalar(max_req_stmt)
-    next_seq = 1
-    if max_req:
-        try:
-            next_seq = int(max_req.replace("PO-REQ-", "")) + 1
-        except ValueError:
-            pass
-    return f"PO-REQ-{next_seq:03d}"
+    """Claim the next PO-REQ-NNN request number.
+
+    Two things used to be wrong here (#1118). The max was taken over the TEXT column, so once
+    PO-REQ-1000 existed the max was still "PO-REQ-999" and every later mint collided on the unique
+    index; and nothing serialized two finalizes, which read the same max and collided too.
+
+    The suffix is now compared as a number, and a transaction-scoped advisory lock is taken first, so
+    concurrent mints queue here the way request_numbers.py and packing_slip_numbers.py queue on their
+    counter rows. The lock is released when the caller's transaction ends, which is what keeps the
+    number and the PO it names atomic - a caller that mints several numbers in one finalize (the
+    import wizard) holds it for all of them. Suffixes that are not all digits are ignored.
+    """
+    session.execute(select(func.pg_advisory_xact_lock(_PO_REQUEST_NUMBER_LOCK_KEY)))
+    suffix = func.substring(PurchaseOrder.request_number, r"^PO-REQ-([0-9]+)$")
+    max_seq = session.scalar(select(func.max(cast(suffix, BigInteger))).where(suffix.is_not(None)))
+    return f"PO-REQ-{(max_seq or 0) + 1:03d}"
 
 
 def _assert_po_number_available(
@@ -693,6 +704,20 @@ def get_open_pos(
     return list(session.scalars(stmt).unique().all())
 
 
+_HARDWARE_ROW_UNCOPIED = frozenset({"id", "item_quantity", "created_at", "updated_at"})
+
+
+def _split_off_hardware_row(hi, quantity: int):
+    """A new schedule row carrying `quantity` units of `hi`, identical to it in every other column. The
+    caller takes the same quantity off `hi`, so the opening's total is unchanged."""
+    from app.models.hardware import HardwareItem
+
+    copied = {
+        c.key: getattr(hi, c.key) for c in HardwareItem.__mapper__.column_attrs if c.key not in _HARDWARE_ROW_UNCOPIED
+    }
+    return HardwareItem(id=uuid.uuid4(), item_quantity=quantity, **copied)
+
+
 def _link_available_items(
     session: Session,
     *,
@@ -702,10 +727,14 @@ def _link_available_items(
     quantity: int,
     po_line_item_id: uuid.UUID,
 ) -> int:
-    """Greedily attach up to `quantity` units of a schedule combo to a PO line for coverage tracking
+    """Greedily attach `quantity` units of a schedule combo to a PO line for coverage tracking
     (gp-owned-po mirror). Marks AVAILABLE HardwareItem rows for the project IN_PO with po_line_item_id,
-    oldest opening first, whole rows only - the same greedy rule the SharePoint migration mark uses.
-    Returns the units actually linked. Never over-consumes: a row that would overshoot is skipped."""
+    oldest opening first. Returns the units actually linked, which is `quantity` whenever that many are
+    AVAILABLE.
+
+    The row that would overshoot is split (#1128): the part the line needs goes IN_PO and the rest stays
+    behind as an AVAILABLE row on the same opening. Skipping it instead, as this used to, left a line
+    asking for 10 against rows of 3 tied at 9 - marked registered, so no screen could tie the last unit."""
     from app.models.hardware import HardwareItem
     from app.models.project import Opening
 
@@ -728,7 +757,8 @@ def _link_available_items(
     remaining = quantity
     for hi in rows:
         if hi.item_quantity > remaining:
-            continue
+            session.add(_split_off_hardware_row(hi, hi.item_quantity - remaining))
+            hi.item_quantity = remaining
         hi.state = HardwareItemState.IN_PO
         hi.po_line_item_id = po_line_item_id
         remaining -= hi.item_quantity
@@ -759,6 +789,21 @@ def _available_schedule_units(
         )
     )
     return int(total or 0)
+
+
+def tied_units_by_line(session: Session, line_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
+    """How many schedule units are tied to each PO line, from one grouped query. A tied row stays
+    IN_PO with the line's id for good, so this is the line's whole tie, received units included."""
+    from app.models.hardware import HardwareItem
+
+    if not line_ids:
+        return {}
+    rows = session.execute(
+        select(HardwareItem.po_line_item_id, func.sum(HardwareItem.item_quantity))
+        .where(HardwareItem.po_line_item_id.in_(line_ids))
+        .group_by(HardwareItem.po_line_item_id)
+    ).all()
+    return {line_id: int(total) for line_id, total in rows}
 
 
 # The PO stages a GP-born PO may be given a schedule identity in: it is still open, so the hardware it
@@ -836,7 +881,10 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
             )
 
         if po.project_id is not None and quantity:
-            outstanding = max(line.ordered_quantity - line.received_quantity, 0)
+            # What is already tied counts against what is outstanding, so a registered line can be
+            # topped up later (#1128) without tying more than it still has coming.
+            already_tied = tied_units_by_line(session, [line.id]).get(line.id, 0)
+            outstanding = max(line.ordered_quantity - line.received_quantity - already_tied, 0)
             available = _available_schedule_units(
                 session,
                 project_id=po.project_id,
@@ -847,7 +895,8 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
             if quantity > cap:
                 raise ValidationError(
                     f"At most {cap} units of {hardware_category} / {product_code} can be tied to this "
-                    f"line ({outstanding} still outstanding, {available} still available on the schedule)",
+                    f"line ({outstanding} still outstanding and untied, {available} still available on the "
+                    "schedule)",
                     field="tie_quantity",
                 )
 
