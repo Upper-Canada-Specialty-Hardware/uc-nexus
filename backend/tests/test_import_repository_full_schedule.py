@@ -18,6 +18,7 @@ from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.shop_assembly import ShopAssemblyRequestItem
 from app.models.stock_item import StockItem
 from app.repositories import import_repository, warehouse_admin_repository
+from tests.shop_assembly_helpers import with_schedule
 
 
 def _seed_inventory(session, project_id, *, hardware_category="HINGE", product_code="HG-100", quantity=10):
@@ -285,20 +286,22 @@ def test_shop_assembly_request_created_pending(db_session):
 
     result = import_repository.finalize_import_session(
         db_session,
-        {
-            "project_id": str(project.id),
-            "openings": [_opening_input("A01", building="B1", floor="F2", location="Lobby")],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_items": [
-                {
-                    "opening_number": "A01",
-                    "hardware_category": "HINGE",
-                    "product_code": "HG-100",
-                    "quantity": 2,
-                },
-            ],
-        },
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [_opening_input("A01", building="B1", floor="F2", location="Lobby")],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": [
+                    {
+                        "opening_number": "A01",
+                        "hardware_category": "HINGE",
+                        "product_code": "HG-100",
+                        "quantity": 2,
+                    },
+                ],
+            }
+        ),
         created_by="Dana Planner",
     )
     db_session.flush()
