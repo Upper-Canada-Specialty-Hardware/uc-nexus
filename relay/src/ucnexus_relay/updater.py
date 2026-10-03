@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import layout
+from .fsutil import atomic_write_text
 from .logging_setup import get_logger
 
 logger = get_logger()
@@ -181,7 +182,7 @@ def read_ledger(install_dir: str | Path) -> dict:
 
 def _write_ledger(install_dir: Path, data: dict) -> None:
     try:
-        (install_dir / _STATE_FILE).write_text(json.dumps(data), encoding="utf-8")
+        atomic_write_text(install_dir / _STATE_FILE, json.dumps(data))  # #1386: never a half-written ledger
     except OSError:
         pass
 
