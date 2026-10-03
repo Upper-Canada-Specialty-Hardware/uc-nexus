@@ -897,6 +897,21 @@ def test_archiving_is_reversible(db_session):
 # --- the admin project detail --------------------------------------------------------------------
 
 
+def test_a_request_back_in_pending_after_its_pull_was_cancelled_counts_as_open(db_session):
+    """Cancelling a pull returns its request to PENDING but leaves the link to the cancelled pull
+    (#1197). The request is waiting on somebody again, so the detail must count it."""
+    project = _project(db_session, "TUBC")
+    pull = _pull(db_session, project)
+    pull.status = PullRequestStatus.CANCELLED
+    req = _shipping_request(db_session, project)
+    req.pull_request_id = pull.id
+    db_session.flush()
+
+    detail = project_repository.get_admin_project_detail(db_session, project.id)
+
+    assert detail["open_shipping_request_count"] == 1
+
+
 def test_the_admin_detail_counts_pos_by_status_inventory_and_open_requests(db_session, two_companies):
     project = two_companies["mine"]
     warehouse = two_companies["my_warehouse"]

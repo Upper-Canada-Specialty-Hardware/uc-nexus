@@ -542,7 +542,9 @@ def get_admin_project_detail(session: Session, project_id: uuid.UUID) -> dict | 
     # "Open" is the request AND the pull it minted: a rejected request is finished, and so is an
     # accepted one whose pull has been completed or cancelled - counting those would make the number
     # grow forever and say nothing about what is still in flight. One LEFT JOIN rather than a second
-    # query, so the whole detail is still four reads.
+    # query, so the whole detail is still four reads. A PENDING request is open on its own status: a
+    # cancelled pull sends its request back to PENDING but leaves pull_request_id pointing at the
+    # cancelled pull until a re-accept overwrites it (#1197).
     open_requests = session.scalar(
         select(func.count())
         .select_from(ShippingOutRequest)
@@ -550,7 +552,8 @@ def get_admin_project_detail(session: Session, project_id: uuid.UUID) -> dict | 
         .where(
             ShippingOutRequest.project_id == project_id,
             ShippingOutRequest.status != ShippingOutRequestStatus.REJECTED,
-            (PullRequest.id.is_(None))
+            (ShippingOutRequest.status == ShippingOutRequestStatus.PENDING)
+            | (PullRequest.id.is_(None))
             | (PullRequest.status.notin_([PullRequestStatus.COMPLETED, PullRequestStatus.CANCELLED])),
         )
     )
