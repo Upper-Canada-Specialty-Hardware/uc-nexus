@@ -39,7 +39,7 @@ There are two separate enum files: `app/models/enums.py` (DB-level Python enums)
 src/main.tsx          → App entry (Apollo, MUI theme, context providers)
 src/App.tsx           → Routes, lazy-loaded modules
 src/modules/          → Feature modules (import, po, warehouse, shop-assembly, shipping, admin)
-src/components/       → Shared UI (DataTable, Modal, Wizard, Toast, etc.)
+src/components/       → Shared UI (DataTable, Modal, Toast, etc.)
 src/contexts/         → React contexts (Role, Project, Wizard, Cart)
 src/graphql/          → queries.ts + mutations.ts (Apollo gql documents)
 src/hooks/            → Custom hooks (useHardwareScheduleParser)
