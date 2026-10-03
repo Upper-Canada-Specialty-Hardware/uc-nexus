@@ -71,6 +71,25 @@ def get_stock_item(session: Session, stock_item_id: uuid.UUID) -> StockItem:
     return si
 
 
+def lock_stock_item(session: Session, stock_item_id: uuid.UUID) -> StockItem:
+    """Row-lock one pool row and return it fresh (#1156).
+
+    For writers that read a pool row's count and then write it back: without the lock two allocations
+    off the same row both pass the availability check, and a recount overwrites a concurrent move.
+    `populate_existing` matters for the same reason as `lock_inventory_combo`: the row is usually already
+    in the session from the tenancy check, and a plain FOR UPDATE would hand back that stale copy.
+    """
+    si = session.scalars(
+        select(StockItem)
+        .where(StockItem.id == stock_item_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+    if si is None:
+        raise NotFoundError(f"Stock item {stock_item_id} not found")
+    return si
+
+
 def adjust_stock_quantity(
     session: Session,
     *,
@@ -85,7 +104,7 @@ def adjust_stock_quantity(
     if new_quantity < 0:
         raise ValidationError("new_quantity must be >= 0", field="new_quantity")
 
-    si = get_stock_item(session, stock_item_id)
+    si = lock_stock_item(session, stock_item_id)
 
     # Honor the deficient_quantity <= quantity invariant by clamping if needed
     if new_quantity < si.deficient_quantity:
@@ -224,7 +243,7 @@ def reclassify_stock_item(
     if not new_product_code:
         raise ValidationError("new_product_code is required", field="new_product_code")
 
-    si = get_stock_item(session, stock_item_id)
+    si = lock_stock_item(session, stock_item_id)
     if quantity > si.quantity:
         raise ValidationError("Reclassify quantity exceeds stock quantity", field="quantity")
 
@@ -338,7 +357,7 @@ def set_stock_item_kind(
     if not performed_by:
         raise ValidationError("performed_by is required", field="performed_by")
 
-    si = get_stock_item(session, stock_item_id)
+    si = lock_stock_item(session, stock_item_id)
     if si.kind == kind:
         raise ValidationError(f"This row is already {kind.value.lower()}", field="kind")
     available = si.quantity - (si.deficient_quantity or 0)

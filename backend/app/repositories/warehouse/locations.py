@@ -506,8 +506,40 @@ def merge_locations(
             )
         ).all()
     )
+    from app.repositories.stock.common import _find_stock_row
+
     for si in si_rows:
-        si.aisle, si.row, si.bay = to_aisle, to_row, to_bay
+        # A pool row keys on (warehouse, category, code, shelf, kind, price), so a row already on the
+        # target shelf with the same key takes this one's units (#1156). Two rows with one key would
+        # show the same product twice and later writes would land in whichever the finder returned.
+        # The source row stays, emptied, at its old shelf: it may still be the origin of project rows
+        # allocated out of it, and an empty pool row is hidden from the browse view.
+        target = _find_stock_row(
+            session,
+            warehouse_id=si.warehouse_id,
+            hardware_category=si.hardware_category,
+            product_code=si.product_code,
+            aisle=to_aisle,
+            row=to_row,
+            bay=to_bay,
+            kind=si.kind,
+            unit_cost=si.unit_cost,
+        )
+        detail = {"fromLocation": from_loc, "toLocation": to_loc, "reason": "location_merge"}
+        if target is not None and target.id != si.id:
+            target.quantity += si.quantity
+            target.deficient_quantity += si.deficient_quantity
+            detail = {
+                **detail,
+                "foldedIntoStockItemId": str(target.id),
+                "quantity": si.quantity,
+                "deficientQuantity": si.deficient_quantity,
+            }
+            si.quantity = 0
+            si.deficient_quantity = 0
+        else:
+            si.aisle, si.row, si.bay = to_aisle, to_row, to_bay
+        session.flush()
         _log_audit_event(
             session,
             project_id=None,
@@ -515,11 +547,7 @@ def merge_locations(
             entity_id=si.id,
             action=AuditAction.MOVE,
             performed_by=performed_by,
-            detail={
-                "fromLocation": from_loc,
-                "toLocation": to_loc,
-                "reason": "location_merge",
-            },
+            detail=detail,
         )
     counts["stock_items"] = len(si_rows)
 

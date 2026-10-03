@@ -136,6 +136,10 @@ def _find_stock_row(
         stmt = stmt.where(StockItem.bay.is_(None))
     else:
         stmt = stmt.where(StockItem.bay == bay)
+    # Every caller is about to add units to the row it gets back, so it comes back locked and fresh
+    # (#1156): two destocks into one pool row would otherwise both write quantity off the same stale
+    # count and one increment would be lost.
+    stmt = stmt.order_by(StockItem.id).with_for_update().execution_options(populate_existing=True)
     return session.scalars(stmt).first()
 
 
