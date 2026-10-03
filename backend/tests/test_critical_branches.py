@@ -256,11 +256,6 @@ def test_a_cancel_rebuilds_a_deleted_row_at_the_schedules_cost(db_session):
     assert audits and all(a.detail.get("returnedToSourceRow") is False for a in audits)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="#1253: the rebuilt row takes the oldest primary warehouse across every company, not the "
-    "project's own; fixed by PR #1275, which should drop this marker",
-)
 def test_a_cancel_rebuilds_a_deleted_row_in_the_projects_own_company(db_session):
     project = _make_project(db_session)
     pr = _pick_then_lose_every_row(db_session, project, unit_cost=12.5)
