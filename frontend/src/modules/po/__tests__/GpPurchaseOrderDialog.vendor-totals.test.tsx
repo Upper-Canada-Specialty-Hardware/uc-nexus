@@ -1,5 +1,5 @@
 import { screen, fireEvent, waitFor, within, configure } from '@testing-library/react';
-import type { MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
 import { SUGGEST_VENDOR_FOR_MANUFACTURER } from '../../../graphql/po';
 import type { PurchaseOrder } from '../index';
 import {

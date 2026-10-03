@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor, within, configure } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import PODetailModal from '../PODetailModal';
 import type { PurchaseOrder } from '../index';
@@ -57,6 +58,9 @@ function makeLineItem(overrides: Partial<LineItem> & { id: string }): LineItem {
     receivedQuantity: 0,
     unitCost: 2.5,
     orderAs: null,
+    costCode: null,
+    uofm: null,
+    jobCost: true,
     gpLineOrd: null,
     nexusRegistered: true,
     customInventoryItemId: null,
@@ -82,6 +86,7 @@ const draftPo: PurchaseOrder = {
   vendorNameSnapshot: 'Ace Hardware Co',
   buyerId: null,
   vendorQuoteNumber: 'Q-100',
+  costCode: null,
   shippingCost: 12.5,
   tariffAmount: 3,
   notes: null,

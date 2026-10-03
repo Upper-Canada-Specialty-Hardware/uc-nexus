@@ -2,15 +2,14 @@
 from the baked defaults with an empty secret), not a crash. get_settings takes an explicit path so each
 test uses a unique one - it's @lru_cache-d by path."""
 
-
 from ucnexus_relay.config import ChannelCfg, UpdateCfg, get_settings
 
 
 def test_missing_config_returns_unenrolled_defaults(tmp_path):
     s = get_settings(str(tmp_path / "does-not-exist" / "config.toml"))
-    assert s.auth.shared_secret == ""              # unenrolled - no secret yet
-    assert s.sql.server == "10.0.0.246,1435"       # infra is baked into the defaults
-    assert s.sql.system_db == "DYNAMICS"           # where the company master is read from
+    assert s.auth.shared_secret == ""  # unenrolled - no secret yet
+    assert s.sql.server == "10.0.0.246,1435"  # infra is baked into the defaults
+    assert s.sql.system_db == "DYNAMICS"  # where the company master is read from
     assert s.channel.backend_url.startswith("wss://")
 
 

@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor, configure } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import SetStockKindModal from '../stock/SetStockKindModal';
 import { SET_STOCK_ITEM_KIND } from '../../../graphql/warehouse';

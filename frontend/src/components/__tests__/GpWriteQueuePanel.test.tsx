@@ -1,5 +1,6 @@
 import { render, screen, configure, fireEvent, waitFor } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { ToastProvider } from '../Toast';
 import GpWriteQueuePanel from '../GpWriteQueuePanel';
 import { GET_GP_OUTBOX } from '../../graphql/shared';

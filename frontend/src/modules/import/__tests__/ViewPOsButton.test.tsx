@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, within } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import ViewPOsButton from '../ViewPOsButton';
 import { GET_PROJECT_PRODUCT_PO_LINES } from '../../../graphql/import';
 

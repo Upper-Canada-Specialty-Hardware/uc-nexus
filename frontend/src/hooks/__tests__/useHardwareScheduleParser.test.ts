@@ -117,6 +117,7 @@ const mockParseResult: ParseResult = {
       heading_no: null,
       single_pair: null,
       assignment_multiplier: null,
+      leaf_count: 1,
     },
   ],
   hardwareItems: [
@@ -124,6 +125,7 @@ const mockParseResult: ParseResult = {
       opening_number: '101',
       product_code: 'HW-001',
       material_id: 'M-001',
+      leaf: null,
       hardware_category: 'Hinges',
       item_quantity: 3,
       unit_cost: null,

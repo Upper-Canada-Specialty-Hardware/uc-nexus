@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react';
 import { render, screen } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import GpCompanyTag from '../GpCompanyTag';
 import { GET_RELAY_STATUS } from '../../graphql/shared';
 

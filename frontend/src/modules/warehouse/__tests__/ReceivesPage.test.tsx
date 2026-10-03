@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, configure } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import ReceivesPage from '../ReceivesPage';
 import { GET_RECEIVES } from '../../../graphql/warehouse';
 import { GET_PROJECTS } from '../../../graphql/shared';

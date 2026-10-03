@@ -165,9 +165,7 @@ def test_a_sync_state_frame_off_the_socket_is_stored_and_never_dispatched(monkey
         done = asyncio.Event()
         ws = _FakeWs([_frame()], done)
         monkeypatch.setattr(channel.websockets, "connect", lambda url, **kw: _Cm(ws))
-        task = asyncio.create_task(
-            channel._run_once(PRODUCTION_BACKEND_URL, "secret", get_settings().channel)
-        )
+        task = asyncio.create_task(channel._run_once(PRODUCTION_BACKEND_URL, "secret", get_settings().channel))
         for _ in range(12):
             await asyncio.sleep(0.005)
         done.set()

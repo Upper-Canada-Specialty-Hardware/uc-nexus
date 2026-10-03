@@ -1,5 +1,6 @@
 import { render, screen, fireEvent } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import HardwareStatusPage from '../HardwareStatusPage';
 import { GET_HARDWARE_STATUS_BY_PRODUCT, GET_REPORT_PROJECT_OPTIONS } from '../../../graphql/admin';

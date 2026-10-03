@@ -82,7 +82,14 @@ def test_the_eight_address_parameters_are_sent_in_proc_order():
     assert sql.index("@I_vADDRESS1") < sql.index("@I_vADDRESS2") < sql.index("@I_vCITY")
     assert sql.index("@I_vCITY") < sql.index("@I_vSTATE") < sql.index("@I_vZIPCODE") < sql.index("@I_vCOUNTRY")
     assert params == (
-        "ELL100", "TOWER5", "1055 Dunsmuir St", "", "Vancouver", "BC", "V7X 1L2", "Canada",
+        "ELL100",
+        "TOWER5",
+        "1055 Dunsmuir St",
+        "",
+        "Vancouver",
+        "BC",
+        "V7X 1L2",
+        "Canada",
     )
 
 

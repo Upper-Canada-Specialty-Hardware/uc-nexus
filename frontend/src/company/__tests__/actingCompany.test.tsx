@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { useApolloClient } from '@apollo/client/react';
 import { GET_NEXUS_COMPANIES } from '../../graphql/shared';
 import { ActingCompanyProvider, useActingCompany } from '../ActingCompanyContext';

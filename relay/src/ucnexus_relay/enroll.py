@@ -31,10 +31,7 @@ from . import dpapi
 from .config import DEFAULT_CONFIG_PATH
 from .fsutil import atomic_write_text
 
-_MUTATION = (
-    "mutation Enroll($input: EnrollRelayInstallInput!) { "
-    "enrollRelayInstall(input: $input) { ok installId } }"
-)
+_MUTATION = "mutation Enroll($input: EnrollRelayInstallInput!) { enrollRelayInstall(input: $input) { ok installId } }"
 
 
 def _post_graphql(url: str, query: str, variables: dict) -> dict:

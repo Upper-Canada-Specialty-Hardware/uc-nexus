@@ -34,6 +34,7 @@ import {
   type SharepointInventoryItem,
   type LocationResolution,
   type InventoryItemTypeOption,
+  type ItemTypeResolution,
   type ItemTypeResolutions,
   type MigrationEntry,
   type MigrationClassification,
@@ -618,7 +619,7 @@ describe('unresolvedItemTypes', () => {
   });
 
   it('is satisfied by an explicit exclusion as much as by a type', () => {
-    const resolved: ItemTypeResolutions = new Map([
+    const resolved: ItemTypeResolutions = new Map<string, ItemTypeResolution>([
       ['Specialties', TYPES[1]],
       ['Door', EXCLUDE_ITEM_TYPE],
     ]);

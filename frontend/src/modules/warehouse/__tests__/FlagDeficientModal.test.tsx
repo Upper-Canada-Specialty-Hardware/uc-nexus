@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, configure } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import FlagDeficientModal, { type FlagDeficientItem } from '../FlagDeficientModal';
 import { GET_PROJECT_INVENTORY_AVAILABILITY } from '../../../graphql/warehouse';

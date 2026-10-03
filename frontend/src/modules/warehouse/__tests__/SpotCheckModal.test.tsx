@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor, configure } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { describe, it, expect, vi } from 'vitest';
 import { ToastProvider } from '../../../components/Toast';
 import SpotCheckModal from '../SpotCheckModal';

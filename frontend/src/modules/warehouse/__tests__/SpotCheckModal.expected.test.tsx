@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor, configure } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import SpotCheckModal from '../SpotCheckModal';
 import { ADJUST_INVENTORY_QUANTITY } from '../../../graphql/warehouse';
@@ -38,7 +39,7 @@ describe('SpotCheckModal', () => {
             expectedQuantity: 10,
           },
         },
-        result: (vars) => {
+        result: (vars: Record<string, unknown>) => {
           calledVariables = vars as Record<string, unknown>;
           return {
             data: {

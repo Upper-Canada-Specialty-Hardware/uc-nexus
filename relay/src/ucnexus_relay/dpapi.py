@@ -39,11 +39,11 @@ if sys.platform == "win32":
         _fn.restype = wintypes.BOOL
         _fn.argtypes = [
             ctypes.POINTER(_DataBlob),  # pDataIn
-            wintypes.LPCWSTR,           # szDataDescr
+            wintypes.LPCWSTR,  # szDataDescr
             ctypes.POINTER(_DataBlob),  # pOptionalEntropy
-            ctypes.c_void_p,            # pvReserved
-            ctypes.c_void_p,            # pPromptStruct
-            wintypes.DWORD,             # dwFlags
+            ctypes.c_void_p,  # pvReserved
+            ctypes.c_void_p,  # pPromptStruct
+            wintypes.DWORD,  # dwFlags
             ctypes.POINTER(_DataBlob),  # pDataOut
         ]
     _kernel32.LocalFree.restype = ctypes.c_void_p
@@ -72,8 +72,13 @@ def protect(plaintext: str) -> str:
     blob_in, _buf = _in_blob(plaintext.encode("utf-8"))
     blob_out = _DataBlob()
     ok = _crypt32.CryptProtectData(
-        ctypes.byref(blob_in), "ucnexus-relay shared_secret", None, None, None,
-        _CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(blob_out),
+        ctypes.byref(blob_in),
+        "ucnexus-relay shared_secret",
+        None,
+        None,
+        None,
+        _CRYPTPROTECT_UI_FORBIDDEN,
+        ctypes.byref(blob_out),
     )
     if not ok:
         raise OSError(ctypes.get_last_error(), "CryptProtectData failed")
@@ -90,15 +95,18 @@ def unprotect(value: str) -> str:
     if not is_encrypted(value):
         return value
     if not is_windows():
-        raise RuntimeError(
-            "config shared_secret is DPAPI-encrypted but this is not Windows - cannot decrypt"
-        )
-    encrypted = base64.b64decode(value[len(ENC_PREFIX):])
+        raise RuntimeError("config shared_secret is DPAPI-encrypted but this is not Windows - cannot decrypt")
+    encrypted = base64.b64decode(value[len(ENC_PREFIX) :])
     blob_in, _buf = _in_blob(encrypted)
     blob_out = _DataBlob()
     ok = _crypt32.CryptUnprotectData(
-        ctypes.byref(blob_in), None, None, None, None,
-        _CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(blob_out),
+        ctypes.byref(blob_in),
+        None,
+        None,
+        None,
+        None,
+        _CRYPTPROTECT_UI_FORBIDDEN,
+        ctypes.byref(blob_out),
     )
     if not ok:
         # Most common cause: the blob was encrypted by a DIFFERENT Windows user (CurrentUser scope) -

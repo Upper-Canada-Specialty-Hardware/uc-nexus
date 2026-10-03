@@ -122,12 +122,16 @@ def test_unreachable_health_counts_as_busy():
 def test_delays_stay_within_their_windows():
     rng = random.Random(7)
     first = update_poller.next_delay(rng, first=True)
-    assert update_poller.FIRST_DELAY_SECONDS <= first <= (
-        update_poller.FIRST_DELAY_SECONDS + update_poller.FIRST_JITTER_SECONDS
+    assert (
+        update_poller.FIRST_DELAY_SECONDS
+        <= first
+        <= (update_poller.FIRST_DELAY_SECONDS + update_poller.FIRST_JITTER_SECONDS)
     )
     later = update_poller.next_delay(rng)
-    assert update_poller.INTERVAL_SECONDS <= later <= (
-        update_poller.INTERVAL_SECONDS + update_poller.INTERVAL_JITTER_SECONDS
+    assert (
+        update_poller.INTERVAL_SECONDS
+        <= later
+        <= (update_poller.INTERVAL_SECONDS + update_poller.INTERVAL_JITTER_SECONDS)
     )
 
 
@@ -223,7 +227,9 @@ def test_run_keeps_polling_when_the_handoff_was_deferred_as_busy(monkeypatch, tm
     # #1212: became busy while staging - nothing was handed off, so the loop must not return (that would
     # end auto-updating) and the next try comes on the short busy cadence.
     app = _FakeApp(tmp_path)
-    app.begin_update = lambda url, build=None, ready_to_hand_off=None: app.staged.append((url, build)) or {"ok": False, "deferred": True}
+    app.begin_update = lambda url, build=None, ready_to_hand_off=None: (
+        app.staged.append((url, build)) or {"ok": False, "deferred": True}
+    )
     monkeypatch.setattr(update_poller, "_read_health", lambda: {"channel": {"jobs_in_flight": 0}})
     monkeypatch.setattr(updater, "check_update", lambda: _check())
     monkeypatch.setattr(updater, "read_ledger", lambda d: {})

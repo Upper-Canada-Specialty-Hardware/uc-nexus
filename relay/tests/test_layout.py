@@ -20,7 +20,9 @@ def _version(root, name: str):
 def test_version_dir_name_sanitizes():
     assert layout.version_dir_name("relay-v0.1.0-build.27") == "app-relay-v0.1.0-build.27"
     assert layout.version_dir_name("") == "app-staged"
-    assert layout.version_dir_name("weird/\\ name") == "app-weird---name"  # path separators + space sanitized (dots kept)
+    assert (
+        layout.version_dir_name("weird/\\ name") == "app-weird---name"
+    )  # path separators + space sanitized (dots kept)
 
 
 def test_installed_exe_prefers_current(tmp_path):

@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import TenantOwnerLanding from '../TenantOwnerLanding';
 import { GET_ADMIN_STATS } from '../../../graphql/admin';

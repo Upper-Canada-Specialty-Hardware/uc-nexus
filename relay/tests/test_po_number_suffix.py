@@ -53,9 +53,7 @@ def stubbed(monkeypatch):
     monkeypatch.setattr(econnect, "site_exists", lambda conn, site: True)
     monkeypatch.setattr(econnect, "vendor_address_exists", lambda conn, vendor, code: True)
     monkeypatch.setattr(econnect, "get_vendor_currency", lambda conn, vendor_id: "CAD")
-    monkeypatch.setattr(
-        econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "BUY"}
-    )
+    monkeypatch.setattr(econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "BUY"})
     monkeypatch.setattr(econnect, "get_next_po_number", lambda conn: "PO0012345")
     seen: dict = {}
 

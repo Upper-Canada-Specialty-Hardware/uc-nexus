@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, configure } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import ReturnShipmentDialog from '../ReturnShipmentDialog';
 import { GET_WAREHOUSES } from '../../../graphql/shared';

@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import ShopAssemblyRequestsPage from '../ShopAssemblyRequestsPage';
@@ -87,8 +88,7 @@ const mocks: MockedResponse[] = [
     result: { data: { shopAssemblyRequests: [request('PENDING')] } },
   },
   {
-    request: { query: GET_SHOP_ASSEMBLY_ALLOCATION_REVIEW },
-    variableMatcher: () => true,
+    request: { query: GET_SHOP_ASSEMBLY_ALLOCATION_REVIEW, variables: () => true },
     maxUsageCount: Number.POSITIVE_INFINITY,
     result: { data: { shopAssemblyAllocationReview: null } },
   },

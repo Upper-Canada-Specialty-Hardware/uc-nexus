@@ -13,9 +13,7 @@ def _cfg(tmp_path, body: str):
 
 
 def _log(tmp_path, *events: dict):
-    (tmp_path / "relay.log").write_text(
-        "".join(json.dumps(e) + "\n" for e in events), encoding="utf-8"
-    )
+    (tmp_path / "relay.log").write_text("".join(json.dumps(e) + "\n" for e in events), encoding="utf-8")
 
 
 def test_config_summary_absent(tmp_path):
@@ -99,7 +97,12 @@ def test_channel_state_connected_wins_over_earlier_drop(tmp_path):
     p = _cfg(tmp_path, '[logging]\nfile = "relay.log"\n')
     _log(
         tmp_path,
-        {"asctime": "t1", "levelname": "WARNING", "message": "channel connection dropped, retrying", "category": "dropped"},
+        {
+            "asctime": "t1",
+            "levelname": "WARNING",
+            "message": "channel connection dropped, retrying",
+            "category": "dropped",
+        },
         {"asctime": "t2", "levelname": "INFO", "message": "channel connected"},
     )
     assert ui.channel_state(p)["state"] == "connected"
@@ -107,7 +110,15 @@ def test_channel_state_connected_wins_over_earlier_drop(tmp_path):
 
 def test_channel_state_secret_rejected(tmp_path):
     p = _cfg(tmp_path, '[logging]\nfile = "relay.log"\n')
-    _log(tmp_path, {"asctime": "t2", "levelname": "WARNING", "message": "backend rejected the relay secret", "category": "secret_rejected"})
+    _log(
+        tmp_path,
+        {
+            "asctime": "t2",
+            "levelname": "WARNING",
+            "message": "backend rejected the relay secret",
+            "category": "secret_rejected",
+        },
+    )
     assert ui.channel_state(p)["state"] == "secret_rejected"
 
 
@@ -278,7 +289,12 @@ def test_gather_status_uses_live_channel_from_health(tmp_path, monkeypatch):
     p = _cfg(tmp_path, '[logging]\nfile = "relay.log"\n')
     _log(tmp_path, {"asctime": "t1", "levelname": "INFO", "message": "channel connected"})  # stale "connected"
     monkeypatch.setattr(
-        ui, "relay_health", lambda host="127.0.0.1", port=7321: {"running": True, "channel": {"connected": False, "state": "secret_rejected"}}
+        ui,
+        "relay_health",
+        lambda host="127.0.0.1", port=7321: {
+            "running": True,
+            "channel": {"connected": False, "state": "secret_rejected"},
+        },
     )
     monkeypatch.setattr(ui.autostart, "autostart_status", lambda: {"installed": True})
     # the live /health channel wins over the stale log line

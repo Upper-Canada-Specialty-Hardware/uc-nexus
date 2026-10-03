@@ -156,6 +156,7 @@ class CreatePoResponse(BaseModel):
 
 # --- receiving (workflow 2) ---
 
+
 class ReceiptLine(BaseModel):
     po_line_ord: int  # = POP10110.ORD / POLNENUM of the PO line being received (16384, 32768, ...)
     quantity: Decimal = Field(..., gt=0)
@@ -170,7 +171,7 @@ class ReceiptRequest(BaseModel):
     company: str
     po_number: str
     lines: list[ReceiptLine] = Field(..., min_length=1)
-    batch_prefix: str = "EC"          # BACHNUMB = f"{batch_prefix}-{yyyy/MM/dd}" (legacy convention)
+    batch_prefix: str = "EC"  # BACHNUMB = f"{batch_prefix}-{yyyy/MM/dd}" (legacy convention)
     receipt_date: date | None = None  # defaults to today
     received_by: str | None = Field(default=None, max_length=255)  # WHRECLINE101.UpdatingUser; default = SQL login
 
@@ -186,17 +187,18 @@ class ReceiptResponse(BaseModel):
 
 # --- vendor sync (feeds Vendor.gp_vendor_id in UC Nexus) ---
 
+
 class VendorOut(BaseModel):
-    vendor_id: str       # GP VENDORID (char 15)
-    vendor_name: str     # GP VENDNAME
+    vendor_id: str  # GP VENDORID (char 15)
+    vendor_name: str  # GP VENDNAME
     vendor_class: str | None = None  # GP VNDCLSID
-    status: int          # GP VENDSTTS (1 = active)
+    status: int  # GP VENDSTTS (1 = active)
     currency: str = "CAD"  # GP CURNCYID, blank -> 'CAD' (issue #257: vendor dictates PO currency)
     # This vendor's own GP defaults, so the PO dialog opens on them rather than on the relay's
     # hardcoded fallbacks. Null when the vendor carries none.
-    shipping_method: str | None = None        # GP SHIPMTHD
+    shipping_method: str | None = None  # GP SHIPMTHD
     purchase_address_code: str | None = None  # GP VADCDPAD
-    contact: str | None = None                # GP VNDCNTCT
+    contact: str | None = None  # GP VNDCNTCT
 
 
 class VendorsResponse(BaseModel):
@@ -206,10 +208,11 @@ class VendorsResponse(BaseModel):
 
 # --- tax details (per-company, feeds the register-PO tax-detail dropdown - issue #257) ---
 
+
 class TaxDetailOut(BaseModel):
-    tax_detail_id: str          # GP TAXDTLID (purchase detail, TX00201 TXDTLTYP=2)
+    tax_detail_id: str  # GP TAXDTLID (purchase detail, TX00201 TXDTLTYP=2)
     description: str | None = None  # GP TXDTLDSC
-    percent: float              # GP TXDTLPCT (the rate the relay computes tax with)
+    percent: float  # GP TXDTLPCT (the rate the relay computes tax with)
 
 
 class TaxDetailsResponse(BaseModel):
@@ -226,8 +229,9 @@ class BuyersResponse(BaseModel):
 # The admin screens that link a Nexus account to a GP buyer identity need the buyer master with
 # descriptions, and a way to add to it - otherwise an admin has to open GP to do either.
 
+
 class BuyerOut(BaseModel):
-    buyer_id: str                   # GP BUYERID (POP00101), char(15)
+    buyer_id: str  # GP BUYERID (POP00101), char(15)
     description: str | None = None  # GP DSCRIPTN
 
 
@@ -275,10 +279,11 @@ class CreateBuyerResponse(BaseModel):
 
 # --- cost codes (per-job, feeds the Create PO cost-code dropdown) ---
 
+
 class CostCodeOut(BaseModel):
-    cost_code: str                  # two-segment number 'cc1-cc2' e.g. '310-000'
+    cost_code: str  # two-segment number 'cc1-cc2' e.g. '310-000'
     description: str | None = None  # GP Cost_Code_Description
-    cost_element: int               # GP Cost_Element (varies by code: 2/3/5/6/...); the /po trailing digit
+    cost_element: int  # GP Cost_Element (varies by code: 2/3/5/6/...); the /po trailing digit
 
 
 class CostCodesResponse(BaseModel):
@@ -293,14 +298,14 @@ class CostCodesResponse(BaseModel):
 
 
 class JobSetupIssueOut(BaseModel):
-    cost_code: str      # 'phase-step-element', e.g. '210-200-2' - what the register-PO dropdown shows
+    cost_code: str  # 'phase-step-element', e.g. '210-200-2' - what the register-PO dropdown shows
     account_index: int  # the dangling JC00701.WS_Account_Index_1, absent from this company's GL00105
 
 
 class JobSetupOut(BaseModel):
-    job_number: str                 # GP WS_Job_Number (JC00102), which is the Nexus project_id
-    ok: bool                        # has active cost codes AND none of them dangle
-    active_cost_code_count: int     # 0 is itself a failure: a job with no cost structure set up
+    job_number: str  # GP WS_Job_Number (JC00102), which is the Nexus project_id
+    ok: bool  # has active cost codes AND none of them dangle
+    active_cost_code_count: int  # 0 is itself a failure: a job with no cost structure set up
     issues: list[JobSetupIssueOut] = []
 
 
@@ -315,8 +320,9 @@ class JobSetupHealthResponse(BaseModel):
 # --- create a GP job (issue #380) ---
 # The five reads that feed the create-job form's dropdowns, then the create request itself.
 
+
 class CustomerOut(BaseModel):
-    customer_number: str            # GP CUSTNMBR (RM00101)
+    customer_number: str  # GP CUSTNMBR (RM00101)
     customer_name: str | None = None  # GP CUSTNAME
 
 
@@ -326,7 +332,7 @@ class CustomersResponse(BaseModel):
 
 
 class CustomerAddressOut(BaseModel):
-    address_code: str               # GP ADRSCODE (RM00102, scoped to one customer)
+    address_code: str  # GP ADRSCODE (RM00102, scoped to one customer)
     address1: str | None = None
     city: str | None = None
     state: str | None = None
@@ -339,7 +345,7 @@ class CustomerAddressesResponse(BaseModel):
 
 
 class TaxScheduleOut(BaseModel):
-    tax_schedule_id: str            # GP TAXSCHID (TX00101 - the SCHEDULE master, not TX00201 details)
+    tax_schedule_id: str  # GP TAXSCHID (TX00101 - the SCHEDULE master, not TX00201 details)
     description: str | None = None  # GP TXSCHDSC
 
 
@@ -364,9 +370,9 @@ class PurchaseTaxSchedulesResponse(BaseModel):
 
 
 class EmployeeOut(BaseModel):
-    employee_id: str                # GP EMPLOYID (UPR00100), what Estimator_ID / WS_Manager_ID hold
-    first_name: str | None = None   # GP FRSTNAME
-    last_name: str | None = None    # GP LASTNAME
+    employee_id: str  # GP EMPLOYID (UPR00100), what Estimator_ID / WS_Manager_ID hold
+    first_name: str | None = None  # GP FRSTNAME
+    last_name: str | None = None  # GP LASTNAME
 
 
 class EmployeesResponse(BaseModel):
@@ -489,8 +495,7 @@ class CreateJobRequest(BaseModel):
             key = (selection.cost_code, selection.cost_element)
             if key in seen:
                 raise ValueError(
-                    f"cost code '{selection.cost_code}' element {selection.cost_element} is selected "
-                    f"more than once"
+                    f"cost code '{selection.cost_code}' element {selection.cost_element} is selected more than once"
                 )
             seen.add(key)
         return self

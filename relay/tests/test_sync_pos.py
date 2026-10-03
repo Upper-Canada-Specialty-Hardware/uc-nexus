@@ -28,9 +28,18 @@ def _hdr(src, po, status=2, vendor="VEND01", vendname="Acme Supply", freight=0):
 def _line(po, ord_, item, qty, cancelled=0, unit_cost=10, status=2, costcode=""):
     """A POP10110/POP30110 row already LEFT JOINed to WS10101 - costcode is the join's one column,
     the assembled string WS10101.COSTCODE holds, blank for a line that books to no job."""
-    return _Row(po=po, ORD=ord_, item=item, itemdesc=f"{item} desc", UNITCOST=unit_cost,
-                QTYORDER=qty, QTYCANCE=cancelled, job="JOB1", POLNESTA=status,
-                costcode=costcode)
+    return _Row(
+        po=po,
+        ORD=ord_,
+        item=item,
+        itemdesc=f"{item} desc",
+        UNITCOST=unit_cost,
+        QTYORDER=qty,
+        QTYCANCE=cancelled,
+        job="JOB1",
+        POLNESTA=status,
+        costcode=costcode,
+    )
 
 
 def _rcv(po, polnenum, received):

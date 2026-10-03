@@ -1,6 +1,7 @@
 import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import NexusGpTrafficPage from '../NexusGpTrafficPage';
 import { GET_GP_SYNC_STATE } from '../../../graphql/admin';
 import { GET_RELAY_STATUS } from '../../../graphql/shared';

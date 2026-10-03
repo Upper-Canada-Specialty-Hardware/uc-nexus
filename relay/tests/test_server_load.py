@@ -212,9 +212,7 @@ def _ceiling(monkeypatch, pct):
 
 def _server_at(monkeypatch, pct):
     """Put the GP server at `pct` CPU, and hand back the log of connections the sampler opened."""
-    return _fake_db(
-        monkeypatch, _Conn(record=RECORD.replace("<ProcessUtilization>84<", f"<ProcessUtilization>{pct}<"))
-    )
+    return _fake_db(monkeypatch, _Conn(record=RECORD.replace("<ProcessUtilization>84<", f"<ProcessUtilization>{pct}<")))
 
 
 def test_a_background_flagged_job_is_refused_above_the_ceiling(monkeypatch, serving, _no_real_sql):

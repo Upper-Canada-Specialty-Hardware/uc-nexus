@@ -34,6 +34,7 @@ def _body(reply: dict) -> dict:
     test can go on asserting the exact {ok, result|error} it is actually about."""
     return {key: value for key, value in reply.items() if key not in ("cost", "server")}
 
+
 PR_URL = "wss://backend-pr-414.up.railway.app/relay-link"
 
 
@@ -290,9 +291,7 @@ def test_a_url_removed_from_config_has_its_channel_cancelled(monkeypatch, tmp_pa
     assert PRODUCTION_BACKEND_URL in states
 
 
-def test_a_config_that_will_not_parse_leaves_the_running_channels_alone(
-    monkeypatch, tmp_path, clean_channel_states
-):
+def test_a_config_that_will_not_parse_leaves_the_running_channels_alone(monkeypatch, tmp_path, clean_channel_states):
     """Hand-editing config.toml on a running relay is the documented way to add a test backend, so a
     save caught mid-write is a live possibility. It must not take production's channel down - there
     would then be no way back without the restart this whole change exists to remove."""
@@ -483,9 +482,7 @@ async def _supervise_for_one_tick(monkeypatch) -> None:
 
 def _write_backend_urls(cfg: Path, urls: list[str], secret: str = "s3cret") -> None:
     rendered = ", ".join(f'"{u}"' for u in urls)
-    cfg.write_text(
-        f'[auth]\nshared_secret = "{secret}"\n\n[channel]\nbackend_url = [{rendered}]\n', encoding="utf-8"
-    )
+    cfg.write_text(f'[auth]\nshared_secret = "{secret}"\n\n[channel]\nbackend_url = [{rendered}]\n', encoding="utf-8")
 
 
 def _use_backend_urls(monkeypatch, tmp_path, urls: list[str]) -> Path:

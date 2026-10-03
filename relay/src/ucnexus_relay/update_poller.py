@@ -165,7 +165,9 @@ def run(app, stop: threading.Event, rng: random.Random | None = None) -> None:
                     )
                 else:
                     deferrals = 0
-                    logger.info("update poller: still busy after %s deferrals; waiting for the next tick", MAX_DEFERRALS)
+                    logger.info(
+                        "update poller: still busy after %s deferrals; waiting for the next tick", MAX_DEFERRALS
+                    )
                 continue
             deferrals = 0
 

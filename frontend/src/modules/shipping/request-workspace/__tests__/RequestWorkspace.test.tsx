@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { beforeAll, beforeEach, describe, it, expect, vi } from 'vitest';
 import { ToastProvider } from '../../../../components/Toast';
@@ -21,7 +22,6 @@ vi.setConfig({ testTimeout: 30_000 });
 // no ResizeObserver.
 beforeAll(() => {
   if (!('ResizeObserver' in globalThis)) {
-    // @ts-expect-error minimal stub for jsdom
     globalThis.ResizeObserver = class {
       observe() {}
       unobserve() {}

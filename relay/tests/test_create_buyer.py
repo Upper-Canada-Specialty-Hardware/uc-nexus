@@ -146,7 +146,9 @@ def test_op_creates_then_reads_back(monkeypatch):
     conn = _FakeConn()
     seen: list[tuple[str, str]] = []
     monkeypatch.setattr(econnect, "buyer_exists", lambda c, b: False)
-    monkeypatch.setattr(econnect, "create_buyer", lambda c, *, buyer_id, description: seen.append((buyer_id, description)))
+    monkeypatch.setattr(
+        econnect, "create_buyer", lambda c, *, buyer_id, description: seen.append((buyer_id, description))
+    )
     _stub_read_back(monkeypatch)
 
     response = ops.create_buyer_op(conn, company="TUBC", request=_request())

@@ -144,7 +144,9 @@ def plan_po_tax(
         )
         for (line_ord, _), base in zip(lines, bases)
     ]
-    freight_tax = {d.tax_detail_id: to_cents(freight_amount * d.percent / 100) for d in details} if freight_amount else {}
+    freight_tax = (
+        {d.tax_detail_id: to_cents(freight_amount * d.percent / 100) for d in details} if freight_amount else {}
+    )
     misc_tax = {d.tax_detail_id: to_cents(misc_amount * d.percent / 100) for d in details} if misc_amount else {}
     return PoTaxPlan(
         details=list(details),

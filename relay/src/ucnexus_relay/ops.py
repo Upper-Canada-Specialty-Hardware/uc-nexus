@@ -116,9 +116,7 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         )
     for site in dict.fromkeys(line.location_code or h.site for line in request.lines):
         if not econnect.site_exists(conn, site):
-            raise RelayOpError(
-                "site_not_registered", f"site '{site}' is not a GP site for {company} (IV40700)"
-            )
+            raise RelayOpError("site_not_registered", f"site '{site}' is not a GP site for {company} (IV40700)")
     if not econnect.vendor_address_exists(conn, h.vendor_id, h.vendor_address_code):
         raise RelayOpError(
             "vendor_address_not_registered",
@@ -298,9 +296,7 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         po_number = request.po_number
         in_use = econnect.po_number_in_use(conn, po_number)
         if in_use:
-            raise RelayOpError(
-                "po_number_taken", f"PO number '{po_number}' is already in use in GP as {in_use}"
-            )
+            raise RelayOpError("po_number_taken", f"PO number '{po_number}' is already in use in GP as {in_use}")
     else:
         po_number = econnect.get_next_po_number(conn)
         # #488: GP still owns and reserves the number; the suffix only makes it traceable. GP's
@@ -321,9 +317,7 @@ def create_po_op(conn, *, company: str, request: models.CreatePoRequest) -> mode
         # collision check an explicit number does.
         in_use = econnect.po_number_in_use(conn, po_number)
         if in_use:
-            raise RelayOpError(
-                "po_number_taken", f"PO number '{po_number}' is already in use in GP as {in_use}"
-            )
+            raise RelayOpError("po_number_taken", f"PO number '{po_number}' is already in use in GP as {in_use}")
 
     # 2. header (no SUBTOTAL yet)
     econnect.create_po_header(
@@ -489,8 +483,7 @@ def _resolve_cost_code_selection(conn, *, company: str, request: models.CreateJo
         return []
 
     master = {
-        (row["cost_code"], row["cost_element"]): row
-        for row in econnect.list_cost_code_master(conn, request.division)
+        (row["cost_code"], row["cost_element"]): row for row in econnect.list_cost_code_master(conn, request.division)
     }
 
     chosen = []
@@ -766,9 +759,7 @@ def update_job_op(conn, *, company: str, request: models.UpdateJobRequest) -> mo
     return models.UpdateJobResponse(job=updated)
 
 
-def update_job_site_op(
-    conn, *, company: str, request: models.UpdateJobSiteRequest
-) -> models.UpdateJobSiteResponse:
+def update_job_site_op(conn, *, company: str, request: models.UpdateJobSiteRequest) -> models.UpdateJobSiteResponse:
     """Push a Nexus project's site details onto its GP job (#497). The caller commits.
 
     GP keeps no site address on the job. `JC00102.Job_Address_Code` is a char(15) pointer at a customer
@@ -939,9 +930,7 @@ def create_receipt_op(conn, *, company: str, request: models.ReceiptRequest) -> 
         raise RelayOpError("po_not_found", f"PO {request.po_number} not found in {company}")
     for rl in request.lines:
         if rl.po_line_ord not in po_lines:
-            raise RelayOpError(
-                "po_line_not_found", f"PO {request.po_number} has no line ORD {rl.po_line_ord}"
-            )
+            raise RelayOpError("po_line_not_found", f"PO {request.po_number} has no line ORD {rl.po_line_ord}")
         pl = po_lines[rl.po_line_ord]
         if pl["polnesta"] >= 4:
             raise RelayOpError(

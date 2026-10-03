@@ -1,5 +1,6 @@
 import { render, screen, configure } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import DeficientItemsReview from '../DeficientItemsReview';
 import { GET_DEFICIENT_ITEMS } from '../../../graphql/warehouse';

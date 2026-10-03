@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import { ToastProvider } from '../../../components/Toast';
 import ShipmentMethodsDialog from '../ShipmentMethodsDialog';
 import { CREATE_SHIPMENT_METHOD, GET_SHIPMENT_METHODS } from '../../../graphql/shipping';
@@ -122,8 +123,10 @@ it('counts a retired method when working out the next position', async () => {
 });
 
 it('does not fire a second create while the first is still in flight', async () => {
+  // The mock answers twice and counts, so a second create would be served and seen, not left to
+  // surface (or not) as an error alert.
   const fired = vi.fn();
-  renderDialog([listMock([]), createMock('Courier', 0, fired)]);
+  renderDialog([listMock([]), { ...createMock('Courier', 0, fired), maxUsageCount: 2 }]);
   await flush();
 
   const box = await screen.findByRole('textbox', { name: /New method/i });
@@ -132,8 +135,9 @@ it('does not fire a second create while the first is still in flight', async () 
   fireEvent.keyDown(box, { key: 'Enter' });
 
   await waitFor(() => expect(fired).toHaveBeenCalledTimes(1));
-  // The second Enter would have had no mock to match, which surfaces as an error alert.
-  expect(screen.queryByText(/No more mocked responses/i)).not.toBeInTheDocument();
+  await flush();
+  await flush();
+  expect(fired).toHaveBeenCalledTimes(1);
 });
 
 it('ignores Enter on an empty box', async () => {

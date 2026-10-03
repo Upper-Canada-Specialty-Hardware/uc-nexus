@@ -171,9 +171,7 @@ def discover() -> Discovery:
         # Guarded on `inaccessible` so a master that genuinely lists nothing stays "no companies, no
         # error" rather than being blamed on a login that refused nothing.
         listed = ", ".join(f"{code} ({why})" for code, why in inaccessible.items())
-        return Discovery(
-            [], {}, f"this relay's login cannot read any GP company it discovered: {listed}", inaccessible
-        )
+        return Discovery([], {}, f"this relay's login cannot read any GP company it discovered: {listed}", inaccessible)
     return Discovery(sorted(names), names, None, inaccessible)
 
 

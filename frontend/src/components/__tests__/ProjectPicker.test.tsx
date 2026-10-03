@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, within } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import ProjectPicker from '../ProjectPicker';
 import { GET_PROJECTS, GET_RELAY_STATUS } from '../../graphql/shared';
 import type { Project } from '../../types/project';

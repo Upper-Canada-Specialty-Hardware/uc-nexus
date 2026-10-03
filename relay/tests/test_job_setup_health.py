@@ -65,9 +65,7 @@ class _FakeConn:
 
 def test_a_job_with_active_codes_and_resolvable_accounts_is_healthy():
     conn = _FakeConn([_Verdict("23090", 14, 0)], [])
-    assert job_setup_health(conn) == [
-        {"job_number": "23090", "ok": True, "active_cost_code_count": 14, "issues": []}
-    ]
+    assert job_setup_health(conn) == [{"job_number": "23090", "ok": True, "active_cost_code_count": 14, "issues": []}]
 
 
 def test_a_dangling_account_index_fails_the_job_and_is_named():
@@ -212,9 +210,12 @@ def test_a_batch_never_reads_more_keys_than_the_cap_in_one_statement():
     keys = [f"J{i:05d}" for i in range(econnect.MAX_JOB_NUMBERS * 2 + 5)]
     # 205 keys -> 3 chunks -> a verdict + detail query per chunk, and the chunks come back unordered.
     conn = _FakeConn(
-        [_Verdict("J00300", 1, 0)], [],
-        [_Verdict("J00100", 1, 0)], [],
-        [_Verdict("J00200", 1, 0)], [],
+        [_Verdict("J00300", 1, 0)],
+        [],
+        [_Verdict("J00100", 1, 0)],
+        [],
+        [_Verdict("J00200", 1, 0)],
+        [],
     )
     out = job_setup_health(conn, job_numbers=keys)
 
@@ -318,25 +319,34 @@ def test_create_po_refuses_a_cost_code_whose_account_does_not_exist(monkeypatch)
     assert error.context["account_index"] == 1617
 
 
+class _ReachedNextStep(Exception):
+    """Raised by the step right after the cost-code guard, proving the op got past the guard."""
+
+
+def _stop_after_cost_code_guard(monkeypatch):
+    # plan_po_tax is the first call made once every line's cost code has been checked, whatever the
+    # PO's tax setup, so reaching it means the guard let the lines through.
+    def reached(**_kwargs):
+        raise _ReachedNextStep
+
+    monkeypatch.setattr(ops.po_tax, "plan_po_tax", reached)
+
+
 def test_create_po_allows_a_cost_code_whose_account_resolves(monkeypatch):
-    """The guard passing must not be provable by the op simply never reaching it, so this asserts the
-    op got PAST the guard - it fails on the next unstubbed step, not on cost_code_account_invalid."""
     _stub_create_po_prechecks(monkeypatch, account_index=96, index_exists=True)
+    _stop_after_cost_code_guard(monkeypatch)
 
-    with pytest.raises(Exception) as excinfo:  # noqa: B017 - anything but the guard's own error
+    with pytest.raises(_ReachedNextStep):
         ops.create_po_op(_FakeConn(), company="TUBC", request=_job_cost_po())
-
-    assert getattr(excinfo.value, "code", None) != "cost_code_account_invalid"
 
 
 def test_create_po_allows_index_zero(monkeypatch):
     # 0 is "GP defaults the account", not a dangling index, so account_index_exists says True for it.
     _stub_create_po_prechecks(monkeypatch, account_index=0, index_exists=True)
+    _stop_after_cost_code_guard(monkeypatch)
 
-    with pytest.raises(Exception) as excinfo:  # noqa: B017
+    with pytest.raises(_ReachedNextStep):
         ops.create_po_op(_FakeConn(), company="TUBC", request=_job_cost_po())
-
-    assert getattr(excinfo.value, "code", None) != "cost_code_account_invalid"
 
 
 # --- the create_receipt pre-flight (po_line_account_invalid) ---
@@ -357,9 +367,7 @@ def _receipt_request(*ords):
     return models.ReceiptRequest(
         company="TUBC",
         po_number="PO0000070",
-        lines=[
-            models.ReceiptLine(po_line_ord=o, quantity=Decimal("1"), rack_location="A1-1-1") for o in ords
-        ],
+        lines=[models.ReceiptLine(po_line_ord=o, quantity=Decimal("1"), rack_location="A1-1-1") for o in ords],
     )
 
 

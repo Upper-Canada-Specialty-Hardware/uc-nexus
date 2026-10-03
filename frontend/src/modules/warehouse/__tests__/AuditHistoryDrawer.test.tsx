@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, configure } from '@testing-library/react';
-import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
+import type { MockedResponse } from '@apollo/client/testing';
+import { MockedProvider } from '@apollo/client/testing/react';
 import AuditHistoryDrawer from '../AuditHistoryDrawer';
 import { GET_AUDIT_LOG, GET_WAREHOUSES } from '../../../graphql/shared';
 

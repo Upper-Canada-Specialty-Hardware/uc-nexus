@@ -127,7 +127,9 @@ def test_begin_update_uses_the_check_its_caller_passes(monkeypatch):
     monkeypatch.setattr(appmod.sys, "frozen", True, raising=False)
     passed = {}
     monkeypatch.setattr(
-        updater, "stage_update", lambda *a_, ready_to_hand_off=None, **k: passed.update(ready=ready_to_hand_off) or {"ok": True}
+        updater,
+        "stage_update",
+        lambda *a_, ready_to_hand_off=None, **k: passed.update(ready=ready_to_hand_off) or {"ok": True},
     )
     strict = appmod.update_poller.ready_for_scheduled_handoff
     a.begin_update("https://x/e.exe", "relay-v0.1.0-build.11", ready_to_hand_off=strict)
@@ -141,9 +143,7 @@ def test_begin_update_does_not_shut_down_when_staging_was_deferred_as_busy(monke
     shut = []
     monkeypatch.setattr(a, "shutdown", lambda: shut.append(True))
     monkeypatch.setattr(appmod.sys, "frozen", True, raising=False)
-    monkeypatch.setattr(
-        updater, "stage_update", lambda *a_, **k: {"ok": False, "deferred": True, "error": "busy"}
-    )
+    monkeypatch.setattr(updater, "stage_update", lambda *a_, **k: {"ok": False, "deferred": True, "error": "busy"})
     r = a.begin_update("https://x/e.exe", "relay-v0.1.0-build.11")
     assert r["deferred"] is True
     assert shut == [] and a._updating is False  # still serving GP; nothing was handed off
