@@ -38,3 +38,15 @@ it('finalizes only from Finalize anyway', () => {
   fireEvent.click(screen.getByRole('button', { name: 'Finalize anyway' }));
   expect(onConfirm).toHaveBeenCalledTimes(1);
 });
+
+it('turns Finalize anyway off while a finalize runs (#1313)', () => {
+  const onConfirm = vi.fn();
+  render(
+    <OverBuyConfirmModal open busy risks={[risk]} productCodeOf={() => 'HG-100'} onGoBack={() => {}} onConfirm={onConfirm} />,
+  );
+
+  const finalize = screen.getByRole('button', { name: 'Finalize anyway' });
+  expect(finalize).toBeDisabled();
+  fireEvent.click(finalize);
+  expect(onConfirm).not.toHaveBeenCalled();
+});
