@@ -8,6 +8,7 @@ import { useQuery, useMutation } from '@apollo/client/react';
 import { pdf } from '@react-pdf/renderer';
 import { GET_PO_DOCUMENT_SETTINGS, GET_GP_BUYERS, GET_GP_PO_TOTALS, GET_PROJECT_SHIP_TO, SAVE_PO_DOCUMENT_DATA, UPLOAD_PO_DOCUMENT } from '../../graphql/po';
 import { useToast } from '../../components/Toast';
+import { useRelayStatus } from '../../relay/useRelayStatus';
 import { poVendorName } from './poVendorName';
 import { isGpEmptyDate } from './poOrderDate';
 import PurchaseOrderDocument, { type PurchaseOrderDocumentProps } from './PurchaseOrderDocument';
@@ -98,9 +99,18 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
   const {
     data: settingsData, loading: sLoading, error: sError, refetch: refetchSettings,
   } = useQuery<{ poDocumentSettings: PODocumentSettings }>(GET_PO_DOCUMENT_SETTINGS, { skip: !open });
-  const { data: buyersData } = useQuery<{ gpBuyers: string[] }>(GET_GP_BUYERS, {
-    variables: { company }, skip: !open || !company,
+  // #1288: the buyer list is a live GP read, so it is not asked for while the relay is known to be down
+  // (the register dialog gates its reads the same way), and a failed read says so under the field.
+  const relay = useRelayStatus({ skip: !open });
+  const relayDown = relay.connected === false;
+  const { data: buyersData, error: buyersError } = useQuery<{ gpBuyers: string[] }>(GET_GP_BUYERS, {
+    variables: { company }, skip: !open || !company || relayDown,
   });
+  const buyersNote = relayDown
+    ? 'The GP relay is offline, so the buyer list could not be read.'
+    : buyersError
+      ? `The GP buyer list could not be read: ${buyersError.message}`
+      : null;
   const { data: totalsData, loading: tLoading, error: tError } = useQuery<{ gpPoTotals: GpPoTotals | null }>(
     GET_GP_PO_TOTALS,
     { variables: { company, poNumber }, skip: !open || !company || !poNumber, fetchPolicy: 'network-only' },
@@ -126,6 +136,7 @@ export default function POGenerateDialog({ open, po, onClose, onRefetch }: POGen
           po={po}
           settings={settings}
           buyers={buyersData?.gpBuyers ?? []}
+          buyersNote={buyersNote}
           gpTotals={totalsData?.gpPoTotals ?? null}
           gpLoading={tLoading}
           gpError={tError ? tError.message : null}
@@ -163,6 +174,8 @@ interface GenerateFormProps {
   po: PurchaseOrder;
   settings: PODocumentSettings;
   buyers: string[];
+  /** Why the GP buyer list is missing (relay offline or the read failed), when it is. */
+  buyersNote: string | null;
   gpTotals: GpPoTotals | null;
   /** GP's totals and header are still being read. */
   gpLoading: boolean;
@@ -174,7 +187,7 @@ interface GenerateFormProps {
 }
 
 function GenerateForm({
-  po, settings, buyers, gpTotals, gpLoading, gpError, projectNumber, onClose, onRefetch,
+  po, settings, buyers, buyersNote, gpTotals, gpLoading, gpError, projectNumber, onClose, onRefetch,
 }: GenerateFormProps) {
   const { showToast } = useToast();
   const dd = po.documentData;
@@ -402,7 +415,11 @@ function GenerateForm({
                   <MenuItem key={b} value={b}>{b}</MenuItem>
                 ))}
               </Select>
-              <FormHelperText>{gpHelper(dd?.buyerName, 'Registered GP buyer for this PO.')}</FormHelperText>
+              {buyersNote ? (
+                <FormHelperText sx={{ color: 'warning.main' }}>{buyersNote}</FormHelperText>
+              ) : (
+                <FormHelperText>{gpHelper(dd?.buyerName, 'Registered GP buyer for this PO.')}</FormHelperText>
+              )}
             </FormControl>
             <FormControl size="small" sx={{ minWidth: 140 }}>
               <InputLabel>Currency</InputLabel>

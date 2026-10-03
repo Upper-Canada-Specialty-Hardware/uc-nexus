@@ -10,6 +10,13 @@ import {
   SAVE_PO_DOCUMENT_DATA,
 } from '../../../graphql/po';
 
+// #1288: the relay's connected flag, which gates the buyer read. Null (unknown) by default, which is
+// what every test before #1288 ran with.
+const relayState: { connected: boolean | null } = { connected: null };
+vi.mock('../../../relay/useRelayStatus', () => ({
+  useRelayStatus: () => ({ connected: relayState.connected }),
+}));
+
 // MUI dialogs render slowly under jsdom, slower still when the whole suite runs in parallel - lift
 // both the per-test budget and testing-library's 1s async-util default.
 vi.setConfig({ testTimeout: 60_000 });
@@ -414,6 +421,29 @@ describe('POGenerateDialog prefill from GP (#858)', () => {
     const method = screen.getByRole('textbox', { name: 'Shipping method' });
     fireEvent.change(method, { target: { value: 'Courier' } });
     expect(method).toHaveValue('Courier');
+  });
+});
+
+describe('POGenerateDialog buyer list (#1288)', () => {
+  afterEach(() => {
+    relayState.connected = null;
+  });
+
+  it('says the buyer list could not be read when the read fails', async () => {
+    const failed: MockedResponse = {
+      request: { query: GET_GP_BUYERS, variables: { company: 'TUBC' } },
+      error: new Error('buyer read failed'),
+    };
+    renderDialog([settingsMock(), failed, totalsMock()]);
+    expect(await screen.findByText(/buyer list could not be read: buyer read failed/)).toBeInTheDocument();
+  });
+
+  it('does not read the buyers while the relay is offline, and says so', async () => {
+    relayState.connected = false;
+    // No buyers mock: a read would fail with "no more mocked responses" instead of the offline note.
+    renderDialog([settingsMock(), totalsMock()]);
+    expect(await screen.findByText(/relay is offline, so the buyer list could not be read/)).toBeInTheDocument();
+    expect(screen.queryByText(/buyer list could not be read:/)).not.toBeInTheDocument();
   });
 });
 
