@@ -403,6 +403,33 @@ def test_build_create_receipt_payload_dedupes_and_joins_rack_locations():
     assert line["rack_location"] == "A1-B1-C1, A2-B2-C2"
 
 
+def _receipt(**kwargs) -> dict:
+    return gp_po.build_create_receipt_payload(
+        po_number="PO0000001",
+        received_by="Jane Doe",
+        line_items=[{"gp_line_ord": 16384, "quantity": 5, "locations": []}],
+        **kwargs,
+    )
+
+
+def test_a_receipt_carries_the_toronto_date_it_was_approved_on(monkeypatch):
+    """#1332: approved at 9pm EDT on Oct 3 (01:00 UTC on the 4th). The stored payload says the 3rd,
+    so a drain on a later day still dates the GP receipt and its batch on the approval day."""
+    from datetime import datetime
+
+    from app.services import gp_window
+
+    real = gp_window.local_today
+    monkeypatch.setattr(gp_window, "local_today", lambda now=None: real(now or datetime(2026, 10, 4, 1, 0)))
+    assert _receipt()["receipt_date"] == "2026-10-03"
+
+
+def test_a_receipt_date_given_is_sent_as_given():
+    from datetime import date
+
+    assert _receipt(receipt_date=date(2026, 9, 30))["receipt_date"] == "2026-09-30"
+
+
 def test_a_line_with_no_locations_tells_gp_the_warehouse():
     """#501: put-away happens after approval, so a line normally reaches GP with no bin yet. The
     warehouse is true at receipt time and is the most specific thing anybody knows - an empty
