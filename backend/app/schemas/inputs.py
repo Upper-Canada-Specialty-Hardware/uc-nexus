@@ -385,9 +385,10 @@ class FinalizeImportSessionInput:
     include_shop_assembly_request: bool = False
     shop_assembly_request_number: str | None = None
     shop_assembly_items: list[SARItemInput] | None = None
-    # When true, this finalize overrides the existing schedule: existing HardwareItem
-    # rows are wiped (including IN_PO ones) and openings absent from the new input
-    # are deleted. Downstream POs/receiving/SAR/inventory aggregates are preserved.
+    # When true, this finalize overrides the existing schedule: the unordered (AVAILABLE) rows are
+    # rebuilt from the new input and openings absent from it are deleted. Ordered (IN_PO) rows are kept,
+    # and so is any opening that still holds them (#1123). Downstream POs/receiving/SAR/inventory
+    # aggregates are preserved.
     replace_schedule: bool = False
     # #627: the source XML file name, sent only when the hardware items came from a fresh parse
     # (initial import, re-import from a new file, schedule replace). A hydrate-from-persisted finalize
@@ -704,23 +705,11 @@ class ApproveReceiveDraftInput:
 
 
 @strawberry.input
-class ShipmentItemInput:
-    opening_number: str | None = None
-    product_code: str = ""
-    hardware_category: str = ""
-    quantity: int = 1
-    # Where it was going, snapshotted onto the slip so a reprint says what the driver's copy said.
-    building: str | None = None
-    floor: str | None = None
-    location: str | None = None
-
-
-@strawberry.input
 class DeliveryRequestHeaderInput:
     """The Delivery Request header, on both of the mutations that write it (#453).
 
     A base rather than the same twenty fields typed out under each input. Two paths write this
-    header - `confirmShipment` fills it in and `updateShipmentDetails` rewrites it - and a field
+    header - `confirmShipmentFromContainers` fills it in and `updateShipmentDetails` rewrites it - and a field
     that reached one but not the other is a field the shipping department can set and never
     correct, or correct and never set. Neither breaks the build or any test, so the drift is
     silent until somebody notices a box on the paper that will not stick.
@@ -763,31 +752,16 @@ class DeliveryRequestHeaderInput:
 
 
 @strawberry.input
-class ConfirmShipmentInput(DeliveryRequestHeaderInput):
-    """What went on the truck, plus the Delivery Request written for it (#447)."""
-
-    project_id: strawberry.ID
-    # Deprecated and ignored - the server mints the number from a global PS-NNNNN counter. Optional
-    # with a default so the confirm dialog can stop sending it; still accepted so a tab loaded
-    # against the previous deploy does not fail schema validation.
-    packing_slip_number: str | None = strawberry.field(
-        default=None,
-        deprecation_reason="Ignored; the server mints the packing slip number from a global counter.",
-    )
-    items: list[ShipmentItemInput] = strawberry.field(default_factory=list)
-
-
-@strawberry.input
 class ConfirmShipmentFromContainersInput(DeliveryRequestHeaderInput):
     """Ship whole containers as one shipment (#451).
 
-    The container flow's confirm. Same Delivery Request header as `ConfirmShipmentInput` above and
-    the same slip at the far end - only where the items come from differs, which is why this carries
-    container ids instead of a hand-built item list.
+    The only confirm. The loose `confirmShipment` it sat beside measured against the staged pool
+    without counting what open containers already held, and no screen called it, so it went (#1107).
     """
 
     project_id: strawberry.ID
-    # Deprecated and ignored - the server mints the number. Same #493 shape as ConfirmShipmentInput.
+    # Deprecated and ignored - the server mints the number from a global PS-NNNNN counter (#493).
+    # Still accepted so a tab loaded against an older deploy does not fail schema validation.
     packing_slip_number: str | None = strawberry.field(
         default=None,
         deprecation_reason="Ignored; the server mints the packing slip number from a global counter.",

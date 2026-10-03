@@ -762,8 +762,9 @@ def finalize_import_session(
         project.schedule_filename = schedule_filename
 
     # 2. Wipe AVAILABLE hardware items for this project — they are pure XML-derived rows
-    # that will be regenerated from the current input. Existing IN_PO rows (attached to
-    # prior POs) are preserved unless replace_schedule=True.
+    # that will be regenerated from the current input. IN_PO rows (attached to prior POs, or marked
+    # purchased by the SharePoint migration) are always preserved, replace_schedule included (#1123):
+    # a new schedule does not change the fact that the hardware has already been ordered.
     session.execute(
         delete(HardwareItemModel).where(
             HardwareItemModel.project_id == project.id,
@@ -773,19 +774,24 @@ def finalize_import_session(
     session.flush()
 
     if replace_schedule:
-        # Full override: wipe every HardwareItem (including IN_PO) and drop openings
-        # not present in the new schedule. Downstream PO/receiving/SAR/inventory
-        # aggregates are preserved; only the per-opening source trail is lost.
-        session.execute(delete(HardwareItemModel).where(HardwareItemModel.project_id == project.id))
-        session.flush()
-
+        # Full override of the schedule: drop openings not present in the new schedule. Ordered
+        # hardware stays where it is (#1123). A row whose (opening, product, category, leaf) is still in
+        # the new schedule is carried over by step 5, which only persists the unordered remainder as
+        # AVAILABLE. A row the new schedule no longer has stays IN_PO on its opening, and an opening that
+        # still holds ordered hardware is kept for it even when the new schedule dropped it - the order
+        # is real, and the PO line and the per-opening reconcile still point at it.
         new_opening_numbers = {o["opening_number"] for o in openings_input}
         # #342: reconcile in-flight requests with the new schedule BEFORE the openings they point at
         # are deleted - drop what vanished, release the reservations it was holding, flag the rest.
         _handle_schedule_replacement(session, project, new_opening_numbers)
+        ordered_opening_ids = set(
+            session.scalars(
+                select(HardwareItemModel.opening_id).where(HardwareItemModel.project_id == project.id).distinct()
+            ).all()
+        )
         # ORM-aware delete so identity map / project.openings stay consistent.
         for opening in list(project.openings):
-            if opening.opening_number not in new_opening_numbers:
+            if opening.opening_number not in new_opening_numbers and opening.id not in ordered_opening_ids:
                 session.delete(opening)
         session.flush()
         session.refresh(project, attribute_names=["openings"])
@@ -812,15 +818,15 @@ def finalize_import_session(
     # Build opening_map: opening_number -> Opening.id
     opening_map: dict[str, uuid.UUID] = {o.opening_number: o.id for o in project.openings}
 
-    # Track existing IN_PO HardwareItem keys so we don't re-create them as AVAILABLE.
-    # (After the AVAILABLE wipe above and the optional full wipe under replace_schedule,
-    # any remaining rows are IN_PO from prior sessions.)
+    # Units already ordered per key, so step 5 persists only the unordered remainder as AVAILABLE.
+    # (After the AVAILABLE wipe above, any remaining rows are IN_PO from prior sessions.) This is a
+    # quantity, not a key set (#1122): a combo a PO took only part of persisted as an IN_PO row plus an
+    # AVAILABLE remainder, and skipping the whole key here dropped that remainder on the next finalize.
     # Leaf is part of the key (#311): a pair's leaf-1 and leaf-2 rows for the same product are
     # distinct HardwareItems, so the dedup must not collapse them.
-    existing_in_po_keys: set[tuple[uuid.UUID, str, str, int | None]] = {
-        (hi.opening_id, hi.product_code, hi.hardware_category, hi.leaf)
-        for hi in session.scalars(select(HardwareItemModel).where(HardwareItemModel.project_id == project.id)).all()
-    }
+    already_ordered_qty: dict[tuple[uuid.UUID, str, str, int | None], int] = defaultdict(int)
+    for hi in session.scalars(select(HardwareItemModel).where(HardwareItemModel.project_id == project.id)).all():
+        already_ordered_qty[(hi.opening_id, hi.product_code, hi.hardware_category, hi.leaf)] += hi.item_quantity
 
     # 2. Build classification map
     classification_map: dict[tuple[str, str, float], Classification] = {}
@@ -1032,8 +1038,10 @@ def finalize_import_session(
     # 5. Persist the unclaimed remainder of every hardware item as AVAILABLE. #570: a combo the PO
     #    block took in full leaves nothing here; a partially-claimed combo persists what plan_po_claims
     #    left in remaining_by_idx (item_quantity = the remainder); an unreferenced combo persists in
-    #    full. Skips a row whose (opening_id, product, category, leaf) already exists as IN_PO from a
-    #    prior session, to avoid duplicating rows.
+    #    full. Units of the same (opening_id, product, category, leaf) already ordered in a prior
+    #    session come off first (#1122): the input row is the schedule's whole requirement - a fresh
+    #    parse's quantity, or a hydrate's sum of the persisted IN_PO and AVAILABLE rows - so only what
+    #    is left after the existing order is still unpurchased.
     available_keys_seen: set[tuple[uuid.UUID, str, str, int | None]] = set()
     for idx, hi in enumerate(hardware_items_input):
         remaining = remaining_by_idx.get(idx, hi["item_quantity"])
@@ -1043,7 +1051,13 @@ def finalize_import_session(
         if opening_id is None:
             continue
         key_with_id = (opening_id, hi["product_code"], hi["hardware_category"], hi.get("leaf"))
-        if key_with_id in existing_in_po_keys or key_with_id in available_keys_seen:
+        if key_with_id in available_keys_seen:
+            continue
+        covered = min(remaining, already_ordered_qty.get(key_with_id, 0))
+        if covered:
+            already_ordered_qty[key_with_id] -= covered
+            remaining -= covered
+        if remaining <= 0:
             continue
         available_keys_seen.add(key_with_id)
 
@@ -1078,12 +1092,11 @@ def finalize_import_session(
         )
     session.flush()
 
-    # 5b. Re-apply the SharePoint migration's purchased-marking. A replace_schedule wipe above took
-    # the null-linked IN_PO rows with it, and without this the project reads as never-purchased
-    # again and the next PO draft offers to re-buy the migrated shelf stock. The recorded coverage
-    # targets are marked against whatever rows this finalize just wrote; on a normal re-import the
-    # preserved rows already cover the targets and this is a no-op. One indexed SELECT on a project
-    # the migration never touched.
+    # 5b. Re-apply the SharePoint migration's purchased-marking. Since #1123 a replace_schedule keeps
+    # the null-linked IN_PO rows too, so the preserved rows already cover the targets and this is
+    # normally a no-op; it stays as the backstop for marks whose rows were lost before that. The
+    # recorded coverage targets are marked against whatever rows this finalize just wrote. One indexed
+    # SELECT on a project the migration never touched.
     from app.repositories import sharepoint_migration_repository
 
     sharepoint_migration_repository.reapply_migration_marks(session, project.id)
