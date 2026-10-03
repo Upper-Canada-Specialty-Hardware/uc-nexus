@@ -14,8 +14,10 @@ import strawberry
 
 from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
+from app.errors import NotFoundError
 from app.repositories import stock as stock_repository
 from app.repositories import tenancy
+from app.repositories.project_labels import project_labels
 
 from .converters import (
     deficiency_review_to_type,
@@ -78,11 +80,19 @@ class StockQueries:
 
     @strawberry.field
     def stock_item(self, info: strawberry.Info, id: strawberry.ID) -> StockItem | None:
+        # Only "not there for this caller" reads as null (#1281): a malformed id, a missing row, or one
+        # outside the caller's company (the scope check raises NotFoundError for that too, so it does not
+        # reveal the row exists). Anything else - a database error, a bug - propagates instead of
+        # hiding as an empty result.
+        try:
+            stock_item_id = uuid.UUID(str(id))
+        except ValueError:
+            return None
         with SessionLocal() as session:
             try:
-                tenancy.require_stock_item_in_scope(session, uuid.UUID(str(id)), tenant_scope(info))
-                row = stock_repository.get_stock_item(session, uuid.UUID(str(id)))
-            except Exception:
+                tenancy.require_stock_item_in_scope(session, stock_item_id, tenant_scope(info))
+                row = stock_repository.get_stock_item(session, stock_item_id)
+            except NotFoundError:
                 return None
             return stock_item_to_type(row)
 
@@ -103,7 +113,9 @@ class StockQueries:
                 source=source,
                 company=scope,
             )
-            return [deficient_item_row_to_type(r) for r in rows]
+            # #1252: every row's project in one read, archived included; stock-pool rows have none.
+            labels = project_labels(session, (r["project_id"] for r in rows))
+            return [deficient_item_row_to_type(r, labels) for r in rows]
 
     @strawberry.field
     def deficiency_reviews(

@@ -179,15 +179,19 @@ def receive_draft_line_item_to_type(li) -> ReceiveDraftLineItem:
     )
 
 
-def receive_draft_to_type(draft, po) -> ReceiveDraft:
+def receive_draft_to_type(draft, po, labels: dict | None = None) -> ReceiveDraft:
     """The draft plus the PO fields every consumer renders beside it. `po` is passed in rather than
-    walked off a relationship so a list read stays one query."""
+    walked off a relationship so a list read stays one query. `labels` is the caller's batched
+    `project_labels` read (#1196), so the project name costs one query per list, not one per row."""
+    number, description = (labels or {}).get(po.project_id if po is not None else None, (None, None))
     return ReceiveDraft(
         id=strawberry.ID(str(draft.id)),
         status=draft.status,
         po_id=strawberry.ID(str(draft.po_id)),
         po_number=po.po_number if po is not None else None,
         project_id=strawberry.ID(str(po.project_id)) if po is not None and po.project_id else None,
+        project_number=number,
+        project_description=description,
         pool_kind=(getattr(po, "pool_kind", None) if po is not None else None) or PoolKindDB.STOCK,
         warehouse_id=strawberry.ID(str(draft.warehouse_id)) if draft.warehouse_id else None,
         created_by_user_id=draft.created_by_user_id,
@@ -410,6 +414,7 @@ def po_document_data_to_type(d) -> PODocumentData:
         tax_amount=float(d.tax_amount),
         tax_label=d.tax_label,
         tariff_amount=float(d.tariff_amount),
+        trade_discount=float(d.trade_discount) if d.trade_discount is not None else None,
         required_by_override=d.required_by_override,
         include_fsc=d.include_fsc,
         include_usa_tariff=d.include_usa_tariff,
@@ -492,13 +497,18 @@ def po_to_type(po, receive_records=None) -> PurchaseOrder:
     )
 
 
-def open_po_summary_to_type(po, pending_quantity: int, pending_line_count: int) -> OpenPOSummary:
+def open_po_summary_to_type(
+    po, pending_quantity: int, pending_line_count: int, labels: dict | None = None
+) -> OpenPOSummary:
     """A lean receiving-picker row (gp-owned-po mirror). Pending scalars come from the caller's grouped
-    query, never from po.line_items."""
+    query, never from po.line_items; `labels` from its batched `project_labels` read (#1196)."""
+    number, description = (labels or {}).get(po.project_id, (None, None))
     return OpenPOSummary(
         id=strawberry.ID(str(po.id)),
         po_number=po.po_number,
         project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
+        project_number=number,
+        project_description=description,
         pool_kind=getattr(po, "pool_kind", None) or PoolKindDB.STOCK,
         status=po.status,
         origin=po.origin,
@@ -512,16 +522,21 @@ def open_po_summary_to_type(po, pending_quantity: int, pending_line_count: int) 
     )
 
 
-def po_list_row_to_type(po, line_item_count: int, created_by: str | None = None) -> POListRow:
+def po_list_row_to_type(
+    po, line_item_count: int, created_by: str | None = None, labels: dict | None = None
+) -> POListRow:
     """A slim register row (gp-owned-po mirror). line_item_count is supplied by the caller from a
     grouped count query, never read off po.line_items - the register never loads the collection.
     created_by is likewise resolved by the caller (batched over the page's distinct author ids, #632)
-    rather than one Clerk lookup per row."""
+    rather than one Clerk lookup per row, and `labels` from its batched `project_labels` read (#1238)."""
+    number, description = (labels or {}).get(po.project_id, (None, None))
     return POListRow(
         id=strawberry.ID(str(po.id)),
         po_number=po.po_number,
         request_number=po.request_number,
         project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
+        project_number=number,
+        project_description=description,
         pool_kind=getattr(po, "pool_kind", None) or PoolKindDB.STOCK,
         status=po.status,
         origin=po.origin,
@@ -908,6 +923,7 @@ def pull_request_to_type(pr, partially_picked=None) -> PullRequest:
         status=pr.status,
         requested_by=pr.requested_by,
         assigned_to=pr.assigned_to,
+        assigned_to_user_id=pr.assigned_to_user_id,
         created_at=pr.created_at,
         updated_at=pr.updated_at,
         approved_at=pr.approved_at,
@@ -922,14 +938,17 @@ def pull_request_to_type(pr, partially_picked=None) -> PullRequest:
     )
 
 
-def pick_sheet_to_type(sheet, partially_picked=None) -> PickSheet:
+def pick_sheet_to_type(sheet, partially_picked=None, project_label=None) -> PickSheet:
     """`warehouse.PickSheet` -> the GraphQL type (#367).
 
     The repository has already done every read this needs in a fixed number of queries, so this is a
     pure shape change - nothing here touches the session. `remainingQuantity` is exposed rather than
     left to the client to subtract, because the pick screen, the PDF and the confirm gate must all
     agree on one definition of "still to pick"."""
+    number, description = project_label or (None, None)
     return PickSheet(
+        project_number=number,
+        project_description=description,
         pull_request=pull_request_to_type(sheet.pull_request, partially_picked),
         sections=[
             PickSheetSection(
@@ -1050,6 +1069,8 @@ def packing_slip_to_type(ps) -> PackingSlip:
         id=strawberry.ID(str(ps.id)),
         packing_slip_number=ps.packing_slip_number,
         project_id=strawberry.ID(str(ps.project_id)),
+        project_number=ps.project.project_id,
+        project_description=ps.project.description,
         status=ps.status,
         shipped_by=ps.shipped_by,
         shipped_at=ps.shipped_at,
@@ -1137,7 +1158,9 @@ def deficiency_review_to_type(dr) -> DeficiencyReview:
     )
 
 
-def deficient_item_row_to_type(row: dict) -> DeficientItemRow:
+def deficient_item_row_to_type(row: dict, labels: dict | None = None) -> DeficientItemRow:
+    """`labels` is the caller's batched `project_labels` read (#1252), one query per list."""
+    number, description = (labels or {}).get(row["project_id"], (None, None))
     return DeficientItemRow(
         source=row["source"],
         inventory_location_id=(
@@ -1145,6 +1168,8 @@ def deficient_item_row_to_type(row: dict) -> DeficientItemRow:
         ),
         stock_item_id=strawberry.ID(str(row["stock_item_id"])) if row["stock_item_id"] else None,
         project_id=strawberry.ID(str(row["project_id"])) if row["project_id"] else None,
+        project_number=number,
+        project_description=description,
         hardware_category=row["hardware_category"],
         product_code=row["product_code"],
         deficient_quantity=row["deficient_quantity"],

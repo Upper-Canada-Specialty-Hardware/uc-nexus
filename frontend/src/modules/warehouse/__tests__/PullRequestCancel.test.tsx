@@ -45,6 +45,7 @@ function pullRequest(overrides: Partial<PullRequest> = {}): PullRequest {
     status: 'IN_PROGRESS',
     requestedBy: 'importer',
     assignedTo: 'Picker',
+    assignedToUserId: null,
     createdAt: '2026-07-01T00:00:00Z',
     updatedAt: '2026-07-01T00:00:00Z',
     approvedAt: '2026-07-01T00:00:00Z',
@@ -142,6 +143,25 @@ it('sends an un-picked pull back to its sheet rather than offering completion', 
   // The terminal handover verb is destination-worded (Send to shop for this SHOP_ASSEMBLY fixture).
   expect(screen.queryByRole('button', { name: /Send to (shop|staging)/ })).not.toBeInTheDocument();
   expect(screen.getByText(/Nothing has left inventory yet/)).toBeInTheDocument();
+});
+
+it('decides who the pull is locked to by user id, not the shared display name (#1356)', async () => {
+  // Same name as the viewer, different person: locked, and the sheet is not offered.
+  const { unmount } = renderModal(
+    [],
+    pullRequest({ pickedAt: null, pickedBy: null, partiallyPicked: false, assignedToUserId: 'someone-else' }),
+  );
+  expect(await screen.findByText(/Locked to Picker/)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Resume pick/ })).not.toBeInTheDocument();
+  unmount();
+
+  // The viewer's own id under a name changed since: still theirs.
+  renderModal(
+    [],
+    pullRequest({ pickedAt: null, pickedBy: null, partiallyPicked: false, assignedTo: 'P. Old', assignedToUserId: 'picker' }),
+  );
+  expect(await screen.findByRole('button', { name: /Resume pick/ })).toBeInTheDocument();
+  expect(screen.queryByText(/Locked to/)).not.toBeInTheDocument();
 });
 
 it('says so when a pick was confirmed short', async () => {

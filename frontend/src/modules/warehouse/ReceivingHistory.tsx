@@ -28,6 +28,11 @@ import { FIT_CELL_WRAP_SX } from '../../components/fitColumns';
 import { springs } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
 
+// UI law 1 (#1231): a short value hugs its column, and the one text column takes the slack. A long
+// product code wraps inside its cell rather than pushing the table wider.
+const HUG_SX = { width: '1%', whiteSpace: 'nowrap' as const };
+const SLACK_SX = { overflowWrap: 'anywhere' as const };
+
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
 
 // Expander + PO + vendor + project + status + received-of-ordered + receives + last received.
@@ -68,6 +73,8 @@ export interface ReceivingHistoryPO {
   status: string;
   vendorName: string | null;
   projectId: string | null;
+  projectNumber: string | null;
+  projectDescription: string | null;
   poolKind: PoolKind;
   orderedTotal: number;
   receivedTotal: number;
@@ -102,7 +109,6 @@ interface ProjectOption {
 
 interface ReceivingHistoryProps {
   projects: ProjectOption[];
-  projectMap: Map<string, string>;
 }
 
 // ---- Helpers ----
@@ -194,17 +200,19 @@ function ReceivesPanel({ poId }: { poId: string }) {
           <Table size="small" sx={{ bgcolor: 'background.paper' }}>
             <TableHead>
               <TableRow>
-                <TableCell>Item Number</TableCell>
+                <TableCell sx={HUG_SX}>Item Number</TableCell>
                 <TableCell>Description</TableCell>
-                <TableCell align="right">Quantity Received</TableCell>
+                <TableCell align="right" sx={HUG_SX}>
+                  Quantity Received
+                </TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {receive.lineItems.map((li) => (
                 <TableRow key={li.id}>
-                  <TableCell>{li.hardwareCategory}</TableCell>
-                  <TableCell sx={monoSx}>{li.productCode}</TableCell>
-                  <TableCell align="right" sx={tabularSx}>
+                  <TableCell sx={HUG_SX}>{li.hardwareCategory}</TableCell>
+                  <TableCell sx={{ ...monoSx, ...SLACK_SX }}>{li.productCode}</TableCell>
+                  <TableCell align="right" sx={{ ...HUG_SX, ...tabularSx }}>
                     {li.quantityReceived}
                   </TableCell>
                 </TableRow>
@@ -227,7 +235,7 @@ interface HistoryRowProps {
 }
 
 function HistoryRow({ po, projectName, expanded, onToggle }: HistoryRowProps) {
-  const hugSx = { width: '1%', whiteSpace: 'nowrap' as const };
+  const hugSx = HUG_SX;
   // A mirrored PO has a poNumber and a null requestNumber; a Nexus draft has the reverse until it is
   // registered. Prefer the PO number, fall back to the request number, and dash when neither exists.
   const label = po.poNumber ?? po.requestNumber ?? DASH;
@@ -297,7 +305,7 @@ function HistoryRow({ po, projectName, expanded, onToggle }: HistoryRowProps) {
  * the moment it is complete. Reconciling a delivery against GP - "which receipt was this, and who
  * booked it" - needs the finished ones, so this is the one surface where CLOSED POs are in scope.
  */
-export default function ReceivingHistory({ projects, projectMap }: ReceivingHistoryProps) {
+export default function ReceivingHistory({ projects }: ReceivingHistoryProps) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState('');
@@ -409,7 +417,10 @@ export default function ReceivingHistory({ projects, projectMap }: ReceivingHist
             <HistoryRow
               key={po.id}
               po={po}
-              projectName={po.projectId ? (projectMap.get(po.projectId) ?? DASH) : noProjectPoLabel(po.poolKind)}
+              // Off the row (#1215): the projects list leaves archived projects out.
+              projectName={
+                po.projectId ? po.projectDescription || po.projectNumber || DASH : noProjectPoLabel(po.poolKind)
+              }
               expanded={expandedIds.has(po.id)}
               onToggle={() => toggle(po.id)}
             />

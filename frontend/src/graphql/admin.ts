@@ -295,8 +295,8 @@ export const SET_PROJECT_ARCHIVED = gql`
 `;
 
 export const UPDATE_USER_ROLES = gql`
-  mutation UpdateUserRoles($userId: String!, $roles: [String!]!) {
-    updateUserRoles(userId: $userId, roles: $roles) {
+  mutation UpdateUserRoles($userId: String!, $roles: [String!]!, $expectedRoles: [String!]) {
+    updateUserRoles(userId: $userId, roles: $roles, expectedRoles: $expectedRoles) {
       ${CLERK_USER_FIELDS}
     }
   }
@@ -475,6 +475,7 @@ export const GET_SHAREPOINT_INVENTORY_SNAPSHOT = gql`
         projectNumber
         projectName
         unitCost
+        unitCostUnreadable
         partDescription
         finish
         rating
@@ -544,6 +545,7 @@ export const MIGRATE_SHAREPOINT_INVENTORY = gql`
       catalogItemsCreated
       catalogItemsSkipped
       catalogAttributesCreated
+      unreadableUnitCosts
     }
   }
 `;

@@ -10,7 +10,6 @@ import {
   GET_PULL_PICK_SHEET,
   SAVE_PICK_DRAFT,
 } from '../../graphql/warehouse';
-import { GET_PROJECTS } from '../../graphql/shared';
 import {
   PICK_CONFIRM_REFETCH_QUERIES,
   PICK_CONFIRM_STALE_ROOT_FIELDS,
@@ -27,12 +26,6 @@ import PickSection from './PickSection';
 import PickSheetDocument from './PickSheetDocument';
 import { entriesFromDraft, pickTotals, toPickLines, type PickEntries, type PickSheet } from './pick';
 import { parseServerDate } from '../../utils/serverDate';
-
-interface ProjectRow {
-  id: string;
-  projectId: string;
-  description: string | null;
-}
 
 interface Shortfall {
   hardwareCategory: string;
@@ -66,6 +59,10 @@ export default function PickPage() {
 
   const [entries, setEntries] = useState<PickEntries>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // #1203: set synchronously on the first confirm click, before `confirming` re-renders. confirmPick is
+  // incremental - a short pick leaves the pull open and a second call deducts again - so a double click
+  // must never send it twice.
+  const confirmInFlight = useRef(false);
   const [shortfalls, setShortfalls] = useState<Shortfall[]>([]);
   const [printing, setPrinting] = useState(false);
 
@@ -73,16 +70,16 @@ export default function PickPage() {
     GET_PULL_PICK_SHEET,
     { variables: { pullRequestId: id }, fetchPolicy: 'cache-and-network', skip: !id },
   );
-  const { data: projectData } = useQuery<{ projects: ProjectRow[] }>(GET_PROJECTS);
 
   const sheet = data?.pullPickSheet;
   const pr = sheet?.pullRequest;
   const sections = useMemo(() => sheet?.sections ?? [], [sheet]);
 
-  const projectName = useMemo(() => {
-    const project = projectData?.projects?.find((p) => p.id === pr?.projectId);
-    return project ? `${project.projectId}${project.description ? ` - ${project.description}` : ''}` : '';
-  }, [projectData, pr?.projectId]);
+  // Off the sheet rather than the projects list (#1196): that list leaves archived projects out, and a
+  // pull for an archived job still has to say whose it is, on screen and on the printed sheet.
+  const projectName = sheet?.projectNumber
+    ? `${sheet.projectNumber}${sheet.projectDescription ? ` - ${sheet.projectDescription}` : ''}`
+    : '';
 
   // Seed the boxes from the saved draft, so reopening resumes the transcription. Re-seeded only when
   // the *server's* view of the pick changes (a confirmation lands, or a different pull is opened) -
@@ -121,6 +118,7 @@ export default function PickPage() {
       const payload = (
         result as { confirmPick?: { outcome?: string; appliedQuantity?: number; shortfalls?: Shortfall[] } }
       )?.confirmPick;
+      confirmInFlight.current = false;
       setConfirmOpen(false);
       if (payload?.outcome === 'SHORT') {
         setShortfalls(payload.shortfalls ?? []);
@@ -137,6 +135,7 @@ export default function PickPage() {
       showToast(`Pick confirmed. ${payload?.appliedQuantity ?? 0} unit(s) came off the shelf.`, 'success');
     },
     onError: (e) => {
+      confirmInFlight.current = false;
       setConfirmOpen(false);
       showToast(e.message, 'error');
     },
@@ -178,10 +177,12 @@ export default function PickPage() {
   }, [saveDraft, id, sections, entries]);
 
   const handleConfirm = useCallback(() => {
+    if (confirmInFlight.current || confirming) return;
+    confirmInFlight.current = true;
     confirmPick({
       variables: { pullRequestId: id, lines: toPickLines(sections, entries) },
     });
-  }, [confirmPick, id, sections, entries]);
+  }, [confirmPick, confirming, id, sections, entries]);
 
   const handleMarkAsPulled = useCallback(() => {
     completePull({ variables: { id } });
@@ -257,7 +258,7 @@ export default function PickPage() {
                 variant="outlined"
                 startIcon={<Save size={16} strokeWidth={1.75} />}
                 onClick={handleSaveDraft}
-                disabled={saving || confirming}
+                disabled={saving || confirming || totals.invalid}
               >
                 {saving ? 'Saving...' : 'Save draft'}
               </Button>
@@ -355,8 +356,9 @@ export default function PickPage() {
 
       {totals.over && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          Some rows ask for more than is there, or more than this request is owed. A pull never takes
-          more than it asked for - fix the highlighted boxes before confirming.
+          {totals.invalid
+            ? 'Some boxes are not a whole number of units. Fix the highlighted boxes before saving or confirming.'
+            : 'Some rows ask for more than is there, or more than this request is owed. A pull never takes more than it asked for - fix the highlighted boxes before confirming.'}
         </Alert>
       )}
 
@@ -403,6 +405,7 @@ export default function PickPage() {
         confirmLabel={confirmIsShort ? 'Confirm short pick' : 'Confirm pick'}
         cancelLabel="Keep entering"
         confirmColor={confirmIsShort ? 'warning' : 'primary'}
+        busy={confirming}
         onConfirm={handleConfirm}
         onCancel={() => setConfirmOpen(false)}
       />
