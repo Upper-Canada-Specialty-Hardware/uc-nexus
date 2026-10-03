@@ -99,6 +99,38 @@ export function cartTotalsByProduct(lines: CartLine[]): Map<string, number> {
 }
 
 /**
+ * The cart indexed once (#1290), so the per-row lookups a render makes - one or more for every
+ * coverage row on screen - are map reads rather than a scan of the whole cart each.
+ *
+ * Built with `useMemo` on the cart by the screens; the lookups below also accept the bare array and
+ * index it themselves, so a one-off caller does not have to.
+ */
+export interface CartIndex {
+  /** The first line's quantity per line key - what `lineQuantity` has always answered. */
+  firstByLine: Map<string, number>;
+  /** Every line's quantity summed per line key (only differs from the above with duplicate keys). */
+  sumByLine: Map<string, number>;
+  /** Every line's quantity summed per product. */
+  byProduct: Map<string, number>;
+}
+
+export function indexCart(lines: CartLine[]): CartIndex {
+  const firstByLine = new Map<string, number>();
+  const sumByLine = new Map<string, number>();
+  const byProduct = new Map<string, number>();
+  for (const line of lines) {
+    const lineKey = cartLineKey(line);
+    if (!firstByLine.has(lineKey)) firstByLine.set(lineKey, line.quantity);
+    sumByLine.set(lineKey, (sumByLine.get(lineKey) ?? 0) + line.quantity);
+    const key = productKey(line);
+    byProduct.set(key, (byProduct.get(key) ?? 0) + line.quantity);
+  }
+  return { firstByLine, sumByLine, byProduct };
+}
+
+const asIndex = (cart: CartLine[] | CartIndex): CartIndex => (Array.isArray(cart) ? indexCart(cart) : cart);
+
+/**
  * What is still free to add of a product, once every OTHER cart line for it has taken its share.
  *
  * `excludingLine` is the line being edited: its own quantity is left out so a line can be re-typed up
@@ -106,17 +138,18 @@ export function cartTotalsByProduct(lines: CartLine[]): Map<string, number> {
  * new line passes a key nothing matches, so the whole product total counts against the ceiling.
  */
 export function remainingForProduct(
-  lines: CartLine[],
+  cart: CartLine[] | CartIndex,
   key: string,
   headroom: Headroom,
   excludingLineKey?: string,
 ): number {
+  const index = asIndex(cart);
   const ceiling = headroom.get(key) ?? 0;
-  let othersHold = 0;
-  for (const line of lines) {
-    if (productKey(line) !== key) continue;
-    if (excludingLineKey !== undefined && cartLineKey(line) === excludingLineKey) continue;
-    othersHold += line.quantity;
+  let othersHold = index.byProduct.get(key) ?? 0;
+  // A line key is `opening|category|code`, so the excluded line belongs to this product exactly when
+  // its key ends in the product key.
+  if (excludingLineKey !== undefined && excludingLineKey.endsWith(`|${key}`)) {
+    othersHold -= index.sumByLine.get(excludingLineKey) ?? 0;
   }
   return Math.max(0, ceiling - othersHold);
 }
@@ -160,11 +193,15 @@ export function setLineQuantity(
 
 /** The quantity of one line currently in the cart, or 0 if it is not there. */
 export function lineQuantity(
-  lines: CartLine[],
+  cart: CartLine[] | CartIndex,
   target: { openingNumber: string | null; hardwareCategory: string; productCode: string },
 ): number {
-  const lineKey = cartLineKey(target);
-  return lines.find((line) => cartLineKey(line) === lineKey)?.quantity ?? 0;
+  if (Array.isArray(cart)) {
+    // One lookup on a bare array: a single scan beats building the whole index.
+    const lineKey = cartLineKey(target);
+    return cart.find((line) => cartLineKey(line) === lineKey)?.quantity ?? 0;
+  }
+  return cart.firstByLine.get(cartLineKey(target)) ?? 0;
 }
 
 /**
@@ -245,10 +282,11 @@ export function aggregateCoverageByProduct(rows: CoverageRow[]): ProductCoverage
 
 /** #632: what the cart holds of a product on THESE openings' lines (loose lines and other openings
  *  excluded) - the product-level quantity field's value. */
-export function productLinesQuantity(lines: CartLine[], rows: CoverageRow[]): number {
+export function productLinesQuantity(cart: CartLine[] | CartIndex, rows: CoverageRow[]): number {
+  const index = asIndex(cart);
   let total = 0;
   for (const row of rows) {
-    total += lineQuantity(lines, {
+    total += lineQuantity(index, {
       openingNumber: row.openingNumber,
       hardwareCategory: row.hardwareCategory,
       productCode: row.productCode,
@@ -294,10 +332,39 @@ export function setProductQuantity(
   );
 
   const ordered = [...rows].sort((a, b) => a.openingNumber.localeCompare(b.openingNumber));
-  // Clear the aggregate's own lines before re-filling. setLineQuantity clamps against everything
-  // ELSE the product holds, so a cart that already sits on a LATER opening - added off that
-  // opening's own row, or seeded from a persisted draft - would have its units counted against the
-  // earlier opening the greedy fill starts on, and the whole product would clamp to zero.
+  // Clear the aggregate's own lines before re-filling. Clamping against everything ELSE the product
+  // holds, a cart that already sits on a LATER opening - added off that opening's own row, or seeded
+  // from a persisted draft - would have its units counted against the earlier opening the greedy fill
+  // starts on, and the whole product would clamp to zero.
+  if (aggregateKeys.size === rows.length) {
+    // #1290: one pass. Dropping the aggregate's lines is what the per-opening clears did (and, as a
+    // rewrite always has, it also drops any zero-quantity line), and each opening of the fill is then
+    // a new line clamped against what the others plus the openings already filled hold.
+    const hadAny = lines.some((line) => aggregateKeys.has(cartLineKey(line)));
+    const next = hadAny
+      ? lines.filter((line) => !aggregateKeys.has(cartLineKey(line)) && line.quantity > 0)
+      : [...lines];
+    let filled = 0;
+    for (const row of ordered) {
+      const take = Math.min(row.suggestedQuantity, target);
+      target -= take;
+      const room = Math.max(0, ceiling - othersHold - filled);
+      const clamped = Math.max(0, Math.min(Number.isFinite(take) ? take : 0, room));
+      if (clamped > 0) {
+        next.push({
+          openingNumber: row.openingNumber,
+          hardwareCategory: row.hardwareCategory,
+          productCode: row.productCode,
+          quantity: clamped,
+        });
+        filled += clamped;
+      }
+    }
+    return hadAny || filled > 0 ? next : lines;
+  }
+
+  // Two rows on one opening never come from the server; kept on the line-by-line path so even that
+  // input behaves exactly as it always has.
   let next = lines;
   for (const row of ordered) {
     next = setLineQuantity(
