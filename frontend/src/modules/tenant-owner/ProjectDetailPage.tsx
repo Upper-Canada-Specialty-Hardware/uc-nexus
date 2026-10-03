@@ -315,7 +315,7 @@ export default function ProjectDetailPage() {
             color={inventoryOnHand === 0 ? 'text.secondary' : undefined}
           />
         </StatTile>
-        <StatTile to="/app/shipping" ariaLabel="Open Shipping">
+        <StatTile to={`/app/shipping/requests?project=${project.id}`} ariaLabel="Open this project's shipping requests">
           <StatCard
             icon={<Truck size={20} strokeWidth={1.75} />}
             label="Open requests"

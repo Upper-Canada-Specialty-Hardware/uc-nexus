@@ -145,6 +145,17 @@ it('says who rejected a request, when and why, and offers no Reopen', async () =
   expect(screen.queryByRole('button', { name: 'Reopen' })).not.toBeInTheDocument();
 });
 
+it('scopes the list to the project the url names (#1310)', async () => {
+  const scoped: MockedResponse = {
+    ...requestsMock,
+    request: { query: GET_SHIPPING_OUT_REQUESTS, variables: { projectId: 'proj-1', status: 'PENDING' } },
+  };
+  renderRequests([scoped], '/app/shipping/requests?project=proj-1');
+
+  // Only the scoped read is mocked, so the request showing proves the page asked for proj-1.
+  expect(await screen.findByRole('button', { name: 'Reject' })).toBeInTheDocument();
+});
+
 it('follows the url to the rejected tab while the page is already open (#1243)', async () => {
   // The bell's link changes the url without remounting the page; the tab has to move with it.
   function GoToRejected() {

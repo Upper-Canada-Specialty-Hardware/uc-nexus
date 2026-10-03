@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import {
   Alert,
   Box,
@@ -29,6 +29,7 @@ import PageHeader from '../../components/PageHeader';
 import ProjectPicker from '../../components/ProjectPicker';
 import { useIdentity } from '../../hooks/useIdentity';
 import type { Project } from '../../types/project';
+import { GET_PROJECTS } from '../../graphql/shared';
 import { monoSx, tabularSx } from '../../theme';
 import { FadeIn } from '../../motion';
 // The stage ladder is identical to shop assembly's, so its labels, colours and reopen rule are the
@@ -121,8 +122,29 @@ export default function ShippingRequestsPage() {
     },
     [setSearchParams],
   );
-  const [project, setProject] = useState<Project | null>(null);
-  const projectId = project?.id;
+  // The scoped project lives in the URL too (#1310), so a project's page can link straight to its
+  // requests and a reload keeps the scope. The picker needs the whole project, read off the same
+  // projects list it loads; the list itself scopes by the id alone, so it holds even before that read.
+  const projectId = searchParams.get('project') || undefined;
+  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !projectId });
+  const project = useMemo(
+    () => (projectId ? (projectsData?.projects.find((p) => p.id === projectId) ?? null) : null),
+    [projectsData, projectId],
+  );
+  const setProject = useCallback(
+    (next: Project | null) => {
+      setSearchParams(
+        (prev) => {
+          const params = new URLSearchParams(prev);
+          if (next) params.set('project', next.id);
+          else params.delete('project');
+          return params;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
   const { ownsTenant, hasRole } = useIdentity();
   // #753: accepting, rejecting and reopening are the SHIPPING MANAGER's, with the TENANT OWNER
   // beside them - the same any-of the server enforces. Shown-and-explained rather than hidden: the
