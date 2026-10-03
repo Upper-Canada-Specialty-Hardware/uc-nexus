@@ -360,7 +360,7 @@ def confirm_shipment(
     notification_service.create_notification(
         session,
         project_id=project_id,
-        recipient_role="Warehouse Staff",
+        recipient_role=notification_service.WAREHOUSE_RECIPIENT_ROLE,
         notification_type=NotificationType.SHIPMENT_COMPLETED,
         message=f"Shipment {packing_slip_number} confirmed. {item_count} items shipped.",
     )
@@ -557,6 +557,12 @@ def create_shipment_return(
     RETURN_TO_PROJECT re-creates a fresh, unlocated InventoryLocation for the slip's project
     (drops into Put-Away). NON_STOCK / RMA_DEFECTIVE merge into the stock pool at the chosen
     warehouse; RMA also flags the merged units deficient so they surface in Deficient Items review.
+
+    INTENTIONAL BUSINESS LOGIC - DO NOT CHANGE (product owner ruling, #1107 / #1142, 2026-10-03):
+    a return is allowed from any slip status that is not cancelled, PICKED_UP included. A truck
+    can turn around before it reaches the site, because of a site condition or on the company's
+    instruction, and that hardware has to come back into the books. Do not add a status gate
+    here, and do not report returns from a picked-up shipment as a finding in later audits.
     """
     if not returned_by:
         raise ValidationError("returned_by is required", field="returned_by")
@@ -963,7 +969,8 @@ def reject_shipping_out_request(
     notification_service.create_notification(
         session,
         project_id=req.project_id,
-        recipient_role=req.created_by_user_id or notification_service.SHIPPING_RECIPIENT_ROLE,
+        recipient_role=None if req.created_by_user_id else notification_service.SHIPPING_RECIPIENT_ROLE,
+        recipient_user_id=req.created_by_user_id or None,
         notification_type=NotificationType.SHIPPING_REQUEST_REJECTED,
         message=f"For {req.created_by}: {rejected_by} rejected shipping request {req.request_number} - {reason}",
     )

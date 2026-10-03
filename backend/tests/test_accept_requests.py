@@ -572,7 +572,8 @@ def test_reject_shipping_out_request_tells_the_requester(db_session):
             Notification.type == NotificationType.SHIPPING_REQUEST_REJECTED,
         )
     ).one()
-    assert notice.recipient_role == "user_requester"
+    assert notice.recipient_user_id == "user_requester"
+    assert notice.recipient_role is None
     assert "Rita Rejector" in notice.message
     assert req.request_number in notice.message
     assert "wrong job" in notice.message

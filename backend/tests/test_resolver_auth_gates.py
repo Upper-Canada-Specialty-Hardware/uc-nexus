@@ -59,7 +59,17 @@ def _codes(result) -> set[str | None]:
 
 
 def _messages(result) -> set[str]:
-    return {e.message for e in (result.errors or [])}
+    """Each error's message, plus the text of whatever it wraps. Since #1114 an unexpected exception
+    reaches the browser masked, so a sentinel raised past the gate is found on the server-side
+    original_error chain rather than in the wire message."""
+    out: set[str] = set()
+    for e in result.errors or []:
+        out.add(e.message)
+        cause = e.original_error
+        while cause is not None:
+            out.add(str(cause))
+            cause = getattr(cause, "original_error", None)
+    return out
 
 
 @pytest.fixture

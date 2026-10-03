@@ -19,6 +19,7 @@ from strawberry.fastapi import GraphQLRouter
 
 from app.auth import get_context, require_admin_request
 from app.auth_policy import enforce_root_field
+from app.config import cors_allow_origins
 from app.database import SessionLocal
 from app.errors import AppError
 from app.models.enums import RelayEventKind
@@ -68,6 +69,11 @@ ADOPT_HELLO_TIMEOUT_SECONDS = 5.0
 # send one - and recording that connection late, with an unknown build, still beats not recording it.
 CONNECTED_EVENT_HELLO_GRACE_SECONDS = 5.0
 
+# What uuid.UUID() says about a string that is not one; matched to tell a malformed id argument from a
+# real fault (#1114).
+_MALFORMED_UUID = "badly formed hexadecimal UUID string"
+_INTERNAL_MESSAGE = "Something went wrong on the server. Try again, and report it if it keeps happening."
+
 
 class ResolverGuardExtension(SchemaExtension):
     """The one hook every GraphQL field resolution passes through. It does two jobs.
@@ -80,6 +86,12 @@ class ResolverGuardExtension(SchemaExtension):
        every node of every response.
     2. **Maps AppError to GraphQLError**, publishing `extensions.code` (and `relayError` where the
        error carries a detail body).
+    3. **Masks everything else** (#1114). An exception that is not an AppError is a bug, and its text
+       is not for the browser: a SQLAlchemy IntegrityError carries the statement and its bound
+       parameters. It is answered with a generic INTERNAL error and kept as the error's
+       original_error, which Strawberry logs with its traceback.
+       The one routine case, an id argument that is not a UUID, is a VALIDATION_ERROR instead.
+       A GraphQLError raised on purpose passes through untouched.
 
     Both live in one extension rather than two on purpose:
 
@@ -111,6 +123,24 @@ class ResolverGuardExtension(SchemaExtension):
         return GraphQLError(message=str(e), extensions={"code": "NOT_IMPLEMENTED"})
 
     @staticmethod
+    def _mask(e: Exception, info: GraphQLResolveInfo) -> GraphQLError:
+        """The answer for an exception no resolver meant to raise (#1114).
+
+        `uuid.UUID(str(id))` is how resolvers parse every ID argument, so a malformed one surfaces as
+        this ValueError; it is the caller's mistake, not ours, and says so.
+
+        The original rides along as `original_error`, which graphql-core never serialises: Strawberry's
+        execution logger writes it out with its traceback, so the server log keeps everything the
+        browser no longer sees."""
+        if isinstance(e, ValueError) and str(e) == _MALFORMED_UUID:
+            return GraphQLError(
+                message=f"{info.field_name}: that id is not valid.",
+                original_error=e,
+                extensions={"code": "VALIDATION_ERROR"},
+            )
+        return GraphQLError(message=_INTERNAL_MESSAGE, original_error=e, extensions={"code": "INTERNAL"})
+
+    @staticmethod
     def _is_root_field(info: GraphQLResolveInfo) -> bool:
         """A field selected directly on Query/Mutation, and ours rather than graphql-core's.
 
@@ -135,15 +165,23 @@ class ResolverGuardExtension(SchemaExtension):
             result = _next(root, info, *args, **kwargs)
         except (AppError, NotImplementedError) as e:
             raise self._to_graphql_error(e) from e
+        except GraphQLError:
+            raise
+        except Exception as e:
+            raise self._mask(e, info) from e
         if inspect.isawaitable(result):
-            return self._resolve_async(result)
+            return self._resolve_async(result, info)
         return result
 
-    async def _resolve_async(self, awaitable):
+    async def _resolve_async(self, awaitable, info: GraphQLResolveInfo):
         try:
             return await awaitable
         except (AppError, NotImplementedError) as e:
             raise self._to_graphql_error(e) from e
+        except GraphQLError:
+            raise
+        except Exception as e:
+            raise self._mask(e, info) from e
 
 
 schema = strawberry.Schema(
@@ -192,7 +230,7 @@ app = FastAPI(title="UC Nexus - Hardware Management System", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_allow_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
