@@ -248,6 +248,14 @@ it('saves the average door cost', async () => {
   expect(screen.getByText(/updated .* by Greg/)).toBeInTheDocument();
 });
 
+it('reads the updated time as the utc instant the server stored (#1271)', async () => {
+  renderPage();
+  // The fixture's '2026-09-08T12:00:00' is naive UTC; read as local time it prints the wrong hour.
+  const expected = new Date(Date.UTC(2026, 8, 8, 12, 0, 0)).toLocaleString();
+  const escaped = expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  expect(await screen.findByText(new RegExp(`updated ${escaped}`))).toBeInTheDocument();
+});
+
 // #1218: a shop assembly manager reaches this page from the Shop Assembly landing and cannot use the
 // Tenant Owner module, so the way back leads to Shop Assembly.
 it('leads a shop assembly manager back to shop assembly', async () => {
