@@ -1993,6 +1993,9 @@ class DeficientItemRow:
     inventory_location_id: strawberry.ID | None
     stock_item_id: strawberry.ID | None
     project_id: strawberry.ID | None
+    # Job number and name off the project itself (#1252), archived included. Null on a stock-pool row.
+    project_number: str | None
+    project_description: str | None
     hardware_category: str
     product_code: str
     deficient_quantity: int

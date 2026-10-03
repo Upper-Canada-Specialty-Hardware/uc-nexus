@@ -374,6 +374,9 @@ export const GET_DEFICIENT_ITEMS = gql`
       inventoryLocationId
       stockItemId
       projectId
+      # Off the project itself (#1252), archived included; null on a stock-pool row.
+      projectNumber
+      projectDescription
       hardwareCategory
       productCode
       deficientQuantity

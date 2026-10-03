@@ -1156,7 +1156,9 @@ def deficiency_review_to_type(dr) -> DeficiencyReview:
     )
 
 
-def deficient_item_row_to_type(row: dict) -> DeficientItemRow:
+def deficient_item_row_to_type(row: dict, labels: dict | None = None) -> DeficientItemRow:
+    """`labels` is the caller's batched `project_labels` read (#1252), one query per list."""
+    number, description = (labels or {}).get(row["project_id"], (None, None))
     return DeficientItemRow(
         source=row["source"],
         inventory_location_id=(
@@ -1164,6 +1166,8 @@ def deficient_item_row_to_type(row: dict) -> DeficientItemRow:
         ),
         stock_item_id=strawberry.ID(str(row["stock_item_id"])) if row["stock_item_id"] else None,
         project_id=strawberry.ID(str(row["project_id"])) if row["project_id"] else None,
+        project_number=number,
+        project_description=description,
         hardware_category=row["hardware_category"],
         product_code=row["product_code"],
         deficient_quantity=row["deficient_quantity"],
