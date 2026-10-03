@@ -321,13 +321,17 @@ def test_refinalize_refuses_a_draft_claiming_units_already_ordered(db_session):
     import_repository.finalize_import_session(db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100", 2))]})
     db_session.commit()
 
+    # A savepoint, not db_session.rollback(): the fixture's session joins an outer transaction, and a
+    # full rollback would take the project and the first order with it.
+    project_id = project.id
+    savepoint = db_session.begin_nested()
     with pytest.raises(ValidationError, match="only 2 not yet on a purchase order"):
         import_repository.finalize_import_session(
             db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100", 3))]}
         )
-    db_session.rollback()
+    savepoint.rollback()
 
-    assert _rows(db_session, project.id) == {
+    assert _rows(db_session, project_id) == {
         ("A01", "HG-100", HardwareItemState.IN_PO): 2,
         ("A01", "HG-100", HardwareItemState.AVAILABLE): 2,
     }
