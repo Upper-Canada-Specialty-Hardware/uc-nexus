@@ -59,13 +59,39 @@ def get_primary_warehouse_id(session: Session, *, company: str | None = None) ->
     base = select(Warehouse.id)
     if company is not None:
         base = base.where(Warehouse.company == company)
-    wh_id = session.scalar(base.where(Warehouse.is_primary.is_(True)).order_by(Warehouse.created_at).limit(1))
-    if wh_id is None:
-        # No primary flagged: fall back to the oldest warehouse so creates never fail.
-        wh_id = session.scalar(base.order_by(Warehouse.created_at).limit(1))
+    # Active buildings first (#1254), then the primary among them, then the oldest. A retired building
+    # is not offered as a destination anywhere, so defaulting into it would park stock where nobody can
+    # pick it; an active non-primary building beats a retired primary one. A retired building is still
+    # the last resort rather than a failure, so creates never fail while any warehouse exists.
+    wh_id = session.scalar(
+        base.order_by(Warehouse.is_active.desc(), Warehouse.is_primary.desc(), Warehouse.created_at).limit(1)
+    )
     if wh_id is None:
         raise ConflictError("No warehouse exists; cannot place inventory")
     return wh_id
+
+
+def assert_usable_destination(
+    session: Session, warehouse_id: uuid.UUID, *, company: str | None, field: str
+) -> Warehouse:
+    """A warehouse that units are about to be put into: it exists, it is active (#1374), and it is the
+    owning company's own building (#1375).
+
+    The company is compared directly, whatever the caller's scope: a UC NEXUS ADMIN is unscoped, so a
+    by-id tenancy check passes them through, and a cross-company destination would leave a row whose
+    warehouse and project (or PO) disagree about whose it is. `company` is the side the units belong
+    to - the project's, the source warehouse's, or the PO's; None skips the comparison."""
+    wh = session.get(Warehouse, warehouse_id)
+    if wh is None:
+        raise NotFoundError(f"Warehouse {warehouse_id} not found")
+    if not wh.is_active:
+        raise ValidationError(f"Warehouse {wh.code} is no longer active; choose another warehouse.", field=field)
+    if company is not None and wh.company != company:
+        raise ValidationError(
+            f"Warehouse {wh.code} belongs to another GP company; choose one of {company}'s warehouses.",
+            field=field,
+        )
+    return wh
 
 
 def _norm(value: str | None) -> str | None:
@@ -75,8 +101,26 @@ def _norm(value: str | None) -> str | None:
     return value or None
 
 
-def _check_name_unique(session: Session, name: str, exclude_id: uuid.UUID | None = None) -> None:
-    stmt = select(func.count()).select_from(Warehouse).where(func.lower(Warehouse.name) == name.lower())
+def _check_primary_active(*, is_primary: bool, is_active: bool) -> None:
+    """A primary warehouse is always active (#1254).
+
+    The primary building is where every receive with no warehouse chosen lands; a retired one is no
+    longer offered as a destination anywhere, so stock booked into it could not be picked again."""
+    if is_primary and not is_active:
+        raise ValidationError(
+            "The primary warehouse must stay active. Make another warehouse primary first.",
+            field="is_active",
+        )
+
+
+def _check_name_unique(session: Session, name: str, *, company: str, exclude_id: uuid.UUID | None = None) -> None:
+    """Names are unique within a company (#1256): another tenant's building does not block a name, and
+    the refusal never reveals a building the caller cannot see."""
+    stmt = (
+        select(func.count())
+        .select_from(Warehouse)
+        .where(Warehouse.company == company, func.lower(Warehouse.name) == name.lower())
+    )
     if exclude_id is not None:
         stmt = stmt.where(Warehouse.id != exclude_id)
     if session.scalar(stmt):
@@ -119,8 +163,14 @@ def _assert_movable(session: Session, wh: Warehouse) -> None:
         )
 
 
-def _check_code_unique(session: Session, code: str, exclude_id: uuid.UUID | None = None) -> None:
-    stmt = select(func.count()).select_from(Warehouse).where(func.lower(Warehouse.code) == code.lower())
+def _check_code_unique(session: Session, code: str, *, company: str, exclude_id: uuid.UUID | None = None) -> None:
+    """Codes are unique within a company (#1256): they are GP site codes, which each company's GP
+    database assigns on its own."""
+    stmt = (
+        select(func.count())
+        .select_from(Warehouse)
+        .where(Warehouse.company == company, func.lower(Warehouse.code) == code.lower())
+    )
     if exclude_id is not None:
         stmt = stmt.where(Warehouse.id != exclude_id)
     if session.scalar(stmt):
@@ -151,8 +201,9 @@ def create_warehouse(
         raise ValidationError("Warehouse code must be 20 characters or fewer", field="code")
     if not company:
         raise ValidationError("A GP company is required for a warehouse", field="company")
-    _check_name_unique(session, name)
-    _check_code_unique(session, code)
+    _check_primary_active(is_primary=is_primary, is_active=is_active)
+    _check_name_unique(session, name, company=company)
+    _check_code_unique(session, code, company=company)
 
     if is_primary:
         _clear_primary(session, company=company)
@@ -198,6 +249,10 @@ def update_warehouse(
     `_assert_movable`. Admin-only, like the mutation.
     """
     wh = get_warehouse(session, warehouse_id)
+    _check_primary_active(
+        is_primary=wh.is_primary if is_primary is None else is_primary,
+        is_active=wh.is_active if is_active is None else is_active,
+    )
 
     if company is not None:
         company = company.strip().upper()
@@ -210,20 +265,24 @@ def update_warehouse(
             _assert_movable(session, wh)
             wh.company = company
 
-    if name is not None:
-        name = name.strip()
-        if not name:
-            raise ValidationError("Warehouse name is required", field="name")
-        _check_name_unique(session, name, exclude_id=warehouse_id)
-        wh.name = name
-    if code is not None:
-        code = code.strip()
-        if not code:
-            raise ValidationError("Warehouse code is required", field="code")
-        if len(code) > 20:
-            raise ValidationError("Warehouse code must be 20 characters or fewer", field="code")
-        _check_code_unique(session, code, exclude_id=warehouse_id)
-        wh.code = code
+    # Names and codes are unique per company (#1256), so they are checked against the company the
+    # building ends up in - a move re-checks the name and code it keeps, not only an edited one.
+    name = wh.name if name is None else name.strip()
+    if not name:
+        raise ValidationError("Warehouse name is required", field="name")
+    # no_autoflush: a pending company move must not reach the database (and its per-company unique
+    # index) before these checks have had the chance to refuse it with a field error.
+    with session.no_autoflush:
+        _check_name_unique(session, name, company=wh.company, exclude_id=warehouse_id)
+    wh.name = name
+    code = wh.code if code is None else code.strip()
+    if not code:
+        raise ValidationError("Warehouse code is required", field="code")
+    if len(code) > 20:
+        raise ValidationError("Warehouse code must be 20 characters or fewer", field="code")
+    with session.no_autoflush:
+        _check_code_unique(session, code, company=wh.company, exclude_id=warehouse_id)
+    wh.code = code
     if address is not None:
         wh.address = _norm(address)
     if city is not None:
@@ -250,9 +309,16 @@ def delete_warehouse(session: Session, warehouse_id: uuid.UUID) -> None:
     if wh.is_primary:
         raise ConflictError("Cannot delete the primary warehouse")
 
+    # Every table whose warehouse_id points here without a cascade (#1229): a receive draft has no
+    # ondelete and a shipment return is RESTRICT, so either used to fail the delete at flush as a
+    # masked server error instead of saying what is in the way.
+    from app.models.shipping import ShipmentReturn as ShipmentReturnModel
+
     for model, label in (
         (InventoryLocationModel, "inventory location"),
         (StockItemModel, "stock"),
+        (ReceiveDraftModel, "receive draft"),
+        (ShipmentReturnModel, "shipment return"),
     ):
         count = session.scalar(select(func.count()).select_from(model).where(model.warehouse_id == warehouse_id))
         if count and count > 0:

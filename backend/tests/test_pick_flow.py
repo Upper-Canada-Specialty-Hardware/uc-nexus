@@ -215,6 +215,18 @@ def test_starting_a_pick_moves_nothing(db_session):
     assert _audits(db_session, AuditAction.PULL_DEDUCTION) == []
 
 
+def test_starting_a_pick_records_the_starter_by_user_id(db_session):
+    """#1356: who the pull is locked to is decided by user id, not by the display name beside it."""
+    project = _make_project(db_session)
+    pr = _pending_pull(db_session, project.id, needs=[(*HINGE, 4, "A01")])
+
+    warehouse_repository.start_pull_request_pick(db_session, pr.id, "Sam Lee", started_by_user_id="user_abc")
+    db_session.flush()
+
+    assert pr.assigned_to == "Sam Lee"
+    assert pr.assigned_to_user_id == "user_abc"
+
+
 def test_starting_a_pick_does_not_gate_on_availability(db_session):
     """The old approve refused a pull it could not fill, before anybody had looked at a rack. Now
     scarcity is discovered where it is visible, and a pull with nothing on the shelf still opens."""
@@ -677,6 +689,31 @@ def test_a_short_confirm_notifies_purchasing_once_per_pull(db_session):
         ).all()
     )
     assert len(notifs) == 1
+
+
+def test_a_managers_stranded_notice_does_not_stand_in_for_purchasings_signal(db_session):
+    """#1241: a count below what is reserved warns warehouse managers about this pull with the same
+    type (#1124). The short pick it predicted must still tell purchasing."""
+    from app.services import notification_service
+
+    project = _make_project(db_session)
+    row = _seed_inventory(db_session, project.id, quantity=9)
+    pr = _started_pull(db_session, project.id, needs=[(*HINGE, 12, "A01")])
+    notification_service.create_notification(
+        db_session,
+        project_id=project.id,
+        recipient_role=notification_service.WAREHOUSE_MANAGER_RECIPIENT_ROLE,
+        notification_type=NotificationType.INVENTORY_SHORTFALL,
+        message="counted below reserved",
+        pull_request_id=pr.id,
+    )
+    db_session.flush()
+
+    result = warehouse_repository.confirm_pick(db_session, pr.id, [_line(row, 9)], "picker")
+    db_session.flush()
+
+    assert result.notification is not None
+    assert result.notification.recipient_role == notification_service.PO_RECIPIENT_ROLE
 
 
 def test_a_second_confirm_covers_the_remainder_and_stamps_picked(db_session):

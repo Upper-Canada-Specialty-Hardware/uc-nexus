@@ -22,6 +22,10 @@ from app.services.notification_service import audiences_for
 # The most rows one notifications read returns (#1134). The bell asks for 5.
 MAX_NOTIFICATIONS_LIMIT = 200
 
+# The unread count stops here (#1224). The bell shows 99+ past 99, so counting further only makes
+# every 30s poll walk a reader's whole unread history for a number nobody sees.
+UNREAD_COUNT_CAP = 100
+
 
 @dataclass(frozen=True)
 class Reader:
@@ -72,9 +76,10 @@ def get_notifications(
 
 
 def count_unread(session: Session, reader: Reader) -> int:
-    """How many notifications this reader can see and has not read. One COUNT, no rows loaded."""
-    stmt = select(func.count()).select_from(Notification).where(*_visible(reader), ~_read_by(reader))
-    return int(session.scalar(stmt) or 0)
+    """How many notifications this reader can see and has not read, up to UNREAD_COUNT_CAP. One
+    COUNT over a LIMITed subquery, so the scan stops at the cap instead of walking the history."""
+    unread = select(Notification.id).where(*_visible(reader), ~_read_by(reader)).limit(UNREAD_COUNT_CAP).subquery()
+    return int(session.scalar(select(func.count()).select_from(unread)) or 0)
 
 
 def mark_as_read(session: Session, notification_id: uuid.UUID, reader: Reader) -> Notification:

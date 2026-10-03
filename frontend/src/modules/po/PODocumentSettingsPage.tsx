@@ -46,7 +46,7 @@ function fromLines(text: string): string[] {
 export default function PODocumentSettingsPage() {
   const { ownsTenant, hasRole } = useIdentity();
   const canEdit = ownsTenant || hasRole('PO Manager');
-  const { data, loading } = useQuery<{ poDocumentSettings: PODocumentSettings }>(GET_PO_DOCUMENT_SETTINGS);
+  const { data, loading, error } = useQuery<{ poDocumentSettings: PODocumentSettings }>(GET_PO_DOCUMENT_SETTINGS);
 
   return (
     <Box>
@@ -66,7 +66,12 @@ export default function PODocumentSettingsPage() {
         </Box>
       ) : data ? (
         <SettingsForm settings={data.poDocumentSettings} />
-      ) : null}
+      ) : (
+        // #1279: a failed read used to leave the page blank under its header.
+        <Alert severity="error">
+          The PO document settings could not be loaded. {error?.message ?? 'Reload the page to try again.'}
+        </Alert>
+      )}
     </Box>
   );
 }

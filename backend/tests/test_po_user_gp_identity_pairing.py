@@ -104,3 +104,36 @@ def test_keeping_po_user_leaves_the_identity_alone(clerk):
     out = user_repository.update_user_roles("u_target", [PO_USER_ROLE, "Warehouse Staff"])
     assert fake.patches == [{"roles": [PO_USER_ROLE, "Warehouse Staff"]}]
     assert out["gp_buyer_id"] == "mira"
+
+
+# --- #1321: a roles write over somebody else's change is refused --------------------------------------
+
+
+def test_a_roles_write_over_changed_roles_is_refused(clerk):
+    from app.errors import ConflictError
+
+    fake = clerk(roles=[PO_USER_ROLE, "Warehouse Staff"], gp_buyer_id="JSMITH")
+
+    with pytest.raises(ConflictError):
+        user_repository.update_user_roles("u_target", ["Warehouse Staff"], expected_roles=[PO_USER_ROLE])
+
+    assert fake.patches == []
+    assert fake.metadata["gpBuyerId"] == "JSMITH"
+
+
+def test_a_roles_write_with_the_loaded_roles_goes_through_in_any_order(clerk):
+    fake = clerk(roles=[PO_USER_ROLE, "Warehouse Staff"])
+
+    user_repository.update_user_roles(
+        "u_target", [PO_USER_ROLE, "Shipping"], expected_roles=["Warehouse Staff", PO_USER_ROLE]
+    )
+
+    assert fake.metadata["roles"] == [PO_USER_ROLE, "Shipping"]
+
+
+def test_a_roles_write_without_expected_roles_is_unchanged(clerk):
+    fake = clerk(roles=["Warehouse Staff"])
+
+    user_repository.update_user_roles("u_target", ["Shipping"])
+
+    assert fake.metadata["roles"] == ["Shipping"]

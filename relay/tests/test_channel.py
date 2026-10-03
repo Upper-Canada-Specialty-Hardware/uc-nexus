@@ -371,11 +371,13 @@ def test_create_job_success_returns_the_response_body(monkeypatch):
     reply = channel._dispatch("create_job", "TUBC", _JOB_PAYLOAD)
     assert reply["ok"] is True
     # cost_codes_provisioned rides along on every create_job reply (#448); 0 when none were selected.
+    # record is GP's full job row (#1307), None when the op did not attach one.
     assert reply["result"] == {
         "job_number": "NEXUS-380-T1",
         "job_name": "Test job",
         "company": "TUBC",
         "cost_codes_provisioned": 0,
+        "record": None,
     }
 
 
