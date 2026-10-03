@@ -43,7 +43,7 @@ from app.models.stock_item import StockItem
 from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
 from app.repositories import warehouse as warehouse_repository
 from tests.pick_helpers import pick_pull
-from tests.shop_assembly_helpers import batch_request
+from tests.shop_assembly_helpers import batch_request, with_schedule
 
 HINGE = ("HINGE", "HG-100")
 
@@ -164,21 +164,23 @@ def _two_opening_request(session, project, *, qty=2, code=HINGE[1]):
     """A shop-assembly request over two openings, through the real creation path."""
     return import_repository.finalize_import_session(
         session,
-        {
-            "project_id": str(project.id),
-            "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_items": [
-                {
-                    "opening_number": opening_number,
-                    "hardware_category": HINGE[0],
-                    "product_code": code,
-                    "quantity": qty,
-                }
-                for opening_number in ("A01", "A02")
-            ],
-        },
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": [
+                    {
+                        "opening_number": opening_number,
+                        "hardware_category": HINGE[0],
+                        "product_code": code,
+                        "quantity": qty,
+                    }
+                    for opening_number in ("A01", "A02")
+                ],
+            }
+        ),
     )
 
 

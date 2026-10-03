@@ -39,7 +39,7 @@ from app.repositories import (
 )
 from app.repositories import warehouse as warehouse_repository
 from tests.pick_helpers import pick_pull
-from tests.shop_assembly_helpers import batch_pull, batch_request
+from tests.shop_assembly_helpers import batch_pull, batch_request, with_schedule
 
 # --- fixtures / helpers ------------------------------------------------------------------------
 
@@ -107,13 +107,15 @@ def _finalize_sar(session, project, *, qty=2, code="HG-100", opening_number="A01
     numbers = sorted({i["opening_number"] for i in sa_items if i.get("opening_number")})
     return import_repository.finalize_import_session(
         session,
-        {
-            "project_id": str(project.id),
-            "openings": [{"opening_number": n} for n in numbers],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_items": sa_items,
-        },
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [{"opening_number": n} for n in numbers],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": sa_items,
+            }
+        ),
     )
 
 
@@ -445,13 +447,15 @@ def test_a_zero_line_shop_assembly_request_is_refused(db_session):
     with pytest.raises(ValidationError) as excinfo:
         import_repository.finalize_import_session(
             db_session,
-            {
-                "project_id": str(project.id),
-                "openings": [{"opening_number": "A01"}],
-                "hardware_items": [],
-                "include_shop_assembly_request": True,
-                "shop_assembly_items": [],
-            },
+            with_schedule(
+                {
+                    "project_id": str(project.id),
+                    "openings": [{"opening_number": "A01"}],
+                    "hardware_items": [],
+                    "include_shop_assembly_request": True,
+                    "shop_assembly_items": [],
+                }
+            ),
         )
     assert excinfo.value.field == "shop_assembly_items"
     assert "at least one line" in excinfo.value.message

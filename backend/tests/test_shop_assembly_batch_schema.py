@@ -27,6 +27,7 @@ from app.models.stock_item import StockItem
 from app.repositories import import_repository, user_repository, warehouse_admin_repository
 from app.schemas import shop_assembly as shop_assembly_module
 from main import schema
+from tests.shop_assembly_helpers import with_schedule
 
 REQUEST_FIELDS = """
   id
@@ -79,16 +80,18 @@ def _seed_inventory(session, project_id, *, category="HINGE", code="HG-100", qua
 def _raise_request(session, project, *, openings=("A01", "A02"), qty=2):
     return import_repository.finalize_import_session(
         session,
-        {
-            "project_id": str(project.id),
-            "openings": [{"opening_number": n} for n in openings],
-            "hardware_items": [],
-            "include_shop_assembly_request": True,
-            "shop_assembly_items": [
-                {"opening_number": n, "hardware_category": "HINGE", "product_code": "HG-100", "quantity": qty}
-                for n in openings
-            ],
-        },
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [{"opening_number": n} for n in openings],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": [
+                    {"opening_number": n, "hardware_category": "HINGE", "product_code": "HG-100", "quantity": qty}
+                    for n in openings
+                ],
+            }
+        ),
     )["shop_assembly_request"]
 
 
