@@ -129,6 +129,17 @@ export const RESERVATION_STALE_ROOT_FIELDS = [
   'requestCoverage',
 ];
 
+// What a request-side write that mints or deletes a pull invalidates (#1232): accepting a shipping
+// request (mints a PENDING pull), reopening one (deletes it), and creating or discarding a shop
+// assembly batch (mints or deletes its pull). The active queue reads pullRequests cache-first and is on
+// another route at that moment, so without this it opens on a list missing the new pull, or still
+// holding a deleted one whose Start pick then answers not found.
+//
+// Evicted, not refetched, for the same reason as PULL_LIFECYCLE_STALE_ROOT_FIELDS: the queue is not
+// mounted where these writes are launched, and nothing on those pages refetches GetPullRequests by
+// name, so the disjointness rule above holds.
+export const PULL_MINTED_STALE_ROOT_FIELDS = ['pullRequests'];
+
 // What cancelling a pull invalidates (#343). It is the widest blast radius in the warehouse: stock
 // goes back on the shelf, the source request returns to the accept queue, its claim is re-created,
 // and the openings leave the assembly floor.

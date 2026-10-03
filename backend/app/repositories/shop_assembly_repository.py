@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import (
+    NotificationType,
     PullRequestSource,
     PullRequestStatus,
     ReservationSource,
@@ -44,6 +45,7 @@ from app.models.shop_assembly import (
     ShopAssemblyRequestItem,
     ShopAssemblyRequestOpening,
 )
+from app.services import gp_window
 
 # Where one request sits on the ladder the requests list draws as columns. Derived from the request's
 # own status and the state of the pulls its batches minted - never stored, because a stored copy is
@@ -55,6 +57,7 @@ STAGE_DONE = "DONE"
 STAGE_REJECTED = "REJECTED"
 
 MAX_DISMISSAL_REASON_LENGTH = 500
+MAX_REJECTION_REASON_LENGTH = 500
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +433,7 @@ def get_return_notes(session: Session, requests: list[ShopAssemblyRequest]) -> d
 
 def _format_return_note(batch_number: str, cancelled_by: str | None, cancelled_at, reason: str | None) -> str:
     who = cancelled_by or "someone"
-    when = cancelled_at.date().isoformat() if cancelled_at is not None else "an earlier date"
+    when = gp_window.local_date(cancelled_at).isoformat() if cancelled_at is not None else "an earlier date"
     head = f"Returned to Pending: batch {batch_number} was cancelled by {who} on {when}"
     return f"{head}: {reason}" if reason else f"{head}."
 
@@ -762,10 +765,31 @@ def reject_shop_assembly_request(
             "batch's pull to undo it, and dismiss whatever is left."
         )
 
+    from app.services import notification_service
+
+    # #1242: a reason is required and the shop is told, as a shipping rejection does (#972).
+    # #1208: the column is String(500); an over-long reason is a field error, not an overflow at
+    # flush. Same limit and wording as a dismissal reason.
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValidationError("Say why the request is rejected - the shop is told.", field="reason")
+    if len(reason) > MAX_REJECTION_REASON_LENGTH:
+        raise ValidationError(
+            f"Rejection reason must be {MAX_REJECTION_REASON_LENGTH} characters or fewer",
+            field="reason",
+        )
+
     request.status = ShopAssemblyRequestStatus.REJECTED
     request.rejected_by = rejected_by
-    request.rejection_reason = (reason or "").strip() or None
+    request.rejection_reason = reason
     request.rejected_at = datetime.utcnow()
+    notification_service.create_notification(
+        session,
+        project_id=request.project_id,
+        recipient_role=notification_service.SHOP_ASSEMBLY_RECIPIENT_ROLE,
+        notification_type=NotificationType.SHOP_ASSEMBLY_REQUEST_REJECTED,
+        message=f"{rejected_by} rejected shop assembly request {request.request_number} - {reason}",
+    )
     session.flush()
     return request
 

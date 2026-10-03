@@ -11,6 +11,7 @@ import {
   Stack,
   TableCell,
   TableRow,
+  TextField,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
@@ -25,8 +26,9 @@ import {
   GET_SHOP_ASSEMBLY_REQUESTS,
   REJECT_SHOP_ASSEMBLY_REQUEST,
 } from '../../graphql/shop-assembly';
-import { RESERVATION_STALE_ROOT_FIELDS } from '../../graphql/refetch';
+import { PULL_MINTED_STALE_ROOT_FIELDS, RESERVATION_STALE_ROOT_FIELDS } from '../../graphql/refetch';
 import ConfirmDialog from '../../components/ConfirmDialog';
+import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import PageHeader from '../../components/PageHeader';
@@ -89,10 +91,20 @@ function groupByOpening(items: RequestItem[]): [string, RequestItem[]][] {
   return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
 }
 
-/** Evict what a batch, dismissal, rejection or discard makes stale everywhere else in the app. */
+/** Evict what a dismissal or rejection makes stale everywhere else in the app. */
 const evictReservationReads = {
   update(cache: { evict: (o: { id: string; fieldName: string }) => void; gc: () => void }) {
     for (const fieldName of RESERVATION_STALE_ROOT_FIELDS) {
+      cache.evict({ id: 'ROOT_QUERY', fieldName });
+    }
+    cache.gc();
+  },
+};
+
+/** A batch mints a warehouse pull and a discard deletes it, so the pull queue goes stale too (#1232). */
+const evictReservationAndPullReads = {
+  update(cache: { evict: (o: { id: string; fieldName: string }) => void; gc: () => void }) {
+    for (const fieldName of [...RESERVATION_STALE_ROOT_FIELDS, ...PULL_MINTED_STALE_ROOT_FIELDS]) {
       cache.evict({ id: 'ROOT_QUERY', fieldName });
     }
     cache.gc();
@@ -109,6 +121,8 @@ export default function ShopAssemblyRequestsPage() {
     | { kind: 'discard'; batchId: string; batchNumber: string }
     | null
   >(null);
+  // #1242: a rejection says why, and the shop is told - the same dialog shipping's reject uses (#972).
+  const [rejectReason, setRejectReason] = useState('');
   const { showToast } = useToast();
   const { ownsTenant, hasRole } = useIdentity();
   // The four writes are the Shop Assembly Manager's, with the TENANT OWNER beside them - the same
@@ -156,7 +170,7 @@ export default function ShopAssemblyRequestsPage() {
   );
 
   const [createBatch, { loading: batching }] = useMutation(CREATE_SHOP_ASSEMBLY_BATCH, {
-    ...evictReservationReads,
+    ...evictReservationAndPullReads,
     onCompleted: () => settle('Batch created - the warehouse pull is on the floor', 'success'),
     onError: (e) => settle(e.message, 'error'),
   });
@@ -171,7 +185,7 @@ export default function ShopAssemblyRequestsPage() {
     onError: (e) => settle(e.message, 'error'),
   });
   const [discardBatch, { loading: discarding }] = useMutation(DISCARD_SHOP_ASSEMBLY_BATCH, {
-    ...evictReservationReads,
+    ...evictReservationAndPullReads,
     onCompleted: () => settle('Batch discarded - its openings are back on the board', 'success'),
     onError: (e) => settle(e.message, 'error'),
   });
@@ -186,11 +200,19 @@ export default function ShopAssemblyRequestsPage() {
     } else if (pending.kind === 'dismiss') {
       dismissOpenings({ variables: { requestId: pending.requestId, openingNumbers: null, reason: null } });
     } else if (pending.kind === 'reject') {
-      rejectRequest({ variables: { id: pending.requestId, reason: null } });
+      const reason = rejectReason.trim();
+      if (!reason) return;
+      setRejectReason('');
+      rejectRequest({ variables: { id: pending.requestId, reason } });
     } else {
       discardBatch({ variables: { batchId: pending.batchId } });
     }
-  }, [confirm, createBatch, dismissOpenings, rejectRequest, discardBatch]);
+  }, [confirm, rejectReason, createBatch, dismissOpenings, rejectRequest, discardBatch]);
+
+  const closeReject = () => {
+    setConfirm(null);
+    setRejectReason('');
+  };
 
   const confirmCopy = useMemo(() => {
     if (!confirm) return { title: '', message: '', label: 'Confirm', color: 'primary' as const };
@@ -500,8 +522,38 @@ export default function ShopAssemblyRequestsPage() {
         </Stack>
       </StaggerList>
 
+      <Modal
+        open={confirm?.kind === 'reject'}
+        title={confirmCopy.title}
+        onClose={closeReject}
+        maxWidth="sm"
+        actions={
+          <>
+            <Button onClick={closeReject}>Keep request</Button>
+            <Button variant="contained" color="error" disabled={!rejectReason.trim()} onClick={runConfirmed}>
+              {confirmCopy.label}
+            </Button>
+          </>
+        }
+      >
+        <Stack spacing={2}>
+          <Typography variant="body2">{confirmCopy.message} The shop is told, with your reason.</Typography>
+          <TextField
+            label="Reason"
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            required
+            fullWidth
+            multiline
+            minRows={2}
+            autoFocus
+            slotProps={{ htmlInput: { maxLength: 500 } }}
+          />
+        </Stack>
+      </Modal>
+
       <ConfirmDialog
-        open={confirm !== null}
+        open={confirm !== null && confirm.kind !== 'reject'}
         title={confirmCopy.title}
         message={confirmCopy.message}
         confirmLabel={confirmCopy.label}

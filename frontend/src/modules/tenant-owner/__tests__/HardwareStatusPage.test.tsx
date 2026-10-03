@@ -2,34 +2,28 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { MockedProvider, type MockedResponse } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import HardwareStatusPage from '../HardwareStatusPage';
-import { GET_PROJECTS } from '../../../graphql/shared';
-import { GET_HARDWARE_STATUS_BY_PRODUCT } from '../../../graphql/admin';
+import { GET_HARDWARE_STATUS_BY_PRODUCT, GET_REPORT_PROJECT_OPTIONS } from '../../../graphql/admin';
 
 const INFINITE = Number.POSITIVE_INFINITY;
 
-const project = (id: string, projectId: string, description: string, openingCount: number) => ({
+const project = (id: string, projectId: string, description: string, openingCount: number, archived = false) => ({
   id,
   projectId,
   description,
-  client: null,
-  jobSiteName: null,
-  scheduleFilename: null,
-  company: 'TUBC',
+  archived,
   openingCount,
-  gpSetupOk: true,
-  gpSetupCheckedAt: null,
-  gpSetupIssues: [],
-  gpJobState: null,
   __typename: 'Project',
 });
 
-// 80001 has an imported schedule; 80003 is a GP-mirrored job with POs and no schedule (#741).
+// 80001 has an imported schedule; 80003 is a GP-mirrored job with POs and no schedule (#741); 79990
+// is a finished job that has been archived (#1200).
 const projectsMock: MockedResponse = {
-  request: { query: GET_PROJECTS },
+  request: { query: GET_REPORT_PROJECT_OPTIONS },
   maxUsageCount: INFINITE,
   result: {
     data: {
-      projects: [
+      adminProjects: [
+        project('p9', '79990', 'Old Library Annex', 12, true),
         project('p1', '80001', 'Cowichan Dist Hospital', 66),
         project('p3', '80003', 'Sea Bus Terminal Refurbishment', 0),
       ],
@@ -45,7 +39,9 @@ const statusMock = (projectIds: string[]): MockedResponse => ({
 
 function renderPage() {
   return render(
-    <MockedProvider mocks={[projectsMock, statusMock(['p3']), statusMock(['p1']), statusMock(['p1', 'p3'])]}>
+    <MockedProvider
+      mocks={[projectsMock, statusMock(['p3']), statusMock(['p1']), statusMock(['p1', 'p3']), statusMock(['p9'])]}
+    >
       <MemoryRouter>
         <HardwareStatusPage />
       </MemoryRouter>
@@ -82,4 +78,19 @@ it('names only the scheduleless projects in a mixed pick', async () => {
   const notice = await screen.findByText(/No hardware schedule has been imported for/);
   expect(notice).toHaveTextContent('80003');
   expect(notice).not.toHaveTextContent('80001');
+});
+
+it('lists an archived project after the live ones, tagged, and it can be picked', async () => {
+  renderPage();
+  const input = screen.getByRole('combobox', { name: 'Projects' });
+  fireEvent.mouseDown(input);
+
+  const options = await screen.findAllByRole('option');
+  expect(options.map((o) => o.textContent)).toEqual([
+    'Cowichan Dist Hospital',
+    'Sea Bus Terminal Refurbishment',
+    'Old Library Annex (archived)',
+  ]);
+  fireEvent.click(options[2]);
+  expect(await screen.findByText('No hardware found for the selected projects.')).toBeInTheDocument();
 });

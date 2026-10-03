@@ -53,6 +53,9 @@ def get_pull_requests(
     statuses=None,
     *,
     company: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+    newest_finished_first: bool = False,
 ) -> list[PullRequestModel]:
     """
     Query PullRequest WHERE deleted_at IS NULL, optionally filtered by project_id.
@@ -63,6 +66,10 @@ def get_pull_requests(
     `status` filters to one status; `statuses` filters to any of a set - the active queue passes
     [PENDING, IN_PROGRESS] so completed and cancelled pulls leave it the moment they land, and the
     history page passes [COMPLETED, CANCELLED]. The two are additive when both are given.
+
+    The history page pages here (#1268): terminal pulls only accumulate, so it reads newest finished
+    first (completed or cancelled at, id as the tiebreak) a page at a time instead of every finished
+    pull and its items on each visit. `limit` None keeps the unpaged read the live queue relies on.
     """
     stmt = (
         select(PullRequestModel)
@@ -81,7 +88,15 @@ def get_pull_requests(
         from app.repositories import tenancy
 
         stmt = stmt.where(PullRequestModel.project_id.in_(tenancy.project_ids_for(company)))
-    stmt = stmt.order_by(PullRequestModel.created_at.asc())
+    if newest_finished_first:
+        finished_at = func.coalesce(
+            PullRequestModel.completed_at, PullRequestModel.cancelled_at, PullRequestModel.created_at
+        )
+        stmt = stmt.order_by(finished_at.desc(), PullRequestModel.id.desc())
+    else:
+        stmt = stmt.order_by(PullRequestModel.created_at.asc())
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
     return list(session.scalars(stmt).unique().all())
 
 
@@ -300,7 +315,9 @@ def find_reservation_holder(session: Session, pr: PullRequestModel) -> tuple[Res
 # confirmed short and the un-picked remainder is still owed.
 
 
-def start_pull_request_pick(session: Session, pr_id: uuid.UUID, started_by: str) -> PullRequestModel:
+def start_pull_request_pick(
+    session: Session, pr_id: uuid.UUID, started_by: str, started_by_user_id: str | None = None
+) -> PullRequestModel:
     """Claim a PENDING pull and open it for picking (#367). **Nothing moves in inventory.**
 
     This is what `approve_pull_request` used to be, minus everything that touched stock: no
@@ -333,6 +350,9 @@ def start_pull_request_pick(session: Session, pr_id: uuid.UUID, started_by: str)
 
     pr.status = PullRequestStatus.IN_PROGRESS
     pr.assigned_to = started_by
+    # #1356: the id is what the pick page compares to decide who the pull is locked to; the name is
+    # only shown.
+    pr.assigned_to_user_id = started_by_user_id
     pr.approved_at = datetime.utcnow()
     session.flush()
     return pr
@@ -1043,8 +1063,15 @@ def confirm_pick(
     shortfalls = _pick_shortfalls(session, pr, required, covered, short_combos, holder)
     notif = None
     # One open signal per pull, not one per confirmation: a picker keying a big sheet in three
-    # sittings would otherwise raise three identical backfill notifications for the same gap.
-    if not notification_service.has_unread_notification_for_pull(session, pr.id, NotificationType.INVENTORY_SHORTFALL):
+    # sittings would otherwise raise three identical backfill notifications for the same gap. Only
+    # purchasing's own signal counts: a warehouse manager's count-below-reserved notice on this pull
+    # (#1124) is the same type and must not stand in for it (#1241).
+    if not notification_service.has_unread_notification_for_pull(
+        session,
+        pr.id,
+        NotificationType.INVENTORY_SHORTFALL,
+        recipient_role=notification_service.PO_RECIPIENT_ROLE,
+    ):
         notif = notification_service.notify_po_shortfall(
             session,
             project_id=pr.project_id,
@@ -1312,10 +1339,15 @@ def _return_units_to_project_inventory(
         .order_by(InventoryLocationModel.received_at.desc())
     ).first()
     if il is None:
+        from app.models.project import Project as ProjectModel
+
         from .inventory import resolve_project_combo_cost
 
         now = datetime.utcnow()
-        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
+        # Scoped to the project's own company (#1253): unscoped, the lookup picks the oldest primary
+        # building across every tenant, and the restored row would sit in another company's warehouse.
+        company = session.scalar(select(ProjectModel.company).where(ProjectModel.id == project_id))
+        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session, company=company)
         # Every prior row for the combo is gone (that is why this one exists), so the cost is
         # re-resolved from the schedule. It is also the anchor stock row's price key (#942), so the
         # anchor is a pool row at the restored units' own price, never one at some other price.

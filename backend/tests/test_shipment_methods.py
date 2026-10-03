@@ -48,6 +48,15 @@ def test_a_blank_name_is_refused(db_session):
         methods.create_shipment_method(db_session, name="   ", company="TUBC")
 
 
+def test_a_name_over_100_characters_is_refused_on_create_and_rename(db_session):
+    # #1175: the column is String(100); past it the flush failed as a masked server error.
+    with pytest.raises(ValidationError):
+        methods.create_shipment_method(db_session, name="x" * 101, company="TUBC")
+    method = methods.create_shipment_method(db_session, name="x" * 100, company="TUBC")
+    with pytest.raises(ValidationError):
+        methods.update_shipment_method(db_session, method.id, name="y" * 101)
+
+
 def test_names_are_trimmed(db_session):
     method = methods.create_shipment_method(db_session, name="  Our truck  ", company="TUBC")
     assert method.name == "Our truck"
@@ -75,6 +84,28 @@ def test_renaming_onto_another_name_is_refused(db_session):
     other = methods.create_shipment_method(db_session, name="Our truck", company="TUBC")
     with pytest.raises(ConflictError):
         methods.update_shipment_method(db_session, other.id, name="courier")
+
+
+def test_recasing_a_name_is_not_a_conflict_with_itself(db_session):
+    method = methods.create_shipment_method(db_session, name="flatbed", company="TUBC")
+    methods.update_shipment_method(db_session, method.id, name="Flatbed")
+    assert method.name == "Flatbed"
+
+
+def test_the_index_stops_a_second_spelling_the_check_did_not_see(db_session, monkeypatch):
+    # #1388: two adds at once both pass the read-before-write check. Stand in for the second by
+    # skipping the check; the case-insensitive index refuses it as the same conflict, and the
+    # savepoint leaves the session usable.
+    methods.create_shipment_method(db_session, name="Flatbed", company="TUBC")
+    monkeypatch.setattr(methods, "_check_name_free", lambda *a, **k: None)
+
+    with pytest.raises(ConflictError, match="already exists"):
+        methods.create_shipment_method(db_session, name="flatbed", company="TUBC")
+    other = methods.create_shipment_method(db_session, name="Courier", company="TUBC")
+    with pytest.raises(ConflictError, match="already exists"):
+        methods.update_shipment_method(db_session, other.id, name="FLATBED")
+
+    assert sorted(m.name for m in methods.get_shipment_methods(db_session, company="TUBC")) == ["Courier", "Flatbed"]
 
 
 def test_renaming_to_the_same_name_is_not_a_conflict_with_itself(db_session):

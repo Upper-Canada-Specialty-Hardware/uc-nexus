@@ -1,5 +1,6 @@
 import { Document, Page, Text, View, Image, StyleSheet } from '@react-pdf/renderer';
 import { PO_COMPANY_LOGO } from './poCompanyLogo';
+import { documentOrderTotal } from './documentTotals';
 
 // The finished supplier PO document (issue #230), laid out to match the hand-edited Word output a PO
 // user currently produces from GP's raw PO: header (from / vendor / ship-to / meta), the info row,
@@ -100,6 +101,8 @@ export interface PurchaseOrderDocumentProps {
   taxAmount: number;
   taxLabel: string;
   tariffAmount: number;
+  /** #1236: GP's trade discount (TRDISAMT), taken off the goods. Omitted reads as none. */
+  tradeDiscount?: number;
   taxNumbers: string;
   mandatoryBullets: string[];
   shippingAccounts: string[];
@@ -130,14 +133,14 @@ export default function PurchaseOrderDocument(props: PurchaseOrderDocumentProps)
     poNumber, date, requiredBy, quotationNumber, companyFromAddress,
     vendorName, vendorAddress, shipTo,
     projectNumber, shippingMethod, paymentTerms, confirmWith, buyerName,
-    currency, lineItems, freight, miscellaneous, taxAmount, taxLabel, tariffAmount,
+    currency, lineItems, freight, miscellaneous, taxAmount, taxLabel, tariffAmount, tradeDiscount = 0,
     taxNumbers, mandatoryBullets, shippingAccounts, customsBrokerBlock,
     fscNote, usaTariffNote, footerNotes, signatureNote,
     includeFsc, includeUsaTariff, includeCustoms,
   } = props;
 
   const subtotal = lineItems.reduce((sum, li) => sum + (li.ordered ?? 0) * (li.unitPrice ?? 0), 0);
-  const orderTotal = subtotal + (freight ?? 0) + (miscellaneous ?? 0) + (taxAmount ?? 0) + (tariffAmount ?? 0);
+  const orderTotal = documentOrderTotal({ subtotal, freight, miscellaneous, taxAmount, tariffAmount, tradeDiscount });
 
   return (
     <Document>
@@ -234,6 +237,12 @@ export default function PurchaseOrderDocument(props: PurchaseOrderDocumentProps)
             <Text style={styles.totalLabel}>Subtotal</Text>
             <Text style={styles.totalValue}>{formatMoney(subtotal, currency)}</Text>
           </View>
+          {tradeDiscount > 0 && (
+            <View style={styles.totalRow}>
+              <Text style={styles.totalLabel}>Trade discount</Text>
+              <Text style={styles.totalValue}>-{formatMoney(tradeDiscount, currency)}</Text>
+            </View>
+          )}
           <View style={styles.totalRow}>
             <Text style={styles.totalLabel}>Freight</Text>
             <Text style={styles.totalValue}>{formatMoney(freight, currency)}</Text>
