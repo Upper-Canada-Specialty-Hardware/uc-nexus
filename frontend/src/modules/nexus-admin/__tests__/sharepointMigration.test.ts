@@ -220,6 +220,7 @@ describe('buildEntries', () => {
         productCode: '1431 CPS TB EN',
         quantity: 4,
         unitCost: null,
+        unitCostUnreadable: false,
         projectId: 'p1',
         aisle: 'A',
         row: '62',
@@ -228,6 +229,15 @@ describe('buildEntries', () => {
         poLineItemId: null,
       },
     ]);
+  });
+
+  it('carries an unreadable source cost onto the entry (#1370)', () => {
+    const [entry] = buildEntries({
+      ...base,
+      candidates: toCandidates([item({ projectInventoryQty: 4, unitCost: 0, unitCostUnreadable: true })]),
+    }).entries;
+    expect(entry.unitCost).toBeNull();
+    expect(entry.unitCostUnreadable).toBe(true);
   });
 
   it('leaves projectId null on a company stock entry', () => {

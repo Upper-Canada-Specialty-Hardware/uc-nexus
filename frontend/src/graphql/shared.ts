@@ -121,6 +121,7 @@ export const GET_GP_OUTBOX = gql`
       id
       label
       op
+      relayOp
       company
       status
       attempts

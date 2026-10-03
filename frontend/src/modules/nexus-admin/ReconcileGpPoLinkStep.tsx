@@ -10,13 +10,11 @@ import {
   MenuItem,
   Select,
   Stack,
-  Table,
-  TableBody,
   TableCell,
-  TableHead,
   TableRow,
   Typography,
 } from '@mui/material';
+import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import {
   PO_LINK_REASON_LABELS,
@@ -24,6 +22,17 @@ import {
   type PoLinkPick,
   type PoLinkResolution,
 } from './sharepointMigration';
+
+// Fits the card at any width (UI law 2): part numbers and the PO cell ellipsize with the full value on
+// hover, and the picker column takes the most of the slack because it is the control the step is for.
+const PO_LINK_COLUMNS: FitTableColumn[] = [
+  { id: 'part', label: 'Part number', min: 96, weight: 1 },
+  { id: 'scheduled', label: 'Scheduled part number', min: 96, weight: 1 },
+  { id: 'poCell', label: 'PO cell', min: 80, weight: 0.8 },
+  { id: 'units', label: 'Units', min: 56, weight: 0.3, align: 'right' },
+  { id: 'reason', label: 'Reason', min: 120, weight: 0.9 },
+  { id: 'line', label: 'PO line', min: 220, weight: 2.4, dense: true },
+];
 
 interface Props {
   /** Every SharePoint row that carries a PO cell. Rows with a blank cell never reach this step. */
@@ -105,30 +114,11 @@ export default function ReconcileGpPoLinkStep({
                 Every row naming a purchase order matched exactly one line on its own.
               </Alert>
             ) : (
-              <Box sx={{ maxHeight: 480, overflow: 'auto' }}>
-                <Table size="small" stickyHeader>
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Part number</TableCell>
-                      <TableCell>Scheduled part number</TableCell>
-                      <TableCell>PO cell</TableCell>
-                      <TableCell align="right">Units</TableCell>
-                      <TableCell>Reason</TableCell>
-                      <TableCell>PO line</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {[...unresolved, ...answered].map((row) => (
-                      <PoLinkRowCells
-                        key={row.spItemId}
-                        row={row}
-                        pick={picks.get(row.spItemId)}
-                        onPick={onPick}
-                      />
-                    ))}
-                  </TableBody>
-                </Table>
-              </Box>
+              <FitTable storageKey="sharepoint-migration-po-link" columns={PO_LINK_COLUMNS} maxHeight={480}>
+                {[...unresolved, ...answered].map((row) => (
+                  <PoLinkRowCells key={row.spItemId} row={row} pick={picks.get(row.spItemId)} onPick={onPick} />
+                ))}
+              </FitTable>
             )}
           </>
         )}
@@ -149,13 +139,19 @@ function PoLinkRowCells({
   const lines = row.po?.lines ?? [];
   return (
     <TableRow hover>
-      <TableCell sx={monoSx}>{row.partNumber || '—'}</TableCell>
-      <TableCell sx={monoSx}>{row.scheduledPartNumber || '—'}</TableCell>
-      <TableCell sx={monoSx}>{row.poCell}</TableCell>
+      <TableCell sx={monoSx} title={row.partNumber || undefined}>
+        {row.partNumber || '—'}
+      </TableCell>
+      <TableCell sx={monoSx} title={row.scheduledPartNumber || undefined}>
+        {row.scheduledPartNumber || '—'}
+      </TableCell>
+      <TableCell sx={monoSx} title={row.poCell}>
+        {row.poCell}
+      </TableCell>
       <TableCell align="right" sx={tabularSx}>
         {row.quantity}
       </TableCell>
-      <TableCell>
+      <TableCell title={row.reason ? PO_LINK_REASON_LABELS[row.reason] : 'Matched'}>
         <Chip
           size="small"
           variant="outlined"
@@ -163,8 +159,7 @@ function PoLinkRowCells({
           label={row.reason ? PO_LINK_REASON_LABELS[row.reason] : 'Matched'}
         />
       </TableCell>
-      {/* minWidth: 0 so the picker shrinks with the table instead of widening the page. */}
-      <TableCell sx={{ minWidth: 0 }}>
+      <TableCell sx={{ px: 1 }}>
         <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
           <Select
             size="small"
@@ -172,7 +167,8 @@ function PoLinkRowCells({
             disabled={lines.length === 0}
             value={pick && pick !== SKIP_PO_LINK ? pick : ''}
             onChange={(e) => onPick(row.spItemId, (e.target.value as string) || null)}
-            sx={{ minWidth: 0, flex: 1, maxWidth: 360 }}
+            fullWidth
+            sx={{ minWidth: 0, flex: 1 }}
           >
             <MenuItem value="">
               <em>{lines.length === 0 ? 'No PO to pick from' : 'Choose a line…'}</em>

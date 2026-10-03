@@ -39,6 +39,8 @@ const NOTIFICATION_LINKS: Record<string, string> = {
   SHIPPING_REQUEST_REJECTED: '/app/shipping/requests?view=REJECTED',
   // #1050: a classification change took a product off openings waiting on a shop request.
   CLASSIFICATION_CHANGED: '/app/shop-assembly/requests',
+  // #1242: a shop assembly request was turned down.
+  SHOP_ASSEMBLY_REQUEST_REJECTED: '/app/shop-assembly/requests',
 };
 
 interface Notification {
@@ -89,6 +91,8 @@ export default function NotificationBell() {
 
   const notifications = data?.notifications ?? [];
   const unreadCount = unreadData?.notificationUnreadCount ?? 0;
+  // The server stops counting at 100 (#1224), so anything past 99 reads as 99+, matching the badge.
+  const unreadLabel = unreadCount > 99 ? '99+' : String(unreadCount);
   const open = Boolean(anchorEl);
 
   const handleClick = (event: React.MouseEvent<HTMLElement>) => {
@@ -101,16 +105,20 @@ export default function NotificationBell() {
 
   const handleNotificationClick = async (notification: Notification) => {
     if (!notification.isRead) {
-      await markAsRead({
-        variables: { id: notification.id },
-        refetchQueries: [
-          {
-            query: GET_NOTIFICATIONS,
-            variables: { limit: 5 },
-          },
-          { query: GET_NOTIFICATION_UNREAD_COUNT },
-        ],
-      });
+      try {
+        await markAsRead({
+          variables: { id: notification.id },
+          refetchQueries: [
+            {
+              query: GET_NOTIFICATIONS,
+              variables: { limit: 5 },
+            },
+            { query: GET_NOTIFICATION_UNREAD_COUNT },
+          ],
+        });
+      } catch {
+        // A failed read must not cost the click its navigation; the next poll reconciles the badge.
+      }
     }
     const to = NOTIFICATION_LINKS[notification.type];
     if (to) {
@@ -143,7 +151,7 @@ export default function NotificationBell() {
         color="inherit"
         sx={{ mr: 1 }}
         onClick={handleClick}
-        aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'}
+        aria-label={unreadCount > 0 ? `Notifications, ${unreadLabel} unread` : 'Notifications'}
       >
         <Badge badgeContent={unreadCount} color="error" invisible={unreadCount === 0}>
           <Bell size={20} strokeWidth={1.75} />
@@ -169,7 +177,7 @@ export default function NotificationBell() {
         >
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
             <Typography sx={{ ...microLabelSx, color: 'text.primary' }}>Notifications</Typography>
-            {unreadCount > 0 && <Chip size="small" color="secondary" label={`${unreadCount} new`} />}
+            {unreadCount > 0 && <Chip size="small" color="secondary" label={`${unreadLabel} new`} />}
           </Box>
           {/* No bulk-clear meant the badge only came down one click at a time, and the popover shows
               just the latest few - so any unread past that were invisible and stuck lit. */}

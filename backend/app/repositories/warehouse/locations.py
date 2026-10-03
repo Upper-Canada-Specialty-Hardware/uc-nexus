@@ -115,9 +115,18 @@ def create_warehouse_location(
         session.flush()
         return existing
 
+    # The read above is unlocked, so two people defining the same shelf at once both reach here. The
+    # insert runs in a savepoint and the loser's unique-key violation becomes the same conflict the
+    # read gives, instead of a masked server error that also poisons the outer transaction (#1387).
+    from sqlalchemy.exc import IntegrityError
+
     loc = WarehouseLocationModel(warehouse_id=warehouse_id, aisle=aisle, row=row, bay=bay, active=True)
-    session.add(loc)
-    session.flush()
+    try:
+        with session.begin_nested():
+            session.add(loc)
+            session.flush()
+    except IntegrityError:
+        raise ConflictError(f"{aisle} / {row} / {bay} is already defined in this warehouse") from None
     return loc
 
 
@@ -172,11 +181,25 @@ def clone_origin_fields(source: InventoryLocationModel) -> dict:
     }
 
 
+# A location part the caller did not give at all, as against one given as null (#1251). An aisle-only
+# shelf (row and bay null) is a place of its own: its panel must list what sits there, not every row
+# in the aisle. So null matches NULL, and only an omitted part matches anything.
+ANY_LOCATION_PART = object()
+
+
+def _part_filter(column, value):
+    if value is ANY_LOCATION_PART:
+        return None
+    if value is None:
+        return column.is_(None)
+    return column == value
+
+
 def get_location_contents(
     session: Session,
     aisle: str,
-    row_name: str | None = None,
-    bay: str | None = None,
+    row_name: str | None | object = ANY_LOCATION_PART,
+    bay: str | None | object = ANY_LOCATION_PART,
     warehouse_id: uuid.UUID | None = None,
     *,
     company: str | None = None,
@@ -191,10 +214,12 @@ def get_location_contents(
         .outerjoin(POModel, POLineItemModel.po_id == POModel.id)
         .where(InventoryLocationModel.aisle == aisle, InventoryLocationModel.quantity > 0)
     )
-    if row_name is not None:
-        inv_stmt = inv_stmt.where(InventoryLocationModel.row == row_name)
-    if bay is not None:
-        inv_stmt = inv_stmt.where(InventoryLocationModel.bay == bay)
+    for clause in (
+        _part_filter(InventoryLocationModel.row, row_name),
+        _part_filter(InventoryLocationModel.bay, bay),
+    ):
+        if clause is not None:
+            inv_stmt = inv_stmt.where(clause)
     if warehouse_id is not None:
         inv_stmt = inv_stmt.where(InventoryLocationModel.warehouse_id == warehouse_id)
     if company is not None:
@@ -206,10 +231,9 @@ def get_location_contents(
         StockItemModel.aisle == aisle,
         StockItemModel.quantity + StockItemModel.deficient_quantity > 0,
     )
-    if row_name is not None:
-        si_stmt = si_stmt.where(StockItemModel.row == row_name)
-    if bay is not None:
-        si_stmt = si_stmt.where(StockItemModel.bay == bay)
+    for clause in (_part_filter(StockItemModel.row, row_name), _part_filter(StockItemModel.bay, bay)):
+        if clause is not None:
+            si_stmt = si_stmt.where(clause)
     if warehouse_id is not None:
         si_stmt = si_stmt.where(StockItemModel.warehouse_id == warehouse_id)
     if company is not None:
@@ -309,8 +333,8 @@ def get_location_utilization(
 def get_location_audit_history(
     session: Session,
     aisle: str,
-    row_name: str | None = None,
-    bay: str | None = None,
+    row_name: str | None | object = ANY_LOCATION_PART,
+    bay: str | None | object = ANY_LOCATION_PART,
     limit: int = 10,
     warehouse_id: uuid.UUID | None = None,
     *,
@@ -325,10 +349,12 @@ def get_location_audit_history(
     # Build the matching predicate via JSONB containment. Postgres-only — matches the JSONB column.
     from_match: dict = {"aisle": aisle}
     to_match: dict = {"aisle": aisle}
-    if row_name is not None:
+    # A null part is written into the location object as JSON null (location_detail), so containment
+    # on {"row": None} matches exactly the aisle-only entries (#1251); an omitted part matches any.
+    if row_name is not ANY_LOCATION_PART:
         from_match["row"] = row_name
         to_match["row"] = row_name
-    if bay is not None:
+    if bay is not ANY_LOCATION_PART:
         from_match["bay"] = bay
         to_match["bay"] = bay
     if warehouse_id is not None:
@@ -439,6 +465,15 @@ def get_location_duplicates(session: Session, *, company: str | None = None) -> 
     )
 
 
+def _matches_from(column, value: str | None):
+    """A merge's from row or bay as a filter, never the aisle. The cleanup page sends a variant's
+    missing row or bay as an empty string (#1199), and `column == ''` never matches the NULL the row
+    actually holds, so an empty or missing value matches a NULL (or empty) column instead."""
+    if value is None or value == "":
+        return or_(column.is_(None), column == "")
+    return column == value
+
+
 def merge_locations(
     session: Session,
     *,
@@ -461,6 +496,11 @@ def merge_locations(
     if not performed_by:
         raise ValidationError("performed_by is required", field="performed_by")
 
+    # The aisle is what makes a row located: an empty from-aisle would name the unlocated rows, and
+    # null-matching it would sweep every one of them in the warehouse onto the target shelf. Only row
+    # and bay match null (#1199); the aisle is required and compared as given.
+    if not (from_aisle or "").strip():
+        raise ValidationError("from_aisle is required", field="from_aisle")
     to_aisle, to_row, to_bay = _normalize_and_validate_location_fields(to_aisle, to_row, to_bay)
     ensure_registered_location(session, warehouse_id, to_aisle, to_row, to_bay)
     # from_* may already be in canonical form; either way only compare equality, no validation needed.
@@ -474,8 +514,8 @@ def merge_locations(
             select(InventoryLocationModel).where(
                 InventoryLocationModel.warehouse_id == warehouse_id,
                 InventoryLocationModel.aisle == from_aisle,
-                InventoryLocationModel.row == from_row,
-                InventoryLocationModel.bay == from_bay,
+                _matches_from(InventoryLocationModel.row, from_row),
+                _matches_from(InventoryLocationModel.bay, from_bay),
             )
         ).all()
     )
@@ -501,13 +541,24 @@ def merge_locations(
             select(StockItemModel).where(
                 StockItemModel.warehouse_id == warehouse_id,
                 StockItemModel.aisle == from_aisle,
-                StockItemModel.row == from_row,
-                StockItemModel.bay == from_bay,
+                _matches_from(StockItemModel.row, from_row),
+                _matches_from(StockItemModel.bay, from_bay),
             )
         ).all()
     )
+    from app.repositories.stock.common import fold_into_same_key_row
+
     for si in si_rows:
-        si.aisle, si.row, si.bay = to_aisle, to_row, to_bay
+        # A row already on the target shelf with this row's key takes its units (#1164), through the
+        # same fold a single move or put-away uses (#1377).
+        detail = {"fromLocation": from_loc, "toLocation": to_loc, "reason": "location_merge"}
+        moved = {"quantity": si.quantity, "deficientQuantity": si.deficient_quantity}
+        target = fold_into_same_key_row(session, si, aisle=to_aisle, row=to_row, bay=to_bay)
+        if target is not None:
+            detail = {**detail, "foldedIntoStockItemId": str(target.id), **moved}
+        else:
+            si.aisle, si.row, si.bay = to_aisle, to_row, to_bay
+        session.flush()
         _log_audit_event(
             session,
             project_id=None,
@@ -515,11 +566,7 @@ def merge_locations(
             entity_id=si.id,
             action=AuditAction.MOVE,
             performed_by=performed_by,
-            detail={
-                "fromLocation": from_loc,
-                "toLocation": to_loc,
-                "reason": "location_merge",
-            },
+            detail=detail,
         )
     counts["stock_items"] = len(si_rows)
 
