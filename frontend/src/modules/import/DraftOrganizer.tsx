@@ -798,7 +798,7 @@ export function DraftCard({
                             startAdornment: <InputAdornment position="start">$</InputAdornment>,
                             sx: tabularSx,
                           },
-                          htmlInput: { min: 0, step: 0.01 },
+                          htmlInput: { min: 0, step: 0.01, 'aria-label': `Unit cost of ${line.productCode}` },
                         }}
                         sx={{ width: '100%' }}
                       />

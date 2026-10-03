@@ -91,20 +91,20 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
     });
   };
 
+  // #1285: the primary action is the form's submit, so Enter in the count does what the button
+  // does, and is refused whenever the button is disabled.
+  const primaryDisabled = hasDiscrepancy ? !isValid || loading : !isValid;
+  const handlePrimary = () => (hasDiscrepancy ? setConfirmOpen(true) : onClose());
+
   const actions = (
     <Stack direction="row" spacing={1}>
       <Button onClick={onClose} disabled={loading}>Cancel</Button>
       {hasDiscrepancy ? (
-        <Button
-          variant="contained"
-          color="warning"
-          disabled={!isValid || loading}
-          onClick={() => setConfirmOpen(true)}
-        >
+        <Button type="submit" variant="contained" color="warning" disabled={primaryDisabled}>
           {loading ? 'Applying...' : 'Apply Adjustment'}
         </Button>
       ) : (
-        <Button variant="contained" disabled={!isValid} onClick={onClose}>
+        <Button type="submit" variant="contained" disabled={primaryDisabled}>
           No Discrepancy
         </Button>
       )}
@@ -113,7 +113,14 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
 
   return (
     <>
-      <Modal title="Spot Check" open={open} onClose={onClose} actions={actions}>
+      <Modal
+        title="Spot Check"
+        open={open}
+        onClose={onClose}
+        actions={actions}
+        onSubmit={handlePrimary}
+        submitDisabled={primaryDisabled}
+      >
         <Box
           sx={{
             display: 'grid',
