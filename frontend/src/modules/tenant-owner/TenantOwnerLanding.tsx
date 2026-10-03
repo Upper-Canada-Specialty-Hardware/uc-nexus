@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Box, Typography, Card, CardActionArea, Grid } from '@mui/material';
+import { Alert, Box, Typography, Card, CardActionArea, Grid } from '@mui/material';
 import {
   ClipboardList,
   PackageSearch,
@@ -17,6 +17,7 @@ import { StatCard, StatCardSkeleton } from '../../components/StatCard';
 import { GET_ADMIN_STATS } from '../../graphql/admin';
 import { microLabelSx, tabularSx } from '../../theme';
 import { AnimatedNumber, StaggerList, StaggerItem, FadeIn } from '../../motion';
+import { useIdentity } from '../../hooks/useIdentity';
 
 interface AdminStatsData {
   adminStats: {
@@ -84,12 +85,29 @@ const SUB_ROUTES: SubRoute[] = [
 
 export default function TenantOwnerLanding() {
   const navigate = useNavigate();
+  const { ownsTenant } = useIdentity();
   // #729: the server scopes these counts to the caller's GP company for a TENANT OWNER, so the
-  // figures here are their company's rather than the whole install's.
-  const { data, loading } = useQuery<AdminStatsData>(GET_ADMIN_STATS, {
+  // figures here are their company's rather than the whole install's. #1218: anyone else is refused
+  // by the server, so the query is not sent for them - a link from elsewhere (Inventory Value is
+  // open to shop assembly managers) can still land a non-owner here.
+  const { data, loading, error } = useQuery<AdminStatsData>(GET_ADMIN_STATS, {
     fetchPolicy: 'cache-and-network',
+    skip: !ownsTenant,
   });
   const s = data?.adminStats;
+
+  if (!ownsTenant) {
+    return (
+      <Box>
+        <Typography variant="h5" sx={{ mb: 0.25 }}>
+          Tenant Owner
+        </Typography>
+        <Alert severity="info" sx={{ mt: 1.5 }}>
+          This module needs the Tenant Owner role. Ask a Tenant Owner in your company if you need it.
+        </Alert>
+      </Box>
+    );
+  }
 
   return (
     <Box>
@@ -101,6 +119,12 @@ export default function TenantOwnerLanding() {
           Your company's projects, warehouses, dashboards and people.
         </Typography>
       </FadeIn>
+
+      {error && !s && (
+        <Alert severity="error" sx={{ mb: 3 }}>
+          Error loading company stats: {error.message}
+        </Alert>
+      )}
 
       <Box sx={{ display: 'flex', gap: 1.5, mb: 3, flexWrap: 'wrap' }}>
         {loading && !s ? (
