@@ -10,7 +10,7 @@
 Downgrade puts any zero line back at 1 (the old pin) and restores the >= 1 check.
 
 Revision ID: 129
-Revises: 127
+Revises: 128
 Create Date: 2026-10-03
 """
 
@@ -19,7 +19,7 @@ from alembic import op
 # Numbered 129 because 128 is taken by a sibling branch (#1188). Whichever of the two merges second
 # sets its down_revision to the other's revision, so master keeps a single head.
 revision = "129"
-down_revision = "127"
+down_revision = "128"
 branch_labels = None
 depends_on = None
 
