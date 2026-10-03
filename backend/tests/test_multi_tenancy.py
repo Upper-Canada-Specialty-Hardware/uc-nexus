@@ -137,6 +137,7 @@ def test_the_company_is_stored_trimmed_and_uppercased(monkeypatch):
         "_merge_public_metadata",
         lambda user_id, patch: written.update(patch) or {"id": user_id},
     )
+    monkeypatch.setattr(user_repository, "_public_metadata", lambda user_id: {})
 
     user_repository.update_user_company("u_1", "  tubc  ")
 
@@ -152,6 +153,7 @@ def test_a_blank_company_clears_the_assignment(monkeypatch):
         "_merge_public_metadata",
         lambda user_id, patch: written.update(patch) or {"id": user_id},
     )
+    monkeypatch.setattr(user_repository, "_public_metadata", lambda user_id: {})
 
     user_repository.update_user_company("u_1", "   ")
 
