@@ -129,7 +129,7 @@ class RelayApp:
         self._cancel_update_if_pending()
         self.shutdown()
 
-    def begin_update(self, url: str, build: str | None = None) -> dict:
+    def begin_update(self, url: str, build: str | None = None, ready_to_hand_off=None) -> dict:
         """Stage an update and hand this process off to the detached apply helper.
 
         Lives here rather than in the UI layer because it is app-lifecycle logic: `stage_update` needs
@@ -142,14 +142,16 @@ class RelayApp:
             return {"ok": False, "error": "no download URL"}
         from . import updater
 
-        # #1212: the busy check before staging is seconds stale by the time the download and extract
-        # finish, so ask again right before committing to the handoff.
+        # #1212: any busy check made before staging is seconds stale once the download and extract finish,
+        # so ask again right before committing to the handoff. The poller passes its fail-safe rule; the
+        # manual "Update now" default refuses only a /health that answers with a job in flight, so a relay
+        # whose serve child is not answering can still be updated by hand.
         result = updater.stage_update(
             url.strip(),
             self._install_dir(),
             os.getpid(),
             target_build=(build or "").strip() or None,
-            ready_to_hand_off=lambda: not update_poller.is_busy(update_poller._read_health()),
+            ready_to_hand_off=ready_to_hand_off or update_poller.ready_for_manual_handoff,
         )
         if result.get("ok"):
             # Mark this teardown as the update handoff so it is NOT treated as a user cancel

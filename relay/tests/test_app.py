@@ -108,11 +108,30 @@ def test_api_apply_update_stages_then_shuts_down_in_app_mode(monkeypatch):
     assert passed["build"] == "relay-v0.1.0-build.11"  # target build threaded through to the ledger
     assert a._hard_exit_timer is not None  # the exit-anyway fallback is armed for a stuck GUI loop
 
-    # #1212: the handoff re-asks the poller's busy rule after the download, against live health.
+    # #1212: the manual path re-checks after the download, refusing only a job known to be in flight. A
+    # serve child that is not answering /health must still be updatable by hand.
     monkeypatch.setattr(appmod.update_poller, "_read_health", lambda: {"channel": {"jobs_in_flight": 1}})
     assert passed["ready"]() is False
     monkeypatch.setattr(appmod.update_poller, "_read_health", lambda: {"channel": {"jobs_in_flight": 0}})
     assert passed["ready"]() is True
+    monkeypatch.setattr(appmod.update_poller, "_read_health", lambda: {})
+    assert passed["ready"]() is True
+
+
+def test_begin_update_uses_the_check_its_caller_passes(monkeypatch):
+    from ucnexus_relay import updater
+
+    a = appmod.RelayApp()
+    monkeypatch.setattr(a, "shutdown", lambda: None)
+    monkeypatch.setattr(a, "_arm_hard_exit", lambda: None)
+    monkeypatch.setattr(appmod.sys, "frozen", True, raising=False)
+    passed = {}
+    monkeypatch.setattr(
+        updater, "stage_update", lambda *a_, ready_to_hand_off=None, **k: passed.update(ready=ready_to_hand_off) or {"ok": True}
+    )
+    strict = appmod.update_poller.ready_for_scheduled_handoff
+    a.begin_update("https://x/e.exe", "relay-v0.1.0-build.11", ready_to_hand_off=strict)
+    assert passed["ready"] is strict
 
 
 def test_begin_update_does_not_shut_down_when_staging_was_deferred_as_busy(monkeypatch):
