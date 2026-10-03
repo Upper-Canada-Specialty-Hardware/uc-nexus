@@ -20,7 +20,7 @@ from app.models.stock_item import StockItem
 from app.services.locking import lock_inventory_combo
 
 from .common import _find_or_create_stock_row, _log_audit_event, destock_unit_cost
-from .items import get_stock_item
+from .items import lock_stock_item
 
 
 def report_inventory_deficiency(
@@ -77,7 +77,7 @@ def report_stock_deficiency(
     if quantity < 1:
         raise ValidationError("quantity must be >= 1", field="quantity")
 
-    si = get_stock_item(session, stock_item_id)
+    si = lock_stock_item(session, stock_item_id)
     new_deficient = (si.deficient_quantity or 0) + quantity
     if new_deficient > si.quantity:
         raise ValidationError(
@@ -138,6 +138,9 @@ def resolve_deficiency(
             "rma_reference is required when resolution is RETURN_TO_VENDOR",
             field="rma_reference",
         )
+    if rma_reference and len(rma_reference) > 100:
+        # The column is String(100); a longer one failed at flush as a raw server error (#1209).
+        raise ValidationError("rma_reference must be 100 characters or fewer", field="rma_reference")
     if resolution == DeficiencyResolution.SEND_TO_STOCK and destock_source is None:
         # default to DEFICIENT_SWAP for project sources if not specified
         destock_source = DestockSource.DEFICIENT_SWAP
@@ -149,7 +152,9 @@ def resolve_deficiency(
     product_code: str
 
     if inventory_location_id is not None:
-        il = session.get(InventoryLocationModel, inventory_location_id)
+        # Locked and re-read (#1156): two reviewers resolving the same batch would otherwise both pass
+        # the check below off the same stale deficient count.
+        il = lock_inventory_combo(session, inventory_location_id)
         if il is None:
             raise NotFoundError(f"Inventory location {inventory_location_id} not found")
         if quantity > (il.deficient_quantity or 0):
@@ -191,7 +196,7 @@ def resolve_deficiency(
             pass
 
     else:
-        si = get_stock_item(session, stock_item_id)
+        si = lock_stock_item(session, stock_item_id)
         if quantity > (si.deficient_quantity or 0):
             raise ValidationError(
                 "Resolved quantity exceeds current deficient_quantity",

@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../../../components/Toast';
 import POModule from '../index';
 import { PURCHASE_ORDERS_PAGE, GET_PO_STATISTICS, GET_PURCHASE_ORDER } from '../../../graphql/po';
-import { GET_PROJECTS, GET_GP_OUTBOX, GET_RELAY_STATUS } from '../../../graphql/shared';
+import { GET_GP_OUTBOX, GET_RELAY_STATUS } from '../../../graphql/shared';
 
 // The register mounts five queries and a full MUI table; jsdom is slow enough at that to trip the
 // 1s async-util default once vitest is running files in parallel.
@@ -67,25 +67,6 @@ beforeEach(() => {
   pageAsked.length = 0;
 });
 
-// #851: the one project a link can scope the table to.
-const PROJECTS = [
-  {
-    __typename: 'Project',
-    id: 'proj-1',
-    projectId: 'J-23094',
-    description: 'Harbour Tower',
-    client: null,
-    jobSiteName: null,
-    scheduleFilename: null,
-    company: 'TUBC',
-    openingCount: 0,
-    gpSetupOk: null,
-    gpSetupCheckedAt: null,
-    gpSetupIssues: [],
-    gpJobState: null,
-  },
-];
-
 const INFINITE = Number.POSITIVE_INFINITY;
 
 function row(overrides: Record<string, unknown>) {
@@ -95,6 +76,8 @@ function row(overrides: Record<string, unknown>) {
     poNumber: null,
     requestNumber: null,
     projectId: null,
+    projectNumber: null,
+    projectDescription: null,
     status: 'DRAFT',
     origin: 'NEXUS',
     company: 'TUBC',
@@ -185,11 +168,18 @@ function mocks(heldRegistrations: Record<string, unknown>[] = []): MockedRespons
           return true;
         },
       },
-      result: {
+      // #1238: the scope chip reads the page's own scope label, so a scoped ask answers with it.
+      result: (v: Record<string, unknown>) => ({
         data: {
-          purchaseOrdersPage: { __typename: 'PurchaseOrderPage', rows: ROWS, totalCount: ROWS.length },
+          purchaseOrdersPage: {
+            __typename: 'PurchaseOrderPage',
+            rows: ROWS,
+            totalCount: ROWS.length,
+            scopeProjectNumber: v.projectId === 'proj-1' ? 'J-23094' : null,
+            scopeProjectDescription: v.projectId === 'proj-1' ? 'Harbour Tower' : null,
+          },
         },
-      },
+      }),
       maxUsageCount: INFINITE,
     },
     {
@@ -208,11 +198,6 @@ function mocks(heldRegistrations: Record<string, unknown>[] = []): MockedRespons
           },
         },
       },
-      maxUsageCount: INFINITE,
-    },
-    {
-      request: { query: GET_PROJECTS, variables: () => true },
-      result: { data: { projects: PROJECTS } },
       maxUsageCount: INFINITE,
     },
     {

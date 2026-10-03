@@ -20,6 +20,7 @@ import PageHeader from '../../components/PageHeader';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { useToast } from '../../components/Toast';
 import { useActingCompany } from '../../company/ActingCompanyContext';
+import { useIdentity } from '../../hooks/useIdentity';
 import { extractGpError } from '../../graphql/gpError';
 import { parseServerDate } from '../../utils/serverDate';
 import {
@@ -85,6 +86,12 @@ const CURRENCY_EXACT = new Intl.NumberFormat('en-CA', {
 const TILE_ICON = { size: 18, strokeWidth: 1.75 } as const;
 
 export default function InventoryValuePage() {
+  // #1218: shop assembly managers reach this page from their own landing and cannot use the Tenant
+  // Owner module, so the way back leads to the module they came from.
+  const { ownsTenant } = useIdentity();
+  const parent = ownsTenant
+    ? { label: 'Tenant Owner', to: '/app/tenant-owner' }
+    : { label: 'Shop Assembly', to: '/app/shop-assembly' };
   // #845: the page values the company the user is working in. It used to carry its own company pick
   // for a UC NEXUS ADMIN; the app bar switcher is that pick now, for every page at once.
   const company = useActingCompany().company ?? '';
@@ -103,7 +110,7 @@ export default function InventoryValuePage() {
       <FadeIn>
         <PageHeader
           title="Inventory Value"
-          parent={{ label: 'Tenant Owner', to: '/app/tenant-owner' }}
+          parent={parent}
           description="What is sitting in the building right now, in dollars: hardware on the shelves, hardware staged for shipping, and doors."
           actions={
             <Box sx={{ textAlign: 'right' }}>
