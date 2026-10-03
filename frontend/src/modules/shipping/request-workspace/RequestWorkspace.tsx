@@ -10,7 +10,7 @@ import {
   Typography,
 } from '@mui/material';
 import { ShoppingCart } from 'lucide-react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link as RouterLink, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery } from '@apollo/client/react';
 import ProjectPicker from '../../../components/ProjectPicker';
 import PageHeader from '../../../components/PageHeader';
@@ -82,7 +82,7 @@ export default function RequestWorkspace({ mode }: { mode: 'create' | 'edit' }) 
 }
 
 function CreateRoute() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const preselectId = searchParams.get('projectId');
   const { data } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const [project, setProject] = useState<Project | null>(null);
@@ -110,6 +110,17 @@ function CreateRoute() {
           onChange={(p) => {
             setTouched(true);
             setProject(p);
+            // #1308: the URL always carries the picked project, so the schedule tab's "upload a newer
+            // schedule" hand-off (which returns to this URL) comes back to the same project.
+            setSearchParams(
+              (prev) => {
+                const next = new URLSearchParams(prev);
+                if (p) next.set('projectId', p.id);
+                else next.delete('projectId');
+                return next;
+              },
+              { replace: true },
+            );
           }}
           sx={{ maxWidth: 420 }}
         />
@@ -156,6 +167,21 @@ function EditRoute() {
   }
   if (!request) {
     return <Alert severity="warning">This request no longer exists.</Alert>;
+  }
+  if (request.status === 'REJECTED') {
+    // #1309: say what actually happened to it.
+    return (
+      <Alert
+        severity="warning"
+        action={
+          <Button color="inherit" size="small" component={RouterLink} to="/app/shipping/requests?view=REJECTED">
+            Rejected requests
+          </Button>
+        }
+      >
+        Request {request.requestNumber} was rejected, so it can no longer be edited.
+      </Alert>
+    );
   }
   if (request.status !== 'PENDING') {
     return (

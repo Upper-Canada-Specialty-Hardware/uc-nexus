@@ -138,6 +138,7 @@ function requestMock(
   overrides?: Partial<{
     project: typeof ARCHIVED_PROJECT | null;
     reservedByProduct: { hardwareCategory: string; productCode: string; quantity: number }[] | null;
+    status: string;
   }>,
 ): MockedResponse {
   return {
@@ -150,7 +151,7 @@ function requestMock(
           id: 'req-1',
           requestNumber: 'JOB-1-003',
           projectId: 'proj-1',
-          status: 'PENDING',
+          status: overrides?.status ?? 'PENDING',
           createdBy: 'Shipper',
           createdAt: '2026-08-03T00:00:00',
           integrityNote: null,
@@ -315,6 +316,16 @@ describe('from-schedule source gate', () => {
     expect(loc.textContent).toContain('/app/import');
     expect(loc.textContent).toContain('projectId=proj-1');
     expect(loc.textContent).toContain('purpose=schedule');
+    expect(loc.textContent).toContain(`returnTo=${encodeURIComponent('/app/shipping/requests/new?projectId=proj-1')}`);
+  });
+
+  it('a project picked by hand still comes back after "upload a newer schedule" (#1308)', async () => {
+    renderAt('/app/shipping/requests/new', [projectsMock(), availabilityMock(), scheduleOpeningsMock()]);
+    const input = await screen.findByRole('combobox', {}, SLOW);
+    fireEvent.mouseDown(input);
+    fireEvent.click(await screen.findByRole('option', { name: /JOB-1/ }, SLOW));
+    fireEvent.click(await screen.findByRole('button', { name: /upload a newer schedule/i }, SLOW));
+    const loc = await screen.findByTestId('loc', {}, SLOW);
     expect(loc.textContent).toContain(`returnTo=${encodeURIComponent('/app/shipping/requests/new?projectId=proj-1')}`);
   });
 
@@ -635,6 +646,16 @@ describe('edit mode', () => {
     ]);
     expect(await screen.findByRole('button', { name: 'Save request' }, SLOW)).toBeInTheDocument();
     expect(screen.getByText(/Edit request JOB-1-003/)).toBeInTheDocument();
+  });
+
+  it('tells a rejected request it was rejected, not accepted (#1309)', async () => {
+    renderAt('/app/shipping/requests/req-1/edit', [emptyProjectsMock(), requestMock({ status: 'REJECTED' })]);
+    expect(await screen.findByText(/JOB-1-003 was rejected/i, {}, SLOW)).toBeInTheDocument();
+    expect(screen.queryByText(/already been accepted/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Rejected requests' })).toHaveAttribute(
+      'href',
+      '/app/shipping/requests?view=REJECTED',
+    );
   });
 
   it('says so instead of spinning when the project cannot be found', async () => {
