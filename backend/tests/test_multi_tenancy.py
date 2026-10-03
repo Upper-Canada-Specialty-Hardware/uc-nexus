@@ -487,6 +487,37 @@ def test_a_receive_draft_alone_blocks_the_move(db_session, two_companies):
     assert "1 receive draft" in str(e.value)
 
 
+def test_a_receive_draft_blocks_the_delete_with_a_named_conflict(db_session, two_companies):
+    """receive_drafts.warehouse_id has no ondelete, so a delete used to fail at flush as a masked
+    server error (#1229). It is refused up front, naming what still points at the warehouse."""
+    from app.errors import ConflictError
+    from app.models.enums import ReceiveDraftStatus
+    from app.models.receive_draft import ReceiveDraft
+
+    db_session.add(
+        ReceiveDraft(
+            id=uuid.uuid4(),
+            po_id=two_companies["my_po"].id,
+            warehouse_id=two_companies["my_warehouse"],
+            status=ReceiveDraftStatus.PENDING_APPROVAL,
+            created_by_user_id="u_1",
+            created_by_name="Wendy Warehouse",
+        )
+    )
+    db_session.flush()
+
+    with pytest.raises(ConflictError) as e:
+        warehouse_admin_repository.delete_warehouse(db_session, two_companies["my_warehouse"])
+
+    assert "1 receive draft" in str(e.value)
+
+
+def test_an_empty_warehouse_still_deletes(db_session, two_companies):
+    warehouse_admin_repository.delete_warehouse(db_session, two_companies["my_warehouse"])
+
+    assert two_companies["my_warehouse"] not in {w.id for w in warehouse_admin_repository.list_warehouses(db_session)}
+
+
 def test_a_defined_layout_alone_does_not_block_the_move(db_session, two_companies):
     """A rack is a description of the building, not something in it - an empty layout moves with the
     walls, so the registry is deliberately not part of the occupancy check."""
