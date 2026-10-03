@@ -101,6 +101,8 @@ describe('ReceiveApprovalsPage', () => {
     expect(screen.getByText('Wendy Warehouse')).toBeInTheDocument();
     // Named off the draft itself (#1196): no projects query, so an archived project still shows.
     expect(screen.getByText('Riverside Tower')).toBeInTheDocument();
+    // #1283: a pending draft's row takes keyboard focus, so review is not mouse-only.
+    expect(screen.getByText('PO-123').closest('tr')).toHaveAttribute('tabindex', '0');
   });
 
   it('says when a resubmitted count last changed, and nothing on an untouched one (#1047)', async () => {

@@ -20,7 +20,7 @@ import uuid
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.enums import HardwareItemState, POOrigin, POStatus
@@ -209,6 +209,7 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
     from app.repositories.po_repository import _release_line_ties_beyond
 
     existing = {li.gp_line_ord: li for li in po.line_items if li.gp_line_ord is not None}
+    receipt_in_flight = _receipt_in_flight(session, po.id)
     for ln in gp_lines:
         ord_ = ln["ord"]
         li = existing.get(ord_)
@@ -218,6 +219,10 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
         # booked; never let a mirror pass reduce received below the stored value, or the drop would
         # reopen the PO to double-receiving. A new line has no stored value to protect.
         received_qty = max(gp_received, li.received_quantity) if li is not None else gp_received
+        # #1300: while a Nexus receipt is between GP and its persist, GP's count may already include it
+        # and the persist will add it again (+=). Hold received where Nexus has it until that lands.
+        if li is not None and receipt_in_flight:
+            received_qty = li.received_quantity
         unit_cost = ln.get("unit_cost") or 0
         ordered_qty = _to_int_qty(net, po_number=po.po_number, ord_=ord_, field="ordered") if net > 0 else 0
 
@@ -259,6 +264,42 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
             li.unit_cost = unit_cost
             _apply_gp_line_identity(li, ln)
             _apply_gp_line_entry_fields(li, ln)
+
+
+def _receipt_in_flight(session: Session, po_id: uuid.UUID) -> bool:
+    """True while a receipt for this PO has reached (or may have reached) GP but not yet Nexus (#1300).
+
+    That is a draft mid-approval (a live approval, or one whose relay call went ambiguous and will be
+    resumed), or a receive on the outbox that is waiting, on the wire, or failed ambiguously (a retry
+    persists it). A queued approval is covered by its outbox row. The sync must not raise
+    received_quantity then: the persist adds its own units on top of what is stored."""
+    from app.models.enums import ReceiveDraftStatus
+    from app.models.receive_draft import ReceiveDraft
+
+    draft_hit = session.scalar(
+        select(ReceiveDraft.id)
+        .where(
+            ReceiveDraft.po_id == po_id,
+            ReceiveDraft.status == ReceiveDraftStatus.APPROVING,
+            ReceiveDraft.receive_record_id.is_(None),
+        )
+        .limit(1)
+    )
+    if draft_hit is not None:
+        return True
+    outbox_hit = session.scalar(
+        select(GpWriteOutbox.id)
+        .where(
+            GpWriteOutbox.op == "create_receive",
+            GpWriteOutbox.entity_key == f"po:{po_id}",
+            or_(
+                GpWriteOutbox.status.in_(("PENDING", "IN_FLIGHT")),
+                and_(GpWriteOutbox.status == "FAILED", GpWriteOutbox.failure_kind == "ambiguous"),
+            ),
+        )
+        .limit(1)
+    )
+    return outbox_hit is not None
 
 
 def _release_linked_hardware(session: Session, po: PurchaseOrder) -> None:

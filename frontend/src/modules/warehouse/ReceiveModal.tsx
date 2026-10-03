@@ -741,6 +741,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
             receiveQuantities={receiveQuantities}
             onQuantityChange={handleQuantityChange}
             showPoHeaders={poIds.length > 1}
+            autoFocusFirst
           />
         )}
       </Modal>

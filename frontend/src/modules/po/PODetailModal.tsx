@@ -578,7 +578,11 @@ export default function PODetailModal({
                   }
                   error={isInvalid}
                   fullWidth
-                  slotProps={{ input: { sx: { fontSize: '0.875rem' } } }}
+                  slotProps={{
+                    input: { sx: { fontSize: '0.875rem' } },
+                    // #1284: a field per line with no label read only as "edit text".
+                    htmlInput: { 'aria-label': `Unit cost of ${params.row.productCode ?? 'line'}` },
+                  }}
                 />
               );
             },
