@@ -309,6 +309,34 @@ def test_shop_to_site_takes_the_product_off_a_waiting_shop_request_and_tells_the
     assert req.request_number in notices[0].message
 
 
+def test_a_change_locks_the_projects_pending_shop_requests_before_planning(db_session, monkeypatch):
+    """#1156: the plan is built under the same request lock batch, dismiss, reject and discard take, so a
+    batch landing at the same moment waits instead of racing it."""
+    from app.services import locking
+
+    project = _project(db_session)
+    _item(db_session, project, _opening(db_session, project), "HG-1", cls=Classification.SHOP_HARDWARE)
+    req = _shop_request(db_session, project, "HG-1")
+    calls: list[str] = []
+    real_lock = locking.lock_rows
+    real_plan = repo.plan_product_classifications
+
+    def lock_spy(session, model_class, ids):
+        calls.append(f"lock {model_class.__name__} {sorted(ids)}")
+        return real_lock(session, model_class, ids)
+
+    def plan_spy(*args, **kwargs):
+        calls.append("plan")
+        return real_plan(*args, **kwargs)
+
+    monkeypatch.setattr(locking, "lock_rows", lock_spy)
+    monkeypatch.setattr(repo, "plan_product_classifications", plan_spy)
+
+    repo.set_product_classifications(db_session, project.id, [(CAT, "HG-1", C.UCH_SITE)], changed_by="Greg")
+
+    assert calls[:2] == [f"lock ShopAssemblyRequest {[req.id]}", "plan"]
+
+
 def test_an_opening_keeping_other_hardware_stays_waiting(db_session):
     project = _project(db_session)
     a01 = _opening(db_session, project)

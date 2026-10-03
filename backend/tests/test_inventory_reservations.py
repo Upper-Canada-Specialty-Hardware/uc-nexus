@@ -579,6 +579,29 @@ def test_reupload_closes_out_a_part_batched_request_that_lost_the_rest(db_sessio
     assert _reserved_total(db_session, project.id) == 3
 
 
+def test_reupload_rejects_a_request_whose_only_batch_was_cancelled(db_session):
+    """#1156: a cancelled batch sent nothing to the shop. Its openings came back to pending, so when
+    the re-upload drops them nothing about the request genuinely happened - it is rejected, not
+    closed out as part-worked (which read Done on the Worked tab)."""
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=20)
+    sar = _finalize_sar(db_session, project, qty=3, opening_number="A01")["shop_assembly_request"]
+    db_session.flush()
+    batch = batch_request(db_session, sar.id)
+    db_session.flush()
+    warehouse_repository.start_pull_request_pick(db_session, batch.pull_request_id, "picker")
+    db_session.flush()
+    warehouse_repository.cancel_pull_request(db_session, batch.pull_request_id, "manager", "wrong pull")
+    db_session.flush()
+
+    _reupload(db_session, project, ["Z99"])
+    db_session.flush()
+    db_session.refresh(sar)
+
+    assert sar.status == ShopAssemblyRequestStatus.REJECTED
+    assert sar.rejected_by == "Hardware Schedule Import"
+
+
 def test_reupload_flags_a_surviving_request(db_session):
     """A full-schedule replacement can change the hardware on an opening it kept, so every live
     request is flagged - not just the ones that lost openings."""
