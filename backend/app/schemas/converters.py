@@ -13,6 +13,7 @@ from app.models.enums import ShippingOutRequestStatus as ShippingOutRequestStatu
 from app.models.enums import ShopAssemblyRequestStatus as ShopAssemblyRequestStatusDB
 from app.models.project import Project as ProjectModel
 from app.repositories import project_repository, shipping_repository
+from app.repositories.shipping_requests import lines_version as shipping_lines_version
 
 from .enums import GpOutboxStatus, RelayEventKind, RequestStage
 from .types import (
@@ -882,6 +883,7 @@ def shipping_out_request_to_type(
         items=[shipping_out_request_item_to_type(i) for i in req.items],
         stage=RequestStage(stage or _fallback_shipping_stage(req)),
         return_note=return_note,
+        lines_version=shipping_lines_version(req.items),
     )
 
 

@@ -26,12 +26,14 @@ import {
   addScheduleRowAtSuggested,
   aggregateCoverageByProduct,
   cartLineKey,
+  indexCart,
   lineQuantity,
   productKey,
   productLinesQuantity,
   remainingForProduct,
   setLineQuantity,
   setProductQuantity,
+  type CartIndex,
   type CartLine,
   type Headroom,
   type ProductCoverage,
@@ -211,6 +213,8 @@ export default function RequestWorkspaceScheduleTab({
   const [showDeadRows, setShowDeadRows] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  // #1290: every per-row cart lookup below reads this, not a fresh scan of the cart.
+  const cartIndex = useMemo(() => indexCart(cart), [cart]);
 
   const { data: openingsData, loading: openingsLoading } = useQuery<ProjectOpeningsData>(GET_PROJECT_OPENINGS, {
     variables: { projectId },
@@ -269,14 +273,14 @@ export default function RequestWorkspaceScheduleTab({
     const hidden: ProductCoverage[] = [];
     for (const agg of aggregates) {
       const basePool = headroom.get(agg.key) ?? 0;
-      if (productLinesQuantity(cart, agg.rows) > 0 || (agg.suggestedQuantity > 0 && basePool > 0)) {
+      if (productLinesQuantity(cartIndex, agg.rows) > 0 || (agg.suggestedQuantity > 0 && basePool > 0)) {
         visible.push(agg);
       } else {
         hidden.push(agg);
       }
     }
     return { visibleAggs: visible, hiddenAggs: hidden };
-  }, [aggregates, cart, headroom]);
+  }, [aggregates, cartIndex, headroom]);
 
   const toggleProduct = (key: string) =>
     setExpandedProducts((prev) => {
@@ -452,6 +456,7 @@ export default function RequestWorkspaceScheduleTab({
                       contributing={contributing(allSite)}
                       onAddAll={() => addAllSuggested(allSite)}
                       cart={cart}
+                      cartIndex={cartIndex}
                       headroom={headroom}
                       onCartChange={onCartChange}
                       openingMeta={openingMeta}
@@ -466,6 +471,7 @@ export default function RequestWorkspaceScheduleTab({
                       contributing={contributing(allShop)}
                       onAddAll={() => addAllSuggested(allShop)}
                       cart={cart}
+                      cartIndex={cartIndex}
                       headroom={headroom}
                       onCartChange={onCartChange}
                       openingMeta={openingMeta}
@@ -519,6 +525,8 @@ interface LaneTableProps {
   contributing: number;
   onAddAll: () => void;
   cart: CartLine[];
+  /** #1290: the cart indexed once per render, for the per-row lookups. */
+  cartIndex: CartIndex;
   headroom: Headroom;
   onCartChange: (next: CartLine[]) => void;
   openingMeta: Map<string, { building: string | null; floor: string | null }>;
@@ -564,6 +572,7 @@ function LaneTable({
   contributing,
   onAddAll,
   cart,
+  cartIndex,
   headroom,
   onCartChange,
   openingMeta,
@@ -599,11 +608,11 @@ function LaneTable({
       </Stack>
       <FitTable storageKey="request-workspace-schedule" columns={LANE_COLUMNS} tableSx={denseTableSx}>
         {aggs.map((agg) => {
-          const inCart = productLinesQuantity(cart, agg.rows);
+          const inCart = productLinesQuantity(cartIndex, agg.rows);
           const muted = agg.suggestedQuantity === 0 && inCart === 0;
           // The live free pool for this product right now - every cart line of it (these
           // openings, other openings, the loose lane) already deducted.
-          const freeNow = remainingForProduct(cart, agg.key, headroom);
+          const freeNow = remainingForProduct(cartIndex, agg.key, headroom);
           // A suggestion the pool cannot cover in full: the lines still go and claim what stock
           // can, so this is a flag, not a block.
           const short = agg.suggestedQuantity > 0 && freeNow + inCart < agg.suggestedQuantity;
@@ -692,6 +701,7 @@ function LaneTable({
                     <ProductOpeningBreakdown
                       agg={agg}
                       cart={cart}
+                      cartIndex={cartIndex}
                       headroom={headroom}
                       onCartChange={onCartChange}
                       openingMeta={openingMeta}
@@ -710,6 +720,8 @@ function LaneTable({
 interface ProductOpeningBreakdownProps {
   agg: ProductCoverage;
   cart: CartLine[];
+  /** #1290: the cart indexed once per render, for the per-row lookups. */
+  cartIndex: CartIndex;
   headroom: Headroom;
   onCartChange: (next: CartLine[]) => void;
   openingMeta: Map<string, { building: string | null; floor: string | null }>;
@@ -718,7 +730,7 @@ interface ProductOpeningBreakdownProps {
 /** #632: the per-opening rows behind one product's summed table row, carrying the per-opening
  *  controls the old per-opening tables had - the cart stays opening-tagged (#610), so this is where
  *  a specific door's share is fine-tuned after a product-level add distributed greedily. */
-function ProductOpeningBreakdown({ agg, cart, headroom, onCartChange, openingMeta }: ProductOpeningBreakdownProps) {
+function ProductOpeningBreakdown({ agg, cart, cartIndex, headroom, onCartChange, openingMeta }: ProductOpeningBreakdownProps) {
   return (
     <Box sx={{ py: 1, minWidth: 0 }}>
       <Table size="small" sx={{ '& td, & th': { border: 0, px: 0.75, py: 0.4 } }}>
@@ -747,11 +759,11 @@ function ProductOpeningBreakdown({ agg, cart, headroom, onCartChange, openingMet
         </TableHead>
         <TableBody>
           {agg.rows.map((row) => {
-            const inCart = lineQuantity(cart, row);
+            const inCart = lineQuantity(cartIndex, row);
             // Same live-pool exclusion the old per-opening table used: this line's own hold is left
             // out so it can be re-typed up to the product ceiling.
             const remaining = remainingForProduct(
-              cart,
+              cartIndex,
               productKey(row),
               headroom,
               cartLineKey({
