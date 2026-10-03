@@ -993,6 +993,7 @@ def packing_slip_item_to_type(psi) -> PackingSlipItem:
         hardware_category=psi.hardware_category,
         quantity=psi.quantity,
         is_manual=psi.is_manual,
+        returned_quantity=sum(ri.quantity for ri in psi.return_items),
     )
 
 

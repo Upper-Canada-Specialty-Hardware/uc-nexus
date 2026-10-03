@@ -1177,6 +1177,9 @@ class PackingSlipItem:
     # A free-text, off-inventory line typed into a container: on the truck, never in inventory. Not
     # returnable, and excluded from the staged-pool arithmetic.
     is_manual: bool
+    # What has come back off this line so far, every disposition (#1107). `quantity` stays what was
+    # cut; a reprint and the Return button read `quantity - returnedQuantity`.
+    returned_quantity: int = 0
 
 
 @strawberry.type

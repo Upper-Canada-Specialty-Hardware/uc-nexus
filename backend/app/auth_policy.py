@@ -280,6 +280,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "projectScheduleProducts": SIGNED_IN,
     # --- shipping.py ----------------------------------------------------------------------
     "packingSlips": SIGNED_IN,
+    "packingSlipCount": SIGNED_IN,
     "returnableLines": SIGNED_IN,
     # The staging workspace and its containers (#451). SIGNED_IN like the rest of shipping - the
     # warehouse and the shipping department both load a truck, and neither owns the screen.

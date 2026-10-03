@@ -467,33 +467,76 @@ def mark_shipment_delivered(
 # ---------------------------------------------------------------------------
 
 
-def list_packing_slips(
-    session: Session,
-    project_id: uuid.UUID | None = None,
-    *,
-    company: str | None = None,
-) -> list[PackingSlip]:
-    """List confirmed packing slips (newest first), optionally scoped to one project.
+# One page of the Shipments list (#1107). The list used to send every slip the company had ever cut,
+# with items and containers, and page and search in the browser - a payload that only ever grows.
+PACKING_SLIP_PAGE_DEFAULT = 25
+PACKING_SLIP_PAGE_MAX = 200
 
-    Containers and their items are eagerly loaded because `packing_slip_to_type` walks them to build
-    the per-container sections the Delivery Request prints - lazy loading here is two extra queries
-    per slip on a list view (CLAUDE.md perf rules).
-    """
-    stmt = (
-        select(PackingSlip)
-        .options(
-            selectinload(PackingSlip.items),
-            selectinload(PackingSlip.containers).selectinload(ShipmentContainer.items),
-        )
-        .order_by(PackingSlip.shipped_at.desc())
-    )
+
+def _packing_slip_filter(stmt, project_id: uuid.UUID | None, company: str | None, search: str | None):
     if project_id is not None:
         stmt = stmt.where(PackingSlip.project_id == project_id)
     if company is not None:
         from app.repositories import tenancy
 
         stmt = stmt.where(PackingSlip.project_id.in_(tenancy.project_ids_for(company)))
+    needle = (search or "").strip()
+    if needle:
+        escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        stmt = stmt.where(PackingSlip.packing_slip_number.ilike(f"%{escaped}%", escape="\\"))
+    return stmt
+
+
+def _packing_slip_loads():
+    """What `packing_slip_to_type` walks, loaded up front (CLAUDE.md perf rules): items with what has
+    come back off them, and containers with their items. Lazy here is extra queries per slip on a
+    list, and a DetachedInstanceError on a mutation reload."""
+    return (
+        selectinload(PackingSlip.items).selectinload(PackingSlipItem.return_items),
+        selectinload(PackingSlip.containers).selectinload(ShipmentContainer.items),
+    )
+
+
+def list_packing_slips(
+    session: Session,
+    project_id: uuid.UUID | None = None,
+    *,
+    company: str | None = None,
+    search: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[PackingSlip]:
+    """One page of confirmed packing slips (newest first), optionally scoped to one project and
+    searched by slip number.
+
+    `limit` defaults to a page and is capped, so no caller can ask for the whole history at once.
+    """
+    if limit is None:
+        limit = PACKING_SLIP_PAGE_DEFAULT
+    if limit < 1 or limit > PACKING_SLIP_PAGE_MAX:
+        raise ValidationError(f"limit must be between 1 and {PACKING_SLIP_PAGE_MAX}", field="limit")
+    if offset < 0:
+        raise ValidationError("offset must not be negative", field="offset")
+    stmt = (
+        _packing_slip_filter(select(PackingSlip), project_id, company, search)
+        .options(*_packing_slip_loads())
+        .order_by(PackingSlip.shipped_at.desc(), PackingSlip.id)
+        .offset(offset)
+        .limit(limit)
+    )
     return list(session.scalars(stmt).unique().all())
+
+
+def count_packing_slips(
+    session: Session,
+    project_id: uuid.UUID | None = None,
+    *,
+    company: str | None = None,
+    search: str | None = None,
+) -> int:
+    """How many slips the same filter matches, so the list can say how many more there are."""
+    stmt = _packing_slip_filter(select(func.count(PackingSlip.id)), project_id, company, search)
+    return int(session.scalar(stmt) or 0)
 
 
 def _returned_quantities(session: Session, packing_slip_id: uuid.UUID) -> dict[uuid.UUID, int]:
@@ -748,14 +791,7 @@ def get_packing_slip(session: Session, packing_slip_id: uuid.UUID) -> PackingSli
     `packing_slip_to_type`, which walks them - and a lazy load after the session closes is a
     DetachedInstanceError rather than a slow query.
     """
-    stmt = (
-        select(PackingSlip)
-        .options(
-            selectinload(PackingSlip.items),
-            selectinload(PackingSlip.containers).selectinload(ShipmentContainer.items),
-        )
-        .where(PackingSlip.id == packing_slip_id)
-    )
+    stmt = select(PackingSlip).options(*_packing_slip_loads()).where(PackingSlip.id == packing_slip_id)
     return session.scalars(stmt).unique().first()
 
 
