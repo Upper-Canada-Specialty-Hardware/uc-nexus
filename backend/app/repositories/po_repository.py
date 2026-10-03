@@ -999,10 +999,17 @@ def get_receive_records_for_po(session: Session, po_id: uuid.UUID) -> list[Recei
     return list(session.scalars(stmt).unique().all())
 
 
-def get_po_statistics(session: Session, project_id: uuid.UUID | None = None, *, company: str | None = None) -> dict:
+def get_po_statistics(
+    session: Session,
+    project_id: uuid.UUID | None = None,
+    *,
+    company: str | None = None,
+    origin: POOrigin | None = None,
+) -> dict:
     """COUNT grouped by status WHERE optional project_id AND deleted_at IS NULL.
     Return dict with keys: total, draft, gp_registered, vendor_confirmed, partially_received, closed,
-    cancelled."""
+    cancelled. `origin` narrows the counts the way the register's origin filter narrows its rows
+    (#1358), so the status strip counts what the table shows."""
     stmt = (
         select(PurchaseOrder.status, func.count())
         .where(PurchaseOrder.deleted_at.is_(None))
@@ -1012,6 +1019,8 @@ def get_po_statistics(session: Session, project_id: uuid.UUID | None = None, *, 
         stmt = stmt.where(PurchaseOrder.project_id == project_id)
     if company is not None:
         stmt = stmt.where(PurchaseOrder.company == company)
+    if origin is not None:
+        stmt = stmt.where(PurchaseOrder.origin == origin)
     rows = session.execute(stmt).all()
 
     counts = {

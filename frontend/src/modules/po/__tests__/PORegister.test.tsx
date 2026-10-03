@@ -566,11 +566,25 @@ it('shows a link’s project scope as a chip, and removing it lifts the scope', 
 it('counts the status strip in the same project scope as the table, and re-counts when it is lifted', async () => {
   renderRegister([], '/?project=proj-1');
   await screen.findByText('PO-2001');
-  await waitFor(() => expect(statsAsked).toContainEqual({ projectId: 'proj-1' }));
-  expect(statsAsked).not.toContainEqual({ projectId: null });
+  await waitFor(() => expect(statsAsked).toContainEqual({ projectId: 'proj-1', origin: null }));
+  expect(statsAsked).not.toContainEqual({ projectId: null, origin: null });
 
   fireEvent.click(screen.getByTestId('CancelIcon'));
-  await waitFor(() => expect(statsAsked).toContainEqual({ projectId: null }));
+  await waitFor(() => expect(statsAsked).toContainEqual({ projectId: null, origin: null }));
+});
+
+// #1358: the origin filter narrowed the table but not the strip, so the counts disagreed with it.
+it('counts the status strip for the origin the table is filtered to, and re-counts when it changes', async () => {
+  renderRegister();
+  await screen.findByText('PO-2001');
+  await waitFor(() => expect(statsAsked).toContainEqual({ projectId: null, origin: null }));
+
+  fireEvent.click(screen.getByRole('button', { name: 'GP' }));
+  await waitFor(() => expect(statsAsked).toContainEqual({ projectId: null, origin: 'GP' }));
+  await waitFor(() => expect(lastPageAsk()).toMatchObject({ origin: 'GP' }));
+
+  fireEvent.click(screen.getByRole('button', { name: 'Nexus' }));
+  await waitFor(() => expect(statsAsked).toContainEqual({ projectId: null, origin: 'NEXUS' }));
 });
 
 it('tints the purchase orders the link names, and only those', async () => {

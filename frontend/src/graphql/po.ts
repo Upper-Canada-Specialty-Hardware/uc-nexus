@@ -1,8 +1,8 @@
 import { gql } from '@apollo/client/core';
 
 export const GET_PO_STATISTICS = gql`
-  query GetPOStatistics($projectId: ID) {
-    poStatistics(projectId: $projectId) {
+  query GetPOStatistics($projectId: ID, $origin: POOrigin) {
+    poStatistics(projectId: $projectId, origin: $origin) {
       total
       draft
       gpRegistered

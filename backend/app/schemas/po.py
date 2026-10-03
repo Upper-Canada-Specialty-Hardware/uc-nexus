@@ -624,12 +624,17 @@ class POQueries:
             return [PriorOrderAsForProduct(product_code=pc, values=vals) for pc, vals in result.items()]
 
     @strawberry.field
-    def po_statistics(self, info: strawberry.Info, project_id: strawberry.ID | None = None) -> POStatistics:
+    def po_statistics(
+        self,
+        info: strawberry.Info,
+        project_id: strawberry.ID | None = None,
+        origin: POOrigin | None = None,
+    ) -> POStatistics:
         with SessionLocal() as session:
             scope = tenant_scope(info)
             pid = uuid.UUID(str(project_id)) if project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
-            stats = po_repository.get_po_statistics(session, pid, company=scope)
+            stats = po_repository.get_po_statistics(session, pid, company=scope, origin=origin)
             return POStatistics(
                 total=stats["total"],
                 draft=stats["draft"],
