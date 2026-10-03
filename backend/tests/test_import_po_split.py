@@ -122,6 +122,36 @@ def test_no_drafts_leaves_the_whole_schedule_as_remainder():
     assert remaining == {0: 3, 1: 1}
 
 
+def test_already_ordered_units_come_off_the_pool_first():
+    # #1156: 2 of 5 are on a PO already. A whole-combo ref takes the 3 left, nothing remains.
+    ordered = {("A01", "HG-100", "HINGE", None): 2}
+    claims, remaining = plan_po_claims([_hw("A01", "HG-100", 5)], [_draft(_ref("A01", "HG-100"))], ordered)
+    assert claims == [[(0, 3)]]
+    assert remaining == {0: 0}
+
+
+def test_already_ordered_with_no_drafts_leaves_only_the_unordered_remainder():
+    ordered = {("A01", "HG-100", "HINGE", None): 2}
+    claims, remaining = plan_po_claims([_hw("A01", "HG-100", 5)], [], ordered)
+    assert claims == []
+    assert remaining == {0: 3}
+
+
+def test_claiming_units_already_ordered_is_refused():
+    ordered = {("A01", "HG-100", "HINGE", None): 4}
+    with pytest.raises(ValidationError, match="only 1 not yet on a purchase order"):
+        plan_po_claims([_hw("A01", "HG-100", 5)], [_draft(_ref("A01", "HG-100", 2))], ordered)
+
+
+def test_already_ordered_is_taken_per_leaf():
+    # Leaf 1 holds the ordered units; the claim comes off leaf 2, which nothing has ordered.
+    rows = [_hw("A01", "HG-100", 3, leaf=1), _hw("A01", "HG-100", 3, leaf=2)]
+    ordered = {("A01", "HG-100", "HINGE", 1): 3}
+    claims, remaining = plan_po_claims(rows, [_draft(_ref("A01", "HG-100", 2))], ordered)
+    assert claims == [[(1, 2)]]
+    assert remaining == {0: 0, 1: 1}
+
+
 # ---------------------------------------------------------------------------
 # finalize_import_session - DB-backed (skips locally, runs in CI)
 # ---------------------------------------------------------------------------

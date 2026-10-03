@@ -625,6 +625,7 @@ def _apply_opening_fields(opening: OpeningModel, opening_input: dict) -> None:
 def plan_po_claims(
     hardware_items_input: list[dict],
     po_drafts: list[dict],
+    already_ordered: dict[tuple[str, str, str, int | None], int] | None = None,
 ) -> tuple[list[list[tuple[int, int]]], dict[int, int]]:
     """Plan how #570 quantity-aware PO drafts claim the schedule's hardware rows.
 
@@ -642,13 +643,24 @@ def plan_po_claims(
     many units, splitting the boundary leaf. Drafts claim in order, so an earlier draft takes the first
     units of a combo and a later one continues where it left off. Raises ValidationError when the
     claims for a combo exceed its total, NotFoundError when a ref names a combo the schedule lacks.
+
+    `already_ordered` maps (opening_number, product_code, hardware_category, leaf) to units a prior
+    session already put on a PO (#1156). The input row is the schedule's whole requirement (#1122), so
+    those units come off each leaf's bucket first: a draft can claim only what is not yet ordered, a
+    whole-combo ref resolves to that remainder, and remaining_by_idx is already net of the order.
     """
     # One mutable pool per combo: each bucket is [row_index, remaining] against hardware_items_input,
-    # in input order.
+    # in input order, net of what is already ordered for that leaf.
+    ordered_left = defaultdict(int, already_ordered or {})
     combo_buckets: dict[tuple[str, str, str], list[list]] = defaultdict(list)
+    combo_ordered: dict[tuple[str, str, str], int] = defaultdict(int)
     for idx, hi in enumerate(hardware_items_input):
         combo = (hi["opening_number"], hi["product_code"], hi["hardware_category"])
-        combo_buckets[combo].append([idx, hi["item_quantity"]])
+        leaf_key = (*combo, hi.get("leaf"))
+        covered = min(hi["item_quantity"], ordered_left[leaf_key])
+        ordered_left[leaf_key] -= covered
+        combo_ordered[combo] += covered
+        combo_buckets[combo].append([idx, hi["item_quantity"] - covered])
     combo_total = {combo: sum(b[1] for b in buckets) for combo, buckets in combo_buckets.items()}
 
     # Up-front cap check: units claimed of a combo cannot exceed what the schedule holds. None resolves
@@ -663,9 +675,11 @@ def plan_po_claims(
     for combo, want in claimed_per_combo.items():
         total = combo_total.get(combo)
         if total is not None and want > total:
+            ordered = combo_ordered.get(combo, 0)
+            held = f"only {total} not yet on a purchase order ({ordered} already are)" if ordered else f"only {total}"
             raise ValidationError(
                 f"Purchase order drafts claim {want} of {combo[1]} ({combo[2]}) at opening {combo[0]}, "
-                f"but the schedule holds only {total}.",
+                f"but the schedule holds {held}.",
                 field="po_drafts",
             )
 
@@ -738,9 +752,18 @@ def finalize_import_session(
     # #627: the source XML file name, present only when the hardware items came from a fresh parse.
     schedule_filename = input_data.get("schedule_filename")
 
-    # 1. Project lookup (must already exist)
+    # 1. Project lookup (must already exist), row-locked so finalizes on one project run one at a time
+    # (#1156). Unlocked, two concurrent finalizes each wiped and re-inserted the AVAILABLE schedule: the
+    # second's delete skipped the first's new rows and it inserted a full set on top, doubling the
+    # requirement. FOR NO KEY UPDATE (key_share) serializes finalizes without blocking the KEY SHARE
+    # locks that inserting rows which reference the project take, the same mode the shipment containers
+    # take on it. populate_existing so the openings are read after the lock, not from a stale session.
     project_stmt = (
-        select(ProjectModel).options(selectinload(ProjectModel.openings)).where(ProjectModel.id == project_id)
+        select(ProjectModel)
+        .options(selectinload(ProjectModel.openings))
+        .where(ProjectModel.id == project_id)
+        .with_for_update(key_share=True, of=ProjectModel)
+        .execution_options(populate_existing=True)
     )
     project = session.scalars(project_stmt).unique().first()
 
@@ -869,7 +892,15 @@ def finalize_import_session(
     # It is pure and DB-free, so the delicate splitting/coordination is unit-tested on its own and the
     # block below only materializes the plan. Built unconditionally: with no drafts the remainder is
     # the whole schedule.
-    per_draft_claims, remaining_by_idx = plan_po_claims(hardware_items_input, po_drafts)
+    # #1156: the units already ordered come off the pool first, keyed by opening number for the planner,
+    # so a draft (a stale tab's included) can claim only what is not yet on a PO.
+    opening_number_by_id = {oid: number for number, oid in opening_map.items()}
+    ordered_by_number: dict[tuple[str, str, str, int | None], int] = defaultdict(int)
+    for (opening_id, product_code, hardware_category, leaf), qty in already_ordered_qty.items():
+        number = opening_number_by_id.get(opening_id)
+        if number is not None:
+            ordered_by_number[(number, product_code, hardware_category, leaf)] += qty
+    per_draft_claims, remaining_by_idx = plan_po_claims(hardware_items_input, po_drafts, ordered_by_number)
 
     # 4. PO creation
     created_pos: list[POModel] = []
@@ -1038,10 +1069,9 @@ def finalize_import_session(
     # 5. Persist the unclaimed remainder of every hardware item as AVAILABLE. #570: a combo the PO
     #    block took in full leaves nothing here; a partially-claimed combo persists what plan_po_claims
     #    left in remaining_by_idx (item_quantity = the remainder); an unreferenced combo persists in
-    #    full. Units of the same (opening_id, product, category, leaf) already ordered in a prior
-    #    session come off first (#1122): the input row is the schedule's whole requirement - a fresh
-    #    parse's quantity, or a hydrate's sum of the persisted IN_PO and AVAILABLE rows - so only what
-    #    is left after the existing order is still unpurchased.
+    #    full. Units of the same (opening, product, category, leaf) already ordered in a prior session
+    #    have already come off (#1122, #1156): plan_po_claims took them out of the pool before any draft
+    #    claimed, so remaining_by_idx is what is still unpurchased.
     available_keys_seen: set[tuple[uuid.UUID, str, str, int | None]] = set()
     for idx, hi in enumerate(hardware_items_input):
         remaining = remaining_by_idx.get(idx, hi["item_quantity"])
@@ -1052,12 +1082,6 @@ def finalize_import_session(
             continue
         key_with_id = (opening_id, hi["product_code"], hi["hardware_category"], hi.get("leaf"))
         if key_with_id in available_keys_seen:
-            continue
-        covered = min(remaining, already_ordered_qty.get(key_with_id, 0))
-        if covered:
-            already_ordered_qty[key_with_id] -= covered
-            remaining -= covered
-        if remaining <= 0:
             continue
         available_keys_seen.add(key_with_id)
 

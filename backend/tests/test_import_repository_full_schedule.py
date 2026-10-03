@@ -3,8 +3,10 @@
 import uuid
 from datetime import datetime
 
+import pytest
 from sqlalchemy import select
 
+from app.errors import ValidationError
 from app.models.enums import (
     HardwareItemState,
     ShopAssemblyOpeningStatus,
@@ -304,6 +306,57 @@ def test_refinalize_ordering_the_remainder_leaves_nothing_available(db_session):
 
     assert _rows(db_session, project.id) == {("A01", "HG-100", HardwareItemState.IN_PO): 4}
     assert _status(db_session, project.id, "HG-100")["not_purchased"] == 0
+
+
+def test_refinalize_refuses_a_draft_claiming_units_already_ordered(db_session):
+    """#1156: a stale tab offering the whole combo again cannot order units a PO already holds. 2 of
+    4 are ordered, so a second draft for 3 is refused and nothing changes."""
+    project = _make_project(db_session)
+    db_session.commit()
+    base = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01")],
+        "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=4)],
+    }
+    import_repository.finalize_import_session(db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100", 2))]})
+    db_session.commit()
+
+    with pytest.raises(ValidationError, match="only 2 not yet on a purchase order"):
+        import_repository.finalize_import_session(
+            db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100", 3))]}
+        )
+    db_session.rollback()
+
+    assert _rows(db_session, project.id) == {
+        ("A01", "HG-100", HardwareItemState.IN_PO): 2,
+        ("A01", "HG-100", HardwareItemState.AVAILABLE): 2,
+    }
+
+
+def test_refinalize_whole_combo_ref_orders_only_the_unordered_remainder(db_session):
+    """#1156: a whole-combo ref (no quantity, what the wizard sends when a draft takes everything) on a
+    partly-ordered product claims what is not yet ordered, not the schedule's whole requirement again."""
+    project = _make_project(db_session)
+    db_session.commit()
+    base = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01")],
+        "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=4)],
+    }
+    import_repository.finalize_import_session(db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100", 1))]})
+    db_session.flush()
+    import_repository.finalize_import_session(db_session, {**base, "po_drafts": [_po_draft(_ref("A01", "HG-100"))]})
+    db_session.flush()
+
+    assert _rows(db_session, project.id) == {("A01", "HG-100", HardwareItemState.IN_PO): 4}
+    ordered = sorted(
+        db_session.scalars(
+            select(POLineItem.ordered_quantity)
+            .join(PurchaseOrder, POLineItem.po_id == PurchaseOrder.id)
+            .where(PurchaseOrder.project_id == project.id)
+        ).all()
+    )
+    assert ordered == [1, 3]
 
 
 def test_replace_schedule_keeps_ordered_hardware(db_session):
