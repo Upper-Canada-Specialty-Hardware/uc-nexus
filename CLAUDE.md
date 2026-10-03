@@ -145,6 +145,13 @@ Two laws govern every screen. They outrank visual preference and apply to all UI
 
 Both laws are read every session and weighed on review.
 
+## Ruled Business Logic
+
+Some behaviour that looks like a gap has been ruled intentional by the product owner. Each such spot carries an `INTENTIONAL BUSINESS LOGIC - DO NOT CHANGE` comment at the code, naming the ruling and its issue. Before reporting or changing behaviour in an audit or review, search for that marker; a marked behaviour is not a finding. Current rulings (#1107 / #1142):
+
+- Shipment returns are allowed from a picked-up (in-transit) shipment (`create_shipment_return` in `backend/app/repositories/shipping_repository.py`).
+- PO document settings are one row shared by every GP company (`backend/app/repositories/po_document_settings_repository.py`).
+
 ## Testing
 
 See [testing/CLAUDE.md](testing/CLAUDE.md) for the simulated user testing guide (app workflows, interaction patterns). End-to-end testing happens only after the PR is merged and deployed to production, driven against TUBC through the Claude in Chrome extension in the owner's signed-in Chrome; before the merge, verification is CI and code review only. Read the `testing/` knowledgebase only when testing actually begins - not during planning or implementation - to avoid consuming context prematurely; testing, when done, is performed by the main agent directly, not the `tester` subagent.
