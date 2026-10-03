@@ -8,7 +8,7 @@
 Downgrade drops the column; assigned_to is untouched either way.
 
 Revision ID: 135
-Revises: 127
+Revises: 132
 Create Date: 2026-10-03
 """
 
@@ -17,7 +17,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "135"
-down_revision = "127"
+down_revision = "132"
 branch_labels = None
 depends_on = None
 
