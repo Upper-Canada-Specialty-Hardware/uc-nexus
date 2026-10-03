@@ -207,6 +207,24 @@ schema = strawberry.Schema(
 graphql_app = GraphQLRouter(schema, context_getter=get_context)
 
 
+async def drain_before_shutdown() -> None:
+    """Let a GP write already on the wire finish before the relay socket goes (#1292).
+
+    A receipt dispatched when the SIGTERM landed used to fail with the socket and be marked FAILED
+    ambiguous while GP may still have committed it. In order: the outbox claims nothing new, the drain
+    in flight gets up to OUTBOX_DRAIN_SECONDS (the relay call gives up at 30s) to finish, then the relay
+    socket is closed cleanly (#353 PR F: the relay knows it is a restart and reconnects at once to the
+    new instance). A drain still running after that is left in flight for the new instance's stale sweep."""
+    gp_outbox_worker.request_stop()
+    await gp_outbox_worker.wait_idle(OUTBOX_DRAIN_SECONDS)
+    await relay_gateway.close_for_shutdown()
+
+
+# Above the relay's 30s call timeout. uvicorn's graceful shutdown (serve.py) and Railway's draining time
+# (railway.toml) are set above this, so the wait is never cut short by the platform.
+OUTBOX_DRAIN_SECONDS = 35.0
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Own the background GP outbox drainer (#353 PR E) and the GP job sync (#380).
@@ -216,6 +234,7 @@ async def lifespan(_app: FastAPI):
     TestClient(app) this runs too, and is harmless: with no relay registered neither loop queries."""
     tasks: list[asyncio.Task] = []
     if gp_outbox_worker.enabled():
+        gp_outbox_worker.reset_for_start()  # a stop from an earlier lifespan must not carry in (#1292)
         tasks.append(asyncio.create_task(gp_outbox_worker.run_forever()))
     if gp_job_sync.enabled():
         tasks.append(asyncio.create_task(gp_job_sync.run_forever()))
@@ -229,10 +248,10 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
-        # Close the relay socket cleanly BEFORE stopping the workers (#353 PR F). The relay then knows
-        # this is a restart rather than a blip and reconnects at once; anything it was about to send
-        # will queue on the outbox and drain when it does.
-        await relay_gateway.close_for_shutdown()
+        # The serve.py launcher has normally done this already, before uvicorn closed the relay socket
+        # with the other connections; under a plain `uvicorn main:app` it happens here. Both steps are
+        # safe to repeat.
+        await drain_before_shutdown()
         for task in tasks:
             task.cancel()
         for task in tasks:

@@ -203,12 +203,6 @@ class RelayEvent:
 
 
 @strawberry.type
-class GpJob:
-    job_number: str
-    job_name: str | None
-
-
-@strawberry.type
 class GpVendor:
     vendor_id: str
     vendor_name: str
@@ -371,6 +365,10 @@ class CreateGpJobResult:
     project: "Project"
     created: bool
     cost_codes_provisioned: int
+    # #1306: on the adopt path (created false), how many active cost codes GP holds on the job, read
+    # from GP; None when it could not be read, and on a real create. That path is also where a retry
+    # after a lost reply lands, so a flat 0 there would wrongly say the selected codes never landed.
+    cost_codes_in_gp: int | None = None
 
 
 @strawberry.type
@@ -622,7 +620,15 @@ class PODocumentInfo:
     file_size: int
     document_type: PODocumentType
     uploaded_at: datetime
-    download_url: str
+    s3_key: strawberry.Private[str]
+
+    # #1339: signed only when a query asks for it, rather than for every document on every PO load. The
+    # link expires in an hour, so a page holding it goes stale; poDocumentDownloadUrl mints one on click.
+    @strawberry.field(deprecation_reason="Expires in an hour. Use poDocumentDownloadUrl when the user opens it.")
+    def download_url(self) -> str:
+        from app.services import storage
+
+        return storage.generate_presigned_url(self.s3_key)
 
 
 @strawberry.type
@@ -1152,6 +1158,15 @@ class ShippingOutRequestItem:
 
 
 @strawberry.type
+class ShippingOutRequestReservedProduct:
+    """What a request actually holds on stock for one product (#1262)."""
+
+    hardware_category: str
+    product_code: str
+    quantity: int
+
+
+@strawberry.type
 class ShippingOutRequest:
     id: strawberry.ID
     request_number: str
@@ -1173,6 +1188,16 @@ class ShippingOutRequest:
     stage: RequestStage
     # See ShopAssemblyRequest.return_note (#343).
     return_note: str | None
+    # #1260: a fingerprint of the lines. The edit page sends back the one it loaded, and a save over
+    # lines someone else changed in between is refused instead of silently undoing their change.
+    lines_version: str
+    # Resolved only by the single-request read that seeds the edit page; null on list reads.
+    # #1257: the request's own project, archived included, so the edit page can open a request whose
+    # job was archived while it was pending (the projects list leaves archived jobs out).
+    project: Project | None = None
+    # #1262: what the request actually holds on stock, which the edit page adds back as headroom.
+    # Usually the line totals; nothing at all for a request a cancelled pull could not re-reserve.
+    reserved_by_product: list[ShippingOutRequestReservedProduct] | None = None
 
 
 @strawberry.type
@@ -1598,13 +1623,16 @@ class InventoryRow:
 class EmailPoResult:
     """The outcome of sending a PO to its vendor (#500).
 
-    A result rather than an exception, because every refusal is something the user can act on -
-    generate the document, register the PO, ask accounting to put an email on the vendor card - and
-    none of them means something broke."""
+    A result rather than an exception. Most refusals are something the user can act on - generate the
+    document, register the PO, ask accounting to put an email on the vendor card. The ones that mean
+    something broke (the mail server, GP, storage) carry `failed` (#1278)."""
 
     sent: bool
     message: str
     sent_to: str | None = None
+    # #1278: true when something broke (the mail server, GP, storage) rather than a step the user can
+    # take, so the page shows it as an error rather than a passing note.
+    failed: bool = False
 
 
 @strawberry.type

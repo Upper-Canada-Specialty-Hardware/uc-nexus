@@ -21,13 +21,17 @@ def _get_client():
     return _client
 
 
-def upload_file(key: str, data: bytes, content_type: str) -> str:
+def upload_file(key: str, data: bytes, content_type: str, *, as_attachment: bool = False) -> str:
+    """Store an object. `as_attachment` makes a browser opening its link download it rather than
+    render it, for a type nothing vouched for."""
     client = _get_client()
+    extra = {"ContentDisposition": "attachment"} if as_attachment else {}
     client.put_object(
         Bucket=BUCKET_NAME,
         Key=key,
         Body=data,
         ContentType=content_type,
+        **extra,
     )
     return key
 

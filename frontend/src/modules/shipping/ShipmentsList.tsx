@@ -75,6 +75,7 @@ import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { FIT_CELL_WRAP_SX } from '../../components/fitColumns';
 import { FadeIn } from '../../motion';
 import { parseServerDate, parseServerDay } from '../../utils/serverDate';
+import { openPdfWindow } from '../../utils/openPdf';
 
 // UI law 1 (#1231): a short value hugs its column, and the one text column takes the slack. A long
 // product code wraps inside its cell rather than pushing the table wider.
@@ -334,6 +335,8 @@ export default function ShipmentsList({ projectId, heading }: Props) {
 
   const handleViewPdf = useCallback(
     async (slip: PackingSlip) => {
+      // #1338: the tab opens inside the click; a tab opened after the render could be blocked.
+      const tab = openPdfWindow(showToast);
       setGeneratingFor(slip.id);
       try {
         // #1107 / #1304: before pickup a reprint is net of returns (it is the copy the driver takes);
@@ -353,8 +356,9 @@ export default function ShipmentsList({ projectId, heading }: Props) {
             returnedNote={net.returnedNote}
           />,
         ).toBlob();
-        window.open(URL.createObjectURL(blob), '_blank');
+        tab.show(blob);
       } catch {
+        tab.cancel();
         showToast('Failed to generate the Delivery Request', 'error');
       } finally {
         setGeneratingFor(null);

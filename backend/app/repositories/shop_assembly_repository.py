@@ -45,6 +45,7 @@ from app.models.shop_assembly import (
     ShopAssemblyRequestItem,
     ShopAssemblyRequestOpening,
 )
+from app.services import gp_window
 
 # Where one request sits on the ladder the requests list draws as columns. Derived from the request's
 # own status and the state of the pulls its batches minted - never stored, because a stored copy is
@@ -432,23 +433,9 @@ def get_return_notes(session: Session, requests: list[ShopAssemblyRequest]) -> d
 
 def _format_return_note(batch_number: str, cancelled_by: str | None, cancelled_at, reason: str | None) -> str:
     who = cancelled_by or "someone"
-    when = cancelled_at.date().isoformat() if cancelled_at is not None else "an earlier date"
+    when = gp_window.local_date(cancelled_at).isoformat() if cancelled_at is not None else "an earlier date"
     head = f"Returned to Pending: batch {batch_number} was cancelled by {who} on {when}"
     return f"{head}: {reason}" if reason else f"{head}."
-
-
-def get_request_line_counts(session: Session, request_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
-    """Line count per request, as one grouped read rather than a `len()` over a loaded collection."""
-    if not request_ids:
-        return {}
-    return {
-        request_id: int(total or 0)
-        for request_id, total in session.execute(
-            select(ShopAssemblyRequestItem.shop_assembly_request_id, func.count())
-            .where(ShopAssemblyRequestItem.shop_assembly_request_id.in_(request_ids))
-            .group_by(ShopAssemblyRequestItem.shop_assembly_request_id)
-        ).all()
-    }
 
 
 def get_allocation_review(session: Session, request_id: uuid.UUID) -> dict:
@@ -861,20 +848,26 @@ def return_batch_to_pending(session: Session, batch: ShopAssemblyBatch) -> bool:
     cancel just restocked go back to the free pool, and the next batch competes for them like
     anybody else. That is the whole difference from the shipping-out path, which does re-reserve
     because a returned shipping request is still a live claim.
+
+    The request is locked and read fresh first, like every other decision on it (#1121, #1156). Read
+    unlocked, a new batch on a sibling opening could close the request out from under this cancel: the
+    batch saw this batch's openings still BATCHED, closed the request to APPROVED, and the cancel - which
+    had read the request while it was still PENDING - flipped its openings back without reopening it,
+    leaving a closed request holding a pending opening no screen can reach. Under the lock one of the two
+    waits, and the request's status is then derived from its openings as they now stand.
     """
+    request = _locked_request(session, batch.shop_assembly_request_id)
+    session.refresh(batch)
     if batch.status != ShopAssemblyBatchStatus.ACTIVE:
         return False
 
     batch.status = ShopAssemblyBatchStatus.CANCELLED
-    openings = session.scalars(
-        select(ShopAssemblyRequestOpening).where(ShopAssemblyRequestOpening.batch_id == batch.id)
-    ).all()
-    for opening in openings:
-        opening.status = ShopAssemblyOpeningStatus.PENDING
-        opening.batch_id = None
+    for opening in request.openings:
+        if opening.batch_id == batch.id:
+            opening.status = ShopAssemblyOpeningStatus.PENDING
+            opening.batch_id = None
 
-    request = session.get(ShopAssemblyRequest, batch.shop_assembly_request_id)
-    if request is not None:
+    if any(o.status == ShopAssemblyOpeningStatus.PENDING for o in request.openings):
         _reopen_to_pending(request)
     session.flush()
     return True
@@ -906,50 +899,3 @@ def _reopen_to_pending(request: ShopAssemblyRequest) -> None:
     request.status = ShopAssemblyRequestStatus.PENDING
     request.approved_by = None
     request.approved_at = None
-
-
-def pending_openings_exist(session: Session, request_id: uuid.UUID) -> bool:
-    """Whether a request still has an opening waiting on the manager. One scalar read."""
-    return bool(
-        session.scalar(
-            select(func.count())
-            .select_from(ShopAssemblyRequestOpening)
-            .where(
-                ShopAssemblyRequestOpening.shop_assembly_request_id == request_id,
-                ShopAssemblyRequestOpening.status == ShopAssemblyOpeningStatus.PENDING,
-            )
-        )
-    )
-
-
-def opening_status_counts(
-    session: Session, request_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, dict[ShopAssemblyOpeningStatus, int]]:
-    """Openings per status per request, as one grouped aggregate for a whole list."""
-    if not request_ids:
-        return {}
-    counts: dict[uuid.UUID, dict[ShopAssemblyOpeningStatus, int]] = {}
-    for request_id, status, total in session.execute(
-        select(
-            ShopAssemblyRequestOpening.shop_assembly_request_id,
-            ShopAssemblyRequestOpening.status,
-            func.count(),
-        )
-        .where(ShopAssemblyRequestOpening.shop_assembly_request_id.in_(request_ids))
-        .group_by(
-            ShopAssemblyRequestOpening.shop_assembly_request_id,
-            ShopAssemblyRequestOpening.status,
-        )
-    ).all():
-        counts.setdefault(request_id, {})[status] = int(total or 0)
-    return counts
-
-
-def batch_for_pull(session: Session, pull_request_id: uuid.UUID) -> ShopAssemblyBatch | None:
-    """The batch a shop-assembly pull was minted by, or None for one nothing here minted.
-
-    Deliberately not filtered on ACTIVE: the mapping is 1:1 for the life of the pull (a re-batch
-    mints a fresh pull under the next batch number), and a caller asking "whose claim is this" about
-    an already-cancelled pull deserves the true answer rather than a silent None.
-    """
-    return session.scalar(select(ShopAssemblyBatch).where(ShopAssemblyBatch.pull_request_id == pull_request_id))

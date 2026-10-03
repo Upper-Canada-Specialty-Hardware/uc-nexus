@@ -15,13 +15,29 @@ Everything here is a pure function of an instant, so the whole of it is testable
 """
 
 import logging
-from datetime import datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_WINDOW = "20:00-05:00"
 DEFAULT_TZ = "America/Toronto"
+
+
+def local_today(now: datetime | None = None) -> date:
+    """Today's calendar date in Toronto, where the people using the app are. The container runs UTC,
+    so `date.today()` is already tomorrow for anyone working an evening (#1273)."""
+    instant = now if now is not None else datetime.now(UTC)
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=UTC)
+    return instant.astimezone(ZoneInfo(DEFAULT_TZ)).date()
+
+
+def local_date(utc_naive: datetime) -> date:
+    """The Toronto calendar date of a stored naive-UTC timestamp. `.date()` on it would give the UTC
+    date, which is the next day from 8pm Eastern (7pm in winter) to midnight (#1272)."""
+    return local_today(utc_naive)
+
 
 # Longest the caller should sleep on one "closed" answer. The exact reopening instant is computed, but
 # a config change or a clock correction should be noticed within half an hour rather than at dawn.

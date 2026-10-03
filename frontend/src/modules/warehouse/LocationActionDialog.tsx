@@ -9,7 +9,7 @@ import {
 } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
-import LocationAutocomplete from '../../components/LocationAutocomplete';
+import LocationAutocomplete, { NO_DEFINED_LOCATIONS_TEXT } from '../../components/LocationAutocomplete';
 import { useToast } from '../../components/Toast';
 import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED } from '../../graphql/shared';
 import { ADJUST_INVENTORY_QUANTITY, MOVE_STOCK_LOCATION, MARK_STOCK_ITEM_UNLOCATED, ADJUST_STOCK_QUANTITY } from '../../graphql/warehouse';
@@ -66,7 +66,7 @@ export default function LocationActionDialog({
 
   // #975: a move lands only on a defined location, so the pickers offer only those - the same strict,
   // cascading picks put away makes (#632), defined in every selected item's warehouse.
-  const { aisleOptions, rowOptions, bayOptions, isDefinedPick } = useDefinedLocationPick(
+  const { aisleOptions, rowOptions, bayOptions, isDefinedPick, registryEmpty } = useDefinedLocationPick(
     targets.map((t) => t.warehouseId),
     aisle,
     row,
@@ -300,7 +300,9 @@ export default function LocationActionDialog({
           <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} />
           <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} />
           <Typography variant="caption" color="text.secondary">
-            Pick a location defined for this warehouse on the Locations tab.
+            {registryEmpty
+              ? NO_DEFINED_LOCATIONS_TEXT
+              : 'Pick a location defined for this warehouse on the Locations tab.'}
           </Typography>
         </Stack>
       )}

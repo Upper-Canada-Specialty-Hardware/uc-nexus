@@ -45,6 +45,8 @@ export function readAuthBridge(): Readonly<AuthBridgeState> {
 /** Back to the pre-mount state. Only the provider's teardown and tests should need this. */
 export function resetAuthBridge(): void {
   state = EMPTY;
+  authFailed = false;
+  lastProbeAt = 0;
 }
 
 /**
@@ -69,6 +71,60 @@ export function onAuthFailure(listener: AuthFailureListener): () => void {
   };
 }
 
-export function notifyAuthFailure(): void {
+/**
+ * The lapsed-session state (#1329). Before it, a session that could not be repaired was announced
+ * once per failing request, and the page's polls (relay status every 10s, the outbox every 15s, the
+ * bell every 30s) each failed, replayed and announced again: "Not now" on the prompt held for about
+ * ten seconds, and every poll kept costing two backend calls and a fresh token mint for as long as
+ * the tab stayed open.
+ *
+ * Now the first unrecoverable failure marks the session lapsed. While it is, the auth link stops
+ * background queries before they mint or reach the network (one probe a minute still goes through,
+ * so a session Clerk repairs on its own is noticed), further failures stay quiet, and the first
+ * request that succeeds clears it. A mutation is the user acting, so it is always attempted and its
+ * failure raises the prompt again even while lapsed.
+ */
+let authFailed = false;
+let lastProbeAt = 0;
+
+/** How often a lapsed session still lets one background query through to see if it recovered. */
+export const AUTH_PROBE_INTERVAL_MS = 60_000;
+
+/** True once a failure could not be repaired, until a request succeeds again. */
+export function isAuthLapsed(): boolean {
+  return authFailed;
+}
+
+/**
+ * Whether a background query should be stopped before it mints or reaches the network. False while
+ * the session is healthy, and false once a minute while it is lapsed: that request is the probe.
+ */
+export function shouldSuspendQuery(now: number = Date.now()): boolean {
+  if (!authFailed) return false;
+  if (now - lastProbeAt >= AUTH_PROBE_INTERVAL_MS) {
+    lastProbeAt = now;
+    return false;
+  }
+  return true;
+}
+
+/** A request got through: the session is back, so background queries resume. */
+export function markAuthRecovered(): void {
+  authFailed = false;
+  lastProbeAt = 0;
+}
+
+/**
+ * Announce that the token could not be repaired. Only the first failure of a lapse reaches the
+ * listeners; the rest are the same news. `userAction` is a failure the user caused (a mutation),
+ * which re-raises the prompt even mid-lapse, because they are waiting on the answer.
+ */
+export function notifyAuthFailure(options: { userAction?: boolean } = {}): void {
+  const alreadyLapsed = authFailed;
+  if (!alreadyLapsed) {
+    authFailed = true;
+    lastProbeAt = Date.now();
+  }
+  if (alreadyLapsed && !options.userAction) return;
   listeners.forEach((listener) => listener());
 }

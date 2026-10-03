@@ -25,7 +25,9 @@ interface AddAddressTarget {
  * dialog and the project edit dialog. `open` is called with the picker's customer and setter; the
  * returned `dialog` is rendered by the caller while a picker is asking.
  */
-export function useAddCustomerAddress(company: string, relayConnected: boolean) {
+// #1334/#1336: relayReason is why GP work is off (relayBlockedReason), so the dialog's alert says the
+// real cause and stays quiet while the first status check is still in flight.
+export function useAddCustomerAddress(company: string, relayConnected: boolean, relayReason?: string | null) {
   // The address pickers render out of the cache, so a created row is written there rather than
   // waited on over the network. Same handle RegisterGpBuyerDialog takes to re-read the buyer master.
   const client = useApolloClient();
@@ -95,6 +97,7 @@ export function useAddCustomerAddress(company: string, relayConnected: boolean) 
       onClose={close}
       customer={target.customer}
       relayConnected={relayConnected}
+      relayReason={relayReason}
       onCreated={handleCreated}
       onDuplicate={handleDuplicate}
     />
