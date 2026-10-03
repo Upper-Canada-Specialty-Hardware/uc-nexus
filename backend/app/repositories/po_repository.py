@@ -55,6 +55,31 @@ def _coerce_custom_inventory_item_id(raw) -> uuid.UUID | None:
     return raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))
 
 
+def _checked_custom_inventory_item_id(session: Session, raw, company: str) -> uuid.UUID | None:
+    """#1379: the catalog entry a line names, refused when it does not exist or belongs to another
+    company's catalog. The line stores the id unchecked otherwise, and a dangling or cross-tenant id
+    surfaces later as a line described by a product nobody can see."""
+    from app.models.inventory_item_type import CustomInventoryItem, InventoryItemType
+
+    item_id = _coerce_custom_inventory_item_id(raw)
+    if item_id is None:
+        return None
+    item_company = session.execute(
+        select(InventoryItemType.company)
+        .join(CustomInventoryItem, CustomInventoryItem.type_id == InventoryItemType.id)
+        .where(CustomInventoryItem.id == item_id)
+    ).scalar_one_or_none()
+    if item_company is None or item_company != company:
+        raise ValidationError(f"Custom item {item_id} is not in this company's catalog", field="line_items")
+    return item_id
+
+
+def validate_line_catalog_items(session: Session, line_items: list[dict], company: str) -> None:
+    """#1379: the catalog check on its own, so the register resolver can refuse before the GP push."""
+    for li_data in line_items:
+        _checked_custom_inventory_item_id(session, li_data.get("custom_inventory_item_id"), company)
+
+
 def _learn_manufacturer_vendor_mappings(
     session: Session,
     *,
@@ -181,15 +206,31 @@ def _assert_po_number_available(
         raise ValidationError(f"PO number '{po_number}' already exists", field="po_number")
 
 
+# The order-time cost columns are Numeric(12,2), so anything at or above this overflows at flush.
+_MAX_ORDER_COST = Decimal("10000000000")
+
+
 def _coerce_order_cost(value, field: str) -> Decimal | None:
     """Issue #156: coerce an optional order-time dollar cost (shipping_cost / tariff_amount) to
-    Decimal. Null passes through ("not entered"); a negative value is a clean field error."""
+    Decimal. Null passes through ("not entered"); a negative value, or one too large for the column
+    (#1207), is a clean field error rather than an overflow at flush."""
     if value is None:
         return None
     amount = Decimal(str(value))
+    label = field.replace("_", " ").capitalize()
     if amount < 0:
-        raise ValidationError(f"{field.replace('_', ' ').capitalize()} must be zero or greater", field=field)
+        raise ValidationError(f"{label} must be zero or greater", field=field)
+    if amount >= _MAX_ORDER_COST:
+        raise ValidationError(f"{label} must be less than {_MAX_ORDER_COST:,}", field=field)
     return amount
+
+
+def validate_order_costs(*, shipping_cost=None, tariff_amount=None) -> None:
+    """#1207: the order-cost checks the persist makes, run on their own so the register resolver can
+    refuse a bad cost BEFORE the GP push. Refused only at the persist, GP would already hold the PO
+    while Nexus kept the draft, and a retry would push a second one."""
+    _coerce_order_cost(shipping_cost, "shipping_cost")
+    _coerce_order_cost(tariff_amount, "tariff_amount")
 
 
 def _effective_pool_kind(project_id: uuid.UUID | None, pool_kind: PoolKind | None) -> PoolKind:
@@ -296,7 +337,7 @@ def create_po(
         if isinstance(classification_val, str):
             classification_val = Classification(classification_val)
 
-        catalog_item_id = _coerce_custom_inventory_item_id(li_data.get("custom_inventory_item_id"))
+        catalog_item_id = _checked_custom_inventory_item_id(session, li_data.get("custom_inventory_item_id"), company)
         order_as_raw = li_data.get("order_as")
         # #563: Hardware Category and Product Code are the line's identity and are both required; they
         # are what a PO REGISTRATION sends GP as the item number and the description. Order As is the
@@ -479,7 +520,10 @@ def register_po_in_gp(
     # is GP POP10110.ORD = line index * 16384, assigned in the order the lines were sent to the relay
     # (== this payload order), which is what a relay /receipt targets per line.
     for idx, li_data in enumerate(line_items, start=1):
-        catalog_item_id = _coerce_custom_inventory_item_id(li_data.get("custom_inventory_item_id"))
+        # #1379: checked first, ahead of the kept-line handling and its schedule ties.
+        catalog_item_id = _checked_custom_inventory_item_id(
+            session, li_data.get("custom_inventory_item_id"), po.company
+        )
         order_as_raw = li_data.get("order_as")
         # #563: Hardware Category and Product Code are the line's identity and are both required; they
         # are what a PO REGISTRATION sends GP as the item number and the description. Order As is the

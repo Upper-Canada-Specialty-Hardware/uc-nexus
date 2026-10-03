@@ -52,7 +52,7 @@ export interface CustomInventoryItem {
  * without types - it just shows raw hardware categories, which is what it did before this existed.
  */
 export function useInventoryItemTypes(options?: { activeOnly?: boolean; skip?: boolean }) {
-  const { data, loading, refetch } = useQuery<{ inventoryItemTypes: InventoryItemType[] }>(
+  const { data, loading, error, refetch } = useQuery<{ inventoryItemTypes: InventoryItemType[] }>(
     GET_INVENTORY_ITEM_TYPES,
     {
       variables: { activeOnly: options?.activeOnly ?? false },
@@ -63,7 +63,8 @@ export function useInventoryItemTypes(options?: { activeOnly?: boolean; skip?: b
   const types = useMemo(() => data?.inventoryItemTypes ?? [], [data]);
   /** Type code -> the type, for matching a `hardwareCategory` off an inventory row. */
   const byCode = useMemo(() => new Map(types.map((t) => [t.code, t])), [types]);
-  return { types, byCode, loading, refetch };
+  // #1341: returned so a screen can tell a failed read from an empty catalog.
+  return { types, byCode, loading, error, refetch };
 }
 
 /**
@@ -78,7 +79,7 @@ export function useCustomInventoryItems(options?: {
   activeOnly?: boolean;
   skip?: boolean;
 }) {
-  const { data, loading, refetch } = useQuery<{ customInventoryItems: CustomInventoryItem[] }>(
+  const { data, loading, error, refetch } = useQuery<{ customInventoryItems: CustomInventoryItem[] }>(
     GET_CUSTOM_INVENTORY_ITEMS,
     {
       variables: { typeId: options?.typeId ?? null, activeOnly: options?.activeOnly ?? false },
@@ -91,7 +92,7 @@ export function useCustomInventoryItems(options?: {
     () => new Map(items.map((i) => [catalogKey(i.hardwareCategory, i.productCode), i])),
     [items],
   );
-  return { items, byKey, loading, refetch };
+  return { items, byKey, loading, error, refetch };
 }
 
 /** The key `useCustomInventoryItems().byKey` is built on. */
