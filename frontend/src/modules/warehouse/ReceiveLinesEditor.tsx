@@ -42,6 +42,8 @@ export interface ReceiveLinesEditorProps {
   onQuantityChange: (lineId: string, value: number) => void;
   /** Name each PO above its table. On for a multi-PO batch, off when there is only one. */
   showPoHeaders: boolean;
+  /** Show the quantities without letting them change: a draft already being posted to GP (#1353). */
+  readOnly?: boolean;
 }
 
 /** Headers in the micro-label face; FitTable's header cell already holds them to one line. */
@@ -63,7 +65,8 @@ const RECEIVE_COLUMNS: FitTableColumn[] = [
   { id: 'ordered', label: 'Ordered Qty', min: 72, weight: 0.5, align: 'right', header: micro('Ordered Qty') },
   { id: 'received', label: 'Already Received', min: 80, weight: 0.5, align: 'right', header: micro('Already Received') },
   { id: 'pending', label: 'Pending', min: 68, weight: 0.5, align: 'right', header: micro('Pending') },
-  { id: 'receiveNow', label: 'Receive Now', min: 184, weight: 1, header: micro('Receive Now') },
+  // #1322: protected, so a narrow dialog takes width from the text columns before the Fill button clips.
+  { id: 'receiveNow', label: 'Receive Now', min: 184, weight: 1, header: micro('Receive Now'), protect: true },
 ];
 
 export default function ReceiveLinesEditor({
@@ -71,6 +74,7 @@ export default function ReceiveLinesEditor({
   receiveQuantities,
   onQuantityChange,
   showPoHeaders,
+  readOnly = false,
 }: ReceiveLinesEditorProps) {
   const renderPOSection = (details: PODetails) => {
     const rows = details.lineItems.map((li) => ({
@@ -108,7 +112,9 @@ export default function ReceiveLinesEditor({
           {rows.map((row) => {
             const fullyReceived = row.pending === 0;
             const currentValue = receiveQuantities[row.id] ?? 0;
-            const hasError = currentValue > row.pending;
+            // #1383: below zero is as wrong as over pending; the caller drops such a line silently.
+            const belowZero = currentValue < 0;
+            const hasError = belowZero || currentValue > row.pending;
             return (
               <TableRow
                 key={row.id}
@@ -139,6 +145,10 @@ export default function ReceiveLinesEditor({
                     <Typography variant="body2" color="text.disabled">
                       Fully Received
                     </Typography>
+                  ) : readOnly ? (
+                    <Typography variant="body2" sx={tabularSx}>
+                      {currentValue}
+                    </Typography>
                   ) : (
                     <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.75 }}>
                       <TextField
@@ -146,7 +156,7 @@ export default function ReceiveLinesEditor({
                         size="small"
                         value={currentValue}
                         error={hasError}
-                        helperText={hasError ? `Max: ${row.pending}` : undefined}
+                        helperText={belowZero ? 'Whole units, 0 or more' : hasError ? `Max: ${row.pending}` : undefined}
                         slotProps={{
                           htmlInput: {
                             min: 0,

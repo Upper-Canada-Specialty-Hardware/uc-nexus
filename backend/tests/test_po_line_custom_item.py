@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import select
 
 from app import auth
+from app.errors import ValidationError
 from app.models.inventory_item_type import CustomInventoryItem, InventoryItemType
 from app.models.project import Project
 from app.models.purchase_order import POLineItem
@@ -124,6 +125,63 @@ def test_registering_carries_the_catalog_entry_onto_kept_and_added_lines(db_sess
     assert len(lines) == 2
     assert all(li.custom_inventory_item_id == catalog_item.id for li in lines)
     assert all(li.order_as is None for li in lines)
+
+
+# --- #1379: a line's catalog entry must exist and be this company's ------------------------------
+
+
+def _other_company_item(db_session):
+    item_type = InventoryItemType(
+        id=uuid.uuid4(),
+        company="UCSH",
+        code=f"OTHER{uuid.uuid4().hex[:4].upper()}",
+        name=f"Other {uuid.uuid4().hex[:4]}",
+    )
+    db_session.add(item_type)
+    db_session.flush()
+    item = CustomInventoryItem(id=uuid.uuid4(), type_id=item_type.id, product_code="OT-1")
+    db_session.add(item)
+    db_session.flush()
+    return item
+
+
+@pytest.mark.parametrize("which", ["missing", "other company"])
+def test_a_draft_line_naming_a_catalog_entry_not_in_this_company_is_refused(db_session, project, which):
+    item_id = uuid.uuid4() if which == "missing" else _other_company_item(db_session).id
+    with pytest.raises(ValidationError) as exc:
+        po_repository.create_po(
+            db_session,
+            line_items=[
+                _line_item(hardware_category="FRAME", product_code="FR-1", custom_inventory_item_id=str(item_id))
+            ],
+            project_id=project.id,
+        )
+    assert exc.value.field == "line_items"
+
+
+@pytest.mark.parametrize("which", ["missing", "other company"])
+def test_registering_a_line_naming_a_catalog_entry_not_in_this_company_is_refused(db_session, project, which):
+    po = po_repository.create_po(db_session, line_items=[_line_item()], project_id=project.id)
+    db_session.flush()
+    existing = _lines(db_session, po)[0]
+    item_id = uuid.uuid4() if which == "missing" else _other_company_item(db_session).id
+
+    with pytest.raises(ValidationError) as exc:
+        po_repository.register_po_in_gp(
+            db_session,
+            po.id,
+            gp_vendor_id="GPV1",
+            vendor_name_snapshot="GP Vendor",
+            po_number=f"PO{uuid.uuid4().hex[:8].upper()}",
+            gp_company=COMPANY,
+            line_items=[_line_item(id=str(existing.id), custom_inventory_item_id=str(item_id))],
+        )
+    assert exc.value.field == "line_items"
+    # The pre-relay check refuses the same line before anything reaches GP.
+    with pytest.raises(ValidationError):
+        po_repository.validate_line_catalog_items(
+            db_session, [_line_item(custom_inventory_item_id=str(item_id))], COMPANY
+        )
 
 
 # --- what the schema publishes -----------------------------------------------------------------------

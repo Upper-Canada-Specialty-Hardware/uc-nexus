@@ -270,6 +270,40 @@ def test_the_tenant_owner_landing_counts_one_company(monkeypatch):
     assert result.data == {"adminStats": {"userCount": 2}}
 
 
+def test_an_admins_user_count_matches_the_users_list_not_the_acting_company(monkeypatch):
+    """The users list keeps a UC NEXUS ADMIN unscoped whatever the switcher names (#845), so the
+    landing's user count does too (#1357): the card counts the accounts the page it links to shows.
+    The database counts still follow the acting company."""
+    from app.services import nexus_companies
+
+    monkeypatch.setattr(auth, "verify_clerk_token", lambda token: {"sub": "u_caller"})
+    monkeypatch.setattr(
+        user_repository,
+        "list_users",
+        lambda: [
+            _roster_entry("u_caller", "admin@ucsh.com", [NEXUS_ADMIN_ROLE], MY_COMPANY),
+            _roster_entry("u_peer", "peer@ucsh.com", ["PO User"], MY_COMPANY),
+            _roster_entry("u_elsewhere", "elsewhere@ucsh.com", ["PO User"], OTHER_COMPANY),
+        ],
+    )
+    monkeypatch.setattr(nexus_companies, "is_known_company", lambda company: True)
+    monkeypatch.setattr(dashboard_module, "SessionLocal", _NoSession)
+    seen: dict = {}
+
+    def _stats(session, user_count, *, company=None):
+        seen.update(user_count=user_count, company=company)
+        return {"user_count": user_count, "hardware_item_count": 0, "opening_count": 0}
+
+    monkeypatch.setattr(dashboard_module.dashboard_repository, "get_admin_stats", _stats)
+
+    request = _FakeRequest()
+    request.headers["X-Nexus-Company"] = MY_COMPANY
+    result = asyncio.run(schema.execute("{ adminStats { userCount } }", context_value={"request": request}))
+
+    assert result.errors is None, f"adminStats failed: {_messages(result)}"
+    assert seen == {"user_count": 3, "company": MY_COMPANY}
+
+
 # --- the module managers hold ---------------------------------------------------------------------
 
 

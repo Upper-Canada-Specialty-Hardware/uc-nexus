@@ -1,5 +1,6 @@
 import { useQuery } from '@apollo/client/react';
 import { GET_RELAY_STATUS } from '../graphql/shared';
+import { useActingCompany } from '../company/ActingCompanyContext';
 
 // One shared empty list so a disconnected relay keeps the same array identity across renders - a
 // fresh [] each poll would invalidate every consumer's memo for nothing.
@@ -35,13 +36,20 @@ export interface RelayStatusInfo {
   lastConnectedAt: string | null;
   lastDisconnectedAt: string | null;
   lastDisconnectReason: string | null;
+  // #1334: the status poll itself failed (backend redeploying, network blip). The fields above keep the
+  // last status that DID arrive, so a failed poll never reads as the relay going down. null when the
+  // last poll succeeded.
+  error: string | null;
+  // #1334: no status has ever arrived and the poll is failing - Nexus is unreachable, which says
+  // nothing about the relay. Shown as its own state instead of "relay not connected".
+  unreachable: boolean;
 }
 
 // Single definition of the relay-status poll (backend relayStatus field, the relay-to-backend WS
 // channel - not a browser probe). Consumers pass skip: !open on dialogs/modals so a hidden one
 // doesn't poll, which keeps this to one live poller at a time.
 export function useRelayStatus(options?: { skip?: boolean }): RelayStatusInfo {
-  const { data } = useQuery<{
+  const { data: current, previousData, error } = useQuery<{
     relayStatus: {
       connected: boolean;
       companies: string[];
@@ -58,6 +66,9 @@ export function useRelayStatus(options?: { skip?: boolean }): RelayStatusInfo {
     fetchPolicy: 'cache-and-network',
     skip: options?.skip,
   });
+  // #1334: an errored poll comes back with no data. Keep the last good answer instead of falling back
+  // to "checking" - a backend redeploy is minutes of failed polls while the relay is perfectly fine.
+  const data = current ?? previousData;
   return {
     connected: data ? data.relayStatus.connected : null,
     companies: data?.relayStatus.companies ?? NO_STRINGS,
@@ -68,5 +79,49 @@ export function useRelayStatus(options?: { skip?: boolean }): RelayStatusInfo {
     lastConnectedAt: data?.relayStatus.lastConnectedAt ?? null,
     lastDisconnectedAt: data?.relayStatus.lastDisconnectedAt ?? null,
     lastDisconnectReason: data?.relayStatus.lastDisconnectReason ?? null,
+    error: error ? error.message : null,
+    unreachable: !data && Boolean(error),
   };
+}
+
+export interface RelayForCompany extends RelayStatusInfo {
+  // The company GP work on screen is for: the one passed in, or the acting company.
+  company: string | null;
+  // #1336: the relay is connected AND serves that company. The backend refuses every GP read and write
+  // for a company the relay does not serve, so this, not `connected`, is what GP actions gate on. With
+  // no company known yet it is just `connected` (callers already hold their reads until a company is).
+  servesCompany: boolean;
+}
+
+/** Whether `relay` can do GP work for `company` (#1336). */
+export function relayServes(relay: Pick<RelayStatusInfo, 'connected' | 'companies'>, company: string | null): boolean {
+  if (relay.connected !== true) return false;
+  return company ? relay.companies.includes(company) : true;
+}
+
+/** #1336: `relay` read for `company` - for callers that already know their company. */
+export function relayFor(relay: RelayStatusInfo, company: string | null): RelayForCompany {
+  return { ...relay, company, servesCompany: relayServes(relay, company) };
+}
+
+// #1336: the relay status plus the one question GP actions ask of it - can it do GP work for the
+// company on screen? Pass `company` where the work is for a specific one (a PO's own company); without
+// it, the acting company from the app bar.
+export function useRelayFor(company?: string | null, options?: { skip?: boolean }): RelayForCompany {
+  const relay = useRelayStatus(options);
+  const { company: acting } = useActingCompany();
+  return relayFor(relay, company ?? acting ?? null);
+}
+
+/** #1334/#1336: the one sentence explaining why GP actions are off, or null when they are on. */
+export function relayBlockedReason(relay: RelayForCompany): string | null {
+  if (relay.unreachable) return "Can't reach Nexus right now - retrying.";
+  if (relay.connected === null) return null; // first check still in flight
+  if (relay.connected === false) {
+    return 'The GP relay (on the GP workstation) is not connected - ask an admin to check it.';
+  }
+  if (!relay.servesCompany && relay.company) {
+    return `The GP relay is connected but is not serving ${relay.company} - ask an admin to check it.`;
+  }
+  return null;
 }

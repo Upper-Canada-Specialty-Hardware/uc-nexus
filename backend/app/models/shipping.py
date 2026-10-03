@@ -20,6 +20,7 @@ from . import Base
 from .enums import ReturnDisposition, ShipmentStatus
 
 if TYPE_CHECKING:
+    from .project import Project
     from .shipment_container import ShipmentContainer
 
 
@@ -112,6 +113,11 @@ class PackingSlip(Base):
         back_populates="packing_slip",
         order_by="ShipmentContainer.created_at",
     )
+
+    # Read-only, for the project's number and name on the slip (#1173). Archiving hides a project from
+    # the pickers but not from its shipments, so the slip reads them here rather than from a lookup
+    # that leaves archived projects out.
+    project: Mapped["Project"] = relationship(viewonly=True)
 
 
 class PackingSlipItem(Base):

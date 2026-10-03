@@ -371,3 +371,74 @@ def test_shipped_out_sums_packing_slip_items(db_session):
     rows = warehouse_repository.get_project_progress_by_product(db_session, project.id)
     assert len(rows) == 1
     assert rows[0]["shipped_out"] == 9
+
+
+def _return(session, slip: PackingSlip, psi: PackingSlipItem, *, quantity: int, disposition) -> None:
+    from app.models.shipping import ShipmentReturn, ShipmentReturnItem
+    from app.repositories import warehouse_admin_repository
+
+    ret = ShipmentReturn(
+        id=uuid.uuid4(),
+        packing_slip_id=slip.id,
+        warehouse_id=warehouse_admin_repository.get_primary_warehouse_id(session),
+        returned_by="tester",
+        returned_at=datetime.utcnow(),
+    )
+    session.add(ret)
+    session.flush()
+    session.add(
+        ShipmentReturnItem(
+            id=uuid.uuid4(),
+            shipment_return_id=ret.id,
+            packing_slip_item_id=psi.id,
+            disposition=disposition,
+            quantity=quantity,
+            hardware_category=psi.hardware_category,
+            product_code=psi.product_code,
+            opening_number=psi.opening_number,
+        )
+    )
+    session.flush()
+
+
+def test_shipped_out_leaves_manual_lines_out(db_session):
+    """#1198: a manual line sharing a product code never came off inventory, so it is not shipped."""
+    project = _make_project(db_session)
+    opening = _make_opening(db_session, project.id)
+    _make_hardware_item(
+        db_session, project_id=project.id, opening_id=opening.id, product_code="HG-100", item_quantity=10
+    )
+    ps = _make_packing_slip(db_session, project.id)
+    _make_packing_slip_item(db_session, packing_slip_id=ps.id, product_code="HG-100", quantity=3)
+    manual = _make_packing_slip_item(db_session, packing_slip_id=ps.id, product_code="HG-100", quantity=5)
+    manual.is_manual = True
+    db_session.flush()
+
+    rows = warehouse_repository.get_project_progress_by_product(db_session, project.id)
+    assert rows[0]["shipped_out"] == 3
+
+
+def test_shipped_out_nets_what_came_back(db_session):
+    """#1198: a return to the project, and anything off a cancelled slip, is owed again - the same
+    netting the request workspace's Shipped out uses. A NON_STOCK return off a delivered slip left
+    the project and stays counted as shipped."""
+    from app.models.enums import ReturnDisposition
+
+    project = _make_project(db_session)
+    opening = _make_opening(db_session, project.id)
+    _make_hardware_item(
+        db_session, project_id=project.id, opening_id=opening.id, product_code="HG-100", item_quantity=20
+    )
+    delivered = _make_packing_slip(db_session, project.id)
+    psi = _make_packing_slip_item(db_session, packing_slip_id=delivered.id, product_code="HG-100", quantity=10)
+    _return(db_session, delivered, psi, quantity=2, disposition=ReturnDisposition.RETURN_TO_PROJECT)
+    _return(db_session, delivered, psi, quantity=1, disposition=ReturnDisposition.NON_STOCK)
+
+    cancelled = _make_packing_slip(db_session, project.id)
+    cancelled.status = ShipmentStatus.CANCELLED
+    cpsi = _make_packing_slip_item(db_session, packing_slip_id=cancelled.id, product_code="HG-100", quantity=4)
+    _return(db_session, cancelled, cpsi, quantity=4, disposition=ReturnDisposition.NON_STOCK)
+
+    rows = warehouse_repository.get_project_progress_by_product(db_session, project.id)
+    # 10 + 4 sent, 2 back to the project, 4 off the cancelled slip: 8 still out.
+    assert rows[0]["shipped_out"] == 8

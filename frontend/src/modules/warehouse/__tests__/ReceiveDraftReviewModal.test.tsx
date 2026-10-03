@@ -211,6 +211,11 @@ async function approveViaConfirm() {
   fireEvent.click(await screen.findByRole('button', { name: 'Approve' }, SLOW));
 }
 
+async function retryViaConfirm() {
+  fireEvent.click(await screen.findByRole('button', { name: 'Retry posting' }, SLOW));
+  fireEvent.click(await screen.findByRole('button', { name: 'Retry' }, SLOW));
+}
+
 vi.setConfig({ testTimeout: 60_000 });
 
 describe('ReceiveDraftReviewModal', () => {
@@ -357,7 +362,10 @@ describe('ReceiveDraftReviewModal', () => {
     expect(screen.getByText('eConnect rejected the receipt')).toBeInTheDocument();
     expect(screen.queryByText(/Approved\./)).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
-    expect(await screen.findByRole('button', { name: 'Approve & Post to GP' }, SLOW)).toBeInTheDocument();
+    // #1353: the failed approve may have claimed the draft, so the only way on is a same-key retry.
+    expect(await screen.findByRole('button', { name: 'Retry posting' }, SLOW)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull();
+    expect(within(screen.getByRole('table')).queryByRole('spinbutton')).toBeNull();
   });
 
   it('will not reject without a reason, and sends it back to the author with one', async () => {
@@ -399,7 +407,7 @@ describe('ReceiveDraftReviewModal', () => {
     };
     await openModal([approveMock], draft({ status: 'APPROVING', approvalIdempotencyKey: 'held-key-1' }));
 
-    await approveViaConfirm();
+    await retryViaConfirm();
     await screen.findByText(/Approved\./, undefined, SLOW);
 
     expect(captured!.input.idempotencyKey).toBe('held-key-1');
@@ -433,10 +441,37 @@ describe('ReceiveDraftReviewModal', () => {
     await approveViaConfirm();
     await screen.findByText(/Approving this receive failed/, undefined, SLOW);
 
-    await approveViaConfirm();
+    await retryViaConfirm();
     await screen.findByText(/Approved\./, undefined, SLOW);
 
     expect(updateCalls).toBe(1);
+  });
+
+  it('shows an approving draft read-only, with retry instead of approve and no reject (#1353)', async () => {
+    await openModal([], draft({ status: 'APPROVING', approvalIdempotencyKey: 'held-key-1' }));
+
+    expect(screen.getByRole('button', { name: 'Retry posting' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Approve & Post to GP' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull();
+    expect(within(screen.getByRole('table')).queryByRole('spinbutton')).toBeNull();
+    expect(within(screen.getByRole('table')).getByText('2')).toBeInTheDocument();
+  });
+
+  it('the approve confirm says inventory waits on GP, and that an offline relay queues it (#1354)', async () => {
+    await openModal([], draft(), false);
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve & Post to GP' }, SLOW));
+
+    expect(await screen.findByText(/the receipt queues; inventory updates once it posts/, undefined, SLOW)).toBeInTheDocument();
+    expect(screen.queryByText(/Inventory updates immediately/)).toBeNull();
+  });
+
+  it('flags a negative count as a line error and blocks approval (#1383)', async () => {
+    await openModal();
+
+    fireEvent.change(within(screen.getByRole('table')).getByRole('spinbutton'), { target: { value: '-3' } });
+
+    expect(screen.getByText('Whole units, 0 or more')).toBeInTheDocument();
+    expect(approveButton()).toBeDisabled();
   });
 
   it('blocks approval when the reviewer raises the count past what the PO still owes', async () => {

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { useState } from 'react';
-import { Box, Button, Card, CardActionArea, Grid, Skeleton, Typography } from '@mui/material';
+import { Box, Button, ButtonBase, Card, CardActionArea, Grid, Skeleton, Typography } from '@mui/material';
 import {
   Boxes,
   CalendarClock,
@@ -12,13 +12,36 @@ import {
   Settings2,
   Truck,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { Link as RouterLink, useNavigate } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import { GET_SHIPPING_STATS } from '../../graphql/shipping';
 import ShipmentMethodsDialog from './ShipmentMethodsDialog';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
 import { useIdentity } from '../../hooks/useIdentity';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
+
+/** A gauge that opens the list it counts (#1361), the same tile-as-link the project page uses. */
+function GaugeLink({ to, label, children }: { to: string; label: string; children: ReactNode }) {
+  return (
+    <ButtonBase
+      component={RouterLink}
+      to={to}
+      aria-label={label}
+      sx={{
+        width: '100%',
+        display: 'flex',
+        alignItems: 'stretch',
+        borderRadius: 1,
+        textAlign: 'left',
+        // ButtonBase zeroes the outline, so the ring the rest of the app gets is restated here.
+        '&.Mui-focusVisible': { outline: '2px solid', outlineColor: 'secondary.main', outlineOffset: 2 },
+        '& > *': { width: '100%' },
+      }}
+    >
+      {children}
+    </ButtonBase>
+  );
+}
 
 interface ShippingStats {
   pendingRequestCount: number;
@@ -187,19 +210,24 @@ export default function ShippingLanding() {
                   value={s?.stagingContainerCount ?? 0}
                 />
               </StaggerItem>
+              {/* #1361: each shipment gauge opens the shipments it counts. */}
               <StaggerItem style={{ flex: '1 1 0', minWidth: 175 }}>
-                <StatCard
-                  icon={<CalendarClock size={18} strokeWidth={1.75} />}
-                  label="Scheduled"
-                  value={s?.scheduledShipmentCount ?? 0}
-                />
+                <GaugeLink to="/app/shipping/shipments?status=SCHEDULED" label="Open scheduled shipments">
+                  <StatCard
+                    icon={<CalendarClock size={18} strokeWidth={1.75} />}
+                    label="Scheduled"
+                    value={s?.scheduledShipmentCount ?? 0}
+                  />
+                </GaugeLink>
               </StaggerItem>
               <StaggerItem style={{ flex: '1 1 0', minWidth: 175 }}>
-                <StatCard
-                  icon={<Truck size={18} strokeWidth={1.75} />}
-                  label="In Transit"
-                  value={s?.inTransitShipmentCount ?? 0}
-                />
+                <GaugeLink to="/app/shipping/shipments?status=PICKED_UP" label="Open shipments in transit">
+                  <StatCard
+                    icon={<Truck size={18} strokeWidth={1.75} />}
+                    label="In Transit"
+                    value={s?.inTransitShipmentCount ?? 0}
+                  />
+                </GaugeLink>
               </StaggerItem>
             </>
           )}

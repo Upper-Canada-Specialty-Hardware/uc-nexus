@@ -93,6 +93,27 @@ def _get_draft(session: Session, draft_id: uuid.UUID) -> ReceiveDraftModel:
     return draft
 
 
+def _lock_draft(session: Session, draft_id: uuid.UUID) -> ReceiveDraftModel:
+    """Row-lock a draft and return it, fresh (#1195), for writers that check its status and then write.
+
+    Unlocked, an approval claim committing between the read and the write slips underneath: an edit
+    rewrites the lines after GP was handed the old counts, a delete removes the draft a receipt is
+    posting against. `populate_existing` matters because the draft is usually already in the session
+    from the tenancy check, and a plain read would hand back that copy instead of what the lock holds.
+    """
+    lock_rows(session, ReceiveDraftModel, [draft_id])
+    stmt = (
+        select(ReceiveDraftModel)
+        .options(selectinload(ReceiveDraftModel.line_items))
+        .where(ReceiveDraftModel.id == draft_id)
+        .execution_options(populate_existing=True)
+    )
+    draft = session.scalars(stmt).unique().first()
+    if draft is None:
+        raise NotFoundError(f"Receive draft {draft_id} not found")
+    return draft
+
+
 def _write_lines(session: Session, draft: ReceiveDraftModel, po: POModel, line_items_input: list[dict]) -> None:
     """Replace the draft's lines wholesale. A re-count is a new sheet, not a merge - the same reading
     `save_pick_draft` takes of a dictated pick."""
@@ -204,6 +225,19 @@ def _assert_no_pending_draft(
         )
 
 
+def _assert_draft_warehouse(session: Session, warehouse_id: uuid.UUID | None, po) -> None:
+    """A draft's chosen warehouse is active (#1374) and the PO's own company's building (#1375), so the
+    approval never books a delivery into a retired building or another tenant's. None means "not
+    chosen" - the approval falls back to the PO company's primary - and is left alone."""
+    if warehouse_id is None:
+        return
+    from app.repositories import warehouse_admin_repository
+
+    warehouse_admin_repository.assert_usable_destination(
+        session, warehouse_id, company=po.company if po is not None else None, field="warehouse_id"
+    )
+
+
 def create_receive_draft(
     session: Session,
     po_id: uuid.UUID,
@@ -248,6 +282,7 @@ def create_receive_draft(
         .unique()
         .first()
     )
+    _assert_draft_warehouse(session, warehouse_id, po)
 
     # #1344: a draft with no warehouse falls back to the company's default building at approval;
     # with no active building at all that approval can never succeed, so refuse the draft now,
@@ -376,7 +411,7 @@ def update_receive_draft(
 
     `notes` follows the same reading: None leaves the remark alone, an empty string clears it.
     """
-    draft = _get_draft(session, draft_id)
+    draft = _lock_draft(session, draft_id)
     _assert_can_edit(draft, actor_user_id, actor_is_manager)
 
     validate_receive_eligibility(session, draft.po_id, draft.created_by_name, line_items_input)
@@ -387,6 +422,7 @@ def update_receive_draft(
     )
 
     if warehouse_id is not None:
+        _assert_draft_warehouse(session, warehouse_id, po)
         draft.warehouse_id = warehouse_id
     if notes is not None:
         draft.notes = _clean_notes(notes)
@@ -401,7 +437,7 @@ def update_receive_draft(
 
 def resubmit_receive_draft(session: Session, draft_id: uuid.UUID, actor_user_id: str) -> ReceiveDraftModel:
     """Send a rejected draft back to the queue. Author only - it is their count being restated."""
-    draft = _get_draft(session, draft_id)
+    draft = _lock_draft(session, draft_id)
     if draft.status != ReceiveDraftStatus.REJECTED:
         raise InvalidStateTransitionError(f"Only a rejected draft can be resubmitted, got {draft.status.value}")
     if draft.created_by_user_id != actor_user_id:
@@ -442,8 +478,7 @@ def reject_receive_draft(
     if len(reason) > MAX_REJECTION_REASON:
         raise ValidationError(f"A rejection reason must be {MAX_REJECTION_REASON} characters or fewer", field="reason")
 
-    lock_rows(session, ReceiveDraftModel, [draft_id])
-    draft = _get_draft(session, draft_id)
+    draft = _lock_draft(session, draft_id)
     if draft.status != ReceiveDraftStatus.PENDING_APPROVAL:
         raise InvalidStateTransitionError(f"Only a draft awaiting approval can be rejected, got {draft.status.value}")
 
@@ -486,7 +521,7 @@ def delete_receive_draft(
     """
     from app.models.purchase_order import PODocument
 
-    draft = _get_draft(session, draft_id)
+    draft = _lock_draft(session, draft_id)
     if draft.status in _IN_FLIGHT_STATUSES:
         raise InvalidStateTransitionError(f"A draft that has been approved cannot be deleted, got {draft.status.value}")
     if draft.created_by_user_id != actor_user_id and not actor_is_manager:
