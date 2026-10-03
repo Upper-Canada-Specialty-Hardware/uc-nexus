@@ -41,6 +41,11 @@ SWEEP_SECONDS = 120.0
 
 _wake_event: asyncio.Event | None = None
 
+# #1292: shutdown. Once stopping, the loop claims nothing new; `_idle` is clear only while a claimed
+# row is being drained, so shutdown can wait for that one to finish before the relay socket goes.
+_stopping = False
+_idle: asyncio.Event | None = None
+
 
 def enabled() -> bool:
     """Env kill switch, default on, so the worker can be stopped without a code deploy."""
@@ -481,14 +486,42 @@ def _claim(company: str) -> uuid.UUID | None:
     return row_id
 
 
+def request_stop() -> None:
+    """Shutdown, first step (#1292): claim nothing new. A drain already under way runs on."""
+    global _stopping
+    _stopping = True
+    wake()
+
+
+async def wait_idle(timeout: float) -> bool:
+    """Wait, at most `timeout` seconds, for the row being drained (if any) to finish. True when the
+    worker is idle; False when it gave up, and the row is left for the next instance's stale sweep."""
+    if _idle is None or _idle.is_set():
+        return True
+    try:
+        await asyncio.wait_for(_idle.wait(), timeout=timeout)
+        return True
+    except TimeoutError:
+        logger.warning("gp outbox: shutdown did not wait out the drain in flight", extra={"timeout": timeout})
+        return False
+
+
 async def run_forever() -> None:
     """The lifespan task. Every iteration is wrapped so no error can kill it - a dead worker is a
     silently non-draining queue, which is worse than the failure it is trying to absorb."""
-    global _wake_event
+    global _wake_event, _idle, _stopping
     _wake_event = asyncio.Event()
+    _idle = asyncio.Event()
+    _idle.set()
+    _stopping = False
     logger.info("gp outbox worker started")
     last_sweep = None
     while True:
+        if _stopping:
+            # Shutting down: nothing new is claimed; the lifespan cancels this task once the socket
+            # is closed.
+            await asyncio.sleep(POLL_SECONDS)
+            continue
         # #1192: rows left in flight are swept on start and then every SWEEP_SECONDS, so one that hangs
         # while this instance runs is recovered too. The sweep's own age threshold is what keeps it off
         # a drain still running elsewhere.
@@ -506,10 +539,16 @@ async def run_forever() -> None:
             # one must not sit behind another company having nothing to drain.
             drained = False
             for company in relay_gateway.companies if relay_gateway.connected else []:
-                row_id = await asyncio.to_thread(_claim, company)
-                if row_id is not None:
-                    await _drain_one(row_id)
-                    drained = True
+                if _stopping:
+                    break
+                _idle.clear()
+                try:
+                    row_id = await asyncio.to_thread(_claim, company)
+                    if row_id is not None:
+                        await _drain_one(row_id)
+                        drained = True
+                finally:
+                    _idle.set()
             if drained:
                 continue  # keep draining while there is work
         except asyncio.CancelledError:
