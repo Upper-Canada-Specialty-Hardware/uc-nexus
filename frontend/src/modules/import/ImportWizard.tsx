@@ -1238,11 +1238,16 @@ export default function ImportWizard({
   const handleFinalize = useCallback(async () => {
     setConfirmOpen(false);
     setOverBuyOpen(false);
-    setFinalizeLoading(true);
     setMutationError(null);
 
+    // #1138: build the input before raising the loading flag. With no parsed schedule there is
+    // nothing to send, and an early return after the flag left the finalize spinning until close.
     const input = buildFinalizeInput();
-    if (!input) return;
+    if (!input) {
+      setMutationError('The schedule is no longer loaded. Go back to Upload and load it again.');
+      return;
+    }
+    setFinalizeLoading(true);
 
     try {
       const result = await finalizeImport({ variables: { input } });
@@ -1964,7 +1969,7 @@ export default function ImportWizard({
         title={canStartFromLatest && !hydratedFromPersisted ? 'Replace Hardware Schedule' : 'Finalize Import'}
         message={
           canStartFromLatest && !hydratedFromPersisted
-            ? "You're uploading a NEW hardware schedule that will REPLACE the previously stored one. Existing purchase orders, receiving records, shop assembly requests, and warehouse inventory will be preserved, but the per-opening source trail of prior POs will be lost. Openings absent from the new schedule will be removed. Continue?"
+            ? "You're uploading a NEW hardware schedule that will REPLACE the previously stored one. Existing purchase orders, receiving records, shop assembly requests, and warehouse inventory will be preserved, and hardware already ordered stays ordered. Openings absent from the new schedule will be removed, unless they still hold ordered hardware. Continue?"
             : purpose === 'schedule'
               // #642: the purpose creates no POs or requests, so the generic message would name
               // neither truthfully. Source-neutral "this file": the schedule here was either just

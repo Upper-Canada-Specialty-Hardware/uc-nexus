@@ -385,9 +385,10 @@ class FinalizeImportSessionInput:
     include_shop_assembly_request: bool = False
     shop_assembly_request_number: str | None = None
     shop_assembly_items: list[SARItemInput] | None = None
-    # When true, this finalize overrides the existing schedule: existing HardwareItem
-    # rows are wiped (including IN_PO ones) and openings absent from the new input
-    # are deleted. Downstream POs/receiving/SAR/inventory aggregates are preserved.
+    # When true, this finalize overrides the existing schedule: the unordered (AVAILABLE) rows are
+    # rebuilt from the new input and openings absent from it are deleted. Ordered (IN_PO) rows are kept,
+    # and so is any opening that still holds them (#1123). Downstream POs/receiving/SAR/inventory
+    # aggregates are preserved.
     replace_schedule: bool = False
     # #627: the source XML file name, sent only when the hardware items came from a fresh parse
     # (initial import, re-import from a new file, schedule replace). A hydrate-from-persisted finalize

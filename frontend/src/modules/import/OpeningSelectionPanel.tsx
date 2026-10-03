@@ -16,6 +16,13 @@ import {
 } from './openingFacets';
 import { monoSx, tabularSx } from '../../theme';
 import { useGridColumnFit } from '../../components/useGridColumnFit';
+import {
+  DEFAULT_COLUMNS,
+  DEFAULT_COLUMN_VISIBILITY,
+  PANEL_GAP_PX,
+  RIGHT_PANEL_MIN_PX,
+  gridMinContentWidth,
+} from './openingPanelColumns';
 
 // The opening-selection experience, extracted from SelectOpeningsStep so the shipping request
 // workspace can reuse it verbatim (#608 follow-up): the paste-a-list filter with matched/unmatched
@@ -62,43 +69,6 @@ interface OpeningSelectionPanelProps {
    *  wizard's key with the default columns; another caller passes its own, or widths last the visit. */
   storageKey?: string | null;
 }
-
-// The wizard's default columns - Building and Location take the larger share, the dimensional/keying detail a
-// small one down to its minimum. Kept here so callers who want full parity get it for free.
-const DEFAULT_COLUMNS: GridColDef<PanelRow>[] = [
-  { field: 'opening_number', headerName: 'Opening #', width: 110, minWidth: 100, cellClassName: 'mono-cell' },
-  { field: 'building', headerName: 'Building', flex: 1, minWidth: 130 },
-  { field: 'floor', headerName: 'Floor', width: 80, minWidth: 70 },
-  { field: 'location', headerName: 'Location', flex: 1.2, minWidth: 150 },
-  { field: 'location_to', headerName: 'Location To', width: 120, minWidth: 110 },
-  { field: 'location_from', headerName: 'Location From', width: 120, minWidth: 120 },
-  { field: 'hand', headerName: 'Hand', width: 70, minWidth: 64 },
-  { field: 'single_pair', headerName: 'Single/Pair', width: 100, minWidth: 100 },
-  { field: 'width', headerName: 'Width', width: 70, minWidth: 70 },
-  { field: 'length', headerName: 'Length', width: 70, minWidth: 76 },
-  { field: 'door_thickness', headerName: 'Door Thickness', width: 120, minWidth: 120 },
-  { field: 'jamb_thickness', headerName: 'Jamb Thickness', width: 120, minWidth: 120 },
-  { field: 'door_type', headerName: 'Door Type', width: 100, minWidth: 90 },
-  { field: 'frame_type', headerName: 'Frame Type', width: 100, minWidth: 96 },
-  { field: 'interior_exterior', headerName: 'Int/Ext', width: 80, minWidth: 76 },
-  { field: 'keying', headerName: 'Keying', width: 100, minWidth: 80 },
-  { field: 'heading_no', headerName: 'Heading #', width: 100, minWidth: 90 },
-  { field: 'assignment_multiplier', headerName: 'Multiplier', width: 90, minWidth: 90 },
-];
-
-const DEFAULT_COLUMN_VISIBILITY: GridColumnVisibilityModel = {
-  location_to: false,
-  location_from: false,
-  single_pair: false,
-  width: false,
-  length: false,
-  door_thickness: false,
-  jamb_thickness: false,
-  interior_exterior: false,
-  keying: false,
-  heading_no: false,
-  assignment_multiplier: false,
-};
 
 export default function OpeningSelectionPanel({
   openings,
@@ -213,103 +183,134 @@ export default function OpeningSelectionPanel({
     onOpeningSelectionChange(new Set());
   }, [onOpeningSelectionChange]);
 
-  return (
-    <Box sx={{ display: 'flex', gap: 2, height, minHeight: 400, minWidth: 0 }}>
-      {/* ---- Left: Openings filter + grid ---- */}
-      <Box sx={{ flex: '1 1 auto', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        {title && (
-          <Typography variant="h6" sx={{ mb: 1 }}>
-            {title}
-          </Typography>
-        )}
+  // #1139: the right panel sits beside the grid while both fit. Once the columns a person has shown
+  // need more width than that leaves the grid, the panel moves under it, so the grid gets the full
+  // width rather than scrolling sideways. A container query on the panel's own width does the switch.
+  const sideBySideMinPx = gridMinContentWidth(columns, visibility) + PANEL_GAP_PX + RIGHT_PANEL_MIN_PX;
+  const stackedQuery = `@container (max-width: ${sideBySideMinPx - 1}px)`;
 
-        {/* Filter by opening numbers - two rows tall by default; it grows as you paste. */}
-        <Box sx={{ display: 'flex', gap: 1, mb: 1, alignItems: 'flex-start' }}>
-          <TextField
-            multiline
-            minRows={2}
-            maxRows={4}
-            size="small"
-            placeholder="Paste opening numbers, one per line..."
-            value={filterText}
-            onChange={(e) => setFilterText(e.target.value)}
-            sx={{ flex: 1 }}
-            slotProps={{ input: { sx: monoSx } }}
-          />
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-            <Button size="small" variant="outlined" onClick={handleApplyFilter}>
-              Filter
-            </Button>
-            {activeFilter !== null && (
-              <Button size="small" variant="text" onClick={handleClearFilter}>
-                Clear
+  return (
+    <Box sx={{ containerType: 'inline-size', minWidth: 0 }}>
+      <Box
+        data-panel-layout-threshold={rightPanel ? sideBySideMinPx : undefined}
+        sx={{
+          display: 'flex',
+          gap: 2,
+          height,
+          minHeight: 400,
+          minWidth: 0,
+          ...(rightPanel && {
+            [stackedQuery]: {
+              flexDirection: 'column',
+              height: 'auto',
+              '& > .opening-grid-column': { height, minHeight: 400, flex: '0 0 auto' },
+              '& > .opening-right-panel': { flex: '0 0 auto', height: 360, minWidth: 0 },
+            },
+          }),
+        }}
+      >
+        {/* ---- Left: Openings filter + grid ---- */}
+        <Box
+          className="opening-grid-column"
+          sx={{ flex: '1 1 auto', display: 'flex', flexDirection: 'column', minWidth: 0 }}
+        >
+          {title && (
+            <Typography variant="h6" sx={{ mb: 1 }}>
+              {title}
+            </Typography>
+          )}
+
+          {/* Filter by opening numbers - two rows tall by default; it grows as you paste. */}
+          <Box sx={{ display: 'flex', gap: 1, mb: 1, alignItems: 'flex-start' }}>
+            <TextField
+              multiline
+              minRows={2}
+              maxRows={4}
+              size="small"
+              placeholder="Paste opening numbers, one per line..."
+              value={filterText}
+              onChange={(e) => setFilterText(e.target.value)}
+              sx={{ flex: 1 }}
+              slotProps={{ input: { sx: monoSx } }}
+            />
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+              <Button size="small" variant="outlined" onClick={handleApplyFilter}>
+                Filter
               </Button>
+              {activeFilter !== null && (
+                <Button size="small" variant="text" onClick={handleClearFilter}>
+                  Clear
+                </Button>
+              )}
+            </Box>
+          </Box>
+
+          {unmatchedNumbers.length > 0 && (
+            <Alert severity="warning" sx={{ mb: 1, py: 0.5 }}>
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                {unmatchedNumbers.length} opening number(s) not found:
+              </Typography>
+              <Typography variant="body2">{unmatchedNumbers.join(', ')}</Typography>
+            </Alert>
+          )}
+
+          <OpeningFacetBar
+            openings={openings}
+            selections={facetSelections}
+            onChange={handleFacetChange}
+            onClearAll={handleClearFacets}
+          />
+
+          <Box sx={{ display: 'flex', gap: 1, mb: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Button size="small" variant="outlined" onClick={handleSelectAllOpenings}>
+              Select All
+            </Button>
+            <Button size="small" variant="outlined" onClick={handleDeselectAllOpenings}>
+              Deselect All
+            </Button>
+            <Chip
+              size="small"
+              color={selectedOpenings.size > 0 ? 'info' : 'default'}
+              label={`${selectedOpenings.size} of ${filteredRows.length} selected`}
+            />
+            {(activeFilter !== null || facetsActive) && (
+              <Typography variant="caption" color="text.secondary" sx={tabularSx}>
+                filtered from {openings.length} total
+              </Typography>
             )}
+          </Box>
+          <Box sx={{ flex: 1, minHeight: 0, minWidth: 0 }}>
+            <DataGrid
+              ref={setContainer}
+              {...fit}
+              sx={[fit.sx, { '& .mono-cell': monoSx }]}
+              rows={filteredRows}
+              columnVisibilityModel={visibility}
+              onColumnVisibilityModelChange={setVisibility}
+              checkboxSelection
+              rowSelectionModel={rowSelectionModel}
+              onRowSelectionModelChange={handleGridSelectionChange}
+              keepNonExistentRowsSelected
+              // #564: the facet bar is the filter UI now. The grid's built-in column filter could hold
+              // only one clause, so a second column filter silently replaced the first.
+              disableColumnFilter
+              density="compact"
+              pageSizeOptions={[25, 50, 100]}
+              initialState={{ pagination: { paginationModel: { pageSize } } }}
+              disableRowSelectionOnClick
+            />
           </Box>
         </Box>
 
-        {unmatchedNumbers.length > 0 && (
-          <Alert severity="warning" sx={{ mb: 1, py: 0.5 }}>
-            <Typography variant="body2" sx={{ fontWeight: 600 }}>
-              {unmatchedNumbers.length} opening number(s) not found:
-            </Typography>
-            <Typography variant="body2">{unmatchedNumbers.join(', ')}</Typography>
-          </Alert>
+        {rightPanel && (
+          <Box
+            className="opening-right-panel"
+            sx={{ flex: '0 1 380px', minWidth: RIGHT_PANEL_MIN_PX, display: 'flex', flexDirection: 'column' }}
+          >
+            {rightPanel}
+          </Box>
         )}
-
-        <OpeningFacetBar
-          openings={openings}
-          selections={facetSelections}
-          onChange={handleFacetChange}
-          onClearAll={handleClearFacets}
-        />
-
-        <Box sx={{ display: 'flex', gap: 1, mb: 1, alignItems: 'center', flexWrap: 'wrap' }}>
-          <Button size="small" variant="outlined" onClick={handleSelectAllOpenings}>
-            Select All
-          </Button>
-          <Button size="small" variant="outlined" onClick={handleDeselectAllOpenings}>
-            Deselect All
-          </Button>
-          <Chip
-            size="small"
-            color={selectedOpenings.size > 0 ? 'info' : 'default'}
-            label={`${selectedOpenings.size} of ${filteredRows.length} selected`}
-          />
-          {(activeFilter !== null || facetsActive) && (
-            <Typography variant="caption" color="text.secondary" sx={tabularSx}>
-              filtered from {openings.length} total
-            </Typography>
-          )}
-        </Box>
-        <Box sx={{ flex: 1, minHeight: 0, minWidth: 0 }}>
-          <DataGrid
-            ref={setContainer}
-            {...fit}
-            sx={[fit.sx, { '& .mono-cell': monoSx }]}
-            rows={filteredRows}
-            columnVisibilityModel={visibility}
-            onColumnVisibilityModelChange={setVisibility}
-            checkboxSelection
-            rowSelectionModel={rowSelectionModel}
-            onRowSelectionModelChange={handleGridSelectionChange}
-            keepNonExistentRowsSelected
-            // #564: the facet bar is the filter UI now. The grid's built-in column filter could hold
-            // only one clause, so a second column filter silently replaced the first.
-            disableColumnFilter
-            density="compact"
-            pageSizeOptions={[25, 50, 100]}
-            initialState={{ pagination: { paginationModel: { pageSize } } }}
-            disableRowSelectionOnClick
-          />
-        </Box>
       </Box>
-
-      {rightPanel && (
-        <Box sx={{ flex: '0 1 380px', minWidth: 280, display: 'flex', flexDirection: 'column' }}>
-          {rightPanel}
-        </Box>
-      )}
     </Box>
   );
 }

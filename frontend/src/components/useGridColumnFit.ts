@@ -23,12 +23,12 @@ type Widths = Record<string, number>;
 const STORAGE_PREFIX = 'uc-nexus:grid-column-widths:';
 
 /** The DataGrid's own checkbox column, which is not in the caller's columns but takes this width. */
-const CHECKBOX_COL_WIDTH = 50;
+export const CHECKBOX_COL_WIDTH = 50;
 
 /** The grid takes its vertical scrollbar out of the flex width only when it has one; the fit cannot
  *  know that ahead of time, so it always leaves room for one (and a pixel for rounding). The flex
  *  columns absorb whatever is left over, so the room never shows as a gap. */
-const SCROLLBAR_ALLOWANCE = 18;
+export const SCROLLBAR_ALLOWANCE = 18;
 
 /** Narrowest a column gets by default, by value type, when the column does not set a `minWidth`. */
 const TYPE_MIN: Record<string, number> = {
