@@ -65,6 +65,7 @@ _SESSION_COST_SQL = (
     "SELECT cpu_time, logical_reads, total_elapsed_time FROM sys.dm_exec_sessions WHERE session_id = @@SPID"
 )
 
+
 class Measured:
     """What one op is being measured as, and what it turned out to cost.
 
@@ -174,9 +175,7 @@ def _sample(conn) -> tuple[int, int, int] | None:
 
 def _record(company: str, op: str, cpu_ms: int, logical_reads: int, elapsed_ms: int) -> None:
     with _COST_LOCK:
-        totals = _COST.setdefault(
-            company, {"ops": 0, "cpu_ms": 0, "logical_reads": 0, "elapsed_ms": 0, "by_op": {}}
-        )
+        totals = _COST.setdefault(company, {"ops": 0, "cpu_ms": 0, "logical_reads": 0, "elapsed_ms": 0, "by_op": {}})
         per_op = totals["by_op"].setdefault(op, {"ops": 0, "cpu_ms": 0, "logical_reads": 0, "elapsed_ms": 0})
         for bucket in (totals, per_op):
             bucket["ops"] += 1
@@ -281,9 +280,11 @@ def connection_info(company: str) -> dict:
     """Read-only identity probe for /info. Opens an autocommit connection, runs a
     metadata SELECT, returns who we are. No eConnect calls, no writes."""
     with pyodbc.connect(build_conn_string(company), autocommit=True) as conn:
-        row = conn.cursor().execute(
-            "SELECT SUSER_NAME() AS login, DB_NAME() AS db, @@VERSION AS ver, IS_MEMBER('DYNGRP') AS dyngrp"
-        ).fetchone()
+        row = (
+            conn.cursor()
+            .execute("SELECT SUSER_NAME() AS login, DB_NAME() AS db, @@VERSION AS ver, IS_MEMBER('DYNGRP') AS dyngrp")
+            .fetchone()
+        )
         return {
             "connected_as": row.login,
             "database": row.db,

@@ -122,12 +122,16 @@ def test_unreachable_health_counts_as_busy():
 def test_delays_stay_within_their_windows():
     rng = random.Random(7)
     first = update_poller.next_delay(rng, first=True)
-    assert update_poller.FIRST_DELAY_SECONDS <= first <= (
-        update_poller.FIRST_DELAY_SECONDS + update_poller.FIRST_JITTER_SECONDS
+    assert (
+        update_poller.FIRST_DELAY_SECONDS
+        <= first
+        <= (update_poller.FIRST_DELAY_SECONDS + update_poller.FIRST_JITTER_SECONDS)
     )
     later = update_poller.next_delay(rng)
-    assert update_poller.INTERVAL_SECONDS <= later <= (
-        update_poller.INTERVAL_SECONDS + update_poller.INTERVAL_JITTER_SECONDS
+    assert (
+        update_poller.INTERVAL_SECONDS
+        <= later
+        <= (update_poller.INTERVAL_SECONDS + update_poller.INTERVAL_JITTER_SECONDS)
     )
 
 

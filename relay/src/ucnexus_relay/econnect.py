@@ -66,9 +66,7 @@ def po_number_in_use(conn, po_number: str) -> str | None:
         ("POP30100", "PONUMBER", "a historical PO"),
         ("POP30300", "VNDDOCNM", "a posted PO receipt"),
     ):
-        row = conn.cursor().execute(
-            f"SELECT COUNT(*) AS n FROM dbo.{table} WHERE {column} = ?", po_number
-        ).fetchone()
+        row = conn.cursor().execute(f"SELECT COUNT(*) AS n FROM dbo.{table} WHERE {column} = ?", po_number).fetchone()
         if row.n:
             return f"{label} ({table}.{column})"
     return None
@@ -110,12 +108,18 @@ def find_po_by_registration_note(conn, *, key: str, buyer_id: str, doc_date: dat
     like = f"%{key}%"
     since = doc_date - timedelta(days=_REGISTRATION_NOTE_DAYS)
     for table in ("POP10100", "POP30100"):
-        row = conn.cursor().execute(
-            f"SELECT TOP 1 h.PONUMBER FROM dbo.{table} h "
-            f"JOIN dbo.{_NOTE_TABLE} n ON n.NOTEINDX = h.{_PO_NOTE_INDEX_COLUMN} "
-            f"WHERE h.BUYERID = ? AND h.DOCDATE >= ? AND CAST(n.TXTFIELD AS varchar(max)) LIKE ?",
-            buyer_id, since, like,
-        ).fetchone()
+        row = (
+            conn.cursor()
+            .execute(
+                f"SELECT TOP 1 h.PONUMBER FROM dbo.{table} h "
+                f"JOIN dbo.{_NOTE_TABLE} n ON n.NOTEINDX = h.{_PO_NOTE_INDEX_COLUMN} "
+                f"WHERE h.BUYERID = ? AND h.DOCDATE >= ? AND CAST(n.TXTFIELD AS varchar(max)) LIKE ?",
+                buyer_id,
+                since,
+                like,
+            )
+            .fetchone()
+        )
         if row is not None:
             return (row[0] or "").strip()
     return None
@@ -138,9 +142,7 @@ def _exec_tapohdr(conn, fields: dict) -> None:
     """
     row = conn.cursor().execute(sql, *fields.values()).fetchone()
     if row.error_state != 0:
-        raise EConnectError(
-            f"taPoHdr failed: {row.err_string.strip()}", proc="taPoHdr", error_state=row.error_state
-        )
+        raise EConnectError(f"taPoHdr failed: {row.err_string.strip()}", proc="taPoHdr", error_state=row.error_state)
 
 
 def _foreign_currency_fields(rate_type: str | None, exchange_date: date | None, null_tax_schedule: bool) -> dict:
@@ -326,29 +328,50 @@ def create_po_line(
         @oErrString        = @err_str OUTPUT;
     SELECT @err AS error_state, @err_str AS err_string;
     """
-    row = conn.cursor().execute(
-        sql,
-        po_type, po_number, doc_date, vendor_id,
-        line_ord, location_code, item_number, item_description, quantity, uofm, unit_cost, tax_amount, usrdefnd1,
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(
+            sql,
+            po_type,
+            po_number,
+            doc_date,
+            vendor_id,
+            line_ord,
+            location_code,
+            item_number,
+            item_description,
+            quantity,
+            uofm,
+            unit_cost,
+            tax_amount,
+            usrdefnd1,
+        )
+        .fetchone()
+    )
     if row.error_state != 0:
         raise EConnectError(
             f"taPoLine failed for {item_number} at ORD {line_ord}: {row.err_string.strip()}",
-            proc="taPoLine", error_state=row.error_state,
+            proc="taPoLine",
+            error_state=row.error_state,
         )
     # Defensive read-back: taPoLine has a known err=0-but-no-row silent-failure mode. Keyed on ORD,
     # NOT on ITEMNMBR (issue #538): item numbers repeat legitimately once GP's 30-char limit truncates
     # two part numbers to the same string, so an ITEMNMBR read-back is satisfied by the OTHER line and
     # waves through exactly the overwrite this function now exists to prevent. ORD is unique per line.
-    verify = conn.cursor().execute(
-        "SELECT COUNT(*) AS n FROM dbo.POP10110 WHERE PONUMBER = ? AND ORD = ?",
-        po_number, line_ord,
-    ).fetchone()
+    verify = (
+        conn.cursor()
+        .execute(
+            "SELECT COUNT(*) AS n FROM dbo.POP10110 WHERE PONUMBER = ? AND ORD = ?",
+            po_number,
+            line_ord,
+        )
+        .fetchone()
+    )
     if verify.n == 0:
         raise EConnectError(
-            f"taPoLine returned err=0 but no row inserted for {item_number} at ORD {line_ord} "
-            f"(silent failure)",
-            proc="taPoLine", error_state=0,
+            f"taPoLine returned err=0 but no row inserted for {item_number} at ORD {line_ord} (silent failure)",
+            proc="taPoLine",
+            error_state=0,
         )
 
 
@@ -374,9 +397,11 @@ def job_exists(conn, job_number: str) -> bool:
     eConnect error (mirrors the buyer pre-check against POP00101). RTRIM the column and strip the
     arg so this normalizes the job the SAME way the /cost-codes dropdown (list_cost_codes) does -
     a job the dropdown loads can't then fail the pre-check on surrounding whitespace."""
-    row = conn.cursor().execute(
-        "SELECT COUNT(*) AS n FROM dbo.JC00102 WHERE RTRIM(WS_Job_Number) = ?", job_number.strip()
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute("SELECT COUNT(*) AS n FROM dbo.JC00102 WHERE RTRIM(WS_Job_Number) = ?", job_number.strip())
+        .fetchone()
+    )
     return row.n > 0
 
 
@@ -394,12 +419,16 @@ def job_state(conn, job_number: str) -> str | None:
     whether a job exists. A job in the work table wins over a history row with the same number - that
     is not supposed to happen, but the job accounting can still see and edit is the one that counts."""
     job = job_number.strip()
-    row = conn.cursor().execute(
-        "SELECT (SELECT TOP 1 WS_Inactive FROM dbo.JC00102 WHERE RTRIM(WS_Job_Number) = ?) AS inactive, "
-        "(SELECT COUNT(*) FROM dbo.JC30001 WHERE RTRIM(WS_Job_Number) = ?) AS closed",
-        job,
-        job,
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(
+            "SELECT (SELECT TOP 1 WS_Inactive FROM dbo.JC00102 WHERE RTRIM(WS_Job_Number) = ?) AS inactive, "
+            "(SELECT COUNT(*) FROM dbo.JC30001 WHERE RTRIM(WS_Job_Number) = ?) AS closed",
+            job,
+            job,
+        )
+        .fetchone()
+    )
     if row.inactive is not None:
         return "inactive" if int(row.inactive) == 1 else "active"
     if row.closed:
@@ -418,12 +447,21 @@ def cost_code_on_job(conn, job_number: str, cost_code: str) -> bool:
     right after, so every code the dropdown hides is still refused by one pre-check or the other.
     /po pre-checks this so a code not on the job returns a clean cost_code_not_on_job."""
     cc1, cc2, cc3, cc4, cost_element = split_cost_code(cost_code)
-    row = conn.cursor().execute(
-        "SELECT COUNT(*) AS n FROM dbo.JC00701 "
-        "WHERE RTRIM(WS_Job_Number) = ? AND Cost_Code_Number_1 = ? AND Cost_Code_Number_2 = ? "
-        "AND Cost_Code_Number_3 = ? AND Cost_Code_Number_4 = ? AND Cost_Element = ? AND WS_Inactive = 0",
-        job_number.strip(), cc1, cc2, cc3, cc4, cost_element,
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(
+            "SELECT COUNT(*) AS n FROM dbo.JC00701 "
+            "WHERE RTRIM(WS_Job_Number) = ? AND Cost_Code_Number_1 = ? AND Cost_Code_Number_2 = ? "
+            "AND Cost_Code_Number_3 = ? AND Cost_Code_Number_4 = ? AND Cost_Element = ? AND WS_Inactive = 0",
+            job_number.strip(),
+            cc1,
+            cc2,
+            cc3,
+            cc4,
+            cost_element,
+        )
+        .fetchone()
+    )
     return row.n > 0
 
 
@@ -479,15 +517,28 @@ def apply_wennsoft_integration(
         @oErrString            = @err_str OUTPUT;
     SELECT @err AS error_state, @err_str AS err_string;
     """
-    row = conn.cursor().execute(
-        sql,
-        po_number, line_ord, product_indicator, job, cc1, cc2, cc3, cc4, cost_element,
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(
+            sql,
+            po_number,
+            line_ord,
+            product_indicator,
+            job,
+            cc1,
+            cc2,
+            cc3,
+            cc4,
+            cost_element,
+        )
+        .fetchone()
+    )
     if row.error_state != 0:
         raise EConnectError(
             f"wsiWSCreateUpdatePurchaseOrderIntegration failed for line ORD={line_ord} (PI={product_indicator}): "
             f"{row.err_string.strip()}",
-            proc="wsiWSCreateUpdatePurchaseOrderIntegration", error_state=row.error_state,
+            proc="wsiWSCreateUpdatePurchaseOrderIntegration",
+            error_state=row.error_state,
         )
 
 
@@ -591,9 +642,7 @@ def get_charge_tax_schedules(conn, vendor_id: str) -> dict:
     value is None when both are blank."""
     cur = conn.cursor()
     setup = cur.execute("SELECT RTRIM(FRTSCHID) AS freight, RTRIM(MSCSCHID) AS misc FROM dbo.POP40100").fetchone()
-    vendor = cur.execute(
-        "SELECT RTRIM(TAXSCHID) AS schedule FROM dbo.PM00200 WHERE VENDORID = ?", vendor_id
-    ).fetchone()
+    vendor = cur.execute("SELECT RTRIM(TAXSCHID) AS schedule FROM dbo.PM00200 WHERE VENDORID = ?", vendor_id).fetchone()
     vendor_schedule = ((vendor.schedule if vendor is not None else "") or "") or None
     return {
         "freight": ((setup.freight if setup is not None else "") or None) or vendor_schedule,
@@ -647,15 +696,27 @@ def insert_po_tax_row(
         @oErrString    = @err_str OUTPUT;
     SELECT @err AS error_state, @err_str AS err_string;
     """
-    row = conn.cursor().execute(
-        sql,
-        po_number, line_ord, tax_detail_id, tax_amount, taxable_purchase, taxable_purchase,
-        freight_tax, misc_tax, vendor_id,
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(
+            sql,
+            po_number,
+            line_ord,
+            tax_detail_id,
+            tax_amount,
+            taxable_purchase,
+            taxable_purchase,
+            freight_tax,
+            misc_tax,
+            vendor_id,
+        )
+        .fetchone()
+    )
     if row.error_state != 0:
         raise EConnectError(
             f"taPopIvcTaxInsert failed for detail {tax_detail_id} at ORD {line_ord}: {row.err_string.strip()}",
-            proc="taPopIvcTaxInsert", error_state=row.error_state,
+            proc="taPopIvcTaxInsert",
+            error_state=row.error_state,
         )
 
 
@@ -693,25 +754,34 @@ def read_po_receipt_context(conn, po_number: str):
     Returns (None, None, {}) if the PO header doesn't exist. The client only sends which line ORDs +
     quantities to receive; the per-line item/desc/vendor/job/jobname/location come from POP10110
     (+ JC00102 for the job name) here. The extra description fields feed WHRECLINE101."""
-    hdr = conn.cursor().execute(
-        "SELECT RTRIM(VENDORID) AS vendor, RTRIM(VENDNAME) AS vendname FROM dbo.POP10100 WHERE PONUMBER = ?",
-        po_number,
-    ).fetchone()
+    hdr = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(VENDORID) AS vendor, RTRIM(VENDNAME) AS vendname FROM dbo.POP10100 WHERE PONUMBER = ?",
+            po_number,
+        )
+        .fetchone()
+    )
     if hdr is None:
         return None, None, {}
     lines: dict[int, dict] = {}
-    rows = conn.cursor().execute(
-        "SELECT l.ORD, RTRIM(l.ITEMNMBR) AS item, RTRIM(l.ITEMDESC) AS itemdesc, RTRIM(l.VENDORID) AS vendor, "
-        "RTRIM(l.JOBNUMBR) AS job, RTRIM(j.WS_Job_Name) AS jobname, RTRIM(l.LOCNCODE) AS locn, "
-        "l.NONINVEN, RTRIM(l.UOFM) AS uofm, RTRIM(l.VNDITNUM) AS vnditnum, l.QTYORDER, l.UNITCOST, "
-        "l.POLNESTA, ISNULL(r.prev_received, 0) AS prev_received "
-        "FROM dbo.POP10110 l "
-        "LEFT JOIN dbo.JC00102 j ON j.WS_Job_Number = l.JOBNUMBR "
-        "LEFT JOIN (SELECT POLNENUM, SUM(QTYSHPPD) AS prev_received FROM dbo.POP10500 "
-        "           WHERE PONUMBER = ? GROUP BY POLNENUM) r ON r.POLNENUM = l.ORD "
-        "WHERE l.PONUMBER = ? ORDER BY l.ORD",
-        po_number, po_number,
-    ).fetchall()
+    rows = (
+        conn.cursor()
+        .execute(
+            "SELECT l.ORD, RTRIM(l.ITEMNMBR) AS item, RTRIM(l.ITEMDESC) AS itemdesc, RTRIM(l.VENDORID) AS vendor, "
+            "RTRIM(l.JOBNUMBR) AS job, RTRIM(j.WS_Job_Name) AS jobname, RTRIM(l.LOCNCODE) AS locn, "
+            "l.NONINVEN, RTRIM(l.UOFM) AS uofm, RTRIM(l.VNDITNUM) AS vnditnum, l.QTYORDER, l.UNITCOST, "
+            "l.POLNESTA, ISNULL(r.prev_received, 0) AS prev_received "
+            "FROM dbo.POP10110 l "
+            "LEFT JOIN dbo.JC00102 j ON j.WS_Job_Number = l.JOBNUMBR "
+            "LEFT JOIN (SELECT POLNENUM, SUM(QTYSHPPD) AS prev_received FROM dbo.POP10500 "
+            "           WHERE PONUMBER = ? GROUP BY POLNENUM) r ON r.POLNENUM = l.ORD "
+            "WHERE l.PONUMBER = ? ORDER BY l.ORD",
+            po_number,
+            po_number,
+        )
+        .fetchall()
+    )
     for r in rows:
         lines[int(r.ORD)] = {
             "item": r.item,
@@ -817,13 +887,17 @@ def list_vendor_addresses(conn, vendor_id: str) -> list[dict]:
     phone). The address rides along because a code on its own ('PRIMARY', 'REMIT') does not tell the
     user which place it is. Every value is RTRIMmed and a blank comes back null, so the dialog shows
     only the lines this vendor actually has."""
-    rows = conn.cursor().execute(
-        "SELECT RTRIM(ADRSCODE) AS code, RTRIM(VNDCNTCT) AS contact, RTRIM(ADDRESS1) AS address1, "
-        "RTRIM(ADDRESS2) AS address2, RTRIM(ADDRESS3) AS address3, RTRIM(CITY) AS city, "
-        "RTRIM(STATE) AS state, RTRIM(ZIPCODE) AS postal_code, RTRIM(COUNTRY) AS country, "
-        "RTRIM(PHNUMBR1) AS phone FROM dbo.PM00300 WHERE RTRIM(VENDORID) = ? ORDER BY ADRSCODE",
-        vendor_id.strip(),
-    ).fetchall()
+    rows = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(ADRSCODE) AS code, RTRIM(VNDCNTCT) AS contact, RTRIM(ADDRESS1) AS address1, "
+            "RTRIM(ADDRESS2) AS address2, RTRIM(ADDRESS3) AS address3, RTRIM(CITY) AS city, "
+            "RTRIM(STATE) AS state, RTRIM(ZIPCODE) AS postal_code, RTRIM(COUNTRY) AS country, "
+            "RTRIM(PHNUMBR1) AS phone FROM dbo.PM00300 WHERE RTRIM(VENDORID) = ? ORDER BY ADRSCODE",
+            vendor_id.strip(),
+        )
+        .fetchall()
+    )
     return [
         {
             "code": r.code,
@@ -849,11 +923,15 @@ def vendor_address_exists(conn, vendor_id: str, address_code: str) -> bool:
     vendor, not globally. Both are char(15), so the columns are RTRIM'd and the arguments stripped -
     the same normalization list_vendor_addresses applies, so a code read out of that picker compares
     equal here."""
-    row = conn.cursor().execute(
-        "SELECT COUNT(*) AS n FROM dbo.PM00300 WHERE RTRIM(VENDORID) = ? AND RTRIM(ADRSCODE) = ?",
-        vendor_id.strip(),
-        address_code.strip(),
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(
+            "SELECT COUNT(*) AS n FROM dbo.PM00300 WHERE RTRIM(VENDORID) = ? AND RTRIM(ADRSCODE) = ?",
+            vendor_id.strip(),
+            address_code.strip(),
+        )
+        .fetchone()
+    )
     return row.n > 0
 
 
@@ -862,9 +940,9 @@ def get_vendor_currency(conn, vendor_id: str) -> str:
     create (issue #257: the vendor dictates PO currency). Blank -> functional currency 'CAD'. Returns
     an uppercased currency id, or 'CAD' if the vendor row is missing (create_po_header would then fail
     on VENDORID with a clear eConnect error anyway)."""
-    row = conn.cursor().execute(
-        "SELECT RTRIM(CURNCYID) AS cur FROM dbo.PM00200 WHERE VENDORID = ?", vendor_id
-    ).fetchone()
+    row = (
+        conn.cursor().execute("SELECT RTRIM(CURNCYID) AS cur FROM dbo.PM00200 WHERE VENDORID = ?", vendor_id).fetchone()
+    )
     return ((row.cur if row else "") or "").strip().upper() or "CAD"
 
 
@@ -874,9 +952,11 @@ def get_mc_setup(conn) -> dict:
     with that rate type; eConnect then resolves the actual XCHGRATE from GP's maintained exchange rate
     table (DYNAMICS.MC00100) itself. Returns {'functional': <id>, 'purchase_rate_type': <id or None>};
     a company with no MC setup (single-currency) yields functional 'CAD' and no rate type."""
-    row = conn.cursor().execute(
-        "SELECT RTRIM(FUNLCURR) AS functional, RTRIM(DEFPURTP) AS purchase_rate_type FROM dbo.MC40000"
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute("SELECT RTRIM(FUNLCURR) AS functional, RTRIM(DEFPURTP) AS purchase_rate_type FROM dbo.MC40000")
+        .fetchone()
+    )
     if row is None:
         return {"functional": "CAD", "purchase_rate_type": None}
     return {
@@ -926,13 +1006,16 @@ def list_tax_details(conn) -> list[dict]:
     The percent column is aliased AS pct, NOT `AS percent`: PERCENT is a reserved SQL Server keyword
     (TOP n PERCENT), so a bare `AS percent` throws "Incorrect syntax near the keyword 'percent'" and the
     dropdown never loads (issue #315 follow-up). Matches get_tax_detail_percent below, which aliases pct."""
-    rows = conn.cursor().execute(
-        "SELECT RTRIM(TAXDTLID) AS tax_detail_id, RTRIM(TXDTLDSC) AS description, TXDTLPCT AS pct "
-        "FROM dbo.TX00201 WHERE TXDTLTYP = 2 ORDER BY TAXDTLID"
-    ).fetchall()
+    rows = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(TAXDTLID) AS tax_detail_id, RTRIM(TXDTLDSC) AS description, TXDTLPCT AS pct "
+            "FROM dbo.TX00201 WHERE TXDTLTYP = 2 ORDER BY TAXDTLID"
+        )
+        .fetchall()
+    )
     return [
-        {"tax_detail_id": r.tax_detail_id, "description": r.description or None, "percent": float(r.pct)}
-        for r in rows
+        {"tax_detail_id": r.tax_detail_id, "description": r.description or None, "percent": float(r.pct)} for r in rows
     ]
 
 
@@ -942,14 +1025,18 @@ def list_purchase_tax_schedules(conn) -> list[dict]:
     details and their rates, for the register-PO schedule picker. Sales-type details a schedule also
     holds are left out: GP's purchasing ignores them. The percent is aliased pct, as in list_tax_details
     (PERCENT is reserved in SQL Server)."""
-    rows = conn.cursor().execute(
-        "SELECT RTRIM(s.TAXSCHID) AS tax_schedule_id, RTRIM(s.TXSCHDSC) AS schedule_description, "
-        "RTRIM(d.TAXDTLID) AS tax_detail_id, RTRIM(d.TXDTLDSC) AS detail_description, d.TXDTLPCT AS pct "
-        "FROM dbo.TX00101 s "
-        "JOIN dbo.TX00102 sd ON sd.TAXSCHID = s.TAXSCHID "
-        "JOIN dbo.TX00201 d ON d.TAXDTLID = sd.TAXDTLID AND d.TXDTLTYP = 2 "
-        "ORDER BY s.TAXSCHID, d.TAXDTLID"
-    ).fetchall()
+    rows = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(s.TAXSCHID) AS tax_schedule_id, RTRIM(s.TXSCHDSC) AS schedule_description, "
+            "RTRIM(d.TAXDTLID) AS tax_detail_id, RTRIM(d.TXDTLDSC) AS detail_description, d.TXDTLPCT AS pct "
+            "FROM dbo.TX00101 s "
+            "JOIN dbo.TX00102 sd ON sd.TAXSCHID = s.TAXSCHID "
+            "JOIN dbo.TX00201 d ON d.TAXDTLID = sd.TAXDTLID AND d.TXDTLTYP = 2 "
+            "ORDER BY s.TAXSCHID, d.TAXDTLID"
+        )
+        .fetchall()
+    )
     schedules: dict[str, dict] = {}
     for r in rows:
         entry = schedules.setdefault(
@@ -983,9 +1070,11 @@ def get_tax_detail_percent(conn, tax_detail_id: str) -> Decimal | None:
     """Read-only: the percent rate of a PURCHASE tax detail (TX00201.TXDTLPCT WHERE TXDTLTYP = 2), for
     computing the PO tax amount. Returns None if the id isn't a purchase tax detail (caller raises a
     clean tax_detail_not_found instead of letting taPopIvcTaxInsert reject it mid-transaction)."""
-    row = conn.cursor().execute(
-        "SELECT TXDTLPCT AS pct FROM dbo.TX00201 WHERE TAXDTLID = ? AND TXDTLTYP = 2", tax_detail_id
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute("SELECT TXDTLPCT AS pct FROM dbo.TX00201 WHERE TAXDTLID = ? AND TXDTLTYP = 2", tax_detail_id)
+        .fetchone()
+    )
     return Decimal(str(row.pct)) if row is not None else None
 
 
@@ -1016,16 +1105,18 @@ def _units_of_measure(conn) -> list[str]:
     opening the PO dialog and 'Each' is what the line would have carried anyway. The read connection
     is autocommit (db.get_read_connection), so a refused SELECT leaves nothing behind to unwind."""
     try:
-        row = conn.cursor().execute(
-            f"SELECT RTRIM({_UOFM_SCHEDULE_COLUMN}) AS schedule FROM dbo.POP40100"
-        ).fetchone()
+        row = conn.cursor().execute(f"SELECT RTRIM({_UOFM_SCHEDULE_COLUMN}) AS schedule FROM dbo.POP40100").fetchone()
         schedule = ((row.schedule if row else "") or "").strip()
         if not schedule:
             return list(_FALLBACK_UNITS_OF_MEASURE)
-        rows = conn.cursor().execute(
-            "SELECT RTRIM(UOFM) AS uofm FROM dbo.IV40202 WHERE RTRIM(UOMSCHDL) = ? ORDER BY UOFM",
-            schedule,
-        ).fetchall()
+        rows = (
+            conn.cursor()
+            .execute(
+                "SELECT RTRIM(UOFM) AS uofm FROM dbo.IV40202 WHERE RTRIM(UOMSCHDL) = ? ORDER BY UOFM",
+                schedule,
+            )
+            .fetchall()
+        )
     except Exception:
         return list(_FALLBACK_UNITS_OF_MEASURE)
     units = [r.uofm for r in rows if (r.uofm or "").strip()]
@@ -1045,14 +1136,22 @@ def list_po_entry_options(conn) -> dict:
 
     One op rather than three because the dialog needs all three the moment it opens, and three
     separate calls would pay for the GP connection three times over for one screen."""
-    shipping_methods = conn.cursor().execute(
-        "SELECT RTRIM(SHIPMTHD) AS id, RTRIM(SHMTHDSC) AS description "
-        "FROM dbo.SY03000 WHERE SHIPMTHD <> '' ORDER BY SHIPMTHD"
-    ).fetchall()
-    sites = conn.cursor().execute(
-        "SELECT RTRIM(LOCNCODE) AS code, RTRIM(LOCNDSCR) AS description "
-        "FROM dbo.IV40700 WHERE LOCNCODE <> '' ORDER BY LOCNCODE"
-    ).fetchall()
+    shipping_methods = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(SHIPMTHD) AS id, RTRIM(SHMTHDSC) AS description "
+            "FROM dbo.SY03000 WHERE SHIPMTHD <> '' ORDER BY SHIPMTHD"
+        )
+        .fetchall()
+    )
+    sites = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(LOCNCODE) AS code, RTRIM(LOCNDSCR) AS description "
+            "FROM dbo.IV40700 WHERE LOCNCODE <> '' ORDER BY LOCNCODE"
+        )
+        .fetchall()
+    )
     return {
         "shipping_methods": [
             {"id": r.id, "description": (r.description or "").strip() or None} for r in shipping_methods
@@ -1068,9 +1167,11 @@ def shipping_method_exists(conn, shipping_method: str) -> bool:
     pre-checks it here for a clean refusal, exactly as it pre-checks the buyer against POP00101.
     SHIPMTHD is char(15), so the column is RTRIM'd and the argument stripped - the same normalization
     list_po_entry_options applies, so a value read out of that picker compares equal here."""
-    row = conn.cursor().execute(
-        "SELECT COUNT(*) AS n FROM dbo.SY03000 WHERE RTRIM(SHIPMTHD) = ?", shipping_method.strip()
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute("SELECT COUNT(*) AS n FROM dbo.SY03000 WHERE RTRIM(SHIPMTHD) = ?", shipping_method.strip())
+        .fetchone()
+    )
     return row.n > 0
 
 
@@ -1078,9 +1179,11 @@ def site_exists(conn, site: str) -> bool:
     """Read-only: is this a site the company has set up (IV40700)? taPoLine validates LOCNCODE against
     the site master, so create_po_op pre-checks every site the PO's lines would land on. LOCNCODE is
     char(11), RTRIM'd on both sides like the shipping method and buyer probes."""
-    row = conn.cursor().execute(
-        "SELECT COUNT(*) AS n FROM dbo.IV40700 WHERE RTRIM(LOCNCODE) = ?", site.strip()
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute("SELECT COUNT(*) AS n FROM dbo.IV40700 WHERE RTRIM(LOCNCODE) = ?", site.strip())
+        .fetchone()
+    )
     return row.n > 0
 
 
@@ -1088,9 +1191,11 @@ def list_buyers(conn) -> list[str]:
     """Registered GP buyer IDs from the buyer master POP00101. eConnect taPoHdr validates BUYERID against
     this and rejects an unregistered buyer (error 269), so /po pre-checks against this list and the
     Create PO buyer dropdown is populated from it. (A device hostname is NOT a registered buyer.)"""
-    rows = conn.cursor().execute(
-        "SELECT RTRIM(BUYERID) AS b FROM dbo.POP00101 WHERE BUYERID <> '' ORDER BY BUYERID"
-    ).fetchall()
+    rows = (
+        conn.cursor()
+        .execute("SELECT RTRIM(BUYERID) AS b FROM dbo.POP00101 WHERE BUYERID <> '' ORDER BY BUYERID")
+        .fetchall()
+    )
     return [r.b for r in rows]
 
 
@@ -1102,10 +1207,14 @@ def list_buyers_detailed(conn) -> list[dict]:
     'mira' says nothing on its own about who or what it is, and picking the wrong one silently
     mis-attributes every PO that account creates. Kept separate rather than widening list_buyers so
     the PO path's payload doesn't grow a field it never reads."""
-    rows = conn.cursor().execute(
-        "SELECT RTRIM(BUYERID) AS buyer_id, RTRIM(DSCRIPTN) AS description "
-        "FROM dbo.POP00101 WHERE BUYERID <> '' ORDER BY BUYERID"
-    ).fetchall()
+    rows = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(BUYERID) AS buyer_id, RTRIM(DSCRIPTN) AS description "
+            "FROM dbo.POP00101 WHERE BUYERID <> '' ORDER BY BUYERID"
+        )
+        .fetchall()
+    )
     return [{"buyer_id": r.buyer_id, "description": r.description or None} for r in rows]
 
 
@@ -1113,9 +1222,11 @@ def buyer_exists(conn, buyer_id: str) -> bool:
     """Read-only: is buyer_id already in the buyer master POP00101? BUYERID is char(15), so the column
     is RTRIM'd and the argument stripped - the same normalization list_buyers/list_buyers_detailed
     apply, so an id read out of either dropdown compares equal here."""
-    row = conn.cursor().execute(
-        "SELECT COUNT(*) AS n FROM dbo.POP00101 WHERE RTRIM(BUYERID) = ?", buyer_id.strip()
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute("SELECT COUNT(*) AS n FROM dbo.POP00101 WHERE RTRIM(BUYERID) = ?", buyer_id.strip())
+        .fetchone()
+    )
     return row.n > 0
 
 
@@ -1129,11 +1240,15 @@ def get_buyer(conn, buyer_id: str) -> dict | None:
     the pre-check and the read-back agree about what counts as the same buyer - a Python `==` against
     list_buyers_detailed would disagree with the pre-check on case, and would roll back a create that
     actually succeeded."""
-    row = conn.cursor().execute(
-        "SELECT RTRIM(BUYERID) AS buyer_id, RTRIM(DSCRIPTN) AS description "
-        "FROM dbo.POP00101 WHERE RTRIM(BUYERID) = ?",
-        buyer_id.strip(),
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(BUYERID) AS buyer_id, RTRIM(DSCRIPTN) AS description "
+            "FROM dbo.POP00101 WHERE RTRIM(BUYERID) = ?",
+            buyer_id.strip(),
+        )
+        .fetchone()
+    )
     if row is None:
         return None
     return {"buyer_id": row.buyer_id, "description": row.description or None}
@@ -1221,9 +1336,7 @@ def _history_columns(conn) -> frozenset[str]:
     other JC00102 column is missing too (213 columns where 215 were expected). A column named in the
     history half that the table lacks fails the WHOLE statement, which took every job read down with it
     - so the history half is built from what the catalogue says is there, not from what it should be."""
-    rows = conn.cursor().execute(
-        "SELECT name FROM sys.columns WHERE object_id = OBJECT_ID('dbo.JC30001')"
-    ).fetchall()
+    rows = conn.cursor().execute("SELECT name FROM sys.columns WHERE object_id = OBJECT_ID('dbo.JC30001')").fetchall()
     return frozenset(r.name.lower() for r in rows)
 
 
@@ -1242,9 +1355,7 @@ def _job_select(history_columns: frozenset[str], where: str = "") -> str:
         f"SELECT {_JOB_COLUMNS}, 1 AS closed, j.Close_Date AS close_date, RTRIM(j.Close_User_ID) AS close_user "
         f"FROM dbo.JC30001 j {_JOB_JOINS}{where}"
     )
-    history = _JOB_ROW_COLUMN.sub(
-        lambda m: m.group(0) if m.group(1).lower() in history_columns else "NULL", history
-    )
+    history = _JOB_ROW_COLUMN.sub(lambda m: m.group(0) if m.group(1).lower() in history_columns else "NULL", history)
     return f"{live}UNION ALL {history}"
 
 
@@ -1260,7 +1371,7 @@ def _gp_date(value) -> str | None:
 
 
 def _person_name(first: str | None, last: str | None) -> str | None:
-    """"First Last" for an employee the join found, None when it found nobody (both halves null) or a
+    """ "First Last" for an employee the join found, None when it found nobody (both halves null) or a
     row with no name on it."""
     return " ".join(part for part in (first, last) if part) or None
 
@@ -1415,16 +1526,20 @@ def list_cost_codes(conn, job_number: str) -> list[dict]:
     Returns one dict per code: cost_code = the two-segment number 'cc1-cc2' (segments 3/4 are
     blank for every code at this customer), description (Cost_Code_Description), and the integer
     cost_element."""
-    rows = conn.cursor().execute(
-        "SELECT RTRIM(c.Cost_Code_Number_1) AS cc1, RTRIM(c.Cost_Code_Number_2) AS cc2, "
-        "c.Cost_Element AS elem, RTRIM(c.Cost_Code_Description) AS descr "
-        "FROM dbo.JC00701 c "
-        "LEFT JOIN dbo.GL00105 a ON a.ACTINDX = c.WS_Account_Index_1 "
-        "WHERE RTRIM(c.WS_Job_Number) = ? AND c.WS_Inactive = 0 "
-        "AND (c.WS_Account_Index_1 = 0 OR a.ACTINDX IS NOT NULL) "
-        "ORDER BY c.Cost_Code_Number_1, c.Cost_Code_Number_2",
-        job_number,
-    ).fetchall()
+    rows = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(c.Cost_Code_Number_1) AS cc1, RTRIM(c.Cost_Code_Number_2) AS cc2, "
+            "c.Cost_Element AS elem, RTRIM(c.Cost_Code_Description) AS descr "
+            "FROM dbo.JC00701 c "
+            "LEFT JOIN dbo.GL00105 a ON a.ACTINDX = c.WS_Account_Index_1 "
+            "WHERE RTRIM(c.WS_Job_Number) = ? AND c.WS_Inactive = 0 "
+            "AND (c.WS_Account_Index_1 = 0 OR a.ACTINDX IS NOT NULL) "
+            "ORDER BY c.Cost_Code_Number_1, c.Cost_Code_Number_2",
+            job_number,
+        )
+        .fetchall()
+    )
     return [
         {
             "cost_code": f"{r.cc1}-{r.cc2}",
@@ -1470,9 +1585,7 @@ _ACTIVE_COST_CODE = "WS_Inactive = 0"
 # between them; change one and change the others.
 
 
-def job_setup_health(
-    conn, job_number: str | None = None, job_numbers: list[str] | None = None
-) -> list[dict]:
+def job_setup_health(conn, job_number: str | None = None, job_numbers: list[str] | None = None) -> list[dict]:
     """Read-only: the per-job GP setup verdict for EVERY job in the company (#425), for the BATCH of
     jobs in `job_numbers`, or for the one job in `job_number`.
 
@@ -1552,9 +1665,7 @@ def job_setup_health(
         verdict_rows = cur.execute(
             verdict_sql + "WHERE RTRIM(j.WS_Job_Number) = ? GROUP BY RTRIM(j.WS_Job_Number) ORDER BY 1", job
         ).fetchall()
-        detail_rows = cur.execute(
-            detail_sql + "AND RTRIM(c.WS_Job_Number) = ? ORDER BY 1, 2, 3", job
-        ).fetchall()
+        detail_rows = cur.execute(detail_sql + "AND RTRIM(c.WS_Job_Number) = ? ORDER BY 1, 2, 3", job).fetchall()
 
     issues_by_job: dict[str, list[dict]] = {}
     for r in detail_rows:
@@ -1589,12 +1700,21 @@ def cost_code_account_index(conn, job_number: str, cost_code: str) -> int | None
     caller has to name the offending index in its error: "cost code 210-200-2 points at GL account
     index 1617" is actionable in GP, "that cost code is broken" is not."""
     cc1, cc2, cc3, cc4, cost_element = split_cost_code(cost_code)
-    row = conn.cursor().execute(
-        "SELECT WS_Account_Index_1 AS account_index FROM dbo.JC00701 "
-        "WHERE RTRIM(WS_Job_Number) = ? AND Cost_Code_Number_1 = ? AND Cost_Code_Number_2 = ? "
-        f"AND Cost_Code_Number_3 = ? AND Cost_Code_Number_4 = ? AND Cost_Element = ? AND {_ACTIVE_COST_CODE}",
-        job_number.strip(), cc1, cc2, cc3, cc4, cost_element,
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(
+            "SELECT WS_Account_Index_1 AS account_index FROM dbo.JC00701 "
+            "WHERE RTRIM(WS_Job_Number) = ? AND Cost_Code_Number_1 = ? AND Cost_Code_Number_2 = ? "
+            f"AND Cost_Code_Number_3 = ? AND Cost_Code_Number_4 = ? AND Cost_Element = ? AND {_ACTIVE_COST_CODE}",
+            job_number.strip(),
+            cc1,
+            cc2,
+            cc3,
+            cc4,
+            cost_element,
+        )
+        .fetchone()
+    )
     if row is None or row.account_index is None:
         return None
     return int(row.account_index)
@@ -1608,9 +1728,9 @@ def account_index_exists(conn, account_index: int) -> bool:
     every job that simply leaves the default in place."""
     if not account_index:
         return True
-    row = conn.cursor().execute(
-        "SELECT COUNT(*) AS n FROM dbo.GL00105 WHERE ACTINDX = ?", int(account_index)
-    ).fetchone()
+    row = (
+        conn.cursor().execute("SELECT COUNT(*) AS n FROM dbo.GL00105 WHERE ACTINDX = ?", int(account_index)).fetchone()
+    )
     return row.n > 0
 
 
@@ -1625,13 +1745,17 @@ def po_lines_with_dangling_account(conn, po_number: str) -> list[dict]:
 
     Returns {ord, item, account_index, job} per broken line, empty when the PO is clean. The caller
     narrows to the lines actually being received."""
-    rows = conn.cursor().execute(
-        "SELECT l.ORD AS ord, RTRIM(l.ITEMNMBR) AS item, l.INVINDX AS account_index, "
-        "RTRIM(l.JOBNUMBR) AS job FROM dbo.POP10110 l "
-        "LEFT JOIN dbo.GL00105 a ON a.ACTINDX = l.INVINDX "
-        "WHERE l.PONUMBER = ? AND l.INVINDX <> 0 AND a.ACTINDX IS NULL ORDER BY l.ORD",
-        po_number,
-    ).fetchall()
+    rows = (
+        conn.cursor()
+        .execute(
+            "SELECT l.ORD AS ord, RTRIM(l.ITEMNMBR) AS item, l.INVINDX AS account_index, "
+            "RTRIM(l.JOBNUMBR) AS job FROM dbo.POP10110 l "
+            "LEFT JOIN dbo.GL00105 a ON a.ACTINDX = l.INVINDX "
+            "WHERE l.PONUMBER = ? AND l.INVINDX <> 0 AND a.ACTINDX IS NULL ORDER BY l.ORD",
+            po_number,
+        )
+        .fetchall()
+    )
     return [
         {
             "ord": int(r.ord),
@@ -1657,9 +1781,7 @@ def list_customers(conn, *, active_only: bool = True) -> list[dict]:
     INACTIVE = 0 by default, mirroring list_vendors' VENDSTTS filter and list_divisions' accounts
     filter: a dropdown must not offer a choice that can only produce a job nobody can invoice. TUBC
     has no inactive customers, so this changes nothing in the sandbox and everything in production."""
-    sql = (
-        "SELECT RTRIM(CUSTNMBR) AS customer_number, RTRIM(CUSTNAME) AS customer_name FROM dbo.RM00101 "
-    )
+    sql = "SELECT RTRIM(CUSTNMBR) AS customer_number, RTRIM(CUSTNAME) AS customer_name FROM dbo.RM00101 "
     if active_only:
         sql += "WHERE INACTIVE = 0 "
     sql += "ORDER BY CUSTNAME"
@@ -1714,10 +1836,14 @@ def get_job(conn, job_number: str) -> dict | None:
     history = _history_columns(conn)
     # The job number is bound once per half; with no history table there is only the one half.
     params = (job, job) if history else (job,)
-    row = conn.cursor().execute(
-        _job_select(history, "WHERE RTRIM(j.WS_Job_Number) = ? ") + "ORDER BY closed",
-        *params,
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(
+            _job_select(history, "WHERE RTRIM(j.WS_Job_Number) = ? ") + "ORDER BY closed",
+            *params,
+        )
+        .fetchone()
+    )
     if row is None:
         return None
     return _job_record(row)
@@ -1731,11 +1857,15 @@ def list_customer_addresses(conn, customer_number: str) -> list[dict]:
 
     city/address1 ride along because an address code alone ('MAIN', 'PRIMARY', 'RIH') doesn't tell the
     user which site it is."""
-    rows = conn.cursor().execute(
-        "SELECT RTRIM(ADRSCODE) AS address_code, RTRIM(ADDRESS1) AS address1, RTRIM(CITY) AS city, "
-        "RTRIM(STATE) AS state FROM dbo.RM00102 WHERE RTRIM(CUSTNMBR) = ? ORDER BY ADRSCODE",
-        customer_number.strip(),
-    ).fetchall()
+    rows = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(ADRSCODE) AS address_code, RTRIM(ADDRESS1) AS address1, RTRIM(CITY) AS city, "
+            "RTRIM(STATE) AS state FROM dbo.RM00102 WHERE RTRIM(CUSTNMBR) = ? ORDER BY ADRSCODE",
+            customer_number.strip(),
+        )
+        .fetchall()
+    )
     return [
         {
             "address_code": r.address_code,
@@ -1752,10 +1882,14 @@ def list_tax_schedules(conn) -> list[dict]:
     optional use-tax schedule, which is the same kind of id - JC00102.USETAXSCHID is char(15) like
     TAXSCHID). Distinct from list_tax_details above, which reads the tax DETAIL table TX00201: a
     schedule groups details, and wsiJCJobMaster wants the schedule."""
-    rows = conn.cursor().execute(
-        "SELECT RTRIM(TAXSCHID) AS tax_schedule_id, RTRIM(TXSCHDSC) AS description "
-        "FROM dbo.TX00101 ORDER BY TAXSCHID"
-    ).fetchall()
+    rows = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(TAXSCHID) AS tax_schedule_id, RTRIM(TXSCHDSC) AS description "
+            "FROM dbo.TX00101 ORDER BY TAXSCHID"
+        )
+        .fetchall()
+    )
     return [{"tax_schedule_id": r.tax_schedule_id, "description": r.description or None} for r in rows]
 
 
@@ -1767,11 +1901,15 @@ def list_divisions(conn) -> list[str]:
     ("division accounts have not been set up"), so offering every JCDivisionSETP row would put choices in
     the dropdown that can only ever fail validation. TUBC has exactly one qualifying division, VANCOUVER.
     There is no description column on either table - the division code IS the label."""
-    rows = conn.cursor().execute(
-        "SELECT RTRIM(d.Divisions) AS division FROM dbo.JCDivisionSETP d "
-        "WHERE EXISTS (SELECT 1 FROM dbo.JCDivisionAccountsSETP a WHERE a.Divisions = d.Divisions) "
-        "ORDER BY d.Divisions"
-    ).fetchall()
+    rows = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(d.Divisions) AS division FROM dbo.JCDivisionSETP d "
+            "WHERE EXISTS (SELECT 1 FROM dbo.JCDivisionAccountsSETP a WHERE a.Divisions = d.Divisions) "
+            "ORDER BY d.Divisions"
+        )
+        .fetchall()
+    )
     return [r.division for r in rows]
 
 
@@ -1884,9 +2022,11 @@ def _exec_job_master(conn, *, only_validate: bool, update_if_exists: bool, **fie
         @oErrString         = @err_str OUTPUT;
     SELECT @err AS error_state, @err_str AS err_string;
     """
-    row = conn.cursor().execute(
-        sql, *supplied.values(), 1 if update_if_exists else 0, 1 if only_validate else 0
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(sql, *supplied.values(), 1 if update_if_exists else 0, 1 if only_validate else 0)
+        .fetchone()
+    )
     if row.error_state != 0:
         message = (row.err_string or "").strip()
         verb = "update" if update_if_exists else "create"
@@ -1953,18 +2093,22 @@ def list_cost_code_master(conn, division: str) -> list[dict]:
     # would show a code that provisions into a DIFFERENT JC00701 row than the one it names. Zero rows in
     # this company have a non-blank segment 3 or 4 (verified live 2026-07-30), so this changes nothing
     # here and refuses to guess anywhere it would.
-    rows = conn.cursor().execute(
-        "SELECT RTRIM(m.Cost_Code_Number_1) AS cc1, RTRIM(m.Cost_Code_Number_2) AS cc2, "
-        "RTRIM(m.Cost_Code_Alias) AS alias, RTRIM(m.Cost_Code_Description) AS descr, "
-        "m.Cost_Element AS elem, m.Profit_Type_Number AS ptype, m.Type_of_Transaction AS ttype, "
-        "a.ACTINDX AS account_index, g.ACTINDX AS resolved "
-        "FROM dbo.JC40202 m "
-        "LEFT JOIN dbo.JC40302 a ON RTRIM(a.Divisions) = ? AND a.Cost_Element = m.Cost_Element "
-        "LEFT JOIN dbo.GL00105 g ON g.ACTINDX = a.ACTINDX "
-        "WHERE RTRIM(m.Cost_Code_Number_3) = '' AND RTRIM(m.Cost_Code_Number_4) = '' "
-        "ORDER BY m.Cost_Code_Number_1, m.Cost_Code_Number_2, m.Cost_Element",
-        division.strip(),
-    ).fetchall()
+    rows = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(m.Cost_Code_Number_1) AS cc1, RTRIM(m.Cost_Code_Number_2) AS cc2, "
+            "RTRIM(m.Cost_Code_Alias) AS alias, RTRIM(m.Cost_Code_Description) AS descr, "
+            "m.Cost_Element AS elem, m.Profit_Type_Number AS ptype, m.Type_of_Transaction AS ttype, "
+            "a.ACTINDX AS account_index, g.ACTINDX AS resolved "
+            "FROM dbo.JC40202 m "
+            "LEFT JOIN dbo.JC40302 a ON RTRIM(a.Divisions) = ? AND a.Cost_Element = m.Cost_Element "
+            "LEFT JOIN dbo.GL00105 g ON g.ACTINDX = a.ACTINDX "
+            "WHERE RTRIM(m.Cost_Code_Number_3) = '' AND RTRIM(m.Cost_Code_Number_4) = '' "
+            "ORDER BY m.Cost_Code_Number_1, m.Cost_Code_Number_2, m.Cost_Element",
+            division.strip(),
+        )
+        .fetchall()
+    )
     out = []
     seen: set[tuple[str, int]] = set()
     for r in rows:
@@ -2072,19 +2216,23 @@ def create_job_cost_code(
         @oErrString             = @err_str OUTPUT;
     SELECT @err AS error_state, @err_str AS err_string;
     """
-    row = conn.cursor().execute(
-        sql,
-        job_number,
-        cost_code_number_1,
-        cost_code_number_2,
-        alias,
-        description,
-        cost_element,
-        account_index,
-        profit_type_number,
-        type_of_transaction,
-        1 if only_validate else 0,
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(
+            sql,
+            job_number,
+            cost_code_number_1,
+            cost_code_number_2,
+            alias,
+            description,
+            cost_element,
+            account_index,
+            profit_type_number,
+            type_of_transaction,
+            1 if only_validate else 0,
+        )
+        .fetchone()
+    )
     if row.error_state != 0:
         message = (row.err_string or "").strip()
         pass_label = "validation" if only_validate else "create"
@@ -2123,11 +2271,15 @@ def customer_address_exists(conn, customer_number: str, address_code: str) -> bo
     the EXEC fails, because a code saved between the two is exactly what the pre-check cannot see. It
     is what lets create_customer_address hardcode UpdateIfExists=0 without a re-run of the dialog
     turning into a raw eConnect error state."""
-    row = conn.cursor().execute(
-        "SELECT COUNT(*) AS n FROM dbo.RM00102 WHERE RTRIM(CUSTNMBR) = ? AND RTRIM(ADRSCODE) = ?",
-        customer_number.strip(),
-        address_code.strip(),
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(
+            "SELECT COUNT(*) AS n FROM dbo.RM00102 WHERE RTRIM(CUSTNMBR) = ? AND RTRIM(ADRSCODE) = ?",
+            customer_number.strip(),
+            address_code.strip(),
+        )
+        .fetchone()
+    )
     return row.n > 0
 
 
@@ -2147,12 +2299,16 @@ def get_customer_address(conn, customer_number: str, address_code: str) -> dict 
     Matched the way customer_address_exists matches (RTRIM'd columns, stripped arguments, comparison
     left to SQL) so the pre-check and the read-back agree on what counts as the same address - a Python
     match would disagree on case and roll back a create that actually worked."""
-    row = conn.cursor().execute(
-        "SELECT RTRIM(ADRSCODE) AS address_code, RTRIM(ADDRESS1) AS address1, RTRIM(CITY) AS city, "
-        "RTRIM(STATE) AS state FROM dbo.RM00102 WHERE RTRIM(CUSTNMBR) = ? AND RTRIM(ADRSCODE) = ?",
-        customer_number.strip(),
-        address_code.strip(),
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(ADRSCODE) AS address_code, RTRIM(ADDRESS1) AS address1, RTRIM(CITY) AS city, "
+            "RTRIM(STATE) AS state FROM dbo.RM00102 WHERE RTRIM(CUSTNMBR) = ? AND RTRIM(ADRSCODE) = ?",
+            customer_number.strip(),
+            address_code.strip(),
+        )
+        .fetchone()
+    )
     if row is None:
         return None
     return {
@@ -2168,13 +2324,17 @@ def get_customer_address_lines(conn, customer_number: str, address_code: str) ->
     own-site rewrite sends, so ops._mint_site_address can tell a re-push of the same address (no write)
     from a changed one. Separate from get_customer_address because that one's shape is the picker row
     the create op answers with. Matched the way customer_address_exists matches."""
-    row = conn.cursor().execute(
-        "SELECT RTRIM(ADDRESS1) AS address1, RTRIM(ADDRESS2) AS address2, RTRIM(CITY) AS city, "
-        "RTRIM(STATE) AS state, RTRIM(ZIP) AS zip_code, RTRIM(COUNTRY) AS country "
-        "FROM dbo.RM00102 WHERE RTRIM(CUSTNMBR) = ? AND RTRIM(ADRSCODE) = ?",
-        customer_number.strip(),
-        address_code.strip(),
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(
+            "SELECT RTRIM(ADDRESS1) AS address1, RTRIM(ADDRESS2) AS address2, RTRIM(CITY) AS city, "
+            "RTRIM(STATE) AS state, RTRIM(ZIP) AS zip_code, RTRIM(COUNTRY) AS country "
+            "FROM dbo.RM00102 WHERE RTRIM(CUSTNMBR) = ? AND RTRIM(ADRSCODE) = ?",
+            customer_number.strip(),
+            address_code.strip(),
+        )
+        .fetchone()
+    )
     if row is None:
         return None
     return {
@@ -2302,13 +2462,16 @@ def create_receipt_header(conn, *, receipt_number, po_number, vendor_id, receipt
         @oErrString     = @err_str OUTPUT;
     SELECT @err AS error_state, @err_str AS err_string;
     """
-    row = conn.cursor().execute(
-        sql, receipt_number, po_number, receipt_date, batch_number, vendor_id, subtotal
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(sql, receipt_number, po_number, receipt_date, batch_number, vendor_id, subtotal)
+        .fetchone()
+    )
     if row.error_state != 0:
         raise EConnectError(
             f"taPopRcptHdrInsert failed: {row.err_string.strip()}",
-            proc="taPopRcptHdrInsert", error_state=row.error_state,
+            proc="taPopRcptHdrInsert",
+            error_state=row.error_state,
         )
 
 
@@ -2317,8 +2480,8 @@ def create_receipt_line(
     *,
     receipt_number: str,
     po_number: str,
-    rcpt_line_num: int,   # RCPTLNNM, GP line scaling: 16384, 32768, ...
-    po_line_ord: int,     # POLNENUM = the POP10110.ORD being received
+    rcpt_line_num: int,  # RCPTLNNM, GP line scaling: 16384, 32768, ...
+    po_line_ord: int,  # POLNENUM = the POP10110.ORD being received
     item_number: str,
     vendor_id: str,
     vnditnum: str,
@@ -2356,27 +2519,42 @@ def create_receipt_line(
         @oErrString      = @err_str OUTPUT;
     SELECT @err AS error_state, @err_str AS err_string;
     """
-    row = conn.cursor().execute(
-        sql,
-        receipt_number, po_number, rcpt_line_num, po_line_ord,
-        item_number, vendor_id, vnditnum, uofm, job_number, location_code,
-        noninven, quantity, receipt_date,
-    ).fetchone()
+    row = (
+        conn.cursor()
+        .execute(
+            sql,
+            receipt_number,
+            po_number,
+            rcpt_line_num,
+            po_line_ord,
+            item_number,
+            vendor_id,
+            vnditnum,
+            uofm,
+            job_number,
+            location_code,
+            noninven,
+            quantity,
+            receipt_date,
+        )
+        .fetchone()
+    )
     if row.error_state != 0:
         raise EConnectError(
             f"taPopRcptLineInsert failed for ORD={po_line_ord}: {row.err_string.strip()}",
-            proc="taPopRcptLineInsert", error_state=row.error_state,
+            proc="taPopRcptLineInsert",
+            error_state=row.error_state,
         )
 
 
 def insert_whrecline_row(
     conn,
     *,
-    custom_db: str,       # e.g. 'PMUBC' / 'PMUCSH' (the paired custom warehouse DB)
+    custom_db: str,  # e.g. 'PMUBC' / 'PMUCSH' (the paired custom warehouse DB)
     po_number: str,
-    polnenum: int,        # = the POP10110.ORD being received
-    poprctnm: str,        # GP receipt number from this receive
-    rcptlnnm: int,        # receipt line number (16384 steps)
+    polnenum: int,  # = the POP10110.ORD being received
+    poprctnm: str,  # GP receipt number from this receive
+    rcptlnnm: int,  # receipt line number (16384 steps)
     qty_ordered: int,
     qty_received: int,
     item: str,
@@ -2385,7 +2563,7 @@ def insert_whrecline_row(
     vendname: str | None,
     job: str | None,
     jobname: str | None,
-    location: str,        # the RACK location - the whole reason this table exists
+    location: str,  # the RACK location - the whole reason this table exists
     revision: str | None,
     comments: str | None,
     date_received: date,
@@ -2416,11 +2594,25 @@ def insert_whrecline_row(
     """
     conn.cursor().execute(
         sql,
-        po_number, polnenum, poprctnm, rcptlnnm,
-        qty_ordered, qty_received, qty_received, None,  # SopNumber null for plain job POs
-        item, itemdesc, vendor_id, vendname, job, jobname,
-        revision, location, comments,
-        date_received, received_by,
+        po_number,
+        polnenum,
+        poprctnm,
+        rcptlnnm,
+        qty_ordered,
+        qty_received,
+        qty_received,
+        None,  # SopNumber null for plain job POs
+        item,
+        itemdesc,
+        vendor_id,
+        vendname,
+        job,
+        jobname,
+        revision,
+        location,
+        comments,
+        date_received,
+        received_by,
     )
 
 
@@ -2550,15 +2742,19 @@ def _read_po_lines(conn, table: str, po_numbers: list[str], *, page_size: int) -
     out: dict[str, list[dict]] = {}
     for group in _chunk(po_numbers, _in_chunk(po_numbers, page_size)):
         placeholders = ",".join("?" * len(group))
-        rows = conn.cursor().execute(
-            f"SELECT RTRIM(l.PONUMBER) AS po, l.ORD, RTRIM(l.ITEMNMBR) AS item, RTRIM(l.ITEMDESC) AS itemdesc, "
-            f"l.UNITCOST, l.QTYORDER, l.QTYCANCE, RTRIM(l.JOBNUMBR) AS job, l.POLNESTA, "
-            f"RTRIM(w.COSTCODE) AS costcode "
-            f"FROM dbo.{table} l "
-            f"LEFT JOIN dbo.WS10101 w ON w.PONUMBER = l.PONUMBER AND w.ORD = l.ORD "
-            f"WHERE l.PONUMBER IN ({placeholders}) ORDER BY l.PONUMBER, l.ORD",
-            *group,
-        ).fetchall()
+        rows = (
+            conn.cursor()
+            .execute(
+                f"SELECT RTRIM(l.PONUMBER) AS po, l.ORD, RTRIM(l.ITEMNMBR) AS item, RTRIM(l.ITEMDESC) AS itemdesc, "
+                f"l.UNITCOST, l.QTYORDER, l.QTYCANCE, RTRIM(l.JOBNUMBR) AS job, l.POLNESTA, "
+                f"RTRIM(w.COSTCODE) AS costcode "
+                f"FROM dbo.{table} l "
+                f"LEFT JOIN dbo.WS10101 w ON w.PONUMBER = l.PONUMBER AND w.ORD = l.ORD "
+                f"WHERE l.PONUMBER IN ({placeholders}) ORDER BY l.PONUMBER, l.ORD",
+                *group,
+            )
+            .fetchall()
+        )
         for r in rows:
             out.setdefault(r.po, []).append(
                 {
@@ -2590,11 +2786,15 @@ def _read_received_sums(conn, po_numbers: list[str], *, page_size: int) -> dict[
     out: dict[tuple[str, int], float] = {}
     for group in _chunk(po_numbers, _in_chunk(po_numbers, page_size)):
         placeholders = ",".join("?" * len(group))
-        rows = conn.cursor().execute(
-            f"SELECT RTRIM(PONUMBER) AS po, POLNENUM, SUM(QTYSHPPD) AS received "
-            f"FROM dbo.POP10500 WHERE PONUMBER IN ({placeholders}) GROUP BY PONUMBER, POLNENUM",
-            *group,
-        ).fetchall()
+        rows = (
+            conn.cursor()
+            .execute(
+                f"SELECT RTRIM(PONUMBER) AS po, POLNENUM, SUM(QTYSHPPD) AS received "
+                f"FROM dbo.POP10500 WHERE PONUMBER IN ({placeholders}) GROUP BY PONUMBER, POLNENUM",
+                *group,
+            )
+            .fetchall()
+        )
         out.update({(r.po, int(r.POLNENUM)): float(r.received or 0) for r in rows})
     return out
 
@@ -2652,9 +2852,7 @@ def _assemble_pos(conn, headers: list, *, page_size: int) -> list[dict]:
     return pos
 
 
-def sync_pos(
-    conn, *, cursor: str | None, page_size: int, modified_since: str | None, open_only: bool = False
-) -> dict:
+def sync_pos(conn, *, cursor: str | None, page_size: int, modified_since: str | None, open_only: bool = False) -> dict:
     """Read a page of GP purchase orders for the mirror sync. Returns {pos: [...], next_cursor}.
 
     Three modes:
@@ -2718,11 +2916,15 @@ def _seek_headers(conn, table: str, src: str, po_numbers: list[str], page_size: 
     out: list = []
     for group in _chunk(po_numbers, _in_chunk(po_numbers, page_size)):
         placeholders = ",".join("?" * len(group))
-        out += conn.cursor().execute(
-            f"SELECT {_PO_HEADER_COLS.format(src=src)} FROM dbo.{table} "
-            f"WHERE PONUMBER IN ({placeholders}) ORDER BY PONUMBER",
-            *group,
-        ).fetchall()
+        out += (
+            conn.cursor()
+            .execute(
+                f"SELECT {_PO_HEADER_COLS.format(src=src)} FROM dbo.{table} "
+                f"WHERE PONUMBER IN ({placeholders}) ORDER BY PONUMBER",
+                *group,
+            )
+            .fetchall()
+        )
     return out
 
 

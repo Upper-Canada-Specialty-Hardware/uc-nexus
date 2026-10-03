@@ -98,7 +98,16 @@ def test_only_supplied_parameters_reach_the_exec():
     # 8 required values, then the two trailing flags: UpdateIfExists (0 - this is a create, #497
     # added the update path that sets it to 1) and OnlyValidate.
     assert params == (
-        "NEXUS-380-T1", "Test job", "VANCOUVER", "ELL100", "MAIN", "MAIN", "GST 5%", date(2025, 9, 15), 0, 0,
+        "NEXUS-380-T1",
+        "Test job",
+        "VANCOUVER",
+        "ELL100",
+        "MAIN",
+        "MAIN",
+        "GST 5%",
+        date(2025, 9, 15),
+        0,
+        0,
     )
 
 

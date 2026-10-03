@@ -16,10 +16,10 @@ _Ship = namedtuple("_Ship", "id description")
 _Site = namedtuple("_Site", "code description")
 _Schedule = namedtuple("_Schedule", "schedule")
 _Uofm = namedtuple("_Uofm", "uofm")
-_Vendor = namedtuple("_Vendor", "vendor_id vendor_name vendor_class status currency shipping_method "
-                                "purchase_address_code contact")
-_Address = namedtuple("_Address", "code contact address1 address2 address3 city state postal_code "
-                                  "country phone")
+_Vendor = namedtuple(
+    "_Vendor", "vendor_id vendor_name vendor_class status currency shipping_method purchase_address_code contact"
+)
+_Address = namedtuple("_Address", "code contact address1 address2 address3 city state postal_code country phone")
 
 
 class _FakeCursor:
@@ -81,6 +81,7 @@ def _options_conn(**overrides):
 
 # --- list_po_entry_options ---
 
+
 def test_shipping_methods_come_from_the_shipping_method_master():
     conn = _FakeConn(_options_conn())
     result = list_po_entry_options(conn)
@@ -141,6 +142,7 @@ def test_the_three_lists_are_answered_together():
 
 # --- list_vendor_addresses ---
 
+
 def test_vendor_addresses_are_scoped_to_the_vendor():
     # ADRSCODE is unique per vendor, not globally: 'PRIMARY' exists under nearly every vendor, so an
     # unscoped read would offer address codes that belong to somebody else.
@@ -153,9 +155,15 @@ def test_vendor_addresses_are_scoped_to_the_vendor():
 
 
 def test_vendor_address_row_assembly_nulls_the_blanks():
-    conn = _FakeConn({"PM00300": [
-        _Address("PRIMARY", "Jane Doe", "1 Main St", "", "", "Vancouver", "BC", "V5K 0A1", "CANADA", "604-555-0100"),
-    ]})
+    conn = _FakeConn(
+        {
+            "PM00300": [
+                _Address(
+                    "PRIMARY", "Jane Doe", "1 Main St", "", "", "Vancouver", "BC", "V5K 0A1", "CANADA", "604-555-0100"
+                ),
+            ]
+        }
+    )
     assert list_vendor_addresses(conn, "ING100") == [
         {
             "code": "PRIMARY",
@@ -173,6 +181,7 @@ def test_vendor_address_row_assembly_nulls_the_blanks():
 
 
 # --- the three GP defaults list_vendors now carries ---
+
 
 def _vendor(**overrides):
     fields = dict(

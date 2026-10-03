@@ -53,9 +53,7 @@ _RING_BUFFER_SQL = (
 
 # VISIBLE ONLINE only: the hidden schedulers serve internal tasks (DAC, resource monitor) and their
 # queues say nothing about the pressure user work is under.
-_RUNNABLE_SQL = (
-    "SELECT SUM(runnable_tasks_count) FROM sys.dm_os_schedulers WHERE status = 'VISIBLE ONLINE'"
-)
+_RUNNABLE_SQL = "SELECT SUM(runnable_tasks_count) FROM sys.dm_os_schedulers WHERE status = 'VISIBLE ONLINE'"
 
 _LOCK = threading.Lock()
 _CURRENT: "Sample | None" = None

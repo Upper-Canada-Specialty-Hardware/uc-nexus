@@ -77,9 +77,7 @@ class _FakeConn:
 
     def tables_looked_up(self) -> list[str]:
         """Which PO table each registration-key lookup read, in the order it read them."""
-        return [
-            table for sql, _ in self.note_lookups() for table in _NOTE_TABLES if f"dbo.{table} h" in sql
-        ]
+        return [table for sql, _ in self.note_lookups() for table in _NOTE_TABLES if f"dbo.{table} h" in sql]
 
 
 def _request(*, header: dict | None = None, **overrides) -> models.CreatePoRequest:
@@ -119,9 +117,7 @@ def stubbed(monkeypatch):
     monkeypatch.setattr(econnect, "site_exists", lambda conn, site: True)
     monkeypatch.setattr(econnect, "vendor_address_exists", lambda conn, vendor, code: True)
     monkeypatch.setattr(econnect, "get_vendor_currency", lambda conn, vendor_id: "CAD")
-    monkeypatch.setattr(
-        econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "BUY"}
-    )
+    monkeypatch.setattr(econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "BUY"})
     monkeypatch.setattr(econnect, "po_number_in_use", lambda conn, po_number: None)
 
     def _next_number(conn):
@@ -130,13 +126,12 @@ def stubbed(monkeypatch):
 
     monkeypatch.setattr(econnect, "get_next_po_number", _next_number)
     monkeypatch.setattr(econnect, "create_po_line", lambda conn, **kwargs: steps["lines"].append(kwargs))
-    monkeypatch.setattr(
-        econnect, "apply_wennsoft_integration", lambda conn, **kwargs: steps["wennsoft"].append(kwargs)
-    )
+    monkeypatch.setattr(econnect, "apply_wennsoft_integration", lambda conn, **kwargs: steps["wennsoft"].append(kwargs))
     return steps
 
 
 # --- a request that names no attempt is the PO REGISTRATION that always was ---
+
 
 def test_a_po_with_no_key_sends_no_note_on_either_header_call(stubbed):
     conn = _FakeConn()
@@ -174,6 +169,7 @@ def test_a_po_with_no_key_never_reads_the_note_table(stubbed):
 
 
 # --- a key GP has not seen: the PO is registered, carrying the key ---
+
 
 def test_the_key_is_stamped_on_the_header_create_only(stubbed):
     # The create writes the note; the subtotal upsert must NOT send it again. taPoHdr writes a note
@@ -220,6 +216,7 @@ def test_the_lookup_is_pinned_to_the_buyer_and_the_week_before_the_po(stubbed):
 
 # --- a key GP already holds: the PO the earlier attempt made, and no second one ---
 
+
 def test_a_key_already_in_gp_returns_that_po_and_writes_nothing(stubbed):
     conn = _FakeConn(registered={"POP10100": "PO0012300        "})  # char(17), padded as GP holds it
 
@@ -254,13 +251,9 @@ def test_a_found_po_answers_with_the_figures_the_create_would_have(stubbed, monk
     monkeypatch.setattr(econnect, "get_tax_detail_percent", lambda conn, tax_detail_id: Decimal("5"))
     header = {"tax_detail_id": "BC HST P"}
 
-    created = ops.create_po_op(
-        _FakeConn(), company="TUBC", request=_request(header=header, idempotency_key=_KEY)
-    )
+    created = ops.create_po_op(_FakeConn(), company="TUBC", request=_request(header=header, idempotency_key=_KEY))
     found_conn = _FakeConn(registered={"POP10100": "PO0012300"})
-    found = ops.create_po_op(
-        found_conn, company="TUBC", request=_request(header=header, idempotency_key=_KEY)
-    )
+    found = ops.create_po_op(found_conn, company="TUBC", request=_request(header=header, idempotency_key=_KEY))
 
     assert found.subtotal == created.subtotal == Decimal("25.00")
     assert found.currency == created.currency == "CAD"
@@ -272,6 +265,7 @@ def test_a_found_po_answers_with_the_figures_the_create_would_have(stubbed, monk
 
 
 # --- what the relay says about it ---
+
 
 def test_the_hello_advertises_the_idempotency_feature():
     # How the backend knows it may send a key at all: an older relay advertises no such string, and a
@@ -288,6 +282,7 @@ def test_the_traffic_line_says_when_a_po_was_recognised_rather_than_made():
 
 
 # --- two creates at once ---
+
 
 class _CommitOnlyConn:
     def cursor(self):
@@ -313,9 +308,7 @@ _PAYLOAD = {
         "doc_date": "2026-09-16",
         "site": "VANCOUVER",
     },
-    "lines": [
-        {"item_number": "ML2010", "item_description": "ML2010 LOCK", "quantity": "2", "unit_cost": "12.50"}
-    ],
+    "lines": [{"item_number": "ML2010", "item_description": "ML2010 LOCK", "quantity": "2", "unit_cost": "12.50"}],
 }
 
 

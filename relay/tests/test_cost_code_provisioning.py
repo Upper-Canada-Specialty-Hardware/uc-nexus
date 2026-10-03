@@ -284,9 +284,7 @@ def test_a_validation_pass_failure_says_validation():
 
 
 def _request(cost_codes=None, **overrides):
-    return models.CreateJobRequest(
-        company="TUBC", **{**REQUIRED, **overrides}, cost_codes=cost_codes or []
-    )
+    return models.CreateJobRequest(company="TUBC", **{**REQUIRED, **overrides}, cost_codes=cost_codes or [])
 
 
 def _stub_job_create(monkeypatch):
@@ -397,9 +395,7 @@ def test_the_selection_is_resolved_before_the_job_proc_runs(monkeypatch):
     _stub_writes(monkeypatch)
     _stub_on_job(monkeypatch)
 
-    ops.create_job_op(
-        conn, company="TUBC", request=_request(cost_codes=[{"cost_code": "210-200", "cost_element": 2}])
-    )
+    ops.create_job_op(conn, company="TUBC", request=_request(cost_codes=[{"cost_code": "210-200", "cost_element": 2}]))
 
     assert order == ["job_exists", "master", "create_job", "create_job"]
 
@@ -435,9 +431,7 @@ def test_the_master_is_read_for_the_jobs_own_division(monkeypatch):
     _stub_writes(monkeypatch)
     _stub_on_job(monkeypatch)
 
-    ops.create_job_op(
-        conn, company="TUBC", request=_request(cost_codes=[{"cost_code": "210-200", "cost_element": 2}])
-    )
+    ops.create_job_op(conn, company="TUBC", request=_request(cost_codes=[{"cost_code": "210-200", "cost_element": 2}]))
 
     assert seen == ["VANCOUVER"]
 
@@ -465,9 +459,7 @@ def test_every_written_value_comes_from_the_master(monkeypatch):
     written = _stub_writes(monkeypatch)
     _stub_on_job(monkeypatch)
 
-    ops.create_job_op(
-        conn, company="TUBC", request=_request(cost_codes=[{"cost_code": "210-2-00", "cost_element": 2}])
-    )
+    ops.create_job_op(conn, company="TUBC", request=_request(cost_codes=[{"cost_code": "210-2-00", "cost_element": 2}]))
 
     # what a re-split would have produced, and did not
     assert econnect.split_cost_code("210-2-00")[:2] == ("210", "2")
@@ -644,9 +636,7 @@ def test_the_job_proc_never_receives_the_cost_code_selection(monkeypatch):
     _stub_on_job(monkeypatch)
     conn = _FakeConn()
 
-    ops.create_job_op(
-        conn, company="TUBC", request=_request(cost_codes=[{"cost_code": "210-200", "cost_element": 2}])
-    )
+    ops.create_job_op(conn, company="TUBC", request=_request(cost_codes=[{"cost_code": "210-200", "cost_element": 2}]))
 
     assert len(received) == 2  # the dry run and the real call
     for kwargs in received:

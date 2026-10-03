@@ -71,6 +71,7 @@ def _subtotal(conn, **overrides):
 
 # --- the contact and the comment on taPoHdr ---
 
+
 def test_contact_is_bound_when_the_po_sets_one():
     conn = _FakeConn()
     _header(conn, contact="Jane Doe")
@@ -139,6 +140,7 @@ def test_the_subtotal_update_still_sends_its_own_fields():
 
 # --- the three create_po pre-checks ---
 
+
 class _NoSqlConn:
     def cursor(self):
         raise AssertionError("the pre-checks under test are stubbed; nothing here should reach SQL")
@@ -159,7 +161,8 @@ def _po(*, lines=None, **header):
     return models.CreatePoRequest(
         company="TUBC",
         header=models.POHeader(**fields),
-        lines=lines or [
+        lines=lines
+        or [
             models.POLine(
                 item_number="ML2010",
                 item_description="ML2010 LOCK",
@@ -248,7 +251,10 @@ def test_the_site_checked_is_the_one_each_line_resolves_to(monkeypatch):
     lines = [
         models.POLine(item_number="A", item_description="a", quantity=Decimal(1), unit_cost=Decimal(1)),
         models.POLine(
-            item_number="B", item_description="b", quantity=Decimal(1), unit_cost=Decimal(1),
+            item_number="B",
+            item_description="b",
+            quantity=Decimal(1),
+            unit_cost=Decimal(1),
             location_code="SHOWROOM",
         ),
     ]

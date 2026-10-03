@@ -28,10 +28,7 @@ from pathlib import Path
 from . import dpapi
 from .config import DEFAULT_CONFIG_PATH
 
-_MUTATION = (
-    "mutation Enroll($input: EnrollRelayInstallInput!) { "
-    "enrollRelayInstall(input: $input) { ok installId } }"
-)
+_MUTATION = "mutation Enroll($input: EnrollRelayInstallInput!) { enrollRelayInstall(input: $input) { ok installId } }"
 
 
 def _post_graphql(url: str, query: str, variables: dict) -> dict:

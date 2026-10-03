@@ -33,9 +33,7 @@ def test_health_ok():
 def test_health_says_which_companies_this_login_could_not_read(monkeypatch):
     """A company missing from the list would otherwise look like a company GP does not hold, and
     nobody would go looking for the missing grant."""
-    found = companies.Discovery(
-        ["TUBC"], {"TUBC": "Test Upper Canada"}, None, {"KEYMA": "login denied (28000)"}
-    )
+    found = companies.Discovery(["TUBC"], {"TUBC": "Test Upper Canada"}, None, {"KEYMA": "login denied (28000)"})
     monkeypatch.setattr(companies, "current", lambda: found)
     body = client.get("/health").json()
     assert body["companies"] == [{"id": "TUBC", "name": "Test Upper Canada"}]

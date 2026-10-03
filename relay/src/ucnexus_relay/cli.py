@@ -216,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
         return _serve(rest)
     if cmd == "app":
         from .app import run_app
+
         return run_app(minimized="--minimized" in rest, force="--force" in rest)
     if cmd == "print-build":
         from .updater import current_build
@@ -247,9 +248,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if cmd == "enroll":
         from .enroll import main as enroll_main
+
         return enroll_main(rest)
     if cmd == "protect-secret":
         from .protect_secret import main as protect_main
+
         return protect_main(rest)
     if cmd == "health":
         return _health(rest)

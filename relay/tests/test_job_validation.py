@@ -37,6 +37,7 @@ class _FakeConn:
 
 # --- split_cost_code (the parse shared by the wsi call and the pre-check) ---
 
+
 def test_split_full_phase_step_element():
     assert split_cost_code("210-200-2") == ("210", "200", "", "", 2)
 
@@ -55,6 +56,7 @@ def test_split_non_numeric_element_falls_back_to_zero():
 
 
 # --- job_exists (JC00102) ---
+
 
 def test_job_exists_true_when_row_found():
     conn = _FakeConn(1)
@@ -79,6 +81,7 @@ def test_job_exists_strips_whitespace_like_the_dropdown():
 
 
 # --- cost_code_on_job (JC00701) ---
+
 
 def test_cost_code_on_job_matches_six_column_key():
     conn = _FakeConn(1)

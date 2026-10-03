@@ -242,8 +242,7 @@ def traffic_snapshot() -> dict:
             ],
             "recent": [dict(row) for row in _RECENT],
             "totals": {
-                company: {op: dict(totals) for op, totals in by_op.items()}
-                for company, by_op in _TOTALS.items()
+                company: {op: dict(totals) for op, totals in by_op.items()} for company, by_op in _TOTALS.items()
             },
         }
 

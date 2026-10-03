@@ -106,10 +106,12 @@ _TaxRow = namedtuple("_TaxRow", "tax_detail_id description pct")
 
 
 def test_list_tax_details_filters_to_purchases_and_maps_rows():
-    conn = _FakeConn(many=[
-        _TaxRow("ON HST - P", "ON HST on Purchases", 13.0),
-        _TaxRow("PST 7%", "", 7.0),
-    ])
+    conn = _FakeConn(
+        many=[
+            _TaxRow("ON HST - P", "ON HST on Purchases", 13.0),
+            _TaxRow("PST 7%", "", 7.0),
+        ]
+    )
     out = list_tax_details(conn)
     assert "TX00201" in conn.cursor_obj.sql
     assert "TXDTLTYP = 2" in conn.cursor_obj.sql
@@ -149,10 +151,12 @@ _VendRow = namedtuple(
 
 
 def test_list_vendors_includes_currency_blank_defaults_to_cad():
-    conn = _FakeConn(many=[
-        _VendRow("SEL101", "SELECT PRODUCTS", "USA", 1, "USD", "LOCAL DELIVERY", "PRIMARY", "Jane"),
-        _VendRow("V2", "BLANK CUR VENDOR", "CAN", 1, "", "LOCAL DELIVERY", "PRIMARY", "Jane"),
-    ])
+    conn = _FakeConn(
+        many=[
+            _VendRow("SEL101", "SELECT PRODUCTS", "USA", 1, "USD", "LOCAL DELIVERY", "PRIMARY", "Jane"),
+            _VendRow("V2", "BLANK CUR VENDOR", "CAN", 1, "", "LOCAL DELIVERY", "PRIMARY", "Jane"),
+        ]
+    )
     out = list_vendors(conn)
     assert out[0]["currency"] == "USD"
     assert out[1]["currency"] == "CAD"
@@ -176,7 +180,9 @@ def test_has_exchange_rate_true_when_a_row_matches():
 
 def test_has_exchange_rate_false_when_no_row():
     # TUBC's live state for USD: no exchange table maintained at all
-    assert has_exchange_rate(_FakeConn(one=None), currency="USD", rate_type="AVERAGE", on_date=date(2026, 8, 26)) is False
+    assert (
+        has_exchange_rate(_FakeConn(one=None), currency="USD", rate_type="AVERAGE", on_date=date(2026, 8, 26)) is False
+    )
 
 
 # --- create_po_op currency preflight ordering (#632) ---
@@ -216,7 +222,9 @@ def test_create_po_raises_no_exchange_rate_before_taPoHdr(monkeypatch):
     _stub_header_lists(monkeypatch)
     monkeypatch.setattr(ops.econnect, "list_buyers", lambda conn: ["BUYER1"])
     monkeypatch.setattr(ops.econnect, "get_vendor_currency", lambda conn, vid: "USD")
-    monkeypatch.setattr(ops.econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "AVERAGE"})
+    monkeypatch.setattr(
+        ops.econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "AVERAGE"}
+    )
     monkeypatch.setattr(ops.econnect, "has_exchange_rate", lambda conn, **kw: False)
     with pytest.raises(ops.RelayOpError) as exc:
         ops.create_po_op(object(), company="TUBC", request=_usd_po_request())
@@ -248,7 +256,9 @@ def test_create_po_rate_present_clears_the_preflight(monkeypatch):
     _stub_header_lists(monkeypatch)
     monkeypatch.setattr(ops.econnect, "list_buyers", lambda conn: ["BUYER1"])
     monkeypatch.setattr(ops.econnect, "get_vendor_currency", lambda conn, vid: "USD")
-    monkeypatch.setattr(ops.econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "AVERAGE"})
+    monkeypatch.setattr(
+        ops.econnect, "get_mc_setup", lambda conn: {"functional": "CAD", "purchase_rate_type": "AVERAGE"}
+    )
     monkeypatch.setattr(ops.econnect, "has_exchange_rate", lambda conn, **kw: True)
 
     class _Stop(Exception):
@@ -308,18 +318,14 @@ def test_plan_matches_tucsh_po097492_two_details_and_freight():
 def test_plan_matches_ubc_office_po502338_one_detail_and_freight():
     # The office reference the live run was compared against: goods 2035.00, freight 60.00 at 5% -
     # summary 101.75, freight row 3.00, header 104.75 and 3.00.
-    plan = po_tax.plan_po_tax(
-        lines=[(16384, Decimal("2035.00"))], details=[_GST], freight_amount=Decimal("60.00")
-    )
+    plan = po_tax.plan_po_tax(lines=[(16384, Decimal("2035.00"))], details=[_GST], freight_amount=Decimal("60.00"))
     assert plan.goods_tax_amount == Decimal("101.75")
     assert plan.freight_tax_amount == Decimal("3.00")
     assert plan.tax_amount == Decimal("104.75")
 
 
 def test_plan_taxes_misc_at_the_goods_rate_under_the_goods_detail():
-    plan = po_tax.plan_po_tax(
-        lines=[(16384, Decimal("100.00"))], details=[_HST], misc_amount=Decimal("10.00")
-    )
+    plan = po_tax.plan_po_tax(lines=[(16384, Decimal("100.00"))], details=[_HST], misc_amount=Decimal("10.00"))
     assert plan.misc_tax_by_detail == {"ON HST - P": Decimal("1.30")}
     assert plan.misc_tax_amount == Decimal("1.30")
     assert plan.freight_tax_by_detail == {}
@@ -328,9 +334,7 @@ def test_plan_taxes_misc_at_the_goods_rate_under_the_goods_detail():
 
 def test_plan_nets_the_trade_discount_before_tax_as_ucsh_po098214_does():
     # one line 1395.20, discount 160.00, 5 percent: GP's line row carries 61.76 on 1235.20.
-    plan = po_tax.plan_po_tax(
-        lines=[(16384, Decimal("1395.20"))], details=[_GST], trade_discount=Decimal("160.00")
-    )
+    plan = po_tax.plan_po_tax(lines=[(16384, Decimal("1395.20"))], details=[_GST], trade_discount=Decimal("160.00"))
     assert plan.lines[0].taxable_base == Decimal("1235.20")
     assert plan.tax_amount == Decimal("61.76")
 
@@ -345,10 +349,22 @@ def test_plan_spreads_the_discount_pro_rata_by_extended_cost_as_ucsh_po032858_do
         trade_discount=Decimal("2572.50"),
     )
     assert [str(line.taxable_base) for line in plan.lines] == [
-        "1470.00", "0.00", "1102.50", "1470.00", "1102.50", "367.50", "2205.00"
+        "1470.00",
+        "0.00",
+        "1102.50",
+        "1470.00",
+        "1102.50",
+        "367.50",
+        "2205.00",
     ]
     assert [str(line.total) for line in plan.lines] == [
-        "191.10", "0.00", "143.33", "191.10", "143.33", "47.78", "286.65"
+        "191.10",
+        "0.00",
+        "143.33",
+        "191.10",
+        "143.33",
+        "47.78",
+        "286.65",
     ]
     assert plan.tax_amount == Decimal("1003.29")
 
@@ -516,9 +532,7 @@ def test_the_tax_rows_land_after_the_lines_and_before_the_final_header(gp):
 def test_a_single_detail_po_keeps_gps_default_header_schedule(gp):
     conn = _RecordingConn()
 
-    ops.create_po_op(
-        conn, company="TUCSH", request=_po_request(header={"tax_detail_ids": ["ON HST - P"]})
-    )
+    ops.create_po_op(conn, company="TUCSH", request=_po_request(header={"tax_detail_ids": ["ON HST - P"]}))
 
     create, final = [_bound(sql, params) for sql, params in conn.matching("taPoHdr")]
     assert "TAXSCHID" not in create and "TAXSCHID" not in final
@@ -562,9 +576,7 @@ def test_freight_discount_and_misc_on_one_detail(gp):
 def test_a_po_with_no_detail_writes_no_rows_and_flags_the_charges_not_taxable(gp):
     conn = _RecordingConn()
 
-    response = ops.create_po_op(
-        conn, company="TUCSH", request=_po_request(header={"freight_amount": Decimal("20.00")})
-    )
+    response = ops.create_po_op(conn, company="TUCSH", request=_po_request(header={"freight_amount": Decimal("20.00")}))
 
     assert response.tax_amount == Decimal(0)
     assert conn.matching("taPopIvcTaxInsert") == []
@@ -582,9 +594,7 @@ def test_a_usd_po_is_unchanged_no_details_no_rows_blank_schedule(gp, monkeypatch
     monkeypatch.setattr(ops.econnect, "has_exchange_rate", lambda conn, **kw: True)
     conn = _RecordingConn()
 
-    response = ops.create_po_op(
-        conn, company="TUCSH", request=_po_request(header={"freight_amount": Decimal("20.00")})
-    )
+    response = ops.create_po_op(conn, company="TUCSH", request=_po_request(header={"freight_amount": Decimal("20.00")}))
 
     assert response.currency == "USD" and response.tax_amount == Decimal(0)
     assert conn.matching("taPopIvcTaxInsert") == []
@@ -597,7 +607,9 @@ def test_a_usd_po_is_unchanged_no_details_no_rows_blank_schedule(gp, monkeypatch
 def test_a_usd_po_still_refuses_a_tax_detail(gp, monkeypatch):
     monkeypatch.setattr(ops.econnect, "get_vendor_currency", lambda conn, vid: "USD")
     with pytest.raises(ops.RelayOpError) as exc:
-        ops.create_po_op(_RecordingConn(), company="TUCSH", request=_po_request(header={"tax_detail_ids": ["ON HST - P"]}))
+        ops.create_po_op(
+            _RecordingConn(), company="TUCSH", request=_po_request(header={"tax_detail_ids": ["ON HST - P"]})
+        )
     assert exc.value.code == "tax_detail_on_foreign_po"
 
 
@@ -651,8 +663,12 @@ def test_the_pre_762_scalar_detail_is_read_as_a_one_detail_list(gp):
 
 def test_the_header_folds_and_dedupes_the_two_fields():
     header = models.POHeader(
-        vendor_id="V", confirm_with="c", doc_date=date(2026, 9, 21), site="S",
-        tax_detail_ids=[" BC GST 5% - P ", "BC PST 7% PURCH", "BC GST 5% - P"], tax_detail_id="BC PST 7% PURCH",
+        vendor_id="V",
+        confirm_with="c",
+        doc_date=date(2026, 9, 21),
+        site="S",
+        tax_detail_ids=[" BC GST 5% - P ", "BC PST 7% PURCH", "BC GST 5% - P"],
+        tax_detail_id="BC PST 7% PURCH",
     )
     assert header.tax_detail_ids == ["BC GST 5% - P", "BC PST 7% PURCH"]
     assert header.tax_detail_id is None
@@ -675,7 +691,9 @@ def test_a_retry_that_finds_the_po_answers_the_full_tax_and_writes_no_row(gp, mo
 
     assert response.existing is True
     assert response.tax_amount == Decimal("44.40")
-    assert conn.matching("taPopIvcTaxInsert") == [] and conn.matching("taPoLine") == [] and conn.matching("taPoHdr") == []
+    assert (
+        conn.matching("taPopIvcTaxInsert") == [] and conn.matching("taPoLine") == [] and conn.matching("taPoHdr") == []
+    )
 
 
 # --- econnect.get_charge_tax_schedules: the fallback chain for FRTSCHID / MSCSCHID ---
@@ -738,8 +756,14 @@ def test_the_hello_advertises_the_tax_rows_feature():
 def test_insert_po_tax_row_binds_the_charge_taxes_and_never_ord_zero_by_itself():
     conn = _RecordingConn()
     econnect.insert_po_tax_row(
-        conn, po_number="PO1", vendor_id="V", tax_detail_id="D", line_ord=po_tax.MISC_TAX_ORD,
-        tax_amount=Decimal(0), taxable_purchase=Decimal("10.00"), misc_tax=Decimal("1.30"),
+        conn,
+        po_number="PO1",
+        vendor_id="V",
+        tax_detail_id="D",
+        line_ord=po_tax.MISC_TAX_ORD,
+        tax_amount=Decimal(0),
+        taxable_purchase=Decimal("10.00"),
+        misc_tax=Decimal("1.30"),
     )
     bound = _bound(*conn.calls[0])
     assert bound["ORD"] == 2147483645
@@ -754,11 +778,13 @@ _SchedRow = namedtuple("_SchedRow", "tax_schedule_id schedule_description tax_de
 
 
 def test_list_purchase_tax_schedules_groups_purchase_details_under_each_schedule():
-    conn = _FakeConn(many=[
-        _SchedRow("BC PURCH 12%", "BC GST + PST purchases", "BC GST 5% - P", "GST on purchases", 5.0),
-        _SchedRow("BC PURCH 12%", "BC GST + PST purchases", "BC PST 7% PURCH", "", 7.0),
-        _SchedRow("ONHST 13%", "", "ON HST - P", "ON HST on Purchases", 13.0),
-    ])
+    conn = _FakeConn(
+        many=[
+            _SchedRow("BC PURCH 12%", "BC GST + PST purchases", "BC GST 5% - P", "GST on purchases", 5.0),
+            _SchedRow("BC PURCH 12%", "BC GST + PST purchases", "BC PST 7% PURCH", "", 7.0),
+            _SchedRow("ONHST 13%", "", "ON HST - P", "ON HST on Purchases", 13.0),
+        ]
+    )
 
     out = econnect.list_purchase_tax_schedules(conn)
 
@@ -817,7 +843,9 @@ def test_a_sales_only_schedule_is_refused(gp, monkeypatch):
     _schedules(monkeypatch, {"BC HST 12%": []})
 
     with pytest.raises(ops.RelayOpError) as err:
-        ops.create_po_op(_RecordingConn(), company="TUCSH", request=_po_request(header={"tax_schedule_id": "BC HST 12%"}))
+        ops.create_po_op(
+            _RecordingConn(), company="TUCSH", request=_po_request(header={"tax_schedule_id": "BC HST 12%"})
+        )
 
     assert err.value.code == "tax_schedule_not_purchase"
 
@@ -838,5 +866,7 @@ def test_a_usd_po_refuses_a_tax_schedule_too(gp, monkeypatch):
     # #763: a foreign-currency PO carries no tax, whichever way it is named.
     monkeypatch.setattr(ops.econnect, "get_vendor_currency", lambda conn, vid: "USD")
     with pytest.raises(ops.RelayOpError) as exc:
-        ops.create_po_op(_RecordingConn(), company="TUCSH", request=_po_request(header={"tax_schedule_id": "ONHST 13%"}))
+        ops.create_po_op(
+            _RecordingConn(), company="TUCSH", request=_po_request(header={"tax_schedule_id": "ONHST 13%"})
+        )
     assert exc.value.code == "tax_detail_on_foreign_po"

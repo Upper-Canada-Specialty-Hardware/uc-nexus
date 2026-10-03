@@ -183,10 +183,14 @@ def test_the_unavailable_reason_is_logged_once_per_process(monkeypatch, caplog):
 def test_totals_add_up_per_company_and_per_op(monkeypatch):
     conn = _Conn(
         samples=[
-            (0, 0, 0), (100, 1000, 200),      # TUCSH / sync_pos
-            (100, 1000, 200), (250, 4000, 700),  # TUCSH / sync_pos again
-            (250, 4000, 700), (300, 4500, 800),  # TUCSH / list_vendors
-            (0, 0, 0), (10, 20, 30),          # TUBC / list_vendors
+            (0, 0, 0),
+            (100, 1000, 200),  # TUCSH / sync_pos
+            (100, 1000, 200),
+            (250, 4000, 700),  # TUCSH / sync_pos again
+            (250, 4000, 700),
+            (300, 4500, 800),  # TUCSH / list_vendors
+            (0, 0, 0),
+            (10, 20, 30),  # TUBC / list_vendors
         ]
     )
     _fake_pyodbc(monkeypatch, conn)
@@ -202,7 +206,10 @@ def test_totals_add_up_per_company_and_per_op(monkeypatch):
     assert companies["TUCSH"]["logical_reads"] == 1000 + 3000 + 500
     assert companies["TUCSH"]["elapsed_ms"] == 200 + 500 + 100
     assert companies["TUCSH"]["by_op"]["sync_pos"] == {
-        "ops": 2, "cpu_ms": 250, "logical_reads": 4000, "elapsed_ms": 700
+        "ops": 2,
+        "cpu_ms": 250,
+        "logical_reads": 4000,
+        "elapsed_ms": 700,
     }
     assert companies["TUCSH"]["by_op"]["list_vendors"]["ops"] == 1
     assert companies["TUBC"] == {
@@ -248,7 +255,10 @@ def test_a_dispatched_op_is_booked_against_its_op_name_and_company(monkeypatch, 
 
     assert reply["ok"] is True
     assert db.cost_snapshot()["companies"]["TUBC"]["by_op"]["list_vendors"] == {
-        "ops": 1, "cpu_ms": 200, "logical_reads": 7000, "elapsed_ms": 500
+        "ops": 1,
+        "cpu_ms": 200,
+        "logical_reads": 7000,
+        "elapsed_ms": 500,
     }
 
 
@@ -295,5 +305,8 @@ def test_an_http_route_is_booked_against_its_path(monkeypatch, serving):
 
     assert r.status_code == 200
     assert db.cost_snapshot()["companies"]["TUBC"]["by_op"]["http:/vendors"] == {
-        "ops": 1, "cpu_ms": 50, "logical_reads": 800, "elapsed_ms": 300
+        "ops": 1,
+        "cpu_ms": 50,
+        "logical_reads": 800,
+        "elapsed_ms": 300,
     }

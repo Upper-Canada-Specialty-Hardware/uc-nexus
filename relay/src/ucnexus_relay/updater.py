@@ -450,9 +450,7 @@ def _probe_health(url: str, timeout: float = 2.0) -> bool:
     parts = urllib.parse.urlsplit(url)
     host = parts.hostname or "127.0.0.1"
     port = parts.port or 80
-    request = (
-        f"GET {parts.path or '/'} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
-    ).encode("ascii")
+    request = (f"GET {parts.path or '/'} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n").encode("ascii")
     chunks: list[bytes] = []
     with socket.create_connection((host.encode("ascii"), port), timeout=timeout) as conn:
         conn.settimeout(timeout)

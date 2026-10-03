@@ -220,9 +220,7 @@ def create_app() -> FastAPI:
                 rows = econnect.list_cost_codes(conn, job)
         except pyodbc.Error as e:
             raise HTTPException(status_code=502, detail=errors.error_body("sql_error", str(e)))
-        return models.CostCodesResponse(
-            company=company, job=job, cost_codes=[models.CostCodeOut(**r) for r in rows]
-        )
+        return models.CostCodesResponse(company=company, job=job, cost_codes=[models.CostCodeOut(**r) for r in rows])
 
     @app.post("/po/next-number")
     def next_number(request: models.NextNumberRequest, _=Depends(auth.verify_token)):
@@ -253,9 +251,7 @@ def create_app() -> FastAPI:
                     return response
                 except ops.RelayOpError as e:
                     conn.rollback()
-                    raise HTTPException(
-                        status_code=400, detail=errors.error_body(e.code, e.message, **e.context)
-                    )
+                    raise HTTPException(status_code=400, detail=errors.error_body(e.code, e.message, **e.context))
                 except econnect.EConnectError as e:
                     conn.rollback()
                     raise _econnect_http(conn, e)

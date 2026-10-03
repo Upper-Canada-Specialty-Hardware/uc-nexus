@@ -251,7 +251,11 @@ def test_create_po_success_returns_the_response_body(monkeypatch):
 
     def _fake(conn, *, company, request):
         return CreatePoResponse(
-            po_number="PO0000001", company=company, lines_created=1, subtotal=Decimal("1"), doc_date=date(2026, 1, 1),
+            po_number="PO0000001",
+            company=company,
+            lines_created=1,
+            subtotal=Decimal("1"),
+            doc_date=date(2026, 1, 1),
             vendor_id="ING100",
         )
 
@@ -486,9 +490,7 @@ def test_create_customer_address_takes_the_customer_key_the_read_op_uses(monkeyp
 
 def test_create_customer_address_also_takes_customer_number(monkeypatch):
     seen = _stub_address_op(monkeypatch)
-    reply = channel._dispatch(
-        "create_customer_address", "TUBC", {**_ADDRESS_PAYLOAD, "customer_number": "ELL100"}
-    )
+    reply = channel._dispatch("create_customer_address", "TUBC", {**_ADDRESS_PAYLOAD, "customer_number": "ELL100"})
     assert reply["ok"] is True
     assert seen[0].customer_number == "ELL100"
 

@@ -65,9 +65,7 @@ class _FakeConn:
 
 def test_a_job_with_active_codes_and_resolvable_accounts_is_healthy():
     conn = _FakeConn([_Verdict("23090", 14, 0)], [])
-    assert job_setup_health(conn) == [
-        {"job_number": "23090", "ok": True, "active_cost_code_count": 14, "issues": []}
-    ]
+    assert job_setup_health(conn) == [{"job_number": "23090", "ok": True, "active_cost_code_count": 14, "issues": []}]
 
 
 def test_a_dangling_account_index_fails_the_job_and_is_named():
@@ -212,9 +210,12 @@ def test_a_batch_never_reads_more_keys_than_the_cap_in_one_statement():
     keys = [f"J{i:05d}" for i in range(econnect.MAX_JOB_NUMBERS * 2 + 5)]
     # 205 keys -> 3 chunks -> a verdict + detail query per chunk, and the chunks come back unordered.
     conn = _FakeConn(
-        [_Verdict("J00300", 1, 0)], [],
-        [_Verdict("J00100", 1, 0)], [],
-        [_Verdict("J00200", 1, 0)], [],
+        [_Verdict("J00300", 1, 0)],
+        [],
+        [_Verdict("J00100", 1, 0)],
+        [],
+        [_Verdict("J00200", 1, 0)],
+        [],
     )
     out = job_setup_health(conn, job_numbers=keys)
 
@@ -357,9 +358,7 @@ def _receipt_request(*ords):
     return models.ReceiptRequest(
         company="TUBC",
         po_number="PO0000070",
-        lines=[
-            models.ReceiptLine(po_line_ord=o, quantity=Decimal("1"), rack_location="A1-1-1") for o in ords
-        ],
+        lines=[models.ReceiptLine(po_line_ord=o, quantity=Decimal("1"), rack_location="A1-1-1") for o in ords],
     )
 
 

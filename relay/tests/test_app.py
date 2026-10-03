@@ -95,7 +95,9 @@ def test_api_apply_update_stages_then_shuts_down_in_app_mode(monkeypatch):
     monkeypatch.setattr(appmod.sys, "frozen", True, raising=False)
     passed = {}
     monkeypatch.setattr(
-        updater, "stage_update", lambda url, d, pid, target_build=None: passed.update(build=target_build) or {"ok": True}
+        updater,
+        "stage_update",
+        lambda url, d, pid, target_build=None: passed.update(build=target_build) or {"ok": True},
     )
     r = ui.Api().apply_update("https://x/e.exe", "relay-v0.1.0-build.11")
     assert r["ok"] is True
