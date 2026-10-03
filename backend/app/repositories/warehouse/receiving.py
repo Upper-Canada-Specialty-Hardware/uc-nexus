@@ -25,6 +25,43 @@ from .audit import _log_audit_event
 from .locations import _normalize_and_validate_location_fields, ensure_registered_location, location_detail
 
 
+def _requested_by_line(line_items_input: list[dict]) -> dict[uuid.UUID, int]:
+    """What the input asks to receive against each PO line, repeats summed (#1120). The per-entry check
+    compares each entry with the same unchanged pending quantity, so a line sent twice used to pass
+    twice and push received past ordered."""
+    requested: dict[uuid.UUID, int] = {}
+    for li_input in line_items_input:
+        requested[li_input["po_line_item_id"]] = (
+            requested.get(li_input["po_line_item_id"], 0) + li_input["quantity_received"]
+        )
+    return requested
+
+
+def _assert_within_pending(poli_dict: dict[uuid.UUID, POLineItemModel], line_items_input: list[dict]) -> None:
+    """Refuse an input whose total for any line exceeds what that line still has pending."""
+    for poli_id, total in _requested_by_line(line_items_input).items():
+        poli = poli_dict[poli_id]
+        pending = poli.ordered_quantity - poli.received_quantity
+        if total > pending:
+            raise ValidationError(
+                f"Receive quantity for {poli.product_code} ({total}) exceeds the {pending} still pending",
+                field="quantity_received",
+            )
+
+
+def _lock_po_lines(session: Session, po_id: uuid.UUID) -> None:
+    """Lock the PO's lines FOR UPDATE, in id order, and refresh them, so two receives on the same line
+    serialize and the second reads the first one's received quantity (#1120). populate_existing makes
+    the refresh stick for lines this session already loaded (the pre-flight runs first)."""
+    session.execute(
+        select(POLineItemModel)
+        .where(POLineItemModel.po_id == po_id)
+        .order_by(POLineItemModel.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+
+
 def validate_receive_eligibility(
     session: Session,
     po_id: uuid.UUID,
@@ -109,6 +146,7 @@ def validate_receive_eligibility(
             }
         )
 
+    _assert_within_pending(poli_dict, line_items_input)
     return po.po_number, po.gp_company, receipt_line_items
 
 
@@ -145,7 +183,9 @@ def create_receive(
     Returns:
         The created ReceiveRecord with line_items loaded.
     """
-    # 1. Look up PO with line_items, validate exists + not soft-deleted
+    # 1. Lock the PO's lines before anything reads their received quantity (#1120), then look up the
+    # PO with line_items, validate exists + not soft-deleted
+    _lock_po_lines(session, po_id)
     stmt = select(POModel).options(selectinload(POModel.line_items)).where(POModel.id == po_id)
     po = session.scalars(stmt).unique().first()
     if po is None or po.deleted_at is not None:
@@ -212,6 +252,8 @@ def create_receive(
                     loc["aisle"], loc["row"], loc["bay"]
                 )
                 ensure_registered_location(session, warehouse_id, loc["aisle"], loc["row"], loc["bay"])
+
+    _assert_within_pending(poli_dict, line_items_input)
 
     # 5. Execute in single transaction
     now = datetime.utcnow()
@@ -343,7 +385,8 @@ def create_receive(
     all_line_items_stmt = select(POLineItemModel).where(POLineItemModel.po_id == po.id)
     all_line_items = list(session.scalars(all_line_items_stmt).all())
 
-    all_fully_received = all(li.received_quantity == li.ordered_quantity for li in all_line_items)
+    # >= rather than ==: a line that ever ends up over-received must still let the PO close (#1120).
+    all_fully_received = all(li.received_quantity >= li.ordered_quantity for li in all_line_items)
     any_received = any(li.received_quantity > 0 for li in all_line_items)
 
     if all_fully_received:
