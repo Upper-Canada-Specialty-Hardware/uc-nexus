@@ -47,7 +47,8 @@ class NotificationQueries:
 
     @strawberry.field
     def notification_unread_count(self, info: strawberry.Info) -> int:
-        """How many notifications the caller has not read, for the bell's badge."""
+        """How many notifications the caller has not read, for the bell's badge. Stops at 100 (#1224):
+        the bell shows 99+ from there."""
         reader = _reader(info)
         with SessionLocal() as session:
             return notification_repository.count_unread(session, reader)

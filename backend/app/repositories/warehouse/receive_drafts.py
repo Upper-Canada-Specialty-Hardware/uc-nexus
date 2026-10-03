@@ -203,6 +203,19 @@ def _assert_no_pending_draft(
         )
 
 
+def _assert_draft_warehouse(session: Session, warehouse_id: uuid.UUID | None, po) -> None:
+    """A draft's chosen warehouse is active (#1374) and the PO's own company's building (#1375), so the
+    approval never books a delivery into a retired building or another tenant's. None means "not
+    chosen" - the approval falls back to the PO company's primary - and is left alone."""
+    if warehouse_id is None:
+        return
+    from app.repositories import warehouse_admin_repository
+
+    warehouse_admin_repository.assert_usable_destination(
+        session, warehouse_id, company=po.company if po is not None else None, field="warehouse_id"
+    )
+
+
 def create_receive_draft(
     session: Session,
     po_id: uuid.UUID,
@@ -247,6 +260,7 @@ def create_receive_draft(
         .unique()
         .first()
     )
+    _assert_draft_warehouse(session, warehouse_id, po)
 
     draft = ReceiveDraftModel(
         id=uuid.uuid4(),
@@ -372,6 +386,7 @@ def update_receive_draft(
     )
 
     if warehouse_id is not None:
+        _assert_draft_warehouse(session, warehouse_id, po)
         draft.warehouse_id = warehouse_id
     if notes is not None:
         draft.notes = _clean_notes(notes)

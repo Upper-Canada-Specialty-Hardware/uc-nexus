@@ -122,6 +122,36 @@ def test_no_drafts_leaves_the_whole_schedule_as_remainder():
     assert remaining == {0: 3, 1: 1}
 
 
+def test_already_ordered_units_come_off_the_pool_first():
+    # #1156: 2 of 5 are on a PO already. A whole-combo ref takes the 3 left, nothing remains.
+    ordered = {("A01", "HG-100", "HINGE", None): 2}
+    claims, remaining = plan_po_claims([_hw("A01", "HG-100", 5)], [_draft(_ref("A01", "HG-100"))], ordered)
+    assert claims == [[(0, 3)]]
+    assert remaining == {0: 0}
+
+
+def test_already_ordered_with_no_drafts_leaves_only_the_unordered_remainder():
+    ordered = {("A01", "HG-100", "HINGE", None): 2}
+    claims, remaining = plan_po_claims([_hw("A01", "HG-100", 5)], [], ordered)
+    assert claims == []
+    assert remaining == {0: 3}
+
+
+def test_claiming_units_already_ordered_is_refused():
+    ordered = {("A01", "HG-100", "HINGE", None): 4}
+    with pytest.raises(ValidationError, match="only 1 not yet on a purchase order"):
+        plan_po_claims([_hw("A01", "HG-100", 5)], [_draft(_ref("A01", "HG-100", 2))], ordered)
+
+
+def test_already_ordered_is_taken_per_leaf():
+    # Leaf 1 holds the ordered units; the claim comes off leaf 2, which nothing has ordered.
+    rows = [_hw("A01", "HG-100", 3, leaf=1), _hw("A01", "HG-100", 3, leaf=2)]
+    ordered = {("A01", "HG-100", "HINGE", 1): 3}
+    claims, remaining = plan_po_claims(rows, [_draft(_ref("A01", "HG-100", 2))], ordered)
+    assert claims == [[(1, 2)]]
+    assert remaining == {0: 0, 1: 1}
+
+
 # ---------------------------------------------------------------------------
 # finalize_import_session - DB-backed (skips locally, runs in CI)
 # ---------------------------------------------------------------------------
@@ -524,3 +554,31 @@ def test_a_skipped_empty_draft_does_not_burn_a_request_number(db_session):
     )
 
     assert [po.request_number for po in pos] == [expected]
+
+
+def test_reload_pos_returns_the_pos_in_the_order_asked_in_one_read(db_session):
+    """#1225: finalize's response reloads its POs in one select, in creation order."""
+    from app.repositories import po_repository
+
+    project = _make_project(db_session)
+    db_session.commit()
+
+    result = import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=3)],
+            "po_drafts": [
+                _po_draft([_ref("A01", "HG-100", 2)], po_number="PO-A"),
+                _po_draft([_ref("A01", "HG-100", 1)], po_number="PO-B"),
+            ],
+        },
+    )
+    db_session.flush()
+    ids = [po.id for po in result["purchase_orders"]]
+
+    pos = po_repository.reload_pos(db_session, list(reversed(ids)))
+    assert [po.id for po in pos] == list(reversed(ids))
+    assert [po.line_items[0].ordered_quantity for po in pos] == [1, 2]
+    assert po_repository.reload_pos(db_session, []) == []
