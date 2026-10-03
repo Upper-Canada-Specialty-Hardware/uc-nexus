@@ -263,10 +263,100 @@ def test_existing_line_cancelled_to_zero_is_zeroed_not_left_stale(db_session, pr
     )
     db_session.flush()
     line = _get(db_session, "PO310").line_items[0]
-    # Outstanding is zeroed (ordered pinned to received) so no phantom pending survives; ck>=1 holds.
+    # Outstanding is zeroed (ordered set to received) so no phantom pending survives.
     assert line.received_quantity == 2
     assert line.ordered_quantity == 2
     assert line.ordered_quantity - line.received_quantity == 0
+
+
+def test_a_never_received_line_gp_cancelled_orders_nothing(db_session, project):
+    """#1228: no phantom unit. The line used to be pinned at ordered 1 to satisfy a >= 1 check, which
+    left one unit outstanding forever and kept the PO from closing."""
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO314", [_line(16384, "IT1", 5)]), pm)
+    db_session.flush()
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO314", [_line(16384, "IT1", 5, cancelled=5)]), pm)
+    db_session.flush()
+    line = _get(db_session, "PO314").line_items[0]
+    assert (line.ordered_quantity, line.received_quantity) == (0, 0)
+
+
+def _tie_schedule_rows(db_session, project, line, quantities):
+    """Schedule rows on openings 101, 102, ... tied IN_PO to `line`, one per quantity."""
+    from app.models.enums import HardwareItemState
+    from app.models.hardware import HardwareItem
+    from app.models.project import Opening
+
+    for n, qty in enumerate(quantities, start=101):
+        opening = Opening(id=uuid.uuid4(), project_id=project.id, opening_number=str(n))
+        db_session.add(opening)
+        db_session.flush()
+        db_session.add(
+            HardwareItem(
+                id=uuid.uuid4(),
+                project_id=project.id,
+                opening_id=opening.id,
+                hardware_category="IT1 description",
+                product_code="IT1",
+                item_quantity=qty,
+                state=HardwareItemState.IN_PO,
+                po_line_item_id=line.id,
+            )
+        )
+    db_session.flush()
+
+
+def _tied_and_available(db_session, project, line_id):
+    from app.models.enums import HardwareItemState
+    from app.models.hardware import HardwareItem
+
+    rows = db_session.query(HardwareItem).filter(HardwareItem.project_id == project.id).all()
+    tied = sum(r.item_quantity for r in rows if r.po_line_item_id == line_id and r.state == HardwareItemState.IN_PO)
+    free = sum(r.item_quantity for r in rows if r.po_line_item_id is None and r.state == HardwareItemState.AVAILABLE)
+    return tied, free
+
+
+def test_a_line_gp_reduced_releases_the_ties_it_no_longer_covers(db_session, project):
+    """#1227: a 12-unit line cut to 8 in GP gives the 4 never arriving back to the schedule."""
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO315", [_line(16384, "IT1", 12)]), pm)
+    db_session.flush()
+    line = _get(db_session, "PO315").line_items[0]
+    _tie_schedule_rows(db_session, project, line, [6, 6])
+
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO315", [_line(16384, "IT1", 12, cancelled=4)]), pm)
+    db_session.flush()
+
+    assert line.ordered_quantity == 8
+    assert _tied_and_available(db_session, project, line.id) == (8, 4)
+
+
+def test_a_line_gp_cancelled_keeps_ties_only_for_what_arrived(db_session, project):
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO316", [_line(16384, "IT1", 5, received=2)]), pm)
+    db_session.flush()
+    line = _get(db_session, "PO316").line_items[0]
+    _tie_schedule_rows(db_session, project, line, [5])
+
+    sync_repo.upsert_mirrored_po(
+        db_session, COMPANY, _po("PO316", [_line(16384, "IT1", 5, received=2, cancelled=5)]), pm
+    )
+    db_session.flush()
+
+    assert _tied_and_available(db_session, project, line.id) == (2, 3)
+
+
+def test_a_line_whose_quantity_gp_leaves_alone_keeps_its_ties(db_session, project):
+    pm = _project_map(db_session)
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO317", [_line(16384, "IT1", 5)]), pm)
+    db_session.flush()
+    line = _get(db_session, "PO317").line_items[0]
+    _tie_schedule_rows(db_session, project, line, [5])
+
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO317", [_line(16384, "IT1", 5, received=1)]), pm)
+    db_session.flush()
+
+    assert _tied_and_available(db_session, project, line.id) == (5, 0)
 
 
 def test_received_never_reduced_below_stored(db_session, project):
@@ -285,7 +375,7 @@ def test_fractional_ordered_rounds_half_up_and_sub_one_is_skipped(db_session, pr
     sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO312", [_line(16384, "IT1", 2.5)]), pm)
     db_session.flush()
     assert _get(db_session, "PO312").line_items[0].ordered_quantity == 3
-    # A net that rounds below 1 creates no line (nothing orderable, ck>=1 could not hold).
+    # A net that rounds below 1 creates no line (nothing orderable).
     sync_repo.upsert_mirrored_po(db_session, COMPANY, _po("PO313", [_line(16384, "IT1", 0.4)]), pm)
     db_session.flush()
     assert _get(db_session, "PO313").line_items == []

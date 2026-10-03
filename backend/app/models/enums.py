@@ -247,6 +247,9 @@ class NotificationType(str, enum.Enum):
     # A classification change took a product off openings waiting on a shop assembly request (#1050).
     # For the Shop Assembly Manager, whose board just lost those lines.
     CLASSIFICATION_CHANGED = "CLASSIFICATION_CHANGED"
+    # A shop assembly request was turned down (#1242). For the shop assembly audience, with the reason,
+    # the way a rejected shipping request tells its requester.
+    SHOP_ASSEMBLY_REQUEST_REJECTED = "SHOP_ASSEMBLY_REQUEST_REJECTED"
 
 
 class AuditEntityType(str, enum.Enum):

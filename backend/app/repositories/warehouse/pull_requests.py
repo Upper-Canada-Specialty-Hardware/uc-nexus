@@ -1312,10 +1312,15 @@ def _return_units_to_project_inventory(
         .order_by(InventoryLocationModel.received_at.desc())
     ).first()
     if il is None:
+        from app.models.project import Project as ProjectModel
+
         from .inventory import resolve_project_combo_cost
 
         now = datetime.utcnow()
-        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session)
+        # Scoped to the project's own company (#1253): unscoped, the lookup picks the oldest primary
+        # building across every tenant, and the restored row would sit in another company's warehouse.
+        company = session.scalar(select(ProjectModel.company).where(ProjectModel.id == project_id))
+        warehouse_id = warehouse_admin_repository.get_primary_warehouse_id(session, company=company)
         # Every prior row for the combo is gone (that is why this one exists), so the cost is
         # re-resolved from the schedule. It is also the anchor stock row's price key (#942), so the
         # anchor is a pool row at the restored units' own price, never one at some other price.

@@ -167,6 +167,74 @@ def test_a_blank_name_is_refused(db_session):
         catalog.create_item_type(db_session, name="   ", company="TUBC")
 
 
+def test_names_codes_and_descriptions_longer_than_their_columns_are_field_errors(db_session):
+    """#1210: each catalog text is refused by name before the flush, instead of overflowing there."""
+    frames = _type(db_session)
+    attribute = catalog.create_attribute(db_session, type_id=frames.id, name="Finish")
+    item = catalog.create_item(db_session, type_id=frames.id, product_code=f"FR-{uuid.uuid4().hex[:6]}")
+
+    refused = [
+        (lambda: catalog.create_item_type(db_session, name="T" * 101, company="TUBC"), "name"),
+        (lambda: catalog.update_item_type(db_session, frames.id, name="T" * 101), "name"),
+        (lambda: catalog.create_attribute(db_session, type_id=frames.id, name="A" * 101), "name"),
+        (lambda: catalog.update_attribute(db_session, attribute.id, name="A" * 101), "name"),
+        (lambda: catalog.create_item(db_session, type_id=frames.id, product_code="P" * 101), "product_code"),
+        (
+            lambda: catalog.create_item(db_session, type_id=frames.id, product_code="FR-LONG", description="D" * 256),
+            "description",
+        ),
+        (lambda: catalog.update_item(db_session, item.id, description="D" * 256), "description"),
+    ]
+    for call, field in refused:
+        with pytest.raises(ValidationError) as exc:
+            call()
+        assert exc.value.field == field
+
+    # At the limit is fine.
+    catalog.update_item(db_session, item.id, description="D" * 255)
+    assert item.description == "D" * 255
+
+
+def test_a_product_code_is_unique_within_its_type_ignoring_case(db_session):
+    """#1342: fr-101 beside FR-101 is the same product, refused by the pre-check."""
+    frames = _type(db_session)
+    catalog.create_item(db_session, type_id=frames.id, product_code="FR-101")
+    with pytest.raises(ConflictError):
+        catalog.create_item(db_session, type_id=frames.id, product_code="fr-101")
+
+
+def test_a_create_that_loses_the_race_is_a_conflict_not_a_server_error(db_session, monkeypatch):
+    """#1342: two creates at once both pass the unlocked pre-check; the case-insensitive unique index
+    refuses the second, and that is the same conflict."""
+    frames = _type(db_session)
+    catalog.create_item(db_session, type_id=frames.id, product_code="FR-202")
+
+    real_scalars = db_session.scalars
+    calls = {"n": 0}
+
+    class _Nothing:
+        def first(self):
+            return None
+
+    def blind_first_check(stmt, *args, **kwargs):
+        # The pre-check is the first read create_item makes; pretend the race hid the other row.
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _Nothing()
+        return real_scalars(stmt, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "scalars", blind_first_check)
+    monkeypatch.setattr(catalog, "_require_active_type", lambda session, type_id: frames)
+
+    with pytest.raises(ConflictError) as exc:
+        catalog.create_item(db_session, type_id=frames.id, product_code="fr-202")
+    assert exc.value.field == "product_code"
+
+    monkeypatch.undo()
+    # The session is still usable after the refused insert: it was a savepoint.
+    assert catalog.create_item(db_session, type_id=frames.id, product_code="FR-203").product_code == "FR-203"
+
+
 # --- attributes -------------------------------------------------------------------------------
 
 

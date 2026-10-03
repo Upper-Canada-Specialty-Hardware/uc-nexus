@@ -410,6 +410,7 @@ def po_document_data_to_type(d) -> PODocumentData:
         tax_amount=float(d.tax_amount),
         tax_label=d.tax_label,
         tariff_amount=float(d.tariff_amount),
+        trade_discount=float(d.trade_discount) if d.trade_discount is not None else None,
         required_by_override=d.required_by_override,
         include_fsc=d.include_fsc,
         include_usa_tariff=d.include_usa_tariff,

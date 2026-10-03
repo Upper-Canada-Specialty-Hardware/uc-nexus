@@ -36,7 +36,6 @@ from app.models.shipping import (
 from app.models.shipping_out_request import (
     ShippingOutRequest,
 )
-from app.models.warehouse import Warehouse
 from app.repositories import project_repository, request_return_notes
 from app.repositories.stock import _find_or_create_stock_row, _log_audit_event
 from app.repositories.warehouse import resolve_project_combo_cost
@@ -621,12 +620,16 @@ def create_shipment_return(
         select(PackingSlip).options(selectinload(PackingSlip.items)).where(PackingSlip.id == packing_slip_id)
     ).first()
 
-    # 2. Validate destination warehouse
-    warehouse = session.get(Warehouse, warehouse_id)
-    if warehouse is None:
-        raise NotFoundError(f"Warehouse {warehouse_id} not found")
-    if not warehouse.is_active:
-        raise ValidationError("Destination warehouse is not active", field="warehouse_id")
+    # 2. Validate destination warehouse: it exists, is active, and is the slip's project's company's own
+    # building (#1376) - compared directly, so an unscoped admin cannot book a return into another
+    # tenant's warehouse either.
+    from app.models.project import Project as ProjectModel
+    from app.repositories import warehouse_admin_repository
+
+    project_company = session.scalar(select(ProjectModel.company).where(ProjectModel.id == ps.project_id))
+    warehouse_admin_repository.assert_usable_destination(
+        session, warehouse_id, company=project_company, field="warehouse_id"
+    )
 
     psi_by_id = {psi.id: psi for psi in ps.items}
     already = _returned_quantities(session, packing_slip_id)
