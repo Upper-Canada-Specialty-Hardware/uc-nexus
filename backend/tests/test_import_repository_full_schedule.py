@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.errors import ValidationError
 from app.models.enums import (
+    Classification,
     HardwareItemState,
     ShopAssemblyOpeningStatus,
     ShopAssemblyRequestStatus,
@@ -361,6 +362,80 @@ def test_refinalize_whole_combo_ref_orders_only_the_unordered_remainder(db_sessi
         ).all()
     )
     assert ordered == [1, 3]
+
+
+def _classes(session, project_id) -> dict[tuple[str, HardwareItemState], set]:
+    rows = session.scalars(select(HardwareItem).where(HardwareItem.project_id == project_id)).all()
+    out: dict[tuple[str, HardwareItemState], set] = {}
+    for hi in rows:
+        out.setdefault((hi.product_code, hi.state), set()).add(hi.classification)
+    return out
+
+
+def test_classification_survives_a_po_step_cost_correction(db_session):
+    """#1263: the wizard keys classifications by the parsed cost but sends rows at the corrected cost.
+    The product still gets its classification, on the PO rows and the unordered remainder."""
+    project = _make_project(db_session)
+    db_session.commit()
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100", item_quantity=3, unit_cost=12.5)],
+            "po_drafts": [_po_draft(_ref("A01", "HG-100", 2))],
+            "classifications": [
+                {
+                    "hardware_category": "HINGE",
+                    "product_code": "HG-100",
+                    "unit_cost": 10.0,
+                    "classification": "SHOP_HARDWARE",
+                }
+            ],
+        },
+    )
+    db_session.flush()
+
+    assert _classes(db_session, project.id) == {
+        ("HG-100", HardwareItemState.IN_PO): {Classification.SHOP_HARDWARE},
+        ("HG-100", HardwareItemState.AVAILABLE): {Classification.SHOP_HARDWARE},
+    }
+    assert db_session.scalar(select(POLineItem.classification)) == Classification.SHOP_HARDWARE
+
+
+def test_reclassifying_a_product_updates_its_rows_already_on_a_po(db_session):
+    """#1264: a later non-replace finalize that reclassifies a product applies it to the IN_PO rows an
+    earlier session left, not only to the rows it writes, so the product never reads mixed."""
+    project = _make_project(db_session)
+    db_session.commit()
+    base = {
+        "project_id": str(project.id),
+        "openings": [_opening_input("A01")],
+        "hardware_items": [
+            _hardware_item_input("A01", "HG-100", item_quantity=4),
+            _hardware_item_input("A01", "HG-200", item_quantity=1),
+        ],
+    }
+
+    def cls(code, value):
+        return {"hardware_category": "HINGE", "product_code": code, "unit_cost": 10.0, "classification": value}
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            **base,
+            "po_drafts": [_po_draft(_ref("A01", "HG-100", 2))],
+            "classifications": [cls("HG-100", "SITE_HARDWARE"), cls("HG-200", "SITE_HARDWARE")],
+        },
+    )
+    db_session.flush()
+    import_repository.finalize_import_session(db_session, {**base, "classifications": [cls("HG-100", "SHOP_HARDWARE")]})
+    db_session.flush()
+
+    classes = _classes(db_session, project.id)
+    assert classes[("HG-100", HardwareItemState.IN_PO)] == {Classification.SHOP_HARDWARE}
+    assert classes[("HG-100", HardwareItemState.AVAILABLE)] == {Classification.SHOP_HARDWARE}
 
 
 def test_replace_schedule_keeps_ordered_hardware(db_session):

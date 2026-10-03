@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 from math import floor
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, NotFoundError, ValidationError
@@ -851,11 +851,21 @@ def finalize_import_session(
     for hi in session.scalars(select(HardwareItemModel).where(HardwareItemModel.project_id == project.id)).all():
         already_ordered_qty[(hi.opening_id, hi.product_code, hi.hardware_category, hi.leaf)] += hi.item_quantity
 
-    # 2. Build classification map
+    # 2. Build classification map. The wizard keys classifications by the PARSED cost, while the rows
+    # it sends carry the PO step's corrected cost (#1263), so an exact (category, code, cost) match can
+    # miss. Cost is a product property (#570), so a miss falls back to the product's one classification
+    # - left None only when the product was given different answers at different costs.
     classification_map: dict[tuple[str, str, float], Classification] = {}
+    by_product: dict[tuple[str, str], set[Classification]] = defaultdict(set)
     for c in classifications_input:
         key = (c["hardware_category"], c["product_code"], c["unit_cost"])
         classification_map[key] = Classification(c["classification"])
+        by_product[(c["hardware_category"], c["product_code"])].add(classification_map[key])
+    product_classification = {product: next(iter(cls)) for product, cls in by_product.items() if len(cls) == 1}
+
+    def classification_for(hardware_category: str, product_code: str, unit_cost: float):
+        exact = classification_map.get((hardware_category, product_code, unit_cost))
+        return exact if exact is not None else product_classification.get((hardware_category, product_code))
 
     # 2b. Manage project excluded items (By Others scope classification)
     if excluded_items_input is not None:
@@ -992,8 +1002,7 @@ def finalize_import_session(
                     raise NotFoundError(f"Opening {hi_data['opening_number']} not found in project")
 
                 unit_cost = hi_data.get("unit_cost") or 0.0
-                class_key = (hi_data["hardware_category"], hi_data["product_code"], unit_cost)
-                classification = classification_map.get(class_key)
+                classification = classification_for(hi_data["hardware_category"], hi_data["product_code"], unit_cost)
 
                 hw_item = HardwareItemModel(
                     id=uuid.uuid4(),
@@ -1086,8 +1095,7 @@ def finalize_import_session(
         available_keys_seen.add(key_with_id)
 
         unit_cost_val = hi.get("unit_cost") or 0.0
-        class_key = (hi["hardware_category"], hi["product_code"], unit_cost_val)
-        classification = classification_map.get(class_key)
+        classification = classification_for(hi["hardware_category"], hi["product_code"], unit_cost_val)
 
         session.add(
             HardwareItemModel(
@@ -1113,6 +1121,25 @@ def finalize_import_session(
                 classification=classification,
                 state=HardwareItemState.AVAILABLE,
             )
+        )
+    session.flush()
+
+    # 5a. A classification given in this finalize holds for the whole product (#1264). The steps above
+    # set it only on rows they create, so a product half on a PO from an earlier session kept its old
+    # value on the surviving IN_PO rows and read mixed. Only Site/Shop arrive here; By Others is the
+    # exclusion table's business and is not touched. A product given different answers at different
+    # costs is left as the rows were written.
+    for (hardware_category, product_code), classification in product_classification.items():
+        session.execute(
+            update(HardwareItemModel)
+            .where(
+                HardwareItemModel.project_id == project.id,
+                HardwareItemModel.hardware_category == hardware_category,
+                HardwareItemModel.product_code == product_code,
+                or_(HardwareItemModel.classification.is_(None), HardwareItemModel.classification != classification),
+            )
+            .values(classification=classification)
+            .execution_options(synchronize_session="fetch")
         )
     session.flush()
 
