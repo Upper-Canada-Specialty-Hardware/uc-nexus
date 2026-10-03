@@ -475,6 +475,7 @@ export const GET_SHAREPOINT_INVENTORY_SNAPSHOT = gql`
         projectNumber
         projectName
         unitCost
+        unitCostUnreadable
         partDescription
         finish
         rating
@@ -544,6 +545,7 @@ export const MIGRATE_SHAREPOINT_INVENTORY = gql`
       catalogItemsCreated
       catalogItemsSkipped
       catalogAttributesCreated
+      unreadableUnitCosts
     }
   }
 `;
