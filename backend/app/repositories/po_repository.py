@@ -55,6 +55,31 @@ def _coerce_custom_inventory_item_id(raw) -> uuid.UUID | None:
     return raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))
 
 
+def _checked_custom_inventory_item_id(session: Session, raw, company: str) -> uuid.UUID | None:
+    """#1379: the catalog entry a line names, refused when it does not exist or belongs to another
+    company's catalog. The line stores the id unchecked otherwise, and a dangling or cross-tenant id
+    surfaces later as a line described by a product nobody can see."""
+    from app.models.inventory_item_type import CustomInventoryItem, InventoryItemType
+
+    item_id = _coerce_custom_inventory_item_id(raw)
+    if item_id is None:
+        return None
+    item_company = session.execute(
+        select(InventoryItemType.company)
+        .join(CustomInventoryItem, CustomInventoryItem.type_id == InventoryItemType.id)
+        .where(CustomInventoryItem.id == item_id)
+    ).scalar_one_or_none()
+    if item_company is None or item_company != company:
+        raise ValidationError(f"Custom item {item_id} is not in this company's catalog", field="line_items")
+    return item_id
+
+
+def validate_line_catalog_items(session: Session, line_items: list[dict], company: str) -> None:
+    """#1379: the catalog check on its own, so the register resolver can refuse before the GP push."""
+    for li_data in line_items:
+        _checked_custom_inventory_item_id(session, li_data.get("custom_inventory_item_id"), company)
+
+
 def _learn_manufacturer_vendor_mappings(
     session: Session,
     *,
@@ -312,7 +337,7 @@ def create_po(
         if isinstance(classification_val, str):
             classification_val = Classification(classification_val)
 
-        catalog_item_id = _coerce_custom_inventory_item_id(li_data.get("custom_inventory_item_id"))
+        catalog_item_id = _checked_custom_inventory_item_id(session, li_data.get("custom_inventory_item_id"), company)
         order_as_raw = li_data.get("order_as")
         # #563: Hardware Category and Product Code are the line's identity and are both required; they
         # are what a PO REGISTRATION sends GP as the item number and the description. Order As is the
@@ -495,7 +520,10 @@ def register_po_in_gp(
     # is GP POP10110.ORD = line index * 16384, assigned in the order the lines were sent to the relay
     # (== this payload order), which is what a relay /receipt targets per line.
     for idx, li_data in enumerate(line_items, start=1):
-        catalog_item_id = _coerce_custom_inventory_item_id(li_data.get("custom_inventory_item_id"))
+        # #1379: checked first, ahead of the kept-line handling and its schedule ties.
+        catalog_item_id = _checked_custom_inventory_item_id(
+            session, li_data.get("custom_inventory_item_id"), po.company
+        )
         order_as_raw = li_data.get("order_as")
         # #563: Hardware Category and Product Code are the line's identity and are both required; they
         # are what a PO REGISTRATION sends GP as the item number and the description. Order As is the

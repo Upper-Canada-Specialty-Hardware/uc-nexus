@@ -261,6 +261,23 @@ def _tax_schedule_id(input: RegisterPOInput, tax_detail_ids: list[str]) -> str |
     return schedule
 
 
+def _validate_line_catalog_items(line_items_data: list[dict], company: str) -> None:
+    with SessionLocal() as session:
+        po_repository.validate_line_catalog_items(session, line_items_data, company)
+
+
+def _known_company_or_refuse(company: str | None) -> str | None:
+    """#1380: a company an unscoped caller names, normalized, or a field error when it is not one an
+    admin may act in. None passes through for create_po's own "a GP company is required" refusal."""
+    from app.repositories import user_repository
+    from app.services import nexus_companies
+
+    cleaned = user_repository.normalize_company(company)
+    if cleaned is not None and not nexus_companies.is_known_company(cleaned):
+        raise ValidationError(f"Unknown GP company '{cleaned}'.", field="company")
+    return cleaned
+
+
 def _prepare_register_po(
     *,
     po_id,
@@ -713,6 +730,11 @@ class POMutations:
             scope = tenant_scope(info)
             pid = uuid.UUID(str(input.project_id)) if input.project_id else None
             tenancy.require_project_in_scope(session, pid, scope)
+            company = scope or input.company
+            if scope is None and pid is None:
+                # #1380: an unscoped admin's stock PO takes the company it names, and a typo there would
+                # file a PO under a company that does not exist. Checked as the acting-company header is.
+                company = _known_company_or_refuse(input.company)
             po = po_repository.create_po(
                 session,
                 line_items=line_items_data,
@@ -726,7 +748,7 @@ class POMutations:
                 vendor_quote_number=input.vendor_quote_number,
                 # A stock PO has no project to take a tenant from, so it takes the caller's. An admin
                 # (unscoped) raising one must say which company it is for - `company` on the input.
-                company=scope or input.company,
+                company=company,
                 pool_kind=input.pool_kind,
             )
             session.commit()
@@ -863,6 +885,9 @@ class POMutations:
 
         # #1207: the costs the persist writes are checked before anything reaches GP.
         po_repository.validate_order_costs(shipping_cost=input.shipping_cost, tariff_amount=input.tariff_amount)
+        # #1379: so is every line's catalog item, against the company the PO registers into (the
+        # pre-flight below refuses a gp_company that is not the PO's own).
+        await asyncio.to_thread(_validate_line_catalog_items, line_items_data, (input.gp_company or "").strip().upper())
         tax_detail_ids = _fold_tax_detail_ids(input)
         tax_schedule_id = _tax_schedule_id(input, tax_detail_ids)
         payload = await asyncio.to_thread(

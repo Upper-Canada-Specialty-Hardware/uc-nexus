@@ -211,3 +211,20 @@ def test_nexus_companies_is_refused_to_a_tenant_owner(companies):
     )
     assert result.errors is not None
     assert result.errors[0].extensions["code"] == "FORBIDDEN"
+
+
+# --- #1380: an unscoped admin's stock PO names a real company ---------------------------------------
+
+
+def test_a_stock_po_for_an_unknown_company_is_refused(monkeypatch):
+    from app.errors import ValidationError as _ValidationError
+    from app.schemas import po as po_schema
+    from app.services import nexus_companies
+
+    monkeypatch.setattr(nexus_companies, "is_known_company", lambda company: company == "TUBC")
+
+    assert po_schema._known_company_or_refuse(" tubc ") == "TUBC"
+    assert po_schema._known_company_or_refuse(None) is None
+    with pytest.raises(_ValidationError) as exc:
+        po_schema._known_company_or_refuse("TUBX")
+    assert exc.value.field == "company"
