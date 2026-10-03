@@ -371,6 +371,10 @@ class CreateGpJobResult:
     project: "Project"
     created: bool
     cost_codes_provisioned: int
+    # #1306: on the adopt path (created false), how many active cost codes GP holds on the job, read
+    # from GP; None when it could not be read, and on a real create. That path is also where a retry
+    # after a lost reply lands, so a flat 0 there would wrongly say the selected codes never landed.
+    cost_codes_in_gp: int | None = None
 
 
 @strawberry.type
