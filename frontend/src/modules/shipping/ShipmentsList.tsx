@@ -74,6 +74,11 @@ import { FIT_CELL_WRAP_SX } from '../../components/fitColumns';
 import { FadeIn } from '../../motion';
 import { parseServerDate, parseServerDay } from '../../utils/serverDate';
 
+// UI law 1 (#1231): a short value hugs its column, and the one text column takes the slack. A long
+// product code wraps inside its cell rather than pushing the table wider.
+const HUG_SX = { width: '1%', whiteSpace: 'nowrap' as const };
+const SLACK_SX = { overflowWrap: 'anywhere' as const };
+
 interface Project {
   id: string;
   projectId: string;
@@ -496,19 +501,21 @@ export default function ShipmentsList({ projectId, heading }: Props) {
                         <Table size="small" sx={{ mb: 2 }}>
                           <TableHead>
                             <TableRow>
-                              <TableCell>Opening</TableCell>
+                              <TableCell sx={HUG_SX}>Opening</TableCell>
                               <TableCell>Product code</TableCell>
-                              <TableCell>Hardware category</TableCell>
-                              <TableCell align="right">Qty</TableCell>
+                              <TableCell sx={HUG_SX}>Hardware category</TableCell>
+                              <TableCell align="right" sx={HUG_SX}>
+                                Qty
+                              </TableCell>
                             </TableRow>
                           </TableHead>
                           <TableBody>
                             {slip.items.map((item) => (
                               <TableRow key={item.id}>
-                                <TableCell sx={monoSx}>{item.openingNumber || '-'}</TableCell>
-                                <TableCell sx={monoSx}>{item.productCode || '-'}</TableCell>
-                                <TableCell>{item.hardwareCategory || '-'}</TableCell>
-                                <TableCell align="right" sx={tabularSx}>
+                                <TableCell sx={{ ...monoSx, ...HUG_SX }}>{item.openingNumber || '-'}</TableCell>
+                                <TableCell sx={{ ...monoSx, ...SLACK_SX }}>{item.productCode || '-'}</TableCell>
+                                <TableCell sx={HUG_SX}>{item.hardwareCategory || '-'}</TableCell>
+                                <TableCell align="right" sx={{ ...HUG_SX, ...tabularSx }}>
                                   {netQuantity(item)}
                                   {(item.returnedQuantity ?? 0) > 0 && (
                                     <Typography

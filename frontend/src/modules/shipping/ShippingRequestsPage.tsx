@@ -41,6 +41,11 @@ import {
   type RequestStage,
 } from '../shop-assembly/requestStages';
 
+// UI law 1 (#1231): a short value hugs its column, and the one text column takes the slack. A long
+// product code wraps inside its cell rather than pushing the table wider.
+const HUG_SX = { width: '1%', whiteSpace: 'nowrap' as const };
+const SLACK_SX = { overflowWrap: 'anywhere' as const };
+
 interface ShippingRequestItem {
   id: string;
   /** Null on a line raised straight off inventory (#451) - shelf stock carries no opening. */
@@ -249,19 +254,23 @@ export default function ShippingRequestsPage() {
             <Table size="small">
               <TableHead>
                 <TableRow>
-                  <TableCell>Opening</TableCell>
+                  <TableCell sx={HUG_SX}>Opening</TableCell>
                   <TableCell>Product Code</TableCell>
-                  <TableCell>Hardware Category</TableCell>
-                  <TableCell align="right">Quantity</TableCell>
+                  <TableCell sx={HUG_SX}>Hardware Category</TableCell>
+                  <TableCell align="right" sx={HUG_SX}>
+                    Quantity
+                  </TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
                 {req.items.map((item) => (
                   <TableRow key={item.id} hover>
-                    <TableCell sx={monoSx}>{item.openingNumber || '-'}</TableCell>
-                    <TableCell sx={monoSx}>{item.productCode}</TableCell>
-                    <TableCell>{item.hardwareCategory}</TableCell>
-                    <TableCell align="right">{item.requestedQuantity}</TableCell>
+                    <TableCell sx={{ ...monoSx, ...HUG_SX }}>{item.openingNumber || '-'}</TableCell>
+                    <TableCell sx={{ ...monoSx, ...SLACK_SX }}>{item.productCode}</TableCell>
+                    <TableCell sx={HUG_SX}>{item.hardwareCategory}</TableCell>
+                    <TableCell align="right" sx={{ ...HUG_SX, ...tabularSx }}>
+                      {item.requestedQuantity}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
