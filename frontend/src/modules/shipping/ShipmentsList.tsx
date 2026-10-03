@@ -71,6 +71,7 @@ import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { FIT_CELL_WRAP_SX } from '../../components/fitColumns';
 import { FadeIn } from '../../motion';
 import { parseServerDate, parseServerDay } from '../../utils/serverDate';
+import { openPdfWindow } from '../../utils/openPdf';
 
 interface Project {
   id: string;
@@ -300,6 +301,8 @@ export default function ShipmentsList({ projectId, heading }: Props) {
 
   const handleViewPdf = useCallback(
     async (slip: PackingSlip) => {
+      // #1338: the tab opens inside the click; a tab opened after the render could be blocked.
+      const tab = openPdfWindow(showToast);
       setGeneratingFor(slip.id);
       try {
         const project = projectsById.get(slip.projectId);
@@ -319,8 +322,9 @@ export default function ShipmentsList({ projectId, heading }: Props) {
             values={valuesFromSlip(slip)}
           />,
         ).toBlob();
-        window.open(URL.createObjectURL(blob), '_blank');
+        tab.show(blob);
       } catch {
+        tab.cancel();
         showToast('Failed to generate the Delivery Request', 'error');
       } finally {
         setGeneratingFor(null);

@@ -27,6 +27,7 @@ import PickSection from './PickSection';
 import PickSheetDocument from './PickSheetDocument';
 import { entriesFromDraft, pickTotals, toPickLines, type PickEntries, type PickSheet } from './pick';
 import { parseServerDate } from '../../utils/serverDate';
+import { openPdfWindow } from '../../utils/openPdf';
 
 interface ProjectRow {
   id: string;
@@ -189,6 +190,8 @@ export default function PickPage() {
 
   const handlePrint = useCallback(async () => {
     if (!pr) return;
+    // #1338: the tab opens inside the click; a tab opened after a large render could be blocked.
+    const tab = openPdfWindow(showToast);
     setPrinting(true);
     try {
       const blob = await pdf(
@@ -202,8 +205,9 @@ export default function PickPage() {
           sections={sections}
         />,
       ).toBlob();
-      window.open(URL.createObjectURL(blob), '_blank');
+      tab.show(blob);
     } catch {
+      tab.cancel();
       showToast('Failed to generate the pick sheet PDF', 'error');
     } finally {
       setPrinting(false);

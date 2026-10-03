@@ -219,6 +219,23 @@ describe('POGenerateDialog shipping method', () => {
     });
   });
 
+  it('opens the preview tab inside the click, then points it at the pdf (#1338)', async () => {
+    const tab = { closed: false, location: { href: '' } };
+    const open = vi.fn(() => tab);
+    window.open = open as unknown as typeof window.open;
+    const calls: Record<string, unknown>[] = [];
+    const { onRefetch } = renderDialog([settingsMock(), buyersMock(), totalsMock(), saveMock(calls)]);
+
+    await screen.findByRole('textbox', { name: 'Shipping method' });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate & preview' }));
+    // Opened before the save and the render resolve, while the click still counts.
+    expect(open).toHaveBeenCalledWith('', '_blank');
+    expect(onRefetch).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(tab.location.href).toBe('blob:generated-po'));
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
   it('saves an empty shipping method as null (issue #703)', async () => {
     const calls: Record<string, unknown>[] = [];
     const { onRefetch } = renderDialog([settingsMock(), buyersMock(), totalsMock(), saveMock(calls)]);
