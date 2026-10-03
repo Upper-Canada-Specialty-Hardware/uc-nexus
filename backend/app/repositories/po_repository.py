@@ -756,6 +756,10 @@ def _link_available_items(
                 HardwareItem.state == HardwareItemState.AVAILABLE,
             )
             .order_by(Opening.opening_number, HardwareItem.id)
+            # #1373: the rows about to be tied or split are locked, so two ties of one combo cannot both
+            # split the same AVAILABLE row and grow the schedule.
+            .with_for_update(of=HardwareItem)
+            .execution_options(populate_existing=True)
         )
         .scalars()
         .all()
@@ -852,6 +856,13 @@ def tied_units_by_line(session: Session, line_ids: list[uuid.UUID]) -> dict[uuid
     return {line_id: int(total) for line_id, total in rows}
 
 
+def untied_outstanding(ordered: int, received: int, tied: int) -> int:
+    """Units a line still has coming that no schedule row is tied to yet (#1371). Tied rows keep their
+    tie once their units arrive, so the received and tied counts overlap; subtracting both counted the
+    received tied units twice and left a topped-up line unable to tie what was still on its way."""
+    return max(ordered - max(received, tied), 0)
+
+
 # The PO stages a GP-born PO may be given a schedule identity in: it is still open, so the hardware it
 # is bringing is still expected. A CLOSED or CANCELLED PO is never made Nexus-registered.
 _REGISTRABLE_PO_STATUSES = (POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED)
@@ -891,8 +902,25 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
             f"Only an open GP-owned purchase order can be registered in Nexus; this one is {po.status.value}"
         )
 
-    by_id = {li.id: li for li in po.line_items}
+    # #1373: ties on one project run one at a time, and never inside a finalize. The project is locked
+    # in the mode finalize takes (FOR NO KEY UPDATE, so inserts referencing it are not blocked), then the
+    # PO's lines in id order, re-read so the caps below are computed from quantities nobody can move.
+    if po.project_id is not None:
+        from app.models.project import Project as ProjectModel
+
+        session.execute(select(ProjectModel.id).where(ProjectModel.id == po.project_id).with_for_update(key_share=True))
+    locked_lines = session.scalars(
+        select(POLineItem)
+        .where(POLineItem.po_id == po.id)
+        .order_by(POLineItem.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+
+    by_id = {li.id: li for li in locked_lines}
     tied = 0
+    # Units each schedule product has given earlier entries of this same save, for the refusal below.
+    tied_here: dict[tuple[str, str], int] = {}
     for entry in lines:
         line = by_id.get(entry["po_line_item_id"])
         if line is None:
@@ -928,9 +956,11 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
 
         if po.project_id is not None and quantity:
             # What is already tied counts against what is outstanding, so a registered line can be
-            # topped up later (#1128) without tying more than it still has coming.
+            # topped up later (#1128) without tying more than it still has coming. A tied row stays IN_PO
+            # after its units arrive, so received and tied overlap: the untied outstanding is ordered less
+            # the larger of the two, not less both (#1371).
             already_tied = tied_units_by_line(session, [line.id]).get(line.id, 0)
-            outstanding = max(line.ordered_quantity - line.received_quantity - already_tied, 0)
+            outstanding = untied_outstanding(line.ordered_quantity, line.received_quantity, already_tied)
             available = _available_schedule_units(
                 session,
                 project_id=po.project_id,
@@ -939,10 +969,19 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
             )
             cap = min(outstanding, available)
             if quantity > cap:
+                # #1372: two lines for one product draw on one schedule. Say when earlier lines of this
+                # save are what used it up, so the fix (split the quantity between them) is obvious.
+                earlier = tied_here.get((hardware_category, product_code), 0)
+                shared = (
+                    f"; {earlier} went to earlier lines for the same product in this save, so split what is "
+                    "left between them"
+                    if earlier
+                    else ""
+                )
                 raise ValidationError(
                     f"At most {cap} units of {hardware_category} / {product_code} can be tied to this "
                     f"line ({outstanding} still outstanding and untied, {available} still available on the "
-                    "schedule)",
+                    f"schedule{shared})",
                     field="tie_quantity",
                 )
 
@@ -951,7 +990,7 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
         line.nexus_registered = True
 
         if po.project_id is not None and quantity:
-            tied += _link_available_items(
+            linked = _link_available_items(
                 session,
                 project_id=po.project_id,
                 hardware_category=hardware_category,
@@ -959,6 +998,9 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
                 quantity=quantity,
                 po_line_item_id=line.id,
             )
+            tied += linked
+            key = (hardware_category, product_code)
+            tied_here[key] = tied_here.get(key, 0) + linked
 
     session.flush()
     return po, tied
