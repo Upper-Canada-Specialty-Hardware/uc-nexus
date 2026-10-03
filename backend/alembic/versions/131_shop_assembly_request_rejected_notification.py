@@ -7,14 +7,14 @@ Downgrade mirrors 126: delete rows of the retiring type first, then recreate not
 without it.
 
 Revision ID: 131
-Revises: 127
+Revises: 130
 Create Date: 2026-10-03
 """
 
 from alembic import op
 
 revision = "131"
-down_revision = "127"
+down_revision = "130"
 branch_labels = None
 depends_on = None
 
