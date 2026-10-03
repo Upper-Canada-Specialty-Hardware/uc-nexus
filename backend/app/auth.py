@@ -30,6 +30,7 @@ request. A query hitting eight root fields verifies its JWT once and looks up ro
 where #415's shape paid for both per field.
 """
 
+import threading
 import time
 from typing import Any
 
@@ -103,32 +104,111 @@ class ForbiddenError(AppError):
         super().__init__(message, "FORBIDDEN")
 
 
-def _load_jwks(force: bool = False) -> dict:
-    now = time.monotonic()
-    cached = _jwks_cache["data"]
-    if not force and cached is not None and (now - _jwks_cache["fetched_at"]) < _JWKS_TTL_SECONDS:
-        return cached
+# #1330: the key set is fetched synchronously inside the per-field guard, which runs on the event loop,
+# so every fetch stalls all GraphQL traffic and the relay socket for its duration. Three limits keep
+# that rare:
+#   - a forced refetch (a token whose key id is not in the set) happens at most once a minute, so a
+#     stream of tokens with a bogus or unknown kid cannot each cost a round trip to Clerk;
+#   - a key id that is still missing after a refetch is remembered as missing for a minute;
+#   - a failed fetch is not retried for half a minute, so a Clerk outage costs one stall, not one per
+#     request. A STALE set is served while a background thread refreshes it, so the routine hourly
+#     refresh never blocks a request either.
+# A fetch failure is an AuthError: memoised per request like any other refusal, and UNAUTHENTICATED,
+# so the browser's sign-in recovery runs instead of a masked INTERNAL on every page.
+_JWKS_FORCE_MIN_INTERVAL_SECONDS = 60.0
+_JWKS_FAILURE_BACKOFF_SECONDS = 30.0
+_KID_MISS_TTL_SECONDS = 60.0
+_jwks_state: dict[str, Any] = {"forced_at": 0.0, "failed_at": None, "refreshing": False}
+_kid_misses: dict[str, float] = {}
+_jwks_lock = threading.Lock()
+
+_JWKS_UNAVAILABLE = "Could not verify sign-in right now"
+
+
+def _fetch_jwks() -> dict:
+    """One synchronous fetch of the key set. Every way it can fail becomes an AuthError."""
     if not CLERK_SECRET_KEY:
         raise AuthError("CLERK_SECRET_KEY is not configured")
-    resp = httpx.get(
-        _CLERK_JWKS_URL,
-        headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"},
-        timeout=10.0,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    try:
+        resp = httpx.get(
+            _CLERK_JWKS_URL,
+            headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except (httpx.HTTPError, ValueError) as e:
+        _jwks_state["failed_at"] = time.monotonic()
+        raise AuthError(_JWKS_UNAVAILABLE) from e
+    if not isinstance(data, dict):
+        _jwks_state["failed_at"] = time.monotonic()
+        raise AuthError(_JWKS_UNAVAILABLE)
     _jwks_cache["data"] = data
-    _jwks_cache["fetched_at"] = now
+    _jwks_cache["fetched_at"] = time.monotonic()
+    _jwks_state["failed_at"] = None
     return data
 
 
+def _refresh_in_background() -> None:
+    """Refresh a stale key set off the event loop. At most one refresh runs at a time."""
+    with _jwks_lock:
+        if _jwks_state["refreshing"]:
+            return
+        _jwks_state["refreshing"] = True
+
+    def run() -> None:
+        try:
+            _fetch_jwks()
+        except AuthError:
+            pass  # the stale set keeps serving; the next stale read tries again after the backoff
+        finally:
+            _jwks_state["refreshing"] = False
+
+    threading.Thread(target=run, name="jwks-refresh", daemon=True).start()
+
+
+def _load_jwks(force: bool = False) -> dict:
+    now = time.monotonic()
+    cached = _jwks_cache["data"]
+    failed_at = _jwks_state["failed_at"]
+    recently_failed = failed_at is not None and (now - failed_at) < _JWKS_FAILURE_BACKOFF_SECONDS
+
+    if cached is not None:
+        if force:
+            if (now - _jwks_state["forced_at"]) < _JWKS_FORCE_MIN_INTERVAL_SECONDS or recently_failed:
+                return cached
+            _jwks_state["forced_at"] = now
+            return _fetch_jwks()
+        if (now - _jwks_cache["fetched_at"]) >= _JWKS_TTL_SECONDS and not recently_failed:
+            _refresh_in_background()
+        return cached
+
+    # Cold: nothing to serve, so this one fetch has to block - unless one just failed.
+    if recently_failed:
+        raise AuthError(_JWKS_UNAVAILABLE)
+    return _fetch_jwks()
+
+
+def _key_set(data: dict) -> PyJWKSet:
+    try:
+        return PyJWKSet.from_dict(data)
+    except jwt.PyJWTError as e:
+        raise AuthError(_JWKS_UNAVAILABLE) from e
+
+
 def _signing_key(kid: str):
+    missed_at = _kid_misses.get(kid)
+    if missed_at is not None and (time.monotonic() - missed_at) < _KID_MISS_TTL_SECONDS:
+        raise AuthError("Token signing key not found")
     for force in (False, True):
-        # Refetch once on a kid miss to tolerate key rotation.
-        key_set = PyJWKSet.from_dict(_load_jwks(force=force))
-        for k in key_set.keys:
+        # Refetch once on a kid miss to tolerate key rotation (rate-limited in _load_jwks).
+        for k in _key_set(_load_jwks(force=force)).keys:
             if k.key_id == kid:
+                _kid_misses.pop(kid, None)
                 return k.key
+    if len(_kid_misses) > 1000:
+        _kid_misses.clear()  # bounded: a flood of random kids cannot grow this without limit
+    _kid_misses[kid] = time.monotonic()
     raise AuthError("Token signing key not found")
 
 

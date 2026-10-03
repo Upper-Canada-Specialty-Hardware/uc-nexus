@@ -147,3 +147,23 @@ test('a double click on the confirm sends one reset (#1319)', async () => {
   await screen.findByText('Reset finished');
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
+
+test('the reset mints a fresh token rather than reusing a cached one (#1331)', async () => {
+  // An idle admin tab's cached token can be expired, and this raw fetch is outside the Apollo replay
+  // that would re-mint it - so the page asks Clerk to skip its cache.
+  const getToken = vi.fn(async () => 'fresh-token');
+  publishAuthBridge({ isLoaded: true, isSignedIn: true, getToken });
+  renderPage();
+
+  fireEvent.change(screen.getByLabelText('Confirmation phrase'), { target: { value: PHRASE } });
+  fireEvent.click(resetButton());
+  const dialog = await screen.findByRole('dialog');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Reset data' }));
+
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  expect(getToken).toHaveBeenCalledWith({ skipCache: true });
+  expect(fetchMock).toHaveBeenCalledWith('/admin/reset-data', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer fresh-token' },
+  });
+});
