@@ -65,7 +65,8 @@ const RECEIVE_COLUMNS: FitTableColumn[] = [
   { id: 'ordered', label: 'Ordered Qty', min: 72, weight: 0.5, align: 'right', header: micro('Ordered Qty') },
   { id: 'received', label: 'Already Received', min: 80, weight: 0.5, align: 'right', header: micro('Already Received') },
   { id: 'pending', label: 'Pending', min: 68, weight: 0.5, align: 'right', header: micro('Pending') },
-  { id: 'receiveNow', label: 'Receive Now', min: 184, weight: 1, header: micro('Receive Now') },
+  // #1322: protected, so a narrow dialog takes width from the text columns before the Fill button clips.
+  { id: 'receiveNow', label: 'Receive Now', min: 184, weight: 1, header: micro('Receive Now'), protect: true },
 ];
 
 export default function ReceiveLinesEditor({
