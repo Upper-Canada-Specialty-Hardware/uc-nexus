@@ -778,6 +778,30 @@ def finalize_import_session(
     # null (never checked) - see require_gp_setup_ok.
     project_repository.require_gp_setup_ok(session, project.id)
 
+    # #1343: a schedule category that is also one of the company's inventory item type codes would make
+    # those rows read as catalog stock and skip the schedule check. Type creation refuses the reverse
+    # (custom_items_repository._check_code_free); this is the other half. Codes are stored uppercase,
+    # so the compare is too. A retired type still owns its code.
+    from app.models.inventory_item_type import InventoryItemType
+
+    categories = {(hi.get("hardware_category") or "").strip().upper() for hi in hardware_items_input} - {""}
+    if categories:
+        clashes = sorted(
+            session.scalars(
+                select(InventoryItemType.code).where(
+                    InventoryItemType.company == project.company,
+                    func.upper(InventoryItemType.code).in_(categories),
+                )
+            ).all()
+        )
+        if clashes:
+            raise ValidationError(
+                f"The schedule's hardware categor{'ies' if len(clashes) > 1 else 'y'} {', '.join(clashes)} "
+                f"{'are' if len(clashes) > 1 else 'is'} also an inventory item type code in {project.company}. "
+                "Rename the category in the schedule or the type before importing.",
+                field="hardware_items",
+            )
+
     # #627: record the source XML file name when this finalize came from a fresh parse. None on a
     # hydrate-from-persisted finalize, which re-sends the persisted items unchanged - leaving the
     # stored name untouched so it survives.

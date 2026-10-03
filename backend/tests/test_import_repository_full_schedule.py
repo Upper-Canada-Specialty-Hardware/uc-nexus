@@ -438,6 +438,40 @@ def test_reclassifying_a_product_updates_its_rows_already_on_a_po(db_session):
     assert classes[("HG-100", HardwareItemState.AVAILABLE)] == {Classification.SHOP_HARDWARE}
 
 
+def test_finalize_refuses_a_category_that_is_a_company_type_code(db_session):
+    """#1343: a schedule category equal (case-insensitively) to one of the company's inventory item type
+    codes is refused, naming it; nothing is written. Another company's type code does not count."""
+    from app.models.inventory_item_type import InventoryItemType
+
+    project = _make_project(db_session)
+    code = f"FRAME{uuid.uuid4().hex[:4].upper()}"
+    other = f"SPEC{uuid.uuid4().hex[:4].upper()}"
+    db_session.add(InventoryItemType(id=uuid.uuid4(), company=project.company, code=code, name=f"Frames {code}"))
+    db_session.add(InventoryItemType(id=uuid.uuid4(), company="UCSH", code=other, name=f"Specs {other}"))
+    db_session.commit()
+
+    def finalize(category):
+        return import_repository.finalize_import_session(
+            db_session,
+            {
+                "project_id": str(project.id),
+                "openings": [_opening_input("A01")],
+                "hardware_items": [_hardware_item_input("A01", "FR-1", hardware_category=category)],
+            },
+        )
+
+    savepoint = db_session.begin_nested()
+    with pytest.raises(ValidationError, match=code) as exc:
+        finalize(code.lower())
+    assert exc.value.field == "hardware_items"
+    savepoint.rollback()
+    assert _rows(db_session, project.id) == {}
+
+    finalize(other)
+    db_session.flush()
+    assert _rows(db_session, project.id) == {("A01", "FR-1", HardwareItemState.AVAILABLE): 1}
+
+
 def test_replace_schedule_keeps_ordered_hardware(db_session):
     """#1123: replace_schedule rebuilds the unordered rows from the new input, but ordered (IN_PO) rows
     are kept with their PO line. A matching row in the new schedule only adds the unordered remainder,
