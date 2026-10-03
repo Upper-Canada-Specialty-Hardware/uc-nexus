@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from graphql import GraphQLError, GraphQLResolveInfo
-from strawberry.extensions import SchemaExtension
+from strawberry.extensions import MaxAliasesLimiter, MaxTokensLimiter, QueryDepthLimiter, SchemaExtension
 from strawberry.fastapi import GraphQLRouter
 
 from app.auth import get_context, require_admin_request
@@ -184,10 +184,24 @@ class ResolverGuardExtension(SchemaExtension):
             raise self._mask(e, info) from e
 
 
+# #1234: request-shape limits, checked at validation before any resolver runs. Without them one
+# signed-in request could alias an expensive list resolver hundreds of times, each alias taking its
+# own DB work off the shared pool. Measured against every gql document in frontend/src (2026-10-03):
+# deepest is 4, none uses an alias, the largest is 135 tokens; the standard introspection query is
+# ~160 tokens and its fields are skipped by the depth limiter. The limits leave wide headroom.
+MAX_QUERY_DEPTH = 10
+MAX_QUERY_ALIASES = 15
+MAX_QUERY_TOKENS = 2000
+
 schema = strawberry.Schema(
     query=Query,
     mutation=Mutation,
-    extensions=[ResolverGuardExtension],
+    extensions=[
+        lambda: QueryDepthLimiter(max_depth=MAX_QUERY_DEPTH),
+        lambda: MaxAliasesLimiter(max_alias_count=MAX_QUERY_ALIASES),
+        lambda: MaxTokensLimiter(max_token_count=MAX_QUERY_TOKENS),
+        ResolverGuardExtension,
+    ],
 )
 
 graphql_app = GraphQLRouter(schema, context_getter=get_context)
