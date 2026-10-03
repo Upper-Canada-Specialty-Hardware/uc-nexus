@@ -8,9 +8,15 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   Stack,
   TableCell,
   TableRow,
+  TextField,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
@@ -100,6 +106,9 @@ const evictReservationReads = {
   },
 };
 
+/** Matches the backend's MAX_DISMISSAL_REASON_LENGTH (shop_assembly_repository.py). */
+const MAX_DISMISSAL_REASON_LENGTH = 500;
+
 export default function ShopAssemblyRequestsPage() {
   const [view, setView] = useState<View>('PENDING');
   const [openRequestId, setOpenRequestId] = useState<string | null>(null);
@@ -177,6 +186,8 @@ export default function ShopAssemblyRequestsPage() {
     onError: (e) => settle(e.message, 'error'),
   });
   const busy = batching || dismissing || rejecting || discarding;
+  // #1156: the dismiss confirm carries an optional reason, shown against the openings afterwards.
+  const [dismissReason, setDismissReason] = useState('');
 
   const runConfirmed = useCallback(() => {
     const pending = confirm;
@@ -185,13 +196,15 @@ export default function ShopAssemblyRequestsPage() {
     if (pending.kind === 'batch') {
       createBatch({ variables: { input: { requestId: pending.requestId, lines: pending.lines } } });
     } else if (pending.kind === 'dismiss') {
-      dismissOpenings({ variables: { requestId: pending.requestId, openingNumbers: null, reason: null } });
+      dismissOpenings({
+        variables: { requestId: pending.requestId, openingNumbers: null, reason: dismissReason.trim() || null },
+      });
     } else if (pending.kind === 'reject') {
       rejectRequest({ variables: { id: pending.requestId, reason: null } });
     } else {
       discardBatch({ variables: { batchId: pending.batchId } });
     }
-  }, [confirm, createBatch, dismissOpenings, rejectRequest, discardBatch]);
+  }, [confirm, createBatch, dismissOpenings, rejectRequest, discardBatch, dismissReason]);
 
   const confirmCopy = useMemo(() => {
     if (!confirm) return { title: '', message: '', label: 'Confirm', color: 'primary' as const };
@@ -401,9 +414,10 @@ export default function ShopAssemblyRequestsPage() {
                                 pendingOpenings.length - new Set(lines.map((l) => l.openingNumber)).size,
                             })
                           }
-                          onDismissRemaining={() =>
-                            setConfirm({ kind: 'dismiss', requestId: req.id, openings: pendingOpenings.length })
-                          }
+                          onDismissRemaining={() => {
+                            setDismissReason('');
+                            setConfirm({ kind: 'dismiss', requestId: req.id, openings: pendingOpenings.length });
+                          }}
                           onReject={() => setConfirm({ kind: 'reject', requestId: req.id })}
                         />
                       ) : (
@@ -500,8 +514,40 @@ export default function ShopAssemblyRequestsPage() {
         </Stack>
       </StaggerList>
 
+      <Dialog
+        open={confirm?.kind === 'dismiss'}
+        onClose={() => setConfirm(null)}
+        maxWidth="xs"
+        fullWidth
+        aria-labelledby="dismiss-openings-title"
+      >
+        <DialogTitle id="dismiss-openings-title" sx={{ fontWeight: 700, pb: 1 }}>
+          {confirmCopy.title}
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ fontSize: '0.875rem', mb: 2 }}>{confirmCopy.message}</DialogContentText>
+          <TextField
+            label="Reason (optional)"
+            value={dismissReason}
+            onChange={(e) => setDismissReason(e.target.value)}
+            fullWidth
+            size="small"
+            multiline
+            minRows={2}
+            slotProps={{ htmlInput: { maxLength: MAX_DISMISSAL_REASON_LENGTH } }}
+            helperText={`${dismissReason.length}/${MAX_DISMISSAL_REASON_LENGTH}`}
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2, pt: 1, justifyContent: 'flex-end', gap: 1 }}>
+          <Button onClick={() => setConfirm(null)}>Cancel</Button>
+          <Button variant="contained" color="warning" onClick={runConfirmed}>
+            {confirmCopy.label}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <ConfirmDialog
-        open={confirm !== null}
+        open={confirm !== null && confirm.kind !== 'dismiss'}
         title={confirmCopy.title}
         message={confirmCopy.message}
         confirmLabel={confirmCopy.label}
