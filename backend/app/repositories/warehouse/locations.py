@@ -457,9 +457,9 @@ def get_location_duplicates(session: Session, *, company: str | None = None) -> 
 
 
 def _matches_from(column, value: str | None):
-    """A merge's from-field as a filter. The cleanup page sends a variant's missing row or bay as an
-    empty string (#1199), and `column == ''` never matches the NULL the row actually holds, so an empty
-    or missing value matches a NULL (or empty) column instead."""
+    """A merge's from row or bay as a filter, never the aisle. The cleanup page sends a variant's
+    missing row or bay as an empty string (#1199), and `column == ''` never matches the NULL the row
+    actually holds, so an empty or missing value matches a NULL (or empty) column instead."""
     if value is None or value == "":
         return or_(column.is_(None), column == "")
     return column == value
@@ -487,6 +487,11 @@ def merge_locations(
     if not performed_by:
         raise ValidationError("performed_by is required", field="performed_by")
 
+    # The aisle is what makes a row located: an empty from-aisle would name the unlocated rows, and
+    # null-matching it would sweep every one of them in the warehouse onto the target shelf. Only row
+    # and bay match null (#1199); the aisle is required and compared as given.
+    if not (from_aisle or "").strip():
+        raise ValidationError("from_aisle is required", field="from_aisle")
     to_aisle, to_row, to_bay = _normalize_and_validate_location_fields(to_aisle, to_row, to_bay)
     ensure_registered_location(session, warehouse_id, to_aisle, to_row, to_bay)
     # from_* may already be in canonical form; either way only compare equality, no validation needed.
@@ -499,7 +504,7 @@ def merge_locations(
         session.scalars(
             select(InventoryLocationModel).where(
                 InventoryLocationModel.warehouse_id == warehouse_id,
-                _matches_from(InventoryLocationModel.aisle, from_aisle),
+                InventoryLocationModel.aisle == from_aisle,
                 _matches_from(InventoryLocationModel.row, from_row),
                 _matches_from(InventoryLocationModel.bay, from_bay),
             )
@@ -526,7 +531,7 @@ def merge_locations(
         session.scalars(
             select(StockItemModel).where(
                 StockItemModel.warehouse_id == warehouse_id,
-                _matches_from(StockItemModel.aisle, from_aisle),
+                StockItemModel.aisle == from_aisle,
                 _matches_from(StockItemModel.row, from_row),
                 _matches_from(StockItemModel.bay, from_bay),
             )

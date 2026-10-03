@@ -225,6 +225,29 @@ def test_merge_folds_a_pool_row_into_the_same_key_row_on_the_target_shelf(db_ses
     assert (other.aisle, other.row, other.bay, other.quantity) == ("B", "2", "2", 2)
 
 
+def test_merge_refuses_an_empty_from_aisle_and_leaves_unlocated_rows_alone(db_session):
+    """Only row and bay match null; an empty aisle would otherwise sweep every unlocated row onto the shelf."""
+    define_location(db_session, aisle="B", row="2", bay="2")
+    project = make_project(db_session)
+    unlocated = make_il(db_session, project, quantity=3, aisle=None, row=None, bay=None)
+
+    with pytest.raises(ValidationError) as exc:
+        warehouse_repository.merge_locations(
+            db_session,
+            warehouse_id=wh_id(db_session),
+            from_aisle="",
+            from_row="",
+            from_bay="",
+            to_aisle="B",
+            to_row="2",
+            to_bay="2",
+            performed_by="manager",
+        )
+
+    assert exc.value.field == "from_aisle"
+    assert unlocated.aisle is None
+
+
 def test_merge_matches_an_empty_row_and_bay_as_null(db_session):
     """The cleanup page sends a variant's missing row/bay as '' (#1199); the NULL rows must still move."""
     define_location(db_session, aisle="B", row="2", bay="2")
