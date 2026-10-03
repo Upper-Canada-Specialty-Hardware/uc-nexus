@@ -29,8 +29,7 @@ import {
   GET_PURCHASE_ORDER,
   SYNC_GP_POS,
 } from '../../graphql/po';
-import { GET_GP_OUTBOX, GET_PROJECTS } from '../../graphql/shared';
-import type { Project } from '../../types/project';
+import { GET_GP_OUTBOX } from '../../graphql/shared';
 import Modal from '../../components/Modal';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import GpWriteQueuePanel from '../../components/GpWriteQueuePanel';
@@ -187,6 +186,9 @@ interface POListRow {
   poNumber: string | null;
   requestNumber: string | null;
   projectId: string | null;
+  // Off the project itself (#1238), so an archived project's POs still name it.
+  projectNumber: string | null;
+  projectDescription: string | null;
   // #958: Stock or Overhead, shown as a chip where a PO with no project has no job.
   poolKind: PoolKind;
   status: string;
@@ -296,9 +298,8 @@ function poDisplayId(po: POListRow): string {
   return po.poNumber ?? po.requestNumber ?? '';
 }
 
-// Project columns: POs carry only projectId (a UUID); the human number + name come from the projects
-// list, joined client-side via this map.
-type ProjectsById = Map<string, Project>;
+// Project columns: each row carries its project's number and name from the server (#1238). Joining
+// against the projects list left an archived project's POs with an empty column.
 
 // --- Columns ---
 
@@ -564,12 +565,18 @@ function POListPage() {
     data: pageData,
     loading: pageLoading,
     refetch: refetchPage,
-  } = useQuery<{ purchaseOrdersPage: { rows: POListRow[]; totalCount: number } }>(PURCHASE_ORDERS_PAGE, {
+  } = useQuery<{
+    purchaseOrdersPage: {
+      rows: POListRow[];
+      totalCount: number;
+      scopeProjectNumber: string | null;
+      scopeProjectDescription: string | null;
+    };
+  }>(PURCHASE_ORDERS_PAGE, {
     variables: pageVariables,
     fetchPolicy: 'cache-and-network',
   });
 
-  const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
 
   // The selected PO's full detail (lines/documents/receives) for the modal, fetched on open. The
   // modal opens immediately on a row click; loading/error drive its placeholder until this resolves.
@@ -591,8 +598,10 @@ function POListPage() {
   const stats = statsData?.poStatistics;
   const rows = useMemo(() => pageData?.purchaseOrdersPage.rows ?? [], [pageData]);
   const totalCount = pageData?.purchaseOrdersPage.totalCount ?? 0;
-  const projects = useMemo(() => projectsData?.projects ?? [], [projectsData?.projects]);
-  const projectsById = useMemo<ProjectsById>(() => new Map(projects.map((p) => [p.id, p])), [projects]);
+  // The scope chip's label, read off the page (#1238) so an archived project - or one with no POs on
+  // this page - still names the scope.
+  const scopeNumber = pageData?.purchaseOrdersPage.scopeProjectNumber ?? null;
+  const scopeDescription = pageData?.purchaseOrdersPage.scopeProjectDescription ?? null;
   const selectedPO = selectedData?.purchaseOrder ?? null;
 
   // #858: while the open PO's registration is queued or GP's copy has not been read back yet, the
@@ -606,12 +615,9 @@ function POListPage() {
     return () => stopPollingSelected();
   }, [selectedAwaitingGp, startPollingSelected, stopPollingSelected]);
 
-  const projectNumberOf = (po: POListRow) => (po.projectId ? projectsById.get(po.projectId)?.projectId ?? '' : '');
-  const projectNameOf = (po: POListRow) => {
-    if (!po.projectId) return '';
-    const p = projectsById.get(po.projectId);
-    return p?.description || p?.projectId || '';
-  };
+  const projectNumberOf = (po: POListRow) => (po.projectId ? po.projectNumber ?? '' : '');
+  const projectNameOf = (po: POListRow) =>
+    po.projectId ? po.projectDescription || po.projectNumber || '' : '';
 
   // #851: once the highlighted rows have rendered, bring the first into view, then drop the link's
   // highlight when the tint has faded so a reload or a later refetch does not tint them again.
@@ -914,16 +920,16 @@ function POListPage() {
             label={
               <Box component="span" sx={{ display: 'flex', gap: 0.75, minWidth: 0 }}>
                 <Box component="span" sx={monoSx}>
-                  {projectsById.get(projectId)?.projectId ?? 'Project'}
+                  {scopeNumber ?? 'Project'}
                 </Box>
-                {projectsById.get(projectId)?.description && (
+                {scopeDescription && (
                   <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {projectsById.get(projectId)?.description}
+                    {scopeDescription}
                   </Box>
                 )}
               </Box>
             }
-            title={projectsById.get(projectId)?.description ?? undefined}
+            title={scopeDescription ?? undefined}
             onDelete={clearProjectScope}
             sx={{ maxWidth: 320, minWidth: 0 }}
           />

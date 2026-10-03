@@ -521,16 +521,21 @@ def open_po_summary_to_type(
     )
 
 
-def po_list_row_to_type(po, line_item_count: int, created_by: str | None = None) -> POListRow:
+def po_list_row_to_type(
+    po, line_item_count: int, created_by: str | None = None, labels: dict | None = None
+) -> POListRow:
     """A slim register row (gp-owned-po mirror). line_item_count is supplied by the caller from a
     grouped count query, never read off po.line_items - the register never loads the collection.
     created_by is likewise resolved by the caller (batched over the page's distinct author ids, #632)
-    rather than one Clerk lookup per row."""
+    rather than one Clerk lookup per row, and `labels` from its batched `project_labels` read (#1238)."""
+    number, description = (labels or {}).get(po.project_id, (None, None))
     return POListRow(
         id=strawberry.ID(str(po.id)),
         po_number=po.po_number,
         request_number=po.request_number,
         project_id=strawberry.ID(str(po.project_id)) if po.project_id else None,
+        project_number=number,
+        project_description=description,
         pool_kind=getattr(po, "pool_kind", None) or PoolKindDB.STOCK,
         status=po.status,
         origin=po.origin,

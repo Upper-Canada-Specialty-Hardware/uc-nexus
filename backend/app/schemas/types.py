@@ -1332,6 +1332,9 @@ class POListRow:
     po_number: str | None
     request_number: str | None
     project_id: strawberry.ID | None
+    # Job number and name off the project itself (#1238), archived included. Null with no project.
+    project_number: str | None
+    project_description: str | None
     # #958: Stock or Overhead, the chip the register shows where a PO with no project has no job.
     pool_kind: PoolKind
     status: POStatus
@@ -1355,6 +1358,11 @@ class POListRow:
 class PurchaseOrderPage:
     rows: list[POListRow]
     total_count: int
+    # The project a `projectId`-scoped page is narrowed to, for its scope chip (#1238). Read here rather
+    # than off a row so an empty page - or an archived project's - still names the scope. Null when
+    # the page is not scoped, or the project is not the caller's company's.
+    scope_project_number: str | None = None
+    scope_project_description: str | None = None
 
 
 @strawberry.type
