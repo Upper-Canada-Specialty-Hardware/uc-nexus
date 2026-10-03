@@ -1,7 +1,13 @@
 import { screen, fireEvent, waitFor, within, configure } from '@testing-library/react';
 import type { MockedResponse } from '@apollo/client/testing/react';
 import { GraphQLError } from 'graphql';
-import { CREATE_DRAFT_PO, REGISTER_PO_IN_GP, GET_GP_PURCHASE_TAX_SCHEDULES } from '../../../graphql/po';
+import {
+  CREATE_DRAFT_PO,
+  REGISTER_PO_IN_GP,
+  GET_GP_PURCHASE_TAX_SCHEDULES,
+  GET_GP_VENDORS,
+  GET_GP_COST_CODES,
+} from '../../../graphql/po';
 import {
   INFINITE,
   UUID_RE,
@@ -121,6 +127,32 @@ describe('GpPurchaseOrderDialog', () => {
 
     expect(screen.getByText(/needs the PO User role and a GP buyer identity/)).toBeInTheDocument();
     expect(screen.queryByText(/Your account has no GP buyer identity/)).not.toBeInTheDocument();
+  });
+
+  // #1287: a failed vendor read says so, not an empty disabled picker with no reason. The failing
+  // mock goes first so it answers the read ahead of the base list.
+  it('says the gp vendor list could not be read when the read fails', async () => {
+    const failing: MockedResponse = {
+      request: { query: GET_GP_VENDORS, variables: { company: 'UCS' } },
+      result: { errors: [new GraphQLError('GP SQL timeout', { extensions: { code: 'GP_ERROR' } })] },
+    };
+    renderDialog({ registerPo: stockDraft }, [failing, ...baseMocks().filter((m) => m.request.query !== GET_GP_VENDORS)]);
+
+    expect(await screen.findByText('The GP vendor list could not be read - refresh to try again')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Refresh GP vendors' })).toBeEnabled();
+  });
+
+  // #1287: a failed cost-code read is not "no cost codes defined for this job".
+  it('says the cost codes could not be read when the read fails', async () => {
+    const failing: MockedResponse = {
+      request: { query: GET_GP_COST_CODES, variables: { company: 'UCS', job: 'JOB-100' } },
+      result: { errors: [new GraphQLError('GP SQL timeout', { extensions: { code: 'GP_ERROR' } })] },
+    };
+    renderDialog({ registerPo: projectDraft }, [...baseMocks(), failing]);
+
+    expect(await screen.findByText('Cost codes could not be read from GP - refresh to try again')).toBeInTheDocument();
+    expect(screen.queryByText('No cost codes defined for this job in GP')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Refresh cost codes' })).toBeEnabled();
   });
 
   it('requires explicit confirmation of a fuzzy vendor guess before registering', async () => {
