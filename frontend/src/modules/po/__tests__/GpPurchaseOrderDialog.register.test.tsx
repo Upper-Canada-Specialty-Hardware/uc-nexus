@@ -31,7 +31,7 @@ configure({ asyncUtilTimeout: 15_000 });
 
 // Issue #216: the buyer IS the caller's GP identity (Clerk publicMetadata.gpBuyerId). Stub the hook
 // with a mutable slot so individual tests can drop the identity.
-const identity = vi.hoisted(() => ({ gpBuyerId: 'JSMITH' as string | null }));
+const identity = vi.hoisted(() => ({ gpBuyerId: 'JSMITH' as string | null, roles: ['PO User'] as string[] }));
 // The "Add Custom Item" dialog reads the catalog over GraphQL; stand it in with a picker that hands
 // back one fixed item the moment it opens, so a test can add a custom row without the catalog.
 vi.mock('../CustomItemPicker', () => ({
@@ -55,8 +55,8 @@ vi.mock('../CustomItemPicker', () => ({
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
     displayName: 'Test Buyer',
-    roles: [],
-    hasRole: () => false,
+    roles: identity.roles,
+    hasRole: (r: string) => identity.roles.includes(r),
     isNexusAdmin: false,
     isTenantOwner: false,
     ownsTenant: false,
@@ -68,6 +68,7 @@ vi.mock('../../../hooks/useIdentity', () => ({
 
 beforeEach(() => {
   identity.gpBuyerId = 'JSMITH';
+  identity.roles = ['PO User'];
 });
 
 describe('GpPurchaseOrderDialog', () => {
@@ -109,6 +110,17 @@ describe('GpPurchaseOrderDialog', () => {
 
     expect(onSubmitted).not.toHaveBeenCalled();
     expect(screen.getByText(/Your account has no GP buyer identity/)).toBeInTheDocument();
+  });
+
+  // #1219: a buyer identity can only be set on a PO User, so a caller without that role (a tenant
+  // owner, say) is told it needs both, not sent to ask for an id an Admin cannot set.
+  it('tells a caller without po user that registering needs the role and a buyer identity', async () => {
+    identity.gpBuyerId = null;
+    identity.roles = ['Tenant Owner'];
+    renderDialog({ registerPo: stockDraft });
+
+    expect(screen.getByText(/needs the PO User role and a GP buyer identity/)).toBeInTheDocument();
+    expect(screen.queryByText(/Your account has no GP buyer identity/)).not.toBeInTheDocument();
   });
 
   it('requires explicit confirmation of a fuzzy vendor guess before registering', async () => {
