@@ -816,6 +816,36 @@ def test_approving_while_the_relay_is_down_queues_the_receipt_and_still_closes_t
     )
 
 
+def test_a_failure_after_queueing_saves_neither_the_row_nor_the_draft(committed, monkeypatch, approve_env):
+    """#1365: the outbox row and the draft's APPROVED + link commit together or not at all."""
+    from sqlalchemy import select
+
+    from app.database import SessionLocal
+    from app.models.gp_outbox import GpWriteOutbox
+
+    f = committed()
+    monkeypatch.setattr(
+        warehouse_module,
+        "relay_gateway",
+        _StubRelay(fail_with=RelayUnavailableError("no relay", dispatched=False)),
+    )
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(warehouse_module.warehouse_repository, "mark_approved", _boom)
+
+    with pytest.raises(Exception):
+        _approve(f.draft_id)
+
+    with SessionLocal() as session:
+        rows = session.scalars(select(GpWriteOutbox).where(GpWriteOutbox.entity_key == f"po:{f.po_id}")).all()
+        draft = session.get(ReceiveDraft, f.draft_id)
+        assert rows == [], "no receipt is queued for a draft that was not marked"
+        assert draft.status != ReceiveDraftStatus.APPROVED
+        assert draft.approved_outbox_entry_id is None
+
+
 def test_a_failure_before_the_relay_call_releases_the_claim(committed, monkeypatch, approve_env):
     """Otherwise a validation error parks the draft in APPROVING, where nobody can see it and only a
     retry with the same key can clear it."""
