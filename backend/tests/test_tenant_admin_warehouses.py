@@ -223,3 +223,62 @@ def test_a_stock_receive_with_no_warehouse_and_no_company_is_refused(db_session)
     with pytest.raises(ValidationError) as exc:
         _receive(db_session)
     assert exc.value.field == "warehouse_id"
+
+
+# --- #1374 / #1375: a destination warehouse is active and the owner's own company ---------------------
+
+
+def test_a_retired_warehouse_is_refused_as_a_destination(db_session):
+    company = _company()
+    wh = _warehouse(db_session, company)
+    wh.is_active = False
+    db_session.flush()
+
+    with pytest.raises(ValidationError) as exc:
+        warehouse_admin_repository.assert_usable_destination(db_session, wh.id, company=company, field="warehouse_id")
+    assert exc.value.field == "warehouse_id"
+
+
+def test_another_companys_warehouse_is_refused_as_a_destination(db_session):
+    wh = _warehouse(db_session, _company())
+
+    with pytest.raises(ValidationError) as exc:
+        warehouse_admin_repository.assert_usable_destination(
+            db_session, wh.id, company=_company(), field="dest_warehouse_id"
+        )
+    assert exc.value.field == "dest_warehouse_id"
+
+
+def test_an_active_own_company_warehouse_is_a_usable_destination(db_session):
+    company = _company()
+    wh = _warehouse(db_session, company)
+
+    assert (
+        warehouse_admin_repository.assert_usable_destination(db_session, wh.id, company=company, field="warehouse_id")
+        is wh
+    )
+
+
+def test_a_pool_transfer_into_another_companys_warehouse_is_refused(db_session):
+    from app.repositories import stock as stock_repository
+    from app.repositories.warehouse.locations import create_warehouse_location
+
+    source_company, other_company = _company(), _company()
+    source_wh = _warehouse(db_session, source_company)
+    other_wh = _warehouse(db_session, other_company)
+    create_warehouse_location(db_session, other_wh.id, "A", "1", "1")
+    row = _receive(db_session, warehouse_id=source_wh.id)
+
+    with pytest.raises(ValidationError) as exc:
+        stock_repository.transfer_inventory(
+            db_session,
+            source_type="STOCK_ITEM",
+            source_id=row.id,
+            quantity=1,
+            dest_warehouse_id=other_wh.id,
+            dest_aisle="A",
+            dest_row="1",
+            dest_bay="1",
+            performed_by="warehouse",
+        )
+    assert exc.value.field == "dest_warehouse_id"

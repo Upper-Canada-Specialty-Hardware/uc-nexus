@@ -71,6 +71,29 @@ def get_primary_warehouse_id(session: Session, *, company: str | None = None) ->
     return wh_id
 
 
+def assert_usable_destination(
+    session: Session, warehouse_id: uuid.UUID, *, company: str | None, field: str
+) -> Warehouse:
+    """A warehouse that units are about to be put into: it exists, it is active (#1374), and it is the
+    owning company's own building (#1375).
+
+    The company is compared directly, whatever the caller's scope: a UC NEXUS ADMIN is unscoped, so a
+    by-id tenancy check passes them through, and a cross-company destination would leave a row whose
+    warehouse and project (or PO) disagree about whose it is. `company` is the side the units belong
+    to - the project's, the source warehouse's, or the PO's; None skips the comparison."""
+    wh = session.get(Warehouse, warehouse_id)
+    if wh is None:
+        raise NotFoundError(f"Warehouse {warehouse_id} not found")
+    if not wh.is_active:
+        raise ValidationError(f"Warehouse {wh.code} is no longer active; choose another warehouse.", field=field)
+    if company is not None and wh.company != company:
+        raise ValidationError(
+            f"Warehouse {wh.code} belongs to another GP company; choose one of {company}'s warehouses.",
+            field=field,
+        )
+    return wh
+
+
 def _norm(value: str | None) -> str | None:
     if value is None:
         return None

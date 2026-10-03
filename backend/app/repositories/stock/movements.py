@@ -167,6 +167,24 @@ def destock_inventory(
     return stock_row
 
 
+def _warehouse_company(session: Session, warehouse_id: uuid.UUID | None) -> str | None:
+    """The GP company that owns a building (#1375), or None when there is no building."""
+    from app.models.warehouse import Warehouse
+
+    if warehouse_id is None:
+        return None
+    return session.scalar(select(Warehouse.company).where(Warehouse.id == warehouse_id))
+
+
+def _project_company(session: Session, project_id: uuid.UUID | None) -> str | None:
+    """The GP company that owns a project (#1375), or None when there is no project."""
+    from app.models.project import Project as ProjectModel
+
+    if project_id is None:
+        return None
+    return session.scalar(select(ProjectModel.company).where(ProjectModel.id == project_id))
+
+
 def allocate_stock_to_project(
     session: Session,
     *,
@@ -212,6 +230,11 @@ def allocate_stock_to_project(
     project = session.get(ProjectModel, project_id)
     if project is None:
         raise NotFoundError(f"Project {project_id} not found")
+    # #1375: the units stay in the pool row's building, so that building must be the project's company's.
+    if _warehouse_company(session, si.warehouse_id) != project.company:
+        raise ValidationError(
+            "This stock sits in another GP company's warehouse than the project's.", field="project_id"
+        )
 
     now = datetime.utcnow()
 
@@ -404,8 +427,6 @@ def transfer_inventory(
     drained stock row is hidden by the qty>0 list filter). The destination merges into a matching
     row (same origin + location) or a new row is created. Same- and cross-warehouse use one path.
     """
-    from app.models.warehouse import Warehouse
-
     if quantity < 1:
         raise ValidationError("quantity must be >= 1", field="quantity")
     if not performed_by:
@@ -419,9 +440,13 @@ def transfer_inventory(
 
     dest_aisle, dest_row, dest_bay = _normalize_optional_location_fields(dest_aisle, dest_row, dest_bay)
 
-    dest_wh = session.get(Warehouse, dest_warehouse_id)
-    if dest_wh is None:
-        raise NotFoundError(f"Warehouse {dest_warehouse_id} not found")
+    from app.repositories import warehouse_admin_repository
+
+    # Existence + active here (#1374); the owning company is compared in each branch once the source
+    # row is known (#1375).
+    warehouse_admin_repository.assert_usable_destination(
+        session, dest_warehouse_id, company=None, field="dest_warehouse_id"
+    )
     ensure_registered_location(session, dest_warehouse_id, dest_aisle, dest_row, dest_bay)
 
     now = datetime.utcnow()
@@ -437,6 +462,10 @@ def transfer_inventory(
             raise ValidationError("Transfer quantity exceeds available (non-deficient) quantity", field="quantity")
         if il.warehouse_id == dest_warehouse_id and (il.aisle, il.row, il.bay) == (dest_aisle, dest_row, dest_bay):
             raise ValidationError("Destination is the same as the source location", field="destination")
+        # #1375: project inventory moves only between its own company's buildings.
+        warehouse_admin_repository.assert_usable_destination(
+            session, dest_warehouse_id, company=_project_company(session, il.project_id), field="dest_warehouse_id"
+        )
 
         from_wh = il.warehouse_id
         from_loc = location_detail(il.aisle, il.row, il.bay, from_wh)
@@ -494,6 +523,10 @@ def transfer_inventory(
             raise ValidationError("Transfer quantity exceeds available (non-deficient) quantity", field="quantity")
         if si.warehouse_id == dest_warehouse_id and (si.aisle, si.row, si.bay) == (dest_aisle, dest_row, dest_bay):
             raise ValidationError("Destination is the same as the source location", field="destination")
+        # #1375: a pool row takes its company from its building, and stays within it.
+        warehouse_admin_repository.assert_usable_destination(
+            session, dest_warehouse_id, company=_warehouse_company(session, si.warehouse_id), field="dest_warehouse_id"
+        )
 
         from_wh = si.warehouse_id
         from_loc = location_detail(si.aisle, si.row, si.bay, from_wh)
