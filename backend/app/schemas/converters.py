@@ -216,8 +216,6 @@ def receive_draft_to_type(draft, po, labels: dict | None = None) -> ReceiveDraft
 
 
 def po_document_to_type(doc) -> PODocumentInfo:
-    from app.services import storage
-
     return PODocumentInfo(
         id=strawberry.ID(str(doc.id)),
         po_id=strawberry.ID(str(doc.po_id)),
@@ -226,7 +224,7 @@ def po_document_to_type(doc) -> PODocumentInfo:
         file_size=doc.file_size,
         document_type=doc.document_type,
         uploaded_at=doc.uploaded_at,
-        download_url=storage.generate_presigned_url(doc.s3_key),
+        s3_key=doc.s3_key,
     )
 
 

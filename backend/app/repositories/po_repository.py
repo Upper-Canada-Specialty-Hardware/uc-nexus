@@ -1,9 +1,11 @@
 """Repository for purchase order data access."""
 
 import base64
+import binascii
 import logging
+import re
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -1146,10 +1148,17 @@ def get_receive_records_for_po(session: Session, po_id: uuid.UUID) -> list[Recei
     return list(session.scalars(stmt).unique().all())
 
 
-def get_po_statistics(session: Session, project_id: uuid.UUID | None = None, *, company: str | None = None) -> dict:
+def get_po_statistics(
+    session: Session,
+    project_id: uuid.UUID | None = None,
+    *,
+    company: str | None = None,
+    origin: POOrigin | None = None,
+) -> dict:
     """COUNT grouped by status WHERE optional project_id AND deleted_at IS NULL.
     Return dict with keys: total, draft, gp_registered, vendor_confirmed, partially_received, closed,
-    cancelled."""
+    cancelled. `origin` narrows the counts the way the register's origin filter narrows its rows
+    (#1358), so the status strip counts what the table shows."""
     stmt = (
         select(PurchaseOrder.status, func.count())
         .where(PurchaseOrder.deleted_at.is_(None))
@@ -1159,6 +1168,8 @@ def get_po_statistics(session: Session, project_id: uuid.UUID | None = None, *, 
         stmt = stmt.where(PurchaseOrder.project_id == project_id)
     if company is not None:
         stmt = stmt.where(PurchaseOrder.company == company)
+    if origin is not None:
+        stmt = stmt.where(PurchaseOrder.origin == origin)
     rows = session.execute(stmt).all()
 
     counts = {
@@ -1319,6 +1330,17 @@ def update_po(
         project = session.get(ProjectModel, project_id)
         if project is None:
             raise NotFoundError(f"Project {project_id} not found")
+        # #1170: the rule register_po_in_gp applies. A registered PO sits in GP under its job, so moving
+        # it here would leave the two disagreeing, and a project-born PO's lines are tied to that
+        # project's schedule. Only a Draft with no project yet can take one, and only of its own company.
+        if project_id != po.project_id:
+            if po.status != POStatus.DRAFT or po.project_id is not None:
+                raise InvalidStateTransitionError("Only a Draft PO with no project can be given a project")
+            if project.company != po.company:
+                raise ValidationError(
+                    f"Project {project.project_id} belongs to {project.company}, not {po.company}",
+                    field="project_id",
+                )
         po.project_id = project_id
         # A PO moved onto a job no longer receives into the pool, so its pool kind reverts (#832).
         po.pool_kind = PoolKind.STOCK
@@ -1416,14 +1438,40 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     """
     from app.models.hardware import HardwareItem
 
+    # The PO's row lock, the one a queued registration is taken under (gp_outbox_enqueue), so a cancel
+    # and a registration cannot both pass their checks at once (#1166). Taken before the read below,
+    # which then sees the status the lock holder left.
+    session.execute(select(PurchaseOrder.id).where(PurchaseOrder.id == po_id).with_for_update())
     po = get_purchase_order(session, po_id)
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
+    session.refresh(po)
 
     if po.status is not POStatus.DRAFT:
         raise InvalidStateTransitionError(
             f"Cannot cancel PO in {po.status.value} status - only a draft can be cancelled. "
             "Once a PO is registered in GP, cancel it there."
+        )
+    # #1166: a queued registration is still a Draft here, but the worker will create it in GP when the
+    # relay returns. Cancelling now would drop a PO GP is about to hold, the phantom this guard exists for.
+    from app.repositories import gp_outbox_repository
+
+    if gp_outbox_repository.queued_po_registration(session, po_id) is not None:
+        raise InvalidStateTransitionError(
+            "This PO's registration is queued for GP, so it cannot be cancelled until it posts. "
+            "Once it is in GP, cancel it there."
+        )
+    # #1274: the same goes for a registration on its way to GP right now, or one GP already took
+    # that was never recorded here.
+    gp_number = _unrecorded_gp_po_number(session, po)
+    if gp_number is not None:
+        raise InvalidStateTransitionError(
+            f"GP already created PO {gp_number} for this draft, but it was not recorded here, so the draft "
+            "cannot be cancelled. Retry the registration from the window that started it, or have it reconciled."
+        )
+    if _registration_claim_is_live(po, datetime.utcnow()):
+        raise InvalidStateTransitionError(
+            "This PO is being registered in GP right now, so it cannot be cancelled. Once it is in GP, cancel it there."
         )
 
     po.status = POStatus.CANCELLED
@@ -1443,6 +1491,90 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
         )
 
     return po
+
+
+# #1274: how long a registration attempt holds its draft. The attempt makes two relay round trips at
+# most (the live job check, then create_po), each given up after 30 seconds; past this, the attempt is
+# taken for dead (a crash, a lost request) and the claim no longer blocks anyone.
+REGISTRATION_CLAIM_SECONDS = 120
+
+
+def _registration_claim_is_live(po: PurchaseOrder, now: datetime) -> bool:
+    return (
+        po.registering_key is not None
+        and po.registering_since is not None
+        and po.registering_since > now - timedelta(seconds=REGISTRATION_CLAIM_SECONDS)
+    )
+
+
+def _unrecorded_gp_po_number(session: Session, po: PurchaseOrder) -> str | None:
+    """The GP PO number the claiming attempt already made, when GP took it but Nexus never recorded it.
+
+    The ledger holds the relay's answer under the attempt's key from the moment GP replies, and the
+    created record's id once the persist lands. An answer with no record means GP holds a PO for this
+    draft that Nexus does not know about - whatever the claim's age, a second push would make another."""
+    from app.models.gp_write import GpWriteIdempotency
+
+    if po.registering_key is None:
+        return None
+    row = session.get(GpWriteIdempotency, po.registering_key)
+    if row is None or row.relay_result is None or row.result_id is not None:
+        return None
+    return str((row.relay_result or {}).get("po_number") or "") or "(number not recorded)"
+
+
+def claim_po_registration(session: Session, po_id: uuid.UUID, key: str) -> None:
+    """Take the draft for one registration attempt, under the PO's row lock (#1274).
+
+    Two windows registering the same draft with the relay up each pushed create_po under their own
+    key, and the relay's per-key protection cannot tell two keys apart, so GP made two POs. The claim
+    is committed before the push, so a second attempt is refused before it sends anything. The same
+    key may take it again: that is the same attempt retried after a timeout, which the relay already
+    recognises."""
+    from app.repositories import gp_outbox_repository
+
+    po = session.scalars(
+        select(PurchaseOrder)
+        .where(PurchaseOrder.id == po_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).first()
+    if po is None or po.deleted_at is not None:
+        raise NotFoundError(f"Purchase order {po_id} not found")
+    if po.status != POStatus.DRAFT:
+        raise InvalidStateTransitionError(f"Only a Draft PO can be registered in GP; this one is {po.status.value}")
+    if gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=key) is not None:
+        raise InvalidStateTransitionError(
+            "This PO's registration is already queued and will post to GP when the relay is back"
+        )
+    now = datetime.utcnow()
+    # A claim whose attempt GP already answered never goes stale (#1274 review). Another window is not
+    # let to resume it either: saving needs the lines, vendor and costs that were pushed, which the
+    # ledger does not hold, and that window's own could differ from what GP has. The attempt itself,
+    # retried with its key, resumes through the ledger.
+    if po.registering_key is not None and po.registering_key != key:
+        gp_number = _unrecorded_gp_po_number(session, po)
+        if gp_number is not None:
+            raise InvalidStateTransitionError(
+                f"GP already created PO {gp_number} for this draft, but it was not recorded here. Retry the "
+                "registration from the window that started it, or have it reconciled; registering again "
+                "would create a second PO in GP."
+            )
+    if _registration_claim_is_live(po, now) and po.registering_key != key:
+        raise InvalidStateTransitionError(
+            "This PO is being registered in GP from another window. Wait a moment, then reopen it."
+        )
+    po.registering_key = key
+    po.registering_since = now
+
+
+def release_po_registration(session: Session, po_id: uuid.UUID, key: str) -> None:
+    """Let go of this attempt's claim; a claim another attempt has since taken is left alone."""
+    session.execute(
+        update(PurchaseOrder)
+        .where(PurchaseOrder.id == po_id, PurchaseOrder.registering_key == key)
+        .values(registering_key=None, registering_since=None)
+    )
 
 
 def update_line_item_order_as(
@@ -1473,8 +1605,9 @@ def update_line_item_unit_cost(
     unit_cost: float,
 ) -> POLineItem:
     """Update unit_cost on a POLineItem. Parent PO must be DRAFT."""
-    if unit_cost <= 0:
-        raise ValidationError("Unit cost must be greater than zero", field="unit_cost")
+    # #1172: zero is a no-charge line, which drafting and registration already accept.
+    if unit_cost < 0:
+        raise ValidationError("Unit cost cannot be negative", field="unit_cost")
 
     stmt = select(POLineItem).where(POLineItem.id == line_item_id)
     poli = session.scalars(stmt).first()
@@ -1571,40 +1704,116 @@ def upload_po_document(
     if po.status in (POStatus.CANCELLED, POStatus.CLOSED):
         raise InvalidStateTransitionError(f"Cannot upload documents to PO in {po.status.value} status")
 
-    file_data = base64.b64decode(file_data_base64)
-    file_size = len(file_data)
+    file_data = _decode_po_document(file_data_base64)
+    stored_type, as_attachment = _stored_content_type(content_type)
 
     doc_id = uuid.uuid4()
-    s3_key = f"po-documents/{po_id}/{doc_id}_{file_name}"
+    s3_key = f"po-documents/{po_id}/{doc_id}_{_safe_key_name(file_name)}"
 
-    storage.upload_file(s3_key, file_data, content_type)
+    storage.upload_file(s3_key, file_data, stored_type, as_attachment=as_attachment)
+    try:
+        doc = PODocument(
+            id=doc_id,
+            po_id=po_id,
+            file_name=file_name,
+            content_type=stored_type,
+            file_size=len(file_data),
+            document_type=document_type,
+            s3_key=s3_key,
+        )
+        session.add(doc)
 
-    doc = PODocument(
-        id=doc_id,
-        po_id=po_id,
-        file_name=file_name,
-        content_type=content_type,
-        file_size=file_size,
-        document_type=document_type,
-        s3_key=s3_key,
-    )
-    session.add(doc)
-
-    # Auto-transition: GP_REGISTERED → VENDOR_CONFIRMED when uploading vendor ack and quote number exists
-    if (
-        document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT
-        and po.status == POStatus.GP_REGISTERED
-        and po.vendor_quote_number is not None
-    ):
-        po.status = POStatus.VENDOR_CONFIRMED
+        # Auto-transition: GP_REGISTERED → VENDOR_CONFIRMED when uploading vendor ack and quote number exists
+        if (
+            document_type == PODocumentType.VENDOR_ACKNOWLEDGEMENT
+            and po.status == POStatus.GP_REGISTERED
+            and po.vendor_quote_number is not None
+        ):
+            po.status = POStatus.VENDOR_CONFIRMED
+    except Exception:
+        discard_uploaded_file(s3_key)
+        raise
 
     return doc
 
 
-def delete_po_document(session: Session, document_id: uuid.UUID) -> None:
-    """Delete a PO document. Validates PO status allows edits."""
+# #1233: a PO document is a quote, an acknowledgement, a packing slip or the generated PO - a scan or a
+# PDF, well under this. The cap is checked on the encoded length first, so an oversized upload is
+# refused before it is decoded into memory at all.
+MAX_PO_DOCUMENT_BYTES = 20 * 1024 * 1024
+
+# Types a browser may render inline from the document link. SVG is left out on purpose (it can carry
+# script); anything not listed is stored as a download.
+_INLINE_DOCUMENT_TYPES = frozenset(
+    {
+        "application/pdf",
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/tiff",
+        "image/bmp",
+        "image/heic",
+        "application/msword",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+)
+
+
+def _decode_po_document(file_data_base64: str) -> bytes:
+    if len(file_data_base64 or "") > (MAX_PO_DOCUMENT_BYTES * 4) // 3 + 4:
+        raise ValidationError(
+            f"The file is larger than {MAX_PO_DOCUMENT_BYTES // (1024 * 1024)} MB", field="file_data_base64"
+        )
+    try:
+        data = base64.b64decode(file_data_base64 or "", validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise ValidationError("The file could not be read; upload it again", field="file_data_base64") from e
+    if not data:
+        raise ValidationError("The file is empty", field="file_data_base64")
+    if len(data) > MAX_PO_DOCUMENT_BYTES:
+        raise ValidationError(
+            f"The file is larger than {MAX_PO_DOCUMENT_BYTES // (1024 * 1024)} MB", field="file_data_base64"
+        )
+    return data
+
+
+def _stored_content_type(content_type: str | None) -> tuple[str, bool]:
+    """The type the object is stored and served with, and whether it must download as an attachment.
+    The client's word is kept only for a type on the list; anything else is opaque bytes."""
+    normalised = (content_type or "").split(";", 1)[0].strip().lower()
+    if normalised in _INLINE_DOCUMENT_TYPES:
+        return normalised, False
+    return "application/octet-stream", True
+
+
+def _safe_key_name(file_name: str | None) -> str:
+    """The file name as it appears in the storage key: letters, digits, dot, dash and underscore only,
+    no leading dots, at most 100 characters. The row keeps the name as uploaded for display."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", file_name or "").strip("._")
+    return cleaned[-100:] or "file"
+
+
+def discard_uploaded_file(s3_key: str) -> None:
+    """Remove an object whose row never landed (#1235). Best effort: a failure here costs an orphaned
+    object, and the error that got us here is the one worth raising."""
     from app.services import storage
 
+    try:
+        storage.delete_file(s3_key)
+    except Exception:  # noqa: BLE001
+        logger.warning("po document upload not removed from storage", extra={"s3_key": s3_key}, exc_info=True)
+
+
+def delete_po_document(session: Session, document_id: uuid.UUID) -> str:
+    """Delete a PO document's row. Validates PO status allows edits.
+
+    Returns the stored file's key and leaves the file alone (#1171): the caller removes it once the
+    commit has landed, so a commit that fails keeps a row whose file is still there."""
     stmt = select(PODocument).where(PODocument.id == document_id)
     doc = session.scalars(stmt).first()
     if doc is None:
@@ -1621,7 +1830,7 @@ def delete_po_document(session: Session, document_id: uuid.UUID) -> None:
     deleted_doc_po_id = doc.po_id
     deleted_doc_type = doc.document_type
 
-    storage.delete_file(doc.s3_key)
+    s3_key = doc.s3_key
     session.delete(doc)
 
     # Auto-revert: VENDOR_CONFIRMED → GP_REGISTERED when last vendor ack doc is deleted
@@ -1635,6 +1844,8 @@ def delete_po_document(session: Session, document_id: uuid.UUID) -> None:
         ).first()
         if remaining_ack is None:
             po.status = POStatus.GP_REGISTERED
+
+    return s3_key
 
 
 def get_po_document(session: Session, document_id: uuid.UUID) -> PODocument:

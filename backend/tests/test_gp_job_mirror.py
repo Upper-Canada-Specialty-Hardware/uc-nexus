@@ -351,6 +351,9 @@ def test_a_registration_gp_refuses_for_the_job_reads_as_the_job_error(monkeypatc
     monkeypatch.setattr(po_schema.user_repository, "get_user_gp_buyer_id", lambda user_id: "mira")
     monkeypatch.setattr(po_schema.gp_idempotency, "load", lambda key: None)
     monkeypatch.setattr(po_schema, "_prepare_register_po", lambda **kw: {"lines": [{"job_number": "23093"}]})
+    released = []
+    monkeypatch.setattr(po_schema, "_claim_registration", lambda po_id, key: None)
+    monkeypatch.setattr(po_schema, "_release_registration", lambda po_id, key: released.append(key))
 
     async def _live_check(company, job_number):
         return None
@@ -384,6 +387,7 @@ def test_a_registration_gp_refuses_for_the_job_reads_as_the_job_error(monkeypatc
             )
         )
     assert "GP job 23093 is inactive in GP" in excinfo.value.message
+    assert len(released) == 1  # GP refused it, so the draft is free for the next attempt (#1274)
 
 
 def _stub_the_approval(monkeypatch, relay_error):
@@ -780,6 +784,7 @@ def test_a_queued_write_gp_refuses_for_the_job_fails_for_good_in_the_same_words(
             entity_key=f"po:{uuid.uuid4()}",
             label="Register PO in GP",
         )
+        row.status = "IN_FLIGHT"  # as the worker's claim leaves it
         row_id = row.id
         session.commit()
 
