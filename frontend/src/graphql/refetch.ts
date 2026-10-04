@@ -168,7 +168,8 @@ export const PULL_CANCEL_STALE_ROOT_FIELDS = [
 //
 // Eviction-only, and deliberately nothing paired to refetch by name: pairing an evict with a refetch
 // is the double-run this whole file exists to prevent (see the disjointness note above). The
-// GpOutboxWatcher evicts these when `lastDrainedAt` advances, and whichever watchers are mounted
+// GpOutboxWatcher evicts these when `lastSettledAt` advances (#1410: a failed or cancelled write
+// too, not only a drain), and whichever watchers are mounted
 // repair their own incomplete cache diffs.
 //
 // The set is "everything a receive or a PO registration changes": the PO lists and the PO's own
