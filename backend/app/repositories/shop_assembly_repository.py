@@ -196,10 +196,6 @@ def _check_lines_against_schedule(session: Session, project_id: uuid.UUID, lines
     opened before a tenant owner moved the product to site or By Others still could: the change only
     takes the product off requests that existed when it was saved.
     """
-    from app.models.hardware import HardwareItem
-    from app.models.project import Opening
-    from app.repositories.request_composer import by_others_products, dominant_classification
-
     seen: set[tuple[str, str, str]] = set()
     for line in lines:
         key = (line["opening_number"], line["hardware_category"], line["product_code"])
@@ -209,6 +205,37 @@ def _check_lines_against_schedule(session: Session, project_id: uuid.UUID, lines
                 field="items",
             )
         seen.add(key)
+
+    scheduled, by_classification, by_others = _schedule_facts(
+        session, project_id, {line["opening_number"] for line in lines}
+    )
+
+    for line in lines:
+        key = (line["opening_number"], line["hardware_category"], line["product_code"])
+        on_schedule = scheduled.get(key, 0)
+        if on_schedule <= 0:
+            raise ValidationError(
+                f"{key[1]} {key[2]} is not on opening {key[0]}'s schedule.",
+                field="product_code",
+            )
+        _refuse_if_not_shop_work(key, by_classification, by_others, then="Reload and compose the request again.")
+        if line["requested_quantity"] > on_schedule:
+            raise ValidationError(
+                f"{key[0]} {key[1]} {key[2]}: the schedule gives this opening {on_schedule}, "
+                f"so it cannot be owed {line['requested_quantity']}.",
+                field="requested_quantity",
+            )
+
+
+def _schedule_facts(
+    session: Session, project_id: uuid.UUID, opening_numbers: set[str]
+) -> tuple[dict[tuple[str, str, str], int], dict[tuple[str, str, str], dict[str | None, int]], set[tuple[str, str]]]:
+    """For the named openings: units scheduled per (opening, category, code), the same units split by
+    classification value (None for unclassified), and the project's By Others products. One grouped
+    read plus the exclusion list."""
+    from app.models.hardware import HardwareItem
+    from app.models.project import Opening
+    from app.repositories.request_composer import by_others_products
 
     scheduled: dict[tuple[str, str, str], int] = {}
     by_classification: dict[tuple[str, str, str], dict[str | None, int]] = {}
@@ -221,10 +248,7 @@ def _check_lines_against_schedule(session: Session, project_id: uuid.UUID, lines
             func.sum(HardwareItem.item_quantity),
         )
         .join(Opening, HardwareItem.opening_id == Opening.id)
-        .where(
-            HardwareItem.project_id == project_id,
-            Opening.opening_number.in_({line["opening_number"] for line in lines}),
-        )
+        .where(HardwareItem.project_id == project_id, Opening.opening_number.in_(opening_numbers))
         .group_by(
             Opening.opening_number,
             HardwareItem.hardware_category,
@@ -238,34 +262,33 @@ def _check_lines_against_schedule(session: Session, project_id: uuid.UUID, lines
         counts = by_classification.setdefault(key, {})
         value = classification.value if classification is not None else None
         counts[value] = counts.get(value, 0) + units
-    by_others = by_others_products(session, project_id)
+    return scheduled, by_classification, by_others_products(session, project_id)
 
-    for line in lines:
-        key = (line["opening_number"], line["hardware_category"], line["product_code"])
-        on_schedule = scheduled.get(key, 0)
-        if on_schedule <= 0:
-            raise ValidationError(
-                f"{key[1]} {key[2]} is not on opening {key[0]}'s schedule.",
-                field="product_code",
-            )
-        if (key[1], key[2]) in by_others:
-            raise ValidationError(
-                f"{key[0]} {key[1]} {key[2]}: this product is By Others on this project, so it is not "
-                "assembled in the shop. Reload and compose the request again.",
-                field="items",
-            )
-        if dominant_classification(by_classification.get(key, {})) != Classification.SHOP_HARDWARE:
-            raise ValidationError(
-                f"{key[0]} {key[1]} {key[2]}: this product is not shop hardware on this opening, so it "
-                "cannot go to the shop. Reload and compose the request again.",
-                field="items",
-            )
-        if line["requested_quantity"] > on_schedule:
-            raise ValidationError(
-                f"{key[0]} {key[1]} {key[2]}: the schedule gives this opening {on_schedule}, "
-                f"so it cannot be owed {line['requested_quantity']}.",
-                field="requested_quantity",
-            )
+
+def _refuse_if_not_shop_work(
+    key: tuple[str, str, str],
+    by_classification: dict[tuple[str, str, str], dict[str | None, int]],
+    by_others: set[tuple[str, str]],
+    *,
+    then: str,
+    field: str = "items",
+) -> None:
+    """#1425's rule for one (opening, category, code): the product is not By Others, and the
+    classification covering most of its units on that opening is SHOP_HARDWARE - the composer's rule."""
+    from app.repositories.request_composer import dominant_classification
+
+    if (key[1], key[2]) in by_others:
+        raise ValidationError(
+            f"{key[0]} {key[1]} {key[2]}: this product is By Others on this project, so it is not "
+            f"assembled in the shop. {then}",
+            field=field,
+        )
+    if dominant_classification(by_classification.get(key, {})) != Classification.SHOP_HARDWARE:
+        raise ValidationError(
+            f"{key[0]} {key[1]} {key[2]}: this product is not shop hardware on this opening, so it "
+            f"cannot go to the shop. {then}",
+            field=field,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -580,6 +603,26 @@ def create_shop_assembly_batch(
                 field="lines",
             )
         allocations[key] = quantity
+
+    # #1442: still shop work, by the rule the request was raised under (#1425). A request waiting since
+    # before a product moved to site or By Others can still name it - the override takes a product off
+    # waiting openings, but not every path that changes it does - and batching it would pull site
+    # hardware to the shop. Read after the request lock, so a change committed first is seen. Refused
+    # only on evidence - schedule rows that are not shop work, or a By Others product: a line whose
+    # opening holds no rows for it any more is the schedule replacement's business (#342), not this.
+    _scheduled, by_classification, by_others = _schedule_facts(
+        session, request.project_id, {key[0] for key in allocations}
+    )
+    for key in sorted(allocations):
+        if key not in by_classification and (key[1], key[2]) not in by_others:
+            continue
+        _refuse_if_not_shop_work(
+            key,
+            by_classification,
+            by_others,
+            then="Dismiss the opening or take the line off the batch.",
+            field="lines",
+        )
 
     batch_openings = sorted({key[0] for key in allocations})
 

@@ -805,6 +805,35 @@ def finalize_import_session(
     if schedule_filename is not None:
         project.schedule_filename = schedule_filename
 
+    # 1b. Build classification map. The wizard keys classifications by the PARSED cost, while the rows
+    # it sends carry the PO step's corrected cost (#1263), so an exact (category, code, cost) match can
+    # miss. Cost is a product property (#570), so a miss falls back to the product's one classification
+    # - left None only when the product was given different answers at different costs.
+    classification_map: dict[tuple[str, str, float], Classification] = {}
+    by_product: dict[tuple[str, str], set[Classification]] = defaultdict(set)
+    for c in classifications_input:
+        key = (c["hardware_category"], c["product_code"], c["unit_cost"])
+        classification_map[key] = Classification(c["classification"])
+        by_product[(c["hardware_category"], c["product_code"])].add(classification_map[key])
+    product_classification = {product: next(iter(cls)) for product, cls in by_product.items() if len(cls) == 1}
+
+    def classification_for(hardware_category: str, product_code: str, unit_cost: float):
+        exact = classification_map.get((hardware_category, product_code, unit_cost))
+        return exact if exact is not None else product_classification.get((hardware_category, product_code))
+
+    # 1c. Step 5a writes these onto every row of the product (#1264) - the change the override page
+    # makes, so it is held to the override's plan (#1442): refused while a shop batch for a product is
+    # still being pulled, and a product leaving the shop comes off the openings still waiting on a
+    # pending shop request (applied at 5a). Planned here, under the project lock and before step 2
+    # rewrites the rows, so it reads what the project held; the pending shop requests are locked after
+    # the project, the order set_product_classifications takes them. Who may make the change is
+    # unchanged (#1443).
+    from app.repositories import classification_override_repository
+
+    reclassification_plans = classification_override_repository.plan_import_reclassification(
+        session, project.id, product_classification
+    )
+
     # 2. Wipe AVAILABLE hardware items for this project — they are pure XML-derived rows
     # that will be regenerated from the current input. IN_PO rows (attached to prior POs, or marked
     # purchased by the SharePoint migration) are always preserved, replace_schedule included (#1123):
@@ -871,22 +900,6 @@ def finalize_import_session(
     already_ordered_qty: dict[tuple[uuid.UUID, str, str, int | None], int] = defaultdict(int)
     for hi in session.scalars(select(HardwareItemModel).where(HardwareItemModel.project_id == project.id)).all():
         already_ordered_qty[(hi.opening_id, hi.product_code, hi.hardware_category, hi.leaf)] += hi.item_quantity
-
-    # 2. Build classification map. The wizard keys classifications by the PARSED cost, while the rows
-    # it sends carry the PO step's corrected cost (#1263), so an exact (category, code, cost) match can
-    # miss. Cost is a product property (#570), so a miss falls back to the product's one classification
-    # - left None only when the product was given different answers at different costs.
-    classification_map: dict[tuple[str, str, float], Classification] = {}
-    by_product: dict[tuple[str, str], set[Classification]] = defaultdict(set)
-    for c in classifications_input:
-        key = (c["hardware_category"], c["product_code"], c["unit_cost"])
-        classification_map[key] = Classification(c["classification"])
-        by_product[(c["hardware_category"], c["product_code"])].add(classification_map[key])
-    product_classification = {product: next(iter(cls)) for product, cls in by_product.items() if len(cls) == 1}
-
-    def classification_for(hardware_category: str, product_code: str, unit_cost: float):
-        exact = classification_map.get((hardware_category, product_code, unit_cost))
-        return exact if exact is not None else product_classification.get((hardware_category, product_code))
 
     # 2b. Manage project excluded items (By Others scope classification)
     if excluded_items_input is not None:
@@ -1163,6 +1176,11 @@ def finalize_import_session(
             .execution_options(synchronize_session="fetch")
         )
     session.flush()
+    # The rest of the override's plan (#1442, planned at 1c): a product leaving the shop comes off the
+    # openings still waiting on a pending shop request, and each change is logged with the override's.
+    classification_override_repository.apply_import_reclassification(
+        session, project.id, reclassification_plans, changed_by=created_by
+    )
 
     # 5b. Re-apply the SharePoint migration's purchased-marking. Since #1123 a replace_schedule keeps
     # the null-linked IN_PO rows too, so the preserved rows already cover the targets and this is
