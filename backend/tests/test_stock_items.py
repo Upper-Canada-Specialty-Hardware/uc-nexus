@@ -37,6 +37,34 @@ def test_reclassify_full_row_changes_category_in_place(db_session):
     assert si.quantity == 10
 
 
+def test_reclassify_full_row_folds_into_the_row_already_holding_the_new_code(db_session):
+    """#1509: a typo'd code beside the right one on a shelf - reclassifying the whole typo row used to
+    rewrite it in place and leave two rows of one product on that shelf."""
+    from app.models.stock_item import StockItem
+
+    right = make_stock_item(db_session, quantity=4, category="HINGE", code="5BB1 4.5x4.5", aisle="A", row="1", bay="1")
+    typo = make_stock_item(db_session, quantity=3, category="HINGE", code="5BB1 4.5 x 4.5", aisle="A", row="1", bay="1")
+    typo_id = typo.id
+
+    reclassified, original = stock_repository.reclassify_stock_item(
+        db_session,
+        stock_item_id=typo_id,
+        new_hardware_category="HINGE",
+        new_product_code="5BB1 4.5x4.5",
+        quantity=3,
+        reason_text="typo at receive",
+        performed_by="warehouse",
+    )
+
+    assert reclassified.id == right.id
+    assert reclassified.quantity == 7
+    assert original is None
+    db_session.expire_all()
+    assert db_session.get(StockItem, typo_id) is None
+    rows = db_session.query(StockItem).filter(StockItem.warehouse_id == right.warehouse_id).all()
+    assert [(r.product_code, r.quantity) for r in rows] == [("5BB1 4.5x4.5", 7)]
+
+
 def test_reclassify_split_moves_part_to_a_new_row(db_session):
     """The branch that crashed: the new row is created via _find_or_create_stock_row."""
     si = make_stock_item(db_session, quantity=10, category="HINGE", code="HG-100")

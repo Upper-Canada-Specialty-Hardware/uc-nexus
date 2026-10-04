@@ -16,6 +16,7 @@ from .common import (
     _find_or_create_stock_row,
     _find_stock_row,
     _log_audit_event,
+    _stock_row_is_referenced,
     _validate_location_fields,
     fold_into_same_key_row,
     lock_for_shelf_move,
@@ -318,6 +319,32 @@ def reclassify_stock_item(
     now = datetime.utcnow()
 
     if quantity == si.quantity:
+        # #1509: the shelf may already hold the new key - a typo'd code put beside the right one at
+        # receive. Rewriting this row in place then left two rows of one product at one price (#1164,
+        # #1377), so the units fold into that row instead, the way a whole-row kind flip and a shelf
+        # move fold. Re-found here locked; lock_pool_source already holds it.
+        target = _find_stock_row(
+            session,
+            warehouse_id=si.warehouse_id,
+            hardware_category=new_hardware_category,
+            product_code=new_product_code,
+            aisle=si.aisle,
+            row=si.row,
+            bay=si.bay,
+            kind=si.kind,
+            unit_cost=si.unit_cost,
+        )
+        if target is not None and target.id != si.id:
+            return _fold_reclassified_row(
+                session,
+                si,
+                target,
+                new_hardware_category=new_hardware_category,
+                new_product_code=new_product_code,
+                reason_text=reason_text,
+                performed_by=performed_by,
+            )
+
         # Full reclassify in place
         old_cat = si.hardware_category
         old_code = si.product_code
@@ -389,6 +416,51 @@ def reclassify_stock_item(
         detail=detail,
     )
     return (new_row, si)
+
+
+def _fold_reclassified_row(
+    session: Session,
+    si: StockItem,
+    target: StockItem,
+    *,
+    new_hardware_category: str,
+    new_product_code: str,
+    reason_text: str | None,
+    performed_by: str,
+) -> tuple[StockItem, StockItem | None]:
+    """Move every unit of `si` into `target`, the row already holding the new key on this shelf (#1509).
+
+    Only sound units reach here (a whole-row reclassify needs no deficient units), so only the quantity
+    moves. The emptied row is deleted when nothing points at it, as `fold_into_same_key_row` does; a
+    referenced one stays, empty and hidden from the browse view, and comes back as the original.
+    """
+    detail = {
+        "originalStockItemId": str(si.id),
+        "newStockItemId": str(target.id),
+        "from": {"hardwareCategory": si.hardware_category, "productCode": si.product_code},
+        "to": {"hardwareCategory": new_hardware_category, "productCode": new_product_code},
+        "quantity": si.quantity,
+        "reasonText": reason_text,
+        "foldedIntoStockItemId": str(target.id),
+    }
+    target.quantity += si.quantity
+    si.quantity = 0
+    session.flush()
+    for entity_id in (si.id, target.id):
+        _log_audit_event(
+            session,
+            project_id=None,
+            entity_type=AuditEntityType.STOCK_ITEM,
+            entity_id=entity_id,
+            action=AuditAction.RECLASSIFY,
+            performed_by=performed_by,
+            detail=detail,
+        )
+    if _stock_row_is_referenced(session, si.id):
+        return (target, si)
+    session.delete(si)
+    session.flush()
+    return (target, None)
 
 
 def set_stock_item_kind(

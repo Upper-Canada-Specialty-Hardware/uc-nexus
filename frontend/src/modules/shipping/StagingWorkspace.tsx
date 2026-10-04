@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -33,7 +33,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { ChevronDown, ChevronUp, GripVertical, Package, Plus, Search, Trash2 } from 'lucide-react';
-import { useMutation, useQuery } from '@apollo/client/react';
+import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import {
   CREATE_SHIPMENT_CONTAINER,
   DELETE_SHIPMENT_CONTAINER,
@@ -99,6 +99,7 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
   const [shipOpen, setShipOpen] = useState(false);
   const [dragging, setDragging] = useState<string | null>(null);
 
+  const client = useApolloClient();
   const { data, loading, error, refetch } = useQuery<{ stagingPool: StagingPool }>(GET_STAGING_POOL, {
     variables: { projectId },
     skip: !projectId,
@@ -230,20 +231,20 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
     [save],
   );
 
-  // The containers as last drawn, for an undo that runs after the screen has moved on.
-  const latestContainers = useRef(containers);
-  useEffect(() => {
-    latestContainers.current = containers;
-  }, [containers]);
-
   /**
    * #1504: the trash beside the up/down arrows saves at once, and on a tablet a near miss on "down"
    * takes the line out. Rather than a confirm on every removal, the toast offers it back: Undo puts the
    * line where it was, in one save. It goes into the container as it stands then, not the list from
    * before the removal, so anything placed in the meantime is kept.
+   *
+   * #1507: the toast outlives this screen, and a save replaces the container's whole contents, so the
+   * container is read from the server when Undo is pressed - for the project the line was taken out
+   * in - rather than from what this screen last drew. A copy held here goes stale the moment the
+   * screen closes, and saving it would quietly take out whatever was placed since.
    */
   const removeItem = useCallback(
     async (container: Container, itemId: string) => {
+      const forProject = projectId;
       const index = container.items.findIndex((i) => i.id === itemId);
       if (index === -1) return;
       const removed = container.items[index];
@@ -252,8 +253,19 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
       if (!result?.data) return;
       showToast(`${removed.productCode} taken out of ${container.name}`, 'info', {
         label: 'Undo',
-        onClick: () => {
-          const current = latestContainers.current.find((c) => c.id === container.id);
+        onClick: async () => {
+          const fresh = await client
+            .query<{ stagingPool: StagingPool }>({
+              query: GET_STAGING_POOL,
+              variables: { projectId: forProject },
+              fetchPolicy: 'network-only',
+            })
+            .catch(() => null);
+          if (!fresh?.data) {
+            showToast(`Could not read ${container.name} - put ${removed.productCode} back by hand`, 'error');
+            return;
+          }
+          const current = fresh.data.stagingPool.containers.find((c) => c.id === container.id);
           if (!current) {
             showToast(`${container.name} is gone - ${removed.productCode} stays in the pool`, 'warning');
             return;
@@ -266,7 +278,7 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
         },
       });
     },
-    [save, showToast],
+    [client, projectId, save, showToast],
   );
 
   /** Correct how much of a loose line a container holds. Down to zero takes the line out. */
