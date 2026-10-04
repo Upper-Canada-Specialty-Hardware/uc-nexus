@@ -62,6 +62,14 @@ it('refreshes the drafts when the GP outbox drains', () => {
   expect(refetch.GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS).toContain('receiveDrafts');
 });
 
+it('refreshes the put-away list, progress and hardware status when the GP outbox settles (#1417)', () => {
+  // A drained receipt lands unshelved and moves received / on hand; a drained registration moves on
+  // order. None of these pages poll, so the watcher's eviction is their only signal.
+  for (const field of ['unlocatedInventory', 'projectProgressByProduct', 'hardwareStatusByProduct']) {
+    expect(refetch.GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS).toContain(field);
+  }
+});
+
 describe('refetch/evict lists stay disjoint', () => {
   it.each(PAIRS)('%s', (_label, refetched, evicted) => {
     const evictedSet = new Set(evicted);

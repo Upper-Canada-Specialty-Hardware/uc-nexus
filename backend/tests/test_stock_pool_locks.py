@@ -10,9 +10,9 @@ transaction's committed write would be, and the writer must act on the new value
 """
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import delete, update
 
-from app.errors import ValidationError
+from app.errors import NotFoundError, ValidationError
 from app.models.enums import DeficiencyResolution, DestockCost, DestockSource, PoolKind
 from app.models.inventory import InventoryLocation
 from app.models.stock_item import StockItem
@@ -356,12 +356,12 @@ def test_a_move_onto_a_same_key_row_locks_both_rows_together(db_session, monkeyp
 def test_a_pool_transfer_locks_source_and_destination_together(db_session, monkeypatch):
     """#1401: a pool-row transfer onto a shelf that holds the same key locks both rows up front, in id
     order, instead of the source first and the destination when it is found."""
-    from app.repositories.stock import movements
+    from app.repositories.stock import common
 
     define_location(db_session, aisle="C", row="3", bay="3")
     source = make_stock_item(db_session, quantity=4, aisle="A", row="1", bay="1")
     dest = make_stock_item(db_session, quantity=6, aisle="C", row="3", bay="3")
-    calls = _spy_pool_locks(monkeypatch, movements)
+    calls = _spy_pool_locks(monkeypatch, common)
 
     stock_repository.transfer_inventory(
         db_session,
@@ -377,3 +377,79 @@ def test_a_pool_transfer_locks_source_and_destination_together(db_session, monke
 
     assert calls and calls[0] == {source.id, dest.id}
     assert (source.quantity, dest.quantity) == (1, 9)
+
+
+def _delete_before_lock(monkeypatch, row_id):
+    """Delete `row_id` the moment `lock_pool_rows` is called, the way a concurrent move that folded it
+    away and committed while this lock waited would (#1416). A Core DELETE leaves the session holding
+    its stale copy, which is exactly what the caller found unlocked."""
+    from app.repositories.stock import common
+
+    real = common.lock_pool_rows
+
+    def deleting(session, ids):
+        session.execute(delete(StockItem).where(StockItem.id == row_id))
+        return real(session, ids)
+
+    monkeypatch.setattr(common, "lock_pool_rows", deleting)
+
+
+def test_lock_pool_rows_returns_only_the_rows_it_locked(db_session):
+    from app.repositories.stock import common
+
+    a = make_stock_item(db_session, quantity=1, aisle="A", row="1", bay="1")
+    b = make_stock_item(db_session, quantity=1, aisle="B", row="1", bay="1")
+    db_session.execute(delete(StockItem).where(StockItem.id == b.id))
+
+    locked = common.lock_pool_rows(db_session, [b.id, a.id, None])
+
+    assert set(locked) == {a.id}
+    assert common.lock_pool_rows(db_session, [None]) == {}
+
+
+def test_a_move_refuses_a_row_deleted_while_it_waited(db_session, monkeypatch):
+    """#1416: the row is found unlocked, then folded away by a concurrent move before the lock is
+    granted. The move is refused as not found instead of failing its flush as a generic error."""
+    define_location(db_session, aisle="C", row="3", bay="3")
+    source = make_stock_item(db_session, quantity=4, aisle="A", row="1", bay="1")
+    _delete_before_lock(monkeypatch, source.id)
+
+    with pytest.raises(NotFoundError, match=f"Stock item {source.id} not found"):
+        stock_repository.move_stock_location(
+            db_session, stock_item_id=source.id, new_aisle="C", new_row="3", new_bay="3", performed_by="warehouse"
+        )
+
+
+def test_a_move_onto_a_shelf_whose_same_key_row_vanished_just_moves(db_session, monkeypatch):
+    """#1416: the same-key row on the target shelf is deleted while the lock waits. The fold looks it up
+    again, locked, finds nothing, and the row simply moves."""
+    define_location(db_session, aisle="C", row="3", bay="3")
+    source = make_stock_item(db_session, quantity=4, aisle="A", row="1", bay="1")
+    target = make_stock_item(db_session, quantity=6, aisle="C", row="3", bay="3")
+    _delete_before_lock(monkeypatch, target.id)
+
+    result = stock_repository.move_stock_location(
+        db_session, stock_item_id=source.id, new_aisle="C", new_row="3", new_bay="3", performed_by="warehouse"
+    )
+
+    assert result.id == source.id
+    assert (source.aisle, source.row, source.bay, source.quantity) == ("C", "3", "3", 4)
+
+
+def test_a_pool_transfer_refuses_a_source_deleted_while_it_waited(db_session, monkeypatch):
+    define_location(db_session, aisle="C", row="3", bay="3")
+    source = make_stock_item(db_session, quantity=4, aisle="A", row="1", bay="1")
+    _delete_before_lock(monkeypatch, source.id)
+
+    with pytest.raises(NotFoundError, match=f"Stock item {source.id} not found"):
+        stock_repository.transfer_inventory(
+            db_session,
+            source_type="STOCK_ITEM",
+            source_id=source.id,
+            quantity=3,
+            dest_warehouse_id=source.warehouse_id,
+            dest_aisle="C",
+            dest_row="3",
+            dest_bay="3",
+            performed_by="warehouse",
+        )
