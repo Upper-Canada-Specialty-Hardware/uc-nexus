@@ -208,8 +208,8 @@ function groupByCategory(items: UnlocatedItem[]): Map<string, UnlocatedItem[]> {
 
 export default function PutAwayTab() {
   const { showToast } = useToast();
-  const [projectFilter, setProjectFilter] = useState<string>('');
-  const [warehouseFilter, setWarehouseFilter] = useState<string>('');
+  const [projectPick, setProjectFilter] = useState<string>('');
+  const [warehousePick, setWarehouseFilter] = useState<string>('');
   const [poFilter, setPoFilter] = useState<string>('');
   const [locationInputs, setLocationInputs] = useState<Record<string, LocationInput>>({});
   const [assigningId, setAssigningId] = useState<string | null>(null);
@@ -226,6 +226,11 @@ export default function PutAwayTab() {
   const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
     variables: { includeInactive: true },
   });
+  // #1469: a filter only while the acting company still offers it (as LocationCleanupPage does). A UC
+  // NEXUS ADMIN's company switch reloads both lists; a pick from the previous company drops out instead
+  // of being sent, where it matched nothing and emptied the lists - a real backlog read as none.
+  const projectFilter = projectsData?.projects.some((p) => p.id === projectPick) ? projectPick : '';
+  const warehouseFilter = warehousesData?.warehouses.some((w) => w.id === warehousePick) ? warehousePick : '';
   // #632: the defined-locations registry (active only) - the three pickers are strict picks from it,
   // filtered to the item's warehouse, and Assign is gated on an exact registry match.
   const { data: registryData } = useQuery<{ warehouseLocations: WarehouseLocationDef[] }>(
