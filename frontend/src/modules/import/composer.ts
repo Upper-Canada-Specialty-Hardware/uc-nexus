@@ -36,6 +36,11 @@ export interface CoverageRow {
   suggestedQuantity: number;
   /** Ordered from a vendor and not yet received, project-wide. Not an allocation to this opening. */
   onOrderQuantity: number;
+  /**
+   * #1425: the project marked the product By Others. Its rows keep their classification, so this is
+   * what keeps it out of the SHOP group - the server refuses it on a shop request too.
+   */
+  byOthers?: boolean;
 }
 
 /**
@@ -64,6 +69,8 @@ export function coverageGroup(row: { classification: HardwareClassification | nu
 export function composableRows(rows: CoverageRow[], group?: CoverageGroup): CoverageRow[] {
   return rows
     .filter((row) => row.suggestedQuantity > 0 && (group === undefined || coverageGroup(row) === group))
+    // #1425: By Others hardware is not UCSH's to assemble, whatever its rows were classified as.
+    .filter((row) => group !== 'SHOP' || !row.byOthers)
     .sort(
       (a, b) =>
         a.openingNumber.localeCompare(b.openingNumber) ||

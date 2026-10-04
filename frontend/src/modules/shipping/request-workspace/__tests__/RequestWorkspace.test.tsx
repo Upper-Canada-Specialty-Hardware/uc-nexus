@@ -285,6 +285,7 @@ function coverageMock(suggested = 4, owed = 4): MockedResponse {
             claimedQuantity: 0,
             suggestedQuantity: suggested,
             onOrderQuantity: 0,
+            byOthers: false,
           },
         ],
       },
@@ -390,6 +391,7 @@ function coverageRow(over: Partial<Record<string, unknown>> = {}) {
     claimedQuantity: 0,
     suggestedQuantity: 4,
     onOrderQuantity: 0,
+    byOthers: false,
     ...over,
   };
 }

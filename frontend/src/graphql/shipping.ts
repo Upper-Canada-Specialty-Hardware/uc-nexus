@@ -198,6 +198,8 @@ export const GET_REQUEST_COVERAGE = gql`
       claimedQuantity
       suggestedQuantity
       onOrderQuantity
+      # #1425: By Others on this project - never offered for the shop.
+      byOthers
     }
   }
 `;

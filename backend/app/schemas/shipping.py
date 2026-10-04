@@ -246,6 +246,7 @@ class ShippingQueries:
                     claimed_quantity=row["claimed_quantity"],
                     suggested_quantity=row["suggested_quantity"],
                     on_order_quantity=row["on_order_quantity"],
+                    by_others=row["by_others"],
                 )
                 for row in rows
             ]

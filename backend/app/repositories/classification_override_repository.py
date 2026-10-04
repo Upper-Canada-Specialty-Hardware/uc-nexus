@@ -439,7 +439,13 @@ def set_product_classifications(
     The project's pending shop requests are locked first, in id order, and the plan is built under that
     lock (#1156). Batch, dismiss, reject and discard each lock the request they decide (#1121); planned
     from unlocked reads, a batch committed at the same moment could leave a site product on a live shop
-    pull, or a batch whose request lines this change then deleted."""
+    pull, or a batch whose request lines this change then deleted.
+
+    The project row is locked before them (#1425), in the order a finalize takes the two: a shop request
+    raised at the same moment is checked against the classification after this commits, not before."""
+    from app.models.project import Project
+
+    session.execute(select(Project.id).where(Project.id == project_id).with_for_update(key_share=True))
     _lock_pending_shop_requests(session, project_id)
     plans = plan_product_classifications(session, project_id, changes)
     blocked = [
