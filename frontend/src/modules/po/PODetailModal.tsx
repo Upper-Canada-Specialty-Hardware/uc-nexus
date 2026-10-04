@@ -305,14 +305,15 @@ export default function PODetailModal({
     }
 
     // Issue #216: the delivery dates are status-gated - preferred is the PM's ask on the DRAFT
-    // request, expected is the vendor's answer once GP-Registered. Send only the one editable now
-    // (null = "not provided" for these).
+    // request, expected is the vendor's answer once GP-Registered. #1463: only the one editable now is
+    // sent, and an emptied box sends null, which clears it; the other is left out (undefined), which
+    // the server reads as "leave alone".
     const isDraft = po.status === 'DRAFT';
     updatePo({
       variables: {
         id: po.id,
-        preferredDeliveryDate: isDraft ? preferredDeliveryDate || null : null,
-        expectedDeliveryDate: !isDraft ? expectedDeliveryDate || null : null,
+        preferredDeliveryDate: isDraft ? preferredDeliveryDate || null : undefined,
+        expectedDeliveryDate: !isDraft ? expectedDeliveryDate || null : undefined,
         poNumber: poNumber || null,
         // #969: sent as typed. An emptied field is "" and clears it - which is how removing the quote #
         // takes a PO back from Vendor Confirmed. Null would mean "leave alone" and never clear.

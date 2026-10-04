@@ -257,7 +257,8 @@ describe('PODetailModal', () => {
     expect(calls[0]).toEqual({
       id: 'po-1',
       preferredDeliveryDate: '2026-09-15',
-      expectedDeliveryDate: null,
+      // #1463: the date not editable on a draft is left out, not sent as null.
+      expectedDeliveryDate: undefined,
       poNumber: null,
       vendorQuoteNumber: 'Q-200',
       notes: '',
@@ -292,7 +293,7 @@ describe('PODetailModal', () => {
     await screen.findByText('PO updated successfully');
     expect(calls[0]).toEqual({
       id: 'po-1',
-      preferredDeliveryDate: null,
+      preferredDeliveryDate: undefined,
       expectedDeliveryDate: '2026-10-01',
       poNumber: 'PO-1001',
       vendorQuoteNumber: 'Q-100',
@@ -301,6 +302,28 @@ describe('PODetailModal', () => {
       tariffAmount: null,
       poolKind: null,
     });
+  });
+
+  it('clears an emptied expected date: null for it, the preferred date left out (#1463)', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const mocks: MockedResponse[] = [
+      {
+        request: { query: UPDATE_PO, variables: () => true },
+        result: (vars) => {
+          calls.push(vars as Record<string, unknown>);
+          return { data: updatePoData(registeredPo) };
+        },
+      },
+    ];
+    renderModal(registeredPo, mocks);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByLabelText('Expected Delivery Date'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await screen.findByText('PO updated successfully');
+    expect(calls[0].expectedDeliveryDate).toBeNull();
+    expect(calls[0].preferredDeliveryDate).toBeUndefined();
   });
 
   it('clears an emptied vendor quote # rather than leaving it alone (#969)', async () => {
@@ -386,7 +409,7 @@ describe('PODetailModal', () => {
       {
         id: 'po-1',
         preferredDeliveryDate: '2026-08-01',
-        expectedDeliveryDate: null,
+        expectedDeliveryDate: undefined,
         poNumber: null,
         vendorQuoteNumber: 'Q-100',
         notes: '',

@@ -1157,8 +1157,9 @@ class POMutations:
         self,
         info: strawberry.Info,
         id: strawberry.ID,
-        expected_delivery_date: date | None = None,
-        preferred_delivery_date: date | None = None,
+        # #1463: tri-state - omitted leaves the date, null clears it (in the status where it is editable).
+        expected_delivery_date: date | None = strawberry.UNSET,
+        preferred_delivery_date: date | None = strawberry.UNSET,
         po_number: str | None = None,
         vendor_quote_number: str | None = None,
         project_id: strawberry.ID | None = None,
@@ -1180,8 +1181,10 @@ class POMutations:
             po = po_repository.update_po(
                 session,
                 uuid.UUID(str(id)),
-                expected_delivery_date=expected_delivery_date,
-                preferred_delivery_date=preferred_delivery_date,
+                expected_delivery_date=_UNSET if expected_delivery_date is strawberry.UNSET else expected_delivery_date,
+                preferred_delivery_date=_UNSET
+                if preferred_delivery_date is strawberry.UNSET
+                else preferred_delivery_date,
                 po_number=po_number,
                 vendor_quote_number=vendor_quote_number,
                 project_id=pid,
