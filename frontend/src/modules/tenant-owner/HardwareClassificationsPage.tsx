@@ -338,6 +338,8 @@ export default function HardwareClassificationsPage() {
               rows={rows}
               density="compact"
               checkboxSelection
+              // #1473: header select-all as explicit ids, not MUI's 'every row except' model the handler reads as none.
+              disableRowSelectionExcludeModel
               disableRowSelectionOnClick
               rowSelectionModel={selection}
               onRowSelectionModelChange={setSelection}

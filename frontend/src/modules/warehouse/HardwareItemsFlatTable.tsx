@@ -227,6 +227,8 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
           rows={rows}
           density="compact"
           checkboxSelection
+          // #1473: header select-all as explicit ids, not MUI's 'every row except' model the handler reads as none.
+          disableRowSelectionExcludeModel
           columnVisibilityModel={columnVisibilityModel}
           onColumnVisibilityModelChange={setColumnVisibilityModel}
           disableRowSelectionOnClick
