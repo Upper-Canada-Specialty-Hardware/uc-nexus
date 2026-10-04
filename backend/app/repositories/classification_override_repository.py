@@ -424,6 +424,107 @@ def _lock_pending_shop_requests(session: Session, project_id: uuid.UUID) -> None
     lock_rows(session, ShopAssemblyRequest, list(ids))
 
 
+def _refuse_blocked(plans: list[dict]) -> None:
+    """Refuse the whole change when any product is blocked, naming each one and what holds it."""
+    blocked = [
+        f"{p['product_code']} ({p['hardware_category']}): {'; '.join(p['blocks'])}" for p in plans if p["blocks"]
+    ]
+    if blocked:
+        raise ConflictError(
+            "Nothing was changed. These products cannot take that classification while something depends on it: "
+            + " | ".join(blocked),
+            field="changes",
+        )
+
+
+def _record_change(
+    session: Session, project_id: uuid.UUID, plan: dict, *, changed_by: str, now: datetime
+) -> HardwareClassificationChange:
+    change = HardwareClassificationChange(
+        id=uuid.uuid4(),
+        project_id=project_id,
+        hardware_category=plan["hardware_category"],
+        product_code=plan["product_code"],
+        from_choice=plan["from_choice"].value,
+        to_choice=plan["to_choice"].value,
+        changed_by=changed_by,
+        changed_at=now,
+        # What had already gone out, and what saving changed - so the log reads the change in full.
+        note="; ".join(plan["went_out"] + plan["adjusts"]) or None,
+    )
+    session.add(change)
+    return change
+
+
+_CHOICE_OF_STORED = {stored: choice for choice, stored in _STORED.items()}
+
+
+def plan_import_reclassification(
+    session: Session,
+    project_id: uuid.UUID,
+    stored: dict[Product, Classification],
+) -> list[dict]:
+    """The override's plan for the Site/Shop values an import finalize is about to write (#1442).
+
+    A finalize writes the classification it was given onto every row of the product (#1264), which is
+    the same change the override page makes, so it is held to the same plan: refused while a shop batch
+    for the product is still being pulled, and a product leaving the shop comes off the openings still
+    waiting on a pending shop request. Called by the finalize under its project lock and BEFORE it
+    rewrites the schedule rows, so `current` is what the project held, not what the finalize wrote.
+
+    Only products already on the project whose choice is Shop, Site or Mixed are planned. A product
+    the finalize brings in, or whose rows were never classified, is taking its first value; a By Others
+    product stays By Others (a finalize changes the exclusion table only through its own excluded list),
+    so the rows' Site/Shop is not the choice anybody sees. Pending shop requests are locked first, in
+    the order set_product_classifications takes them.
+    """
+    if not stored:
+        return []
+    _lock_pending_shop_requests(session, project_id)
+    current = {
+        (r["hardware_category"], r["product_code"]): r["choice"]
+        for r in list_product_classifications(session, project_id)
+    }
+    changes = [
+        (category, code, _CHOICE_OF_STORED[classification])
+        for (category, code), classification in sorted(stored.items())
+        if current.get((category, code))
+        in (
+            HardwareClassificationChoice.UCH_SHOP,
+            HardwareClassificationChoice.UCH_SITE,
+            HardwareClassificationChoice.MIXED,
+        )
+        and current[(category, code)] != _CHOICE_OF_STORED[classification]
+    ]
+    if not changes:
+        return []
+    plans = plan_product_classifications(session, project_id, changes)
+    _refuse_blocked(plans)
+    return plans
+
+
+def apply_import_reclassification(
+    session: Session, project_id: uuid.UUID, plans: list[dict], *, changed_by: str
+) -> list[HardwareClassificationChange]:
+    """What an import's reclassification does beyond the rows the finalize itself rewrites (#1442):
+    a product leaving the shop comes off waiting shop openings (the manager is told), and every change
+    is logged where the override page's history reads it."""
+    now = datetime.utcnow()
+    written: list[HardwareClassificationChange] = []
+    for plan in plans:
+        if plan["leaves_shop_requests"]:
+            _take_off_waiting_shop_openings(
+                session,
+                project_id,
+                (plan["hardware_category"], plan["product_code"]),
+                plan["to_choice"],
+                changed_by=changed_by,
+            )
+        written.append(_record_change(session, project_id, plan, changed_by=changed_by, now=now))
+    session.flush()
+    return written
+
+
 def set_product_classifications(
     session: Session,
     project_id: uuid.UUID,
@@ -448,15 +549,7 @@ def set_product_classifications(
     session.execute(select(Project.id).where(Project.id == project_id).with_for_update(key_share=True))
     _lock_pending_shop_requests(session, project_id)
     plans = plan_product_classifications(session, project_id, changes)
-    blocked = [
-        f"{p['product_code']} ({p['hardware_category']}): {'; '.join(p['blocks'])}" for p in plans if p["blocks"]
-    ]
-    if blocked:
-        raise ConflictError(
-            "Nothing was changed. These products cannot take that classification while something depends on it: "
-            + " | ".join(blocked),
-            field="changes",
-        )
+    _refuse_blocked(plans)
 
     now = datetime.utcnow()
     written: list[HardwareClassificationChange] = []
@@ -490,19 +583,6 @@ def set_product_classifications(
         else:
             session.execute(delete(ProjectExcludedItem).where(match))
             session.execute(update(HardwareItem).where(product_rows).values(classification=_STORED[to], updated_at=now))
-        change = HardwareClassificationChange(
-            id=uuid.uuid4(),
-            project_id=project_id,
-            hardware_category=category,
-            product_code=code,
-            from_choice=plan["from_choice"].value,
-            to_choice=to.value,
-            changed_by=changed_by,
-            changed_at=now,
-            # What had already gone out, and what saving changed - so the log reads the change in full.
-            note="; ".join(plan["went_out"] + plan["adjusts"]) or None,
-        )
-        session.add(change)
-        written.append(change)
+        written.append(_record_change(session, project_id, plan, changed_by=changed_by, now=now))
     session.flush()
     return written
