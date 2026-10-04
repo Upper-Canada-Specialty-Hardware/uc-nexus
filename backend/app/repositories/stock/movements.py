@@ -18,14 +18,16 @@ from app.repositories.warehouse import (
     get_reserved_quantities,
     location_detail,
 )
-from app.services.locking import lock_inventory_combo, lock_rows
+from app.services.locking import lock_inventory_combo
 
 from .common import (
     _find_or_create_stock_row,
+    _find_stock_row,
     _log_audit_event,
     _normalize_optional_location_fields,
     _validate_location_fields,
     destock_unit_cost,
+    lock_pool_rows,
 )
 from .items import lock_stock_item
 
@@ -515,12 +517,25 @@ def transfer_inventory(
         return {"success": True, "quantity": quantity, "dest_warehouse_id": dest_warehouse_id}
 
     if source_type == "STOCK_ITEM":
-        locked = lock_rows(session, StockItem, [source_id])
-        si = locked[0] if locked else None
-        if si is not None:
-            session.refresh(si)
+        si = session.get(StockItem, source_id)
         if si is None:
             raise NotFoundError(f"Stock item {source_id} not found")
+        # #1401: the source and the destination's same-key pool row are locked together, in id order.
+        # Locking the source first and the target after would deadlock two opposite transfers between
+        # the same two rows. The target is found unlocked here only to learn its id.
+        dest = _find_stock_row(
+            session,
+            warehouse_id=dest_warehouse_id,
+            hardware_category=si.hardware_category,
+            product_code=si.product_code,
+            aisle=dest_aisle,
+            row=dest_row,
+            bay=dest_bay,
+            kind=si.kind,
+            unit_cost=si.unit_cost,
+            lock=False,
+        )
+        lock_pool_rows(session, [si.id, dest.id if dest is not None else None])
         available = si.quantity - (si.deficient_quantity or 0)
         if quantity > available:
             raise ValidationError("Transfer quantity exceeds available (non-deficient) quantity", field="quantity")
