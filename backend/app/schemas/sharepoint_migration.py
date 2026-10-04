@@ -139,8 +139,11 @@ class SharepointMigrationQueries:
             )
             for r in rows
         ]
+        # Per company (#1399): the acting company's own runs (and unattributed legacy ones) count. An
+        # unscoped admin, with no company to ask about, sees whether any run exists at all.
+        company = tenant_scope(info)
         with SessionLocal() as session:
-            already_migrated = sharepoint_migration_repository.has_migration_run(session)
+            already_migrated = sharepoint_migration_repository.has_migration_run(session, company=company)
         return SharepointInventorySnapshot(items=items, already_migrated=already_migrated)
 
     @strawberry.field
@@ -279,19 +282,23 @@ class SharepointMigrationMutations:
         company = scope or target
         with SessionLocal() as session:
             # Everything that can refuse the batch runs before anything is written (all-or-nothing):
-            # the re-run guard first, under its lock, then the one-company rule.
-            sharepoint_migration_repository.guard_rerun(session, allow_rerun=input.allow_rerun)
-            sharepoint_migration_repository.validate_batch_company(
+            # the one-company rule first, since it resolves the company the re-run guard is about
+            # (#1399), then the guard under its lock. The rule only reads, so taking the lock second
+            # still serializes two runs before either writes.
+            company = sharepoint_migration_repository.validate_batch_company(
                 session,
                 company=company,
                 entries=entries,
                 classifications=classifications,
                 catalog_items=catalog_items,
             )
+            sharepoint_migration_repository.guard_rerun(session, allow_rerun=input.allow_rerun, company=company)
             # Catalog first: it is the description of what the quantities below are, and doing it in
             # the same transaction means a failure either way leaves neither behind.
             catalog = sharepoint_migration_repository.migrate_catalog_items(session, catalog_items)
-            result = sharepoint_migration_repository.migrate_inventory(session, entries, actor, classifications)
+            result = sharepoint_migration_repository.migrate_inventory(
+                session, entries, actor, classifications, company=company
+            )
             session.commit()
             return MigrationResult(
                 stock_items=result["stock_items"],

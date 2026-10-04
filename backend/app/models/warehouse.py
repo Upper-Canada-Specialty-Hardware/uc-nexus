@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, String, UniqueConstraint
+from sqlalchemy import Boolean, Index, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from . import Base
@@ -14,8 +14,9 @@ class Warehouse(Base):
     # Unique per company (#1256): one tenant's "Main" does not block another's, and codes are GP site
     # codes each company's GP assigns on its own.
     __table_args__ = (
-        UniqueConstraint("company", "name", name="uq_warehouses_company_name"),
-        UniqueConstraint("company", "code", name="uq_warehouses_company_code"),
+        # Unique ignoring case (#1402), the rule the repository checks.
+        Index("uq_warehouses_company_lower_name", "company", func.lower(text("name")), unique=True),
+        Index("uq_warehouses_company_lower_code", "company", func.lower(text("code")), unique=True),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)

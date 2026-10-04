@@ -464,6 +464,8 @@ class POLineItem:
     # A NEXUS REGISTERED LINE: hardwareCategory and productCode above are the schedule's own, so the
     # OPEN-POS SYNC leaves them alone. False on a mirrored line still carrying GP's own pair.
     nexus_registered: bool
+    # Units already received when a GP-born line was first registered (#1398); null when not recorded.
+    received_before_registration: int | None
     # Set when the line was added from the non-schedule item catalog (#454). Order As belongs to
     # hardware schedule items only, so the PO detail modal shows no Order As on a line that has this.
     custom_inventory_item_id: strawberry.ID | None

@@ -3,6 +3,7 @@
 import uuid
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.errors import ConflictError, NotFoundError, ValidationError
@@ -177,6 +178,21 @@ def _check_code_unique(session: Session, code: str, *, company: str, exclude_id:
         raise ConflictError(f"A warehouse with code '{code}' already exists")
 
 
+def _flush_refusing_duplicates(session: Session, *, name: str, code: str) -> None:
+    """Flush inside a savepoint, so two saves of one name or code racing past the pre-checks get the
+    same conflict the checks give rather than a masked server error (#1402)."""
+    try:
+        with session.begin_nested():
+            session.flush()
+    except IntegrityError as e:
+        constraint = getattr(getattr(e.orig, "diag", None), "constraint_name", None)
+        if constraint == "uq_warehouses_company_lower_name":
+            raise ConflictError(f"A warehouse named '{name}' already exists") from e
+        if constraint == "uq_warehouses_company_lower_code":
+            raise ConflictError(f"A warehouse with code '{code}' already exists") from e
+        raise
+
+
 def create_warehouse(
     session: Session,
     *,
@@ -221,7 +237,7 @@ def create_warehouse(
         is_active=is_active,
     )
     session.add(wh)
-    session.flush()
+    _flush_refusing_duplicates(session, name=name, code=code)
     return wh
 
 
@@ -300,7 +316,7 @@ def update_warehouse(
         else:
             wh.is_primary = False
 
-    session.flush()
+    _flush_refusing_duplicates(session, name=wh.name, code=wh.code)
     return wh
 
 

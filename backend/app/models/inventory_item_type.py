@@ -26,7 +26,7 @@ find, let alone rewrite, so changing it would orphan the stock it was stamped on
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from . import Base
@@ -49,8 +49,9 @@ class InventoryItemType(Base):
     # stop UCSH defining one - a globally unique code would make the second company's catalog
     # unbuildable, not merely awkward.
     __table_args__ = (
-        UniqueConstraint("company", "code", name="uq_inventory_item_types_company_code"),
-        UniqueConstraint("company", "name", name="uq_inventory_item_types_company_name"),
+        # Unique ignoring case (#1402), the rule the repository checks.
+        Index("uq_inventory_item_types_company_lower_code", "company", func.lower(text("code")), unique=True),
+        Index("uq_inventory_item_types_company_lower_name", "company", func.lower(text("name")), unique=True),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -88,7 +89,7 @@ class InventoryItemAttribute(Base):
 
     __tablename__ = "inventory_item_attributes"
     __table_args__ = (
-        UniqueConstraint("type_id", "name", name="uq_inventory_item_attributes_type_name"),
+        Index("uq_inventory_item_attributes_type_lower_name", "type_id", func.lower(text("name")), unique=True),
         Index("ix_inventory_item_attributes_type_id", "type_id"),
     )
 

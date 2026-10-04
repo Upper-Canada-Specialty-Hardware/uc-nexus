@@ -97,6 +97,8 @@ export const PURCHASE_ORDER_DETAIL_FIELDS = gql`
       # True when this line's category and code are the schedule's own, so the GP sync leaves them
       # alone; false while it still carries GP's item number and description.
       nexusRegistered
+      # #1398: units received before a GP-born line was first registered; null when not recorded.
+      receivedBeforeRegistration
       # Set when the line was added from the non-schedule item catalog; Order As does not apply to it.
       customInventoryItemId
       manufacturer
@@ -237,6 +239,7 @@ export const NEXUS_REGISTER_PO_LINES = gql`
           orderedQuantity
           receivedQuantity
           nexusRegistered
+          receivedBeforeRegistration
         }
       }
     }

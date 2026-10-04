@@ -18,6 +18,7 @@ from .common import (
     _log_audit_event,
     _validate_location_fields,
     fold_into_same_key_row,
+    lock_for_shelf_move,
 )
 
 
@@ -165,7 +166,8 @@ def move_stock_location(
     new_bay = normalize_location_value(new_bay) or ""
     _validate_location_fields(new_aisle, new_row, new_bay)
 
-    si = lock_stock_item(session, stock_item_id)
+    # The moving row and the same-key row on the target shelf are locked together, in id order (#1401).
+    si = lock_for_shelf_move(session, stock_item_id, aisle=new_aisle, row=new_row, bay=new_bay)
     ensure_registered_location(session, si.warehouse_id, new_aisle, new_row, new_bay)
     old = location_detail(si.aisle, si.row, si.bay, si.warehouse_id)
     detail = {"fromLocation": old, "toLocation": location_detail(new_aisle, new_row, new_bay, si.warehouse_id)}
@@ -228,7 +230,8 @@ def assign_stock_item_location(
     row = normalize_location_value(row) or ""
     bay = normalize_location_value(bay) or ""
     _validate_location_fields(aisle, row, bay)
-    si = lock_stock_item(session, stock_item_id)
+    # Locked with the same-key row on the target shelf, in id order (#1401).
+    si = lock_for_shelf_move(session, stock_item_id, aisle=aisle, row=row, bay=bay)
     ensure_registered_location(session, si.warehouse_id, aisle, row, bay)
     detail = {"toLocation": location_detail(aisle, row, bay, si.warehouse_id)}
     # Put away onto a shelf that already holds this row's key: fold into it (#1377).
