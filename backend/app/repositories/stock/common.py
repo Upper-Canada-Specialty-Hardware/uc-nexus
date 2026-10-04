@@ -7,7 +7,7 @@ from decimal import Decimal
 from sqlalchemy import Numeric, literal, select
 from sqlalchemy.orm import Session
 
-from app.errors import ValidationError
+from app.errors import NotFoundError, ValidationError
 from app.models.audit_log import InventoryAuditLog
 from app.models.enums import AuditAction, AuditEntityType, DestockCost, PoolKind
 from app.models.inventory import InventoryLocation as InventoryLocationModel
@@ -99,8 +99,12 @@ def _find_stock_row(
     bay: str | None,
     kind: PoolKind = PoolKind.STOCK,
     unit_cost: Decimal | None = None,
+    lock: bool = True,
 ) -> StockItem | None:
     """The pool row matching (warehouse, category, code, aisle, row, bay, kind, unit cost), or None.
+
+    `lock=False` only finds the row, for a caller that is about to lock it together with another
+    pool row in id order (`lock_pool_rows`, #1401).
 
     The kind is part of the key (#832): a stock row and an overhead row of the same product on the
     same shelf are two rows and never merge. So is the price (#942): a pool row holds one unit cost,
@@ -139,8 +143,54 @@ def _find_stock_row(
     # Every caller is about to add units to the row it gets back, so it comes back locked and fresh
     # (#1156): two destocks into one pool row would otherwise both write quantity off the same stale
     # count and one increment would be lost.
-    stmt = stmt.order_by(StockItem.id).with_for_update().execution_options(populate_existing=True)
+    stmt = stmt.order_by(StockItem.id)
+    if lock:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
     return session.scalars(stmt).first()
+
+
+def lock_pool_rows(session: Session, ids: list[uuid.UUID | None]) -> None:
+    """Row-lock pool rows in id order and refresh them (#1401).
+
+    Two writers that each lock their own row first and then the other's - a move between two rows of
+    one key, in opposite directions - deadlock. Locking every row the write touches up front, sorted,
+    gives one order everywhere. `populate_existing` hands back the locked values, not the session's
+    earlier copies."""
+    wanted = sorted({i for i in ids if i is not None})
+    if not wanted:
+        return
+    session.scalars(
+        select(StockItem)
+        .where(StockItem.id.in_(wanted))
+        .order_by(StockItem.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+
+
+def lock_for_shelf_move(
+    session: Session, stock_item_id: uuid.UUID, *, aisle: str | None, row: str | None, bay: str | None
+) -> StockItem:
+    """Lock a pool row about to move onto (aisle, row, bay) together with the same-key row already on
+    that shelf, in id order, and return the moving row fresh (#1401). `fold_into_same_key_row` then
+    finds the target already held."""
+    si = session.get(StockItem, stock_item_id)
+    if si is None:
+        raise NotFoundError(f"Stock item {stock_item_id} not found")
+    target = _find_stock_row(
+        session,
+        warehouse_id=si.warehouse_id,
+        hardware_category=si.hardware_category,
+        product_code=si.product_code,
+        aisle=aisle,
+        row=row,
+        bay=bay,
+        kind=si.kind,
+        unit_cost=si.unit_cost,
+        lock=False,
+    )
+    lock_pool_rows(session, [si.id, target.id if target is not None else None])
+    return si
 
 
 def fold_into_same_key_row(

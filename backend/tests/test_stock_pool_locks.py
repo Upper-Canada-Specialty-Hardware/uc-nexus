@@ -318,3 +318,62 @@ def test_move_without_a_same_key_row_just_moves(db_session):
 
     assert result.id == source.id
     assert (source.aisle, source.row, source.bay, source.quantity) == ("C", "3", "3", 4)
+
+
+def _spy_pool_locks(monkeypatch, module):
+    """Record every set of pool rows locked through `lock_pool_rows` in `module`."""
+    from app.repositories.stock import common
+
+    calls: list[set] = []
+    real = common.lock_pool_rows
+
+    def spy(session, ids):
+        calls.append({i for i in ids if i is not None})
+        return real(session, ids)
+
+    monkeypatch.setattr(module, "lock_pool_rows", spy)
+    return calls
+
+
+def test_a_move_onto_a_same_key_row_locks_both_rows_together(db_session, monkeypatch):
+    """#1401: the moving row and the same-key row on the target shelf are locked in one id-ordered
+    call. Locking the source first and the target after deadlocks two opposite moves."""
+    from app.repositories.stock import common
+
+    define_location(db_session, aisle="C", row="3", bay="3")
+    source = make_stock_item(db_session, quantity=4, aisle="A", row="1", bay="1")
+    target = make_stock_item(db_session, quantity=6, aisle="C", row="3", bay="3")
+    calls = _spy_pool_locks(monkeypatch, common)
+
+    stock_repository.move_stock_location(
+        db_session, stock_item_id=source.id, new_aisle="C", new_row="3", new_bay="3", performed_by="warehouse"
+    )
+
+    assert {source.id, target.id} in calls
+    assert target.quantity == 10
+
+
+def test_a_pool_transfer_locks_source_and_destination_together(db_session, monkeypatch):
+    """#1401: a pool-row transfer onto a shelf that holds the same key locks both rows up front, in id
+    order, instead of the source first and the destination when it is found."""
+    from app.repositories.stock import movements
+
+    define_location(db_session, aisle="C", row="3", bay="3")
+    source = make_stock_item(db_session, quantity=4, aisle="A", row="1", bay="1")
+    dest = make_stock_item(db_session, quantity=6, aisle="C", row="3", bay="3")
+    calls = _spy_pool_locks(monkeypatch, movements)
+
+    stock_repository.transfer_inventory(
+        db_session,
+        source_type="STOCK_ITEM",
+        source_id=source.id,
+        quantity=3,
+        dest_warehouse_id=source.warehouse_id,
+        dest_aisle="C",
+        dest_row="3",
+        dest_bay="3",
+        performed_by="warehouse",
+    )
+
+    assert calls and calls[0] == {source.id, dest.id}
+    assert (source.quantity, dest.quantity) == (1, 9)

@@ -23,6 +23,10 @@ class SharepointMigrationRun(Base):
     performed_by: Mapped[str] = mapped_column(String, nullable=False)
     entry_count: Mapped[int] = mapped_column(Integer, nullable=False)
     unit_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The GP company the run wrote into (#1399). A batch is one company (#1367), so the re-run guard
+    # is per company. Null is a run from before the column existed that could not be attributed; it
+    # guards every company, so an old run is never silently forgotten.
+    company: Mapped[str | None] = mapped_column(String(15), nullable=True)
 
 
 class SharepointMigrationMark(Base):
