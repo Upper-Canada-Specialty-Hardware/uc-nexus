@@ -65,6 +65,7 @@ from app.models.enums import (
 )
 from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.project import Opening as OpeningModel
+from app.models.project_excluded_item import ProjectExcludedItem
 from app.models.pull_request import PullRequest as PullRequestModel
 from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.purchase_order import POLineItem as POLineItemModel
@@ -119,6 +120,7 @@ def get_request_coverage(
     sent = _sent_quantities(session, project_id, known)
     claimed = _claimed_quantities(session, project_id, known)
     on_order = _on_order_quantities(session, project_id)
+    by_others = by_others_products(session, project_id)
 
     rows: list[dict] = []
     for opening_number in known:
@@ -151,6 +153,9 @@ def get_request_coverage(
                     # for is over-supplied, not owed a negative quantity.
                     "suggested_quantity": max(0, owed_quantity - sent_quantity - claimed_quantity),
                     "on_order_quantity": on_order.get(key, 0),
+                    # #1425: supplied by others, so not UCSH's to assemble - the shop composer leaves it
+                    # out and the shop request refuses it, whatever the rows' stored classification.
+                    "by_others": key in by_others,
                 }
             )
     return rows
@@ -452,6 +457,30 @@ def _on_order_quantities(session: Session, project_id: uuid.UUID) -> dict[_Combo
     return {(category, code): int(total or 0) for category, code, total in rows if total}
 
 
+def by_others_products(session: Session, project_id: uuid.UUID) -> set[tuple[str, str]]:
+    """The project's By Others (category, code) pairs. Marking a product By Others leaves its rows'
+    classification as it was, so this, not the classification, is what says it is not UCSH's work."""
+    return {
+        (category, code)
+        for category, code in session.execute(
+            select(ProjectExcludedItem.hardware_category, ProjectExcludedItem.product_code).where(
+                ProjectExcludedItem.project_id == project_id
+            )
+        )
+    }
+
+
+def dominant_classification(by_classification: dict[str | None, int]) -> Classification | None:
+    """Whichever classification covers the most units of one product on one opening, given units by
+    classification value (None for unclassified). Shared with the shop request's own check (#1425), so
+    the server holds a line to exactly the rule the composer offered it under."""
+    if not by_classification:
+        return None
+    ranked = sorted(by_classification.items(), key=lambda item: (-item[1], item[0] or ""))
+    winner = ranked[0][0]
+    return Classification(winner) if winner is not None else None
+
+
 def _dominant_classification(owed_line: dict | None) -> Classification | None:
     """The classification of one product on one opening: whichever covers the most units.
 
@@ -463,9 +492,4 @@ def _dominant_classification(owed_line: dict | None) -> Classification | None:
     """
     if not owed_line:
         return None
-    ranked = sorted(
-        owed_line["by_classification"].items(),
-        key=lambda item: (-item[1], item[0] or ""),
-    )
-    winner = ranked[0][0]
-    return Classification(winner) if winner is not None else None
+    return dominant_classification(owed_line["by_classification"])

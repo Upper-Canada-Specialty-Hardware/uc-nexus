@@ -1552,6 +1552,10 @@ class RequestCoverageLine:
     # Placed with a vendor and not yet received, project-wide for this product. Not an allocation to
     # this opening - it answers "is more coming, or is this all there will ever be".
     on_order_quantity: int
+    # #1425: the project marked this product By Others. Its rows keep whatever classification they had,
+    # so this is what keeps it off a shop request: the shop composer leaves it out and the server refuses
+    # it. Shipping out still sees it, as before.
+    by_others: bool = False
 
 
 @strawberry.type
