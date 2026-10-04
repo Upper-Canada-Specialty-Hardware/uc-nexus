@@ -509,14 +509,22 @@ def merge_locations(
     from_loc = location_detail(from_aisle, from_row, from_bay, warehouse_id)
     to_loc = location_detail(to_aisle, to_row, to_bay, warehouse_id)
 
+    # Locked (#1422): only the shelf columns are written, so a concurrent quantity change survives the
+    # UPDATE either way, but an unlocked read let a row moved off this shelf meanwhile be dragged back
+    # onto the target, and one deleted meanwhile fail the flush. Under the lock Postgres re-checks the
+    # shelf filter against the committed row, so neither is picked up. Id order, one order everywhere.
     inv_rows = list(
         session.scalars(
-            select(InventoryLocationModel).where(
+            select(InventoryLocationModel)
+            .where(
                 InventoryLocationModel.warehouse_id == warehouse_id,
                 InventoryLocationModel.aisle == from_aisle,
                 _matches_from(InventoryLocationModel.row, from_row),
                 _matches_from(InventoryLocationModel.bay, from_bay),
             )
+            .order_by(InventoryLocationModel.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         ).all()
     )
     for il in inv_rows:
@@ -536,7 +544,9 @@ def merge_locations(
         )
     counts["inventory_locations"] = len(inv_rows)
 
-    si_rows = list(
+    from app.repositories.stock.common import _find_stock_row, fold_into_same_key_row, lock_pool_rows
+
+    found = list(
         session.scalars(
             select(StockItemModel).where(
                 StockItemModel.warehouse_id == warehouse_id,
@@ -546,7 +556,37 @@ def merge_locations(
             )
         ).all()
     )
-    from app.repositories.stock.common import fold_into_same_key_row
+    # #1422: a fold adds the source's units to the target and zeroes the source, so both rows are
+    # written from their counts. Every source and the same-key row each would fold into are locked
+    # together, fresh and in id order (#1401) - the fold used to work from this unlocked read, and a pull
+    # or adjustment committed in between was overwritten: the source zeroed, its stale count added to
+    # the target. Targets are found unlocked first; the fold re-finds its target, already held.
+    targets = [
+        _find_stock_row(
+            session,
+            warehouse_id=si.warehouse_id,
+            hardware_category=si.hardware_category,
+            product_code=si.product_code,
+            aisle=to_aisle,
+            row=to_row,
+            bay=to_bay,
+            kind=si.kind,
+            unit_cost=si.unit_cost,
+            lock=False,
+        )
+        for si in found
+    ]
+    locked = lock_pool_rows(session, [si.id for si in found] + [t.id for t in targets if t is not None])
+
+    def _still_on_source_shelf(si: StockItemModel) -> bool:
+        # A row moved off the shelf while the lock waited is no longer this merge's to move.
+        def same(value, wanted):
+            return (value or "") == (wanted or "")
+
+        return si.aisle == from_aisle and same(si.row, from_row) and same(si.bay, from_bay)
+
+    # A source a concurrent move folded away and deleted is not in the locked rows; it is gone, not moved.
+    si_rows = [locked[si.id] for si in found if si.id in locked and _still_on_source_shelf(locked[si.id])]
 
     for si in si_rows:
         # A row already on the target shelf with this row's key takes its units (#1164), through the

@@ -1791,7 +1791,13 @@ export default function GpPurchaseOrderDialog({
           <Typography component="h3" sx={microLabelSx}>
             GP purchase order
           </Typography>
-          <RelayStatusChip connected={relayStatus} companies={relay.companies} gpCompanies={relay.gpCompanies} />
+          <RelayStatusChip
+            connected={relayStatus}
+            unreachable={relay.unreachable}
+            signInLapsed={relay.signInLapsed}
+            companies={relay.companies}
+            gpCompanies={relay.gpCompanies}
+          />
         </Stack>
         <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap alignItems="flex-start">
           {/* Issue #216: the buyer IS the caller's GP identity - display only, never a pick. */}

@@ -298,6 +298,8 @@ export default function NexusGpTrafficPage() {
             <Stack direction="row" spacing={1.5} alignItems="center" sx={{ minWidth: 0 }}>
               <RelayStatusChip
                 connected={relay.connected}
+                unreachable={relay.unreachable}
+                signInLapsed={relay.signInLapsed}
                 companies={relay.companies}
                 gpCompanies={relay.gpCompanies}
                 showReach

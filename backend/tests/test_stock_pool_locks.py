@@ -453,3 +453,156 @@ def test_a_pool_transfer_refuses_a_source_deleted_while_it_waited(db_session, mo
             dest_bay="3",
             performed_by="warehouse",
         )
+
+
+def _merge_a_to_b(session):
+    return warehouse_repository.merge_locations(
+        session,
+        warehouse_id=wh_id(session),
+        from_aisle="A",
+        from_row="1",
+        from_bay="1",
+        to_aisle="B",
+        to_row="2",
+        to_bay="2",
+        performed_by="manager",
+    )
+
+
+def test_merge_folds_the_count_after_a_concurrent_pull(db_session):
+    """#1422: a pull takes 3 off the source between the merge's read and its fold. The fold works from
+    the locked, fresh row, so the target gains the 7 that are left, not a stale 10."""
+    define_location(db_session, aisle="A", row="1", bay="1")
+    define_location(db_session, aisle="B", row="2", bay="2")
+    source = make_stock_item(db_session, quantity=10, aisle="A", row="1", bay="1")
+    target = make_stock_item(db_session, quantity=6, aisle="B", row="2", bay="2")
+    _changed_underneath(db_session, StockItem, source, quantity=7)
+    assert source.quantity == 10  # the session still holds the stale copy
+
+    _merge_a_to_b(db_session)
+
+    assert target.quantity == 13
+    assert source.quantity == 0
+
+
+def test_merge_locks_every_source_with_its_same_key_target_together(db_session, monkeypatch):
+    """#1422: sources and the rows they fold into are locked in one id-ordered call, like a move (#1401)."""
+    from app.repositories.stock import common
+
+    define_location(db_session, aisle="A", row="1", bay="1")
+    define_location(db_session, aisle="B", row="2", bay="2")
+    source = make_stock_item(db_session, quantity=4, aisle="A", row="1", bay="1")
+    target = make_stock_item(db_session, quantity=6, aisle="B", row="2", bay="2")
+    lone = make_stock_item(db_session, quantity=2, code="HG-555", aisle="A", row="1", bay="1")
+    calls = _spy_pool_locks(monkeypatch, common)
+
+    _merge_a_to_b(db_session)
+
+    assert calls and calls[0] == {source.id, target.id, lone.id}
+    assert (target.quantity, lone.aisle) == (10, "B")
+
+
+def test_merge_leaves_a_stock_row_moved_off_the_shelf_while_it_waited(db_session, monkeypatch):
+    """#1422: a concurrent move takes the row to another shelf after the merge found it and before its
+    lock was granted. The locked row is no longer on the merge's shelf, so the merge leaves it there."""
+    from app.repositories.stock import common
+
+    define_location(db_session, aisle="A", row="1", bay="1")
+    define_location(db_session, aisle="B", row="2", bay="2")
+    source = make_stock_item(db_session, quantity=4, aisle="A", row="1", bay="1")
+    real = common.lock_pool_rows
+
+    def moving(session, ids):
+        _changed_underneath(session, StockItem, source, aisle="Z")
+        return real(session, ids)
+
+    monkeypatch.setattr(common, "lock_pool_rows", moving)
+
+    counts = _merge_a_to_b(db_session)
+
+    assert counts["stock_items"] == 0
+    assert (source.aisle, source.quantity) == ("Z", 4)
+
+
+def test_merge_skips_a_stock_row_deleted_while_it_waited(db_session, monkeypatch):
+    define_location(db_session, aisle="A", row="1", bay="1")
+    define_location(db_session, aisle="B", row="2", bay="2")
+    gone = make_stock_item(db_session, quantity=4, aisle="A", row="1", bay="1")
+    kept = make_stock_item(db_session, quantity=2, code="HG-555", aisle="A", row="1", bay="1")
+    _delete_before_lock(monkeypatch, gone.id)
+
+    counts = _merge_a_to_b(db_session)
+
+    assert counts["stock_items"] == 1
+    assert kept.aisle == "B"
+
+
+def _other_kind_pair(session):
+    stock = make_stock_item(session, quantity=5, aisle="A", row="1", bay="1")
+    overhead = make_stock_item(session, quantity=5, aisle="A", row="1", bay="1")
+    overhead.kind = PoolKind.OVERHEAD
+    session.flush()
+    return stock, overhead
+
+
+def test_a_kind_flip_locks_both_rows_together(db_session, monkeypatch):
+    """#1422: a Stock -> Overhead flip and the opposite flip of the same product used to lock their
+    own row first and the other after, and deadlocked. Both rows are now locked in one id-ordered call."""
+    from app.repositories.stock import common
+
+    stock, overhead = _other_kind_pair(db_session)
+    calls = _spy_pool_locks(monkeypatch, common)
+
+    stock_repository.set_stock_item_kind(
+        db_session, stock_item_id=stock.id, kind=PoolKind.OVERHEAD, quantity=2, performed_by="warehouse"
+    )
+
+    assert calls and calls[0] == {stock.id, overhead.id}
+    assert (stock.quantity, overhead.quantity) == (3, 7)
+
+
+def test_a_reclassify_split_locks_both_rows_together(db_session, monkeypatch):
+    from app.repositories.stock import common
+
+    source = make_stock_item(db_session, quantity=10, aisle="A", row="1", bay="1")
+    other = make_stock_item(db_session, quantity=1, code="HG-200", aisle="A", row="1", bay="1")
+    calls = _spy_pool_locks(monkeypatch, common)
+
+    stock_repository.reclassify_stock_item(
+        db_session,
+        stock_item_id=source.id,
+        new_hardware_category="HINGE",
+        new_product_code="HG-200",
+        quantity=4,
+        reason_text=None,
+        performed_by="warehouse",
+    )
+
+    assert calls and calls[0] == {source.id, other.id}
+    assert (source.quantity, other.quantity) == (6, 5)
+
+
+def test_a_kind_flip_refuses_a_row_deleted_while_it_waited(db_session, monkeypatch):
+    stock, _ = _other_kind_pair(db_session)
+    _delete_before_lock(monkeypatch, stock.id)
+
+    with pytest.raises(NotFoundError, match=f"Stock item {stock.id} not found"):
+        stock_repository.set_stock_item_kind(
+            db_session, stock_item_id=stock.id, kind=PoolKind.OVERHEAD, quantity=2, performed_by="warehouse"
+        )
+
+
+def test_a_reclassify_refuses_a_row_deleted_while_it_waited(db_session, monkeypatch):
+    source = make_stock_item(db_session, quantity=10, aisle="A", row="1", bay="1")
+    _delete_before_lock(monkeypatch, source.id)
+
+    with pytest.raises(NotFoundError, match=f"Stock item {source.id} not found"):
+        stock_repository.reclassify_stock_item(
+            db_session,
+            stock_item_id=source.id,
+            new_hardware_category="HINGE",
+            new_product_code="HG-200",
+            quantity=4,
+            reason_text=None,
+            performed_by="warehouse",
+        )
