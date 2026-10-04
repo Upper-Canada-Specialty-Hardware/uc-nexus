@@ -25,6 +25,7 @@ class MockFileReader {
   onload: (() => void) | null = null;
   onerror: (() => void) | null = null;
   result: string | null = null;
+  abort = vi.fn();
   readAsText = vi.fn().mockImplementation(() => {
     // readAsText stores the text result and then we let tests manually
     // trigger onload / onerror from the outside.
@@ -534,5 +535,60 @@ describe('useHardwareScheduleParser', () => {
 
     expect(result.current.state).toBe('idle');
     expect(result.current.parseResult).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1455: a read cancelled by reset / unmount never starts a worker
+// ---------------------------------------------------------------------------
+
+describe('a cancelled read (#1455)', () => {
+  let workersCreated = 0;
+  beforeEach(() => {
+    workersCreated = 0;
+    const Base = MockWorker;
+    vi.stubGlobal(
+      'Worker',
+      class extends Base {
+        constructor() {
+          super();
+          workersCreated += 1;
+          // eslint-disable-next-line @typescript-eslint/no-this-alias
+          latestMockWorker = this;
+        }
+      },
+    );
+  });
+
+  it('reset during the read: the late onload starts no worker', () => {
+    const { result } = renderHook(() => useHardwareScheduleParser());
+    act(() => result.current.parseFile(createMockFile()));
+    const reader = latestMockFileReader;
+    act(() => result.current.reset());
+    expect(reader.abort).toHaveBeenCalled();
+
+    act(() => reader.onload?.());
+    expect(workersCreated).toBe(0);
+    expect(result.current.state).toBe('idle');
+  });
+
+  it('unmount during the read: the late onload starts no worker', () => {
+    const { result, unmount } = renderHook(() => useHardwareScheduleParser());
+    act(() => result.current.parseFile(createMockFile()));
+    const reader = latestMockFileReader;
+    unmount();
+    reader.onload?.();
+    expect(workersCreated).toBe(0);
+  });
+
+  it('a new parse after a reset still parses', () => {
+    const { result } = renderHook(() => useHardwareScheduleParser());
+    act(() => result.current.parseFile(createMockFile()));
+    act(() => result.current.reset());
+    act(() => result.current.parseFile(createMockFile()));
+    act(() => latestMockFileReader.onload?.());
+    expect(workersCreated).toBe(1);
+    expect(result.current.state).toBe('parsing');
+    expect(latestMockWorker.postMessage).toHaveBeenCalledTimes(1);
   });
 });

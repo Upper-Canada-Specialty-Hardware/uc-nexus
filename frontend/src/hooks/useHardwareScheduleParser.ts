@@ -28,6 +28,19 @@ export function useHardwareScheduleParser(): UseHardwareScheduleParserReturn {
   const [error, setErrorState] = useState<string | null>(null);
 
   const workerRef = useRef<Worker | null>(null);
+  // #1455: the read in flight and which parse it belongs to. Closing the wizard (reset, unmount) during
+  // "Reading file" found no worker to stop yet; the read then finished and started one that nothing
+  // ever terminated. A read whose generation is stale returns before it creates the worker.
+  const readerRef = useRef<FileReader | null>(null);
+  const generationRef = useRef(0);
+
+  const cancelRead = useCallback(() => {
+    generationRef.current += 1;
+    const reader = readerRef.current;
+    readerRef.current = null;
+    // A no-op on a read that already finished; the generation check is what stops a late onload.
+    reader?.abort();
+  }, []);
 
   const parseFile = useCallback((file: File) => {
     if (state === 'reading' || state === 'parsing') {
@@ -39,10 +52,14 @@ export function useHardwareScheduleParser(): UseHardwareScheduleParserReturn {
     setResult(null);
     setErrorState(null);
 
+    const generation = ++generationRef.current;
     const reader = new FileReader();
+    readerRef.current = reader;
     reader.readAsText(file);
 
     reader.onload = () => {
+      if (generation !== generationRef.current) return;
+      readerRef.current = null;
       setState('parsing');
 
       if (!workerRef.current) {
@@ -86,12 +103,15 @@ export function useHardwareScheduleParser(): UseHardwareScheduleParserReturn {
     };
 
     reader.onerror = () => {
+      if (generation !== generationRef.current) return;
+      readerRef.current = null;
       setErrorState('Failed to read file');
       setState('error');
     };
   }, [state]);
 
   const hydrate = useCallback((parseResult: ParseResult) => {
+    cancelRead();
     if (workerRef.current) {
       workerRef.current.terminate();
       workerRef.current = null;
@@ -100,7 +120,7 @@ export function useHardwareScheduleParser(): UseHardwareScheduleParserReturn {
     setState('done');
     setProgress({ percent: 100, phase: 'Complete' });
     setErrorState(null);
-  }, []);
+  }, [cancelRead]);
 
   const setLoading = useCallback((phase: string) => {
     setState('reading');
@@ -114,6 +134,7 @@ export function useHardwareScheduleParser(): UseHardwareScheduleParserReturn {
   }, []);
 
   const reset = useCallback(() => {
+    cancelRead();
     if (workerRef.current) {
       workerRef.current.terminate();
       workerRef.current = null;
@@ -123,15 +144,16 @@ export function useHardwareScheduleParser(): UseHardwareScheduleParserReturn {
     setProgress({ percent: 0, phase: '' });
     setResult(null);
     setErrorState(null);
-  }, []);
+  }, [cancelRead]);
 
   useEffect(() => {
     return () => {
+      cancelRead();
       if (workerRef.current) {
         workerRef.current.terminate();
       }
     };
-  }, []);
+  }, [cancelRead]);
 
   const isLoading = state === 'reading' || state === 'parsing';
 

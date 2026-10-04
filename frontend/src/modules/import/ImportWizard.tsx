@@ -71,6 +71,7 @@ import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { plural } from '../../utils/plural';
 import { FadeIn, useStepDirection } from '../../motion';
 import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
+import { seedScheduleClassifications } from './scheduleClassificationSeed';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
 import { isDoorFrameItem } from '../../types/hardwareSchedule';
 import SelectOpeningsStep from './SelectOpeningsStep';
@@ -464,35 +465,15 @@ export default function ImportWizard({
   const exclusionsBlockFinalize =
     purpose === 'po' && (exclusionsPrefill === 'loading' || exclusionsPrefill === 'failed');
 
-  // #608/#492: on a schedule replace, seed each fresh item's Site/Shop mark from the schedule already
-  // on file, matched by product, so the user is not made to re-answer a classification the previous
-  // schedule already carried. Fills blanks only - a manual pick this session wins - and matches by
-  // (category, product) rather than the full classification key, since a fresh XML's unit cost may
-  // differ from what is persisted.
+  // #608/#492/#1455: on a schedule replace, seed each fresh item's Site/Shop mark from the schedule
+  // already on file - by cost first, product-wide only where the product was one answer (see
+  // seedScheduleClassifications). Fills blanks only, so a manual pick this session wins.
   useEffect(() => {
     if (purpose !== 'schedule') return;
     const persisted = scheduleData?.projectHardwareSchedule?.hardwareItems;
     if (!persisted || !parsedHardwareItems || parsedHardwareItems.length === 0) return;
-    const persistedByProduct = new Map<string, string>();
-    for (const hi of persisted) {
-      const key = `${hi.hardwareCategory}|${hi.productCode}`;
-      if (hi.classification && !persistedByProduct.has(key)) persistedByProduct.set(key, hi.classification);
-    }
-    if (persistedByProduct.size === 0) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- seeding local classification state from the persisted schedule once it loads; fills blanks only, so a re-run cannot clobber a manual pick
-    setClassifications((prev) => {
-      const next = new Map(prev);
-      let changed = false;
-      for (const hi of parsedHardwareItems) {
-        const ck = `${hi.hardware_category}|${hi.product_code}|${hi.unit_cost ?? 0}`;
-        const cls = persistedByProduct.get(`${hi.hardware_category}|${hi.product_code}`);
-        if (cls && !next.has(ck)) {
-          next.set(ck, cls);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
+    setClassifications((prev) => seedScheduleClassifications(persisted, parsedHardwareItems, prev) ?? prev);
   }, [purpose, scheduleData, parsedHardwareItems]);
 
 
