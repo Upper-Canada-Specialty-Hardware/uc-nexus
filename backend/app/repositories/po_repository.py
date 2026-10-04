@@ -1336,8 +1336,8 @@ def _lock_po_row(session: Session, po: PurchaseOrder) -> None:
 def update_po(
     session: Session,
     po_id: uuid.UUID,
-    expected_delivery_date=None,
-    preferred_delivery_date=None,
+    expected_delivery_date=_UNSET,
+    preferred_delivery_date=_UNSET,
     po_number: str | None = None,
     vendor_quote_number: str | None = None,
     project_id=_UNSET,
@@ -1420,14 +1420,22 @@ def update_po(
     # Issue #216: the two delivery dates are status-gated. Preferred is the PM's ask, captured on the
     # DRAFT request; expected is the vendor's answer, only enterable once the PO exists in GP (the
     # DRAFT/GP_REGISTERED/VENDOR_CONFIRMED guard above already blocks both after receiving starts).
-    if preferred_delivery_date is not None:
-        if po.status != POStatus.DRAFT:
+    #
+    # #1463: tri-state, like the order costs. Omitted (_UNSET) leaves a date alone, a value sets it, and
+    # an explicit null clears it - but only in the status where that date is editable. Outside it a null
+    # still means "leave alone": the modal used to send null for the date it could not edit, and a tab
+    # opened before this change must keep saving rather than be refused or wipe the other date.
+    preferred_editable = po.status == POStatus.DRAFT
+    if preferred_delivery_date is not _UNSET:
+        if preferred_delivery_date is not None and not preferred_editable:
             raise InvalidStateTransitionError("Preferred delivery date can only be set on a Draft PO request")
-        po.preferred_delivery_date = preferred_delivery_date
-    if expected_delivery_date is not None:
-        if po.status == POStatus.DRAFT:
+        if preferred_editable:
+            po.preferred_delivery_date = preferred_delivery_date
+    if expected_delivery_date is not _UNSET:
+        if expected_delivery_date is not None and preferred_editable:
             raise InvalidStateTransitionError("Expected delivery date can only be set after the PO is GP-Registered")
-        po.expected_delivery_date = expected_delivery_date
+        if not preferred_editable:
+            po.expected_delivery_date = expected_delivery_date
     if vendor_quote_number is not None:
         po.vendor_quote_number = vendor_quote_number if vendor_quote_number.strip() else None
     if notes is not None:
