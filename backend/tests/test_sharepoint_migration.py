@@ -1245,6 +1245,48 @@ def test_a_second_run_is_refused_unless_asked_for(db_session):
     migration_repo.guard_rerun(db_session, allow_rerun=True)
 
 
+def test_a_second_companys_first_run_is_not_a_rerun(db_session):
+    """#1399: a batch is one company, so a run into one company does not guard another."""
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    company = _warehouse_company(db_session, wh)
+    other = _another_company(company)
+    migration_repo.migrate_inventory(db_session, [_entry(wh)], ACTOR, company=company)
+    db_session.flush()
+
+    migration_repo.guard_rerun(db_session, allow_rerun=False, company=other)  # passes
+    assert migration_repo.has_migration_run(db_session, company=other) is False
+    assert migration_repo.has_migration_run(db_session, company=company) is True
+
+
+def test_the_same_company_is_refused_without_allow_rerun(db_session):
+    from app.errors import ConflictError
+
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    company = _warehouse_company(db_session, wh)
+    migration_repo.migrate_inventory(db_session, [_entry(wh)], ACTOR, company=company)
+    db_session.flush()
+
+    with pytest.raises(ConflictError) as e:
+        migration_repo.guard_rerun(db_session, allow_rerun=False, company=company)
+    assert f"already been run into {company}" in e.value.message
+    migration_repo.guard_rerun(db_session, allow_rerun=True, company=company)
+
+
+def test_a_legacy_run_with_no_company_guards_every_company(db_session):
+    """A run from before the column, which the backfill could not attribute, keeps guarding all."""
+    from app.errors import ConflictError
+
+    wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
+    company = _warehouse_company(db_session, wh)
+    migration_repo.migrate_inventory(db_session, [_entry(wh)], ACTOR)  # company=None, as a legacy run
+    db_session.flush()
+
+    for c in (company, _another_company(company)):
+        assert migration_repo.has_migration_run(db_session, company=c) is True
+        with pytest.raises(ConflictError):
+            migration_repo.guard_rerun(db_session, allow_rerun=False, company=c)
+
+
 def test_a_batch_inside_one_company_passes(db_session):
     wh = warehouse_admin_repository.get_primary_warehouse_id(db_session)
     company = _warehouse_company(db_session, wh)

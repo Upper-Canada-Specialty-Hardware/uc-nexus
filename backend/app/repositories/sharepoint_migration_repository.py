@@ -27,7 +27,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, NotFoundError, ValidationError
@@ -64,19 +64,23 @@ MIGRATION_RECEIPT_NOTE = "SharePoint migration"
 _MIGRATION_LOCK_KEY = 0x5350_4D49_4752  # "SPMIGR"
 
 
-def guard_rerun(session: Session, *, allow_rerun: bool) -> None:
-    """Refuse a second run unless the caller asked for one on purpose (#1366).
+def guard_rerun(session: Session, *, allow_rerun: bool, company: str | None = None) -> None:
+    """Refuse a second run into the same company unless the caller asked for one on purpose (#1366).
 
     A run is not idempotent: every stock row is incremented again, project rows and receipts are
     written again, and the coverage marks double (reapply sums them). The wizard's warning used to be
     the only thing between a double click and that, and a warning is read once per page load. Taken
     under the lock, so two runs that both start before either commits cannot both pass the check.
+
+    Per company (#1399): a batch writes into one company (#1367), so a second company's first run is
+    not a re-run. `company` is the batch's resolved company; None checks for any run at all.
     """
     session.execute(select(func.pg_advisory_xact_lock(_MIGRATION_LOCK_KEY)))
-    if has_migration_run(session) and not allow_rerun:
+    if has_migration_run(session, company=company) and not allow_rerun:
+        where = f" into {company}" if company else ""
         raise ConflictError(
-            "The SharePoint migration has already been run. Running it again adds every row a second "
-            "time; confirm the re-run on the wizard's warning to go ahead.",
+            f"The SharePoint migration has already been run{where}. Running it again adds every row a "
+            "second time; confirm the re-run on the wizard's warning to go ahead.",
             field="allowRerun",
         )
 
@@ -240,7 +244,12 @@ def _catalog_item_exists(session: Session, type_id: uuid.UUID, product_code: str
 
 
 def migrate_inventory(
-    session: Session, entries: list[dict], performed_by: str, classifications: list[dict] | None = None
+    session: Session,
+    entries: list[dict],
+    performed_by: str,
+    classifications: list[dict] | None = None,
+    *,
+    company: str | None = None,
 ) -> dict:
     """Write every resolved entry, in one transaction, and make the units behave like PO'd hardware.
 
@@ -384,6 +393,8 @@ def migrate_inventory(
         performed_by=performed_by,
         entry_count=len(entries),
         unit_count=total_units,
+        # The batch's company (#1399), so the re-run guard can tell a new company from a repeat.
+        company=company,
     )
     session.add(run)
     session.flush()
@@ -920,12 +931,18 @@ def _location_triple(entry: dict) -> tuple[str | None, str | None, str | None]:
     return tuple(normalize_location_value(_clean_location(entry.get(part))) for part in ("aisle", "row", "bay"))
 
 
-def has_migration_run(session: Session) -> bool:
+def has_migration_run(session: Session, *, company: str | None = None) -> bool:
     """Whether the SharePoint migration has already run, for the wizard's re-run warning.
 
     Definitive, unlike the old has-any-inventory check it replaces: that answered "is this database
     empty" and was true on any environment that had ever received a PO. This reads the run marker the
     migration writes, so it means what it says. A full data reset clears the table (it is not
     preserved), which is what lets the cutover run the migration again after resetting.
+
+    With `company`, only runs into that company count (#1399), plus legacy runs with no company: those
+    could not be attributed, so they keep guarding every company. Without it, any run counts.
     """
-    return session.scalar(select(SharepointMigrationRun.id).limit(1)) is not None
+    stmt = select(SharepointMigrationRun.id)
+    if company is not None:
+        stmt = stmt.where(or_(SharepointMigrationRun.company == company, SharepointMigrationRun.company.is_(None)))
+    return session.scalar(stmt.limit(1)) is not None
