@@ -309,6 +309,20 @@ def test_a_pass_covers_every_company_the_relay_serves(monkeypatch):
         assert sorted(r.company for r in rows) == ["TUBC", "UCSH"]
 
 
+def test_a_pass_narrowed_to_one_company_reads_and_adopts_only_that_one(monkeypatch):
+    """#1513: Sync from GP pressed by an account pinned to UCSH must not read TUBC's job master, adopt
+    TUBC's jobs, or count them in what it reports."""
+    calls = _relay(monkeypatch, company=["TUBC", "UCSH"], jobs=[{"job_number": "SYNC-380-B", "job_name": "Own"}])
+
+    total, adopted = asyncio.run(gp_job_sync.run_once(only_company="ucsh"))
+
+    assert (total, adopted) == (1, 1)
+    assert {c[0] for c in calls} == {"UCSH"}
+    with SessionLocal() as session:
+        rows = session.query(ProjectModel).filter(ProjectModel.project_id == "SYNC-380-B").all()
+        assert [r.company for r in rows] == ["UCSH"]
+
+
 def test_one_companys_failure_does_not_cost_the_others_their_pass(monkeypatch):
     """#637: a company whose GP read fails must not leave every other company's new jobs unadopted."""
 
