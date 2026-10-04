@@ -779,6 +779,11 @@ export default function LocationsTab() {
   // product code and a location, so a client-side join maps each matching product to the rack
   // positions holding it. Fired only while the box has text (a heavy read otherwise), and scoped to
   // the same warehouse filter as the utilization list.
+  //
+  // #1519: read from the server each time the search turns on, not once a session. Neither read is
+  // keyed by the search text, so a cache-first read answered every later search from the first one's
+  // copy, and hardware put away or moved since never showed where it now sits. Keystrokes do not
+  // change the variables, so this is one read per search, not one per keystroke.
   const searchActive = search.trim().length > 0;
   const {
     data: invRowsData,
@@ -790,7 +795,7 @@ export default function LocationsTab() {
   }>(GET_INVENTORY_ROWS, {
     variables: { warehouseId: warehouseFilter || null },
     skip: !searchActive,
-    fetchPolicy: 'cache-first',
+    fetchPolicy: 'cache-and-network',
   });
   const {
     data: stockItemsData,
@@ -802,7 +807,7 @@ export default function LocationsTab() {
   }>(GET_STOCK_ITEMS, {
     variables: { warehouseId: warehouseFilter || null },
     skip: !searchActive,
-    fetchPolicy: 'cache-first',
+    fetchPolicy: 'cache-and-network',
   });
   const productSearchLoading = searchActive && (invRowsLoading || stockItemsLoading);
   // #1503: a failed product-code read would leave only the label matches - "no match" when it is not.

@@ -6,9 +6,19 @@ export const WAREHOUSE_REFETCH_QUERIES = [
   'GetUnlocatedInventory',
   'GetStockItems',
   'GetDeficientItems',
-  'GetDeficiencyReviews',
   'GetWarehouseDashboard',
   'GetProjectProgressByProduct',
+];
+
+// What a move, unlocate or adjust from the location dialog invalidates: the rack views it is opened
+// from, and (#1519) the Locations product search's two reads, which name each product's rack positions.
+// Self-scoping like the rest: the search reads are only refetched while a search is up.
+export const LOCATION_ACTION_REFETCH_QUERIES = [
+  'GetLocationUtilization',
+  'GetLocationContents',
+  'GetLocationAuditHistory',
+  'GetInventoryRows',
+  'GetStockItems',
 ];
 
 // What a successful receive invalidates, on top of the inventory summaries above (#416). The three
