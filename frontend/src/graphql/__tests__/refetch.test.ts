@@ -37,6 +37,13 @@ it('refetches a draft list after a draft write and never evicts it in the same b
   expect(refetch.RECEIVE_APPROVE_REFETCH_QUERIES).toContain('GetReceiveDrafts');
 });
 
+it("refreshes the Receiving page's pending-draft read after any draft write (#1433)", () => {
+  // The waiting note, the Approvals count and the already-counted chips read GetPendingDraftSummaries,
+  // a separate operation from GetReceiveDrafts.
+  expect(refetch.RECEIVE_DRAFT_REFETCH_QUERIES).toContain('GetPendingDraftSummaries');
+  expect(refetch.RECEIVE_APPROVE_REFETCH_QUERIES).toContain('GetPendingDraftSummaries');
+});
+
 it('takes a PO with a pending draft off the awaiting list, and puts it back (#971)', () => {
   // A submitted count hides its PO from POs Awaiting Receipt; a rejected or deleted one returns it.
   expect(refetch.RECEIVE_DRAFT_REFETCH_QUERIES).toContain('GetOpenPosSummary');
