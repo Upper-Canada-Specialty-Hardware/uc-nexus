@@ -18,7 +18,6 @@ const ROOT_FIELD_OF_QUERY: Record<string, string> = {
   GetUnlocatedInventory: 'unlocatedInventory',
   GetStockItems: 'stockItems',
   GetDeficientItems: 'deficientItems',
-  GetDeficiencyReviews: 'deficiencyReviews',
   GetWarehouseDashboard: 'warehouseDashboard',
   GetProjectProgressByProduct: 'projectProgressByProduct',
   GetReceiveDrafts: 'receiveDrafts',

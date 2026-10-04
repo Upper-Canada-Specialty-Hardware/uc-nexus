@@ -6,7 +6,6 @@ export const WAREHOUSE_REFETCH_QUERIES = [
   'GetUnlocatedInventory',
   'GetStockItems',
   'GetDeficientItems',
-  'GetDeficiencyReviews',
   'GetWarehouseDashboard',
   'GetProjectProgressByProduct',
 ];
