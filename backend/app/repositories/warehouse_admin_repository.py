@@ -9,13 +9,15 @@ from sqlalchemy.orm import Session
 from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models.inventory import InventoryLocation as InventoryLocationModel
 from app.models.receive_draft import ReceiveDraft as ReceiveDraftModel
+from app.models.shipping import ShipmentReturn as ShipmentReturnModel
 from app.models.stock_item import StockItem as StockItemModel
 from app.models.warehouse import Warehouse
 
 # What makes a warehouse OCCUPIED for the purpose of moving it to another company (#637), as
-# (model, singular, plural). These are the three tables that carry `warehouse_id` and would be
-# dragged into the new tenant by a move - stock on its shelves, project inventory on its shelves, and
-# counted-but-unapproved receives against it.
+# (model, singular, plural). These are the four tables that carry `warehouse_id` and would be
+# dragged into the new tenant by a move - stock on its shelves, project inventory on its shelves,
+# counted-but-unapproved receives against it, and shipment returns that landed in it (#1411: a return
+# whose units have since moved on is still the old company's record, and the delete already counts it).
 #
 # `warehouse_locations` is deliberately NOT here: a defined layout is a description of the building,
 # not something in it, and an empty rack moves harmlessly with the walls.
@@ -27,6 +29,7 @@ _OCCUPANCY = (
     (StockItemModel, "stock item", "stock items"),
     (InventoryLocationModel, "inventory row", "inventory rows"),
     (ReceiveDraftModel, "receive draft", "receive drafts"),
+    (ShipmentReturnModel, "shipment return", "shipment returns"),
 )
 
 
@@ -278,6 +281,15 @@ def update_warehouse(
         if company and company != wh.company:
             if len(company) > 15:
                 raise ValidationError("A GP company code is at most 15 characters", field="company")
+            # The primary flag is read per company (#919), so a primary that moved would leave its old
+            # company with none and give the new one two (#1411). Refused rather than quietly unflagged:
+            # the old company's default receiving building is a choice for the admin to make first.
+            if wh.is_primary:
+                raise ValidationError(
+                    f"Warehouse {wh.code} is the primary warehouse for {wh.company}; make another warehouse "
+                    "primary before changing its company.",
+                    field="company",
+                )
             _assert_movable(session, wh)
             wh.company = company
 
@@ -328,8 +340,6 @@ def delete_warehouse(session: Session, warehouse_id: uuid.UUID) -> None:
     # Every table whose warehouse_id points here without a cascade (#1229): a receive draft has no
     # ondelete and a shipment return is RESTRICT, so either used to fail the delete at flush as a
     # masked server error instead of saying what is in the way.
-    from app.models.shipping import ShipmentReturn as ShipmentReturnModel
-
     for model, label in (
         (InventoryLocationModel, "inventory location"),
         (StockItemModel, "stock"),

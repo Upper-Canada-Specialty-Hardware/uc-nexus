@@ -171,19 +171,23 @@ def reconcile_schedule(
     if not lifecycle_items:
         return results
 
-    # The (opening, product) pairs this call is asking about. Matching happens in Python rather than
-    # as a SQL `tuple_(...).in_(pairs)` predicate: Postgres expands a row-constructor IN list into a
-    # nested expression tree and parses it recursively, so a full-schedule selection (thousands of
+    # The (opening, category, product) keys this call is asking about - the wizard sends one item per
+    # that triple, so a product listed under two categories at one opening is two items, and keying by
+    # (opening, product) credited each of them with both categories' units (#1412). Matching happens
+    # in Python rather than as a SQL `tuple_(...).in_(pairs)` predicate: Postgres expands a
+    # row-constructor IN list into a nested expression tree and parses it recursively, so a
+    # full-schedule selection (thousands of
     # openings x their hardware) overflowed `max_stack_depth` and the whole reconcile failed with
     # StatementTooComplex. Every query below is already scoped to the project and indexed on it, so
     # the predicate only ever trimmed rows the loops can skip just as cheaply - and at the scale that
     # broke it, it trimmed nothing at all.
-    pair_set = {(item["opening_number"], item["product_code"]) for item in lifecycle_items}
+    pair_set = {(item["opening_number"], item["hardware_category"], item["product_code"]) for item in lifecycle_items}
 
     # ---- Bulk Query 1: HardwareItems linked to non-cancelled, non-deleted POs ----
     hi_stmt = (
         select(
             OpeningModel.opening_number,
+            HardwareItemModel.hardware_category,
             HardwareItemModel.product_code,
             HardwareItemModel.item_quantity,
             POModel.status.label("po_status"),
@@ -199,9 +203,9 @@ def reconcile_schedule(
             POModel.deleted_at.is_(None),
         )
     )
-    hi_by_pair: dict[tuple[str, str], list] = defaultdict(list)
+    hi_by_pair: dict[tuple[str, str, str], list] = defaultdict(list)
     for row in session.execute(hi_stmt).all():
-        pair = (row.opening_number, row.product_code)
+        pair = (row.opening_number, row.hardware_category, row.product_code)
         if pair not in pair_set:
             continue
         hi_by_pair[pair].append(row)
@@ -214,6 +218,7 @@ def reconcile_schedule(
     marked_stmt = (
         select(
             OpeningModel.opening_number,
+            HardwareItemModel.hardware_category,
             HardwareItemModel.product_code,
             func.sum(HardwareItemModel.item_quantity).label("marked_quantity"),
         )
@@ -223,11 +228,11 @@ def reconcile_schedule(
             HardwareItemModel.state == HardwareItemState.IN_PO,
             HardwareItemModel.po_line_item_id.is_(None),
         )
-        .group_by(OpeningModel.opening_number, HardwareItemModel.product_code)
+        .group_by(OpeningModel.opening_number, HardwareItemModel.hardware_category, HardwareItemModel.product_code)
     )
-    marked_by_pair: dict[tuple[str, str], int] = {}
+    marked_by_pair: dict[tuple[str, str, str], int] = {}
     for row in session.execute(marked_stmt).all():
-        pair = (row.opening_number, row.product_code)
+        pair = (row.opening_number, row.hardware_category, row.product_code)
         if pair not in pair_set:
             continue
         marked_by_pair[pair] = int(row.marked_quantity or 0)
@@ -236,6 +241,7 @@ def reconcile_schedule(
     pr_stmt = (
         select(
             PullRequestItemModel.opening_number,
+            PullRequestItemModel.hardware_category,
             PullRequestItemModel.product_code,
             PullRequestModel.source,
             PullRequestModel.status,
@@ -248,14 +254,15 @@ def reconcile_schedule(
         )
         .group_by(
             PullRequestItemModel.opening_number,
+            PullRequestItemModel.hardware_category,
             PullRequestItemModel.product_code,
             PullRequestModel.source,
             PullRequestModel.status,
         )
     )
-    pr_by_pair: dict[tuple[str, str], list] = defaultdict(list)
+    pr_by_pair: dict[tuple[str, str, str], list] = defaultdict(list)
     for row in session.execute(pr_stmt).all():
-        pair = (row.opening_number, row.product_code)
+        pair = (row.opening_number, row.hardware_category, row.product_code)
         if pair not in pair_set:
             continue
         pr_by_pair[pair].append(row)
@@ -267,16 +274,21 @@ def reconcile_schedule(
     slip_stmt = (
         select(
             PackingSlipItemModel.opening_number,
+            PackingSlipItemModel.hardware_category,
             PackingSlipItemModel.product_code,
             func.sum(PackingSlipItemModel.quantity).label("qty"),
         )
         .join(PackingSlipModel, PackingSlipItemModel.packing_slip_id == PackingSlipModel.id)
         .where(PackingSlipModel.project_id == project_id)
-        .group_by(PackingSlipItemModel.opening_number, PackingSlipItemModel.product_code)
+        .group_by(
+            PackingSlipItemModel.opening_number,
+            PackingSlipItemModel.hardware_category,
+            PackingSlipItemModel.product_code,
+        )
     )
-    shipped_by_pair: dict[tuple[str, str], int] = defaultdict(int)
+    shipped_by_pair: dict[tuple[str, str, str], int] = defaultdict(int)
     for row in session.execute(slip_stmt).all():
-        key = (row.opening_number, row.product_code)
+        key = (row.opening_number, row.hardware_category, row.product_code)
         if key not in pair_set:
             continue
         shipped_by_pair[key] += row.qty or 0
@@ -287,7 +299,7 @@ def reconcile_schedule(
         hardware_category = item["hardware_category"]
         product_code = item["product_code"]
         quantity_needed = item["quantity_needed"]
-        pair_key = (opening_number, product_code)
+        pair_key = (opening_number, hardware_category, product_code)
 
         # Step 2: Bucket quantities by PO status
         buckets: dict[str, int] = defaultdict(int)
@@ -724,7 +736,10 @@ def finalize_import_session(
     hardware_items_input = input_data.get("hardware_items") or []
     po_drafts = input_data.get("po_drafts") or []
     classifications_input = input_data.get("classifications") or []
-    excluded_items_input = input_data.get("excluded_items") or []
+    # #1412: None means "leave the project's By Others exclusions alone" - only a PO import sends a
+    # list, and an empty list is a real answer (every product moved back to UCSH). Coalescing None to
+    # [] here made every shop-assembly request and schedule replace delete them all.
+    excluded_items_input = input_data.get("excluded_items")
     shipping_pr_drafts = input_data.get("shipping_out_pr_drafts") or []
     include_sar = input_data.get("include_shop_assembly_request", False)
     # #493: the client's shop_assembly_request_number is deprecated and ignored. The number is

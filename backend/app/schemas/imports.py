@@ -212,9 +212,10 @@ def finalize_payload(input: FinalizeImportSessionInput, *, created_by_user_id: s
                 "hardware_category": ei.hardware_category,
                 "product_code": ei.product_code,
             }
-            for ei in (input.excluded_items or [])
+            for ei in input.excluded_items
         ]
-        if input.excluded_items
+        # #1412: an explicit [] clears the exclusions; only an omitted/null list leaves them alone.
+        if input.excluded_items is not None
         else None,
         "shipping_out_pr_drafts": [
             {

@@ -11,6 +11,7 @@ import {
   GET_USERS,
   UPDATE_USER_COMPANY,
   UPDATE_USER_GP_BUYER_ID,
+  UPDATE_USER_NAME,
   UPDATE_USER_ROLES,
 } from '../../../graphql/admin';
 import { GET_RELAY_STATUS } from '../../../graphql/shared';
@@ -581,6 +582,73 @@ test('an unchanged company is not re-written to Clerk on save', async () => {
 
   await waitFor(() => expect(screen.getByText(/User updated successfully/i)).toBeInTheDocument(), GRID_TIMEOUT);
   expect(companyWrites).toBe(0);
+});
+
+test('a retry after a partial save does not re-send the roles that already landed (#1411)', async () => {
+  // Roles land, the name write fails, and the dialog stays open. Pressing Save again used to re-send
+  // the roles with the open-time list as expectedRoles, which the #1321 guard refused as somebody
+  // else's change - the admin's own first write.
+  const roleWrites: unknown[] = [];
+  const rolesMock: MockedResponse = {
+    request: { query: UPDATE_USER_ROLES, variables: () => true },
+    maxUsageCount: INFINITE,
+    result: (vars: Record<string, unknown>) => {
+      roleWrites.push(vars.expectedRoles);
+      return { data: { updateUserRoles: { ...USER, roles: ['PO User', 'Warehouse Staff'] } } };
+    },
+  };
+  let nameAttempts = 0;
+  const nameMock: MockedResponse = {
+    request: { query: UPDATE_USER_NAME, variables: () => true },
+    maxUsageCount: INFINITE,
+    result: () => {
+      nameAttempts += 1;
+      if (nameAttempts === 1) return { errors: [new GraphQLError('Clerk is unavailable')] };
+      return { data: { updateUserName: { ...USER, firstName: 'Jaymi', roles: ['PO User', 'Warehouse Staff'] } } };
+    },
+  };
+  renderPage([relayStatusMock(true), usersMock(), buyersMock, rolesMock, nameMock]);
+
+  await openEditDialog();
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Warehouse Staff' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'First name' }), { target: { value: 'Jaymi' } });
+  fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+  expect(await screen.findByText(/Clerk is unavailable/i, {}, GRID_TIMEOUT)).toBeInTheDocument();
+  expect(roleWrites).toEqual([['PO User']]);
+  expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+  await waitFor(() => expect(screen.getByText(/User updated successfully/i)).toBeInTheDocument(), GRID_TIMEOUT);
+  expect(nameAttempts).toBe(2);
+  expect(roleWrites).toEqual([['PO User']]);
+  expect(screen.queryByText(/roles changed since you opened them/i)).not.toBeInTheDocument();
+});
+
+test('a save that leaves the roles alone does not write them (#1411)', async () => {
+  let roleWrites = 0;
+  const rolesMock: MockedResponse = {
+    request: { query: UPDATE_USER_ROLES, variables: () => true },
+    maxUsageCount: INFINITE,
+    result: () => {
+      roleWrites += 1;
+      return { data: { updateUserRoles: USER } };
+    },
+  };
+  const nameMock: MockedResponse = {
+    request: { query: UPDATE_USER_NAME, variables: () => true },
+    maxUsageCount: INFINITE,
+    result: { data: { updateUserName: { ...USER, firstName: 'Jaymi' } } },
+  };
+  renderPage([relayStatusMock(true), usersMock(), buyersMock, rolesMock, nameMock]);
+
+  await openEditDialog();
+  fireEvent.change(screen.getByRole('textbox', { name: 'First name' }), { target: { value: 'Jaymi' } });
+  fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+  await waitFor(() => expect(screen.getByText(/User updated successfully/i)).toBeInTheDocument(), GRID_TIMEOUT);
+  expect(roleWrites).toBe(0);
 });
 
 test('with the relay down the stored company shows read-only, with the reason', async () => {
