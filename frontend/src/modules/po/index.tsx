@@ -80,6 +80,9 @@ interface POLineItem {
   // True when hardwareCategory and productCode above came off a hardware schedule, so the GP sync
   // leaves them alone; false while the line still carries GP's own item number and description.
   nexusRegistered: boolean;
+  // #1398: units already received when a GP-born line was first registered (never tied). Missing or
+  // null when not recorded (lines registered before #1398, or Nexus-drafted lines).
+  receivedBeforeRegistration?: number | null;
   // Set when the line was added from the non-schedule item catalog (#454). Order As belongs to
   // hardware schedule items only, so a line with this shows none.
   customInventoryItemId: string | null;

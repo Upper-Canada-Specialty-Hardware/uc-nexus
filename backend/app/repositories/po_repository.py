@@ -509,6 +509,14 @@ def register_po_in_gp(
         session, cleaned_po_number, company=po.company, project_id=po.project_id, exclude_po_id=po.id
     )
 
+    # #1398: a kept line's ties may be released back to AVAILABLE below, which must not interleave
+    # with a finalize on the same project (it deletes and re-inserts AVAILABLE rows from a read of
+    # what is ordered). Take the project lock in the mode finalize and the tie path take.
+    if po.project_id is not None:
+        from app.models.project import Project as ProjectModel
+
+        session.execute(select(ProjectModel.id).where(ProjectModel.id == po.project_id).with_for_update(key_share=True))
+
     existing = {li.id: li for li in po.line_items}
     seen_ids: set[uuid.UUID] = set()
     cleaned_cost_code = cost_code.strip() if cost_code and cost_code.strip() else None
@@ -839,6 +847,10 @@ def _release_line_ties_beyond(session: Session, po_line_item_id: uuid.UUID, *, k
             .join(Opening, HardwareItem.opening_id == Opening.id)
             .where(HardwareItem.po_line_item_id == po_line_item_id)
             .order_by(Opening.opening_number, HardwareItem.id)
+            # #1398: the rows rewritten below are locked (not the openings joined for ordering) and
+            # re-read, so a concurrent writer cannot move them between this read and the split.
+            .with_for_update(of=HardwareItem)
+            .execution_options(populate_existing=True)
         )
         .scalars()
         .all()
@@ -902,10 +914,19 @@ def tied_units_by_line(session: Session, line_ids: list[uuid.UUID]) -> dict[uuid
     return {line_id: int(total) for line_id, total in rows}
 
 
-def untied_outstanding(ordered: int, received: int, tied: int) -> int:
-    """Units a line still has coming that no schedule row is tied to yet (#1371). Tied rows keep their
-    tie once their units arrive, so the received and tied counts overlap; subtracting both counted the
-    received tied units twice and left a topped-up line unable to tie what was still on its way."""
+def untied_outstanding(ordered: int, received: int, tied: int, received_before_registration: int | None = None) -> int:
+    """Units a line still has coming that no schedule row is tied to yet.
+
+    Units received before the line was registered were never tied (registration ties only what is
+    still coming), while units received after it arrive on tied rows that keep their tie. So when the
+    line knows how many it had received at registration (#1398), the untied outstanding is ordered
+    less those less what is tied - exact for both cases.
+
+    Lines registered before that was recorded carry None: the split is unknown, so this falls back to
+    ordered less the larger of received and tied (#1371). That is right when every received unit was a
+    tied one, and over-allows a top-up on a line whose units arrived before registration."""
+    if received_before_registration is not None:
+        return max(ordered - received_before_registration - tied, 0)
     return max(ordered - max(received, tied), 0)
 
 
@@ -1002,11 +1023,11 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
 
         if po.project_id is not None and quantity:
             # What is already tied counts against what is outstanding, so a registered line can be
-            # topped up later (#1128) without tying more than it still has coming. A tied row stays IN_PO
-            # after its units arrive, so received and tied overlap: the untied outstanding is ordered less
-            # the larger of the two, not less both (#1371).
+            # topped up later (#1128) without tying more than it still has coming (#1371, #1398).
             already_tied = tied_units_by_line(session, [line.id]).get(line.id, 0)
-            outstanding = untied_outstanding(line.ordered_quantity, line.received_quantity, already_tied)
+            # A first registration records what had arrived; a re-registration uses what was recorded.
+            before = line.received_before_registration if line.nexus_registered else line.received_quantity
+            outstanding = untied_outstanding(line.ordered_quantity, line.received_quantity, already_tied, before)
             available = _available_schedule_units(
                 session,
                 project_id=po.project_id,
@@ -1033,6 +1054,9 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
 
         line.hardware_category = hardware_category
         line.product_code = product_code
+        if not line.nexus_registered:
+            # #1398: what had already arrived is never tied; remember it so later top-ups subtract it.
+            line.received_before_registration = line.received_quantity
         line.nexus_registered = True
 
         if po.project_id is not None and quantity:
