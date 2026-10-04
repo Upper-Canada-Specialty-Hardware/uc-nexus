@@ -1726,7 +1726,8 @@ export default function GpPurchaseOrderDialog({
               value={costCode}
               onChange={(e) => handleAllLinesCostCode(e.target.value)}
               size="small"
-              sx={{ minWidth: 300, '& .MuiSelect-select': monoSx }}
+              // #1521: capped at the dialog's width so a phone does not scroll the dialog sideways.
+              sx={{ minWidth: 'min(300px, 100%)', '& .MuiSelect-select': monoSx }}
               helperText="Carried to GP registration as the default"
             >
               <MenuItem value="">
@@ -1750,11 +1751,12 @@ export default function GpPurchaseOrderDialog({
             value={vendorQuoteNumber}
             onChange={(e) => setVendorQuoteNumber(e.target.value)}
             size="small"
-            sx={{ width: 260 }}
+            sx={{ width: 260, maxWidth: '100%' }}
             helperText="The vendor quotation this request is raised against"
           />
         )}
-        <Stack direction="row" spacing={2}>
+        {/* #1521: wraps, so on a phone Tariffs drops under Shipping costs instead of the dialog scrolling sideways. */}
+        <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
           <TextField
             label="Shipping costs (optional)"
             value={shippingCost}
