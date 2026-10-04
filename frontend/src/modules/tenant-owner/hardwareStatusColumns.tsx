@@ -91,7 +91,7 @@ export const buildColumns = (anySchedule: boolean): GridColDef[] => [
   countColumn(
     'notPurchased',
     'Not Purchased',
-    'Schedule quantity not yet drafted into any purchase order.',
+    'Schedule quantity not yet drafted into any purchase order. By Others products are not counted: the general contractor supplies them.',
     96,
     !anySchedule,
   ),
