@@ -311,7 +311,7 @@ async def check_job_setup_live(company: str, job_number: str) -> dict | None:
     return None
 
 
-async def run_once(*, background: bool = False) -> tuple[int, int]:
+async def run_once(*, background: bool = False, only_company: str | None = None) -> tuple[int, int]:
     """One sync pass PER COMPANY the connected relay serves (#637): read GP's job master through the
     relay and create the projects that are missing, then stamp each project with its GP setup verdict
     (#425).
@@ -327,13 +327,20 @@ async def run_once(*, background: bool = False) -> tuple[int, int]:
 
     `background` marks these reads as timer-driven on the wire, which is what the relay's busy gate
     keys on. It defaults FALSE, so the admin Sync from GP button and the /admin/reset-data re-adoption
-    are served rather than refused; run_forever passes True for its own passes."""
+    are served rather than refused; run_forever passes True for its own passes.
+
+    `only_company` narrows the pass to that one company (#1513), as gp_po_sync's does: the Sync from GP
+    button pressed by an account pinned to one company reads and adopts that company's jobs only, and
+    the totals it shows are that company's. The caller checks the relay serves it."""
     global _activity
     companies = relay_gateway.companies
     if not companies:
         raise RelayUnavailableError(
             "The GP relay is not connected, so jobs cannot be synced from GP. Start the relay and try again."
         )
+    if only_company:
+        wanted = only_company.strip().upper()
+        companies = [c for c in companies if c.strip().upper() == wanted]
 
     total = 0
     adopted = 0
