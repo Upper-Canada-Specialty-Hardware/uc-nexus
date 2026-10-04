@@ -103,6 +103,18 @@ interface PODetailModalProps {
 
 // --- Component ---
 
+/** The PO fields an edit can change, as strings the way the edit form holds them (#1498). */
+interface EditStart {
+  poNumber: string;
+  vendorQuoteNumber: string;
+  expectedDeliveryDate: string;
+  preferredDeliveryDate: string;
+  notes: string;
+  shippingCost: string;
+  tariffAmount: string;
+  poolKind: string;
+}
+
 export default function PODetailModal({
   open,
   po,
@@ -126,6 +138,8 @@ export default function PODetailModal({
   const [tariffAmount, setTariffAmount] = useState(po.tariffAmount != null ? String(po.tariffAmount) : '');
   // #832: Stock or Overhead - a draft field, and only on a PO with no project.
   const [poolKind, setPoolKind] = useState<PoolKind>(po.poolKind ?? 'STOCK');
+  // #1498: the edit fields as they stood when Edit was pressed (see handleStartEdit / handleSave).
+  const editStart = useRef<EditStart | null>(null);
   const [poNumberError, setPoNumberError] = useState('');
   const [aliasEdits, setAliasEdits] = useState<Record<string, string>>({});
   const [unitCostEdits, setUnitCostEdits] = useState<Record<string, string>>({});
@@ -241,6 +255,17 @@ export default function PODetailModal({
   // --- Handlers ---
 
   const handleStartEdit = () => {
+    // #1498: what the fields held when editing began, so Save sends only what this edit changed.
+    editStart.current = {
+      poNumber: po.poNumber ?? '',
+      vendorQuoteNumber: po.vendorQuoteNumber ?? '',
+      expectedDeliveryDate: po.expectedDeliveryDate ?? '',
+      preferredDeliveryDate: po.preferredDeliveryDate ?? '',
+      notes: po.notes ?? '',
+      shippingCost: po.shippingCost != null ? String(po.shippingCost) : '',
+      tariffAmount: po.tariffAmount != null ? String(po.tariffAmount) : '',
+      poolKind: po.poolKind ?? 'STOCK',
+    };
     setPoNumber(po.poNumber ?? '');
     setVendorQuoteNumber(po.vendorQuoteNumber ?? '');
     setExpectedDeliveryDate(po.expectedDeliveryDate ?? '');
@@ -304,26 +329,37 @@ export default function PODetailModal({
       return;
     }
 
+    // #1498: only what this edit changed is sent; everything else is left out (undefined), which the
+    // server reads as "leave it alone". Sending every field overwrote whatever another buyer saved since
+    // this modal loaded - an emptied quote number from a stale view cleared theirs and dropped a Vendor
+    // Confirmed PO back to GP-Registered.
+    const start = editStart.current;
+    const changed = (key: keyof EditStart, value: string) => !start || start[key] !== value;
     // Issue #216: the delivery dates are status-gated - preferred is the PM's ask on the DRAFT
     // request, expected is the vendor's answer once GP-Registered. #1463: only the one editable now is
-    // sent, and an emptied box sends null, which clears it; the other is left out (undefined), which
-    // the server reads as "leave alone".
+    // sent, and an emptied box sends null, which clears it.
     const isDraft = po.status === 'DRAFT';
     updatePo({
       variables: {
         id: po.id,
-        preferredDeliveryDate: isDraft ? preferredDeliveryDate || null : undefined,
-        expectedDeliveryDate: !isDraft ? expectedDeliveryDate || null : undefined,
-        poNumber: poNumber || null,
+        preferredDeliveryDate:
+          isDraft && changed('preferredDeliveryDate', preferredDeliveryDate) ? preferredDeliveryDate || null : undefined,
+        expectedDeliveryDate:
+          !isDraft && changed('expectedDeliveryDate', expectedDeliveryDate) ? expectedDeliveryDate || null : undefined,
+        poNumber: changed('poNumber', poNumber) ? poNumber || null : undefined,
         // #969: sent as typed. An emptied field is "" and clears it - which is how removing the quote #
         // takes a PO back from Vendor Confirmed. Null would mean "leave alone" and never clear.
-        vendorQuoteNumber,
-        notes,
+        vendorQuoteNumber: changed('vendorQuoteNumber', vendorQuoteNumber) ? vendorQuoteNumber : undefined,
+        notes: changed('notes', notes) ? notes : undefined,
         // Issue #156: '' = not entered (null clears); 0 is a valid entered value.
-        shippingCost: shippingCost.trim() === '' ? null : parseFloat(shippingCost),
-        tariffAmount: tariffAmount.trim() === '' ? null : parseFloat(tariffAmount),
-        // #832: sent only where it can change - a draft with no project. Null leaves it alone.
-        poolKind: isDraft && !po.projectId ? poolKind : null,
+        shippingCost: changed('shippingCost', shippingCost)
+          ? shippingCost.trim() === '' ? null : parseFloat(shippingCost)
+          : undefined,
+        tariffAmount: changed('tariffAmount', tariffAmount)
+          ? tariffAmount.trim() === '' ? null : parseFloat(tariffAmount)
+          : undefined,
+        // #832: sent only where it can change - a draft with no project.
+        poolKind: isDraft && !po.projectId && changed('poolKind', poolKind) ? poolKind : undefined,
       },
     });
   };

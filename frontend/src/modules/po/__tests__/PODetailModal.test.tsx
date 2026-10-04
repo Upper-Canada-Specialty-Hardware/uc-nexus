@@ -254,18 +254,19 @@ describe('PODetailModal', () => {
 
     await screen.findByText('PO updated successfully');
     expect(calls).toHaveLength(1);
+    // #1498: only what this edit changed goes up; the rest is left out (undefined = leave alone).
     expect(calls[0]).toEqual({
       id: 'po-1',
       preferredDeliveryDate: '2026-09-15',
       // #1463: the date not editable on a draft is left out, not sent as null.
       expectedDeliveryDate: undefined,
-      poNumber: null,
+      poNumber: undefined,
       vendorQuoteNumber: 'Q-200',
-      notes: '',
+      notes: undefined,
       shippingCost: 0,
       tariffAmount: null,
       // #832: a PO on a job has no Stock / Overhead choice to send.
-      poolKind: null,
+      poolKind: undefined,
     });
     expect(onRefetch).toHaveBeenCalled();
   });
@@ -291,17 +292,53 @@ describe('PODetailModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
 
     await screen.findByText('PO updated successfully');
-    expect(calls[0]).toEqual({
-      id: 'po-1',
-      preferredDeliveryDate: undefined,
-      expectedDeliveryDate: '2026-10-01',
-      poNumber: 'PO-1001',
-      vendorQuoteNumber: 'Q-100',
-      notes: '',
-      shippingCost: 12.5,
-      tariffAmount: null,
-      poolKind: null,
-    });
+    expect(calls[0]).toEqual({ id: 'po-1', expectedDeliveryDate: '2026-10-01' });
+  });
+
+  it('leaves every field it did not change out of the save, so a stale view overwrites nothing (#1498)', async () => {
+    // Another buyer may have added the quote # and confirmed the PO since this modal loaded; sending the
+    // stale quote # (or an empty one) would wipe theirs and drop the PO back to GP-Registered.
+    const calls: Record<string, unknown>[] = [];
+    const mocks: MockedResponse[] = [
+      {
+        request: { query: UPDATE_PO, variables: () => true },
+        result: (vars) => {
+          calls.push(vars as Record<string, unknown>);
+          return { data: updatePoData(registeredPo) };
+        },
+      },
+    ];
+    renderModal(registeredPo, mocks);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByLabelText('Expected Delivery Date'), { target: { value: '2026-10-01' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await screen.findByText('PO updated successfully');
+    for (const field of ['vendorQuoteNumber', 'notes', 'poNumber', 'shippingCost', 'tariffAmount', 'poolKind']) {
+      expect(calls[0][field]).toBeUndefined();
+    }
+    expect(calls[0].expectedDeliveryDate).toBe('2026-10-01');
+  });
+
+  it('saving with nothing changed sends only the PO id (#1498)', async () => {
+    const calls: Record<string, unknown>[] = [];
+    const mocks: MockedResponse[] = [
+      {
+        request: { query: UPDATE_PO, variables: () => true },
+        result: (vars) => {
+          calls.push(vars as Record<string, unknown>);
+          return { data: updatePoData(registeredPo) };
+        },
+      },
+    ];
+    renderModal(registeredPo, mocks);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await screen.findByText('PO updated successfully');
+    expect(calls[0]).toEqual({ id: 'po-1' });
   });
 
   it('clears an emptied expected date: null for it, the preferred date left out (#1463)', async () => {
@@ -405,19 +442,8 @@ describe('PODetailModal', () => {
     await screen.findByText('PO updated successfully');
     expect(aliasCalls).toEqual([{ id: 'li-1', orderAs: 'ML-9000' }]);
     expect(costCalls).toEqual([{ id: 'li-1', unitCost: 3.75 }]);
-    expect(updateCalls).toEqual([
-      {
-        id: 'po-1',
-        preferredDeliveryDate: '2026-08-01',
-        expectedDeliveryDate: undefined,
-        poNumber: null,
-        vendorQuoteNumber: 'Q-100',
-        notes: '',
-        shippingCost: 12.5,
-        tariffAmount: 3,
-        poolKind: null,
-      },
-    ]);
+    // #1498: no header field changed, so the PO update carries only its id.
+    expect(updateCalls).toEqual([{ id: 'po-1' }]);
   });
 
   it('shows and edits Stock or Overhead only on a draft with no project (#832)', async () => {
