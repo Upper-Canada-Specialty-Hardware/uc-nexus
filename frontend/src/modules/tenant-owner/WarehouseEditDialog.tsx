@@ -133,14 +133,17 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
       setFieldError('A GP company is required. Choose the company to work in first.');
       return;
     }
+    // #1463: on an edit a blanked address field goes as '', which the server stores as empty; null there
+    // means "leave it" and kept the old line printing on delivery requests. A create has nothing to keep.
+    const blank = form.id ? '' : null;
     const payload = {
       name: trimmedName,
       code: trimmedCode,
       company,
-      address: form.address?.trim() || null,
-      city: form.city?.trim() || null,
-      province: form.province?.trim() || null,
-      postalCode: form.postalCode?.trim() || null,
+      address: form.address?.trim() || blank,
+      city: form.city?.trim() || blank,
+      province: form.province?.trim() || blank,
+      postalCode: form.postalCode?.trim() || blank,
       isPrimary: form.isPrimary,
       isActive: form.isActive,
     };
