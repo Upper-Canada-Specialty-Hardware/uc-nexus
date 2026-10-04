@@ -659,3 +659,26 @@ def test_notes_on_a_po_that_does_not_exist_is_not_found(db_session):
 
     with pytest.raises(NotFoundError):
         po_repository.update_po_notes(db_session, uuid.uuid4(), "nowhere")
+
+
+# --- #1438: a draft line is held to the floor registration holds it to ------------------------------
+
+
+@pytest.mark.parametrize(
+    "override, field",
+    [
+        ({"ordered_quantity": 0}, "ordered_quantity"),
+        ({"ordered_quantity": -5}, "ordered_quantity"),
+        ({"unit_cost": -10}, "unit_cost"),
+    ],
+)
+def test_create_po_refuses_a_line_it_could_not_register(db_session, override, field):
+    with pytest.raises(ValidationError) as exc:
+        po_repository.create_po(db_session, line_items=[{**_line_item("ML2010"), **override}], company="TUBC")
+    assert exc.value.field == field
+
+
+def test_create_po_takes_a_free_line(db_session):
+    po = po_repository.create_po(db_session, line_items=[{**_line_item("ML2010"), "unit_cost": 0}], company="TUBC")
+    db_session.refresh(po)
+    assert po.line_items[0].unit_cost == 0

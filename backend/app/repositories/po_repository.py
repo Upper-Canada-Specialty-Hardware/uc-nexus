@@ -353,6 +353,14 @@ def create_po(
             raise ValidationError("Hardware category is required for every line item", field="hardware_category")
         if not (li_data.get("product_code") or "").strip():
             raise ValidationError("Product code is required for every line item", field="product_code")
+        # #1438: the same floor registration holds a line to, so a draft can never carry a line it
+        # could not register (or a negative quantity that shrinks the PO Drafted totals).
+        qty = li_data.get("ordered_quantity")
+        if qty is None or qty < 1:
+            raise ValidationError("Ordered quantity must be at least 1", field="ordered_quantity")
+        unit_cost = li_data.get("unit_cost")
+        if unit_cost is not None and unit_cost < 0:
+            raise ValidationError("Unit cost must be zero or greater", field="unit_cost")
 
         line_job_cost = gp_po.line_is_job_cost(li_data, has_project=has_project)
         # GP takes these three per line. A job-cost line without a code of its own books to the PO's;

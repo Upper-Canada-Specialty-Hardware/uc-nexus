@@ -292,6 +292,41 @@ def test_the_largest_weight_the_column_holds_is_accepted(db_session):
     assert slip.weight_lbs == Decimal("99999999.99")
 
 
+def test_confirm_shipment_refuses_a_delivery_before_the_pick_up(db_session):
+    """#1438: a Delivery Request delivering before it is picked up is a typo, caught at the box it came
+    from rather than printed and handed to a driver."""
+    project = _make_project(db_session)
+    _stage(db_session, project.id)
+
+    with pytest.raises(ValidationError) as exc:
+        shipping_repository.confirm_shipment(
+            db_session,
+            project_id=project.id,
+            shipped_by="shipper",
+            items=[_shipped_line()],
+            details={**FULL_DETAILS, "pickup_date": date(2026, 8, 5), "delivery_date": date(2026, 8, 3)},
+        )
+
+    assert exc.value.field == "delivery_date"
+
+
+def test_update_shipment_details_refuses_a_delivery_before_the_pick_up_and_takes_the_same_day(db_session):
+    project = _make_project(db_session)
+    slip = _make_slip(db_session, project.id, gate_number="Gate 1")
+
+    with pytest.raises(ValidationError) as exc:
+        shipping_repository.update_shipment_details(
+            db_session, slip.id, {**FULL_DETAILS, "pickup_date": date(2026, 8, 5), "delivery_date": date(2026, 8, 3)}
+        )
+    assert exc.value.field == "delivery_date"
+    assert slip.gate_number == "Gate 1"
+
+    # Same-day delivery is ordinary, and either date alone is fine.
+    same_day = {**FULL_DETAILS, "pickup_date": date(2026, 8, 5), "delivery_date": date(2026, 8, 5)}
+    shipping_repository.update_shipment_details(db_session, slip.id, same_day)
+    shipping_repository.update_shipment_details(db_session, slip.id, {**FULL_DETAILS, "pickup_date": None})
+
+
 # --- the lifecycle ------------------------------------------------------------------------------
 
 
