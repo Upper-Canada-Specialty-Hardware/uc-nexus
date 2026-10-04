@@ -20,6 +20,7 @@ import { TRANSFER_INVENTORY } from '../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { useDefinedLocationPick } from './useDefinedLocationPick';
+import { isAtDestination } from './transferLocation';
 
 export interface TransferSource {
   type: 'INVENTORY_LOCATION' | 'STOCK_ITEM';
@@ -106,9 +107,24 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
     awaitRefetchQueries: true,
   });
 
+  const destComplete = !!destWarehouseId && isDefinedPick;
+  // #1451: consolidating several rows into a bin that already holds one of them is the usual case. The
+  // server refuses to move a row onto its own bin, so a batch sending it stopped there on every retry
+  // and never reached the rows after it. A source already at the destination needs no move: it is left
+  // out of the batch and shown as already there. Worked out against the destination as it stands, so
+  // picking another bin brings it back into the batch.
+  const alreadyThere = useMemo(
+    () =>
+      multi && destComplete
+        ? new Set(pending.filter((s) => isAtDestination(s, destWarehouseId, aisle, row, bay)).map((s) => s.id))
+        : new Set<string>(),
+    [multi, destComplete, pending, destWarehouseId, aisle, row, bay],
+  );
+  const toMove = useMemo(() => pending.filter((s) => !alreadyThere.has(s.id)), [pending, alreadyThere]);
+
   const totalAvailable = useMemo(
-    () => pending.reduce((sum, s) => sum + s.available, 0),
-    [pending],
+    () => toMove.reduce((sum, s) => sum + s.available, 0),
+    [toMove],
   );
 
   const q = Number(quantity);
@@ -119,11 +135,10 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
     (single.row ?? '') === row.trim() &&
     (single.bay ?? '') === bay.trim();
 
-  const destComplete = !!destWarehouseId && isDefinedPick;
   const singleQtyValid = single
     ? Number.isInteger(q) && q >= 1 && q <= single.available && !sameLocationSingle
     : true;
-  const valid = destComplete && (single ? singleQtyValid : pending.length > 0);
+  const valid = destComplete && (single ? singleQtyValid : toMove.length > 0);
 
   const handleSubmit = async () => {
     if (!valid || submitting) return;
@@ -133,7 +148,7 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
     try {
       // Sequential so a mid-loop failure stops cleanly (the mutate promise rejects on error) and we
       // can report exactly how many landed.
-      for (const s of pending) {
+      for (const s of single ? pending : toMove) {
         const qtyForSource = single ? q : s.available;
         await transfer({
           variables: {
@@ -151,9 +166,11 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
         done.add(s.id);
         setDoneIds(new Set(done));
       }
+      const skipped = alreadyThere.size;
       showToast(
         multi
-          ? `Transferred ${done.size} item${done.size === 1 ? '' : 's'}`
+          ? `Transferred ${done.size} item${done.size === 1 ? '' : 's'}` +
+              (skipped > 0 ? ` (${skipped} already there)` : '')
           : `Transferred ${q} ${single!.productCode}`,
         'success',
       );
@@ -162,7 +179,7 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Transfer failed';
       const summary = multi
-        ? `${message} — ${done.size} of ${sources.length} transferred. Transfer again to move the rest.`
+        ? `${message} — ${done.size} of ${sources.length - alreadyThere.size} transferred. Transfer again to move the rest.`
         : message;
       setErrorMsg(summary);
       showToast(summary, 'error');
@@ -221,14 +238,21 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
         ) : (
           <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
             <Typography component="div" sx={{ ...microLabelSx, mb: 0.75 }}>
-              {pending.length} source{pending.length === 1 ? '' : 's'} · {totalAvailable} total to transfer
+              {toMove.length} source{toMove.length === 1 ? '' : 's'} · {totalAvailable} total to transfer
               {doneIds.size > 0 && ` · ${doneIds.size} already moved`}
+              {alreadyThere.size > 0 && ` · ${alreadyThere.size} already at the destination`}
             </Typography>
             <Stack spacing={0.5}>
               {pending.map((s) => (
                 <Box
                   key={s.id}
-                  sx={{ display: 'flex', alignItems: 'baseline', gap: 1, minWidth: 0 }}
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'baseline',
+                    gap: 1,
+                    minWidth: 0,
+                    opacity: alreadyThere.has(s.id) ? 0.6 : 1,
+                  }}
                 >
                   <Typography noWrap sx={{ ...monoSx, flex: 1, minWidth: 0 }}>
                     {s.productCode}
@@ -237,7 +261,7 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
                     {sourceLocation(s)}
                   </Typography>
                   <Typography variant="caption" color="text.secondary" sx={tabularSx}>
-                    qty {s.available}
+                    {alreadyThere.has(s.id) ? 'already here' : `qty ${s.available}`}
                   </Typography>
                 </Box>
               ))}

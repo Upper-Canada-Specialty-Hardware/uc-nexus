@@ -4,6 +4,7 @@ import { MockedProvider } from '@apollo/client/testing/react';
 import { describe, it, expect, vi } from 'vitest';
 import { ToastProvider } from '../../../components/Toast';
 import TransferDialog, { type TransferSource } from '../TransferDialog';
+import { isAtDestination, normalizeLocationPart } from '../transferLocation';
 import { GET_WAREHOUSES } from '../../../graphql/shared';
 import { GET_WAREHOUSE_LOCATIONS, TRANSFER_INVENTORY } from '../../../graphql/warehouse';
 
@@ -224,5 +225,73 @@ describe('TransferDialog', () => {
 
     setLocation('A1', 'R1', 'B1');
     await waitFor(() => expect(screen.getByRole('button', { name: /^transfer$/i })).toBeEnabled());
+  });
+});
+
+describe('sources already at the destination (#1451)', () => {
+  it('leaves a source already in the chosen bin out of the batch and moves the rest', async () => {
+    const sources: TransferSource[] = [
+      { type: 'STOCK_ITEM', id: 's1', productCode: 'LK-200', available: 3, warehouseId: 'wh-1', aisle: 'A1', row: 'R1', bay: 'B1' },
+      { type: 'STOCK_ITEM', id: 's2', productCode: 'LK-300', available: 4, warehouseId: 'wh-1', aisle: 'A9', row: 'R9', bay: 'B9' },
+      { type: 'STOCK_ITEM', id: 's3', productCode: 'LK-400', available: 5, warehouseId: 'wh-1', aisle: 'A2', row: 'R2', bay: 'B2' },
+    ];
+    const calls: string[] = [];
+    const base = { destWarehouseId: 'wh-1', destAisle: 'A9', destRow: 'R9', destBay: 'B9' };
+    // No mock for s2: sending it (the server refuses it as its own bin) would fail the batch.
+    const mocks = [
+      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's1', quantity: 3, ...base }, () => calls.push('s1')),
+      transferMock({ sourceType: 'STOCK_ITEM', sourceId: 's3', quantity: 5, ...base }, () => calls.push('s3')),
+    ];
+    const { onSuccess, onClose } = renderDialog(sources, mocks);
+
+    setLocation('A9', 'R9', 'B9');
+    await waitFor(() => expect(screen.getByText('already here')).toBeInTheDocument());
+    expect(screen.getByText(/1 already at the destination/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: /^transfer$/i })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: /^transfer$/i }));
+
+    await waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    expect(calls).toEqual(['s1', 's3']);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('refuses to transfer when every source is already in the chosen bin', async () => {
+    const sources: TransferSource[] = [
+      { type: 'STOCK_ITEM', id: 's1', productCode: 'LK-200', available: 3, warehouseId: 'wh-1', aisle: 'A9', row: 'R9', bay: 'B9' },
+      { type: 'INVENTORY_LOCATION', id: 'i2', productCode: 'LK-300', available: 4, warehouseId: 'wh-1', aisle: 'A9', row: 'R9', bay: 'B9' },
+    ];
+    renderDialog(sources, []);
+
+    setLocation('A9', 'R9', 'B9');
+    await waitFor(() => expect(screen.getAllByText('already here')).toHaveLength(2));
+    expect(screen.getByRole('button', { name: /^transfer$/i })).toBeDisabled();
+  });
+});
+
+describe('isAtDestination matches the server rule', () => {
+  const src = (over: Partial<TransferSource>): TransferSource => ({
+    type: 'STOCK_ITEM',
+    id: 'x',
+    productCode: 'P',
+    available: 1,
+    warehouseId: 'wh-1',
+    aisle: 'A9',
+    row: 'R9',
+    bay: 'B9',
+    ...over,
+  });
+
+  it('compares the normalized location in the same warehouse', () => {
+    expect(isAtDestination(src({}), 'wh-1', ' a9 ', 'r9', 'B9')).toBe(true);
+    expect(isAtDestination(src({}), 'wh-2', 'A9', 'R9', 'B9')).toBe(false);
+    expect(isAtDestination(src({ bay: 'B8' }), 'wh-1', 'A9', 'R9', 'B9')).toBe(false);
+  });
+
+  it('never matches a source missing a part: null and empty read alike, and a destination needs all three', () => {
+    expect(normalizeLocationPart('')).toBeNull();
+    expect(normalizeLocationPart('   ')).toBeNull();
+    expect(normalizeLocationPart(null)).toBeNull();
+    expect(isAtDestination(src({ bay: null }), 'wh-1', 'A9', 'R9', 'B9')).toBe(false);
+    expect(isAtDestination(src({ bay: '' }), 'wh-1', 'A9', 'R9', 'B9')).toBe(false);
   });
 });
