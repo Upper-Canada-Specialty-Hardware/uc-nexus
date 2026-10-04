@@ -111,6 +111,35 @@ def test_summary_counts_by_status(db_session):
     assert pending.status == "PENDING"
 
 
+def test_summary_last_settled_at_moves_on_failed_and_cancelled_rows(db_session):
+    # #1410: a failed or cancelled write changes what open pages show (a receipt hands its draft back),
+    # so the timestamp the browser watches moves for those too, not only for a success.
+    company = f"S{uuid.uuid4().hex[:8]}"
+    row = _enqueue(db_session, entity_key="po:settle1", company=company)
+    assert gp_outbox_repository.summary(db_session, company=company)["last_settled_at"] is None
+
+    gp_outbox_repository.mark_failed(db_session, row, kind="gp_rejected", error="no")
+    data = gp_outbox_repository.summary(db_session, company=company)
+    assert data["last_settled_at"] == row.updated_at
+    assert data["last_drained_at"] is None
+
+    other = _enqueue(db_session, entity_key="po:settle2", company=company)
+    cancelled = gp_outbox_repository.cancel_entry(db_session, other.id)
+    assert cancelled is not None
+    data = gp_outbox_repository.summary(db_session, company=company)
+    assert data["last_settled_at"] == cancelled.updated_at
+    assert data["last_settled_at"] >= row.updated_at
+
+
+def test_summary_last_settled_at_ignores_rows_still_queued(db_session):
+    company = f"S{uuid.uuid4().hex[:8]}"
+    _enqueue(db_session, entity_key="po:settle3", company=company)
+    claimed = _enqueue(db_session, entity_key="po:settle4", company=company)
+    claimed.status = "IN_FLIGHT"
+    db_session.flush()
+    assert gp_outbox_repository.summary(db_session, company=company)["last_settled_at"] is None
+
+
 def test_retry_entry_resets_the_attempt_budget_and_requeues(db_session):
     row = _enqueue(db_session, entity_key="po:manual")
     row.attempts = 5

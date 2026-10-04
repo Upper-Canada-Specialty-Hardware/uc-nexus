@@ -472,6 +472,7 @@ def test_read_db_counts_a_companys_mirrored_and_open_pos(borrowed_session):
         "failed",
         "oldest_pending_at",
         "last_drained_at",
+        "last_settled_at",
     }
 
 

@@ -11,6 +11,8 @@ interface RelayStatusChipProps {
   // #1334: no status has arrived and the poll is failing - Nexus itself is unreachable, which says
   // nothing about the relay. Shown as its own state so nobody restarts a healthy relay.
   unreachable?: boolean;
+  // #1403: no status because the user's sign-in lapsed. Not a Nexus or relay problem, so it says so.
+  signInLapsed?: boolean;
   // #637: the GP companies the live relay serves. Shown compactly beside the status when given -
   // the full list is in the tooltip, so a multi-company relay never widens the header. For a scoped
   // user this list only decides whether the relay is serving their own company yet.
@@ -31,6 +33,7 @@ interface RelayStatusChipProps {
 export default function RelayStatusChip({
   connected,
   unreachable = false,
+  signInLapsed = false,
   companies,
   gpCompanies,
   showReach = false,
@@ -38,6 +41,14 @@ export default function RelayStatusChip({
   const { isNexusAdmin } = useIdentity();
   // #863: the company on screen - a scoped user's own, or the one a UC NEXUS ADMIN has switched to.
   const { company: ownCompany } = useActingCompany();
+
+  if (signInLapsed) {
+    return (
+      <Tooltip title="Your sign-in has lapsed, so Nexus cannot check the GP relay. Sign in again - the relay may be fine." arrow>
+        <Chip size="small" color="warning" label="sign-in lapsed" />
+      </Tooltip>
+    );
+  }
 
   if (unreachable) {
     return (

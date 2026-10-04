@@ -97,6 +97,9 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   // Put-away is entered here rather than later: the GP receipt the approval posts needs a rack
   // location per line, and the person who unloaded the truck is the one who knows where it went.
   const [submitting, setSubmitting] = useState(false);
+  // Set before the first await, so a second click on the confirm during its exit transition (#1403)
+  // returns before React has re-rendered with `submitting`.
+  const submitInFlight = useRef(false);
   // #504: one packing slip per PO, because one draft is created per PO. Held as the chosen File
   // until submit - uploading on pick would leave orphan documents on every abandoned count.
   const [packingSlips, setPackingSlips] = useState<Record<string, File>>({});
@@ -380,6 +383,8 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   // ---- Handlers ----
 
   const handleSubmit = useCallback(async () => {
+    if (submitInFlight.current) return;
+    submitInFlight.current = true;
     setConfirmOpen(false);
     setMutationError(null);
     setSubmitting(true);
@@ -475,6 +480,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
         completed.push(poId);
       }
     } finally {
+      submitInFlight.current = false;
       setSubmitting(false);
     }
 
@@ -753,6 +759,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
         confirmLabel="Submit"
         onConfirm={handleSubmit}
         onCancel={() => setConfirmOpen(false)}
+        busy={submitting}
       />
     </>
   );
