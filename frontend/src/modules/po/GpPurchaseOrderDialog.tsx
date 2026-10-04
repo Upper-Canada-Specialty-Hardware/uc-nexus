@@ -1754,7 +1754,8 @@ export default function GpPurchaseOrderDialog({
             helperText="The vendor quotation this request is raised against"
           />
         )}
-        <Stack direction="row" spacing={2}>
+        {/* #1521: wraps, so on a phone Tariffs drops under Shipping costs instead of the dialog scrolling sideways. */}
+        <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
           <TextField
             label="Shipping costs (optional)"
             value={shippingCost}
