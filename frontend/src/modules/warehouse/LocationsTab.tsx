@@ -287,6 +287,8 @@ interface ContentsPanelProps {
   selected: LocationEntry;
   warehouseLabel?: string;
   onClose: () => void;
+  /** #1519: after a move, unlocate or adjust from this panel - the product search names rack positions too. */
+  onChanged?: () => void;
 }
 
 function RowActionMenu({
@@ -352,7 +354,7 @@ function RowActionMenu({
   );
 }
 
-function ContentsPanel({ selected, warehouseLabel, onClose }: ContentsPanelProps) {
+function ContentsPanel({ selected, warehouseLabel, onClose, onChanged }: ContentsPanelProps) {
   const { data, loading, error } = useQuery<LocationContentsData>(GET_LOCATION_CONTENTS, {
     variables: {
       aisle: selected.aisle,
@@ -386,7 +388,8 @@ function ContentsPanel({ selected, warehouseLabel, onClose }: ContentsPanelProps
     // Mutations declare refetchQueries with awaitRefetchQueries: true, so locationUtilization,
     // locationContents, and locationAuditHistory are already fresh by the time this fires.
     setSelectedIds(new Set());
-  }, []);
+    onChanged?.();
+  }, [onChanged]);
 
   const allTargetsById = useMemo(() => {
     const map = new Map<string, LocationActionTarget>();
@@ -782,6 +785,11 @@ export default function LocationsTab() {
   // product code and a location, so a client-side join maps each matching product to the rack
   // positions holding it. Fired only while the box has text (a heavy read otherwise), and scoped to
   // the same warehouse filter as the utilization list.
+  //
+  // #1519: read from the server each time the search turns on, not once a session. Neither read is
+  // keyed by the search text, so a cache-first read answered every later search from the first one's
+  // copy, and hardware put away or moved since never showed where it now sits. Keystrokes do not
+  // change the variables, so this is one read per search, not one per keystroke.
   const searchActive = search.trim().length > 0;
   const {
     data: invRowsData,
@@ -793,7 +801,7 @@ export default function LocationsTab() {
   }>(GET_INVENTORY_ROWS, {
     variables: { warehouseId: warehouseFilter || null },
     skip: !searchActive,
-    fetchPolicy: 'cache-first',
+    fetchPolicy: 'cache-and-network',
   });
   const {
     data: stockItemsData,
@@ -805,11 +813,19 @@ export default function LocationsTab() {
   }>(GET_STOCK_ITEMS, {
     variables: { warehouseId: warehouseFilter || null },
     skip: !searchActive,
-    fetchPolicy: 'cache-first',
+    fetchPolicy: 'cache-and-network',
   });
   const productSearchLoading = searchActive && (invRowsLoading || stockItemsLoading);
   // #1503: a failed product-code read would leave only the label matches - "no match" when it is not.
   const productSearchError = searchActive ? (invRowsError ?? stockItemsError ?? null) : null;
+  // #1519: a move can fold a row into another shelf's, so the search's rack positions change with it. Only
+  // this tab reads these two while an action runs, so they are refreshed here rather than awaited by the
+  // dialog on every screen that opens it.
+  const refreshProductSearch = useCallback(() => {
+    if (!searchActive) return;
+    void refetchInvRows().catch(() => undefined);
+    void refetchStockItems().catch(() => undefined);
+  }, [searchActive, refetchInvRows, refetchStockItems]);
   const retryProductSearch = () =>
     Promise.all([invRowsError && refetchInvRows(), stockItemsError && refetchStockItems()]);
 
@@ -1033,6 +1049,7 @@ export default function LocationsTab() {
                 selected={selected}
                 warehouseLabel={selected.warehouseId ? warehouseCode.get(selected.warehouseId) : undefined}
                 onClose={() => setSelected(null)}
+                onChanged={refreshProductSearch}
               />
             </motion.div>
           )}
