@@ -210,6 +210,78 @@ def _assert_po_number_available(
         raise ValidationError(f"PO number '{po_number}' already exists", field="po_number")
 
 
+def _adopt_mirrored_copy(session: Session, po: PurchaseOrder, po_number: str, company: str) -> None:
+    """Clear the GP sync's own copy of the PO this registration just created in GP (#1492).
+
+    The sync can read a just-created GP PO before the registration persists, and mirror it as a
+    GP-origin row (the pending-registration skip narrows that window, it cannot close it - the ledger
+    write and the sync page are separate transactions). That row then holds (gp_company, po_number),
+    so the draft can never be stamped and every retry fails. When it is nothing but a mirrored copy -
+    GP-origin, never registered from Nexus, and nothing in Nexus points at it or its lines - it is
+    removed, and the draft takes its place; the next sync pass converges onto the draft by the same key.
+
+    Removed, not merged: the draft holds everything Nexus knows (its lines' schedule ties, request
+    number, documents); the copy holds only what GP reports, which the next pass writes again. It is
+    hard-deleted because the (gp_company, po_number) index ignores deleted_at, so a soft delete would
+    still collide. Anything that has a receipt, inventory, a tie, a document or a migration mark is a
+    real PO and is left alone - the duplicate-number refusal below stands for it."""
+    from app.models.hardware import HardwareItem
+    from app.models.inventory import InventoryLocation
+    from app.models.sharepoint_migration_run import SharepointMigrationMark
+
+    copies = session.scalars(
+        select(PurchaseOrder)
+        .where(
+            PurchaseOrder.po_number == po_number,
+            PurchaseOrder.id != po.id,
+            or_(PurchaseOrder.gp_company == company, PurchaseOrder.company == company),
+        )
+        .with_for_update()
+    ).all()
+    for copy in copies:
+        if copy.origin != POOrigin.GP or copy.request_number is not None:
+            continue
+        line_ids = list(session.scalars(select(POLineItem.id).where(POLineItem.po_id == copy.id)).all())
+        received = session.scalar(
+            select(func.coalesce(func.sum(POLineItem.received_quantity), 0)).where(POLineItem.po_id == copy.id)
+        )
+        referenced = (
+            received
+            or session.scalar(select(ReceiveDraft.id).where(ReceiveDraft.po_id == copy.id).limit(1))
+            or session.scalar(select(ReceiveRecord.id).where(ReceiveRecord.po_id == copy.id).limit(1))
+            or session.scalar(select(PODocument.id).where(PODocument.po_id == copy.id).limit(1))
+            or session.scalar(select(PODocumentData.id).where(PODocumentData.po_id == copy.id).limit(1))
+            or (
+                line_ids
+                and (
+                    session.scalar(select(HardwareItem.id).where(HardwareItem.po_line_item_id.in_(line_ids)).limit(1))
+                    or session.scalar(
+                        select(InventoryLocation.id).where(InventoryLocation.po_line_item_id.in_(line_ids)).limit(1)
+                    )
+                    or session.scalar(
+                        select(SharepointMigrationMark.id)
+                        .where(SharepointMigrationMark.po_line_item_id.in_(line_ids))
+                        .limit(1)
+                    )
+                )
+            )
+        )
+        if referenced:
+            continue
+        logger.warning(
+            "register po %s: removing the gp sync's copy of %s %s (po %s) so the registration can persist",
+            po.request_number,
+            company,
+            po_number,
+            copy.id,
+        )
+        for line in session.scalars(select(POLineItem).where(POLineItem.po_id == copy.id)).all():
+            session.delete(line)
+        session.flush()
+        session.delete(copy)
+        session.flush()
+
+
 # The order-time cost columns are Numeric(12,2), so anything at or above this overflows at flush.
 _MAX_ORDER_COST = Decimal("10000000000")
 
@@ -516,6 +588,9 @@ def register_po_in_gp(
             f"This purchase order belongs to {po.company} and cannot be registered in {cleaned_company}",
             field="gp_company",
         )
+    # #1492: the sync may have mirrored this very PO a moment before this persist; its bare copy gives
+    # way. Anything more than a copy is a real duplicate and is refused below.
+    _adopt_mirrored_copy(session, po, cleaned_po_number, cleaned_company)
     # Surface a duplicate GP number as a clean field error rather than a raw IntegrityError at commit.
     _assert_po_number_available(
         session, cleaned_po_number, company=po.company, project_id=po.project_id, exclude_po_id=po.id

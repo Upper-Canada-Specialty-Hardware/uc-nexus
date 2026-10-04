@@ -386,6 +386,16 @@ def po_numbers_pending_registration(session: Session, company: str) -> frozenset
     return frozenset(pending)
 
 
+def po_number_pending_registration(session: Session, company: str, po_number: str) -> bool:
+    """Whether this one number is GP's answer to a Nexus registration that has not persisted yet (#1492).
+
+    The page-level set (`po_numbers_pending_registration`) is read once, at the start of a page, and a
+    registration's ledger write can commit after that read and before the mirror reaches the number.
+    Re-read right before inserting a new row, it closes that window. Same two sources as the set; both
+    hold only in-flight registrations, so this stays a handful of rows."""
+    return po_number in po_numbers_pending_registration(session, company)
+
+
 def _lock_po_for_mirror(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
     """Lock a PO row, then its lines in id order, and return it with both read fresh (#1484).
 
@@ -482,6 +492,11 @@ def upsert_mirrored_po(
         )
 
     if row is None:
+        # #1492: the page's pending set may predate this number's ledger write. Check again right before
+        # inserting: a GP-origin row for a number a registration is about to stamp wedges that
+        # registration (the (gp_company, po_number) key is taken), and the next pass mirrors it anyway.
+        if po_number_pending_registration(session, company, po_number):
+            return "skipped"
         # New rows start at their derived stage when past registration, else at the registration
         # baseline. A mirrored PO is never a DRAFT - it exists in GP by definition.
         status = stage if stage in _APPLIED_STAGES else POStatus.GP_REGISTERED
