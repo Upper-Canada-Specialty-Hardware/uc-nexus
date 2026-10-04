@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 import { useAuth } from '@clerk/clerk-react';
+import { useApolloClient } from '@apollo/client/react';
 import ConfirmDialog from '../components/ConfirmDialog';
-import { markAuthRecovered, onAuthFailure, publishAuthBridge } from '../authBridge';
+import { markAuthRecovered, onAuthFailure, onAuthRecovered, publishAuthBridge } from '../authBridge';
 
 interface AuthRecoveryContextType {
   /** Raise the re-authentication prompt. The Apollo auth link reaches this through authBridge. */
@@ -26,6 +27,21 @@ const AuthRecoveryContext = createContext<AuthRecoveryContextType | undefined>(u
 export function AuthRecoveryProvider({ children }: { children: ReactNode }) {
   const { isLoaded, isSignedIn, getToken, sessionId } = useAuth();
   const [promptOpen, setPromptOpen] = useState(false);
+  const client = useApolloClient();
+
+  // A lapse that ends - by a probe that got through, a new session or the prompt's renewal - leaves
+  // the page's own queries in the error the suspended link gave them; polls recover on their next
+  // tick, a list or detail page would not until a reload (#1400). Re-run them once per recovery,
+  // deferred so a recovery noticed inside the auth link's result handler is not refetched from it.
+  useEffect(
+    () =>
+      onAuthRecovered(() => {
+        setTimeout(() => {
+          void client.refetchObservableQueries();
+        }, 0);
+      }),
+    [client],
+  );
 
   // A new session (the user signed in again after a reload, or Clerk restored one) ends the
   // lapse, so the polls the auth link has been holding back resume on their next tick (#1329).
