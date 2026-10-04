@@ -14,6 +14,7 @@ from app.models.enums import (
 from app.models.hardware import HardwareItem
 from app.models.inventory import InventoryLocation
 from app.models.project import Opening, Project
+from app.models.project_excluded_item import ProjectExcludedItem
 from app.models.pull_request import PullRequest, PullRequestItem
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.models.shipping import PackingSlip, PackingSlipItem
@@ -243,6 +244,63 @@ def test_not_purchased_follows_hardware_item_state(db_session):
     rows = warehouse_repository.get_hardware_status_by_product(db_session, [project.id])
     assert rows[0]["required_quantity"] == 8
     assert rows[0]["not_purchased"] == 5
+
+
+def _exclude(session, project_id: uuid.UUID, product_code: str, hardware_category: str = CAT) -> None:
+    session.add(
+        ProjectExcludedItem(
+            id=uuid.uuid4(), project_id=project_id, hardware_category=hardware_category, product_code=product_code
+        )
+    )
+    session.flush()
+
+
+def test_by_others_products_are_not_counted_as_not_purchased(db_session):
+    """#1489: a By Others product is the general contractor's to supply. Its rows are AVAILABLE (setting By
+    Others hands them back) but nothing is waiting on a PO, so Not Purchased leaves them out; Required
+    still counts them."""
+    project = _make_project(db_session)
+    opening = _make_opening(db_session, project.id)
+    _make_hardware_item(
+        db_session, project_id=project.id, opening_id=opening.id, product_code="CL-40", item_quantity=40
+    )
+    _make_hardware_item(
+        db_session, project_id=project.id, opening_id=opening.id, product_code="HG-100", item_quantity=6
+    )
+    _exclude(db_session, project.id, "CL-40")
+
+    rows = warehouse_repository.get_hardware_status_by_product(db_session, [project.id])
+    closer = _row(rows, "CL-40")
+    assert closer["required_quantity"] == 40
+    assert closer["not_purchased"] == 0
+    hinge = _row(rows, "HG-100")
+    assert (hinge["required_quantity"], hinge["not_purchased"]) == (6, 6)
+
+
+def test_by_others_is_per_project_when_projects_are_summed(db_session):
+    """The exclusion belongs to one project: summed with a project that still buys the product, only that
+    project's units are Not Purchased."""
+    gc_supplies, we_supply = _make_project(db_session), _make_project(db_session)
+    for p, qty in ((gc_supplies, 10), (we_supply, 4)):
+        o = _make_opening(db_session, p.id)
+        _make_hardware_item(db_session, project_id=p.id, opening_id=o.id, product_code="CL-40", item_quantity=qty)
+    _exclude(db_session, gc_supplies.id, "CL-40")
+    # Same code under another category on the excluding project is a different product and still counts.
+    o = _make_opening(db_session, gc_supplies.id, opening_number="A02")
+    _make_hardware_item(
+        db_session,
+        project_id=gc_supplies.id,
+        opening_id=o.id,
+        product_code="CL-40",
+        hardware_category="CLOSER-ALT",
+        item_quantity=2,
+    )
+
+    rows = warehouse_repository.get_hardware_status_by_product(db_session, [gc_supplies.id, we_supply.id])
+    main = next(r for r in rows if r["product_code"] == "CL-40" and r["hardware_category"] == CAT)
+    assert (main["required_quantity"], main["not_purchased"]) == (14, 4)
+    alt = next(r for r in rows if r["hardware_category"] == "CLOSER-ALT")
+    assert (alt["required_quantity"], alt["not_purchased"]) == (2, 2)
 
 
 def test_po_buckets_split_by_status(db_session):

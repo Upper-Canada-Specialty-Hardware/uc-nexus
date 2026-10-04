@@ -16,6 +16,7 @@ from app.models.enums import (
 )
 from app.models.hardware import HardwareItem as HardwareItemModel
 from app.models.inventory import InventoryLocation as InventoryLocationModel
+from app.models.project_excluded_item import ProjectExcludedItem as ProjectExcludedItemModel
 from app.models.pull_request import PullRequest as PullRequestModel
 from app.models.pull_request import PullRequestItem as PullRequestItemModel
 from app.models.purchase_order import POLineItem as POLineItemModel
@@ -397,6 +398,7 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
     One row per (hardware_category, product_code), quantities summed across the given projects:
     - required_quantity: sum of hardware_items.item_quantity
     - not_purchased: schedule lines still AVAILABLE (never drafted into a PO, or released back)
+      that the project has not marked By Others (#1489) - those are the general contractor's to supply
     - po_drafted: ordered_quantity on DRAFT POs
     - on_order: ordered - received on placed POs not yet CLOSED (still expected to arrive)
     - received_quantity: PO receipts on placed POs - NOT current inventory
@@ -442,7 +444,19 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
             rows[key] = dict.fromkeys(fields, 0)
         return rows[key]
 
-    # Schedule: required total + the slice never drafted into a PO.
+    # Schedule: required total + the slice never drafted into a PO. A By Others product (#1489) is the
+    # general contractor's to supply, so its rows are not waiting on a PO: setting By Others hands them
+    # back to AVAILABLE and the mark lives only in project_excluded_items, which is why the exclusion is
+    # checked per project here rather than read off the row's state. Required still counts them.
+    excluded = (
+        select(ProjectExcludedItemModel.id)
+        .where(
+            ProjectExcludedItemModel.project_id == HardwareItemModel.project_id,
+            ProjectExcludedItemModel.hardware_category == HardwareItemModel.hardware_category,
+            ProjectExcludedItemModel.product_code == HardwareItemModel.product_code,
+        )
+        .exists()
+    )
     required_stmt = (
         select(
             HardwareItemModel.hardware_category,
@@ -450,7 +464,10 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
             func.sum(HardwareItemModel.item_quantity).label("required_quantity"),
             func.sum(
                 case(
-                    (HardwareItemModel.state == HardwareItemState.AVAILABLE, HardwareItemModel.item_quantity),
+                    (
+                        and_(HardwareItemModel.state == HardwareItemState.AVAILABLE, ~excluded),
+                        HardwareItemModel.item_quantity,
+                    ),
                     else_=0,
                 )
             ).label("not_purchased"),

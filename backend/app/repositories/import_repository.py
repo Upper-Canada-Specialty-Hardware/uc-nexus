@@ -4,7 +4,6 @@ import uuid
 from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal
-from math import floor
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
@@ -138,6 +137,40 @@ def get_project_openings(session: Session, project_id: uuid.UUID) -> dict:
     }
 
 
+def _received_share_by_row(hi_rows) -> dict[uuid.UUID, int]:
+    """How many of each partially received line's received units each tied schedule row holds (#1490).
+
+    Rounding every row's proportional share down on its own lost them: a 20-unit line spread over 20
+    openings at 1 each with 10 received gave every row floor(1 x 0.5) = 0, so all 20 openings read
+    ORDERED and nothing downstream (pulls, shipments) could be placed against a received unit. The
+    line's total share is worked out once - the units on its tied rows, scaled by received / ordered
+    as before, so a line ordered beyond the schedule still splits its receipts in proportion - and
+    then handed out across ALL of the line's tied rows in a fixed order (opening, leaf, row id), each
+    filled up to its quantity. Every row of the project is in `hi_rows`, so a row's share is the same
+    whichever openings a call asks about.
+    """
+    by_line: dict[uuid.UUID, list] = defaultdict(list)
+    for row in hi_rows:
+        if row.po_status == POStatus.PARTIALLY_RECEIVED:
+            by_line[row.po_line_item_id].append(row)
+
+    share: dict[uuid.UUID, int] = {}
+    for rows in by_line.values():
+        tied = sum(r.item_quantity for r in rows)
+        ordered = rows[0].ordered_quantity or 0
+        received = rows[0].received_quantity or 0
+        if tied <= 0 or received <= 0:
+            continue
+        remaining = min(tied, received, received * tied // max(ordered, tied))
+        for r in sorted(rows, key=lambda r: (r.opening_number, r.leaf is not None, r.leaf or 0, str(r.id))):
+            if remaining <= 0:
+                break
+            take = min(r.item_quantity, remaining)
+            share[r.id] = take
+            remaining -= take
+    return share
+
+
 def reconcile_schedule(
     session: Session,
     project_id: uuid.UUID,
@@ -186,6 +219,9 @@ def reconcile_schedule(
     # ---- Bulk Query 1: HardwareItems linked to non-cancelled, non-deleted POs ----
     hi_stmt = (
         select(
+            HardwareItemModel.id,
+            HardwareItemModel.leaf,
+            HardwareItemModel.po_line_item_id,
             OpeningModel.opening_number,
             HardwareItemModel.hardware_category,
             HardwareItemModel.product_code,
@@ -203,8 +239,10 @@ def reconcile_schedule(
             POModel.deleted_at.is_(None),
         )
     )
+    hi_rows = session.execute(hi_stmt).all()
+    received_share = _received_share_by_row(hi_rows)
     hi_by_pair: dict[tuple[str, str, str], list] = defaultdict(list)
-    for row in session.execute(hi_stmt).all():
+    for row in hi_rows:
         pair = (row.opening_number, row.hardware_category, row.product_code)
         if pair not in pair_set:
             continue
@@ -312,11 +350,9 @@ def reconcile_schedule(
             elif po_status in (POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED):
                 buckets["ORDERED"] += hi_qty
             elif po_status == POStatus.PARTIALLY_RECEIVED:
-                if row.ordered_quantity > 0:
-                    ratio = row.received_quantity / row.ordered_quantity
-                else:
-                    ratio = 0
-                received_portion = floor(hi_qty * ratio)
+                # #1490: the row's share of the line's received units, handed out across every row
+                # tied to the line rather than rounded down row by row.
+                received_portion = received_share.get(row.id, 0)
                 ordered_portion = hi_qty - received_portion
                 if received_portion > 0:
                     buckets["RECEIVED"] += received_portion
