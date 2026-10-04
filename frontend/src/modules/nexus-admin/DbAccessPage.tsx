@@ -31,6 +31,7 @@ import {
 } from '../../graphql/admin';
 import ConfirmDialog from '../../components/ConfirmDialog';
 import PageHeader from '../../components/PageHeader';
+import LoadError from '../../components/LoadError';
 import { useToast } from '../../components/Toast';
 import { useIdentity } from '../../hooks/useIdentity';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
@@ -127,7 +128,11 @@ export default function DbAccessPage() {
   const admins = useMemo(() => data?.postgresAdmins ?? [], [data]);
 
   // The audit history under the grid; only fetched once the panel is opened.
-  const { data: auditData, refetch: refetchAudit } = useQuery<{ postgresAccessAudit: AuditEntry[] }>(
+  const {
+    data: auditData,
+    error: auditError,
+    refetch: refetchAudit,
+  } = useQuery<{ postgresAccessAudit: AuditEntry[] }>(
     POSTGRES_ACCESS_AUDIT,
     {
       skip: !isDbAdmin || !auditOpen,
@@ -148,7 +153,7 @@ export default function DbAccessPage() {
   }, [refetchAudit]);
 
   // The mint picker's roster, only pulled while the dialog is open.
-  const { data: usersData } = useQuery<{ users: RosterUser[] }>(GET_USERS, { skip: !mintOpen });
+  const { data: usersData, error: usersError } = useQuery<{ users: RosterUser[] }>(GET_USERS, { skip: !mintOpen });
   const mintedIds = useMemo(() => new Set(admins.map((a) => a.clerkUserId)), [admins]);
   const eligibleUsers = useMemo(
     // Backend refuses a target who is not a UC NEXUS ADMIN, and a user who already holds a live
@@ -445,7 +450,10 @@ export default function DbAccessPage() {
         </Button>
         <Collapse in={auditOpen}>
           <Box sx={{ mt: 1 }}>
-            {audit.length === 0 ? (
+            {/* #1503: a failed read is not "no activity yet". */}
+            {auditError && !auditData ? (
+              <LoadError what="the audit history" error={auditError} onRetry={() => refetchAudit()} />
+            ) : audit.length === 0 ? (
               <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: 1.5 }}>
                 No activity yet.
               </Typography>
@@ -515,7 +523,14 @@ export default function DbAccessPage() {
               onChange={(e) => setMintUserId(e.target.value)}
               fullWidth
               autoFocus
-              helperText={eligibleUsers.length === 0 ? 'No eligible users.' : undefined}
+              helperText={
+                usersError && !usersData
+                  ? `Couldn't load the users - the read failed, so this is not an empty list. ${usersError.message}`
+                  : eligibleUsers.length === 0
+                    ? 'No eligible users.'
+                    : undefined
+              }
+              error={Boolean(usersError && !usersData)}
             >
               {eligibleUsers.map((u) => (
                 <MenuItem key={u.id} value={u.id}>

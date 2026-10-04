@@ -17,6 +17,7 @@ import { useQuery } from '@apollo/client/react';
 import { GET_SHIPPING_STATS } from '../../graphql/shipping';
 import ShipmentMethodsDialog from './ShipmentMethodsDialog';
 import { StatCard, StatCardSkeleton } from '../../components/StatCard';
+import LoadError from '../../components/LoadError';
 import { useIdentity } from '../../hooks/useIdentity';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
 
@@ -125,7 +126,7 @@ export default function ShippingLanding() {
   // point is hidden rather than disabled: the list is a settings screen, and a Shipping Out user has
   // no reason to open a screen where every control is dead.
   const canManage = ownsTenant || hasRole('Shipping Manager');
-  const { data, loading: queryLoading } = useQuery<{ shippingStats: ShippingStats }>(
+  const { data, loading: queryLoading, error, refetch } = useQuery<{ shippingStats: ShippingStats }>(
     GET_SHIPPING_STATS,
     { fetchPolicy: 'cache-and-network' },
   );
@@ -182,56 +183,62 @@ export default function ShippingLanding() {
       </FadeIn>
 
       <Box sx={{ maxWidth: COLUMN, mb: 3 }}>
-        <StaggerList
-          count={4}
-          style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}
-        >
-          {loading ? (
-            [0, 1, 2, 3].map((i) => (
-              <StaggerItem key={i} style={{ flex: '1 1 0', minWidth: 175 }}>
-                <StatCardSkeleton />
-              </StaggerItem>
-            ))
-          ) : (
-            <>
-              <StaggerItem style={{ flex: '1 1 0', minWidth: 175 }}>
-                {/* The one queue on this page anybody is waiting on: a request nobody has accepted. */}
-                <StatCard
-                  icon={<ClipboardList size={18} strokeWidth={1.75} />}
-                  label="Pending Requests"
-                  value={s?.pendingRequestCount ?? 0}
-                  accent={s && s.pendingRequestCount > 0 ? 'amber' : undefined}
-                />
-              </StaggerItem>
-              <StaggerItem style={{ flex: '1 1 0', minWidth: 175 }}>
-                <StatCard
-                  icon={<Boxes size={18} strokeWidth={1.75} />}
-                  label="Staging"
-                  value={s?.stagingContainerCount ?? 0}
-                />
-              </StaggerItem>
-              {/* #1361: each shipment gauge opens the shipments it counts. */}
-              <StaggerItem style={{ flex: '1 1 0', minWidth: 175 }}>
-                <GaugeLink to="/app/shipping/shipments?status=SCHEDULED" label="Open scheduled shipments">
+        {/* #1503: a failed read used to fall through to four zeros - "nothing pending" when it was
+            unknown. The counts are not shown at all until a read lands. */}
+        {error && !s ? (
+          <LoadError what="the shipping counts" error={error} onRetry={() => refetch()} />
+        ) : (
+          <StaggerList
+            count={4}
+            style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}
+          >
+            {loading ? (
+              [0, 1, 2, 3].map((i) => (
+                <StaggerItem key={i} style={{ flex: '1 1 0', minWidth: 175 }}>
+                  <StatCardSkeleton />
+                </StaggerItem>
+              ))
+            ) : (
+              <>
+                <StaggerItem style={{ flex: '1 1 0', minWidth: 175 }}>
+                  {/* The one queue on this page anybody is waiting on: a request nobody has accepted. */}
                   <StatCard
-                    icon={<CalendarClock size={18} strokeWidth={1.75} />}
-                    label="Scheduled"
-                    value={s?.scheduledShipmentCount ?? 0}
+                    icon={<ClipboardList size={18} strokeWidth={1.75} />}
+                    label="Pending Requests"
+                    value={s?.pendingRequestCount ?? 0}
+                    accent={s && s.pendingRequestCount > 0 ? 'amber' : undefined}
                   />
-                </GaugeLink>
-              </StaggerItem>
-              <StaggerItem style={{ flex: '1 1 0', minWidth: 175 }}>
-                <GaugeLink to="/app/shipping/shipments?status=PICKED_UP" label="Open shipments in transit">
+                </StaggerItem>
+                <StaggerItem style={{ flex: '1 1 0', minWidth: 175 }}>
                   <StatCard
-                    icon={<Truck size={18} strokeWidth={1.75} />}
-                    label="In Transit"
-                    value={s?.inTransitShipmentCount ?? 0}
+                    icon={<Boxes size={18} strokeWidth={1.75} />}
+                    label="Staging"
+                    value={s?.stagingContainerCount ?? 0}
                   />
-                </GaugeLink>
-              </StaggerItem>
-            </>
-          )}
-        </StaggerList>
+                </StaggerItem>
+                {/* #1361: each shipment gauge opens the shipments it counts. */}
+                <StaggerItem style={{ flex: '1 1 0', minWidth: 175 }}>
+                  <GaugeLink to="/app/shipping/shipments?status=SCHEDULED" label="Open scheduled shipments">
+                    <StatCard
+                      icon={<CalendarClock size={18} strokeWidth={1.75} />}
+                      label="Scheduled"
+                      value={s?.scheduledShipmentCount ?? 0}
+                    />
+                  </GaugeLink>
+                </StaggerItem>
+                <StaggerItem style={{ flex: '1 1 0', minWidth: 175 }}>
+                  <GaugeLink to="/app/shipping/shipments?status=PICKED_UP" label="Open shipments in transit">
+                    <StatCard
+                      icon={<Truck size={18} strokeWidth={1.75} />}
+                      label="In Transit"
+                      value={s?.inTransitShipmentCount ?? 0}
+                    />
+                  </GaugeLink>
+                </StaggerItem>
+              </>
+            )}
+          </StaggerList>
+        )}
       </Box>
 
       <Box sx={{ maxWidth: COLUMN }}>

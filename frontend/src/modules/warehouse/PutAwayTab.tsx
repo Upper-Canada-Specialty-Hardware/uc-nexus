@@ -44,6 +44,7 @@ import { StaggerItem, StaggerList } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
 import { type WarehouseLocationDef, normalizeLocationValue } from './receiveDraftTypes';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
+import LoadError from '../../components/LoadError';
 import { isPutAwaySplitValid } from './putAwaySplit';
 
 // #856: at ~850 px Assign, the row's only action, sat past the right edge of the table's own scroll
@@ -250,7 +251,11 @@ export default function PutAwayTab() {
   // Stock pool put-away. Stock is project-less, so it honors only the warehouse filter and the
   // section is skipped entirely under a project filter (nothing project-scoped to show). onlyUnlocated
   // narrows the shared stockItems query to rows with no aisle.
-  const { data: stockData, refetch: refetchStock } = useQuery<{ stockItems: StockRow[] }>(
+  const {
+    data: stockData,
+    error: stockError,
+    refetch: refetchStock,
+  } = useQuery<{ stockItems: StockRow[] }>(
     GET_STOCK_ITEMS,
     {
       variables: { onlyUnlocated: true, warehouseId: warehouseFilter || null },
@@ -660,7 +665,7 @@ export default function PutAwayTab() {
   }
 
   if (error) {
-    return <Alert severity="error">Error loading unlocated inventory: {error.message}</Alert>;
+    return <LoadError what="the unlocated inventory" error={error} onRetry={() => refetch()} />;
   }
 
   const groups = Array.from(grouped.entries());
@@ -945,6 +950,16 @@ export default function PutAwayTab() {
       {/* Stock pool: project-less, so it honors only the warehouse filter and is hidden under a
           project or PO filter (stock carries neither). assignStockItemLocation gives each unlocated
           row its aisle/row/bay. */}
+      {/* #1503: a failed stock read used to drop the section as if the pool were all located. */}
+      {!projectFilter && !poFilter && stockError && (
+        <LoadError
+          what="the unlocated stock pool"
+          error={stockError}
+          onRetry={() => refetchStock()}
+          sx={{ mt: 4 }}
+        />
+      )}
+
       {showStockPool && (
         <Box sx={{ mt: 4 }}>
           <Typography variant="h6" sx={{ mb: 0.5 }}>

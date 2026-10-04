@@ -195,4 +195,27 @@ describe('NotificationBell', () => {
     await vi.waitFor(() => expect(seen).toEqual(['n-3']), SLOW);
     expect(screen.getByTestId('location')).toHaveTextContent('/app');
   });
+
+  it('says the notifications failed to load rather than "nothing to review" (#1503)', async () => {
+    render(
+      <MockedProvider
+        mocks={[
+          {
+            request: { query: GET_NOTIFICATIONS, variables: { limit: 5 } },
+            error: new Error('Network down'),
+            maxUsageCount: Number.POSITIVE_INFINITY,
+          },
+          notificationsMocks([])[1],
+        ]}
+      >
+        <MemoryRouter>
+          <NotificationBell />
+        </MemoryRouter>
+      </MockedProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Notifications/ }));
+    expect(await screen.findByText(/couldn.t load your notifications/i, undefined, SLOW)).toBeInTheDocument();
+    expect(screen.queryByText('Nothing to review right now')).not.toBeInTheDocument();
+  });
 });

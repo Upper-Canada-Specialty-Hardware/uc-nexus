@@ -19,6 +19,7 @@ import { useApolloClient, useMutation, useQuery } from '@apollo/client/react';
 import { useParams } from 'react-router-dom';
 import Modal from '../../components/Modal';
 import PageHeader from '../../components/PageHeader';
+import LoadError from '../../components/LoadError';
 import { useToast } from '../../components/Toast';
 import { GET_ADMIN_PROJECT_DETAIL } from '../../graphql/admin';
 import {
@@ -128,7 +129,11 @@ export default function HardwareClassificationsPage() {
     GET_PROJECT_HARDWARE_CLASSIFICATIONS,
     { variables: { projectId: id }, skip: !id, fetchPolicy: 'cache-and-network' },
   );
-  const { data: changesData } = useQuery<{ hardwareClassificationChanges: ChangeRow[] }>(
+  const {
+    data: changesData,
+    error: changesError,
+    refetch: refetchChanges,
+  } = useQuery<{ hardwareClassificationChanges: ChangeRow[] }>(
     GET_HARDWARE_CLASSIFICATION_CHANGES,
     { variables: { projectId: id }, skip: !id, fetchPolicy: 'cache-and-network' },
   );
@@ -351,7 +356,10 @@ export default function HardwareClassificationsPage() {
       )}
 
       <Typography sx={{ ...microLabelSx, mt: 3, mb: 1 }}>Change log</Typography>
-      {changes.length === 0 ? (
+      {/* #1503: a failed read is not "nothing changed since import". */}
+      {changesError && !changesData ? (
+        <LoadError what="the change log" error={changesError} onRetry={() => refetchChanges()} />
+      ) : changes.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
           No classification on this project has been changed since import.
         </Typography>

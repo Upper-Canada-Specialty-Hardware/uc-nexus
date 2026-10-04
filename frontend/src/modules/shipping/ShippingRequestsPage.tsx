@@ -151,7 +151,7 @@ export default function ShippingRequestsPage() {
   // person who raised a request should still see what happens to it next. Editing a pending request
   // stays open to everyone, because correcting your own request is not a review.
   const canManage = ownsTenant || hasRole('Shipping Manager');
-  const { data, loading, refetch } = useQuery<{ shippingOutRequests: ShippingOutRequest[] }>(
+  const { data, loading, error, refetch } = useQuery<{ shippingOutRequests: ShippingOutRequest[] }>(
     GET_SHIPPING_OUT_REQUESTS,
     {
       variables: { projectId: projectId ?? null, status: view },
@@ -244,6 +244,8 @@ export default function ShippingRequestsPage() {
         emptyMessage={VIEW_COPY[view].empty}
         loading={loading}
         loaded={data !== undefined}
+        error={error}
+        onRetry={() => refetch()}
         requests={requests}
         acceptMutation={ACCEPT_SHIPPING_OUT_REQUEST}
         rejectMutation={REJECT_SHIPPING_OUT_REQUEST}

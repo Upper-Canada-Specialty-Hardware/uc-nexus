@@ -20,6 +20,7 @@ import {
 import { Check, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
+import LoadError from '../../components/LoadError';
 import { Appear, FadeIn } from '../../motion';
 import { plural } from '../../utils/plural';
 import {
@@ -40,6 +41,9 @@ import {
 interface BatchReviewPanelProps {
   review: AllocationReview | null;
   loading: boolean;
+  /** #1503: the review read's error - shown as one, never as "nothing is waiting". */
+  error?: { message: string } | null;
+  onRetry?: () => unknown;
   /** Disabled while a batch/dismiss/reject is in flight, or when the caller is not a manager. */
   busy: boolean;
   /** Why the manager actions are unavailable, or null when they are. */
@@ -100,6 +104,8 @@ const SUMMARY_COLUMNS: FitTableColumn[] = [
 export default function BatchReviewPanel({
   review,
   loading,
+  error,
+  onRetry,
   busy,
   disabledReason,
   onCreateBatch,
@@ -172,6 +178,10 @@ export default function BatchReviewPanel({
               'openings stay',
             )} waiting.`
           : 'Reserves the hardware and puts a pull on the warehouse floor. Nothing is left waiting afterwards.');
+
+  if (error && !review) {
+    return <LoadError what="this request's openings" error={error} onRetry={onRetry} />;
+  }
 
   if (loading && !review) {
     return (

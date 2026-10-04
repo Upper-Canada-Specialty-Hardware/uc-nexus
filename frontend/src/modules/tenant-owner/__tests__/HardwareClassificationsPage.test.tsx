@@ -90,9 +90,9 @@ const setMock = (result: MockedResponse['result']): MockedResponse => ({
   result,
 });
 
-function renderPage(extra: MockedResponse[] = []) {
+function renderPage(extra: MockedResponse[] = [], changes: MockedResponse = changesMock) {
   return render(
-    <MockedProvider mocks={[listMock, changesMock, ...extra]}>
+    <MockedProvider mocks={[listMock, changes, ...extra]}>
       <ToastProvider>
         <MemoryRouter initialEntries={[`/app/tenant-owner/projects/${PID}/classifications`]}>
           <Routes>
@@ -181,4 +181,15 @@ it('will not save while a product is blocked (#1050)', async () => {
   const preview = await screen.findByLabelText('What this change does');
   expect(preview).toHaveTextContent(/Blocks the change.*still being pulled/);
   expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+});
+
+it('says the change log failed to load rather than "nothing changed since import" (#1503)', async () => {
+  renderPage([], {
+    request: { query: GET_HARDWARE_CLASSIFICATION_CHANGES, variables: { projectId: PID } },
+    maxUsageCount: INFINITE,
+    error: new Error('Network down'),
+  });
+
+  expect(await screen.findByText(/couldn.t load the change log/i)).toBeInTheDocument();
+  expect(screen.queryByText(/has been changed since import/)).not.toBeInTheDocument();
 });

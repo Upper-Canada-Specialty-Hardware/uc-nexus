@@ -21,6 +21,7 @@ import {
   MARK_NOTIFICATION_AS_READ,
 } from '../graphql/shared';
 import { microLabelSx } from '../theme';
+import LoadError from './LoadError';
 import { parseServerDate } from '../utils/serverDate';
 
 /**
@@ -72,7 +73,7 @@ export default function NotificationBell() {
   const [markingAll, setMarkingAll] = useState(false);
   const navigate = useNavigate();
 
-  const { data, refetch: refetchRecent } = useQuery<{ notifications: Notification[] }>(
+  const { data, error, refetch: refetchRecent } = useQuery<{ notifications: Notification[] }>(
     GET_NOTIFICATIONS,
     {
       variables: { limit: 5 },
@@ -195,7 +196,10 @@ export default function NotificationBell() {
         </Box>
         <Divider />
 
-        {notifications.length === 0 ? (
+        {/* #1503: a failed read is not "nothing to review" - the poll retries on its own, Retry now. */}
+        {error && !data ? (
+          <LoadError what="your notifications" error={error} onRetry={() => refetchRecent()} sx={{ m: 1.5 }} />
+        ) : notifications.length === 0 ? (
           <Box
             sx={{
               px: 2,
