@@ -451,7 +451,14 @@ def test_the_queue_reads_are_handed_the_callers_company(roles, expected_company,
 
     def _summary(session, company=None):
         seen["summary"] = company
-        return {"pending": 0, "in_flight": 0, "failed": 0, "oldest_pending_at": None, "last_drained_at": None}
+        return {
+            "pending": 0,
+            "in_flight": 0,
+            "failed": 0,
+            "oldest_pending_at": None,
+            "last_drained_at": None,
+            "last_settled_at": None,
+        }
 
     monkeypatch.setattr(gp_outbox_repository, "list_entries", _list)
     monkeypatch.setattr(gp_outbox_repository, "summary", _summary)

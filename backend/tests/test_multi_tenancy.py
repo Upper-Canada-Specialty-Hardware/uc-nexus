@@ -504,6 +504,66 @@ def test_a_receive_draft_alone_blocks_the_move(db_session, two_companies):
     assert "1 receive draft" in str(e.value)
 
 
+def test_a_shipment_return_alone_blocks_the_move(db_session, two_companies):
+    """A return whose units have since moved on still names this building as where it landed (#1411),
+    and it belongs to the old company's project - moving it would re-tenant that record."""
+    from app.models.enums import ShipmentStatus
+    from app.models.shipping import PackingSlip, ShipmentReturn
+
+    slip = PackingSlip(
+        id=uuid.uuid4(),
+        packing_slip_number=f"PS-{uuid.uuid4().hex[:8]}",
+        project_id=two_companies["mine"].id,
+        shipped_by="shipper",
+        shipped_at=datetime.utcnow(),
+        status=ShipmentStatus.DELIVERED,
+    )
+    db_session.add(slip)
+    db_session.flush()
+    db_session.add(
+        ShipmentReturn(
+            id=uuid.uuid4(),
+            packing_slip_id=slip.id,
+            warehouse_id=two_companies["my_warehouse"],
+            returned_by="tester",
+            returned_at=datetime.utcnow(),
+        )
+    )
+    db_session.flush()
+
+    with pytest.raises(ValidationError) as e:
+        warehouse_admin_repository.update_warehouse(db_session, two_companies["my_warehouse"], company=OTHER)
+
+    assert e.value.field == "company"
+    assert "1 shipment return" in str(e.value)
+
+
+def test_a_primary_warehouse_cannot_change_company(db_session, two_companies):
+    """The primary flag is per company (#919): a primary that moved would leave its old company with
+    none and give the new one two (#1411). Refused on the company field, and nothing is changed."""
+    warehouse_admin_repository.update_warehouse(db_session, two_companies["my_warehouse"], is_primary=True)
+
+    with pytest.raises(ValidationError) as e:
+        warehouse_admin_repository.update_warehouse(db_session, two_companies["my_warehouse"], company=OTHER)
+
+    assert e.value.field == "company"
+    assert "primary" in str(e.value)
+    wh = warehouse_admin_repository.get_warehouse(db_session, two_companies["my_warehouse"])
+    assert wh.company == "TUBC"
+    assert wh.is_primary is True
+
+
+def test_a_primary_warehouse_still_takes_other_edits(db_session, two_companies):
+    """Only an actual move is refused: re-sending the company it already has stays a no-op."""
+    warehouse_admin_repository.update_warehouse(db_session, two_companies["my_warehouse"], is_primary=True)
+
+    warehouse_admin_repository.update_warehouse(
+        db_session, two_companies["my_warehouse"], company="tubc", city="Ottawa"
+    )
+
+    assert warehouse_admin_repository.get_warehouse(db_session, two_companies["my_warehouse"]).city == "Ottawa"
+
+
 def test_a_receive_draft_blocks_the_delete_with_a_named_conflict(db_session, two_companies):
     """receive_drafts.warehouse_id has no ondelete, so a delete used to fail at flush as a masked
     server error (#1229). It is refused up front, naming what still points at the warehouse."""

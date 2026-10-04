@@ -1201,6 +1201,7 @@ def gp_outbox_summary_to_type(data: dict) -> GpOutboxSummary:
         failed=data["failed"],
         oldest_pending_at=data["oldest_pending_at"],
         last_drained_at=data["last_drained_at"],
+        last_settled_at=data["last_settled_at"],
     )
 
 

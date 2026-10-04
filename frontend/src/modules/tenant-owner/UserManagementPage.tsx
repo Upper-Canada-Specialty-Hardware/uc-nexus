@@ -211,6 +211,13 @@ interface UserManagementPageProps {
   scope: 'tenant' | 'nexus';
 }
 
+// Roles are a set: the same grants in another order are not a change worth a write (#1411).
+function sameRoles(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const held = new Set(b);
+  return a.every((r) => held.has(r));
+}
+
 export default function UserManagementPage({ scope }: UserManagementPageProps) {
   const { isNexusAdmin, ownsTenant, isDbAdmin } = useIdentity();
   const nexusScope = scope === 'nexus';
@@ -341,39 +348,51 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
   const handleSave = useCallback(async () => {
     if (!selectedUser) return;
     setSaving(true);
+    // #1411: what the server holds as each write lands. A save is up to four separate writes, so one
+    // can land and a later one fail; the dialog stays open, and a retry has to compare against what
+    // landed - not the row as it was opened - or it re-sends the landed writes and the roles guard
+    // below reads its own earlier write as somebody else's.
+    let landed = selectedUser;
+    const keep = (patch: Partial<ClerkUser>) => {
+      landed = { ...landed, ...patch };
+      setSelectedUser(landed);
+    };
     try {
       // #1321: the roles this dialog loaded, so a save over somebody else's change is refused rather
-      // than replacing their grants with this list.
-      await updateRoles({
-        variables: { userId: selectedUser.id, roles: editRoles, expectedRoles: selectedUser.roles },
-      });
-      // Issue #240: only write the name when it actually changed (Clerk PATCH is not a no-op).
-      if (
-        editFirstName.trim() !== (selectedUser.firstName ?? '') ||
-        editLastName.trim() !== (selectedUser.lastName ?? '')
-      ) {
-        await updateName({
-          variables: { userId: selectedUser.id, firstName: editFirstName.trim(), lastName: editLastName.trim() },
+      // than replacing their grants with this list. Only written when they changed (#1411), like the
+      // fields below.
+      if (!sameRoles(editRoles, landed.roles)) {
+        await updateRoles({
+          variables: { userId: landed.id, roles: editRoles, expectedRoles: landed.roles },
         });
+        keep({ roles: editRoles });
+      }
+      // Issue #240: only write the name when it actually changed (Clerk PATCH is not a no-op).
+      if (editFirstName.trim() !== (landed.firstName ?? '') || editLastName.trim() !== (landed.lastName ?? '')) {
+        await updateName({
+          variables: { userId: landed.id, firstName: editFirstName.trim(), lastName: editLastName.trim() },
+        });
+        keep({ firstName: editFirstName.trim(), lastName: editLastName.trim() });
       }
       // #637: same only-when-changed rule as the name above. While the relay is down the field is
       // read-only and still holds the stored company, so an unconditional write would re-PATCH Clerk on
       // every save. Written BEFORE the buyer id (#1255): moving an account off a company clears its
       // buyer id server-side, so a buyer picked for the new company has to land after that.
-      const companyChanged = (editCompany || null) !== (selectedUser.company ?? null);
-      if (companyChanged) {
-        await updateCompany({ variables: { userId: selectedUser.id, company: editCompany || null } });
+      if ((editCompany || null) !== (landed.company ?? null)) {
+        await updateCompany({ variables: { userId: landed.id, company: editCompany || null } });
+        // A move off a company it already had has just cleared the id in Clerk (#1255).
+        keep({ company: editCompany || null, gpBuyerId: landed.company ? null : landed.gpBuyerId });
       }
       // #699: an account that is not a PO User gives its GP identity back. The decision is made here
       // and nowhere else, so unchecking PO User and checking it again before Save keeps the id.
       const gpBuyerIdToSave = editRoles.includes(PO_USER_ROLE) ? editGpBuyerId : null;
-      // What Clerk holds now: a move off a company it already had has just cleared the id (#1255).
-      const storedGpBuyerId = companyChanged && selectedUser.company ? null : (selectedUser.gpBuyerId ?? null);
       // Same only-when-changed rule, which #409 makes load-bearing rather than merely tidy: while the
       // relay is down the buyer field is disabled and holds the stored id, and an unconditional write
-      // would re-PATCH Clerk on every unrelated save.
-      if (gpBuyerIdToSave !== storedGpBuyerId) {
-        await updateGpBuyerId({ variables: { userId: selectedUser.id, gpBuyerId: gpBuyerIdToSave } });
+      // would re-PATCH Clerk on every unrelated save. Compared with what Clerk holds now, which a
+      // company move above has already cleared.
+      if (gpBuyerIdToSave !== (landed.gpBuyerId ?? null)) {
+        await updateGpBuyerId({ variables: { userId: landed.id, gpBuyerId: gpBuyerIdToSave } });
+        keep({ gpBuyerId: gpBuyerIdToSave });
       }
       showToast('User updated successfully', 'success');
       closeDialog();

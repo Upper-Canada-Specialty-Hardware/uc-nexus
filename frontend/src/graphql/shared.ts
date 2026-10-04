@@ -108,6 +108,7 @@ export const GET_GP_OUTBOX_SUMMARY = gql`
       failed
       oldestPendingAt
       lastDrainedAt
+      lastSettledAt
     }
   }
 `;
