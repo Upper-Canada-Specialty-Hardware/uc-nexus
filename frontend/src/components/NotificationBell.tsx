@@ -40,7 +40,7 @@ const NOTIFICATION_LINKS: Record<string, string> = {
   // #1050: a classification change took a product off openings waiting on a shop request.
   CLASSIFICATION_CHANGED: '/app/shop-assembly/requests',
   // #1242: a shop assembly request was turned down.
-  SHOP_ASSEMBLY_REQUEST_REJECTED: '/app/shop-assembly/requests',
+  SHOP_ASSEMBLY_REQUEST_REJECTED: '/app/shop-assembly/requests?view=REJECTED',
 };
 
 interface Notification {

@@ -82,11 +82,11 @@ const mock = (status: 'PENDING' | 'REJECTED'): MockedResponse => ({
   result: { data: { shopAssemblyRequests: [request(status)] } },
 });
 
-function renderPage(extra: MockedResponse[] = []) {
+function renderPage(extra: MockedResponse[] = [], path = '/app/shop-assembly/requests') {
   render(
     <MockedProvider mocks={[mock('PENDING'), mock('REJECTED'), ...extra]}>
       <ToastProvider>
-        <MemoryRouter>
+        <MemoryRouter initialEntries={[path]}>
           <ShopAssemblyRequestsPage />
         </MemoryRouter>
       </ToastProvider>
@@ -130,4 +130,10 @@ it('sends the reason typed into the dismiss confirm (#1156)', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
 
   await vi.waitFor(() => expect(dismissed).toHaveBeenCalled());
+});
+
+it("opens on the Rejected tab from the bell's link (#1453)", async () => {
+  renderPage([], '/app/shop-assembly/requests?view=REJECTED');
+  expect(await screen.findByText('80001-010')).toBeInTheDocument();
+  expect(screen.queryByText('80001-009')).not.toBeInTheDocument();
 });
