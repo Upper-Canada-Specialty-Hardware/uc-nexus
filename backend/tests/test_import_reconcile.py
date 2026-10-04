@@ -224,3 +224,91 @@ def test_a_product_under_two_categories_at_one_opening_is_reconciled_apart(db_se
         for cat in (CATEGORY, "CLOSER")
     }
     assert by_category == {CATEGORY: {"ORDERED": 4}, "CLOSER": {"NOT_COVERED": 4}}
+
+
+# --- #1490: a partially received line's receipts are handed out across its rows, not rounded away ---
+
+
+def _spread_line(session, project, *, rows=20, received=10, ordered=None):
+    """One partially received line tied to `rows` openings at 1 unit each (O01, O02, ...)."""
+    line = _po_line(
+        session,
+        project,
+        status=POStatus.PARTIALLY_RECEIVED,
+        ordered=ordered if ordered is not None else rows,
+        received=received,
+    )
+    numbers = [f"O{i:02d}" for i in range(1, rows + 1)]
+    for n in numbers:
+        _schedule_item(session, project, _make_opening(session, project, n), "HG-100", 1, line=line)
+    return numbers
+
+
+def test_a_partly_received_line_spread_over_single_units_shows_its_received_units(db_session):
+    """Rounding each 1-unit row's half share down gave every opening 0 received (all ORDERED)."""
+    project = _make_project(db_session)
+    numbers = _spread_line(db_session, project)
+
+    results = import_repository.reconcile_schedule(db_session, project.id, [_request(n, "HG-100", 1) for n in numbers])
+
+    statuses = {n: _by_status(results, n, "HG-100") for n in numbers}
+    assert [n for n in numbers if statuses[n] == {"RECEIVED": 1}] == numbers[:10]
+    assert [n for n in numbers if statuses[n] == {"ORDERED": 1}] == numbers[10:]
+
+
+def test_a_rows_share_does_not_depend_on_which_openings_are_asked_about(db_session):
+    project = _make_project(db_session)
+    numbers = _spread_line(db_session, project)
+
+    everything = import_repository.reconcile_schedule(
+        db_session, project.id, [_request(n, "HG-100", 1) for n in numbers]
+    )
+    subset = numbers[8:13]
+    some = import_repository.reconcile_schedule(db_session, project.id, [_request(n, "HG-100", 1) for n in subset])
+
+    assert {n: _by_status(some, n, "HG-100") for n in subset} == {
+        n: _by_status(everything, n, "HG-100") for n in subset
+    }
+
+
+def test_a_received_unit_on_a_partly_received_line_shows_as_pulled(db_session):
+    """Step 3 can only place a pull against received units, which the old rounding never left."""
+    project = _make_project(db_session)
+    numbers = _spread_line(db_session, project)
+    pr = PullRequest(
+        id=uuid.uuid4(),
+        request_number=f"SAR-{uuid.uuid4().hex[:6]}",
+        project_id=project.id,
+        source=PullRequestSource.SHOP_ASSEMBLY,
+        status=PullRequestStatus.IN_PROGRESS,
+        requested_by="tester",
+    )
+    db_session.add(pr)
+    db_session.flush()
+    db_session.add(
+        PullRequestItem(
+            id=uuid.uuid4(),
+            pull_request_id=pr.id,
+            opening_number=numbers[0],
+            hardware_category=CATEGORY,
+            product_code="HG-100",
+            requested_quantity=1,
+        )
+    )
+    db_session.flush()
+
+    results = import_repository.reconcile_schedule(db_session, project.id, [_request(numbers[0], "HG-100", 1)])
+
+    assert _by_status(results, numbers[0], "HG-100") == {"ASSEMBLING": 1}
+
+
+def test_a_line_ordered_beyond_the_schedule_still_splits_its_receipts_in_proportion(db_session):
+    """30 ordered for 20 scheduled units, 15 received: half the line arrived, so 10 of the 20 rows."""
+    project = _make_project(db_session)
+    numbers = _spread_line(db_session, project, rows=20, received=15, ordered=30)
+
+    results = import_repository.reconcile_schedule(db_session, project.id, [_request(n, "HG-100", 1) for n in numbers])
+
+    received = sum(_by_status(results, n, "HG-100").get("RECEIVED", 0) for n in numbers)
+    ordered = sum(_by_status(results, n, "HG-100").get("ORDERED", 0) for n in numbers)
+    assert (received, ordered) == (10, 10)
