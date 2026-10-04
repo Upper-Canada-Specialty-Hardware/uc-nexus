@@ -116,8 +116,9 @@ export interface PurchaseOrderDocumentProps {
   includeCustoms: boolean;
 }
 
-// `maxDecimals` is 5 for a unit price (#1523): GP holds unit costs to 5 places, and a $0.0425 screw printed
-// as $0.04 is a different price to the vendor. Money totals stay at cents.
+// `maxDecimals` is 5 for a unit price and a line's extension (#1523): GP holds both to 5 places, and a
+// $0.0425 screw printed as $0.04 is a different price to the vendor. An ordinary price still prints two
+// places; the extra ones appear only when they are there. Totals stay at cents, as GP rounds them.
 function formatMoney(amount: number, currency: string, maxDecimals = 2): string {
   const prefix = currency === 'USD' ? '$US' : '$';
   const n = (amount ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: maxDecimals });
@@ -227,7 +228,7 @@ export default function PurchaseOrderDocument(props: PurchaseOrderDocumentProps)
                 <Text style={[styles.td, styles.colUom]}>{li.uom}</Text>
                 <Text style={[styles.td, styles.colQty]}>{li.ordered}</Text>
                 <Text style={[styles.td, styles.colPrice]}>{formatMoney(li.unitPrice, currency, 5)}</Text>
-                <Text style={[styles.td, styles.colExt]}>{formatMoney(ext, currency)}</Text>
+                <Text style={[styles.td, styles.colExt]}>{formatMoney(ext, currency, 5)}</Text>
               </View>
             );
           })}
