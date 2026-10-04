@@ -196,6 +196,13 @@ export const GP_OUTBOX_DRAINED_STALE_ROOT_FIELDS = [
   'warehouseDashboard',
   'inventoryRows',
   'projectInventoryAvailability',
+  // #1417: a posted receipt lands unshelved, so the put-away list grows - the direct receive already
+  // refetches it through WAREHOUSE_REFETCH_QUERIES.
+  'unlocatedInventory',
+  // #1417: received and on-hand move with a receipt, on order with a registration (DRAFT ->
+  // GP_REGISTERED), and neither page polls.
+  'projectProgressByProduct',
+  'hardwareStatusByProduct',
   // A queued approval persists NOTHING until the drain: no receive record and no inventory. The
   // drain is when both appear, and it lands while the browser is on an arbitrary route - so the
   // draft's own status (APPROVED with a receipt now, rather than APPROVED and still syncing) is only
