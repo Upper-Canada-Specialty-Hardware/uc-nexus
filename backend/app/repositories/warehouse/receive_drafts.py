@@ -190,6 +190,18 @@ def _validate_packing_slip(session: Session, po_id: uuid.UUID, document_id: uuid
         )
 
 
+def _draft_for_create_key(session: Session, idempotency_key: str | None) -> ReceiveDraftModel | None:
+    """The draft a submission with this create key already wrote, if any (fresh, not cached)."""
+    if not idempotency_key:
+        return None
+    return session.scalars(
+        select(ReceiveDraftModel)
+        .options(selectinload(ReceiveDraftModel.line_items))
+        .where(ReceiveDraftModel.create_idempotency_key == idempotency_key)
+        .execution_options(populate_existing=True)
+    ).first()
+
+
 def _assert_no_pending_draft(
     session: Session,
     po_id: uuid.UUID,
@@ -262,12 +274,16 @@ def create_receive_draft(
     """
     _validate_packing_slip(session, po_id, packing_slip_document_id)
 
+    existing = _draft_for_create_key(session, idempotency_key)
+    if existing is not None:
+        return existing
+
     if idempotency_key:
-        existing = session.scalars(
-            select(ReceiveDraftModel)
-            .options(selectinload(ReceiveDraftModel.line_items))
-            .where(ReceiveDraftModel.create_idempotency_key == idempotency_key)
-        ).first()
+        # #1402: a retry that overlaps the first submit passes the unlocked check above, then waits on
+        # the PO lock while the first commits. Look again under that lock, so the retry gets the draft
+        # its own first attempt wrote rather than a conflict with itself.
+        lock_rows(session, POModel, [po_id])
+        existing = _draft_for_create_key(session, idempotency_key)
         if existing is not None:
             return existing
 

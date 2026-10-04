@@ -94,6 +94,23 @@ def get_item_type(session: Session, type_id: uuid.UUID) -> InventoryItemType:
     return item_type
 
 
+def _flush_refusing_duplicates(session: Session, *, name: str | None = None, code: str | None = None) -> None:
+    """Flush inside a savepoint, so two saves of one type name, type code or attribute name racing past
+    the pre-checks get the same conflict the checks give rather than a masked server error (#1402)."""
+    try:
+        with session.begin_nested():
+            session.flush()
+    except IntegrityError as e:
+        constraint = getattr(getattr(e.orig, "diag", None), "constraint_name", None)
+        if constraint == "uq_inventory_item_types_company_lower_name":
+            raise ConflictError(f"An inventory item type named {name} already exists", field="name") from e
+        if constraint == "uq_inventory_item_types_company_lower_code":
+            raise ConflictError(f"The code {code} is already used by another type", field="code") from e
+        if constraint == "uq_inventory_item_attributes_type_lower_name":
+            raise ConflictError(f"This type already has an attribute named {name}", field="name") from e
+        raise
+
+
 def create_item_type(session: Session, *, name: str, code: str | None = None, sort_order: int = 0, company: str):
     """Add a type. `code` defaults to one derived from the name, and can never be changed afterwards.
 
@@ -125,7 +142,7 @@ def create_item_type(session: Session, *, name: str, code: str | None = None, so
         sort_order=sort_order,
     )
     session.add(item_type)
-    session.flush()
+    _flush_refusing_duplicates(session, name=name, code=code)
     return item_type
 
 
@@ -159,7 +176,7 @@ def update_item_type(
         item_type.is_active = is_active
     if sort_order is not None:
         item_type.sort_order = sort_order
-    session.flush()
+    _flush_refusing_duplicates(session, name=item_type.name)
     return item_type
 
 
@@ -183,7 +200,7 @@ def create_attribute(session: Session, *, type_id: uuid.UUID, name: str, sort_or
         sort_order=sort_order,
     )
     session.add(attribute)
-    session.flush()
+    _flush_refusing_duplicates(session, name=name)
     return attribute
 
 
@@ -216,7 +233,7 @@ def update_attribute(
         attribute.is_active = is_active
     if sort_order is not None:
         attribute.sort_order = sort_order
-    session.flush()
+    _flush_refusing_duplicates(session, name=attribute.name)
     return attribute
 
 
