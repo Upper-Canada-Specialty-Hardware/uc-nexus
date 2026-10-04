@@ -13,6 +13,7 @@ to a different 23093-004.
 import uuid
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.models.project import Project as ProjectModel
@@ -31,17 +32,21 @@ def mint_request_number(session: Session, project_id: uuid.UUID) -> str:
     if project is None:
         raise ValueError(f"Project {project_id} not found")
 
+    # Make sure the counter row exists without racing: a project created after the migration seeded
+    # the table has none, and two first requests at once both inserting it used to fail the second on
+    # the primary key (#1402). ON CONFLICT DO NOTHING lets both through; the lock below then
+    # serializes them on the one row.
+    session.execute(
+        pg_insert(ProjectRequestCounter)
+        .values(project_id=project_id, next_value=1)
+        .on_conflict_do_nothing(index_elements=[ProjectRequestCounter.project_id])
+    )
     counter = session.scalars(
-        select(ProjectRequestCounter).where(ProjectRequestCounter.project_id == project_id).with_for_update()
-    ).first()
-
-    if counter is None:
-        # A project created after the migration seeded the table. Insert-then-lock rather than
-        # lock-then-insert: the primary key makes a concurrent duplicate impossible, and the
-        # loser re-reads under the lock below.
-        counter = ProjectRequestCounter(project_id=project_id, next_value=1)
-        session.add(counter)
-        session.flush()
+        select(ProjectRequestCounter)
+        .where(ProjectRequestCounter.project_id == project_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
 
     seq = counter.next_value
     counter.next_value = seq + 1
