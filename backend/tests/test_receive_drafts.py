@@ -1303,3 +1303,109 @@ def test_a_packing_slip_a_count_uses_cannot_be_deleted_from_the_po(db_session):
     with pytest.raises(ConflictError):
         po_repository.delete_po_document(db_session, draft.packing_slip_document_id)
     assert db_session.get(PODocument, draft.packing_slip_document_id) is not None
+
+
+# --- #1497: approval and edits check the count is the one that was reviewed ---------------------
+
+
+def _fresh(session, draft_id):
+    session.expire_all()
+    return session.get(ReceiveDraft, draft_id)
+
+
+def test_approving_a_count_that_changed_since_it_was_reviewed_is_refused_and_stays_pending(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li, 3)
+    reviewed_at = draft.updated_at  # what the reviewer's screen loaded
+
+    # The author corrects the count while the manager still has the old one open.
+    warehouse_repository.update_receive_draft(db_session, draft.id, _lines(li, 5), AUTHOR, actor_is_manager=False)
+    assert _fresh(db_session, draft.id).updated_at != reviewed_at
+
+    with pytest.raises(AppError) as excinfo:
+        warehouse_repository.claim_for_approval(
+            db_session, draft.id, MANAGER, MANAGER_NAME, "key-stale", expected_updated_at=reviewed_at
+        )
+    assert excinfo.value.code == "CONFLICT"
+    assert "changed since you opened it" in excinfo.value.message
+    after = _fresh(db_session, draft.id)
+    assert after.status == ReceiveDraftStatus.PENDING_APPROVAL, "nothing was claimed, so nothing reaches GP"
+    assert after.approval_idempotency_key is None
+
+
+def test_approving_the_count_as_reviewed_claims_it_and_a_same_key_resume_still_works(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li, 3)
+    reviewed_at = draft.updated_at
+
+    ctx = warehouse_repository.claim_for_approval(
+        db_session, draft.id, MANAGER, MANAGER_NAME, "key-ok", expected_updated_at=reviewed_at
+    )
+    assert ctx.po_id == po.id
+    assert _fresh(db_session, draft.id).status == ReceiveDraftStatus.APPROVING
+
+    # A retry of the same approval resumes, not refuses.
+    resumed = warehouse_repository.claim_for_approval(
+        db_session, draft.id, MANAGER, MANAGER_NAME, "key-ok", expected_updated_at=reviewed_at
+    )
+    assert resumed.po_id == po.id
+
+
+def test_a_retry_after_a_released_claim_is_not_mistaken_for_a_changed_count(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li, 3)
+    reviewed_at = draft.updated_at
+
+    # GP refused the first try, so the claim was released and the draft is back in the queue. Neither
+    # step changed the count, so the version the reviewer holds still stands.
+    warehouse_repository.claim_for_approval(
+        db_session, draft.id, MANAGER, MANAGER_NAME, "key-retry", expected_updated_at=reviewed_at
+    )
+    warehouse_repository.release_approval_claim(db_session, draft.id, "key-retry")
+    released = _fresh(db_session, draft.id)
+    assert released.status == ReceiveDraftStatus.PENDING_APPROVAL
+    assert released.updated_at == reviewed_at
+
+    warehouse_repository.claim_for_approval(
+        db_session, draft.id, MANAGER, MANAGER_NAME, "key-retry", expected_updated_at=reviewed_at
+    )
+    assert _fresh(db_session, draft.id).status == ReceiveDraftStatus.APPROVING
+
+
+def test_an_edit_over_a_newer_one_is_refused_and_one_from_the_current_view_goes_through(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li, 3)
+    opened_at = draft.updated_at  # both tabs open the same count
+
+    # The manager's correction lands first.
+    warehouse_repository.update_receive_draft(
+        db_session, draft.id, _lines(li, 8), MANAGER, actor_is_manager=True, expected_updated_at=opened_at
+    )
+    corrected_at = _fresh(db_session, draft.id).updated_at
+
+    # The author's tab still holds the first count; its save is refused instead of undoing the 8.
+    with pytest.raises(AppError) as excinfo:
+        warehouse_repository.update_receive_draft(
+            db_session, draft.id, _lines(li, 10), AUTHOR, actor_is_manager=False, expected_updated_at=opened_at
+        )
+    assert excinfo.value.code == "CONFLICT"
+    assert [line.quantity_received for line in _fresh(db_session, draft.id).line_items] == [8]
+
+    # Reloaded, the author's next save carries the current version and goes through.
+    warehouse_repository.update_receive_draft(
+        db_session, draft.id, _lines(li, 9), AUTHOR, actor_is_manager=False, expected_updated_at=corrected_at
+    )
+    assert [line.quantity_received for line in _fresh(db_session, draft.id).line_items] == [9]
+
+
+def test_a_client_that_sends_no_version_behaves_as_before(db_session):
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li, 3)
+    warehouse_repository.update_receive_draft(db_session, draft.id, _lines(li, 4), AUTHOR, actor_is_manager=False)
+    warehouse_repository.claim_for_approval(db_session, draft.id, MANAGER, MANAGER_NAME, "key-old-client")
+    assert _fresh(db_session, draft.id).status == ReceiveDraftStatus.APPROVING

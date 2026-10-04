@@ -45,6 +45,7 @@ import {
   type PODetails,
 } from './receiveLines';
 import { type ReceiveDraft, draftLastChanged } from './receiveDraftTypes';
+import { countChangedMessage, isCountChangedError, useReloadableDraft } from './receiveDraftVersion';
 import { monoSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
 
@@ -75,10 +76,12 @@ interface ReceiveDraftReviewModalProps {
  * written from: another receive may have landed in between, and approving against a stale pending
  * quantity is the one mistake that ends with GP holding a receipt Nexus will refuse to book.
  */
-export default function ReceiveDraftReviewModal({ open, draft, onClose }: ReceiveDraftReviewModalProps) {
+export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClose }: ReceiveDraftReviewModalProps) {
   const { showToast } = useToast();
   const navigate = useNavigate();
   const client = useApolloClient();
+  // #1497: after a count-changed refusal the draft is re-read, and the modal shows that instead.
+  const { draft, reload } = useReloadableDraft(draftProp);
 
   const [receiveQuantities, setReceiveQuantities] = useState<Record<string, number>>({});
   const [warehouseId, setWarehouseId] = useState<string>('');
@@ -99,6 +102,10 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
   // #1353: an approve that failed after its call went out may have left the draft claimed (APPROVING)
   // and GP holding the receipt, whatever the cached draft still says. Only a same-key retry is safe.
   const [approveFailed, setApproveFailed] = useState(false);
+  // #1497: an approval refused because the count changed since it was opened. Kept apart from
+  // mutationError, which the re-read draft's hydration clears, and tied to the draft it was raised on.
+  const [countChanged, setCountChanged] = useState<{ on: ReceiveDraft | null; message: string } | null>(null);
+  const countChangedNotice = countChanged && countChanged.on === draftProp ? countChanged.message : null;
 
   const [approveDraft] = useMutation<{
     approveReceiveDraft: {
@@ -107,7 +114,7 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
       receiveRecord: { id: string; receiptNumber: string | null } | null;
     };
   }>(APPROVE_RECEIVE_DRAFT);
-  const [updateDraft] = useMutation(UPDATE_RECEIVE_DRAFT);
+  const [updateDraft] = useMutation<{ updateReceiveDraft: ReceiveDraft }>(UPDATE_RECEIVE_DRAFT);
   const [rejectDraft] = useMutation(REJECT_RECEIVE_DRAFT);
 
   // Same key across retries of this approval, so a retry after a dropped connection resumes the
@@ -215,8 +222,12 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
     setConfirmOpen(false);
     setMutationError(null);
     setGpError(null);
+    setCountChanged(null);
     setSubmitting(true);
     let approveSent = false;
+    // #1497: the version the approval is checked against - what the reviewer loaded, or what their
+    // own edit just saved. A count somebody else changed in between is refused, not posted.
+    let expectedUpdatedAt = draft.updatedAt;
 
     try {
       // Save the edits FIRST, so what gets approved is what is on screen. A failure here stops
@@ -228,22 +239,24 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
       // retry re-send the update, fail on that refusal, and never reach the same-key approve that is
       // the actual way out.
       if (isDirty && !retrying) {
-        await updateDraft({
+        const saved = await updateDraft({
           variables: {
             input: {
               draftId: draft.id,
               warehouseId: warehouseId || null,
               lineItems: buildReceiveLineItemsInput(lineItemsToReceive, receiveQuantities),
+              expectedUpdatedAt: draft.updatedAt,
             },
           },
         });
+        expectedUpdatedAt = saved.data?.updateReceiveDraft.updatedAt ?? expectedUpdatedAt;
         setInitialSignature(JSON.stringify([receiveQuantities, warehouseId]));
       }
 
       const idempotencyKey = (idempotencyKeyRef.current[draft.id] ??= crypto.randomUUID());
       approveSent = true;
       const res = await approveDraft({
-        variables: { input: { draftId: draft.id, idempotencyKey } },
+        variables: { input: { draftId: draft.id, idempotencyKey, expectedUpdatedAt } },
       });
       const result = res.data?.approveReceiveDraft;
 
@@ -271,6 +284,14 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
       showToast(`Receive approved. ${totalUnits} items added to inventory.`, 'success');
       await client.refetchQueries({ include: RECEIVE_APPROVE_REFETCH_QUERIES });
     } catch (err: unknown) {
+      if (isCountChangedError(err)) {
+        // #1497: refused before anything was claimed - the draft is still pending and GP untouched - so
+        // this is not a failed approval to retry under the same key. Show the new count to review.
+        delete idempotencyKeyRef.current[draft.id];
+        setCountChanged({ on: draftProp, message: countChangedMessage(err) });
+        await reload().catch(() => undefined);
+        return;
+      }
       // Key kept: GP may have committed even if the mutation reported failure, so the retry must
       // carry the same key. A failed edit never reached GP, so the draft stays editable; a failed
       // approve may have claimed it, so from here on it is only retried (#1353).
@@ -293,6 +314,8 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
     }
   }, [
     draft,
+    draftProp,
+    reload,
     isDirty,
     retrying,
     updateDraft,
@@ -451,6 +474,11 @@ export default function ReceiveDraftReviewModal({ open, draft, onClose }: Receiv
             {/* #447: GP numbered the receipt on the way in, and this is the only moment it is in
                 front of anybody without opening GP. */}
             <PostedReceiptLines receipts={[posted]} namePo={false} />
+          </Alert>
+        )}
+        {countChangedNotice && (
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            {countChangedNotice}
           </Alert>
         )}
         {mutationError && (
