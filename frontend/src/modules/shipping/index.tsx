@@ -9,6 +9,7 @@ import StagingWorkspace from './StagingWorkspace';
 import ShippingLanding from './ShippingLanding';
 import RequestWorkspace from './request-workspace/RequestWorkspace';
 import ProjectPicker from '../../components/ProjectPicker';
+import { useScopedProject } from '../../hooks/useScopedProject';
 import PageHeader from '../../components/PageHeader';
 import { useIdentity } from '../../hooks/useIdentity';
 import type { Project } from '../../types/project';
@@ -52,7 +53,9 @@ export default function ShippingModule() {
  * choosing how it travels.
  */
 function StagingRoute() {
-  const [project, setProject] = useState<Project | null>(null);
+  const [picked, setProject] = useState<Project | null>(null);
+  // #1467: dropped by a company switch rather than queried under the new company.
+  const project = useScopedProject(picked);
   const [methodsOpen, setMethodsOpen] = useState(false);
   // #753: the same gate the landing puts on the list - keeping the shipment methods is the SHIPPING
   // MANAGER's, with the TENANT OWNER beside them.

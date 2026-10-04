@@ -13,6 +13,7 @@ import { ShoppingCart } from 'lucide-react';
 import { Link as RouterLink, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery } from '@apollo/client/react';
 import ProjectPicker from '../../../components/ProjectPicker';
+import { useScopedProject } from '../../../hooks/useScopedProject';
 import PageHeader from '../../../components/PageHeader';
 import GpCompanyTag from '../../../components/GpCompanyTag';
 import GpSetupQuarantineBanner from '../../../components/GpSetupQuarantineBanner';
@@ -85,7 +86,9 @@ function CreateRoute() {
   const [searchParams, setSearchParams] = useSearchParams();
   const preselectId = searchParams.get('projectId');
   const { data } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
-  const [project, setProject] = useState<Project | null>(null);
+  const [picked, setProject] = useState<Project | null>(null);
+  // #1467: dropped by a company switch rather than composed against under the new company.
+  const project = useScopedProject(picked);
   const [touched, setTouched] = useState(false);
 
   // Preselect the project a deep link named (generic ?projectId deep-link support), once the list is
