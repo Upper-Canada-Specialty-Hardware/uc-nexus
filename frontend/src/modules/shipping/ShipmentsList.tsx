@@ -288,8 +288,9 @@ export default function ShipmentsList({ projectId, heading }: Props) {
   );
 
 
-  // Both mutations answer with the whole PackingSlip, so Apollo's normalised cache moves the row on
-  // its own - there is nothing to refetch and nothing that could show the old status for a beat.
+  // Each mutation answers with the whole PackingSlip, so Apollo's normalised cache updates the row's
+  // status on its own. It cannot know the row no longer matches a status filter (#1433), so the list
+  // is refetched after the action: a Scheduled view drops the slip just picked up or cancelled.
   const [markPickedUp, { loading: markingPickedUp }] = useMutation(MARK_SHIPMENT_PICKED_UP);
   const [markDelivered, { loading: markingDelivered }] = useMutation(MARK_SHIPMENT_DELIVERED);
   const [cancelShipment, { loading: cancelling }] = useMutation(CANCEL_SHIPMENT);
@@ -375,10 +376,11 @@ export default function ShipmentsList({ projectId, heading }: Props) {
       await run({ variables: { id: slip.id } });
       showToast(`${slip.packingSlipNumber} ${LIFECYCLE_DONE[action]}`, 'success');
       setLifecycle(null);
+      void refetch();
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Failed to update the shipment', 'error');
     }
-  }, [lifecycle, markPickedUp, markDelivered, cancelShipment, showToast]);
+  }, [lifecycle, markPickedUp, markDelivered, cancelShipment, showToast, refetch]);
 
   // Slip #, [project], status, shipped by, created, pick-up, delivery, method, carrier. The
   // expansion row spans all of them plus the chevron, so this has to move with the header.

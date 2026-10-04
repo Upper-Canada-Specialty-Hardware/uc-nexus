@@ -98,13 +98,14 @@ function renderPanel(
   );
 }
 
-// The admin queue is unchanged by #754: every column, every write, and its own heading.
+// The admin queue is unchanged by #754: every column, every write, and its own heading. Since #1429 the
+// failure kind leads the last error it explains instead of taking a column of its own.
 it('gives the admin queue every column', async () => {
   renderPanel({});
 
   expect(await screen.findByText('GP write queue')).toBeInTheDocument();
   expect(await screen.findByRole('columnheader', { name: 'Company' })).toBeInTheDocument();
-  expect(screen.getByRole('columnheader', { name: 'Failure' })).toBeInTheDocument();
+  expect(screen.getByRole('columnheader', { name: 'Last error' })).toBeInTheDocument();
   expect(screen.getByRole('columnheader', { name: 'Queued at' })).toBeInTheDocument();
 });
 

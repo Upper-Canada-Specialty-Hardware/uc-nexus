@@ -31,6 +31,9 @@ export const RECEIVE_REFETCH_QUERIES = [
 // is self-scoping, so naming every surface costs nothing for whichever one is not live.
 export const RECEIVE_DRAFT_REFETCH_QUERIES = [
   'GetReceiveDrafts',
+  // #1433: the Receiving page's own pending-draft read (the waiting note, the Approvals count, the
+  // already-counted chips) is a separate operation, so refetching GetReceiveDrafts never reached it.
+  'GetPendingDraftSummaries',
   'GetWarehouseDashboard',
   'GetOpenPosSummary',
   'GetBackOrderedItems',
