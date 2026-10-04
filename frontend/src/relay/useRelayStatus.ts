@@ -1,4 +1,5 @@
 import { useQuery } from '@apollo/client/react';
+import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import { GET_RELAY_STATUS } from '../graphql/shared';
 import { useActingCompany } from '../company/ActingCompanyContext';
 
@@ -43,6 +44,21 @@ export interface RelayStatusInfo {
   // #1334: no status has ever arrived and the poll is failing - Nexus is unreachable, which says
   // nothing about the relay. Shown as its own state instead of "relay not connected".
   unreachable: boolean;
+  // #1403: no status has arrived because the user's sign-in lapsed - the poll is held back (or refused)
+  // until they sign in again. Nexus and the relay may both be fine, so this is neither of those states.
+  signInLapsed: boolean;
+}
+
+// #1403: the poll failed because the session lapsed, not because Nexus is down. Matched by name so this
+// hook does not pull in the Apollo client module: apollo.ts raises AuthSuspendedError while the session
+// is lapsed and MissingAuthTokenError when no token could be minted; the backend answers UNAUTHENTICATED.
+const AUTH_ERROR_NAMES = new Set(['AuthSuspendedError', 'MissingAuthTokenError']);
+
+export function isSignInLapsedError(error: unknown): boolean {
+  if (CombinedGraphQLErrors.is(error)) {
+    return error.errors.some((e) => e.extensions?.code === 'UNAUTHENTICATED');
+  }
+  return error instanceof Error && AUTH_ERROR_NAMES.has(error.name);
 }
 
 // Single definition of the relay-status poll (backend relayStatus field, the relay-to-backend WS
@@ -80,7 +96,8 @@ export function useRelayStatus(options?: { skip?: boolean }): RelayStatusInfo {
     lastDisconnectedAt: data?.relayStatus.lastDisconnectedAt ?? null,
     lastDisconnectReason: data?.relayStatus.lastDisconnectReason ?? null,
     error: error ? error.message : null,
-    unreachable: !data && Boolean(error),
+    unreachable: !data && Boolean(error) && !isSignInLapsedError(error),
+    signInLapsed: !data && isSignInLapsedError(error),
   };
 }
 
@@ -115,6 +132,7 @@ export function useRelayFor(company?: string | null, options?: { skip?: boolean 
 
 /** #1334/#1336: the one sentence explaining why GP actions are off, or null when they are on. */
 export function relayBlockedReason(relay: RelayForCompany): string | null {
+  if (relay.signInLapsed) return 'Your sign-in has lapsed - sign in again to use GP.';
   if (relay.unreachable) return "Can't reach Nexus right now - retrying.";
   if (relay.connected === null) return null; // first check still in flight
   if (relay.connected === false) {

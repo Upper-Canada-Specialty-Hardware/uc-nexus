@@ -589,6 +589,7 @@ export default function CreateGpJobDialog({ open, onClose, onCreated }: CreateGp
             <RelayStatusChip
               connected={relay.connected}
               unreachable={relay.unreachable}
+              signInLapsed={relay.signInLapsed}
               companies={relay.companies}
               gpCompanies={relay.gpCompanies}
             />
