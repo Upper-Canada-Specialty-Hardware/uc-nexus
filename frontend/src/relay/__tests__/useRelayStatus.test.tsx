@@ -1,4 +1,5 @@
 import { render, renderHook, screen } from '@testing-library/react';
+import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import RelayStatusChip from '../RelayStatusChip';
 import { relayBlockedReason, relayServes, useRelayFor, useRelayStatus } from '../useRelayStatus';
 
@@ -115,5 +116,47 @@ it('relayServes needs a connected relay that lists the company', () => {
 it('the chip shows an unreachable Nexus as its own state', () => {
   render(<RelayStatusChip connected={null} unreachable companies={[]} />);
   expect(screen.getByText("can't reach Nexus - retrying")).toBeInTheDocument();
+  expect(screen.queryByText(/relay not connected/i)).toBeNull();
+});
+
+// #1403: a lapsed sign-in holds the poll back with AuthSuspendedError (or the backend answers
+// UNAUTHENTICATED). That is neither Nexus down nor the relay down, so it reads as its own state.
+function authSuspended() {
+  const e = new Error('Your sign-in has lapsed. Sign in again to keep working.');
+  e.name = 'AuthSuspendedError';
+  return e;
+}
+
+it('reports a lapsed sign-in, not an unreachable Nexus, when the poll is held back for auth', () => {
+  query.result = { data: undefined, previousData: undefined, error: authSuspended() };
+  const { result } = renderHook(() => useRelayFor());
+
+  expect(result.current.signInLapsed).toBe(true);
+  expect(result.current.unreachable).toBe(false);
+  expect(relayBlockedReason(result.current)).toMatch(/sign-in has lapsed/i);
+});
+
+it('reads an UNAUTHENTICATED answer as a lapsed sign-in', () => {
+  const error = new CombinedGraphQLErrors({
+    errors: [{ message: 'Not signed in', extensions: { code: 'UNAUTHENTICATED' } }],
+  });
+  query.result = { data: undefined, previousData: undefined, error };
+  const { result } = renderHook(() => useRelayStatus());
+
+  expect(result.current.signInLapsed).toBe(true);
+  expect(result.current.unreachable).toBe(false);
+});
+
+it('still reports an unreachable Nexus for a network failure', () => {
+  query.result = { data: undefined, previousData: undefined, error: new Error('Failed to fetch') };
+  const { result } = renderHook(() => useRelayStatus());
+  expect(result.current.signInLapsed).toBe(false);
+  expect(result.current.unreachable).toBe(true);
+});
+
+it('the chip shows a lapsed sign-in as its own state', () => {
+  render(<RelayStatusChip connected={null} signInLapsed companies={[]} />);
+  expect(screen.getByText('sign-in lapsed')).toBeInTheDocument();
+  expect(screen.queryByText(/can't reach Nexus/i)).toBeNull();
   expect(screen.queryByText(/relay not connected/i)).toBeNull();
 });
