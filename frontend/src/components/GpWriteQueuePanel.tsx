@@ -1,30 +1,15 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Alert, Box, Button, Chip, Stack, Tooltip, Typography } from '@mui/material';
+import { Alert, Box, Typography } from '@mui/material';
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_GP_OUTBOX, GET_GP_OUTBOX_SUMMARY } from '../graphql/shared';
 import { RETRY_GP_OUTBOX_ENTRY, CANCEL_GP_OUTBOX_ENTRY } from '../graphql/admin';
 import ConfirmDialog from './ConfirmDialog';
 import { useGridColumnFit } from './useGridColumnFit';
+import { buildGpWriteQueueColumns, type OutboxEntry } from './gpWriteQueueColumns';
 import { useToast } from './Toast';
 import { microLabelSx, monoSx, tabularSx } from '../theme';
-import { parseServerDate } from '../utils/serverDate';
 import { useIdentity } from '../hooks/useIdentity';
-
-interface OutboxEntry {
-  id: string;
-  label: string;
-  op: string;
-  relayOp: string;
-  company: string;
-  status: string;
-  attempts: number;
-  nextAttemptAt: string;
-  lastError: string | null;
-  failureKind: string | null;
-  entityKey: string;
-  createdAt: string;
-}
 
 interface GpWriteQueuePanelProps {
   /**
@@ -47,18 +32,6 @@ interface GpWriteQueuePanelProps {
    */
   compact?: boolean;
 }
-
-function fmtDate(v: string | null | undefined): string {
-  return v ? parseServerDate(v).toLocaleString() : '—';
-}
-
-const STATUS_COLOR: Record<string, 'default' | 'warning' | 'success' | 'error'> = {
-  PENDING: 'warning',
-  IN_FLIGHT: 'warning',
-  SUCCEEDED: 'success',
-  FAILED: 'error',
-  CANCELLED: 'default',
-};
 
 // An `ambiguous` write reached the relay and we do not know what GP did with it. Retrying it can
 // genuinely create a duplicate receipt or a second PO number, so the confirm text has to say so -
@@ -85,10 +58,6 @@ const ROLE_LABEL_BY_RELAY_OP: Record<string, string> = {
 function gpWriteGateReason(relayOp: string): string {
   return `Only ${ROLE_LABEL_BY_RELAY_OP[relayOp] ?? 'a Tenant Owner'} can retry or cancel this write.`;
 }
-
-// The columns the compact mounting keeps. The company is the caller's own one, and the queued-at
-// time is an admin's forensic detail, so neither earns its width inside a module.
-const COMPACT_FIELDS = ['label', 'status', 'attempts', 'nextAttemptAt', 'lastError', 'actions'];
 
 export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: GpWriteQueuePanelProps) {
   const { showToast } = useToast();
@@ -144,88 +113,17 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
     },
   });
 
-  const columns: GridColDef[] = useMemo(() => {
-    const all: GridColDef[] = [
-      { field: 'label', headerName: 'Write', flex: 1, minWidth: 220 },
-      {
-        field: 'company',
-        headerName: 'Company',
-        width: 100,
-        renderCell: (p) => (
-          <Box component="span" sx={monoSx}>
-            {p.row.company}
-          </Box>
-        ),
-      },
-      {
-        field: 'status',
-        headerName: 'Status',
-        width: 120,
-        renderCell: (p) => (
-          <Chip size="small" label={p.row.status} color={STATUS_COLOR[p.row.status] ?? 'default'} />
-        ),
-      },
-      { field: 'attempts', headerName: 'Tries', width: 80, type: 'number', headerAlign: 'right', align: 'right' },
-      {
-        field: 'failureKind',
-        headerName: 'Failure',
-        width: 130,
-        valueFormatter: (v: string | null) => v ?? '—',
-      },
-      { field: 'lastError', headerName: 'Last error', flex: 1, minWidth: 220, valueFormatter: (v: string | null) => v ?? '—' },
-      {
-        field: 'nextAttemptAt',
-        headerName: 'Next attempt',
-        flex: 1,
-        minWidth: 170,
-        valueFormatter: (v: string) => fmtDate(v),
-        cellClassName: 'ts-cell',
-      },
-      {
-        field: 'createdAt',
-        headerName: 'Queued at',
-        flex: 1,
-        minWidth: 170,
-        valueFormatter: (v: string) => fmtDate(v),
-        cellClassName: 'ts-cell',
-      },
-      {
-        field: 'actions',
-        headerName: 'Actions',
-        width: 170,
-        // #909: the two buttons need exactly this; the fit keeps it fixed rather than flexing.
-        resizable: false,
-        sortable: false,
-        filterable: false,
-        renderCell: (p) => {
-          const row = p.row as OutboxEntry;
-          const allowed = canActOn(row.relayOp);
-          const canRetry = allowed && (row.status === 'FAILED' || row.status === 'CANCELLED');
-          const canCancel = allowed && (row.status === 'PENDING' || row.status === 'FAILED');
-          const buttons = (
-            <Stack direction="row" spacing={1}>
-              <Button size="small" disabled={!canRetry} onClick={() => setRetryTarget(row)}>
-                Retry
-              </Button>
-              <Button size="small" color="error" disabled={!canCancel} onClick={() => setCancelTarget(row)}>
-                Cancel
-              </Button>
-            </Stack>
-          );
-          if (allowed) return buttons;
-          // A disabled button fires no pointer events, so the reason hangs off a wrapper.
-          return (
-            <Tooltip title={gpWriteGateReason(row.relayOp)}>
-              <Box component="span" sx={{ display: 'inline-flex' }}>
-                {buttons}
-              </Box>
-            </Tooltip>
-          );
-        },
-      },
-    ];
-    return compact ? all.filter((c) => COMPACT_FIELDS.includes(c.field)) : all;
-  }, [compact, canActOn]);
+  const columns: GridColDef[] = useMemo(
+    () =>
+      buildGpWriteQueueColumns({
+        compact,
+        canActOn,
+        gateReason: gpWriteGateReason,
+        onRetry: setRetryTarget,
+        onCancel: setCancelTarget,
+      }),
+    [compact, canActOn],
+  );
 
   // #909: the columns fit the panel's width instead of scrolling sideways, and a person's resized
   // widths are remembered - apart for the admin queue and a module's compact mounting, whose column
