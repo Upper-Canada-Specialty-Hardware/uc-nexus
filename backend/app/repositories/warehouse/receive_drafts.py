@@ -696,6 +696,11 @@ def claim_for_approval(
             )
     else:
         _assert_no_conflicting_claim(session, draft)
+        # #1401: the warehouse was checked when the draft was saved, but it can be retired or moved to
+        # another company since. Re-checked on a fresh claim, before the caller commits it and before
+        # anything reaches GP - live or queued - so a refusal leaves the draft pending and GP untouched.
+        # A same-key resume is not re-checked: GP may already hold that receipt.
+        _assert_draft_warehouse(session, draft.warehouse_id, session.get(POModel, draft.po_id))
 
     return ApprovalContext(
         draft_id=draft.id,

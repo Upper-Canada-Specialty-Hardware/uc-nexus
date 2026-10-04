@@ -355,6 +355,48 @@ def test_a_line_can_be_topped_up_after_its_tied_units_arrive(db_session, project
     assert _tied_units(db_session, line) == 10
 
 
+@pytest.mark.parametrize(
+    ("ordered", "received", "tied", "before", "expected"),
+    [
+        (10, 5, 5, 5, 0),  # 5 arrived before registration (untied), 5 tied still coming: nothing untied
+        (10, 5, 5, 0, 5),  # registered with nothing in, 5 tied then received: 5 still coming untied
+        (10, 8, 3, 5, 2),  # 5 before, 3 tied (all received since), 2 untied still coming
+        (10, 10, 0, 10, 0),  # everything arrived before registration
+    ],
+)
+def test_untied_outstanding_subtracts_what_arrived_before_registration(ordered, received, tied, before, expected):
+    """#1398: with the at-registration count recorded, the formula is exact for both cases."""
+    assert po_repository.untied_outstanding(ordered, received, tied, before) == expected
+
+
+def test_units_received_before_registration_are_not_tied_again_on_a_top_up(db_session, project):
+    """#1398: 10 ordered with 5 already received in GP. Registration ties the 5 still coming; a later
+    top-up is refused, because nothing is left untied - the old max() formula allowed 5 more."""
+    _schedule_rows(db_session, project, [1] * 12)
+    po, line = _mirrored_po(db_session, project=project, ordered=10, received=5)
+    po_repository.nexus_register_po_lines(db_session, po.id, [_entry(line, tie_quantity=5)])
+    assert line.received_before_registration == 5
+
+    with pytest.raises(ValidationError) as exc:
+        po_repository.nexus_register_po_lines(db_session, po.id, [_entry(line, tie_quantity=1)])
+    assert "At most 0" in str(exc.value)
+    assert _tied_units(db_session, line) == 5
+
+
+def test_a_line_registered_before_the_count_was_recorded_keeps_the_old_formula(db_session, project):
+    """#1398: a registered line with no recorded count (registered before the column existed) falls
+    back to ordered less the larger of received and tied, as #1371 did."""
+    _schedule_rows(db_session, project, [1] * 12)
+    po, line = _mirrored_po(db_session, project=project, ordered=10)
+    po_repository.nexus_register_po_lines(db_session, po.id, [_entry(line, tie_quantity=5)])
+    line.received_before_registration = None
+    line.received_quantity = 5
+    db_session.flush()
+
+    _po, tied = po_repository.nexus_register_po_lines(db_session, po.id, [_entry(line, tie_quantity=5)])
+    assert tied == 5
+
+
 def test_two_lines_for_one_product_are_told_they_share_the_schedule(db_session, project):
     """#1372: the second line's refusal says the first line in the same save took the units."""
     _schedule_rows(db_session, project, [1] * 7)

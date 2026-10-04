@@ -10,6 +10,7 @@ import ColumnResizeHandle from '../../components/ColumnResizeHandle';
 import { useFitColumns, type FitColumn } from '../../components/fitColumns';
 import { productKeyOf, suggestScheduleProduct, type ScheduleProduct } from './nexusRegistrationMatch';
 import type { PurchaseOrder } from './index';
+import { untiedOutstanding } from './poTies';
 
 // A PO born in GP carries GP's own item number and description on every line, so nothing on it says
 // which product the line is for. This panel is where somebody says so: picking the schedule product
@@ -85,13 +86,8 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
     return map;
   }, [tiedData]);
 
-  /** What a line still has coming with nothing tied to it. An unregistered line has no tie yet. A tied
-   *  row keeps its tie once its units arrive, so received and tied overlap: the line's untied
-   *  outstanding is ordered less the larger of the two, not less both (#1371). */
-  const untiedOf = useCallback(
-    (li: POLine) => Math.max(li.orderedQuantity - Math.max(li.receivedQuantity, tiedByLine.get(li.id) ?? 0), 0),
-    [tiedByLine],
-  );
+  /** What a line still has coming with nothing tied to it - the server's untied_outstanding. */
+  const untiedOf = useCallback((li: POLine) => untiedOutstanding(li, tiedByLine.get(li.id) ?? 0), [tiedByLine]);
 
   /** A registered line that can still take a tie: units untied, and its product still on the
    *  schedule with some left unpurchased. Its identity is fixed; only the quantity is asked. */

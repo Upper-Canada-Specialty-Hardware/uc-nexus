@@ -124,6 +124,7 @@ def po_line_item_to_type(li) -> POLineItem:
         uofm=li.uofm,
         job_cost=li.job_cost,
         nexus_registered=li.nexus_registered,
+        received_before_registration=li.received_before_registration,
         custom_inventory_item_id=(
             strawberry.ID(str(li.custom_inventory_item_id)) if li.custom_inventory_item_id else None
         ),

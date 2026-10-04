@@ -553,6 +553,31 @@ def test_claiming_a_draft_blocks_a_second_approver_but_lets_a_retry_resume(db_se
     assert resumed.po_id == po.id
 
 
+@pytest.mark.parametrize("change", ["deactivated", "moved"])
+def test_a_draft_whose_warehouse_changed_since_saving_is_refused_at_the_claim(db_session, change):
+    """#1401: the warehouse was checked when the draft was saved; retired or moved to another company
+    since, the claim refuses it - before the caller commits and before anything reaches GP."""
+    from app.models.warehouse import Warehouse
+
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li, 3)
+    wh = Warehouse(id=uuid.uuid4(), name=f"Dock {uuid.uuid4().hex[:6]}", code=uuid.uuid4().hex[:8], company=po.company)
+    db_session.add(wh)
+    db_session.flush()
+    draft.warehouse_id = wh.id
+    db_session.flush()
+    if change == "deactivated":
+        wh.is_active = False
+    else:
+        wh.company = "UBC" if po.company != "UBC" else "UCSH"
+    db_session.flush()
+
+    with pytest.raises(ValidationError) as excinfo:
+        warehouse_repository.claim_for_approval(db_session, draft.id, MANAGER, MANAGER_NAME, "key-wh")
+    assert excinfo.value.field == "warehouse_id"
+
+
 def test_releasing_a_claim_puts_the_draft_back_and_only_its_own_holder_may(db_session):
     project = _make_project(db_session)
     po, li = _make_po(db_session, project.id)
