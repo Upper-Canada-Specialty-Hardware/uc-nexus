@@ -27,6 +27,7 @@ from app.models.receive_draft import ReceiveDraftLineItem as ReceiveDraftLineIte
 from app.models.warehouse import Warehouse
 from app.services import notification_service
 from app.services.locking import lock_rows
+from app.status_labels import REFRESH_HINT, status_label
 
 from .receiving import validate_receive_eligibility
 
@@ -391,7 +392,8 @@ def count_pending_drafts(session: Session, *, company: str | None = None) -> int
 def _assert_can_edit(draft: ReceiveDraftModel, actor_user_id: str, actor_is_manager: bool) -> None:
     if draft.status not in (ReceiveDraftStatus.PENDING_APPROVAL, ReceiveDraftStatus.REJECTED):
         raise InvalidStateTransitionError(
-            f"A receive draft can only be edited while it is awaiting approval or rejected, got {draft.status.value}"
+            f"A receive draft can only be edited while it is awaiting approval or rejected; this one is "
+            f"{status_label(draft.status)}. {REFRESH_HINT}"
         )
     is_author = draft.created_by_user_id == actor_user_id
     if is_author:
@@ -455,7 +457,9 @@ def resubmit_receive_draft(session: Session, draft_id: uuid.UUID, actor_user_id:
     """Send a rejected draft back to the queue. Author only - it is their count being restated."""
     draft = _lock_draft(session, draft_id)
     if draft.status != ReceiveDraftStatus.REJECTED:
-        raise InvalidStateTransitionError(f"Only a rejected draft can be resubmitted, got {draft.status.value}")
+        raise InvalidStateTransitionError(
+            f"Only a rejected draft can be resubmitted; this one is {status_label(draft.status)}. {REFRESH_HINT}"
+        )
     if draft.created_by_user_id != actor_user_id:
         raise ConflictError("Only the person who submitted this draft can resubmit it")
 
@@ -496,7 +500,9 @@ def reject_receive_draft(
 
     draft = _lock_draft(session, draft_id)
     if draft.status != ReceiveDraftStatus.PENDING_APPROVAL:
-        raise InvalidStateTransitionError(f"Only a draft awaiting approval can be rejected, got {draft.status.value}")
+        raise InvalidStateTransitionError(
+            f"Only a draft awaiting approval can be rejected; this one is {status_label(draft.status)}. {REFRESH_HINT}"
+        )
 
     draft.status = ReceiveDraftStatus.REJECTED
     draft.reviewed_by_user_id = reviewer_user_id
@@ -539,7 +545,9 @@ def delete_receive_draft(
 
     draft = _lock_draft(session, draft_id)
     if draft.status in _IN_FLIGHT_STATUSES:
-        raise InvalidStateTransitionError(f"A draft that has been approved cannot be deleted, got {draft.status.value}")
+        raise InvalidStateTransitionError(
+            f"An approved draft cannot be deleted; this one is {status_label(draft.status)}. {REFRESH_HINT}"
+        )
     if draft.created_by_user_id != actor_user_id and not actor_is_manager:
         raise ConflictError("Only the person who submitted this draft, or a Warehouse Manager, can delete it")
     slip_id = draft.packing_slip_document_id
@@ -692,7 +700,8 @@ def claim_for_approval(
             raise ConflictError("This draft has already been approved")
         else:
             raise InvalidStateTransitionError(
-                f"Only a draft awaiting approval can be approved, got {draft.status.value}"
+                f"Only a draft awaiting approval can be approved; this one is "
+                f"{status_label(draft.status)}. {REFRESH_HINT}"
             )
     else:
         _assert_no_conflicting_claim(session, draft)

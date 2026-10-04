@@ -41,6 +41,7 @@ from app.repositories.stock import _find_or_create_stock_row, _log_audit_event
 from app.repositories.warehouse import resolve_project_combo_cost
 from app.services import notification_service
 from app.services.locking import lock_rows
+from app.status_labels import REFRESH_HINT, status_label
 
 
 def staged_fulfilled_stmt(
@@ -415,7 +416,8 @@ def update_shipment_details(
     ps = _locked_packing_slip(session, packing_slip_id)
     if ps.status != ShipmentStatus.SCHEDULED:
         raise InvalidStateTransitionError(
-            f"Delivery Request {ps.packing_slip_number} can only be edited while Scheduled (current: {ps.status.value})"
+            f"Delivery Request {ps.packing_slip_number} can only be edited while scheduled; "
+            f"it is {status_label(ps.status)}. {REFRESH_HINT}"
         )
     _apply_delivery_details(ps, details)
     return ps
@@ -434,8 +436,8 @@ def mark_shipment_picked_up(
     ps = _locked_packing_slip(session, packing_slip_id)
     if ps.status != ShipmentStatus.SCHEDULED:
         raise InvalidStateTransitionError(
-            f"Delivery Request {ps.packing_slip_number} must be Scheduled to mark picked up "
-            f"(current: {ps.status.value})"
+            f"Delivery Request {ps.packing_slip_number} must be scheduled to mark picked up; "
+            f"it is {status_label(ps.status)}. {REFRESH_HINT}"
         )
     ps.status = ShipmentStatus.PICKED_UP
     ps.picked_up_at = datetime.utcnow()
@@ -455,7 +457,8 @@ def cancel_shipment(session: Session, packing_slip_id: uuid.UUID) -> PackingSlip
     ps = _locked_packing_slip(session, packing_slip_id)
     if ps.status != ShipmentStatus.SCHEDULED:
         raise InvalidStateTransitionError(
-            f"Delivery Request {ps.packing_slip_number} must be Scheduled to cancel (current: {ps.status.value})"
+            f"Delivery Request {ps.packing_slip_number} must be scheduled to cancel; "
+            f"it is {status_label(ps.status)}. {REFRESH_HINT}"
         )
     session.refresh(ps, attribute_names=["items"])
     returned = _returned_quantities(session, packing_slip_id)
@@ -482,8 +485,8 @@ def mark_shipment_delivered(
     ps = _locked_packing_slip(session, packing_slip_id)
     if ps.status != ShipmentStatus.PICKED_UP:
         raise InvalidStateTransitionError(
-            f"Delivery Request {ps.packing_slip_number} must be Picked Up to mark delivered "
-            f"(current: {ps.status.value})"
+            f"Delivery Request {ps.packing_slip_number} must be picked up to mark delivered; "
+            f"it is {status_label(ps.status)}. {REFRESH_HINT}"
         )
     ps.status = ShipmentStatus.DELIVERED
     ps.delivered_at = datetime.utcnow()
@@ -985,7 +988,9 @@ def accept_shipping_out_request(
     and nothing to release. The claim is spent when the pick is confirmed."""
     req = lock_shipping_out_request(session, request_id)
     if req.status != ShippingOutRequestStatus.PENDING:
-        raise InvalidStateTransitionError(f"Shipping-out request must be Pending to accept, got {req.status.value}")
+        raise InvalidStateTransitionError(
+            f"Only a pending shipping request can be accepted; this one is {status_label(req.status)}. {REFRESH_HINT}"
+        )
 
     now = datetime.utcnow()
     pr = PullRequestModel(
@@ -1041,7 +1046,9 @@ def reject_shipping_out_request(
 
     req = lock_shipping_out_request(session, request_id)
     if req.status != ShippingOutRequestStatus.PENDING:
-        raise InvalidStateTransitionError(f"Shipping-out request must be Pending to reject, got {req.status.value}")
+        raise InvalidStateTransitionError(
+            f"Only a pending shipping request can be rejected; this one is {status_label(req.status)}. {REFRESH_HINT}"
+        )
 
     req.status = ShippingOutRequestStatus.REJECTED
     req.rejected_by = rejected_by
@@ -1072,7 +1079,9 @@ def reopen_shipping_out_request(
 
     req = lock_shipping_out_request(session, request_id)
     if req.status != ShippingOutRequestStatus.APPROVED:
-        raise InvalidStateTransitionError(f"Shipping-out request must be Approved to reopen, got {req.status.value}")
+        raise InvalidStateTransitionError(
+            f"Only an accepted shipping request can be reopened; this one is {status_label(req.status)}. {REFRESH_HINT}"
+        )
 
     # Unlink the request and flush BEFORE discarding the PR, so deleting it does not trip the
     # shipping_out_requests.pull_request_id foreign key. discard_pending_pull_request still guards that

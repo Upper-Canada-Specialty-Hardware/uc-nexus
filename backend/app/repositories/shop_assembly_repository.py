@@ -47,6 +47,7 @@ from app.models.shop_assembly import (
     ShopAssemblyRequestOpening,
 )
 from app.services import gp_window
+from app.status_labels import REFRESH_HINT, status_label
 
 # Where one request sits on the ladder the requests list draws as columns. Derived from the request's
 # own status and the state of the pulls its batches minted - never stored, because a stored copy is
@@ -585,7 +586,10 @@ def create_shop_assembly_batch(
     # this batch's alone (#1121).
     request = _locked_request(session, request_id)
     if request.status != ShopAssemblyRequestStatus.PENDING:
-        raise InvalidStateTransitionError(f"Shop-assembly request must be Pending to batch, got {request.status.value}")
+        raise InvalidStateTransitionError(
+            f"Only a pending shop assembly request can be batched; this one is "
+            f"{status_label(request.status)}. {REFRESH_HINT}"
+        )
     if not lines:
         raise ValidationError("A batch must allocate at least one line.", field="lines")
 
@@ -771,7 +775,8 @@ def dismiss_shop_assembly_openings(
     request = _locked_request(session, request_id)
     if request.status != ShopAssemblyRequestStatus.PENDING:
         raise InvalidStateTransitionError(
-            f"Shop-assembly request must be Pending to dismiss openings, got {request.status.value}"
+            f"Openings can only be dismissed on a pending shop assembly request; this one is "
+            f"{status_label(request.status)}. {REFRESH_HINT}"
         )
 
     reason = (reason or "").strip() or None
@@ -825,7 +830,8 @@ def reject_shop_assembly_request(
     request = _locked_request(session, request_id)
     if request.status != ShopAssemblyRequestStatus.PENDING:
         raise InvalidStateTransitionError(
-            f"Shop-assembly request must be Pending to reject, got {request.status.value}"
+            f"Only a pending shop assembly request can be rejected; this one is "
+            f"{status_label(request.status)}. {REFRESH_HINT}"
         )
     if request.batches:
         raise InvalidStateTransitionError(

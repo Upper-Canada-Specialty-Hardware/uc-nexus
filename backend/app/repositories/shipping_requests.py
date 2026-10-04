@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.errors import ConflictError, InvalidStateTransitionError, ValidationError
 from app.models.enums import ReservationSource, ShippingOutRequestStatus
 from app.models.shipping_out_request import ShippingOutRequest, ShippingOutRequestItem
+from app.status_labels import status_label
 
 
 def create_shipping_out_requests(
@@ -138,7 +139,7 @@ def replace_shipping_out_request_items(
     req = lock_shipping_out_request(session, request_id)
     if req.status != ShippingOutRequestStatus.PENDING:
         raise InvalidStateTransitionError(
-            f"Shipping-out request must be Pending to edit, got {req.status.value}. "
+            f"Shipping-out request must be Pending to edit; it is {status_label(req.status)}. "
             "Reopen it first if the warehouse has not started the pull."
         )
     if not items:

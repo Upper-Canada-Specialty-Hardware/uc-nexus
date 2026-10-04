@@ -234,7 +234,7 @@ def test_a_request_accepted_elsewhere_cannot_be_accepted_again(db_session):
     req = _request(db_session, project)
     _decided_elsewhere(db_session, req, ShippingOutRequestStatus.APPROVED)
 
-    with pytest.raises(InvalidStateTransitionError, match="Pending to accept"):
+    with pytest.raises(InvalidStateTransitionError, match="Only a pending shipping request can be accepted"):
         shipping_repository.accept_shipping_out_request(db_session, req.id, "manager")
 
 
@@ -244,7 +244,7 @@ def test_a_request_accepted_elsewhere_cannot_then_be_rejected(db_session):
     req = _request(db_session, project)
     _decided_elsewhere(db_session, req, ShippingOutRequestStatus.APPROVED)
 
-    with pytest.raises(InvalidStateTransitionError, match="Pending to reject"):
+    with pytest.raises(InvalidStateTransitionError, match="Only a pending shipping request can be rejected"):
         shipping_repository.reject_shipping_out_request(db_session, req.id, "manager", "no truck")
 
 
@@ -253,7 +253,7 @@ def test_a_request_reopened_elsewhere_cannot_be_reopened_again(db_session):
     req = _request(db_session, project, status=ShippingOutRequestStatus.APPROVED)
     _decided_elsewhere(db_session, req, ShippingOutRequestStatus.PENDING)
 
-    with pytest.raises(InvalidStateTransitionError, match="Approved to reopen"):
+    with pytest.raises(InvalidStateTransitionError, match="Only an accepted shipping request can be reopened"):
         shipping_repository.reopen_shipping_out_request(db_session, req.id)
 
 
