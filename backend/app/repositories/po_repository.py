@@ -10,6 +10,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import BigInteger, case, cast, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
@@ -1962,11 +1963,20 @@ def upsert_po_document_data(session: Session, po_id: uuid.UUID, **fields) -> POD
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
 
-    data = get_po_document_data(session, po_id)
-    created = data is None
-    if created:
-        data = PODocumentData(id=uuid.uuid4(), po_id=po_id)
-        session.add(data)
+    # #1475: insert-if-absent, then the row locked and re-read - as #1201 / #1473 did elsewhere. Two
+    # buyers saving one PO's document for the first time both found nothing and both inserted, and the
+    # loser hit uq_po_document_data_po_id as a masked server error.
+    session.execute(
+        pg_insert(PODocumentData)
+        .values(id=uuid.uuid4(), po_id=po_id)
+        .on_conflict_do_nothing(constraint="uq_po_document_data_po_id")
+    )
+    data = session.scalars(
+        select(PODocumentData)
+        .where(PODocumentData.po_id == po_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
 
     for key in _DOC_DATA_TEXT_FIELDS:
         if key in fields:

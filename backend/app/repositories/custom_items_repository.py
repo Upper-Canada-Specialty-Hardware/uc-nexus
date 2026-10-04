@@ -374,6 +374,11 @@ def update_item(
     if is_active is not None:
         item.is_active = is_active
     if values is not None:
+        # #1475: the item locked and its answers re-read first, so two people answering the same
+        # attribute at once update one row in turn instead of both inserting it - the loser used to hit
+        # uq_custom_inventory_item_values_item_attr as a masked server error.
+        session.execute(select(CustomInventoryItem.id).where(CustomInventoryItem.id == item.id).with_for_update())
+        session.refresh(item, attribute_names=["values"])
         _apply_values(session, item, values)
     session.flush()
     return item
