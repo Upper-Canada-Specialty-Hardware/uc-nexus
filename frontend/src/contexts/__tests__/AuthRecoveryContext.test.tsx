@@ -1,7 +1,13 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { AuthRecoveryProvider } from '../AuthRecoveryContext';
-import { isAuthLapsed, notifyAuthFailure, readAuthBridge, resetAuthBridge } from '../../authBridge';
+import {
+  isAuthLapsed,
+  markAuthRecovered,
+  notifyAuthFailure,
+  readAuthBridge,
+  resetAuthBridge,
+} from '../../authBridge';
 
 /**
  * The React end of #429. The Apollo auth link cannot call `useAuth` (the client is built at module
@@ -18,11 +24,17 @@ const auth = vi.hoisted(() => ({
 
 vi.mock('@clerk/clerk-react', () => ({ useAuth: () => auth }));
 
+// #1400: the provider re-runs the page's queries when a lapse ends; this stands in for the client.
+const apollo = vi.hoisted(() => ({ refetchObservableQueries: vi.fn(async () => []) }));
+
+vi.mock('@apollo/client/react', () => ({ useApolloClient: () => apollo }));
+
 const PROMPT = 'Your session needs a refresh';
 
 beforeEach(() => {
   auth.isLoaded = true;
   auth.isSignedIn = true;
+  apollo.refetchObservableQueries.mockClear();
 });
 
 afterEach(() => {
@@ -136,6 +148,57 @@ test('"Sign in again" falls back to a reload when the session cannot be renewed'
 
     await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
     expect(isAuthLapsed()).toBe(true);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+// #1400: a renewal used to leave the page's own (non-polling) queries in their suspended error.
+test('a renewal in place re-runs the suspended queries once', async () => {
+  const reload = vi.fn();
+  vi.stubGlobal('location', { ...window.location, reload });
+  auth.getToken.mockResolvedValueOnce('renewed');
+  try {
+    render(<AuthRecoveryProvider><div /></AuthRecoveryProvider>);
+    act(() => notifyAuthFailure());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
+
+    await waitFor(() => expect(apollo.refetchObservableQueries).toHaveBeenCalledTimes(1));
+    expect(reload).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+test('a lapse that ends on its own (a probe got through) re-runs the queries; a healthy session does not', async () => {
+  render(<AuthRecoveryProvider><div /></AuthRecoveryProvider>);
+
+  act(() => markAuthRecovered());
+  await new Promise((r) => setTimeout(r, 10));
+  expect(apollo.refetchObservableQueries).not.toHaveBeenCalled();
+
+  act(() => notifyAuthFailure());
+  act(() => {
+    markAuthRecovered();
+    markAuthRecovered();
+  });
+
+  await waitFor(() => expect(apollo.refetchObservableQueries).toHaveBeenCalledTimes(1));
+});
+
+test('a renewal that fails reloads instead and re-runs nothing', async () => {
+  const reload = vi.fn();
+  vi.stubGlobal('location', { ...window.location, reload });
+  auth.getToken.mockResolvedValueOnce(null as unknown as string);
+  try {
+    render(<AuthRecoveryProvider><div /></AuthRecoveryProvider>);
+    act(() => notifyAuthFailure());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }));
+
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
+    expect(apollo.refetchObservableQueries).not.toHaveBeenCalled();
   } finally {
     vi.unstubAllGlobals();
   }
