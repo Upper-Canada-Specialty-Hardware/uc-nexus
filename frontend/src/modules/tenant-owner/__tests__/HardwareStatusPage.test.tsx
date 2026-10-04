@@ -1,4 +1,7 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
+import type { ApolloClient } from '@apollo/client/core';
+import { useApolloClient } from '@apollo/client/react';
+import { GraphQLError } from 'graphql';
 import type { MockedResponse } from '@apollo/client/testing';
 import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -94,4 +97,54 @@ it('lists an archived project after the live ones, tagged, and it can be picked'
   ]);
   fireEvent.click(options[2]);
   expect(await screen.findByText('No hardware found for the selected projects.')).toBeInTheDocument();
+});
+
+it('drops the picks a company switch takes away instead of querying them (#1449)', async () => {
+  // The switch reloads the project options under the new company. The reset may still refetch the
+  // status once with the old company's ids, which the server refuses as out of scope; the page must
+  // drop the pick and say nothing about that refusal, not show it beside chips the company lacks.
+  let company = 'A';
+  let client: ApolloClient | undefined;
+  const optionsMock: MockedResponse = {
+    request: { query: GET_REPORT_PROJECT_OPTIONS },
+    maxUsageCount: INFINITE,
+    result: () => ({
+      data: {
+        adminProjects:
+          company === 'A' ? [project('p1', '80001', 'Cowichan Dist Hospital', 66)] : [project('b1', '90001', 'B Job', 3)],
+      },
+    }),
+  };
+  const anyStatus: MockedResponse = {
+    request: { query: GET_HARDWARE_STATUS_BY_PRODUCT, variables: () => true },
+    maxUsageCount: INFINITE,
+    result: (vars: { projectIds: string[] }) =>
+      company === 'B' && vars.projectIds.includes('p1')
+        ? { errors: [new GraphQLError('Project not found', { extensions: { code: 'NOT_FOUND' } })] }
+        : { data: { hardwareStatusByProduct: [] } },
+  };
+  function Grab() {
+    client = useApolloClient();
+    return null;
+  }
+  render(
+    <MockedProvider mocks={[optionsMock, anyStatus]}>
+      <MemoryRouter>
+        <Grab />
+        <HardwareStatusPage />
+      </MemoryRouter>
+    </MockedProvider>,
+  );
+  await pick('Cowichan Dist Hospital');
+  expect(await screen.findByText('No hardware found for the selected projects.')).toBeInTheDocument();
+
+  company = 'B';
+  await act(async () => {
+    // As ActingCompanyContext does: the reset's own refetch of the old ids may reject; the page is what counts.
+    await client?.resetStore().catch(() => undefined);
+  });
+
+  expect(await screen.findByText(/Pick one or more projects/)).toBeInTheDocument();
+  expect(screen.queryByText(/Project not found/)).not.toBeInTheDocument();
+  expect(screen.queryByText('Cowichan Dist Hospital')).not.toBeInTheDocument();
 });
