@@ -192,3 +192,35 @@ def test_handles_a_schedule_sized_request(db_session):
 
     assert len(results) == 2000
     assert {r["status"] for r in results} == {"NOT_COVERED"}
+
+
+def test_a_product_under_two_categories_at_one_opening_is_reconciled_apart(db_session):
+    """#1412: the wizard sends one item per (opening, category, product), so the lifecycle has to be
+    keyed the same way. Keyed by (opening, product), each category was credited with both categories'
+    units and the uncovered one's gap vanished."""
+    project = _make_project(db_session)
+    a01 = _make_opening(db_session, project, "A01")
+
+    ordered = _po_line(db_session, project, status=POStatus.GP_REGISTERED)
+    _schedule_item(db_session, project, a01, "HG-100", 4, line=ordered)
+    db_session.add(
+        HardwareItem(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            opening_id=a01.id,
+            hardware_category="CLOSER",
+            product_code="HG-100",
+            item_quantity=4,
+            state=HardwareItemState.AVAILABLE,
+        )
+    )
+    db_session.flush()
+
+    other = {**_request("A01", "HG-100", 4), "hardware_category": "CLOSER"}
+    results = import_repository.reconcile_schedule(db_session, project.id, [_request("A01", "HG-100", 4), other])
+
+    by_category = {
+        cat: {r["status"]: r["quantity"] for r in results if r["hardware_category"] == cat}
+        for cat in (CATEGORY, "CLOSER")
+    }
+    assert by_category == {CATEGORY: {"ORDERED": 4}, "CLOSER": {"NOT_COVERED": 4}}
