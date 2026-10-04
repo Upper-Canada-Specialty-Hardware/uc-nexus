@@ -10,7 +10,7 @@ Upgrade refuses, naming them, when existing rows already differ only by case: wh
 keep is a person's call, not a migration's.
 
 Revision ID: 139
-Revises: 133
+Revises: 137
 Create Date: 2026-10-04
 """
 
@@ -19,7 +19,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "139"
-down_revision = "133"
+down_revision = "137"
 branch_labels = None
 depends_on = None
 
