@@ -218,6 +218,29 @@ describe('LocationActionDialog', () => {
     );
   });
 
+  it('adjust stops at the units flagged deficient, saying the lowest it can go (#1517)', () => {
+    // 5 on the row, 2 of them deficient: the server refuses anything that leaves fewer than 2.
+    renderDialog({ mode: 'adjust', targets: [{ ...stockTarget, quantity: 5, deficientQuantity: 2 }] });
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'recount' } });
+
+    fireEvent.change(screen.getByLabelText('Adjustment (+/-)'), { target: { value: '-4' } });
+    expect(confirmButton()).toBeDisabled();
+    expect(screen.getByTestId('adjust-blocked-reason')).toHaveTextContent(
+      '2 of the units on this row are flagged deficient - the lowest it can go is 2.',
+    );
+
+    fireEvent.change(screen.getByLabelText('Adjustment (+/-)'), { target: { value: '-3' } });
+    expect(confirmButton()).toBeEnabled();
+  });
+
+  it('adjust takes whole numbers only (#1517)', () => {
+    renderDialog({ mode: 'adjust' });
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'recount' } });
+    fireEvent.change(screen.getByLabelText('Adjustment (+/-)'), { target: { value: '-2.5' } });
+    expect(confirmButton()).toBeDisabled();
+    expect(screen.getByTestId('adjust-blocked-reason')).toHaveTextContent('Whole numbers only.');
+  });
+
   it('says what a disabled adjust Confirm is waiting for (#981)', () => {
     renderDialog({ mode: 'adjust' });
     const why = () => screen.getByTestId('adjust-blocked-reason');

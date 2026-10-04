@@ -67,6 +67,7 @@ function toTarget(r: GridRow): LocationActionTarget {
     hardwareCategory: il.hardwareCategory,
     productCode: il.productCode,
     quantity: il.quantity,
+    deficientQuantity: il.deficientQuantity,
     warehouseId: il.warehouseId,
     aisle: il.aisle,
     row: il.row,
