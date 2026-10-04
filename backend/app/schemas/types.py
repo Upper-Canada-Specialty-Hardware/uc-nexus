@@ -2150,6 +2150,9 @@ class GpOutboxSummary:
     # The most recent successful drain. The browser watches this to know a background drain changed
     # data underneath whatever route it happens to be on.
     last_drained_at: datetime | None = None
+    # When any queued write last reached an end state - succeeded, failed or cancelled (#1410). This is
+    # what the browser watches: a failed receipt hands its draft back, which changes data too.
+    last_settled_at: datetime | None = None
 
 
 # --- GP SYNC STATE, the backend half of NEXUS GP TRAFFIC (#679) -------------------------------------

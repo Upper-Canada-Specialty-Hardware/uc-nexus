@@ -277,7 +277,7 @@ def summary(session: Session, company: str | None = None) -> dict:
     """Scalar aggregates only - this is polled by every browser with the app open, so it must never
     load rows (see the GraphQL/SQLAlchemy performance rules in CLAUDE.md).
 
-    `company` scopes all three counts and both timestamps to one tenant (#729), so the chip a
+    `company` scopes all three counts and every timestamp to one tenant (#729), so the chip a
     scoped user watches counts their own company's held writes. None means every company."""
     scope = [GpWriteOutbox.company == company] if company is not None else []
     counts = dict(
@@ -291,12 +291,21 @@ def summary(session: Session, company: str | None = None) -> dict:
         select(func.min(GpWriteOutbox.created_at)).where(GpWriteOutbox.status == "PENDING", *scope)
     )
     last_drained_at = session.scalar(select(func.max(GpWriteOutbox.succeeded_at)).where(*scope))
+    # #1410: any row reaching an end state - a failed or cancelled receipt hands its draft back for
+    # review (#1298) - changes data an open page shows, not only a success. updated_at moves on every
+    # transition, so over the end states its max is when the queue last settled something.
+    last_settled_at = session.scalar(
+        select(func.max(GpWriteOutbox.updated_at)).where(
+            GpWriteOutbox.status.in_(("SUCCEEDED", "FAILED", "CANCELLED")), *scope
+        )
+    )
     return {
         "pending": counts.get("PENDING", 0),
         "in_flight": counts.get("IN_FLIGHT", 0),
         "failed": counts.get("FAILED", 0),
         "oldest_pending_at": oldest_pending_at,
         "last_drained_at": last_drained_at,
+        "last_settled_at": last_settled_at,
     }
 
 
