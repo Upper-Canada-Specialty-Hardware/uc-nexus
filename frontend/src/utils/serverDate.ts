@@ -41,6 +41,16 @@ export function fmtDate(v: string | null | undefined): string {
 }
 
 /**
+ * The same instant without the year or seconds ("Oct 4, 5:32 AM"), for a grid column that has to stay
+ * narrow (#1429). Pair it with `fmtDate` on hover so the full reading is never lost.
+ */
+export function fmtShortDateTime(v: string | null | undefined): string {
+  return v
+    ? parseServerDate(v).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : ABSENT;
+}
+
+/**
  * The same instant written as an age ("5m ago"), which is what gets scanned on a page that is
  * watching something happen. Anything a week old or more falls back to the calendar date, because
  * past that point the exact day is the useful reading, not the distance.
