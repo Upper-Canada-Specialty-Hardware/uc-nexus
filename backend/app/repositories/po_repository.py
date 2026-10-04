@@ -1923,7 +1923,10 @@ def upsert_po_document_data(session: Session, po_id: uuid.UUID, **fields) -> POD
     for key in _DOC_DATA_MONEY_FIELDS:
         if key in fields:
             value = fields[key]
-            setattr(data, key, Decimal(str(value)) if value is not None else Decimal("0"))
+            # Bounded like the order-time costs (#1207): a negative or a column-overflowing amount is a
+            # field error, not a numeric overflow masked as a server error at flush.
+            amount = _coerce_order_cost(value, key)
+            setattr(data, key, amount if amount is not None else Decimal("0"))
 
     # #1236: the trade discount stays null until a value is sent, so a document saved before it existed
     # still prefills GP's discount; a sent value is stored as given (0 included).
@@ -1931,6 +1934,8 @@ def upsert_po_document_data(session: Session, po_id: uuid.UUID, **fields) -> POD
         discount = Decimal(str(fields["trade_discount"]))
         if discount < 0:
             raise ValidationError("Trade discount cannot be negative", field="trade_discount")
+        if discount >= _MAX_ORDER_COST:
+            raise ValidationError(f"Trade discount must be less than {_MAX_ORDER_COST:,}", field="trade_discount")
         data.trade_discount = discount
 
     for key in _DOC_DATA_BOOL_FIELDS:
