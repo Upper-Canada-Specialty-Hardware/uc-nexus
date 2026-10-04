@@ -106,8 +106,11 @@ _EMAILABLE_PO_STATUSES = frozenset(
 # has to look up in GP.
 
 
-def _load_po_type(po_id: uuid.UUID) -> PurchaseOrder:
+def _load_po_type(po_id: uuid.UUID, scope: str | None = None) -> PurchaseOrder:
     with SessionLocal() as session:
+        # #1514: an idempotency replay answers with the PO its key recorded, which is read here before
+        # the pre-flight's own check - so it is scoped here too.
+        tenancy.require_po_in_scope(session, po_id, scope)
         return po_to_type(po_repository.reload_po(session, po_id))
 
 
@@ -363,6 +366,9 @@ def _prepare_register_po(
 
         job_number = None
         if effective_project_id is not None:
+            # #1514: another company's project reads as absent, before the company comparison below -
+            # that one names the job and its company, which would confirm a project the caller cannot see.
+            tenancy.require_project_in_scope(session, effective_project_id, scope)
             project = session.get(ProjectModel, effective_project_id)
             if project is None:
                 raise NotFoundError(f"Project {effective_project_id} not found")
@@ -966,7 +972,7 @@ class POMutations:
 
         state = await asyncio.to_thread(gp_idempotency.load, key)
         if state is not None and state.result_id is not None:
-            po = await asyncio.to_thread(_load_po_type, uuid.UUID(state.result_id))
+            po = await asyncio.to_thread(_load_po_type, uuid.UUID(state.result_id), tenant_scope(info))
             return RegisterPOResult(queued=False, outbox_entry_id=None, purchase_order=po)
 
         # #1207: the costs the persist writes are checked before anything reaches GP.
