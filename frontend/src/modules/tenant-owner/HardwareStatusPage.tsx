@@ -36,7 +36,7 @@ function projectToOption(p: ReportProject): ProjectOption {
 }
 
 export default function HardwareStatusPage() {
-  const [selected, setSelected] = useState<ProjectOption[]>([]);
+  const [picked, setPicked] = useState<ProjectOption[]>([]);
   const [search, setSearch] = useState('');
 
   const {
@@ -50,6 +50,9 @@ export default function HardwareStatusPage() {
     [projectsData],
   );
 
+  // #1449: only the picks the current company still offers. A company switch reloads the options,
+  // and the previous company's projects drop out instead of being queried under the new company.
+  const selected = useMemo(() => picked.filter((p) => options.some((o) => o.id === p.id)), [picked, options]);
   const projectIds = useMemo(() => selected.map((s) => s.id), [selected]);
 
   const {
@@ -99,7 +102,7 @@ export default function HardwareStatusPage() {
           sx={{ flex: '1 1 380px', maxWidth: 560, minWidth: 0 }}
           options={options}
           value={selected}
-          onChange={(_, v) => setSelected(v)}
+          onChange={(_, v) => setPicked(v)}
           loading={projectsLoading}
           isOptionEqualToValue={(opt, val) => opt.id === val.id}
           getOptionLabel={(opt) => opt.label}
