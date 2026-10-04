@@ -72,6 +72,10 @@ export default function DataTable({
           pagination: { paginationModel: { pageSize: 10 } },
         }}
         disableRowSelectionOnClick
+        // #1473: a checkbox grid's header select-all as explicit ids. MUI otherwise stores it as "every
+        // row except none" (an exclude model with no ids), which a handler reading model.ids takes as
+        // nothing selected. Before the caller's props, so a grid that wants the exclude model can say so.
+        disableRowSelectionExcludeModel
         sx={[
           {
             border: 1,

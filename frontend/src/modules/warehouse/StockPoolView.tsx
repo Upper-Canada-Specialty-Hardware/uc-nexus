@@ -401,6 +401,8 @@ export default function StockPoolView() {
             getRowId={(r) => r.id}
             loading={loading}
             checkboxSelection
+            // #1473: header select-all as explicit ids, not MUI's 'every row except' model the handler reads as none.
+            disableRowSelectionExcludeModel
             disableRowSelectionOnClick
             rowSelectionModel={rowSelectionModel}
             onRowSelectionModelChange={(model) => setSelectedIds(new Set(model.ids as Set<string>))}

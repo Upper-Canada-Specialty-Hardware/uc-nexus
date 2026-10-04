@@ -332,6 +332,8 @@ export default function SelectHardwareStep({
             sx={[fit.sx, { '& .mono-cell': monoSx }]}
             rows={filteredRows}
             checkboxSelection
+            // #1473: header select-all as explicit ids, not MUI's 'every row except' model the handler reads as none.
+            disableRowSelectionExcludeModel
             rowSelectionModel={rowSelectionModel}
             onRowSelectionModelChange={handleGridSelectionChange}
             keepNonExistentRowsSelected
