@@ -1313,6 +1313,18 @@ def get_purchase_orders_page(
     return rows, counts, total
 
 
+def _lock_po_row(session: Session, po: PurchaseOrder) -> None:
+    """Take the PO's row lock and re-read it (#1431), before a status is decided from it.
+
+    The automatic status steps (registered <-> vendor confirmed) read the PO and assign a status from
+    that read. A receipt posting the last units at the same moment sets CLOSED; without the lock the
+    stale read wrote VENDOR_CONFIRMED or GP_REGISTERED over it at flush, and nothing closed the PO
+    again. One order everywhere: the PO row before its lines (cancel, the registration queue and the
+    receipt all take it first), so this never waits on a line while holding the PO."""
+    session.execute(select(PurchaseOrder.id).where(PurchaseOrder.id == po.id).with_for_update())
+    session.refresh(po)
+
+
 def update_po(
     session: Session,
     po_id: uuid.UUID,
@@ -1337,6 +1349,7 @@ def update_po(
     po = get_purchase_order(session, po_id)
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
+    _lock_po_row(session, po)
 
     if po.status not in (POStatus.DRAFT, POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED):
         raise InvalidStateTransitionError(f"Cannot edit PO in {po.status.value} status")
@@ -1745,6 +1758,11 @@ def upload_po_document(
             document_type=document_type,
             s3_key=s3_key,
         )
+        # Locked after the upload, so the storage call is not made holding the PO (#1431); the status
+        # check above is repeated on the locked row, which may have closed meanwhile.
+        _lock_po_row(session, po)
+        if po.status in (POStatus.CANCELLED, POStatus.CLOSED):
+            raise InvalidStateTransitionError(f"Cannot upload documents to PO in {po.status.value} status")
         session.add(doc)
 
         # Auto-transition: GP_REGISTERED → VENDOR_CONFIRMED when uploading vendor ack and quote number exists
@@ -1846,6 +1864,7 @@ def delete_po_document(session: Session, document_id: uuid.UUID) -> str:
     po = get_purchase_order(session, doc.po_id)
     if po is None:
         raise NotFoundError("Parent purchase order not found")
+    _lock_po_row(session, po)
 
     if po.status in (POStatus.CANCELLED, POStatus.CLOSED):
         raise InvalidStateTransitionError(f"Cannot delete documents from PO in {po.status.value} status")
