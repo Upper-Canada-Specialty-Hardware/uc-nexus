@@ -30,6 +30,7 @@ import {
   GET_GP_VENDOR_ADDRESSES,
   SUGGEST_VENDOR_FOR_MANUFACTURER,
   UPDATE_PO,
+  UPDATE_PO_NOTES,
 } from '../../graphql/po';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { useIdentity } from '../../hooks/useIdentity';
@@ -414,6 +415,7 @@ export default function GpPurchaseOrderDialog({
   );
   // Register mode only: a changed Stock / Overhead pick is saved onto the draft before it registers.
   const [updatePoolKind] = useMutation(UPDATE_PO);
+  const [updatePoNotes] = useMutation(UPDATE_PO_NOTES);
   const [registerPoInGp, { loading: registerLoading }] = useMutation<{
     // #353 PR E: `queued` true means the GP relay was unreachable and the registration is on the
     // durable outbox; the PO comes back still DRAFT.
@@ -1163,6 +1165,11 @@ export default function GpPurchaseOrderDialog({
         if (!projectId && poolKind !== (registerPo.poolKind ?? 'STOCK')) {
           await updatePoolKind({ variables: { id: registerPo.id, poolKind } });
         }
+        // #1453: notes are a Nexus overlay the registration does not carry; edited here, they land on
+        // the PO first, the way the pool pick does, instead of being dropped without a word.
+        if (notes.trim() !== (registerPo.notes ?? '').trim()) {
+          await updatePoNotes({ variables: { id: registerPo.id, notes: notes.trim() || null } });
+        }
         const resp = await registerPoInGp({
           variables: {
             input: {
@@ -1276,6 +1283,7 @@ export default function GpPurchaseOrderDialog({
     validate,
     poolKind,
     updatePoolKind,
+    updatePoNotes,
     projectLocked,
     vendorQuoteNumber,
     isJob,

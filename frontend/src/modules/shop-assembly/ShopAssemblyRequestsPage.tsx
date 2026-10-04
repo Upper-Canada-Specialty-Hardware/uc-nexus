@@ -22,6 +22,7 @@ import {
   Typography,
 } from '@mui/material';
 import { ChevronDown, Undo2 } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery } from '@apollo/client/react';
 import {
   CREATE_SHOP_ASSEMBLY_BATCH,
@@ -121,7 +122,25 @@ const evictReservationAndPullReads = {
 };
 
 export default function ShopAssemblyRequestsPage() {
-  const [view, setView] = useState<View>('PENDING');
+  // #1453: the tab lives in the URL, as on the shipping requests page (#1243), so the bell's link to a
+  // rejected request opens the Rejected tab - followed while this page is already open too.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const paramView = searchParams.get('view');
+  const view: View = paramView === 'APPROVED' || paramView === 'REJECTED' ? paramView : 'PENDING';
+  const setView = useCallback(
+    (next: View) => {
+      setSearchParams(
+        (prev) => {
+          const params = new URLSearchParams(prev);
+          if (next === 'PENDING') params.delete('view');
+          else params.set('view', next);
+          return params;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
   const [openRequestId, setOpenRequestId] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<
     | { kind: 'batch'; requestId: string; lines: BatchLineInput[]; openings: number; leftBehind: number }
