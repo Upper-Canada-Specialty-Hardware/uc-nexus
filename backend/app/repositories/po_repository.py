@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import BigInteger, case, cast, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
+from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import (
     Classification,
     HardwareItemState,
@@ -1868,6 +1868,10 @@ def delete_po_document(session: Session, document_id: uuid.UUID) -> str:
 
     if po.status in (POStatus.CANCELLED, POStatus.CLOSED):
         raise InvalidStateTransitionError(f"Cannot delete documents from PO in {po.status.value} status")
+    # #1440: a packing slip pinned to a receive count is part of that count's record, and the foreign key
+    # refuses the delete anyway - at commit, as a generic server error. Say why here instead.
+    if session.scalar(select(ReceiveDraft.id).where(ReceiveDraft.packing_slip_document_id == doc.id).limit(1)):
+        raise ConflictError("This packing slip is attached to a receive count; delete or change the count first.")
 
     deleted_doc_id = doc.id
     deleted_doc_po_id = doc.po_id
