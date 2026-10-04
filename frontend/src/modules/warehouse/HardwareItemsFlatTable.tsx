@@ -1,14 +1,14 @@
 import { useState, useMemo, useCallback } from 'react';
-import { Box, Alert, Chip, CircularProgress, Tooltip, Typography } from '@mui/material';
+import { Box, Alert, CircularProgress, Typography } from '@mui/material';
 import {
   DataGrid,
   type GridColDef,
+  type GridColumnVisibilityModel,
   type GridRowSelectionModel,
   GridToolbar,
 } from '@mui/x-data-grid';
 import { useGridColumnFit } from '../../components/useGridColumnFit';
 import { useQuery } from '@apollo/client/react';
-import { TriangleAlert } from 'lucide-react';
 import { GET_INVENTORY_ROWS } from '../../graphql/warehouse';
 import { useCustomInventoryItems, catalogKey } from '../../hooks/useCustomItems';
 import InventoryCorrectionModal from '../tenant-owner/InventoryCorrectionModal';
@@ -23,29 +23,15 @@ import LocationActionDialog, {
 } from './LocationActionDialog';
 import SelectionActionBar, { BarButton, BarMoreMenu } from '../../components/SelectionActionBar';
 import { computeSelectionActions, type SelectionRow } from './selectionActions';
-import { microLabelSx, monoSx, tabularSx } from '../../theme';
-import { parseServerDate } from '../../utils/serverDate';
-
-/** One InventoryLocation as the API returns it. */
-interface InventoryItem {
-  id: string;
-  projectId: string;
-  poLineItemId: string | null;
-  receiveLineItemId: string | null;
-  stockItemId: string | null;
-  warehouseId: string | null;
-  hardwareCategory: string;
-  productCode: string;
-  quantity: number;
-  deficientQuantity: number;
-  available: number;
-  aisle: string | null;
-  row: string | null;
-  bay: string | null;
-  receivedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
+import { microLabelSx, tabularSx } from '../../theme';
+import {
+  buildHardwareItemColumns,
+  formatCurrency,
+  HARDWARE_ITEMS_DEFAULT_HIDDEN,
+  type GridRow,
+  type InventoryItem,
+  type InventoryRow,
+} from './hardwareItemsColumns';
 
 /**
  * Warehouse inventory as a flat table (#506).
@@ -63,39 +49,9 @@ interface InventoryItem {
  * the same ones the accordion had, now reachable in bulk where the operation supports it.
  */
 
-interface InventoryRow {
-  inventoryLocation: InventoryItem;
-  unitCost: number;
-  lineValue: number;
-  poNumber: string | null;
-  vendorName: string | null;
-  warehouseCode: string;
-  warehouseName: string;
-  projectNumber: string;
-  projectName: string;
-  matchesSchedule: boolean;
-}
-
-/** Row shape the grid sees: the server row, flattened enough for sorting and CSV export. */
-interface GridRow extends InventoryRow {
-  id: string;
-  hardwareCategory: string;
-  productCode: string;
-  quantity: number;
-  deficient: number;
-  location: string;
-  receivedAt: string | null;
-  notOnSchedule: boolean;
-}
-
 function formatLocation(aisle: string | null, row: string | null, bay: string | null): string {
   const parts = [aisle, row, bay].filter(Boolean);
   return parts.length > 0 ? parts.join('-') : '—';
-}
-
-function formatCurrency(value: number | null | undefined): string {
-  if (value == null) return '—';
-  return `$${value.toFixed(2)}`;
 }
 
 function inventoryAvailable(il: InventoryItem): number {
@@ -236,110 +192,16 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
     [rows],
   );
 
-  const columns = useMemo<GridColDef<GridRow>[]>(() => {
-    const cols: GridColDef<GridRow>[] = [
-      { field: 'hardwareCategory', headerName: 'Item Number', flex: 1, minWidth: 150 },
-      {
-        field: 'productCode',
-        headerName: 'Description',
-        flex: 1,
-        minWidth: 140,
-        renderCell: (params) => (
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
-            <Typography component="span" sx={{ ...monoSx, minWidth: 0 }} noWrap>
-              {params.value as string}
-            </Typography>
-            {params.row.notOnSchedule && (
-              // An icon, not a labelled chip: the cell belongs to the product code, and a chip wide
-              // enough to say "Not on schedule" pushes the code itself out of a compact grid cell.
-              <Tooltip title="Not on schedule: this category and product code pair is not on the project's hardware schedule, so no shop assembly or shipping out request can claim it.">
-                <Box
-                  component="span"
-                  aria-label="Not on schedule"
-                  sx={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0, color: 'warning.main' }}
-                >
-                  <TriangleAlert size={15} strokeWidth={2} />
-                </Box>
-              </Tooltip>
-            )}
-          </Box>
-        ),
-      },
-      { field: 'warehouseCode', headerName: 'Warehouse', width: 120, minWidth: 110 },
-      {
-        field: 'location',
-        headerName: 'Location',
-        width: 130,
-        minWidth: 110,
-        renderCell: (params) => (
-          <Typography component="span" sx={monoSx}>
-            {params.value as string}
-          </Typography>
-        ),
-      },
-      { field: 'quantity', headerName: 'Qty', type: 'number', width: 90, minWidth: 70 },
-      {
-        field: 'deficient',
-        headerName: 'Deficient',
-        type: 'number',
-        width: 110,
-        minWidth: 100,
-        renderCell: (params) =>
-          (params.value as number) > 0 ? (
-            <Chip label={params.value as number} color="warning" size="small" />
-          ) : (
-            <span>0</span>
-          ),
-      },
-      {
-        field: 'unitCost',
-        headerName: 'Unit Cost',
-        type: 'number',
-        width: 110,
-        minWidth: 100,
-        valueFormatter: (value: number | null) => formatCurrency(value),
-      },
-      {
-        field: 'lineValue',
-        headerName: 'Line Value',
-        type: 'number',
-        width: 120,
-        minWidth: 110,
-        valueFormatter: (value: number | null) => formatCurrency(value),
-      },
-      { field: 'vendorName', headerName: 'Vendor', flex: 1, minWidth: 140 },
-      {
-        field: 'poNumber',
-        headerName: 'PO #',
-        width: 140,
-        minWidth: 110,
-        renderCell: (params) => (
-          <Typography component="span" sx={monoSx}>
-            {(params.value as string | null) ?? '—'}
-          </Typography>
-        ),
-      },
-      {
-        field: 'receivedAt',
-        headerName: 'Received',
-        width: 130,
-        minWidth: 110,
-        valueFormatter: (value: string | null) =>
-          value ? parseServerDate(value).toLocaleDateString() : '—',
-      },
-    ];
-
-    // Only meaningful when the table spans projects; inside one project it would repeat.
-    if (!projectId) {
-      cols.splice(2, 0, { field: 'projectName', headerName: 'Project', flex: 1, minWidth: 150 });
-    }
-
-    return cols;
-  }, [projectId]);
+  const columns = useMemo(() => buildHardwareItemColumns(projectId), [projectId]);
+  // Controlled, so the fit leaves out a hidden column's width and makes room again when one is shown.
+  const [columnVisibilityModel, setColumnVisibilityModel] = useState<GridColumnVisibilityModel>({
+    ...HARDWARE_ITEMS_DEFAULT_HIDDEN,
+  });
 
   // #909: the columns fit the grid's width and never scroll sideways; resized widths are remembered.
   const { setContainer, gridProps } = useGridColumnFit('warehouse.inventory.items', columns as GridColDef[], {
     checkboxSelection: true,
+    columnVisibilityModel,
   });
 
   if (loading) {
@@ -365,12 +227,14 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
           rows={rows}
           density="compact"
           checkboxSelection
+          columnVisibilityModel={columnVisibilityModel}
+          onColumnVisibilityModelChange={setColumnVisibilityModel}
           disableRowSelectionOnClick
           rowSelectionModel={rowSelectionModel}
           onRowSelectionModelChange={(model) => setSelectedIds(new Set(model.ids as Set<string>))}
           showToolbar
           slots={{ toolbar: GridToolbar }}
-          slotProps={{ toolbar: { showQuickFilter: true, csvOptions: { fileName: 'inventory' } } }}
+          slotProps={{ toolbar: { showQuickFilter: true, csvOptions: { fileName: 'inventory', allColumns: true } } }}
           initialState={{ pagination: { paginationModel: { pageSize: 50 } } }}
           pageSizeOptions={[25, 50, 100]}
           sx={[gridProps.sx, { '& .MuiDataGrid-cell:focus': { outline: 'none' } }]}
