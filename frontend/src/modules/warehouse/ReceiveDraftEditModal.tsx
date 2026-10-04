@@ -18,6 +18,7 @@ import {
   type PODetails,
 } from './receiveLines';
 import type { ReceiveDraft } from './receiveDraftTypes';
+import { countChangedMessage, isCountChangedError, useReloadableDraft } from './receiveDraftVersion';
 
 interface ReceiveDraftEditModalProps {
   open: boolean;
@@ -32,15 +33,21 @@ interface ReceiveDraftEditModalProps {
  * the GP apparatus. Nothing here can reach GP, so there is no relay chip, no receipt number and no
  * quarantine block; those belong to the press that posts, which is the manager's.
  */
-export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveDraftEditModalProps) {
+export default function ReceiveDraftEditModal({ open, draft: draftProp, onClose }: ReceiveDraftEditModalProps) {
   const { showToast } = useToast();
   const client = useApolloClient();
+  // #1497: after a count-changed refusal the draft is re-read, and the modal shows that instead.
+  const { draft, reload } = useReloadableDraft(draftProp);
 
   const [receiveQuantities, setReceiveQuantities] = useState<Record<string, number>>({});
   // #632: the counter's remark, editable alongside the count. '' clears it on save.
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
+  // #1497: a save refused because somebody else changed the count first. Kept apart from mutationError,
+  // which the re-read draft's hydration clears, and tied to the draft it was raised on.
+  const [countChanged, setCountChanged] = useState<{ on: ReceiveDraft | null; message: string } | null>(null);
+  const countChangedNotice = countChanged && countChanged.on === draftProp ? countChanged.message : null;
 
   const [updateDraft] = useMutation(UPDATE_RECEIVE_DRAFT);
   const [resubmitDraft] = useMutation(RESUBMIT_RECEIVE_DRAFT);
@@ -93,6 +100,7 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
     if (!draft) return;
     setSubmitting(true);
     setMutationError(null);
+    setCountChanged(null);
     try {
       await updateDraft({
         variables: {
@@ -103,6 +111,9 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
             // empty string to travel.
             notes,
             lineItems: buildReceiveLineItemsInput(lineItemsToReceive, receiveQuantities),
+            // #1497: refused if the count changed since this modal loaded it, rather than replacing
+            // somebody else's newer correction with this older view.
+            expectedUpdatedAt: draft.updatedAt,
           },
         },
       });
@@ -116,12 +127,19 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
       await client.refetchQueries({ include: RECEIVE_DRAFT_REFETCH_QUERIES });
       onClose();
     } catch (err: unknown) {
+      if (isCountChangedError(err)) {
+        setCountChanged({ on: draftProp, message: countChangedMessage(err) });
+        await reload().catch(() => undefined);
+        return;
+      }
       setMutationError(err instanceof Error ? err.message : 'Saving this draft failed');
     } finally {
       setSubmitting(false);
     }
   }, [
     draft,
+    draftProp,
+    reload,
     updateDraft,
     lineItemsToReceive,
     receiveQuantities,
@@ -165,6 +183,11 @@ export default function ReceiveDraftEditModal({ open, draft, onClose }: ReceiveD
           <Typography variant="body2">
             {draft.reviewedBy ?? 'A reviewer'} sent this back: {draft.rejectionReason}
           </Typography>
+        </Alert>
+      )}
+      {countChangedNotice && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          {countChangedNotice}
         </Alert>
       )}
       {mutationError && (
