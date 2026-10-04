@@ -440,10 +440,11 @@ def _email_po_context(po_id: uuid.UUID, scope: str | None) -> EmailPoResult | di
         if po.status not in _EMAILABLE_PO_STATUSES:
             status_word = "cancelled" if po.status == POStatus.CANCELLED.value else "closed"
             return EmailPoResult(sent=False, message=f"This PO is {status_word}, so it is not sent to the vendor.")
-        document = next(
-            (d for d in (po.documents or []) if d.document_type == PODocumentTypeDB.GENERATED_PO),
-            None,
-        )
+        # #1457: the newest one. Each "Save to PO" adds a generated document rather than replacing the
+        # last, and the documents load in no set order - the first match could be a draft the buyer
+        # had since corrected, sent to the vendor under a success toast.
+        generated = [d for d in (po.documents or []) if d.document_type == PODocumentTypeDB.GENERATED_PO]
+        document = max(generated, key=lambda d: (d.uploaded_at, str(d.id)), default=None)
         if document is None:
             return EmailPoResult(sent=False, message="Generate the PO document before sending it to the vendor.")
         return {

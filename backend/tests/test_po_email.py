@@ -71,6 +71,7 @@ def world(db_session, monkeypatch):
 
     def _download(key):
         state["threads"]["download"] = threading.get_ident()
+        state["downloaded"] = key
         if state.get("storage_error"):
             raise state["storage_error"]
         return b"%PDF"
@@ -146,3 +147,29 @@ def test_a_missing_vendor_email_is_a_step_for_the_user_not_a_failure(world):
     out = _email(world)
     assert (out["sent"], out["failed"]) == (False, False)
     assert "accounting" in out["message"]
+
+
+def test_the_newest_generated_document_is_the_one_sent(world, db_session):
+    """#1457: each "Save to PO" adds a generated document; the corrected one saved last is what the
+    vendor gets, not whichever the unordered load happened to list first."""
+    from datetime import datetime, timedelta
+
+    po_id = uuid.UUID(world["po_id"])
+    newer = PODocument(
+        id=uuid.uuid4(),
+        po_id=po_id,
+        file_name="po-corrected.pdf",
+        content_type="application/pdf",
+        file_size=10,
+        document_type=PODocumentType.GENERATED_PO,
+        s3_key=f"po/{po_id}/po-corrected.pdf",
+        uploaded_at=datetime.utcnow() + timedelta(minutes=5),
+    )
+    db_session.add(newer)
+    db_session.flush()
+    db_session.expire_all()
+
+    out = _email(world)
+
+    assert out["sent"] is True
+    assert world["downloaded"] == newer.s3_key
