@@ -6,6 +6,8 @@ carries deficient units can only ever take the split branch, so exact full-row r
 only thing that worked.
 """
 
+import uuid
+
 import pytest
 
 from app.errors import ValidationError
@@ -217,3 +219,28 @@ def test_reclassify_split_carries_the_unit_cost(db_session):
     )
 
     assert new_row.unit_cost == Decimal("6")
+
+
+# --- pool filters (#1508) -----------------------------------------------------------------------
+
+
+def test_pool_filters_trim_and_match_part_of_the_category_in_any_case(db_session):
+    code = f"PF-{uuid.uuid4().hex[:8]}"
+    si = make_stock_item(db_session, quantity=2, category="HINGE", code=code)
+
+    def ids(**kw):
+        return [r.id for r in stock_repository.get_stock_items(db_session, product_code_contains=code, **kw)]
+
+    assert ids(hardware_category="hin") == [si.id]
+    assert ids(hardware_category="  HINGE ") == [si.id]
+    assert ids(hardware_category="strike") == []
+    # A pasted code with a trailing space still finds its row.
+    assert [r.id for r in stock_repository.get_stock_items(db_session, product_code_contains=f" {code} ")] == [si.id]
+
+
+def test_pool_filters_read_wildcards_literally(db_session):
+    code = f"PF-{uuid.uuid4().hex[:8]}"
+    make_stock_item(db_session, quantity=1, category="HINGE", code=code)
+
+    assert stock_repository.get_stock_items(db_session, product_code_contains=code, hardware_category="%") == []
+    assert stock_repository.get_stock_items(db_session, product_code_contains=code, hardware_category="H_NGE") == []

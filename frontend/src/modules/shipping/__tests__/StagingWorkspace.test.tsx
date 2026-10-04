@@ -409,6 +409,66 @@ describe('taking a line out of a container (#1504)', () => {
     expect(taken).toHaveBeenCalledTimes(1);
     expect(await screen.findByRole('spinbutton', { name: /Quantity of 101 · HG-100 in Box 1/i })).toHaveValue(4);
   });
+
+  it('puts the line back into the container as the server holds it, keeping what was placed since (#1507)', async () => {
+    const hinge = {
+      __typename: 'ShipmentContainerItem',
+      id: 'ci-1',
+      openingItemId: null,
+      openingNumber: '101',
+      hardwareCategory: 'HINGE',
+      productCode: 'HG-100',
+      quantity: 4,
+      isManual: false,
+      position: 0,
+    };
+    const lock = { ...hinge, id: 'ci-2', hardwareCategory: 'LOCK', productCode: 'LK-200', quantity: 1, position: 1 };
+    const closer = { ...hinge, id: 'ci-9', hardwareCategory: 'CLOSER', productCode: 'CL-300', quantity: 2, position: 1 };
+    let held: Record<string, unknown>[] = [hinge, lock];
+    const pool: MockedResponse = {
+      ...poolMock({}),
+      result: () => ({
+        data: {
+          stagingPool: { __typename: 'StagingPool', looseItems: [], containers: [container({ items: held })] },
+        },
+      }),
+    };
+    const lockInput = looseInput(1, { hardwareCategory: 'LOCK', productCode: 'LK-200' });
+    const closerInput = looseInput(2, { hardwareCategory: 'CLOSER', productCode: 'CL-300' });
+    const taken = vi.fn();
+    const restored = vi.fn();
+    renderWorkspace([
+      pool,
+      {
+        ...setItemsMock('c-1', [lockInput]),
+        result: () => {
+          taken();
+          held = [{ ...lock, position: 0 }];
+          return { data: { setContainerItems: container({ items: held }) } };
+        },
+      },
+      {
+        ...setItemsMock('c-1', [looseInput(4), lockInput, closerInput]),
+        result: () => {
+          restored();
+          return { data: { setContainerItems: container({ items: held }) } };
+        },
+      },
+    ]);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Take 101 · HG-100 out of Box 1/i }));
+    await waitFor(() => expect(taken).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.queryByRole('spinbutton', { name: /Quantity of 101 · HG-100 in Box 1/i })).not.toBeInTheDocument(),
+    );
+    await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+    // Placed into the box elsewhere - another screen, or this one after leaving and coming back -
+    // while this screen still shows the box without it.
+    held = [{ ...lock, position: 0 }, closer];
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(restored).toHaveBeenCalledTimes(1));
+  });
 });
 
 describe('a refused save (#1302)', () => {

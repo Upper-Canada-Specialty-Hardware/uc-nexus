@@ -148,6 +148,12 @@ class ProjectQueries:
             )
 
 
+def _job_sync_company(info: strawberry.Info) -> str | None:
+    """The one company a Sync from GP may run for, or None for an unscoped (admin) caller (#1513)."""
+    scope = tenant_scope(info)
+    return resolve_gp_company(info, scope) if scope is not None else None
+
+
 @strawberry.type
 class ProjectMutations:
     @strawberry.mutation
@@ -297,8 +303,14 @@ class ProjectMutations:
 
         The background service already does this on a timer and on every relay reconnect, so this is
         for the case where someone wants to see the result immediately - after creating a job directly
-        in GP, or when checking whether the sync is working at all."""
-        total, adopted = await gp_job_sync.run_once()
+        in GP, or when checking whether the sync is working at all.
+
+        A caller pinned to one company syncs that company only (#1513), as syncGpPos does: the pass
+        reads each company's job master and adopts its jobs, so an unscoped run would spend other
+        companies' GP reads and report their jobs in this caller's totals. `resolve_gp_company` refuses
+        a company the relay does not serve, naming what it does serve, rather than a silent empty pass."""
+        only_company = await asyncio.to_thread(_job_sync_company, info)
+        total, adopted = await gp_job_sync.run_once(only_company=only_company)
         return GpJobSyncResult(total=total, adopted=adopted)
 
     @strawberry.mutation
