@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Numeric, literal, select
+from sqlalchemy import Numeric, func, literal, select
 from sqlalchemy.orm import Session
 
 from app.errors import NotFoundError, ValidationError
@@ -264,6 +264,36 @@ def _stock_row_is_referenced(session: Session, stock_item_id: uuid.UUID) -> bool
     )
 
 
+# #1464: the namespace of the two-key advisory lock that serializes inserting a pool row for one key. The
+# two-key form never conflicts with the one-key locks elsewhere (PO-REQ minting, the SharePoint run).
+_POOL_KEY_LOCK_NAMESPACE = 1464
+
+
+def _pool_key_text(
+    *,
+    warehouse_id: uuid.UUID,
+    hardware_category: str,
+    product_code: str,
+    aisle: str | None,
+    row: str | None,
+    bay: str | None,
+    kind: PoolKind,
+    unit_cost: Decimal | None,
+) -> str:
+    """A pool row's key as one string, normalized the way `_find_stock_row` matches it, for the lock."""
+    parts = (
+        str(warehouse_id),
+        hardware_category,
+        product_code,
+        normalize_location_value(aisle),
+        normalize_location_value(row),
+        normalize_location_value(bay),
+        kind.value,
+        pool_unit_cost(unit_cost),
+    )
+    return "".join("" if p is None else str(p) for p in parts)
+
+
 def _find_or_create_stock_row(
     session: Session,
     *,
@@ -286,17 +316,53 @@ def _find_or_create_stock_row(
     carries it and no caller ever has to reconcile two prices. Caller is responsible for incrementing
     quantity and writing audit events.
     """
-    existing = _find_stock_row(
-        session,
-        warehouse_id=warehouse_id,
-        hardware_category=hardware_category,
-        product_code=product_code,
-        aisle=aisle,
-        row=row,
-        bay=bay,
-        kind=kind,
-        unit_cost=unit_cost,
+
+    def find() -> StockItem | None:
+        return _find_stock_row(
+            session,
+            warehouse_id=warehouse_id,
+            hardware_category=hardware_category,
+            product_code=product_code,
+            aisle=aisle,
+            row=row,
+            bay=bay,
+            kind=kind,
+            unit_cost=unit_cost,
+        )
+
+    existing = find()
+    if existing is not None:
+        return existing
+
+    # #1464: a FOR UPDATE that matches nothing locks nothing, and stock_items carries no unique key, so
+    # two writers onto an empty shelf both missed and both inserted - one product shown twice, every
+    # later write landing on whichever .first() returned. A miss now queues on an advisory lock named
+    # for the key and looks again, so the second writer finds the first one's row.
+    #
+    # Taken only on a miss, never around a hit: a caller may already hold this key's row (transfer and
+    # the shelf move lock it with lock_pool_rows), and waiting here for a key whose holder is waiting
+    # on that row would deadlock. Whoever holds the key lock holds no lock on the key's row - it found
+    # none - so it waits on nothing but that row's appearance.
+    session.execute(
+        select(
+            func.pg_advisory_xact_lock(
+                _POOL_KEY_LOCK_NAMESPACE,
+                func.hashtext(
+                    _pool_key_text(
+                        warehouse_id=warehouse_id,
+                        hardware_category=hardware_category,
+                        product_code=product_code,
+                        aisle=aisle,
+                        row=row,
+                        bay=bay,
+                        kind=kind,
+                        unit_cost=unit_cost,
+                    )
+                ),
+            )
+        )
     )
+    existing = find()
     if existing is not None:
         return existing
 
