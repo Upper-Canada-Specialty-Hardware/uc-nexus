@@ -2,11 +2,15 @@ import { useState, useCallback } from 'react';
 import { Button, Stack, TextField, FormControlLabel, Checkbox, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import type { ApolloCache } from '@apollo/client/core';
+import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { CREATE_WAREHOUSE, UPDATE_WAREHOUSE } from '../../graphql/admin';
 import { useActingCompany } from '../../company/ActingCompanyContext';
 import { FONT_MONO, microLabelSx } from '../../theme';
+
+type WarehouseField = 'name' | 'code' | 'company';
+const isWarehouseField = (f: string): f is WarehouseField => f === 'name' || f === 'code' || f === 'company';
 
 export interface WarehouseFormValue {
   id?: string;
@@ -65,7 +69,11 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
         }
       : EMPTY,
   );
-  const [fieldError, setFieldError] = useState('');
+  // #1470: an error per field, shown under that field. One error shown under Name sent a code or company
+  // problem to the wrong box: the user edited Name, the error cleared, and the save failed again.
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<WarehouseField, string>>>({});
+  const clearFieldError = (field: WarehouseField) =>
+    setFieldErrors((prev) => (prev[field] ? { ...prev, [field]: undefined } : prev));
 
   // #637: a warehouse belongs to a GP company. #845: a new building goes into the company the user is
   // working in (a UC NEXUS ADMIN picks it with the app bar switcher); an existing row keeps its own.
@@ -82,9 +90,13 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
     cache.gc();
   };
 
-  const onError = (err: { message: string }) => {
-    if (err.message.toLowerCase().includes('already exists')) {
-      setFieldError(err.message);
+  // The server names the field it refused (extensions.field: name, code, company); anything else is a
+  // general failure and goes to a toast.
+  const onError = (err: Error) => {
+    const refused = CombinedGraphQLErrors.is(err) ? err.errors.find((e) => e.extensions?.field) : undefined;
+    const field = refused?.extensions?.field;
+    if (refused && typeof field === 'string' && isWarehouseField(field)) {
+      setFieldErrors({ [field]: refused.message });
     } else {
       showToast(err.message, 'error');
     }
@@ -121,16 +133,12 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
   const handleSubmit = useCallback(() => {
     const trimmedName = form.name.trim();
     const trimmedCode = form.code.trim();
-    if (!trimmedName) {
-      setFieldError('Warehouse name is required');
-      return;
-    }
-    if (!trimmedCode) {
-      setFieldError('Warehouse code is required');
-      return;
-    }
-    if (!company) {
-      setFieldError('A GP company is required. Choose the company to work in first.');
+    const missing: Partial<Record<WarehouseField, string>> = {};
+    if (!trimmedName) missing.name = 'Warehouse name is required';
+    if (!trimmedCode) missing.code = 'Warehouse code is required';
+    if (!company) missing.company = 'A GP company is required. Choose the company to work in first.';
+    if (Object.keys(missing).length > 0) {
+      setFieldErrors(missing);
       return;
     }
     // #1463: on an edit a blanked address field goes as '', which the server stores as empty; null there
@@ -174,24 +182,26 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
             value={form.name}
             onChange={(e) => {
               setForm((f) => ({ ...f, name: e.target.value }));
-              if (fieldError) setFieldError('');
+              clearFieldError('name');
             }}
             required
             autoFocus
             fullWidth
             size="small"
-            error={!!fieldError}
-            helperText={fieldError}
+            error={!!fieldErrors.name}
+            helperText={fieldErrors.name}
           />
           <TextField
             label="Code"
             value={form.code}
             onChange={(e) => {
               setForm((f) => ({ ...f, code: e.target.value }));
-              if (fieldError) setFieldError('');
+              clearFieldError('code');
             }}
             required
             size="small"
+            error={!!fieldErrors.code}
+            helperText={fieldErrors.code}
             sx={{ width: 140, '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
             inputProps={{ maxLength: 20 }}
           />
@@ -203,6 +213,8 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
             required
             size="small"
             disabled
+            error={!!fieldErrors.company}
+            helperText={fieldErrors.company}
             sx={{ width: 140, '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
           />
         </Stack>

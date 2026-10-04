@@ -626,7 +626,7 @@ def test_a_pull_cannot_be_picked_before_it_is_started(db_session):
     row = _seed_inventory(db_session, project.id, quantity=5)
     pr = _pending_pull(db_session, project.id, needs=[(*HINGE, 2, "A01")])
 
-    with pytest.raises(InvalidStateTransitionError, match="Start the pick first"):
+    with pytest.raises(InvalidStateTransitionError, match="start the pick first"):
         warehouse_repository.confirm_pick(db_session, pr.id, [_line(row, 2)], "picker")
 
 

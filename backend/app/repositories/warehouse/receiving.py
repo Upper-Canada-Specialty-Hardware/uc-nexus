@@ -20,6 +20,7 @@ from app.models.purchase_order import PurchaseOrder as POModel
 from app.models.receiving import ReceiveLineItem as ReceiveLineItemModel
 from app.models.receiving import ReceiveRecord as ReceiveRecordModel
 from app.repositories import project_repository
+from app.status_labels import REFRESH_HINT, status_label
 
 from .audit import _log_audit_event
 from .locations import _normalize_and_validate_location_fields, ensure_registered_location, location_detail
@@ -84,8 +85,8 @@ def validate_receive_eligibility(
         raise ValidationError("PO must be registered in GP before it can be received", field="po_id")
     if po.status not in (POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED):
         raise InvalidStateTransitionError(
-            f"PO status must be GP_Registered, Vendor_Confirmed, or Partially_Received to receive, "
-            f"got {po.status.value}"
+            f"Only a PO registered in GP and not yet fully received can be received against; this one is "
+            f"{status_label(po.status)}. {REFRESH_HINT}"
         )
     if not received_by or len(received_by) < 1 or len(received_by) > 100:
         raise ValidationError("received_by must be 1-100 characters", field="received_by")
@@ -213,8 +214,8 @@ def create_receive(
     # Validate PO status
     if po.status not in (POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED, POStatus.PARTIALLY_RECEIVED):
         raise InvalidStateTransitionError(
-            f"PO status must be GP_Registered, Vendor_Confirmed, or Partially_Received to receive, "
-            f"got {po.status.value}"
+            f"Only a PO registered in GP and not yet fully received can be received against; this one is "
+            f"{status_label(po.status)}. {REFRESH_HINT}"
         )
 
     # 2. Validate received_by

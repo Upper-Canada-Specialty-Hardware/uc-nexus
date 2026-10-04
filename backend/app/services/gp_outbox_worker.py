@@ -32,6 +32,7 @@ from app.services.relay_gateway import (
     CREATE_PO_TAX_SCHEDULE_FEATURE,
 )
 from app.services.relay_gateway import gateway as relay_gateway
+from app.status_labels import status_label
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +206,8 @@ def _registration_stale_reason(context: dict) -> str | None:
             return "The purchase order was cancelled before it could be registered in GP; nothing was sent to GP"
         if po.status != POStatus.DRAFT:
             return (
-                f"The purchase order is {po.status.value}, no longer a Draft, so this registration was not sent to GP"
+                f"The purchase order is {status_label(po.status)}, no longer a draft, "
+                "so this registration was not sent to GP"
             )
     return None
 

@@ -38,6 +38,7 @@ from app.models.shop_assembly import ShopAssemblyRequest as ShopAssemblyRequestM
 from app.models.warehouse import Warehouse as WarehouseModel
 from app.services import notification_service
 from app.services.locking import lock_rows
+from app.status_labels import REFRESH_HINT, status_label
 
 from . import reservations
 from .audit import _log_audit_event
@@ -346,7 +347,9 @@ def start_pull_request_pick(
     if pr.deleted_at is not None:
         raise NotFoundError(f"Pull request {pr_id} not found")
     if pr.status != PullRequestStatus.PENDING:
-        raise InvalidStateTransitionError(f"Pull request must be Pending to start picking, got {pr.status.value}")
+        raise InvalidStateTransitionError(
+            f"Picking can only start on a pending pull request; this one is {status_label(pr.status)}. {REFRESH_HINT}"
+        )
 
     pr.status = PullRequestStatus.IN_PROGRESS
     pr.assigned_to = started_by
@@ -716,7 +719,7 @@ def _pickable_pull(session: Session, pr_id: uuid.UUID) -> PullRequestModel:
         raise NotFoundError(f"Pull request {pr_id} not found")
     if pr.status != PullRequestStatus.IN_PROGRESS:
         raise InvalidStateTransitionError(
-            f"Pull request must be In_Progress to pick, got {pr.status.value}. Start the pick first."
+            f"This pull request is {status_label(pr.status)}, not in progress - start the pick first."
         )
     if pr.picked_at is not None:
         raise InvalidStateTransitionError(
@@ -1242,7 +1245,9 @@ def complete_pull_request(session: Session, pr_id: uuid.UUID, completed_by: str 
         raise NotFoundError(f"Pull request {pr_id} not found")
 
     if pr.status != PullRequestStatus.IN_PROGRESS:
-        raise InvalidStateTransitionError(f"Pull request must be In_Progress to complete, got {pr.status.value}")
+        raise InvalidStateTransitionError(
+            f"Only a pull request in progress can be completed; this one is {status_label(pr.status)}. {REFRESH_HINT}"
+        )
     _require_picked(pr, "complete")
 
     now = datetime.utcnow()
@@ -1800,7 +1805,7 @@ def discard_pending_pull_request(session: Session, pr_id: uuid.UUID | None) -> N
     pr = locked[0]
     if pr.status != PullRequestStatus.PENDING:
         raise InvalidStateTransitionError(
-            f"Cannot reopen - the warehouse has already started this pull request ({pr.status.value}). "
+            f"Cannot reopen - the warehouse has already started this pull request ({status_label(pr.status)}). "
             "Resolve it in the warehouse first."
         )
     # Bulk-delete the items in one statement (rather than a load + per-row DELETE), then the PR itself.
