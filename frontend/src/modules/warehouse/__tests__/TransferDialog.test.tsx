@@ -228,6 +228,40 @@ describe('TransferDialog', () => {
   });
 });
 
+describe('the quantity is read before a scanned bay can send it (#1504)', () => {
+  // A scanner types the bay and then presses Enter, and Enter submits the form. With the quantity
+  // below the bay, that Enter moved the whole pre-filled amount before the worker had seen it.
+  it('single source: opens on the quantity, which comes before the destination', async () => {
+    const source: TransferSource = {
+      type: 'INVENTORY_LOCATION',
+      id: 'inv-1',
+      productCode: 'HG-100',
+      available: 81,
+      warehouseId: 'wh-1',
+    };
+    renderDialog([source], []);
+
+    const quantity = screen.getByLabelText('Quantity');
+    await waitFor(() => expect(quantity).toHaveFocus());
+    expect(quantity).toHaveValue(81);
+    const after = (field: HTMLElement) =>
+      Boolean(quantity.compareDocumentPosition(field) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(after(screen.getByRole('combobox', { name: 'Destination warehouse' }))).toBe(true);
+    expect(after(screen.getByRole('combobox', { name: 'Bay' }))).toBe(true);
+  });
+
+  it('multiple sources: no quantity, and the dialog still opens on the destination warehouse', async () => {
+    const sources: TransferSource[] = [
+      { type: 'STOCK_ITEM', id: 's1', productCode: 'LK-200', available: 3, warehouseId: 'wh-1', aisle: 'A1', row: 'R1', bay: 'B1' },
+      { type: 'STOCK_ITEM', id: 's2', productCode: 'LK-300', available: 4, warehouseId: 'wh-1', aisle: 'A2', row: 'R2', bay: 'B2' },
+    ];
+    renderDialog(sources, []);
+
+    expect(screen.queryByLabelText('Quantity')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Destination warehouse' })).toHaveFocus());
+  });
+});
+
 describe('sources already at the destination (#1451)', () => {
   it('leaves a source already in the chosen bin out of the batch and moves the rest', async () => {
     const sources: TransferSource[] = [

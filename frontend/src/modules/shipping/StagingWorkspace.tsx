@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -230,9 +230,43 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
     [save],
   );
 
+  // The containers as last drawn, for an undo that runs after the screen has moved on.
+  const latestContainers = useRef(containers);
+  useEffect(() => {
+    latestContainers.current = containers;
+  }, [containers]);
+
+  /**
+   * #1504: the trash beside the up/down arrows saves at once, and on a tablet a near miss on "down"
+   * takes the line out. Rather than a confirm on every removal, the toast offers it back: Undo puts the
+   * line where it was, in one save. It goes into the container as it stands then, not the list from
+   * before the removal, so anything placed in the meantime is kept.
+   */
   const removeItem = useCallback(
-    (container: Container, itemId: string) => save(container, container.items.filter((i) => i.id !== itemId)),
-    [save],
+    async (container: Container, itemId: string) => {
+      const index = container.items.findIndex((i) => i.id === itemId);
+      if (index === -1) return;
+      const removed = container.items[index];
+      const result = await save(container, container.items.filter((i) => i.id !== itemId)).catch(() => null);
+      // A refused removal is reported by onError and leaves the line in; there is nothing to undo.
+      if (!result?.data) return;
+      showToast(`${removed.productCode} taken out of ${container.name}`, 'info', {
+        label: 'Undo',
+        onClick: () => {
+          const current = latestContainers.current.find((c) => c.id === container.id);
+          if (!current) {
+            showToast(`${container.name} is gone - ${removed.productCode} stays in the pool`, 'warning');
+            return;
+          }
+          const same = removed.isManual ? undefined : current.items.find((i) => sameStagedStock(i, removed));
+          const next = same
+            ? current.items.map((i) => (i === same ? { ...i, quantity: i.quantity + removed.quantity } : i))
+            : [...current.items.slice(0, index), removed, ...current.items.slice(index)];
+          save(current, next);
+        },
+      });
+    },
+    [save, showToast],
   );
 
   /** Correct how much of a loose line a container holds. Down to zero takes the line out. */
@@ -944,7 +978,7 @@ function ContainerRow({
           />
         )}
       </Box>
-      <Stack direction="row" spacing={0.5} alignItems="center">
+      <Stack direction="row" spacing={0.5} useFlexGap alignItems="center">
         {/* Correctable in place. Splitting a product across two containers means getting the split
             wrong sometimes, and pulling the line out and starting over is a poor answer to that. */}
         {/* #1447: typed into a draft and saved on blur or Enter. Saving every keystroke took the line out
@@ -993,6 +1027,8 @@ function ContainerRow({
           color="error"
           aria-label={`Take ${label} out of ${containerName}`}
           onClick={onRemove}
+          // #1504: set apart from the arrows, so reaching for "down" does not land on it.
+          sx={{ ml: 1 }}
         >
           <Trash2 size={14} strokeWidth={1.75} />
         </IconButton>

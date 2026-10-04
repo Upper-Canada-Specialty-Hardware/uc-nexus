@@ -269,13 +269,33 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
           </Box>
         )}
 
+        {/* #1504: the quantity comes before the destination and opens focused. Below the bay it was out
+            of sight, so the Enter a scanner sends after a bay moved the whole pre-filled amount - one
+            the worker had never looked at. Now the amount is read first and the bay scan is the last
+            step. It keeps the full available as its default; that is still the usual move. */}
+        {single && (
+          <TextField
+            label="Quantity"
+            type="number"
+            size="small"
+            autoFocus
+            value={quantity}
+            onChange={(e) => setQuantity(e.target.value)}
+            error={q > single.available || q < 1}
+            helperText={q > single.available ? `Max ${single.available}` : undefined}
+            slotProps={{ htmlInput: { min: 1, max: single.available } }}
+            sx={{ width: 160 }}
+          />
+        )}
+
         <FormControl size="small" fullWidth>
           <InputLabel id="transfer-dest-warehouse">Destination warehouse</InputLabel>
           <Select
             labelId="transfer-dest-warehouse"
             label="Destination warehouse"
-            // #1285: the dialog opens ready to pick, not waiting for a click into it.
-            autoFocus
+            // #1285: the dialog opens ready to pick, not waiting for a click into it. A single source
+            // opens on its quantity instead (#1504).
+            autoFocus={!single}
             value={destWarehouseId}
             onChange={(e) => setDestWarehouseId(e.target.value)}
           >
@@ -303,20 +323,6 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
               Pick an aisle, row and bay defined in the destination warehouse on the Locations tab.
             </Typography>
           )
-        )}
-
-        {single && (
-          <TextField
-            label="Quantity"
-            type="number"
-            size="small"
-            value={quantity}
-            onChange={(e) => setQuantity(e.target.value)}
-            error={q > single.available || q < 1}
-            helperText={q > single.available ? `Max ${single.available}` : undefined}
-            slotProps={{ htmlInput: { min: 1, max: single.available } }}
-            sx={{ width: 160 }}
-          />
         )}
 
         {sameLocationSingle && (
