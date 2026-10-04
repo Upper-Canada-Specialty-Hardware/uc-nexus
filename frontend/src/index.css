@@ -3,13 +3,17 @@
 /* UI law: no horizontal PAGE scroll, ever. The viewport never widens to reveal
    primary content. This clips rather than scrolls, so layouts must fit (use
    minWidth:0 on flex/grid children). Components may still scroll inside their
-   own bounded container. Safe with position:sticky because body is the scroll root. */
+   own bounded container.
+   #1485: clip, not hidden. overflow-x: hidden on html and body turned body into a scroll container
+   that never scrolls (the window does), so every position:sticky element - the app bar, the nav
+   rail - stuck to body instead of the viewport and scrolled away with the page. clip cuts the
+   overflow without creating a scroll container, so sticky keeps working. */
 html,
 body {
   margin: 0;
   min-height: 100vh;
   max-width: 100%;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 #root {
