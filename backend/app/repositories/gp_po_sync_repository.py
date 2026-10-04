@@ -386,6 +386,32 @@ def po_numbers_pending_registration(session: Session, company: str) -> frozenset
     return frozenset(pending)
 
 
+def _lock_po_for_mirror(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
+    """Lock a PO row, then its lines in id order, and return it with both read fresh (#1484).
+
+    populate_existing makes the refresh stick for rows this session already loaded unlocked, which is
+    the whole point: the values the mirror computes from must be the committed ones under the lock."""
+    row = (
+        session.scalars(
+            select(PurchaseOrder)
+            .where(PurchaseOrder.id == po_id)
+            .with_for_update()
+            .options(selectinload(PurchaseOrder.line_items))
+            .execution_options(populate_existing=True)
+        )
+        .unique()
+        .one()
+    )
+    session.execute(
+        select(POLineItem)
+        .where(POLineItem.po_id == po_id)
+        .order_by(POLineItem.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).all()
+    return row
+
+
 def upsert_mirrored_po(
     session: Session,
     company: str,
@@ -486,6 +512,14 @@ def upsert_mirrored_po(
         if status == POStatus.CANCELLED:
             _release_linked_hardware(session, row)
         return "created"
+
+    # #1484: the row and its lines are read again under their locks before anything is assigned. The
+    # find above is unlocked, so a receipt committing in between left this pass holding the lines as
+    # they were before it: the in-flight check then saw the draft APPROVED (nothing held), the floor was
+    # the stale count, and the update wrote received back down and reopened a CLOSED PO. Locked here,
+    # a pass waits for a receipt already writing and reads what it committed. PO row, then lines in id
+    # order - the order create_receive, cancel_po and the status steps take them in.
+    row = _lock_po_for_mirror(session, row.id)
 
     is_gp_origin = row.origin == POOrigin.GP
     # Fill a legacy NULL company so the (company, po_number) key finds this row directly next pass.
@@ -667,6 +701,12 @@ def note_missing_from_gp(
                 PurchaseOrder.status.in_(OPEN_STAGES),
                 PurchaseOrder.deleted_at.is_(None),
             )
+            # #1484: locked in id order and read fresh, like the upsert. Under the lock Postgres re-checks
+            # the open-stage filter against the committed row, so a PO a receipt closed meanwhile drops
+            # out instead of being cancelled from a stale read.
+            .order_by(PurchaseOrder.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         .unique()
         .all()
