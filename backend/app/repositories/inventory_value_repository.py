@@ -410,14 +410,22 @@ def save_doors_on_hand(
     if owner != company:
         raise NotFoundError(f"Project {project_id} not found")
 
+    # #1473: insert-if-absent, as #1201 made the settings and general rows. Two first saves of one
+    # project at once (two tabs, two people adding it) both found nothing and both inserted, and the
+    # loser hit uq_doors_on_hand_company_project as a masked server error. The row is then locked and
+    # set, so the later save's number is the one kept.
+    session.execute(
+        pg_insert(DoorsOnHand)
+        .values(id=uuid.uuid4(), company=company, project_id=project_id, quantity=quantity)
+        .on_conflict_do_nothing(constraint="uq_doors_on_hand_company_project")
+    )
     row = session.scalars(
-        select(DoorsOnHand).where(DoorsOnHand.company == company, DoorsOnHand.project_id == project_id)
-    ).first()
-    if row is None:
-        row = DoorsOnHand(company=company, project_id=project_id, quantity=quantity)
-        session.add(row)
-    else:
-        row.quantity = quantity
+        select(DoorsOnHand)
+        .where(DoorsOnHand.company == company, DoorsOnHand.project_id == project_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    row.quantity = quantity
     session.flush()
     return row
 
