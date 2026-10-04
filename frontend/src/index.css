@@ -7,13 +7,24 @@
    #1485: clip, not hidden. overflow-x: hidden on html and body turned body into a scroll container
    that never scrolls (the window does), so every position:sticky element - the app bar, the nav
    rail - stuck to body instead of the viewport and scrolled away with the page. clip cuts the
-   overflow without creating a scroll container, so sticky keeps working. */
+   overflow without creating a scroll container, so sticky keeps working.
+   #1501: hidden is the fallback for browsers without clip (Safari before 16, so an iPad on iOS 15),
+   and clip applies through @supports - a second declaration in the same rule is merged away by the
+   CSS minifier, so the fallback has to live in its own rule. Without clip, sticky stays broken there
+   as it was, but the page still never scrolls sideways. */
 html,
 body {
   margin: 0;
   min-height: 100vh;
   max-width: 100%;
-  overflow-x: clip;
+  overflow-x: hidden;
+}
+
+@supports (overflow-x: clip) {
+  html,
+  body {
+    overflow-x: clip;
+  }
 }
 
 #root {
