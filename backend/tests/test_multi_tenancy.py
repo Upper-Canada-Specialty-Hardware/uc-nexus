@@ -961,6 +961,65 @@ def test_a_stock_draft_cannot_adopt_another_companys_project(db_session, two_com
     assert e.value.field == "project_id"
 
 
+class _TestSession:
+    """The test's own session as SessionLocal() hands it out, left open - db_session owns it."""
+
+    def __init__(self, session):
+        self._session = session
+
+    def __enter__(self):
+        return self._session
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_registering_with_another_companys_project_reads_as_not_found(monkeypatch, db_session, two_companies):
+    """#1514: the register pre-flight compared companies before anything checked scope, and that
+    refusal names the project's job number and company - an answer an absent project never gives."""
+    from app.schemas import po as po_schema
+
+    draft = po_repository.create_po(
+        db_session,
+        line_items=[{"hardware_category": "HINGE", "product_code": "HG-100", "ordered_quantity": 1, "unit_cost": 1.0}],
+        company="TUBC",
+    )
+    monkeypatch.setattr(po_schema, "SessionLocal", lambda: _TestSession(db_session))
+    theirs = two_companies["theirs"]
+
+    def register(project_id):
+        po_schema._prepare_register_po(
+            po_id=draft.id,
+            gp_vendor_id="V1",
+            buyer_id="mira",
+            cost_code="210-200-2",
+            line_items_data=[],
+            project_id=project_id,
+            scope="TUBC",
+            gp_company="TUBC",
+        )
+
+    with pytest.raises(NotFoundError) as other:
+        register(theirs.id)
+    assert theirs.project_id not in str(other.value)
+    assert OTHER not in str(other.value)
+
+    with pytest.raises(NotFoundError) as absent:
+        register(uuid.uuid4())
+    assert str(other.value).split()[0] == str(absent.value).split()[0] == "Project"
+
+
+def test_a_register_replay_does_not_answer_with_another_companys_po(monkeypatch, db_session, two_companies):
+    """#1514: a replayed key answers with the PO it recorded, read before the pre-flight's own check."""
+    from app.schemas import po as po_schema
+
+    monkeypatch.setattr(po_schema, "SessionLocal", lambda: _TestSession(db_session))
+
+    with pytest.raises(NotFoundError):
+        po_schema._load_po_type(two_companies["their_po"].id, "TUBC")
+    assert po_schema._load_po_type(two_companies["my_po"].id, "TUBC").id
+
+
 # --- archive ------------------------------------------------------------------------------------
 
 
