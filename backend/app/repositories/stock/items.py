@@ -52,12 +52,15 @@ def get_stock_items(
             StockItem.received_at.asc(),
         )
     )
+    # #1508: both come from the pool's filter boxes, typed or pasted, so a stray space must not empty
+    # the pool, and the category matches part of the value in any case, like every other search box.
+    product_code_contains = (product_code_contains or "").strip()
+    hardware_category = (hardware_category or "").strip()
     if product_code_contains:
         # Escaped (#1270): product codes carry `_`, which LIKE reads as "any character".
-        escaped = product_code_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        stmt = stmt.where(StockItem.product_code.ilike(f"%{escaped}%", escape="\\"))
+        stmt = stmt.where(StockItem.product_code.ilike(f"%{_escape_like(product_code_contains)}%", escape="\\"))
     if hardware_category:
-        stmt = stmt.where(StockItem.hardware_category == hardware_category)
+        stmt = stmt.where(StockItem.hardware_category.ilike(f"%{_escape_like(hardware_category)}%", escape="\\"))
     if aisle:
         stmt = stmt.where(StockItem.aisle == aisle)
     if only_deficient:
@@ -74,6 +77,11 @@ def get_stock_items(
         # Stock is jobless, so it scopes through its warehouse rather than a project (#637).
         stmt = stmt.where(StockItem.warehouse_id.in_(tenancy.warehouse_ids_for(company)))
     return list(session.scalars(stmt).all())
+
+
+def _escape_like(raw: str) -> str:
+    r"""Escape LIKE metacharacters so a filter for "50%" means "50%" and not "anything after 50"."""
+    return raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def get_stock_item(session: Session, stock_item_id: uuid.UUID) -> StockItem:

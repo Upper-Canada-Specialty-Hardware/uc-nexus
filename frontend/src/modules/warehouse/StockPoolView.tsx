@@ -118,8 +118,9 @@ export default function StockPoolView() {
     GET_STOCK_ITEMS,
     {
       variables: {
-        productCodeContains: productCodeFilter || null,
-        hardwareCategory: categoryFilter || null,
+        // #1508: a pasted code often carries a trailing space, which would match nothing.
+        productCodeContains: productCodeFilter.trim() || null,
+        hardwareCategory: categoryFilter.trim() || null,
         onlyDeficient,
         warehouseId: warehouseFilter || null,
         kind: kindFilter === 'ALL' ? null : kindFilter,
