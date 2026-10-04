@@ -132,3 +132,20 @@ def test_upsert_refuses_a_negative_trade_discount(db_session):
 def test_get_document_data_none_when_never_saved(db_session):
     po = _make_po(db_session)
     assert po_repository.get_po_document_data(db_session, po.id) is None
+
+
+@pytest.mark.parametrize("field", ["freight", "miscellaneous", "tax_amount", "tariff_amount", "trade_discount"])
+def test_upsert_refuses_an_amount_too_large_for_the_column(db_session, field):
+    # Numeric(12,2): an amount past it was a numeric overflow at flush, shown as a server error.
+    po = _make_po(db_session)
+    with pytest.raises(ValidationError) as exc:
+        po_repository.upsert_po_document_data(db_session, po.id, **{field: 10_000_000_000})
+    assert exc.value.field == field
+
+
+@pytest.mark.parametrize("field", ["freight", "miscellaneous", "tax_amount", "tariff_amount"])
+def test_upsert_refuses_a_negative_charge(db_session, field):
+    po = _make_po(db_session)
+    with pytest.raises(ValidationError) as exc:
+        po_repository.upsert_po_document_data(db_session, po.id, **{field: -1})
+    assert exc.value.field == field
