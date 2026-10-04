@@ -296,3 +296,116 @@ def test_the_sync_raises_received_once_nothing_is_in_flight(db_session):
     db_session.flush()
     db_session.refresh(li)
     assert li.received_quantity == 6
+
+
+# --- #1436 ---------------------------------------------------------------------------------------
+
+
+def _receivable(session):
+    """A registered project PO with 2 of 10 received in both systems, and a shelf to receive onto."""
+    from tests.inventory_fixtures import define_location
+
+    project = _project(session)
+    po, li = _po(session, project.id)
+    define_location(session, aisle="A", row="1", bay="1")
+    sync_repo.upsert_mirrored_po(session, COMPANY, _gp_po(po.po_number, 2), {})
+    session.flush()
+    session.refresh(po)
+    assert po.status == POStatus.PARTIALLY_RECEIVED
+    return po, li
+
+
+def _persist(session, po, li, quantity):
+    from app.repositories.warehouse.receiving import create_receive
+    from tests.inventory_fixtures import wh_id
+
+    create_receive(
+        session,
+        po.id,
+        "warehouse",
+        [
+            {
+                "po_line_item_id": li.id,
+                "quantity_received": quantity,
+                "locations": [{"aisle": "A", "row": "1", "bay": "1", "quantity": quantity}],
+            }
+        ],
+        warehouse_id=wh_id(session),
+    )
+    session.flush()
+
+
+def test_the_sync_does_not_close_a_po_while_its_last_receipt_is_mid_approval(db_session):
+    po, li = _receivable(db_session)
+    draft = _draft(db_session, po, li, 8, status=ReceiveDraftStatus.APPROVING)
+
+    # GP already shows all 10: the 8 being approved posted there, the Nexus persist has not run.
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _gp_po(po.po_number, 10), {})
+    db_session.flush()
+    db_session.refresh(po)
+    assert po.status == POStatus.PARTIALLY_RECEIVED
+
+    # So the persist is not refused as a receipt onto a closed PO, and it closes the PO itself.
+    _persist(db_session, po, li, 8)
+    db_session.delete(draft)
+    db_session.flush()
+    db_session.refresh(po)
+    db_session.refresh(li)
+    assert li.received_quantity == 10
+    assert po.status == POStatus.CLOSED
+
+    # The next pass agrees with GP and leaves it closed.
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _gp_po(po.po_number, 10), {})
+    db_session.flush()
+    db_session.refresh(po)
+    assert po.status == POStatus.CLOSED
+
+
+def test_the_sync_does_not_close_a_po_while_its_last_receipt_is_queued(db_session):
+    po, li = _receivable(db_session)
+    gp_outbox_repository.enqueue(
+        db_session,
+        idempotency_key=f"rcv-{uuid.uuid4().hex}",
+        op="create_receive",
+        relay_op="create_receipt",
+        company=COMPANY,
+        payload={},
+        persist_context={},
+        entity_key=f"po:{po.id}",
+        label="Receipt",
+    )
+
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _gp_po(po.po_number, 10), {})
+    db_session.flush()
+    db_session.refresh(po)
+    assert po.status == POStatus.PARTIALLY_RECEIVED
+
+    _persist(db_session, po, li, 8)
+    db_session.refresh(po)
+    assert po.status == POStatus.CLOSED
+
+
+def test_an_unposted_gp_count_below_nexus_does_not_reopen_a_closed_po(db_session):
+    po, li = _receivable(db_session)
+    _persist(db_session, po, li, 8)
+    db_session.refresh(po)
+    assert po.status == POStatus.CLOSED
+
+    # GP's batch for the 8 is not posted yet, so it still reports 2; the lines keep 10 (the floor).
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _gp_po(po.po_number, 2), {})
+    db_session.flush()
+    db_session.refresh(po)
+    db_session.refresh(li)
+    assert li.received_quantity == 10
+    assert po.status == POStatus.CLOSED
+
+
+def test_the_sync_closes_a_po_gp_received_in_full_with_nothing_in_flight(db_session):
+    po, li = _receivable(db_session)
+
+    sync_repo.upsert_mirrored_po(db_session, COMPANY, _gp_po(po.po_number, 10), {})
+    db_session.flush()
+    db_session.refresh(po)
+    db_session.refresh(li)
+    assert li.received_quantity == 10
+    assert po.status == POStatus.CLOSED

@@ -189,7 +189,7 @@ def _apply_gp_line_entry_fields(li: POLineItem, gp_line: dict) -> None:
         li.cost_code = None
 
 
-def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> None:
+def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> bool:
     """Match GP lines onto the PO's line rows by gp_line_ord. Received qty is GP's (authoritative) but
     floored at what Nexus already stored; ordered qty, unit cost, the line's cost code and whether it
     is a job-cost line are GP-owned on every line without exception. hardware_category / product_code
@@ -205,7 +205,9 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
 
     An existing line's schedule ties follow its new quantity (#1227): rows tied beyond what the line can
     still cover - what GP orders, or what has already arrived when that is more - go back to AVAILABLE,
-    so the units GP will never send resurface as needing a PO."""
+    so the units GP will never send resurface as needing a PO.
+
+    Returns whether a receipt was in flight (#1300), so the caller holds the PO's status too (#1436)."""
     from app.repositories.po_repository import _release_line_ties_beyond
 
     existing = {li.gp_line_ord: li for li in po.line_items if li.gp_line_ord is not None}
@@ -264,6 +266,22 @@ def _upsert_lines(session: Session, po: PurchaseOrder, gp_lines: list[dict]) -> 
             li.unit_cost = unit_cost
             _apply_gp_line_identity(li, ln)
             _apply_gp_line_entry_fields(li, ln)
+    return receipt_in_flight
+
+
+def _stored_stage(source_table: str, gp_lines: list[dict], po: PurchaseOrder) -> POStatus:
+    """The stage of an existing row, derived from the received counts `_upsert_lines` just stored (#1436).
+
+    Those are GP's, floored at what Nexus booked: an unposted GP batch reporting less than a Nexus
+    receipt must not turn a CLOSED PO back into PARTIALLY_RECEIVED while its lines read fully received.
+    Ordered and cancelled stay GP's, so derive_po_stage's rules are otherwise unchanged; a line the
+    upsert skipped (new and cancelled to nothing) keeps GP's count. The history table's rule is GP's
+    posted state and stays as GP reports it."""
+    if source_table == "history":
+        return derive_po_stage(source_table, gp_lines)
+    stored = {li.gp_line_ord: li.received_quantity for li in po.line_items if li.gp_line_ord is not None}
+    held = [{**ln, "received": stored[ln["ord"]]} if ln["ord"] in stored else ln for ln in gp_lines]
+    return derive_po_stage(source_table, held)
 
 
 def _receipt_in_flight(session: Session, po_id: uuid.UUID) -> bool:
@@ -490,7 +508,13 @@ def upsert_mirrored_po(
     # the count starts over from the next first miss.
     row.gp_missing_since = None
     _apply_gp_costs(row, po, lines)
-    _upsert_lines(session, row, lines)
+    receipt_in_flight = _upsert_lines(session, row, lines)
+    # #1436: while a Nexus receipt is between GP and its persist the status holds, as the lines do
+    # (#1300). GP's count may already include it; closing the PO now would make create_receive refuse
+    # the persist, leaving GP holding a receipt Nexus never books. The next pass after it lands moves it.
+    if receipt_in_flight:
+        return "updated"
+    stage = _stored_stage(po.get("source_table") or "work", lines, row)
     # Status only moves when the derived stage is past registration; otherwise the row (and any
     # VENDOR_CONFIRMED overlay) is left exactly as it is.
     if stage in _APPLIED_STAGES:
