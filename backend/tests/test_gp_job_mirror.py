@@ -557,6 +557,17 @@ def test_a_job_gp_no_longer_holds_is_not_in_gp_only_on_the_second_miss(monkeypat
     assert first.gp_job_state == GpJobState.ACTIVE
     assert first.gp_missing_since is not None
 
+    # Real passes are a minute or more apart. Back-to-back here, both can stamp the same utcnow() on a
+    # coarse clock (Windows before Python 3.13 ticks in milliseconds), and the strict "missed on an
+    # EARLIER pass" comparison then never fires (#1395). Age the first miss the way time would.
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        session.query(ProjectModel).filter_by(project_id=gone, company=SYNC_COMPANY).update(
+            {"gp_missing_since": first.gp_missing_since - timedelta(minutes=1)}
+        )
+        session.commit()
+
     asyncio.run(gp_job_sync.run_once())
     second = _load(gone)
     assert second.gp_job_state == GpJobState.NOT_IN_GP
