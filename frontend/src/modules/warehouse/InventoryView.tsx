@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@apollo/client/react';
 import { Box, Button } from '@mui/material';
@@ -9,6 +9,7 @@ import PageHeader from '../../components/PageHeader';
 import GpCompanyTag from '../../components/GpCompanyTag';
 import { FadeIn } from '../../motion';
 import { GET_PROJECTS } from '../../graphql/shared';
+import { useActingCompany } from '../../company/ActingCompanyContext';
 import type { Project } from '../../types/project';
 
 const WAREHOUSE_PARENT = { label: 'Warehouse', to: '/app/warehouse' };
@@ -25,6 +26,27 @@ export default function InventoryView() {
     () => (projectId ? (projectsData?.projects.find((p) => p.id === projectId) ?? null) : null),
     [projectsData, projectId],
   );
+
+  // #1469: a UC NEXUS ADMIN's company switch takes the scoped project with it. Left in the URL, the old
+  // company's project is refetched under the new company, refused, and shown as an error - on every
+  // reload too. It is cleared on the switch itself, not checked against the project list, which leaves
+  // out archived jobs a #1359 link may rightly point at.
+  const { company } = useActingCompany();
+  const previousCompany = useRef<string | null>(null);
+  useEffect(() => {
+    const before = previousCompany.current;
+    previousCompany.current = company;
+    if (before === null || before === company) return;
+    setSearchParams(
+      (prev) => {
+        if (!prev.has('project')) return prev;
+        const params = new URLSearchParams(prev);
+        params.delete('project');
+        return params;
+      },
+      { replace: true },
+    );
+  }, [company, setSearchParams]);
 
   const choose = useCallback(
     (next: Project | null) => {

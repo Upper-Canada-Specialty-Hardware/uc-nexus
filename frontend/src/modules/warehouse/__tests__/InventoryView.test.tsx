@@ -1,7 +1,7 @@
 import { render, screen, configure } from '@testing-library/react';
 import type { MockedResponse } from '@apollo/client/testing';
 import { MockedProvider } from '@apollo/client/testing/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import InventoryView from '../InventoryView';
 import { GET_PROJECTS } from '../../../graphql/shared';
 
@@ -12,6 +12,16 @@ configure({ asyncUtilTimeout: 10_000 });
 vi.mock('../HardwareItemsTab', () => ({
   default: ({ projectId }: { projectId?: string }) => <div data-testid="tab">{projectId ?? 'all'}</div>,
 }));
+
+// #1469: the acting company, switchable from a test the way the app bar switches it.
+let actingCompany: string | null = 'TUBC';
+vi.mock('../../../company/ActingCompanyContext', () => ({
+  useActingCompany: () => ({ company: actingCompany }),
+}));
+
+beforeEach(() => {
+  actingCompany = 'TUBC';
+});
 
 const projectsMock: MockedResponse = {
   request: { query: GET_PROJECTS },
@@ -61,4 +71,36 @@ it('shows every project with no project in the url', () => {
 
   expect(screen.getByTestId('tab')).toHaveTextContent('all');
   expect(screen.getByText('All Projects')).toBeInTheDocument();
+});
+
+function Search() {
+  return <div data-testid="search">{useLocation().search}</div>;
+}
+
+// A fresh element each time: the same one again would let React skip the re-render.
+const scopedPage = () => (
+  <MockedProvider mocks={[projectsMock]}>
+    <MemoryRouter initialEntries={['/app/warehouse/inventory?project=proj-1']}>
+      <InventoryView />
+      <Search />
+    </MemoryRouter>
+  </MockedProvider>
+);
+
+it("clears the previous company's project from the url on a company switch (#1469)", () => {
+  const { rerender } = render(scopedPage());
+  expect(screen.getByTestId('tab')).toHaveTextContent('proj-1');
+
+  actingCompany = 'OTHER';
+  rerender(scopedPage());
+
+  expect(screen.getByTestId('tab')).toHaveTextContent('all');
+  expect(screen.getByTestId('search')).not.toHaveTextContent('project=');
+});
+
+it('keeps the project while the company stays the same', () => {
+  const { rerender } = render(scopedPage());
+  rerender(scopedPage());
+
+  expect(screen.getByTestId('tab')).toHaveTextContent('proj-1');
 });

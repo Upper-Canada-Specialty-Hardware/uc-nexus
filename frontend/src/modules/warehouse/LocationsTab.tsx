@@ -682,7 +682,7 @@ export default function LocationsTab() {
   const narrowRow = rowWidth > 0 && rowWidth < RAIL_WIDE + MASTER_DETAIL_GAP + PANEL_BASIS_WIDE;
   const railWidth = narrowRow ? RAIL_NARROW : RAIL_WIDE;
   const panelBasis = narrowRow ? PANEL_BASIS_NARROW : PANEL_BASIS_WIDE;
-  const [warehouseFilter, setWarehouseFilter] = useState('');
+  const [warehousePick, setWarehouseFilter] = useState('');
   const { showToast } = useToast();
   const { ownsTenant, hasRole } = useIdentity();
   // #632: defining and retiring locations is warehouse management (the mutations enforce it too).
@@ -692,6 +692,10 @@ export default function LocationsTab() {
     variables: { includeInactive: true },
   });
   const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
+  // #1469: the filter only while the acting company still has that warehouse (as LocationCleanupPage
+  // does). A UC NEXUS ADMIN's company switch reloads the list; the previous company's warehouse drops
+  // out instead of being sent, where it matched nothing and emptied the rail and the registry.
+  const warehouseFilter = warehouses.some((w) => w.id === warehousePick) ? warehousePick : '';
   const warehouseCode = useMemo(() => {
     const m = new Map<string, string>();
     for (const w of warehouses) m.set(w.id, w.code);
