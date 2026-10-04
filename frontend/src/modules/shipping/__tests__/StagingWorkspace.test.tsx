@@ -353,6 +353,64 @@ describe('sameStagedStock', () => {
   });
 });
 
+describe('taking a line out of a container (#1504)', () => {
+  it('offers the line back, and Undo restores it where it was in one save', async () => {
+    const hinge = {
+      __typename: 'ShipmentContainerItem',
+      id: 'ci-1',
+      openingItemId: null,
+      openingNumber: '101',
+      hardwareCategory: 'HINGE',
+      productCode: 'HG-100',
+      quantity: 4,
+      isManual: false,
+      position: 0,
+    };
+    const lock = { ...hinge, id: 'ci-2', hardwareCategory: 'LOCK', productCode: 'LK-200', quantity: 1, position: 1 };
+    // What the container holds on the server, so the redraw after each save shows it as it is.
+    let held: Record<string, unknown>[] = [hinge, lock];
+    const pool: MockedResponse = {
+      ...poolMock({}),
+      result: () => ({
+        data: {
+          stagingPool: { __typename: 'StagingPool', looseItems: [], containers: [container({ items: held })] },
+        },
+      }),
+    };
+    const saveMock = (
+      items: Record<string, unknown>[],
+      after: Record<string, unknown>[],
+      fired: () => void,
+    ): MockedResponse => ({
+      ...setItemsMock('c-1', items),
+      result: () => {
+        fired();
+        held = after;
+        return { data: { setContainerItems: container({ items: after }) } };
+      },
+    });
+    const lockInput = looseInput(1, { hardwareCategory: 'LOCK', productCode: 'LK-200' });
+    const taken = vi.fn();
+    const restored = vi.fn();
+    renderWorkspace([
+      pool,
+      saveMock([lockInput], [{ ...lock, position: 0 }], taken),
+      saveMock([looseInput(4), lockInput], [{ ...hinge, id: 'ci-3' }, lock], restored),
+    ]);
+
+    fireEvent.click(await screen.findByRole('button', { name: /Take 101 · HG-100 out of Box 1/i }));
+    await waitFor(() => expect(taken).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(restored).toHaveBeenCalledTimes(1));
+    // A second save would answer asynchronously; give it the chance before saying none went out.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+    expect(restored).toHaveBeenCalledTimes(1);
+    expect(taken).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole('spinbutton', { name: /Quantity of 101 · HG-100 in Box 1/i })).toHaveValue(4);
+  });
+});
+
 describe('a refused save (#1302)', () => {
   it('says why and redraws the pool, so the next try is made against the floor as it is now', async () => {
     let poolReads = 0;
