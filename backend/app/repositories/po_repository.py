@@ -26,6 +26,7 @@ from app.models.purchase_order import PODocument, PODocumentData, POLineItem, Pu
 from app.models.receive_draft import ReceiveDraft
 from app.models.receiving import ReceiveRecord
 from app.services import gp_po, gp_window
+from app.status_labels import REFRESH_HINT, status_label
 
 logger = logging.getLogger(__name__)
 
@@ -466,7 +467,9 @@ def register_po_in_gp(
     if po is None:
         raise NotFoundError(f"Purchase order {po_id} not found")
     if po.status != POStatus.DRAFT:
-        raise InvalidStateTransitionError(f"Only a Draft PO can be registered in GP; this one is {po.status.value}")
+        raise InvalidStateTransitionError(
+            f"Only a draft PO can be registered in GP; this one is {status_label(po.status)}. {REFRESH_HINT}"
+        )
     if not line_items:
         raise ValidationError("At least one line item is required", field="line_items")
 
@@ -974,7 +977,7 @@ def nexus_register_po_lines(session: Session, po_id: uuid.UUID, lines: list[dict
         )
     if po.status not in _REGISTRABLE_PO_STATUSES:
         raise InvalidStateTransitionError(
-            f"Only an open GP-owned purchase order can be registered in Nexus; this one is {po.status.value}"
+            f"Only an open GP-owned purchase order can be registered in Nexus; this one is {status_label(po.status)}"
         )
 
     # #1373: ties on one project run one at a time, and never inside a finalize. The project is locked
@@ -1360,7 +1363,9 @@ def update_po(
     _lock_po_row(session, po)
 
     if po.status not in (POStatus.DRAFT, POStatus.GP_REGISTERED, POStatus.VENDOR_CONFIRMED):
-        raise InvalidStateTransitionError(f"Cannot edit PO in {po.status.value} status")
+        raise InvalidStateTransitionError(
+            f"This PO can no longer be edited - it is {status_label(po.status)}. {REFRESH_HINT}"
+        )
 
     # Check for existing receive records
     receive_count_stmt = select(func.count()).select_from(ReceiveRecord).where(ReceiveRecord.po_id == po_id)
@@ -1502,7 +1507,7 @@ def cancel_po(session: Session, po_id: uuid.UUID) -> PurchaseOrder:
 
     if po.status is not POStatus.DRAFT:
         raise InvalidStateTransitionError(
-            f"Cannot cancel PO in {po.status.value} status - only a draft can be cancelled. "
+            f"This PO is {status_label(po.status)} - only a draft can be cancelled. "
             "Once a PO is registered in GP, cancel it there."
         )
     # #1166: a queued registration is still a Draft here, but the worker will create it in GP when the
@@ -1595,7 +1600,9 @@ def claim_po_registration(session: Session, po_id: uuid.UUID, key: str) -> None:
     if po is None or po.deleted_at is not None:
         raise NotFoundError(f"Purchase order {po_id} not found")
     if po.status != POStatus.DRAFT:
-        raise InvalidStateTransitionError(f"Only a Draft PO can be registered in GP; this one is {po.status.value}")
+        raise InvalidStateTransitionError(
+            f"Only a draft PO can be registered in GP; this one is {status_label(po.status)}. {REFRESH_HINT}"
+        )
     if gp_outbox_repository.queued_po_registration(session, po_id, exclude_key=key) is not None:
         raise InvalidStateTransitionError(
             "This PO's registration is already queued and will post to GP when the relay is back"
@@ -1646,7 +1653,9 @@ def update_line_item_order_as(
         raise NotFoundError("Parent purchase order not found")
 
     if po.status != POStatus.DRAFT:
-        raise InvalidStateTransitionError(f"Cannot update Order As on PO in {po.status.value} status")
+        raise InvalidStateTransitionError(
+            f"Order As can only change on a draft PO; this one is {status_label(po.status)}. {REFRESH_HINT}"
+        )
 
     poli.order_as = order_as
     return poli
@@ -1672,7 +1681,9 @@ def update_line_item_unit_cost(
         raise NotFoundError("Parent purchase order not found")
 
     if po.status != POStatus.DRAFT:
-        raise InvalidStateTransitionError(f"Cannot update unit cost on PO in {po.status.value} status")
+        raise InvalidStateTransitionError(
+            f"Unit cost can only change on a draft PO; this one is {status_label(po.status)}. {REFRESH_HINT}"
+        )
 
     poli.unit_cost = unit_cost
     return poli
@@ -1755,7 +1766,9 @@ def upload_po_document(
         raise NotFoundError(f"Purchase order {po_id} not found")
 
     if po.status in (POStatus.CANCELLED, POStatus.CLOSED):
-        raise InvalidStateTransitionError(f"Cannot upload documents to PO in {po.status.value} status")
+        raise InvalidStateTransitionError(
+            f"Documents can no longer be added - this PO is {status_label(po.status)}. {REFRESH_HINT}"
+        )
 
     file_data = _decode_po_document(file_data_base64)
     stored_type, as_attachment = _stored_content_type(content_type)
@@ -1778,7 +1791,9 @@ def upload_po_document(
         # check above is repeated on the locked row, which may have closed meanwhile.
         _lock_po_row(session, po)
         if po.status in (POStatus.CANCELLED, POStatus.CLOSED):
-            raise InvalidStateTransitionError(f"Cannot upload documents to PO in {po.status.value} status")
+            raise InvalidStateTransitionError(
+                f"Documents can no longer be added - this PO is {status_label(po.status)}. {REFRESH_HINT}"
+            )
         session.add(doc)
 
         # Auto-transition: GP_REGISTERED → VENDOR_CONFIRMED when uploading vendor ack and quote number exists
@@ -1883,7 +1898,9 @@ def delete_po_document(session: Session, document_id: uuid.UUID) -> str:
     _lock_po_row(session, po)
 
     if po.status in (POStatus.CANCELLED, POStatus.CLOSED):
-        raise InvalidStateTransitionError(f"Cannot delete documents from PO in {po.status.value} status")
+        raise InvalidStateTransitionError(
+            f"Documents can no longer be removed - this PO is {status_label(po.status)}. {REFRESH_HINT}"
+        )
     # #1440: a packing slip pinned to a receive count is part of that count's record, and the foreign key
     # refuses the delete anyway - at commit, as a generic server error. Say why here instead.
     if session.scalar(select(ReceiveDraft.id).where(ReceiveDraft.packing_slip_document_id == doc.id).limit(1)):

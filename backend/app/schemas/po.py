@@ -44,6 +44,7 @@ from app.services.relay_gateway import (
     CREATE_PO_TAX_SCHEDULE_FEATURE,
 )
 from app.services.relay_gateway import gateway as relay_gateway
+from app.status_labels import REFRESH_HINT, status_label
 
 from .converters import (
     open_po_summary_to_type,
@@ -342,7 +343,9 @@ def _prepare_register_po(
                 field="gp_company",
             )
         if po.status != POStatus.DRAFT:
-            raise InvalidStateTransitionError(f"Only a Draft PO can be registered in GP; this one is {po.status.value}")
+            raise InvalidStateTransitionError(
+                f"Only a draft PO can be registered in GP; this one is {status_label(po.status)}. {REFRESH_HINT}"
+            )
         # #1165: a queued registration leaves the PO a Draft until the worker drains it, so the check
         # above passes a second attempt. Its fresh key would queue a second write and GP would end up
         # with two POs, the second never recorded. The same attempt's key is let through: its resubmit

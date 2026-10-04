@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import type { MockedResponse } from '@apollo/client/testing';
 import { MockedProvider } from '@apollo/client/testing/react';
+import { GraphQLError } from 'graphql';
 import WarehouseEditDialog, { type WarehouseFormValue } from '../WarehouseEditDialog';
 import { ToastProvider } from '../../../components/Toast';
 import { UPDATE_WAREHOUSE } from '../../../graphql/admin';
@@ -61,5 +62,48 @@ describe('WarehouseEditDialog', () => {
     // '' clears (the server stores it as empty); null would mean "leave it".
     expect(input.postalCode).toBe('');
     expect(input.address).toBe('12 Depot Rd');
+  });
+
+  // #1470: each error shows under the field it is about, not all of them under Name.
+  const renderEdit = (mocks: MockedResponse[] = []) =>
+    render(
+      <MockedProvider mocks={mocks}>
+        <ToastProvider>
+          <WarehouseEditDialog open warehouse={existing} onClose={() => {}} />
+        </ToastProvider>
+      </MockedProvider>,
+    );
+  const helperOf = (label: string) => {
+    const describedBy = screen.getByLabelText(new RegExp(`^${label}`)).getAttribute('aria-describedby');
+    return describedBy ? (document.getElementById(describedBy)?.textContent ?? '') : '';
+  };
+  const refused = (field: string, message: string): MockedResponse => ({
+    request: { query: UPDATE_WAREHOUSE, variables: () => true },
+    result: { errors: [new GraphQLError(message, { extensions: { code: 'CONFLICT', field } })] },
+  });
+
+  it('marks Code, not Name, when the code is left empty (#1470)', () => {
+    renderEdit();
+    fireEvent.change(screen.getByLabelText(/^Code/), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(helperOf('Code')).toBe('Warehouse code is required');
+    expect(helperOf('Name')).toBe('');
+  });
+
+  it('puts a server refusal under the field it names (#1470)', async () => {
+    renderEdit([refused('code', "A warehouse with code 'MAIN' already exists")]);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(helperOf('Code')).toBe("A warehouse with code 'MAIN' already exists"));
+    expect(helperOf('Name')).toBe('');
+  });
+
+  it('puts a duplicate name under Name (#1470)', async () => {
+    renderEdit([refused('name', "A warehouse named 'Main' already exists")]);
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(helperOf('Name')).toBe("A warehouse named 'Main' already exists"));
+    expect(helperOf('Code')).toBe('');
   });
 });

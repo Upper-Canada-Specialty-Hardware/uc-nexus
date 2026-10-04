@@ -128,7 +128,7 @@ def _check_name_unique(session: Session, name: str, *, company: str, exclude_id:
     if exclude_id is not None:
         stmt = stmt.where(Warehouse.id != exclude_id)
     if session.scalar(stmt):
-        raise ConflictError(f"A warehouse named '{name}' already exists")
+        raise ConflictError(f"A warehouse named '{name}' already exists", field="name")
 
 
 def describe_occupancy(session: Session, warehouse_id: uuid.UUID) -> list[str]:
@@ -178,7 +178,7 @@ def _check_code_unique(session: Session, code: str, *, company: str, exclude_id:
     if exclude_id is not None:
         stmt = stmt.where(Warehouse.id != exclude_id)
     if session.scalar(stmt):
-        raise ConflictError(f"A warehouse with code '{code}' already exists")
+        raise ConflictError(f"A warehouse with code '{code}' already exists", field="code")
 
 
 def _flush_refusing_duplicates(session: Session, *, name: str, code: str) -> None:
@@ -190,9 +190,9 @@ def _flush_refusing_duplicates(session: Session, *, name: str, code: str) -> Non
     except IntegrityError as e:
         constraint = getattr(getattr(e.orig, "diag", None), "constraint_name", None)
         if constraint == "uq_warehouses_company_lower_name":
-            raise ConflictError(f"A warehouse named '{name}' already exists") from e
+            raise ConflictError(f"A warehouse named '{name}' already exists", field="name") from e
         if constraint == "uq_warehouses_company_lower_code":
-            raise ConflictError(f"A warehouse with code '{code}' already exists") from e
+            raise ConflictError(f"A warehouse with code '{code}' already exists", field="code") from e
         if constraint == "uq_warehouses_company_primary":
             # Only reachable for a company with no building to lock yet (#1431): two first buildings
             # both created primary at once.
