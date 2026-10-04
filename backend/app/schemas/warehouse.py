@@ -322,7 +322,7 @@ def _authorize_draft_approval(info, user_id: str, draft_id: uuid.UUID) -> None:
     raise ForbiddenError("Only a Warehouse Manager can approve this receive.")
 
 
-def _claim_draft_for_approval(draft_id, reviewer_user_id, reviewer_name, key, scope=None):
+def _claim_draft_for_approval(draft_id, reviewer_user_id, reviewer_name, key, scope=None, expected_updated_at=None):
     """Take the approval claim and COMMIT it, before anything talks to GP.
 
     Committing here rather than at the end is the whole point: the claim has to be visible to another
@@ -334,7 +334,9 @@ def _claim_draft_for_approval(draft_id, reviewer_user_id, reviewer_name, key, sc
     """
     with SessionLocal() as session:
         tenancy.require_receive_draft_in_scope(session, draft_id, scope)
-        ctx = warehouse_repository.claim_for_approval(session, draft_id, reviewer_user_id, reviewer_name, key)
+        ctx = warehouse_repository.claim_for_approval(
+            session, draft_id, reviewer_user_id, reviewer_name, key, expected_updated_at=expected_updated_at
+        )
         session.commit()
     return ctx
 
@@ -1095,6 +1097,7 @@ class WarehouseMutations:
                 _is_warehouse_manager(info),
                 warehouse_id=uuid.UUID(str(input.warehouse_id)) if input.warehouse_id else None,
                 notes=input.notes,
+                expected_updated_at=input.expected_updated_at,
             )
             session.commit()
         return _load_draft_type(draft_id)
@@ -1193,7 +1196,15 @@ class WarehouseMutations:
         # Off the event loop like every other Clerk-touching call on this path: resolving the caller's
         # company is a Clerk round trip the first time a request asks for it.
         scope = await asyncio.to_thread(tenant_scope, info)
-        ctx = await asyncio.to_thread(_claim_draft_for_approval, draft_id, user["user_id"], reviewer_name, key, scope)
+        ctx = await asyncio.to_thread(
+            _claim_draft_for_approval,
+            draft_id,
+            user["user_id"],
+            reviewer_name,
+            key,
+            scope,
+            input.expected_updated_at,
+        )
         # GP has ALREADY run under this key and only the persist is outstanding. Re-validating here
         # would be re-asking a question GP has answered: the world can have moved since (another
         # receive against the line), and a refusal would release the claim for a receipt that is

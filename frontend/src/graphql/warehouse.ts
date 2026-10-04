@@ -512,6 +512,13 @@ export const GET_RECEIVE_DRAFTS = gql`
   }
 `;
 
+// One draft, read fresh when an edit or approval was refused because it changed underneath (#1497).
+export const GET_RECEIVE_DRAFT = gql`
+  query GetReceiveDraft($id: ID!) {
+    receiveDraft(id: $id) { ${RECEIVE_DRAFT_FIELDS} }
+  }
+`;
+
 // Scalars only, for the Receiving page's "already counted" chip and the approvals badge. Those want
 // a count per PO and nothing else, and the full selection above would make the backend build every
 // line and rack row of every pending draft in the system on each page load (CLAUDE.md perf rule 3).

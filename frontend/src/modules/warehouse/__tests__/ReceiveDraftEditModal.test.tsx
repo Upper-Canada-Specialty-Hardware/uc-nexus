@@ -18,6 +18,7 @@ type UpdateVars = {
     draftId: string;
     warehouseId: string | null;
     notes: string;
+    expectedUpdatedAt?: string;
     lineItems: { poLineItemId: string; quantityReceived: number; locations: unknown[] }[];
   };
 };
@@ -151,6 +152,8 @@ describe('ReceiveDraftEditModal notes (#632)', () => {
 
     await vi.waitFor(() => expect(captured).not.toBeNull(), SLOW);
     expect(captured!.input.notes).toBe('short 2 per slip');
+    // #1497: the version it loaded, so a save over somebody else's newer change is refused.
+    expect(captured!.input.expectedUpdatedAt).toBe(draft().updatedAt);
     expect(captured!.input.lineItems).toEqual([
       { poLineItemId: 'li-1', quantityReceived: 2, locations: [] },
     ]);

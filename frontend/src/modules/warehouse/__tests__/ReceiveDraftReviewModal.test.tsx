@@ -6,6 +6,7 @@ import { ToastProvider } from '../../../components/Toast';
 import ReceiveDraftReviewModal from '../ReceiveDraftReviewModal';
 import {
   GET_PO_RECEIVING_DETAILS,
+  GET_RECEIVE_DRAFT,
   APPROVE_RECEIVE_DRAFT,
   UPDATE_RECEIVE_DRAFT,
   REJECT_RECEIVE_DRAFT,
@@ -21,11 +22,12 @@ import type { ReceiveDraft } from '../receiveDraftTypes';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-type ApproveVars = { input: { draftId: string; idempotencyKey: string } };
+type ApproveVars = { input: { draftId: string; idempotencyKey: string; expectedUpdatedAt?: string } };
 type UpdateVars = {
   input: {
     draftId: string;
     warehouseId: string | null;
+    expectedUpdatedAt?: string;
     lineItems: {
       poLineItemId: string;
       quantityReceived: number;
@@ -300,6 +302,7 @@ describe('ReceiveDraftReviewModal', () => {
             locations: [],
           },
         ],
+        expectedUpdatedAt: '2026-08-02T10:00:00Z',
       },
     });
   });
@@ -567,6 +570,86 @@ describe('ReceiveDraftReviewModal', () => {
 
       const expected = new Date('2026-08-02T19:48:32Z').toLocaleString();
       expect(screen.getByText(/Counted by/)).toHaveTextContent(`on ${expected}`);
+    });
+  });
+
+  describe('the count it approves is the count it showed (#1497)', () => {
+    it('sends the version it loaded with an unedited approval', async () => {
+      let captured: ApproveVars | null = null;
+      const approveMock: MockedResponse<Record<string, unknown>, ApproveVars> = {
+        request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+        result: (vars) => {
+          captured = vars;
+          return { data: approveResult(false, 'RCT0000123') };
+        },
+      };
+      await openModal([approveMock]);
+
+      await approveViaConfirm();
+
+      await screen.findByText(/Approved\. 2 items added to inventory/, undefined, SLOW);
+      expect(captured!.input.expectedUpdatedAt).toBe('2026-08-02T10:00:00Z');
+    });
+
+    it('approves against the version its own edit just saved, not the one it opened with', async () => {
+      // The reviewer's edit moves updatedAt; approving with the loaded one would refuse their own change.
+      let captured: ApproveVars | null = null;
+      const updateMock: MockedResponse<Record<string, unknown>, UpdateVars> = {
+        request: { query: UPDATE_RECEIVE_DRAFT, variables: () => true },
+        result: {
+          data: { updateReceiveDraft: { ...draft({ updatedAt: '2026-08-02T10:05:00.123456' }), __typename: 'ReceiveDraft' } },
+        },
+      };
+      const approveMock: MockedResponse<Record<string, unknown>, ApproveVars> = {
+        request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+        result: (vars) => {
+          captured = vars;
+          return { data: approveResult(false, 'RCT0000123') };
+        },
+      };
+      await openModal([updateMock, approveMock]);
+
+      fireEvent.change(within(screen.getByRole('table')).getByRole('spinbutton'), { target: { value: '3' } });
+      await approveViaConfirm();
+
+      await screen.findByText(/Approved\. 3 items added to inventory/, undefined, SLOW);
+      expect(captured!.input.expectedUpdatedAt).toBe('2026-08-02T10:05:00.123456');
+    });
+
+    it('shows a refusal over a changed count and re-reads the draft, with nothing left to retry', async () => {
+      const approveMock: MockedResponse = {
+        request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+        result: {
+          errors: [
+            new GraphQLError('This count changed since you opened it - review the new numbers before going on.', {
+              extensions: { code: 'CONFLICT', field: 'expected_updated_at' },
+            }),
+          ],
+        },
+      };
+      // The author recounted to three while the manager had two on screen.
+      const recounted = draft({
+        updatedAt: '2026-08-02T10:07:00',
+        totalQuantity: 3,
+        lineItems: [{ ...draft().lineItems[0], quantityReceived: 3 }],
+      });
+      const rereadMock: MockedResponse = {
+        request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+        result: { data: { receiveDraft: { ...recounted, __typename: 'ReceiveDraft' } } },
+      };
+      await openModal([approveMock, rereadMock]);
+
+      await approveViaConfirm();
+
+      expect(await screen.findByText(/This count changed since you opened it/, undefined, SLOW)).toBeInTheDocument();
+      await vi.waitFor(
+        () => expect(within(screen.getByRole('table')).getByRole('spinbutton')).toHaveValue(3),
+        SLOW,
+      );
+      // Refused before any claim, so this is a fresh review of the new count, not a retry of a post.
+      expect(screen.queryByRole('button', { name: 'Retry posting' })).toBeNull();
+      expect(screen.queryByText(/A retry won't post a duplicate receipt/)).toBeNull();
+      expect(approveButton()).toBeEnabled();
     });
   });
 });

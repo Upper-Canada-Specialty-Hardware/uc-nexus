@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 import strawberry
 
@@ -695,6 +695,9 @@ class UpdateReceiveDraftInput:
     line_items: list[ReceiveLineItemInput] = strawberry.field(default_factory=list)
     # None means "not being changed" (mirrors warehouse_id); send an empty string to clear.
     notes: str | None = None
+    # #1497: the draft's updatedAt as the editor loaded it. Sent, an edit made over somebody else's
+    # newer change is refused instead of silently replacing it. Omitted (an older client), no check.
+    expected_updated_at: datetime | None = None
 
 
 @strawberry.input
@@ -715,6 +718,9 @@ class ApproveReceiveDraftInput:
 
     draft_id: strawberry.ID
     idempotency_key: str = ""
+    # #1497: the draft's updatedAt as the reviewer saw it. Sent, an approval is refused when the count
+    # changed since - otherwise GP would receive numbers nobody reviewed. Omitted, no check.
+    expected_updated_at: datetime | None = None
 
 
 @strawberry.input

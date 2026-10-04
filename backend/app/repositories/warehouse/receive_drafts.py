@@ -13,7 +13,7 @@ if it fails before the relay call.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
@@ -416,6 +416,7 @@ def update_receive_draft(
     actor_is_manager: bool,
     warehouse_id: uuid.UUID | None = None,
     notes: str | None = None,
+    expected_updated_at: datetime | None = None,
 ) -> ReceiveDraftModel:
     """Rewrite what a draft says was counted.
 
@@ -428,8 +429,13 @@ def update_receive_draft(
     booked into the wrong building with nothing reported.
 
     `notes` follows the same reading: None leaves the remark alone, an empty string clears it.
+
+    `expected_updated_at` (#1497) is the draft's updated_at as the editor loaded it. Checked under the
+    lock, so an edit made over a newer one - a manager's correction, the author's own second tab - is
+    refused rather than silently replacing it. None (an older client) skips the check.
     """
     draft = _lock_draft(session, draft_id)
+    _assert_unchanged_since(draft, expected_updated_at)
     _assert_can_edit(draft, actor_user_id, actor_is_manager)
 
     validate_receive_eligibility(session, draft.po_id, draft.created_by_name, line_items_input)
@@ -447,7 +453,9 @@ def update_receive_draft(
     _write_lines(session, draft, po, line_items_input)
     # #982: a rewrite that only touches the line rows leaves the draft row as it was, so its own
     # updated_at would keep the first count's time; the review reads it as when the count last changed.
-    draft.updated_at = datetime.utcnow()
+    # #1497: it is also the version an edit or approval is checked against, so it must move on every
+    # edit - strictly later than the last, even when two land inside one tick of a coarse clock.
+    draft.updated_at = max(datetime.utcnow(), draft.updated_at + timedelta(microseconds=1))
     session.flush()
     session.refresh(draft)
     return draft
@@ -655,12 +663,31 @@ def _assert_no_conflicting_claim(session: Session, draft: ReceiveDraftModel) -> 
             )
 
 
+COUNT_CHANGED_MESSAGE = "This count changed since you opened it - review the new numbers before going on."
+# The field the refusal names, so a client can tell it from other conflicts without matching text.
+COUNT_CHANGED_FIELD = "expected_updated_at"
+
+
+def _assert_unchanged_since(draft: ReceiveDraftModel, expected_updated_at: datetime | None) -> None:
+    """Refuse a write based on an older view of the draft (#1497).
+
+    updated_at moves on every change to the draft (#982 stamps it on a line rewrite; the column's
+    onupdate covers the rest), and it round-trips GraphQL exactly - a naive datetime serialised with its
+    microseconds and parsed back the same - so plain equality is the right comparison.
+    """
+    if expected_updated_at is None:
+        return
+    if draft.updated_at != expected_updated_at.replace(tzinfo=None):
+        raise ConflictError(COUNT_CHANGED_MESSAGE, field=COUNT_CHANGED_FIELD)
+
+
 def claim_for_approval(
     session: Session,
     draft_id: uuid.UUID,
     reviewer_user_id: str,
     reviewer_name: str,
     idempotency_key: str,
+    expected_updated_at: datetime | None = None,
 ) -> ApprovalContext:
     """Take exclusive ownership of a draft so the GP receipt can be posted for it.
 
@@ -671,13 +698,21 @@ def claim_for_approval(
     A retry carrying the same key resumes rather than conflicting: the GP idempotency ledger will
     return the already-posted receipt, so re-entering this path is exactly what should happen after a
     dropped connection.
+
+    `expected_updated_at` (#1497) is the draft's updated_at as the reviewer saw it. It is part of the
+    claim's own WHERE, so an edit can't land between a check and the claim: a count changed since the
+    review is refused and stays pending, and GP never receives numbers nobody reviewed. A same-key
+    resume is not re-checked: GP may already hold that receipt, and nothing can edit a claimed draft.
     """
+    conditions = [
+        ReceiveDraftModel.id == draft_id,
+        ReceiveDraftModel.status == ReceiveDraftStatus.PENDING_APPROVAL,
+    ]
+    if expected_updated_at is not None:
+        conditions.append(ReceiveDraftModel.updated_at == expected_updated_at.replace(tzinfo=None))
     rowcount = session.execute(
         update(ReceiveDraftModel)
-        .where(
-            ReceiveDraftModel.id == draft_id,
-            ReceiveDraftModel.status == ReceiveDraftStatus.PENDING_APPROVAL,
-        )
+        .where(*conditions)
         .values(
             status=ReceiveDraftStatus.APPROVING,
             reviewed_by_user_id=reviewer_user_id,
@@ -685,7 +720,10 @@ def claim_for_approval(
             reviewed_at=datetime.utcnow(),
             approval_idempotency_key=idempotency_key,
             rejection_reason=None,
-            updated_at=datetime.utcnow(),
+            # #1497: held, not stamped - the column's onupdate would otherwise move it. The claim
+            # changes no count, and a claim released after a GP failure must leave the version the
+            # reviewer holds intact, or their retry would be refused as a changed count.
+            updated_at=ReceiveDraftModel.updated_at,
         )
     ).rowcount
 
@@ -698,6 +736,9 @@ def claim_for_approval(
             raise ConflictError(f"{draft.reviewed_by_name or 'Another reviewer'} is approving this draft right now")
         elif draft.status == ReceiveDraftStatus.APPROVED:
             raise ConflictError("This draft has already been approved")
+        elif draft.status == ReceiveDraftStatus.PENDING_APPROVAL:
+            # Still pending, so only the version condition can have missed: it changed since review.
+            raise ConflictError(COUNT_CHANGED_MESSAGE, field=COUNT_CHANGED_FIELD)
         else:
             raise InvalidStateTransitionError(
                 f"Only a draft awaiting approval can be approved; this one is "
@@ -736,7 +777,8 @@ def release_approval_claim(session: Session, draft_id: uuid.UUID, idempotency_ke
         .values(
             status=ReceiveDraftStatus.PENDING_APPROVAL,
             approval_idempotency_key=None,
-            updated_at=datetime.utcnow(),
+            # #1497: held for the same reason as the claim - releasing it changes no count.
+            updated_at=ReceiveDraftModel.updated_at,
         )
     )
 
