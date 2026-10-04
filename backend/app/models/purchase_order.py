@@ -196,6 +196,10 @@ class POLineItem(Base):
     # the quantities and the unit cost. True on every line Nexus drafts or registers; false on a line
     # the mirror created, until somebody gives it a schedule identity.
     nexus_registered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    # How many units had already been received when a GP-born line was first registered (#1398). Those
+    # units were never tied to the schedule, so the line's untied outstanding is ordered less these less
+    # what is tied. Null on a line registered before this was recorded (and on Nexus-drafted lines).
+    received_before_registration: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # The non-schedule catalog entry this line was added from (#454), when it was added that way.
     # Order As exists only for hardware schedule items - a catalog item is ordered as the vendor sells
     # it - so a line carrying this never carries an Order As, and the PO detail modal leaves that cell
