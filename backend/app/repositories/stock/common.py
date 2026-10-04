@@ -149,23 +149,42 @@ def _find_stock_row(
     return session.scalars(stmt).first()
 
 
-def lock_pool_rows(session: Session, ids: list[uuid.UUID | None]) -> None:
-    """Row-lock pool rows in id order and refresh them (#1401).
+def lock_pool_rows(session: Session, ids: list[uuid.UUID | None]) -> dict[uuid.UUID, StockItem]:
+    """Row-lock pool rows in id order and refresh them (#1401), returning the locked rows by id.
 
     Two writers that each lock their own row first and then the other's - a move between two rows of
     one key, in opposite directions - deadlock. Locking every row the write touches up front, sorted,
     gives one order everywhere. `populate_existing` hands back the locked values, not the session's
-    earlier copies."""
+    earlier copies.
+
+    A row deleted while the lock waited - folded away by a concurrent move - is missing from the result
+    (#1416). The caller found it unlocked, so its session copy is stale, and writing through that copy
+    fails the flush as a generic error; callers check the result instead."""
     wanted = sorted({i for i in ids if i is not None})
     if not wanted:
-        return
-    session.scalars(
+        return {}
+    rows = session.scalars(
         select(StockItem)
         .where(StockItem.id.in_(wanted))
         .order_by(StockItem.id)
         .with_for_update()
         .execution_options(populate_existing=True)
     ).all()
+    return {r.id: r for r in rows}
+
+
+def lock_pool_source(session: Session, source_id: uuid.UUID, other_id: uuid.UUID | None) -> StockItem:
+    """Lock a pool row being written together with the other pool row the write touches, in id order,
+    and return the source fresh (#1401). A source deleted while the lock waited is refused as not found,
+    the way `lock_stock_item` refuses it (#1416).
+
+    A vanished other row needs nothing here: the fold and the destination finder look it up again,
+    locked and fresh, after this."""
+    locked = lock_pool_rows(session, [source_id, other_id])
+    si = locked.get(source_id)
+    if si is None:
+        raise NotFoundError(f"Stock item {source_id} not found")
+    return si
 
 
 def lock_for_shelf_move(
@@ -189,8 +208,7 @@ def lock_for_shelf_move(
         unit_cost=si.unit_cost,
         lock=False,
     )
-    lock_pool_rows(session, [si.id, target.id if target is not None else None])
-    return si
+    return lock_pool_source(session, si.id, target.id if target is not None else None)
 
 
 def fold_into_same_key_row(

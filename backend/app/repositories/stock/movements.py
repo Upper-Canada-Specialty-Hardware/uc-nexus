@@ -27,7 +27,7 @@ from .common import (
     _normalize_optional_location_fields,
     _validate_location_fields,
     destock_unit_cost,
-    lock_pool_rows,
+    lock_pool_source,
 )
 from .items import lock_stock_item
 
@@ -535,7 +535,7 @@ def transfer_inventory(
             unit_cost=si.unit_cost,
             lock=False,
         )
-        lock_pool_rows(session, [si.id, dest.id if dest is not None else None])
+        si = lock_pool_source(session, si.id, dest.id if dest is not None else None)
         available = si.quantity - (si.deficient_quantity or 0)
         if quantity > available:
             raise ValidationError("Transfer quantity exceeds available (non-deficient) quantity", field="quantity")
