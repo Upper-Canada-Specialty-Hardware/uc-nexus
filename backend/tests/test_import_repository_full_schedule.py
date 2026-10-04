@@ -956,3 +956,111 @@ def test_leaf_po_ref_attaches_both_leaf_rows_to_one_line(db_session):
     assert len(line_item_ids) == 1  # both leaves roll into one PO line
     poli = db_session.scalar(select(POLineItem).where(POLineItem.id == next(iter(line_item_ids))))
     assert poli.ordered_quantity == 5  # 2 (leaf 1) + 3 (leaf 2)
+
+
+# ---- #1412: By Others exclusions survive every finalize that does not send them ----
+
+
+def _exclusions(session, project_id) -> set[tuple[str, str]]:
+    from app.models.project_excluded_item import ProjectExcludedItem
+
+    rows = session.scalars(select(ProjectExcludedItem).where(ProjectExcludedItem.project_id == project_id)).all()
+    return {(r.hardware_category, r.product_code) for r in rows}
+
+
+def _project_with_schedule_and_exclusion(session) -> Project:
+    from app.models.project_excluded_item import ProjectExcludedItem
+
+    project = _make_project(session)
+    session.commit()
+    import_repository.finalize_import_session(
+        session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100"), _hardware_item_input("A01", "HG-200")],
+        },
+    )
+    session.add(
+        ProjectExcludedItem(id=uuid.uuid4(), project_id=project.id, hardware_category="HINGE", product_code="HG-200")
+    )
+    session.flush()
+    return project
+
+
+def test_a_schedule_replace_keeps_the_by_others_exclusions(db_session):
+    project = _project_with_schedule_and_exclusion(db_session)
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100"), _hardware_item_input("A01", "HG-200")],
+            "replace_schedule": True,
+            "excluded_items": None,
+        },
+    )
+    db_session.flush()
+
+    assert _exclusions(db_session, project.id) == {("HINGE", "HG-200")}
+
+
+def test_a_shop_assembly_request_keeps_the_by_others_exclusions(db_session):
+    project = _project_with_schedule_and_exclusion(db_session)
+    _seed_inventory(db_session, project.id, quantity=10)
+    db_session.flush()
+
+    import_repository.finalize_import_session(
+        db_session,
+        with_schedule(
+            {
+                "project_id": str(project.id),
+                "openings": [_opening_input("A01")],
+                "hardware_items": [],
+                "include_shop_assembly_request": True,
+                "shop_assembly_items": [
+                    {"opening_number": "A01", "hardware_category": "HINGE", "product_code": "HG-100", "quantity": 1},
+                ],
+            }
+        ),
+        created_by="Dana Planner",
+    )
+    db_session.flush()
+
+    assert _exclusions(db_session, project.id) == {("HINGE", "HG-200")}
+
+
+def test_a_po_import_with_an_empty_list_clears_the_exclusions(db_session):
+    # Every By Others product moved back to UCSH in the wizard: an explicit [] is that answer.
+    project = _project_with_schedule_and_exclusion(db_session)
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100"), _hardware_item_input("A01", "HG-200")],
+            "excluded_items": [],
+        },
+    )
+    db_session.flush()
+
+    assert _exclusions(db_session, project.id) == set()
+
+
+def test_a_po_import_with_a_list_replaces_the_exclusions(db_session):
+    project = _project_with_schedule_and_exclusion(db_session)
+
+    import_repository.finalize_import_session(
+        db_session,
+        {
+            "project_id": str(project.id),
+            "openings": [_opening_input("A01")],
+            "hardware_items": [_hardware_item_input("A01", "HG-100"), _hardware_item_input("A01", "HG-200")],
+            "excluded_items": [{"hardware_category": "HINGE", "product_code": "HG-100"}],
+        },
+    )
+    db_session.flush()
+
+    assert _exclusions(db_session, project.id) == {("HINGE", "HG-100")}

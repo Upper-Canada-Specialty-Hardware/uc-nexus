@@ -484,6 +484,30 @@ describe('ImportWizard step transitions', () => {
     expect(screen.queryByRole('heading', { name: 'Reconciliation' })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
   });
+
+  // #1412: a PO finalize replaces the project's exclusions with this wizard's By Others marks, so a
+  // prefill read that failed would have sent none and cleared them all. It says so and offers a retry.
+  it('says the By Others read failed and recovers on retry', async () => {
+    const excludedFails: MockedResponse = {
+      request: { query: GET_PROJECT_EXCLUDED_ITEMS, variables: { projectId: 'proj-1' } },
+      error: new Error('network down'),
+    };
+    const excludedLoads: MockedResponse = {
+      request: { query: GET_PROJECT_EXCLUDED_ITEMS, variables: { projectId: 'proj-1' } },
+      result: { data: { projectExcludedItems: [] } },
+    };
+    renderWizard({
+      project: reimportProject,
+      mocks: [reimportBaseMocks[0], reimportBaseMocks[1], excludedFails, excludedLoads],
+    });
+    await flushApollo();
+
+    expect(screen.getByText(/Couldn't load this project's By Others items/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await flushApollo();
+
+    expect(screen.queryByText(/Couldn't load this project's By Others items/)).not.toBeInTheDocument();
+  });
 });
 
 // #642: the import module is the hardware-schedule surface, so entering it directly runs the

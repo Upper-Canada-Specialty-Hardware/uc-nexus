@@ -212,6 +212,23 @@ def test_empty_collections_send_none_rather_than_an_empty_list(field):
     assert payload[field] is None
 
 
+def test_excluded_items_keep_null_apart_from_an_explicit_empty_list():
+    # #1412: unlike the request collections above, [] is a real answer here - a PO import where every
+    # By Others product went back to UCSH clears the exclusions - while null (every other purpose)
+    # leaves them alone. Folding both into None kept a cleared list from clearing anything.
+    absent = finalize_payload(
+        FinalizeImportSessionInput(project_id="p1", openings=[_opening()]),
+        created_by_user_id="u",
+    )
+    assert absent["excluded_items"] is None
+
+    empty = finalize_payload(
+        FinalizeImportSessionInput(project_id="p1", openings=[_opening()], excluded_items=[]),
+        created_by_user_id="u",
+    )
+    assert empty["excluded_items"] == []
+
+
 class _StopAfterFinalize(Exception):
     pass
 
