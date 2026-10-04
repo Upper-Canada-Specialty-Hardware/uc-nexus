@@ -37,3 +37,13 @@ it('exports PO # and Vendor as separate values, blanks empty (#1445)', () => {
   expect(value('vendorName', row)).toBe('Acme Hardware');
   expect(value('poNumber', { poNumber: null, vendorName: null })).toBe('');
 });
+
+it('exports cost, value and received as data, not display text (#1457)', () => {
+  // MUI's CSV export takes a column's valueFormatter output; these three only format on screen.
+  const columns = buildHardwareItemColumns(undefined) as GridColDef[];
+  for (const field of ['unitCost', 'lineValue', 'receivedAt']) {
+    const col = columns.find((c) => c.field === field);
+    expect(col?.valueFormatter).toBeUndefined();
+    expect(col?.renderCell).toBeDefined();
+  }
+});

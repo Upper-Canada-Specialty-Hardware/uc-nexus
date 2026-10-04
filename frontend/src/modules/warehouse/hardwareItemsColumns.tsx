@@ -145,7 +145,8 @@ export function buildHardwareItemColumns(projectId: string | undefined): GridCol
       type: 'number',
       width: 95,
       minWidth: 95,
-      valueFormatter: (value: number | null) => formatCurrency(value),
+      // #1457: shown formatted, exported as the number - the CSV takes a valueFormatter's text.
+      renderCell: (params) => formatCurrency(params.value as number | null),
     },
     {
       field: 'lineValue',
@@ -153,7 +154,8 @@ export function buildHardwareItemColumns(projectId: string | undefined): GridCol
       type: 'number',
       width: 90,
       minWidth: 90,
-      valueFormatter: (value: number | null) => formatCurrency(value),
+      // #1457: shown formatted, exported as the number - the CSV takes a valueFormatter's text.
+      renderCell: (params) => formatCurrency(params.value as number | null),
     },
     {
       // The cell shows the PO number with its vendor after it. The value is the PO number alone (#1445),
@@ -197,7 +199,8 @@ export function buildHardwareItemColumns(projectId: string | undefined): GridCol
       headerName: 'Received',
       width: 95,
       minWidth: 95,
-      valueFormatter: (value: string | null) => (value ? parseServerDate(value).toLocaleDateString() : '—'),
+      // #1457: shown as a local date, exported as the server's sortable timestamp (blank when never).
+      renderCell: (params) => (params.value ? parseServerDate(params.value as string).toLocaleDateString() : '—'),
     },
   ];
 
