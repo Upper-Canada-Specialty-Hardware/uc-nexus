@@ -84,4 +84,18 @@ describe('SpotCheckModal', () => {
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(calls).toBe(1);
   });
+
+  it('refuses a count that is not a whole number instead of cutting it down (#1517)', () => {
+    render(
+      <MockedProvider mocks={[]}>
+        <ToastProvider>
+          <SpotCheckModal open item={item} onClose={vi.fn()} onSuccess={vi.fn()} />
+        </ToastProvider>
+      </MockedProvider>,
+    );
+
+    fireEvent.change(screen.getByLabelText('Physical Count'), { target: { value: '4.5' } });
+    expect(screen.getByText('Whole numbers only')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Apply Adjustment|No Discrepancy/ })).toBeDisabled();
+  });
 });

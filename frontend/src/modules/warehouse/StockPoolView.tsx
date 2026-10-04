@@ -78,6 +78,7 @@ function toTarget(s: StockItem): LocationActionTarget {
     kind: 'stock',
     productCode: s.productCode,
     quantity: s.quantity,
+    deficientQuantity: s.deficientQuantity,
     warehouseId: s.warehouseId,
     aisle: s.aisle,
     row: s.row,

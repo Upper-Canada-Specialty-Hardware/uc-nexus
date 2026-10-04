@@ -133,10 +133,10 @@ def adjust_stock_quantity(
     # Must follow the lock directly: the count compared is the locked, fresh one.
     check_expected_quantity(si.quantity, expected_quantity)
 
-    # Honor the deficient_quantity <= quantity invariant by clamping if needed
+    # The deficient units stay on the row, so the count cannot go below them (#1517: same words as inventory).
     if new_quantity < si.deficient_quantity:
         raise ValidationError(
-            "Cannot set quantity below current deficient_quantity",
+            "Cannot set quantity below this row's deficient quantity",
             field="new_quantity",
         )
 

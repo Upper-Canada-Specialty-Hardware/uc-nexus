@@ -44,7 +44,10 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
   // synchronously on the first confirm click, before `loading` re-renders.
   const adjustInFlight = useRef(false);
 
-  const physicalNum = parseInt(physicalCount, 10);
+  // #1517: whole units only - parseInt quietly recorded a typed 4.5 as a count of 4.
+  const parsedCount = physicalCount.trim() === '' ? NaN : Number(physicalCount);
+  const notWhole = physicalCount.trim() !== '' && !Number.isInteger(parsedCount);
+  const physicalNum = Number.isInteger(parsedCount) ? parsedCount : NaN;
   const discrepancy = isNaN(physicalNum) ? null : physicalNum - item.quantity;
   const hasDiscrepancy = discrepancy !== null && discrepancy !== 0;
 
@@ -184,18 +187,20 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
           size="small"
           fullWidth
           autoFocus
-          error={belowFloor}
-          slotProps={{ htmlInput: { min: floor } }}
+          error={belowFloor || notWhole}
+          slotProps={{ htmlInput: { min: floor, step: 1 } }}
           helperText={
-            belowFloor
-              ? `Cannot count below the ${floor} deficient units on this row`
-              : discrepancy === null
-                ? floor > 0
-                  ? `Enter the actual quantity counted (min ${floor}, the deficient count)`
-                  : 'Enter the actual quantity counted'
-                : discrepancy === 0
-                  ? 'Matches system quantity'
-                  : `Discrepancy: ${discrepancy > 0 ? '+' : ''}${discrepancy}`
+            notWhole
+              ? 'Whole numbers only'
+              : belowFloor
+                ? `Cannot count below the ${floor} deficient units on this row`
+                : discrepancy === null
+                  ? floor > 0
+                    ? `Enter the actual quantity counted (min ${floor}, the deficient count)`
+                    : 'Enter the actual quantity counted'
+                  : discrepancy === 0
+                    ? 'Matches system quantity'
+                    : `Discrepancy: ${discrepancy > 0 ? '+' : ''}${discrepancy}`
           }
           sx={{ mb: 2 }}
         />
