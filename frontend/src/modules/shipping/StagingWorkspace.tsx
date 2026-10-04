@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -893,9 +893,15 @@ function ContainerRow({
   const label = item.openingNumber ? `${item.openingNumber} · ${item.productCode}` : item.productCode;
   // null while not editing; the box then shows what the container holds.
   const [draft, setDraft] = useState<string | null>(null);
+  // #1459: Escape blurs to leave the box, and the blur runs commitDraft before React has applied the
+  // cleared draft - so the cancel is a flag the commit reads, not the state it cannot see yet.
+  const cancelEdit = useRef(false);
   const commitDraft = () => {
+    const cancelled = cancelEdit.current;
+    cancelEdit.current = false;
     if (draft === null) return;
     setDraft(null);
+    if (cancelled) return;
     const next = Number.parseInt(draft, 10);
     if (Number.isNaN(next) || next < 0 || next === item.quantity) return;
     onSetQuantity(next);
@@ -955,7 +961,7 @@ function ContainerRow({
           onKeyDown={(e) => {
             if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
             if (e.key === 'Escape') {
-              setDraft(null);
+              cancelEdit.current = true;
               (e.target as HTMLInputElement).blur();
             }
           }}
