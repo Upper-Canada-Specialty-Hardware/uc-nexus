@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, within, configure } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within, configure } from '@testing-library/react';
 import type { MockedResponse } from '@apollo/client/testing';
 import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
@@ -217,10 +217,12 @@ describe('splitting loose hardware', () => {
     await waitFor(() => expect(corrected).toHaveBeenCalledTimes(1));
     expect(removed).not.toHaveBeenCalled();
 
-    // An emptied box left as it is goes back to what the container holds; nothing is saved.
+    // An emptied box left as it is goes back to what the container holds; nothing is saved. A save
+    // would answer asynchronously, so give it the chance before saying none went out.
     fireEvent.focus(qty);
     fireEvent.change(qty, { target: { value: '' } });
     fireEvent.blur(qty);
+    await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
     expect(removed).not.toHaveBeenCalled();
     expect(qty).toHaveValue(4);
   });
