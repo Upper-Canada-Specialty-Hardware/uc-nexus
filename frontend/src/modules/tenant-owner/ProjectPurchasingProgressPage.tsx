@@ -129,7 +129,7 @@ function projectToOption(p: ReportProject): ProjectOption {
 }
 
 export default function ProjectPurchasingProgressPage() {
-  const [selected, setSelected] = useState<ProjectOption | null>(null);
+  const [picked, setPicked] = useState<ProjectOption | null>(null);
 
   const {
     data: projectsData,
@@ -140,6 +140,12 @@ export default function ProjectPurchasingProgressPage() {
   const options = useMemo<ProjectOption[]>(
     () => liveFirst(projectsData?.adminProjects ?? []).map(projectToOption),
     [projectsData],
+  );
+  // #1449: the pick only while the current company still offers it, so a company switch clears it
+  // instead of querying the other company's project.
+  const selected = useMemo(
+    () => (picked && options.some((o) => o.id === picked.id) ? picked : null),
+    [picked, options],
   );
 
   const {
@@ -173,7 +179,7 @@ export default function ProjectPurchasingProgressPage() {
         sx={{ maxWidth: 480, mb: 3 }}
         options={options}
         value={selected}
-        onChange={(_, v) => setSelected(v)}
+        onChange={(_, v) => setPicked(v)}
         loading={projectsLoading}
         isOptionEqualToValue={(opt, val) => opt.id === val.id}
         getOptionLabel={(opt) => opt.label}
