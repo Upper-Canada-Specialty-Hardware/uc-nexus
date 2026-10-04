@@ -19,6 +19,7 @@ from .common import (
     _validate_location_fields,
     fold_into_same_key_row,
     lock_for_shelf_move,
+    lock_pool_source,
 )
 
 
@@ -275,7 +276,26 @@ def reclassify_stock_item(
     if not new_product_code:
         raise ValidationError("new_product_code is required", field="new_product_code")
 
-    si = lock_stock_item(session, stock_item_id)
+    # #1422: a split writes two pool rows - this one and the row of the new key on the same shelf - so
+    # both are locked together in id order, the way a shelf move locks them (#1401). Locking this row
+    # first and the other inside the find-or-create below let two opposite reclassifies on one shelf
+    # deadlock. The other row is found unlocked here; the find-or-create re-finds it, already held.
+    found = session.get(StockItem, stock_item_id)
+    if found is None:
+        raise NotFoundError(f"Stock item {stock_item_id} not found")
+    other = _find_stock_row(
+        session,
+        warehouse_id=found.warehouse_id,
+        hardware_category=new_hardware_category,
+        product_code=new_product_code,
+        aisle=found.aisle,
+        row=found.row,
+        bay=found.bay,
+        kind=found.kind,
+        unit_cost=found.unit_cost,
+        lock=False,
+    )
+    si = lock_pool_source(session, stock_item_id, other.id if other is not None else None)
     if quantity > si.quantity:
         raise ValidationError("Reclassify quantity exceeds stock quantity", field="quantity")
 
@@ -389,7 +409,26 @@ def set_stock_item_kind(
     if not performed_by:
         raise ValidationError("performed_by is required", field="performed_by")
 
-    si = lock_stock_item(session, stock_item_id)
+    # #1422: the units move to the row of the other kind on this shelf, so both rows are locked
+    # together in id order (#1401) - locking this one first and that one in the find below let a Stock
+    # -> Overhead flip and an Overhead -> Stock flip of the same product deadlock. Found unlocked here,
+    # re-found below, already held.
+    found = session.get(StockItem, stock_item_id)
+    if found is None:
+        raise NotFoundError(f"Stock item {stock_item_id} not found")
+    other = _find_stock_row(
+        session,
+        warehouse_id=found.warehouse_id,
+        hardware_category=found.hardware_category,
+        product_code=found.product_code,
+        aisle=found.aisle,
+        row=found.row,
+        bay=found.bay,
+        kind=kind,
+        unit_cost=found.unit_cost,
+        lock=False,
+    )
+    si = lock_pool_source(session, stock_item_id, other.id if other is not None else None)
     if si.kind == kind:
         raise ValidationError(f"This row is already {kind.value.lower()}", field="kind")
     available = si.quantity - (si.deficient_quantity or 0)
