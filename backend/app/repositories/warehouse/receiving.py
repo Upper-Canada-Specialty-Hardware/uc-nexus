@@ -183,10 +183,19 @@ def create_receive(
     Returns:
         The created ReceiveRecord with line_items loaded.
     """
-    # 1. Lock the PO's lines before anything reads their received quantity (#1120), then look up the
-    # PO with line_items, validate exists + not soft-deleted
+    # 1. Lock the PO row, then its lines, before anything reads their received quantity (#1120), then
+    # look up the PO with line_items, validate exists + not soft-deleted. The PO row comes first (#1431):
+    # this receipt writes the PO's status, and the paths that move it otherwise (cancel, the registration
+    # queue, the vendor-confirmed steps) take the PO row before anything else - so one order everywhere,
+    # and the status below is read fresh rather than from a copy a concurrent edit has since replaced.
+    session.execute(select(POModel.id).where(POModel.id == po_id).with_for_update())
     _lock_po_lines(session, po_id)
-    stmt = select(POModel).options(selectinload(POModel.line_items)).where(POModel.id == po_id)
+    stmt = (
+        select(POModel)
+        .options(selectinload(POModel.line_items))
+        .where(POModel.id == po_id)
+        .execution_options(populate_existing=True)
+    )
     po = session.scalars(stmt).unique().first()
     if po is None or po.deleted_at is not None:
         raise NotFoundError(f"Purchase order {po_id} not found")

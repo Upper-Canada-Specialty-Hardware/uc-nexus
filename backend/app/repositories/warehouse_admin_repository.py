@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -193,6 +193,13 @@ def _flush_refusing_duplicates(session: Session, *, name: str, code: str) -> Non
             raise ConflictError(f"A warehouse named '{name}' already exists") from e
         if constraint == "uq_warehouses_company_lower_code":
             raise ConflictError(f"A warehouse with code '{code}' already exists") from e
+        if constraint == "uq_warehouses_company_primary":
+            # Only reachable for a company with no building to lock yet (#1431): two first buildings
+            # both created primary at once.
+            raise ValidationError(
+                "Another warehouse was just made this company's primary; reload and try again",
+                field="is_primary",
+            ) from e
         raise
 
 
@@ -357,9 +364,23 @@ def delete_warehouse(session: Session, warehouse_id: uuid.UUID) -> None:
 def _clear_primary(session: Session, *, company: str, exclude_id: uuid.UUID | None = None) -> None:
     """Unflag the company's other primary warehouse. Scoped to `company` (#919): the flag is read per
     company (`get_primary_warehouse_id`), and clearing it everywhere made one company's new primary
-    silently un-primary every other company's building."""
-    stmt = select(Warehouse).where(Warehouse.is_primary.is_(True), Warehouse.company == company)
-    if exclude_id is not None:
-        stmt = stmt.where(Warehouse.id != exclude_id)
-    for wh in session.scalars(stmt).all():
-        wh.is_primary = False
+    silently un-primary every other company's building.
+
+    Serialized per company (#1431): two admins making different buildings primary at once each read the
+    old primary unlocked, each unflagged it, and both new ones stayed primary. The company's warehouse
+    rows are locked first, in id order, so the second waits and then clears the first one's choice.
+    The clear is an UPDATE run now rather than at flush: the database holds one primary per company
+    (uq_warehouses_company_primary), and a flush could write the new flag before this one is lifted."""
+    with session.no_autoflush:
+        session.execute(
+            select(Warehouse.id).where(Warehouse.company == company).order_by(Warehouse.id).with_for_update()
+        )
+        stmt = (
+            update(Warehouse)
+            .where(Warehouse.is_primary.is_(True), Warehouse.company == company)
+            .values(is_primary=False)
+            .execution_options(synchronize_session="fetch")
+        )
+        if exclude_id is not None:
+            stmt = stmt.where(Warehouse.id != exclude_id)
+        session.execute(stmt)

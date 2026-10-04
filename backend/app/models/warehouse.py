@@ -17,6 +17,9 @@ class Warehouse(Base):
         # Unique ignoring case (#1402), the rule the repository checks.
         Index("uq_warehouses_company_lower_name", "company", func.lower(text("name")), unique=True),
         Index("uq_warehouses_company_lower_code", "company", func.lower(text("code")), unique=True),
+        # One primary per company (#1431): the flag is read per company to pick where an unrouted
+        # receipt, pull or movement lands, so two primaries made that pick by sort order.
+        Index("uq_warehouses_company_primary", "company", unique=True, postgresql_where=text("is_primary")),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
