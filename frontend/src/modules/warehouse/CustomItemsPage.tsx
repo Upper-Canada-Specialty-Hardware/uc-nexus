@@ -566,7 +566,7 @@ function ItemDialog({
   );
 }
 
-function ItemForm({
+export function ItemForm({
   type,
   item,
   onClose,
@@ -618,7 +618,9 @@ function ItemForm({
       variables: {
         id: item.id,
         isActive: !item.isActive,
-        description: description.trim() || null,
+        // #1485: the trimmed text, '' included - the server stores '' as no description, while null
+        // means "leave it as it is", so an emptied box used to save without clearing anything.
+        description: description.trim(),
         values: valuePayload(),
       },
     });
@@ -630,7 +632,8 @@ function ItemForm({
       updateItem({
         variables: {
           id: item.id,
-          description: description.trim() || null,
+          // #1485: '' clears (the server stores it as no description); null would mean "leave it".
+          description: description.trim(),
           values: valuePayload(),
         },
       });
