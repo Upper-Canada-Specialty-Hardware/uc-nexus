@@ -891,6 +891,15 @@ function ContainerRow({
     id: item.id,
   });
   const label = item.openingNumber ? `${item.openingNumber} · ${item.productCode}` : item.productCode;
+  // null while not editing; the box then shows what the container holds.
+  const [draft, setDraft] = useState<string | null>(null);
+  const commitDraft = () => {
+    if (draft === null) return;
+    setDraft(null);
+    const next = Number.parseInt(draft, 10);
+    if (Number.isNaN(next) || next < 0 || next === item.quantity) return;
+    onSetQuantity(next);
+  };
 
   return (
     <Box
@@ -932,13 +941,23 @@ function ContainerRow({
       <Stack direction="row" spacing={0.5} alignItems="center">
         {/* Correctable in place. Splitting a product across two containers means getting the split
             wrong sometimes, and pulling the line out and starting over is a poor answer to that. */}
+        {/* #1447: typed into a draft and saved on blur or Enter. Saving every keystroke took the line out
+            the moment the box was cleared to retype it, and raced its own saves on a two-digit number.
+            An empty or unreadable box goes back to what the container holds; a 0 typed on purpose still
+            takes the line out. */}
         <TextField
           size="small"
           type="number"
-          value={item.quantity}
-          onChange={(e) => {
-            const next = Number.parseInt(e.target.value, 10);
-            onSetQuantity(Number.isNaN(next) ? 0 : Math.max(0, next));
+          value={draft ?? String(item.quantity)}
+          onFocus={() => setDraft(String(item.quantity))}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commitDraft}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            if (e.key === 'Escape') {
+              setDraft(null);
+              (e.target as HTMLInputElement).blur();
+            }
           }}
           inputProps={{ min: 0, 'aria-label': `Quantity of ${label} in ${containerName}` }}
           sx={{ width: 80 }}

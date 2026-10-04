@@ -179,9 +179,50 @@ describe('splitting loose hardware', () => {
     ]);
 
     const qty = await screen.findByRole('spinbutton', { name: /Quantity of 101 · HG-100 in Box 1/i });
+    fireEvent.focus(qty);
     fireEvent.change(qty, { target: { value: '3' } });
+    fireEvent.blur(qty);
 
     await waitFor(() => expect(fired).toHaveBeenCalled());
+  });
+
+  it('waits for the edit to finish: clearing the box to retype it keeps the line (#1447)', async () => {
+    const removed = vi.fn();
+    const corrected = vi.fn();
+    const held = {
+      __typename: 'ShipmentContainerItem',
+      id: 'ci-1',
+      openingItemId: null,
+      openingNumber: '101',
+      hardwareCategory: 'HINGE',
+      productCode: 'HG-100',
+      quantity: 4,
+      isManual: false,
+      position: 0,
+    };
+    renderWorkspace([
+      poolMock({ containers: [container({ items: [held] })] }),
+      setItemsMock('c-1', [], removed),
+      setItemsMock('c-1', [looseInput(2)], corrected),
+    ]);
+
+    const qty = await screen.findByRole('spinbutton', { name: /Quantity of 101 · HG-100 in Box 1/i });
+    fireEvent.focus(qty);
+    fireEvent.change(qty, { target: { value: '' } });
+    fireEvent.change(qty, { target: { value: '2' } });
+    expect(corrected).not.toHaveBeenCalled();
+    fireEvent.keyDown(qty, { key: 'Enter' });
+    fireEvent.blur(qty);
+
+    await waitFor(() => expect(corrected).toHaveBeenCalledTimes(1));
+    expect(removed).not.toHaveBeenCalled();
+
+    // An emptied box left as it is goes back to what the container holds; nothing is saved.
+    fireEvent.focus(qty);
+    fireEvent.change(qty, { target: { value: '' } });
+    fireEvent.blur(qty);
+    expect(removed).not.toHaveBeenCalled();
+    expect(qty).toHaveValue(4);
   });
 
   it('takes the line out when its quantity is corrected to zero', async () => {
@@ -203,7 +244,9 @@ describe('splitting loose hardware', () => {
     ]);
 
     const qty = await screen.findByRole('spinbutton', { name: /Quantity of 101 · HG-100 in Box 1/i });
+    fireEvent.focus(qty);
     fireEvent.change(qty, { target: { value: '0' } });
+    fireEvent.blur(qty);
 
     await waitFor(() => expect(fired).toHaveBeenCalled());
   });
