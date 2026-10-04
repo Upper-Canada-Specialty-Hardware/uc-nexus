@@ -72,6 +72,7 @@ import { plural } from '../../utils/plural';
 import { FadeIn, useStepDirection } from '../../motion';
 import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
 import { seedScheduleClassifications } from './scheduleClassificationSeed';
+import { exclusionsBlockFinalize as blocksFinalize, type ExclusionsPrefill } from './exclusionsGate';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
 import { isDoorFrameItem } from '../../types/hardwareSchedule';
 import SelectOpeningsStep from './SelectOpeningsStep';
@@ -454,7 +455,7 @@ export default function ImportWizard({
       stale = true;
     };
   }, [isReimport, parsedHardwareItems, existingProjectId, fetchExcludedItems, exclusionsRetry]);
-  const exclusionsPrefill: 'idle' | 'loading' | 'loaded' | 'failed' =
+  const exclusionsPrefill: ExclusionsPrefill =
     !isReimport || !parsedHardwareItems || parsedHardwareItems.length === 0
       ? 'idle'
       : exclusionsSettled?.items !== parsedHardwareItems || exclusionsSettled.retry !== exclusionsRetry
@@ -462,8 +463,7 @@ export default function ImportWizard({
         : exclusionsSettled.ok
           ? 'loaded'
           : 'failed';
-  const exclusionsBlockFinalize =
-    purpose === 'po' && (exclusionsPrefill === 'loading' || exclusionsPrefill === 'failed');
+  const exclusionsBlockFinalize = blocksFinalize(purpose, exclusionsPrefill);
 
   // #608/#492/#1455: on a schedule replace, seed each fresh item's Site/Shop mark from the schedule
   // already on file - by cost first, product-wide only where the product was one answer (see
