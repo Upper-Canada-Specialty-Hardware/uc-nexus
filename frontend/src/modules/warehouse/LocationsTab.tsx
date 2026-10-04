@@ -286,6 +286,8 @@ interface ContentsPanelProps {
   selected: LocationEntry;
   warehouseLabel?: string;
   onClose: () => void;
+  /** #1519: after a move, unlocate or adjust from this panel - the product search names rack positions too. */
+  onChanged?: () => void;
 }
 
 function RowActionMenu({
@@ -351,7 +353,7 @@ function RowActionMenu({
   );
 }
 
-function ContentsPanel({ selected, warehouseLabel, onClose }: ContentsPanelProps) {
+function ContentsPanel({ selected, warehouseLabel, onClose, onChanged }: ContentsPanelProps) {
   const { data, loading, error } = useQuery<LocationContentsData>(GET_LOCATION_CONTENTS, {
     variables: {
       aisle: selected.aisle,
@@ -385,7 +387,8 @@ function ContentsPanel({ selected, warehouseLabel, onClose }: ContentsPanelProps
     // Mutations declare refetchQueries with awaitRefetchQueries: true, so locationUtilization,
     // locationContents, and locationAuditHistory are already fresh by the time this fires.
     setSelectedIds(new Set());
-  }, []);
+    onChanged?.();
+  }, [onChanged]);
 
   const allTargetsById = useMemo(() => {
     const map = new Map<string, LocationActionTarget>();
@@ -812,6 +815,14 @@ export default function LocationsTab() {
   const productSearchLoading = searchActive && (invRowsLoading || stockItemsLoading);
   // #1503: a failed product-code read would leave only the label matches - "no match" when it is not.
   const productSearchError = searchActive ? (invRowsError ?? stockItemsError ?? null) : null;
+  // #1519: a move can fold a row into another shelf's, so the search's rack positions change with it. Only
+  // this tab reads these two while an action runs, so they are refreshed here rather than awaited by the
+  // dialog on every screen that opens it.
+  const refreshProductSearch = useCallback(() => {
+    if (!searchActive) return;
+    void refetchInvRows().catch(() => undefined);
+    void refetchStockItems().catch(() => undefined);
+  }, [searchActive, refetchInvRows, refetchStockItems]);
   const retryProductSearch = () =>
     Promise.all([invRowsError && refetchInvRows(), stockItemsError && refetchStockItems()]);
 
@@ -1035,6 +1046,7 @@ export default function LocationsTab() {
                 selected={selected}
                 warehouseLabel={selected.warehouseId ? warehouseCode.get(selected.warehouseId) : undefined}
                 onClose={() => setSelected(null)}
+                onChanged={refreshProductSearch}
               />
             </motion.div>
           )}

@@ -149,9 +149,3 @@ it('takes the pull queue with it when a request mints or deletes a pull (#1232)'
   // evicted - and nothing paired refetches GetPullRequests by name, so the disjointness rule holds.
   expect(refetch.PULL_MINTED_STALE_ROOT_FIELDS).toContain('pullRequests');
 });
-
-it('refreshes the Locations product search after a move, unlocate or adjust from the location dialog (#1519)', () => {
-  // A fold deletes the source row; a search answered from the old list kept naming its empty shelf.
-  expect(refetch.LOCATION_ACTION_REFETCH_QUERIES).toContain('GetInventoryRows');
-  expect(refetch.LOCATION_ACTION_REFETCH_QUERIES).toContain('GetStockItems');
-});

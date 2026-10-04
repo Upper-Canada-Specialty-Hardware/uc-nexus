@@ -14,7 +14,6 @@ import { useToast } from '../../components/Toast';
 import { MOVE_INVENTORY_LOCATION, MARK_INVENTORY_UNLOCATED } from '../../graphql/shared';
 import { ADJUST_INVENTORY_QUANTITY, MOVE_STOCK_LOCATION, MARK_STOCK_ITEM_UNLOCATED, ADJUST_STOCK_QUANTITY } from '../../graphql/warehouse';
 import { isStaleRowRefusal } from '../../graphql/staleRow';
-import { LOCATION_ACTION_REFETCH_QUERIES } from '../../graphql/refetch';
 import { microLabelSx, monoSx } from '../../theme';
 import { ReservationGateNotice, useComboReservation, useReservationGate } from './reservationNotice';
 import { useDefinedLocationPick } from './useDefinedLocationPick';
@@ -111,7 +110,7 @@ export default function LocationActionDialog({
   // LocationsTab + side panel depend on so the UI reflects the new server state when
   // the success toast appears (no stale render until full reload).
   const syncQueries = {
-    refetchQueries: LOCATION_ACTION_REFETCH_QUERIES,
+    refetchQueries: ['GetLocationUtilization', 'GetLocationContents', 'GetLocationAuditHistory'],
     awaitRefetchQueries: true,
   };
   const [moveInv] = useMutation(MOVE_INVENTORY_LOCATION, syncQueries);
