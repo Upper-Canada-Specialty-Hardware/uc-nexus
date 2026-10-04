@@ -1,6 +1,6 @@
 import { Document, Page, Text, View, Image, StyleSheet } from '@react-pdf/renderer';
 import { PO_COMPANY_LOGO } from './poCompanyLogo';
-import { documentOrderTotal } from './documentTotals';
+import { documentOrderTotal, documentSubtotal, lineExtension } from './documentTotals';
 
 // The finished supplier PO document (issue #230), laid out to match the hand-edited Word output a PO
 // user currently produces from GP's raw PO: header (from / vendor / ship-to / meta), the info row,
@@ -116,9 +116,11 @@ export interface PurchaseOrderDocumentProps {
   includeCustoms: boolean;
 }
 
-function formatMoney(amount: number, currency: string): string {
+// `maxDecimals` is 5 for a unit price (#1523): GP holds unit costs to 5 places, and a $0.0425 screw printed
+// as $0.04 is a different price to the vendor. Money totals stay at cents.
+function formatMoney(amount: number, currency: string, maxDecimals = 2): string {
   const prefix = currency === 'USD' ? '$US' : '$';
-  const n = (amount ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const n = (amount ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: maxDecimals });
   return `${prefix}${n}`;
 }
 
@@ -139,7 +141,7 @@ export default function PurchaseOrderDocument(props: PurchaseOrderDocumentProps)
     includeFsc, includeUsaTariff, includeCustoms,
   } = props;
 
-  const subtotal = lineItems.reduce((sum, li) => sum + (li.ordered ?? 0) * (li.unitPrice ?? 0), 0);
+  const subtotal = documentSubtotal(lineItems);
   const orderTotal = documentOrderTotal({ subtotal, freight, miscellaneous, taxAmount, tariffAmount, tradeDiscount });
 
   return (
@@ -213,7 +215,7 @@ export default function PurchaseOrderDocument(props: PurchaseOrderDocumentProps)
             <Text style={[styles.th, styles.colExt]}>Ext. Price</Text>
           </View>
           {lineItems.map((li, i) => {
-            const ext = (li.ordered ?? 0) * (li.unitPrice ?? 0);
+            const ext = lineExtension(li.ordered, li.unitPrice);
             return (
               <View key={i} style={styles.tableRow} wrap={false}>
                 <Text style={[styles.td, styles.colLn]}>{i + 1}</Text>
@@ -224,7 +226,7 @@ export default function PurchaseOrderDocument(props: PurchaseOrderDocumentProps)
                 <Text style={[styles.td, styles.colDate]}>{li.date || '-'}</Text>
                 <Text style={[styles.td, styles.colUom]}>{li.uom}</Text>
                 <Text style={[styles.td, styles.colQty]}>{li.ordered}</Text>
-                <Text style={[styles.td, styles.colPrice]}>{formatMoney(li.unitPrice, currency)}</Text>
+                <Text style={[styles.td, styles.colPrice]}>{formatMoney(li.unitPrice, currency, 5)}</Text>
                 <Text style={[styles.td, styles.colExt]}>{formatMoney(ext, currency)}</Text>
               </View>
             );
