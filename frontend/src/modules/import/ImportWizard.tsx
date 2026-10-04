@@ -407,26 +407,62 @@ export default function ImportWizard({
 
   // Pre-populate BY_OTHERS classifications from this project's exclusion table once XML is parsed
   const parsedHardwareItems = parser.parseResult?.hardwareItems;
+  // #1412: a PO finalize replaces the project's exclusions with the BY_OTHERS marks in this wizard, so
+  // a prefill that never landed would send none and clear them all. Finishing waits for it, and a
+  // failed read blocks it until a retry succeeds. Each read records which attempt it answered (the parse
+  // it ran for and the retry count), so the status is derived: an attempt with no answer yet is loading.
+  const [exclusionsRetry, setExclusionsRetry] = useState(0);
+  const [exclusionsSettled, setExclusionsSettled] = useState<{
+    items: NonNullable<typeof parsedHardwareItems>;
+    retry: number;
+    ok: boolean;
+  } | null>(null);
   useEffect(() => {
     if (!isReimport || !parsedHardwareItems || parsedHardwareItems.length === 0) return;
-    fetchExcludedItems({ variables: { projectId: existingProjectId } }).then((res) => {
-      const excluded = res.data?.projectExcludedItems;
-      if (excluded && excluded.length > 0) {
-        setClassifications((prev) => {
-          const next = new Map(prev);
-          for (const ei of excluded) {
-            for (const hi of parsedHardwareItems) {
-              if (hi.hardware_category === ei.hardwareCategory && hi.product_code === ei.productCode) {
-                const ck = `${hi.hardware_category}|${hi.product_code}|${hi.unit_cost ?? 0}`;
-                next.set(ck, 'BY_OTHERS');
+    let stale = false;
+    const settle = (ok: boolean) => setExclusionsSettled({ items: parsedHardwareItems, retry: exclusionsRetry, ok });
+    fetchExcludedItems({ variables: { projectId: existingProjectId } }).then(
+      (res) => {
+        if (stale) return;
+        if (res.error || !res.data) {
+          settle(false);
+          return;
+        }
+        settle(true);
+        const excluded = res.data.projectExcludedItems;
+        if (excluded && excluded.length > 0) {
+          setClassifications((prev) => {
+            const next = new Map(prev);
+            for (const ei of excluded) {
+              for (const hi of parsedHardwareItems) {
+                if (hi.hardware_category === ei.hardwareCategory && hi.product_code === ei.productCode) {
+                  const ck = `${hi.hardware_category}|${hi.product_code}|${hi.unit_cost ?? 0}`;
+                  next.set(ck, 'BY_OTHERS');
+                }
               }
             }
-          }
-          return next;
-        });
-      }
-    });
-  }, [isReimport, parsedHardwareItems, existingProjectId, fetchExcludedItems]);
+            return next;
+          });
+        }
+      },
+      () => {
+        if (!stale) settle(false);
+      },
+    );
+    return () => {
+      stale = true;
+    };
+  }, [isReimport, parsedHardwareItems, existingProjectId, fetchExcludedItems, exclusionsRetry]);
+  const exclusionsPrefill: 'idle' | 'loading' | 'loaded' | 'failed' =
+    !isReimport || !parsedHardwareItems || parsedHardwareItems.length === 0
+      ? 'idle'
+      : exclusionsSettled?.items !== parsedHardwareItems || exclusionsSettled.retry !== exclusionsRetry
+        ? 'loading'
+        : exclusionsSettled.ok
+          ? 'loaded'
+          : 'failed';
+  const exclusionsBlockFinalize =
+    purpose === 'po' && (exclusionsPrefill === 'loading' || exclusionsPrefill === 'failed');
 
   // #608/#492: on a schedule replace, seed each fresh item's Site/Shop mark from the schedule already
   // on file, matched by product, so the user is not made to re-answer a classification the previous
@@ -1245,6 +1281,7 @@ export default function ImportWizard({
     // Set synchronously, before finalizeLoading re-renders; cleared only when a finalize fails, so a
     // successful one cannot be sent again from this wizard.
     if (finalizeInFlight.current) return;
+    if (exclusionsBlockFinalize) return;
     finalizeInFlight.current = true;
     setConfirmOpen(false);
     setOverBuyOpen(false);
@@ -1322,7 +1359,18 @@ export default function ImportWizard({
       setFinalizeLoading(false);
       finalizeInFlight.current = false;
     }
-  }, [buildFinalizeInput, finalizeImport, showToast, poDraftBuild, draftGroups, uploadPoDocument, returnTo, onClose, navigate]);
+  }, [
+    buildFinalizeInput,
+    finalizeImport,
+    showToast,
+    poDraftBuild,
+    draftGroups,
+    uploadPoDocument,
+    returnTo,
+    onClose,
+    navigate,
+    exclusionsBlockFinalize,
+  ]);
 
   const handlePostAction = useCallback(
     (action: ImportNextStep) => {
@@ -1521,6 +1569,23 @@ export default function ImportWizard({
               </Step>
             ))}
           </Stepper>
+
+          {/* #1412: shown on every step - classifying without the project's By Others marks is what a
+              failed read would otherwise lead to, and Finish stays disabled until a retry lands. */}
+          {purpose === 'po' && exclusionsPrefill === 'failed' && (
+            <Alert
+              severity="error"
+              sx={{ mb: 2 }}
+              action={
+                <Button color="inherit" size="small" onClick={() => setExclusionsRetry((n) => n + 1)}>
+                  Retry
+                </Button>
+              }
+            >
+              Couldn't load this project's By Others items. Finishing now would clear them, so it waits until
+              they load.
+            </Alert>
+          )}
 
           {/* One entrance per step. Keyed by the step id so stepping forward or back re-triggers it;
               the step's own content and gating are untouched by the wrapper. It arrives from the
@@ -1963,7 +2028,7 @@ export default function ImportWizard({
                   variant="contained"
                   size="large"
                   startIcon={<FileUp size={18} strokeWidth={1.75} />}
-                  disabled={finalizeLoading || isGpSetupBroken(project)}
+                  disabled={finalizeLoading || isGpSetupBroken(project) || exclusionsBlockFinalize}
                   onClick={() => (finalizeOverBuy.length > 0 ? setOverBuyOpen(true) : setConfirmOpen(true))}
                 >
                   Finish Import Session
