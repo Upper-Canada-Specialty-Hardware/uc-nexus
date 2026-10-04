@@ -69,7 +69,7 @@ export default function ProjectPicker({
   gpBound = false,
   showSelectedCompany = true,
 }: Props) {
-  const { data, loading } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
+  const { data, loading, error } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const options = useMemo(() => {
     const all = data?.projects ?? [];
     return filter ? all.filter(filter) : all;
@@ -87,10 +87,13 @@ export default function ProjectPicker({
       onChange={(_, v) => onChange(v)}
       loading={loading}
       // #1347: an empty list is not a search miss - projects come from GP's jobs, so say where.
+      // #1503: a failed read is not "no projects yet".
       noOptionsText={
-        options.length === 0
-          ? 'No projects yet - projects appear for every job in GP once the job sync runs.'
-          : 'No matching project'
+        error && !data
+          ? `Couldn't load the projects, so this is not an empty list - the read failed. ${error.message}`
+          : options.length === 0
+            ? 'No projects yet - projects appear for every job in GP once the job sync runs.'
+            : 'No matching project'
       }
       disabled={disabled}
       isOptionEqualToValue={(opt, val) => opt.id === val.id}

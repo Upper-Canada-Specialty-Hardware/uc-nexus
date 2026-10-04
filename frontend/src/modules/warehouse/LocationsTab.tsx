@@ -49,6 +49,7 @@ import LocationAuditStrip from './LocationAuditStrip';
 import TransferDialog, { type TransferSource } from './TransferDialog';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { springs } from '../../motion';
+import LoadError from '../../components/LoadError';
 import type { WarehouseLocationDef } from './receiveDraftTypes';
 import {
   combineLocationRows,
@@ -702,7 +703,12 @@ export default function LocationsTab() {
     return m;
   }, [warehouses]);
 
-  const { data: utilData, loading: utilLoading, error: utilError } = useQuery<{
+  const {
+    data: utilData,
+    loading: utilLoading,
+    error: utilError,
+    refetch: refetchUtil,
+  } = useQuery<{
     locationUtilization: LocationEntry[];
   }>(GET_LOCATION_UTILIZATION, {
     variables: { warehouseId: warehouseFilter || null },
@@ -774,14 +780,24 @@ export default function LocationsTab() {
   // positions holding it. Fired only while the box has text (a heavy read otherwise), and scoped to
   // the same warehouse filter as the utilization list.
   const searchActive = search.trim().length > 0;
-  const { data: invRowsData, loading: invRowsLoading } = useQuery<{
+  const {
+    data: invRowsData,
+    loading: invRowsLoading,
+    error: invRowsError,
+    refetch: refetchInvRows,
+  } = useQuery<{
     inventoryRows: { inventoryLocation: ProductLocation }[];
   }>(GET_INVENTORY_ROWS, {
     variables: { warehouseId: warehouseFilter || null },
     skip: !searchActive,
     fetchPolicy: 'cache-first',
   });
-  const { data: stockItemsData, loading: stockItemsLoading } = useQuery<{
+  const {
+    data: stockItemsData,
+    loading: stockItemsLoading,
+    error: stockItemsError,
+    refetch: refetchStockItems,
+  } = useQuery<{
     stockItems: ProductLocation[];
   }>(GET_STOCK_ITEMS, {
     variables: { warehouseId: warehouseFilter || null },
@@ -789,6 +805,10 @@ export default function LocationsTab() {
     fetchPolicy: 'cache-first',
   });
   const productSearchLoading = searchActive && (invRowsLoading || stockItemsLoading);
+  // #1503: a failed product-code read would leave only the label matches - "no match" when it is not.
+  const productSearchError = searchActive ? (invRowsError ?? stockItemsError ?? null) : null;
+  const retryProductSearch = () =>
+    Promise.all([invRowsError && refetchInvRows(), stockItemsError && refetchStockItems()]);
 
   // Location keys whose contents include a product matching the search. Only located rows (aisle set)
   // can map to a utilization entry, so unlocated product rows are skipped.
@@ -879,7 +899,7 @@ export default function LocationsTab() {
       </Box>
     );
   }
-  if (utilError) return <Alert severity="error">Error: {utilError.message}</Alert>;
+  if (utilError) return <LoadError what="the warehouse locations" error={utilError} onRetry={() => refetchUtil()} />;
 
   const totalLocations = combined.length;
   const totalQty = combined.reduce((sum, r) => sum + r.totalQuantity, 0);
@@ -940,13 +960,22 @@ export default function LocationsTab() {
         </Typography>
       </Box>
 
+      {productSearchError && !allEmpty && (
+        <LoadError
+          what="the product codes to search"
+          error={productSearchError}
+          onRetry={retryProductSearch}
+          sx={{ mb: 2 }}
+        />
+      )}
+
       {allEmpty ? (
         <Alert severity="info">
           No locations defined and nothing located yet.
           {canManage ? ' Define the first location to make put-away possible.' : ''}
         </Alert>
       ) : rows.length === 0 ? (
-        productSearchLoading ? (
+        productSearchError ? null : productSearchLoading ? (
           // The product-code join is still in flight - don't claim "no match" before it lands.
           <Alert severity="info" icon={<CircularProgress size={18} />}>
             Searching product codes…

@@ -33,6 +33,7 @@ import { GET_GP_OUTBOX } from '../../graphql/shared';
 import Modal from '../../components/Modal';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import GpWriteQueuePanel from '../../components/GpWriteQueuePanel';
+import LoadError from '../../components/LoadError';
 import PODetailModal from './PODetailModal';
 import GpPurchaseOrderDialog from './GpPurchaseOrderDialog';
 import CreatePOChooser from './CreatePOChooser';
@@ -581,6 +582,7 @@ function POListPage() {
   const {
     data: pageData,
     loading: pageLoading,
+    error: pageError,
     refetch: refetchPage,
   } = useQuery<{
     purchaseOrdersPage: {
@@ -975,6 +977,11 @@ function POListPage() {
         </ToggleButtonGroup>
       </Box>
 
+      {/* #1503: a failed page read is not "no purchase orders match". */}
+      {pageError && (
+        <LoadError what="the purchase orders" error={pageError} onRetry={() => refetchPage()} sx={{ mb: 1.5 }} />
+      )}
+
       {/* PO Table */}
       <Box ref={tableRef} sx={{ minWidth: 0 }}>
         <FitTable
@@ -1002,7 +1009,7 @@ function POListPage() {
               </TableCell>
             </TableRow>
           )}
-          {!pageLoading && rows.length === 0 && (
+          {!pageLoading && !pageError && rows.length === 0 && (
             <TableRow>
               <TableCell colSpan={PO_TABLE_COLUMN_COUNT} align="center" sx={{ py: 4 }}>
                 <Typography variant="body2" color="text.secondary">

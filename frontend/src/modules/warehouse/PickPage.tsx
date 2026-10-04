@@ -52,6 +52,9 @@ function formatSource(source: string): string {
  * suggested column. The Received date is here so stock can be rotated by the person holding it; the
  * system's opinion stops there.
  */
+const STALE_AFTER_CONFIRM =
+  'The pick was confirmed, but the sheet could not refresh. Reload it before confirming again.';
+
 export default function PickPage() {
   const { id = '' } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -64,6 +67,11 @@ export default function PickPage() {
   // incremental - a short pick leaves the pull open and a second call deducts again - so a double click
   // must never send it twice.
   const confirmInFlight = useRef(false);
+  // #1503: set once the server has applied a confirm. The guard is held until the sheet shows it: a
+  // short pick leaves the old figures in the boxes until the refetch lands, and a second confirm off
+  // those would deduct them again. If that refetch fails the confirm still went through, so the guard
+  // stays held until a later load of the sheet moves the seed below.
+  const confirmLanded = useRef(false);
   const [shortfalls, setShortfalls] = useState<Shortfall[]>([]);
   const [printing, setPrinting] = useState(false);
 
@@ -91,6 +99,10 @@ export default function PickPage() {
   const seededRef = useRef<string | null>(null);
   useEffect(() => {
     if (!sheet || seedToken === null || seededRef.current === seedToken) return;
+    if (confirmLanded.current) {
+      confirmLanded.current = false;
+      confirmInFlight.current = false;
+    }
     seededRef.current = seedToken;
     setEntries(entriesFromDraft(sheet.sections));
   }, [sheet, seedToken]);
@@ -107,7 +119,11 @@ export default function PickPage() {
 
   const [confirmPick, { loading: confirming }] = useMutation(CONFIRM_PICK, {
     refetchQueries: PICK_CONFIRM_REFETCH_QUERIES,
-    update(cache) {
+    // #1503: completion (and the guard's release) waits for the sheet refetch, so the boxes are
+    // re-seeded from the confirmed figures before another confirm can be sent.
+    awaitRefetchQueries: true,
+    update(cache, result) {
+      if ((result.data as { confirmPick?: unknown } | null | undefined)?.confirmPick) confirmLanded.current = true;
       // Disjoint from the refetch list above (see refetch.ts): evicting a field a mounted query also
       // refetches makes Apollo run the heavy resolver twice concurrently.
       for (const field of PICK_CONFIRM_STALE_ROOT_FIELDS) {
@@ -119,6 +135,7 @@ export default function PickPage() {
       const payload = (
         result as { confirmPick?: { outcome?: string; appliedQuantity?: number; shortfalls?: Shortfall[] } }
       )?.confirmPick;
+      confirmLanded.current = false;
       confirmInFlight.current = false;
       setConfirmOpen(false);
       if (payload?.outcome === 'SHORT') {
@@ -136,8 +153,13 @@ export default function PickPage() {
       showToast(`Pick confirmed. ${payload?.appliedQuantity ?? 0} unit(s) came off the shelf.`, 'success');
     },
     onError: (e) => {
-      confirmInFlight.current = false;
       setConfirmOpen(false);
+      if (confirmLanded.current) {
+        // The pick was applied; only the sheet's refresh failed. Keep the guard (see confirmLanded).
+        showToast(STALE_AFTER_CONFIRM, 'warning');
+        return;
+      }
+      confirmInFlight.current = false;
       showToast(e.message, 'error');
     },
   });
@@ -178,12 +200,15 @@ export default function PickPage() {
   }, [saveDraft, id, sections, entries]);
 
   const handleConfirm = useCallback(() => {
-    if (confirmInFlight.current || confirming) return;
+    if (confirmInFlight.current || confirming) {
+      if (confirmLanded.current && !confirming) showToast(STALE_AFTER_CONFIRM, 'warning');
+      return;
+    }
     confirmInFlight.current = true;
     confirmPick({
       variables: { pullRequestId: id, lines: toPickLines(sections, entries) },
     });
-  }, [confirmPick, confirming, id, sections, entries]);
+  }, [confirmPick, confirming, id, sections, entries, showToast]);
 
   const handleMarkAsPulled = useCallback(() => {
     completePull({ variables: { id } });

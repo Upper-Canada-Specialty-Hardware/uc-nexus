@@ -584,3 +584,24 @@ it('tints the purchase orders the link names, and only those', async () => {
   // The table still opens on its default view: the highlight never narrows it.
   expect(lastPageAsk()).toMatchObject({ statuses: null, search: null, projectId: null });
 });
+
+it('says the purchase orders failed to load rather than "no purchase orders match" (#1503)', async () => {
+  // The page read fails; everything else answers as usual.
+  const failing = mocks().map((m) =>
+    m.request.query === PURCHASE_ORDERS_PAGE
+      ? { request: m.request, maxUsageCount: INFINITE, error: new Error('Network down') }
+      : m,
+  );
+  render(
+    <MemoryRouter>
+      <MockedProvider mocks={failing}>
+        <ToastProvider>
+          <POModule />
+        </ToastProvider>
+      </MockedProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByText(/couldn.t load the purchase orders/i)).toBeInTheDocument();
+  expect(screen.queryByText(/no purchase orders match/i)).not.toBeInTheDocument();
+});

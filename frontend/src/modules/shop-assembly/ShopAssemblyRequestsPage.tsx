@@ -43,6 +43,7 @@ import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { plural } from '../../utils/plural';
 import { FadeIn, StaggerItem, StaggerList } from '../../motion';
 import BatchReviewPanel from './BatchReviewPanel';
+import LoadError from '../../components/LoadError';
 import { dismissalLines } from './dismissals';
 import {
   PULL_STATUS_COLOR,
@@ -161,7 +162,7 @@ export default function ShopAssemblyRequestsPage() {
     ? null
     : 'Allocating, dismissing and rejecting are the Shop Assembly Manager’s.';
 
-  const { data, loading, refetch } = useQuery<{ shopAssemblyRequests: ShopAssemblyRequest[] }>(
+  const { data, loading, error, refetch } = useQuery<{ shopAssemblyRequests: ShopAssemblyRequest[] }>(
     GET_SHOP_ASSEMBLY_REQUESTS,
     { variables: { status: view }, fetchPolicy: 'cache-and-network' },
   );
@@ -181,6 +182,7 @@ export default function ShopAssemblyRequestsPage() {
   const {
     data: reviewData,
     loading: reviewLoading,
+    error: reviewError,
     refetch: refetchReview,
   } = useQuery<{ shopAssemblyAllocationReview: AllocationReview }>(GET_SHOP_ASSEMBLY_ALLOCATION_REVIEW, {
     variables: { requestId: openRequestId },
@@ -336,12 +338,16 @@ export default function ShopAssemblyRequestsPage() {
         </Stack>
       </FadeIn>
 
-      {loading && data === undefined && (
+      {/* #1503: a failed read is said, never shown as an empty board. */}
+      {error && <LoadError what="the shop assembly requests" error={error} onRetry={() => refetch()} sx={{ mb: 2 }} />}
+      {loading && data === undefined && !error && (
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Loading...
         </Typography>
       )}
-      {data !== undefined && requests.length === 0 && <Alert severity="info">{VIEW_COPY[view].empty}</Alert>}
+      {data !== undefined && !error && requests.length === 0 && (
+        <Alert severity="info">{VIEW_COPY[view].empty}</Alert>
+      )}
 
       <StaggerList count={requests.length}>
         <Stack spacing={1}>
@@ -441,6 +447,8 @@ export default function ShopAssemblyRequestsPage() {
                         <BatchReviewPanel
                           review={expanded ? (reviewData?.shopAssemblyAllocationReview ?? null) : null}
                           loading={reviewLoading}
+                          error={expanded ? reviewError : null}
+                          onRetry={() => refetchReview()}
                           busy={busy}
                           disabledReason={managerGateReason}
                           canReject={req.batches.length === 0}

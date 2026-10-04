@@ -179,4 +179,14 @@ describe('BatchReviewPanel', () => {
 
     expect(screen.getByText(/every opening has been batched or dismissed/)).toBeInTheDocument();
   });
+
+  it('says the review failed to load rather than "nothing is waiting" (#1503)', () => {
+    const onRetry = vi.fn();
+    renderPanel({ review: null, error: new Error('Network down'), onRetry });
+
+    expect(screen.getByText(/couldn.t load this request's openings/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing on this request is waiting/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
 });

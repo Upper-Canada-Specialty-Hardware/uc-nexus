@@ -18,6 +18,7 @@ import type { DocumentNode } from 'graphql';
 import { useToast } from './Toast';
 import ConfirmDialog from './ConfirmDialog';
 import Modal from './Modal';
+import LoadError from './LoadError';
 import { parseServerDate } from '../utils/serverDate';
 import { PULL_MINTED_STALE_ROOT_FIELDS, RESERVATION_STALE_ROOT_FIELDS } from '../graphql/refetch';
 import { monoSx } from '../theme';
@@ -50,6 +51,10 @@ interface RequestsReviewPageProps<TRequest extends ReviewableRequest> {
   loading: boolean;
   /** True once the list query has returned at least once (data !== undefined). */
   loaded: boolean;
+  /** #1503: the list query's error. A failed read shows as one, never as an empty board. */
+  error?: { message: string } | null;
+  /** Re-runs the list query from the error banner. */
+  onRetry?: () => unknown;
   requests: TRequest[];
   acceptMutation: DocumentNode;
   rejectMutation: DocumentNode;
@@ -104,6 +109,8 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   emptyMessage,
   loading,
   loaded,
+  error,
+  onRetry,
   requests,
   acceptMutation,
   rejectMutation,
@@ -211,13 +218,15 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
     <Box>
       {note && <Box sx={{ mb: 2 }}>{note}</Box>}
 
-      {loading && !loaded && (
+      {error && <LoadError what="the requests" error={error} onRetry={onRetry} sx={{ mb: 2 }} />}
+
+      {loading && !loaded && !error && (
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Loading...
         </Typography>
       )}
 
-      {loaded && requests.length === 0 && <Alert severity="info">{emptyMessage}</Alert>}
+      {loaded && !error && requests.length === 0 && <Alert severity="info">{emptyMessage}</Alert>}
 
       <StaggerList count={requests.length}>
         <Stack spacing={1}>

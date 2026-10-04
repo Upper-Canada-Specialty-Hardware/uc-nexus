@@ -137,3 +137,27 @@ it("opens on the Rejected tab from the bell's link (#1453)", async () => {
   expect(await screen.findByText('80001-010')).toBeInTheDocument();
   expect(screen.queryByText('80001-009')).not.toBeInTheDocument();
 });
+
+it('says the requests failed to load rather than "no requests are waiting" (#1503)', async () => {
+  render(
+    <MockedProvider
+      mocks={[
+        {
+          request: { query: GET_SHOP_ASSEMBLY_REQUESTS, variables: { status: 'PENDING' } },
+          maxUsageCount: Number.POSITIVE_INFINITY,
+          error: new Error('Network down'),
+        },
+      ]}
+    >
+      <ToastProvider>
+        <MemoryRouter initialEntries={['/app/shop-assembly/requests']}>
+          <ShopAssemblyRequestsPage />
+        </MemoryRouter>
+      </ToastProvider>
+    </MockedProvider>,
+  );
+
+  expect(await screen.findByText(/couldn.t load the shop assembly requests/i)).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  expect(screen.queryByText('No shop assembly requests are waiting.')).not.toBeInTheDocument();
+});

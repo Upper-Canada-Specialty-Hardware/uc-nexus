@@ -45,8 +45,14 @@ const RESULTS = new Map<DocumentNode, unknown>([
   ],
 ]);
 
+// A query listed here fails instead: no data, its error set (#1503).
+const FAILED = new Set<DocumentNode>();
+
 vi.mock('@apollo/client/react', () => ({
-  useQuery: (query: DocumentNode) => ({ data: RESULTS.get(query), loading: false, error: undefined, refetch: vi.fn() }),
+  useQuery: (query: DocumentNode) =>
+    FAILED.has(query)
+      ? { data: undefined, loading: false, error: new Error('Network down'), refetch: vi.fn() }
+      : { data: RESULTS.get(query), loading: false, error: undefined, refetch: vi.fn() },
   useMutation: () => [vi.fn(), { loading: false }],
 }));
 
@@ -72,6 +78,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  FAILED.clear();
 });
 
 function renderTab() {
@@ -121,5 +128,17 @@ describe('PutAwayTab at a narrow width (#856)', () => {
 
     const destination = screen.getAllByRole('separator', { name: 'Resize Destination column' })[0];
     expect(Number(destination.getAttribute('aria-valuenow'))).toBeGreaterThanOrEqual(248);
+  });
+});
+
+describe('PutAwayTab failed stock read (#1503)', () => {
+  it('says the stock pool read failed instead of dropping the section', () => {
+    FAILED.add(GET_STOCK_ITEMS);
+    renderTab();
+
+    expect(screen.getByText(/couldn.t load the unlocated stock pool/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    // The project queue still renders; only the stock section is replaced by the banner.
+    expect(screen.queryByText('Stock Pool')).not.toBeInTheDocument();
   });
 });

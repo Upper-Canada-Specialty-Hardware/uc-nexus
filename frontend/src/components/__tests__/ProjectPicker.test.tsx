@@ -317,4 +317,20 @@ describe('ProjectPicker with no projects (#1347)', () => {
     typeInto(screen.getByRole('combobox'), 'zzz-nothing');
     expect(await screen.findByText('No matching project')).toBeInTheDocument();
   });
+  it('says the read failed rather than "no projects yet" (#1503)', async () => {
+    const failedMock: MockedResponse = {
+      request: { query: GET_PROJECTS },
+      maxUsageCount: INFINITE,
+      error: new Error('Network down'),
+    };
+    render(
+      <MockedProvider mocks={[failedMock]}>
+        <ProjectPicker value={null} onChange={vi.fn()} />
+      </MockedProvider>,
+    );
+    typeInto(screen.getByLabelText('Project'), 'a');
+
+    expect(await screen.findByText(/couldn.t load the projects/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No projects yet/)).not.toBeInTheDocument();
+  });
 });

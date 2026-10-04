@@ -301,6 +301,18 @@ describe('from-schedule source gate', () => {
     expect(screen.getByRole('button', { name: /upload a newer schedule/i })).toBeInTheDocument();
   });
 
+  it('says the schedule read failed rather than "no schedule on file" (#1503)', async () => {
+    const failed: MockedResponse = {
+      request: { query: GET_PROJECT_OPENINGS, variables: { projectId: 'proj-1' } },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      error: new Error('Network down'),
+    };
+    renderAt('/app/shipping/requests/new?projectId=proj-1', [projectsMock(), availabilityMock(), failed]);
+    expect(await screen.findByText(/couldn.t load this project's schedule/i, {}, SLOW)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.queryByText(/no schedule on file/i)).not.toBeInTheDocument();
+  });
+
   it('"use current schedule" reaches the opening grid', async () => {
     renderAt('/app/shipping/requests/new?projectId=proj-1', [projectsMock(), availabilityMock(), scheduleOpeningsMock()]);
     // The card is disabled until the counts load, so wait for them before clicking.

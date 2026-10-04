@@ -41,6 +41,7 @@ import {
 import { isShopClassified, SHOP_FRAMING } from './classificationChip';
 import { monoSx, microLabelSx, tabularSx } from '../../../theme';
 import FitTable, { type FitTableColumn } from '../../../components/FitTable';
+import LoadError from '../../../components/LoadError';
 import { FIT_CELL_WRAP_SX } from '../../../components/fitColumns';
 
 /** The thin projectOpenings row the picker reads (#608 review): opening fields + the two source-card
@@ -216,7 +217,12 @@ export default function RequestWorkspaceScheduleTab({
   // #1290: every per-row cart lookup below reads this, not a fresh scan of the cart.
   const cartIndex = useMemo(() => indexCart(cart), [cart]);
 
-  const { data: openingsData, loading: openingsLoading } = useQuery<ProjectOpeningsData>(GET_PROJECT_OPENINGS, {
+  const {
+    data: openingsData,
+    loading: openingsLoading,
+    error: openingsError,
+    refetch: refetchOpenings,
+  } = useQuery<ProjectOpeningsData>(GET_PROJECT_OPENINGS, {
     variables: { projectId },
     fetchPolicy: 'cache-and-network',
   });
@@ -344,6 +350,16 @@ export default function RequestWorkspaceScheduleTab({
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Compose off the schedule already on file, or replace it with a newer one first.
         </Typography>
+        {/* #1503: a failed read is not "no schedule on file" - that would send the user to re-upload one
+            that is already there. The banner sits outside the cards: they are buttons, and can't hold one. */}
+        {openingsError && (
+          <LoadError
+            what="this project's schedule"
+            error={openingsError}
+            onRetry={() => refetchOpenings()}
+            sx={{ mb: 2 }}
+          />
+        )}
         <Box
           sx={{
             display: 'grid',
@@ -359,7 +375,11 @@ export default function RequestWorkspaceScheduleTab({
             disabled={openingCount === 0}
             onClick={() => setView('select')}
           >
-            {openingsLoading && openingCount === 0 ? (
+            {openingsError && openingCount === 0 ? (
+              <Typography variant="body2" color="text.secondary">
+                The schedule couldn&rsquo;t be read.
+              </Typography>
+            ) : openingsLoading && openingCount === 0 ? (
               <Skeleton variant="text" width={160} />
             ) : openingCount === 0 ? (
               <Typography variant="body2" color="text.secondary">
