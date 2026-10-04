@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import type { MockedResponse } from '@apollo/client/testing';
 import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -379,6 +379,36 @@ describe('ReceiveModal', () => {
     expect(screen.queryByText(/GP Receipt/)).toBeNull();
     expect(await screen.findByRole('button', { name: 'View My Drafts' }, SLOW)).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('a double click on the confirm sends one draft (#1403)', async () => {
+    // Both clicks land in one act, before React re-renders with the dialog busy, so only the in-flight
+    // ref holds the second one back. (Two fireEvent calls would each flush, and busy alone would pass.)
+    let calls = 0;
+    const draftMock: MockedResponse<Record<string, unknown>, CreateDraftVars> = {
+      request: { query: CREATE_RECEIVE_DRAFT, variables: () => true },
+      // Unlimited, so a duplicate submit would be answered and counted rather than refused by the mock.
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: () => {
+        calls += 1;
+        return { data: draftResultData() };
+      },
+    };
+    await openModal([poDetailsMock(), draftMock]);
+    await screen.findByText(/Main \(MAIN\)/, undefined, SLOW);
+
+    setReceiveQty('2');
+    attachPackingSlips();
+    fireEvent.click(await screen.findByRole('button', { name: 'Submit for Approval' }, SLOW));
+    const confirm = await screen.findByRole('button', { name: 'Submit' }, SLOW);
+    act(() => {
+      confirm.click();
+      confirm.click();
+    });
+
+    await screen.findByText(/Submitted for approval\. 2 items across 1 PO/, undefined, SLOW);
+    expect(uploadCalls).toHaveLength(1);
+    expect(calls).toBe(1);
   });
 
   it("carries the counter's note into the draft, even when it is typed last", async () => {

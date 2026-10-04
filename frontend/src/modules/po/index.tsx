@@ -761,6 +761,7 @@ function POListPage() {
         <RelayStatusChip
           connected={relay.connected}
           unreachable={relay.unreachable}
+          signInLapsed={relay.signInLapsed}
           companies={relay.companies}
           gpCompanies={relay.gpCompanies}
         />

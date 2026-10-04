@@ -8,143 +8,15 @@ import {
   InputAdornment,
 } from '@mui/material';
 import { Search } from 'lucide-react';
-import { DataGrid, type GridColDef } from '@mui/x-data-grid';
+import { DataGrid } from '@mui/x-data-grid';
 import { useQuery } from '@apollo/client/react';
 import { GET_HARDWARE_STATUS_BY_PRODUCT, GET_REPORT_PROJECT_OPTIONS } from '../../graphql/admin';
-import { infoHeader } from '../../components/InfoColumnHeader';
 import PageHeader from '../../components/PageHeader';
-import { monoSx } from '../../theme';
 import { FadeIn, Reveal, useHadLoading } from '../../motion';
 import { useGridColumnFit } from '../../components/useGridColumnFit';
+import { buildColumns, HEADER_HEIGHT, type StatusRow } from './hardwareStatusColumns';
 import { liveFirst, reportProjectLabel, type ReportProject } from './reportProjects';
 
-interface StatusRow {
-  hardwareCategory: string;
-  productCode: string;
-  requiredQuantity: number;
-  notPurchased: number;
-  poDrafted: number;
-  onOrder: number;
-  receivedQuantity: number;
-  onHand: number;
-  sentToShop: number;
-  stagedForShipping: number;
-  shippedOut: number;
-  returnedToProject: number;
-}
-
-// Zeros dominate most rows; dimming them makes the non-zero counts - the actual signal - pop
-// without giving up the tabular alignment.
-function renderCount(value: number) {
-  return (
-    <Box component="span" sx={{ color: value === 0 ? 'text.disabled' : 'text.primary' }}>
-      {value}
-    </Box>
-  );
-}
-
-// A schedule-only column on a pick where no project has an imported schedule has nothing to count
-// (#741): a dimmed 0 there read as "failed to load", so it says "not applicable" instead.
-function renderNotApplicable() {
-  return (
-    <Box component="span" sx={{ color: 'text.disabled' }}>
-      —
-    </Box>
-  );
-}
-
-function countColumn(
-  field: keyof StatusRow,
-  label: string,
-  tooltip: string,
-  width = 104,
-  notApplicable = false,
-): GridColDef {
-  return {
-    field,
-    headerName: label,
-    type: 'number',
-    width,
-    // The width is sized to the header title and its info icon, so it is also the floor.
-    minWidth: width,
-    headerAlign: 'right',
-    align: 'right',
-    renderHeader: infoHeader(label, tooltip),
-    renderCell: (params) => (notApplicable ? renderNotApplicable() : renderCount(params.row[field] as number)),
-  };
-}
-
-// Required and Not Purchased count the hardware schedule imported into Nexus; every other column
-// counts POs and warehouse movements, which exist for GP-mirrored jobs that never had a schedule.
-const buildColumns = (anySchedule: boolean): GridColDef[] => [
-  {
-    field: 'productCode',
-    headerName: 'Product Code',
-    flex: 1,
-    minWidth: 130,
-    renderCell: (params) => (
-      <Box component="span" sx={{ ...monoSx, fontWeight: 600 }}>
-        {params.row.productCode}
-      </Box>
-    ),
-  },
-  { field: 'hardwareCategory', headerName: 'Hardware Category', flex: 1, minWidth: 140 },
-  countColumn(
-    'requiredQuantity',
-    'Required',
-    'Total required quantity from the selected projects’ hardware schedules.',
-    104,
-    !anySchedule,
-  ),
-  countColumn(
-    'notPurchased',
-    'Not Purchased',
-    'Schedule quantity not yet drafted into any purchase order.',
-    124,
-    !anySchedule,
-  ),
-  countColumn('poDrafted', 'PO Drafted', 'Ordered quantity on DRAFT purchase orders.', 112),
-  countColumn(
-    'onOrder',
-    'On Order',
-    'Ordered minus received on placed POs not yet Closed - still expected to arrive.',
-  ),
-  countColumn(
-    'receivedQuantity',
-    'Received',
-    'Received quantity on placed POs - NOT current inventory. Stock-pool allocations and other non-PO inventory paths do not count here.',
-  ),
-  countColumn(
-    'onHand',
-    'On Hand',
-    'Current project inventory across warehouse locations. Pulls are already deducted.',
-  ),
-  countColumn(
-    'sentToShop',
-    'Sent to Shop',
-    'Taken off the shelf by completed shop pull requests. Hardware sent to the shop has exited Nexus tracking.',
-    118,
-  ),
-  countColumn(
-    'stagedForShipping',
-    'Staged',
-    'Pulled for shipping and waiting for a truck - completed shipping pulls not yet on a packing slip.',
-    96,
-  ),
-  countColumn(
-    'shippedOut',
-    'Shipped Out',
-    'Gross quantity on packing slips (manual lines excluded). Returns never reduce it: units returned to the project are counted here and again in On Hand.',
-    116,
-  ),
-  // #1381: the returned units Shipped Out still holds, so the two columns can be read together.
-  countColumn(
-    'returnedToProject',
-    'Returned to Project',
-    'Shipped units that came back to the project. They are back in On Hand and still inside Shipped Out.',
-    150,
-  ),
-];
 
 interface ProjectOption {
   id: string;
@@ -312,6 +184,11 @@ export default function HardwareStatusPage() {
           <DataGrid
             ref={setContainer}
             {...gridProps}
+            columnHeaderHeight={HEADER_HEIGHT}
+            sx={[
+              gridProps.sx,
+              { '& .MuiDataGrid-columnHeaderTitleContainerContent': { overflow: 'visible', whiteSpace: 'normal' } },
+            ]}
             rows={rows}
             density="compact"
             pageSizeOptions={[25, 50, 100]}
