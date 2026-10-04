@@ -108,10 +108,28 @@ export function shouldSuspendQuery(now: number = Date.now()): boolean {
   return true;
 }
 
+type AuthRecoveredListener = () => void;
+
+const recoveredListeners = new Set<AuthRecoveredListener>();
+
+/**
+ * Subscribe to "a lapsed session is back" (#1400). Fires once per recovery - only on the change from
+ * lapsed to healthy - however the lapse ended: a probe that got through, a new Clerk session, or the
+ * prompt's in-place renewal. Returns the unsubscribe.
+ */
+export function onAuthRecovered(listener: AuthRecoveredListener): () => void {
+  recoveredListeners.add(listener);
+  return () => {
+    recoveredListeners.delete(listener);
+  };
+}
+
 /** A request got through: the session is back, so background queries resume. */
 export function markAuthRecovered(): void {
+  const wasLapsed = authFailed;
   authFailed = false;
   lastProbeAt = 0;
+  if (wasLapsed) recoveredListeners.forEach((listener) => listener());
 }
 
 /**
