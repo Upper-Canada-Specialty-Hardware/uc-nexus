@@ -235,7 +235,11 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
           showToolbar
           slots={{ toolbar: GridToolbar }}
           slotProps={{ toolbar: { showQuickFilter: true, csvOptions: { fileName: 'inventory', allColumns: true } } }}
-          initialState={{ pagination: { paginationModel: { pageSize: 50 } } }}
+          initialState={{
+            pagination: { paginationModel: { pageSize: 50 } },
+            // #1445: the vendor column starts hidden; the quick filter still finds a row by its vendor.
+            filter: { filterModel: { items: [], quickFilterExcludeHiddenColumns: false } },
+          }}
           pageSizeOptions={[25, 50, 100]}
           sx={[gridProps.sx, { '& .MuiDataGrid-cell:focus': { outline: 'none' } }]}
         />

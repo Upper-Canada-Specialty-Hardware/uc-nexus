@@ -57,7 +57,9 @@ export function formatCurrency(value: number | null | undefined): string {
 
 /** The Deficient column starts hidden: the count already shows beside Qty. It stays one click away in
  *  the column menu, and in the CSV export. */
-export const HARDWARE_ITEMS_DEFAULT_HIDDEN = { deficient: false } as const;
+// #1445: the vendor is its own column again, hidden at first so it costs no width, so the CSV (which
+// exports every column) keeps Vendor and PO # apart as it did before #1429.
+export const HARDWARE_ITEMS_DEFAULT_HIDDEN = { deficient: false, vendorName: false } as const;
 
 /**
  * The warehouse inventory grid's columns (#1429). With the checkbox column the grid has 1024px at 1366
@@ -154,13 +156,14 @@ export function buildHardwareItemColumns(projectId: string | undefined): GridCol
       valueFormatter: (value: number | null) => formatCurrency(value),
     },
     {
-      // The PO and its vendor read together. The value is both, so the quick filter finds a row by
-      // either and the CSV keeps both; the cell shows the PO number first and the vendor after it.
+      // The cell shows the PO number with its vendor after it. The value is the PO number alone (#1445),
+      // so it sorts and exports as a PO # column, blanks together; the vendor has its own hidden column,
+      // which the CSV exports and the quick filter still searches.
       field: 'poNumber',
-      headerName: 'PO / Vendor',
+      headerName: 'PO #',
       flex: 1,
       minWidth: 130,
-      valueGetter: (_value, row) => [row.poNumber, row.vendorName].filter(Boolean).join(' · ') || '—',
+      valueGetter: (_value, row) => row.poNumber ?? '',
       renderCell: (params) => {
         const { poNumber, vendorName } = params.row;
         if (!poNumber && !vendorName) return <span>—</span>;
@@ -181,6 +184,13 @@ export function buildHardwareItemColumns(projectId: string | undefined): GridCol
           </Tooltip>
         );
       },
+    },
+    {
+      field: 'vendorName',
+      headerName: 'Vendor',
+      flex: 1,
+      minWidth: 130,
+      valueGetter: (_value, row) => row.vendorName ?? '',
     },
     {
       field: 'receivedAt',

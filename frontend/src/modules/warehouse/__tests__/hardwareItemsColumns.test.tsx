@@ -19,14 +19,21 @@ it.each([
   expect(visibleFloorSum(columns)).toBeLessThanOrEqual(FLOOR_BUDGET);
 });
 
-it('keeps the deficient count as a column, hidden at first, and the vendor searchable', () => {
+type Getter = (v: unknown, row: object) => string;
+
+it('keeps the deficient count and the vendor as columns, hidden at first', () => {
   const columns = buildHardwareItemColumns(undefined) as GridColDef[];
   expect(columns.some((c) => c.field === 'deficient')).toBe(true);
   expect(hidden.deficient).toBe(false);
-  const po = columns.find((c) => c.field === 'poNumber');
-  const value = (po?.valueGetter as unknown as (v: unknown, row: object) => string)(null, {
-    poNumber: 'PO-1001',
-    vendorName: 'Acme Hardware',
-  });
-  expect(value).toBe('PO-1001 · Acme Hardware');
+  expect(hidden.vendorName).toBe(false);
+});
+
+it('exports PO # and Vendor as separate values, blanks empty (#1445)', () => {
+  const columns = buildHardwareItemColumns(undefined) as GridColDef[];
+  const value = (field: string, row: object) =>
+    (columns.find((c) => c.field === field)?.valueGetter as unknown as Getter)(null, row);
+  const row = { poNumber: 'PO-1001', vendorName: 'Acme Hardware' };
+  expect(value('poNumber', row)).toBe('PO-1001');
+  expect(value('vendorName', row)).toBe('Acme Hardware');
+  expect(value('poNumber', { poNumber: null, vendorName: null })).toBe('');
 });
