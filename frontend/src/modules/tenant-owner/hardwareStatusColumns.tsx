@@ -55,6 +55,9 @@ function countColumn(
     width,
     // Headers wrap onto two lines with the (i) marker leading (#1403), so the floor is the label's
     // longest word plus cell padding: 80 fits a 7-letter word, 86 an 8-letter one, 96 "PURCHASED".
+    // The marker takes about one letter of the first line, so a first word that fills a line pushes
+    // the marker onto a line of its own and the label needs three (#1483). The column test holds every
+    // header to two lines at its floor.
     minWidth: width,
     headerAlign: 'right',
     align: 'right',
@@ -119,10 +122,13 @@ export const buildColumns = (anySchedule: boolean): GridColDef[] => [
     'Staged',
     'Pulled for shipping and waiting for a truck - completed shipping pulls not yet on a packing slip.',
   ),
+  // #1483: 96, so the marker and "SHIPPED" share the first line and "OUT" takes the second. At the
+  // default 80 the marker sat alone and "OUT" fell onto a third line the header row cut off.
   countColumn(
     'shippedOut',
     'Shipped Out',
     'Gross quantity on packing slips (manual lines excluded). Returns never reduce it: units returned to the project are counted here and again in On Hand.',
+    96,
   ),
   // #1381: the returned units Shipped Out still holds, so the two columns can be read together.
   countColumn(
