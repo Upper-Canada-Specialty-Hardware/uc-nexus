@@ -225,6 +225,10 @@ def _apply_delivery_details(packing_slip: PackingSlip, details: dict | None) -> 
             f"weight_lbs must be between 0 and {_MAX_WEIGHT_LBS - 1}.99 pounds",
             field="weight_lbs",
         )
+    # #1438: a Delivery Request that delivers before it is picked up is a typo, not a plan.
+    pickup, delivery = values.get("pickup_date"), values.get("delivery_date")
+    if pickup is not None and delivery is not None and delivery < pickup:
+        raise ValidationError("The delivery date cannot be before the pick-up date", field="delivery_date")
     for field in DELIVERY_REQUEST_FIELDS:
         value = values.get(field)
         if isinstance(value, str):

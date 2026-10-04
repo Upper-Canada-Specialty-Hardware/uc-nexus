@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, type ReactNode } from 'react';
+import { useState, useMemo, useCallback, useRef, type ReactNode } from 'react';
 import {
   Box,
   Typography,
@@ -206,6 +206,11 @@ export default function PODetailModal({
     },
   });
 
+  // #1438: the file is read before the upload starts, and `uploadLoading` only turns on once it has
+  // been. A second click during the read started a second read and a second upload - the server keeps
+  // both - so the click is held from the moment it lands until the upload settles.
+  const uploadInFlight = useRef(false);
+  const [readingUpload, setReadingUpload] = useState(false);
   const [uploadDocument, { loading: uploadLoading }] = useMutation(UPLOAD_PO_DOCUMENT, {
     onCompleted: () => {
       showToast('Document uploaded', 'success');
@@ -327,17 +332,25 @@ export default function PODetailModal({
   };
 
   const handleUpload = useCallback(async () => {
-    if (!uploadFile) return;
+    if (!uploadFile || uploadInFlight.current) return;
     // #1233: the server refuses it too; saying so here spares reading and sending the whole file first.
     if (uploadFile.size > MAX_PO_DOCUMENT_BYTES) {
       showToast(`The file is larger than ${MAX_PO_DOCUMENT_BYTES / (1024 * 1024)} MB`, 'error');
       return;
     }
 
+    uploadInFlight.current = true;
+    setReadingUpload(true);
     const reader = new FileReader();
+    reader.onerror = () => {
+      uploadInFlight.current = false;
+      setReadingUpload(false);
+      showToast('Could not read the file', 'error');
+    };
     reader.onload = () => {
+      setReadingUpload(false);
       const base64 = (reader.result as string).split(',')[1];
-      uploadDocument({
+      void uploadDocument({
         variables: {
           poId: po.id,
           fileName: uploadFile.name,
@@ -345,7 +358,12 @@ export default function PODetailModal({
           documentType: uploadDocType,
           fileDataBase64: base64,
         },
-      });
+      })
+        // onError above reports a failure; this only releases the click either way.
+        .catch(() => undefined)
+        .finally(() => {
+          uploadInFlight.current = false;
+        });
     };
     reader.readAsDataURL(uploadFile);
   }, [uploadFile, uploadDocType, po.id, uploadDocument, showToast]);
@@ -1151,10 +1169,10 @@ export default function PODetailModal({
           <Button
             variant="contained"
             onClick={handleUpload}
-            disabled={!uploadFile || uploadLoading}
-            startIcon={uploadLoading ? <CircularProgress size={16} /> : <Upload {...ICON} />}
+            disabled={!uploadFile || uploadLoading || readingUpload}
+            startIcon={uploadLoading || readingUpload ? <CircularProgress size={16} /> : <Upload {...ICON} />}
           >
-            {uploadLoading ? 'Uploading...' : 'Upload'}
+            {uploadLoading || readingUpload ? 'Uploading...' : 'Upload'}
           </Button>
         </DialogActions>
       </Dialog>
