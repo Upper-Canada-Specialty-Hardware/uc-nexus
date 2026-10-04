@@ -1288,3 +1288,18 @@ def test_approving_copies_the_drafts_remark_onto_the_receive(committed, monkeypa
 
     assert result.receive_record.notes == "box crushed on the pallet"
     assert result.draft.notes == "box crushed on the pallet"
+
+
+def test_a_packing_slip_a_count_uses_cannot_be_deleted_from_the_po(db_session):
+    # #1440: the foreign key refused it at commit as a generic server error; now it says why, before
+    # anything is deleted, and the slip is still there.
+    from app.errors import ConflictError
+    from app.models.purchase_order import PODocument
+
+    project = _make_project(db_session)
+    po, li = _make_po(db_session, project.id)
+    draft = _draft(db_session, po, li)
+
+    with pytest.raises(ConflictError):
+        po_repository.delete_po_document(db_session, draft.packing_slip_document_id)
+    assert db_session.get(PODocument, draft.packing_slip_document_id) is not None
