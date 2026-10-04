@@ -27,6 +27,9 @@ export type LocationActionTarget = {
   hardwareCategory?: string | null;
   productCode: string;
   quantity: number;
+  // #1517: units on this row flagged deficient. The server refuses an adjust below them, so the
+  // dialog does too, up front, with the number.
+  deficientQuantity?: number | null;
   warehouseId?: string | null;
   aisle: string | null;
   row: string | null;
@@ -122,8 +125,13 @@ export default function LocationActionDialog({
 
   const [submitting, setSubmitting] = useState(false);
 
-  const adjustmentNum = parseInt(adjustment, 10);
+  // #1517: whole units only - parseInt quietly turned 2.5 into 2, so a typed -2.5 took off 2.
+  const parsedAdjustment = adjustment.trim() === '' ? NaN : Number(adjustment);
+  const notWhole = adjustment.trim() !== '' && !Number.isInteger(parsedAdjustment);
+  const adjustmentNum = Number.isInteger(parsedAdjustment) ? parsedAdjustment : NaN;
   const newQuantity = single && !isNaN(adjustmentNum) ? single.quantity + adjustmentNum : 0;
+  const floor = single?.deficientQuantity ?? 0;
+  const belowFloor = !isNaN(adjustmentNum) && newQuantity < floor;
 
   // Adjusting an inventory row down can leave the combo's sound on-hand below what active requests
   // have reserved. Show the reserved count and warn on a stranding result. Stock-pool rows carry no
@@ -147,17 +155,21 @@ export default function LocationActionDialog({
     // adjust
     if (!single) return false;
     if (isNaN(adjustmentNum) || adjustmentNum === 0) return false;
-    if (newQuantity < 0) return false;
+    if (newQuantity < 0 || belowFloor) return false;
     if (!reason.trim() || reason.length > REASON_MAX_LENGTH) return false;
     if (gate.blocked) return false;
     return true;
-  }, [mode, isDefinedPick, adjustmentNum, newQuantity, reason, single, gate.blocked]);
+  }, [mode, isDefinedPick, adjustmentNum, newQuantity, belowFloor, reason, single, gate.blocked]);
 
   // #981: why Confirm is off on an adjust, whichever check is blocking it, so a dead button always
   // says what it is waiting for.
   const adjustBlockedReason = (() => {
     if (mode !== 'adjust' || !single) return null;
+    if (notWhole) return 'Whole numbers only.';
     if (isNaN(adjustmentNum) || adjustmentNum === 0) return 'Enter how many to add (+) or take off (-).';
+    if (belowFloor && floor > 0) {
+      return `${floor} of the units on this row are flagged deficient - the lowest it can go is ${floor}.`;
+    }
     if (newQuantity < 0) {
       return `Only ${single.quantity} on this row - the most you can take off is ${single.quantity}.`;
     }
@@ -359,15 +371,20 @@ export default function LocationActionDialog({
             fullWidth
             autoFocus
             helperText={
-              !isNaN(adjustmentNum)
-                ? newQuantity < 0
-                  ? `Only ${single.quantity} on this row - cannot go below 0`
-                  : `New qty: ${newQuantity}`
-                : 'Enter a positive or negative number'
+              notWhole
+                ? 'Whole numbers only'
+                : !isNaN(adjustmentNum)
+                  ? belowFloor && floor > 0
+                    ? `${floor} deficient on this row - cannot go below ${floor}`
+                    : newQuantity < 0
+                      ? `Only ${single.quantity} on this row - cannot go below 0`
+                      : `New qty: ${newQuantity}`
+                  : 'Enter a positive or negative number'
             }
             slotProps={{
+              htmlInput: { step: 1 },
               formHelperText: {
-                sx: { color: newQuantity < 0 ? 'error.main' : 'text.secondary' },
+                sx: { color: notWhole || belowFloor || newQuantity < 0 ? 'error.main' : 'text.secondary' },
               },
             }}
           />

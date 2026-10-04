@@ -71,6 +71,7 @@ interface InventoryLocationItem {
   hardwareCategory: string;
   productCode: string;
   quantity: number;
+  deficientQuantity: number;
   available: number;
   aisle: string | null;
   row: string | null;
@@ -397,6 +398,7 @@ function ContentsPanel({ selected, warehouseLabel, onClose }: ContentsPanelProps
         hardwareCategory: i.inventoryLocation.hardwareCategory,
         productCode: i.inventoryLocation.productCode,
         quantity: i.inventoryLocation.quantity,
+        deficientQuantity: i.inventoryLocation.deficientQuantity,
         warehouseId: i.inventoryLocation.warehouseId,
         aisle: i.inventoryLocation.aisle,
         row: i.inventoryLocation.row,
@@ -409,6 +411,7 @@ function ContentsPanel({ selected, warehouseLabel, onClose }: ContentsPanelProps
         kind: 'stock',
         productCode: s.productCode,
         quantity: s.quantity,
+        deficientQuantity: s.deficientQuantity,
         warehouseId: s.warehouseId,
         aisle: s.aisle,
         row: s.row,
