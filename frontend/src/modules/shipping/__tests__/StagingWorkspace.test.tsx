@@ -227,6 +227,41 @@ describe('splitting loose hardware', () => {
     expect(qty).toHaveValue(4);
   });
 
+  it('cancels the edit on Escape instead of saving it (#1459)', async () => {
+    const removed = vi.fn();
+    const changed = vi.fn();
+    const held = {
+      __typename: 'ShipmentContainerItem',
+      id: 'ci-1',
+      openingItemId: null,
+      openingNumber: '101',
+      hardwareCategory: 'HINGE',
+      productCode: 'HG-100',
+      quantity: 4,
+      isManual: false,
+      position: 0,
+    };
+    renderWorkspace([
+      poolMock({ containers: [container({ items: [held] })] }),
+      setItemsMock('c-1', [], removed),
+      setItemsMock('c-1', [looseInput(7)], changed),
+    ]);
+
+    const qty = await screen.findByRole('spinbutton', { name: /Quantity of 101 · HG-100 in Box 1/i });
+    for (const typed of ['7', '0']) {
+      // Really focused, so the handler's own blur() fires the blur inside the keydown, as a browser does.
+      act(() => qty.focus());
+      fireEvent.change(qty, { target: { value: typed } });
+      fireEvent.keyDown(qty, { key: 'Escape' });
+      expect(qty).not.toHaveFocus();
+      expect(qty).toHaveValue(4);
+    }
+    // A save would answer asynchronously; give it the chance before saying none went out.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+    expect(changed).not.toHaveBeenCalled();
+    expect(removed).not.toHaveBeenCalled();
+  });
+
   it('takes the line out when its quantity is corrected to zero', async () => {
     const fired = vi.fn();
     const held = {
