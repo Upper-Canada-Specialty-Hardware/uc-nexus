@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.errors import InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import (
+    Classification,
     NotificationType,
     PullRequestSource,
     PullRequestStatus,
@@ -92,6 +93,12 @@ def create_shop_assembly_request(
         )
 
     lines = [_validated_line(item) for item in items]
+    # #1425: the project row first, the lock finalize takes before anything else (#1156) and that
+    # set_product_classifications takes too, so a classification change and this check cannot
+    # interleave. Inside a finalize it is already held and this is a no-op.
+    from app.models.project import Project
+
+    session.execute(select(Project.id).where(Project.id == project_id).with_for_update(key_share=True))
     _check_lines_against_schedule(session, project_id, lines)
 
     # #493: minted from the project's counter, shared with shipping-out requests so one chronological
@@ -182,9 +189,16 @@ def _check_lines_against_schedule(session: Session, project_id: uuid.UUID, lines
     The ceiling is the opening's scheduled total, not the composer's net-of-sent-and-claimed figure:
     it bounds what a request can claim to be owed without re-deriving the composer here, so a line the
     composer suggested is never refused. One grouped read over the named openings.
+
+    #1425: a line must also be shop work, by the composer's own rule - the classification covering most
+    of the product's units on that opening is SHOP_HARDWARE (`request_composer.dominant_classification`),
+    and the project has not marked the product By Others. The composer offers nothing else, but a tab
+    opened before a tenant owner moved the product to site or By Others still could: the change only
+    takes the product off requests that existed when it was saved.
     """
     from app.models.hardware import HardwareItem
     from app.models.project import Opening
+    from app.repositories.request_composer import by_others_products, dominant_classification
 
     seen: set[tuple[str, str, str]] = set()
     for line in lines:
@@ -196,23 +210,36 @@ def _check_lines_against_schedule(session: Session, project_id: uuid.UUID, lines
             )
         seen.add(key)
 
-    scheduled = {
-        (opening_number, category, code): int(total or 0)
-        for opening_number, category, code, total in session.execute(
-            select(
-                Opening.opening_number,
-                HardwareItem.hardware_category,
-                HardwareItem.product_code,
-                func.sum(HardwareItem.item_quantity),
-            )
-            .join(Opening, HardwareItem.opening_id == Opening.id)
-            .where(
-                HardwareItem.project_id == project_id,
-                Opening.opening_number.in_({line["opening_number"] for line in lines}),
-            )
-            .group_by(Opening.opening_number, HardwareItem.hardware_category, HardwareItem.product_code)
-        ).all()
-    }
+    scheduled: dict[tuple[str, str, str], int] = {}
+    by_classification: dict[tuple[str, str, str], dict[str | None, int]] = {}
+    for opening_number, category, code, classification, total in session.execute(
+        select(
+            Opening.opening_number,
+            HardwareItem.hardware_category,
+            HardwareItem.product_code,
+            HardwareItem.classification,
+            func.sum(HardwareItem.item_quantity),
+        )
+        .join(Opening, HardwareItem.opening_id == Opening.id)
+        .where(
+            HardwareItem.project_id == project_id,
+            Opening.opening_number.in_({line["opening_number"] for line in lines}),
+        )
+        .group_by(
+            Opening.opening_number,
+            HardwareItem.hardware_category,
+            HardwareItem.product_code,
+            HardwareItem.classification,
+        )
+    ).all():
+        key = (opening_number, category, code)
+        units = int(total or 0)
+        scheduled[key] = scheduled.get(key, 0) + units
+        counts = by_classification.setdefault(key, {})
+        value = classification.value if classification is not None else None
+        counts[value] = counts.get(value, 0) + units
+    by_others = by_others_products(session, project_id)
+
     for line in lines:
         key = (line["opening_number"], line["hardware_category"], line["product_code"])
         on_schedule = scheduled.get(key, 0)
@@ -220,6 +247,18 @@ def _check_lines_against_schedule(session: Session, project_id: uuid.UUID, lines
             raise ValidationError(
                 f"{key[1]} {key[2]} is not on opening {key[0]}'s schedule.",
                 field="product_code",
+            )
+        if (key[1], key[2]) in by_others:
+            raise ValidationError(
+                f"{key[0]} {key[1]} {key[2]}: this product is By Others on this project, so it is not "
+                "assembled in the shop. Reload and compose the request again.",
+                field="items",
+            )
+        if dominant_classification(by_classification.get(key, {})) != Classification.SHOP_HARDWARE:
+            raise ValidationError(
+                f"{key[0]} {key[1]} {key[2]}: this product is not shop hardware on this opening, so it "
+                "cannot go to the shop. Reload and compose the request again.",
+                field="items",
             )
         if line["requested_quantity"] > on_schedule:
             raise ValidationError(

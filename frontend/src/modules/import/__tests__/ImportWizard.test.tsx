@@ -238,6 +238,7 @@ function coverageLine(overrides: Record<string, unknown> = {}) {
     claimedQuantity: 0,
     suggestedQuantity: 6,
     onOrderQuantity: 0,
+    byOthers: false,
     ...overrides,
   };
 }

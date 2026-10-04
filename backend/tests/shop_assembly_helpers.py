@@ -33,11 +33,29 @@ def schedule_for(sar_items):
     ]
 
 
+def shop_classifications(sar_items):
+    """The finalize `classifications` that make every product a set of request lines names shop hardware.
+
+    A line must also be shop work since #1425 (the composer's own rule), and a product the finalize
+    gives one classification takes it on every row whatever the cost, so the cost here is nominal.
+    """
+    products = {(item["hardware_category"], item["product_code"]) for item in sar_items}
+    return [
+        {"hardware_category": c, "product_code": p, "unit_cost": 0.0, "classification": "SHOP_HARDWARE"}
+        for c, p in sorted(products)
+    ]
+
+
 def with_schedule(payload: dict) -> dict:
-    """A finalize payload whose `hardware_items` schedule what its `shop_assembly_items` ask for."""
+    """A finalize payload whose `hardware_items` schedule what its `shop_assembly_items` ask for, as shop
+    hardware."""
     return {
         **payload,
         "hardware_items": [*(payload.get("hardware_items") or []), *schedule_for(payload["shop_assembly_items"])],
+        "classifications": [
+            *(payload.get("classifications") or []),
+            *shop_classifications(payload["shop_assembly_items"]),
+        ],
     }
 
 

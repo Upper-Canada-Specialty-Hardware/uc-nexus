@@ -11,12 +11,18 @@ import pytest
 from sqlalchemy import update
 
 from app.errors import InvalidStateTransitionError, ValidationError
-from app.models.enums import ShopAssemblyOpeningStatus, ShopAssemblyRequestStatus
+from app.models.enums import HardwareClassificationChoice, ShopAssemblyOpeningStatus, ShopAssemblyRequestStatus
 from app.models.inventory import InventoryLocation
 from app.models.project import Project
 from app.models.shop_assembly import ShopAssemblyRequest
 from app.models.stock_item import StockItem
-from app.repositories import import_repository, shop_assembly_repository, warehouse_admin_repository
+from app.repositories import (
+    classification_override_repository,
+    import_repository,
+    request_composer,
+    shop_assembly_repository,
+    warehouse_admin_repository,
+)
 from app.services import locking
 from tests.pick_helpers import pick_pull
 from tests.shop_assembly_helpers import batch_lines
@@ -60,14 +66,19 @@ def _stock(session, project, quantity=10):
     session.flush()
 
 
-def _finalize(session, project, sar_items, *, scheduled=4):
-    """A01 scheduled for `scheduled` HG-100 hinges, and a request raised with `sar_items`."""
+_SHOP_HINGE = {"hardware_category": "HINGE", "product_code": "HG-100", "unit_cost": 0.0}
+
+
+def _finalize(session, project, sar_items, *, scheduled=4, classification="SHOP_HARDWARE"):
+    """A01 scheduled for `scheduled` HG-100 hinges classified `classification` (None: unclassified),
+    and a request raised with `sar_items`."""
     return import_repository.finalize_import_session(
         session,
         {
             "project_id": str(project.id),
             "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
             "hardware_items": [{**_HINGE, "item_quantity": scheduled}],
+            "classifications": [{**_SHOP_HINGE, "classification": classification}] if classification else [],
             "include_shop_assembly_request": True,
             "shop_assembly_items": sar_items,
         },
@@ -110,6 +121,107 @@ def test_the_same_line_twice_is_refused(db_session):
     same triple used to replace the first without a word."""
     with pytest.raises(ValidationError, match="appears on the request twice"):
         _finalize(db_session, _project(db_session), [{**_HINGE, "quantity": 1}, {**_HINGE, "quantity": 2}])
+
+
+# --- shop work only (#1425) -----------------------------------------------------------------------
+
+
+def _schedule_only(session, project, classification="SHOP_HARDWARE"):
+    """A01 scheduled for 4 HG-100 hinges, no request - the schedule a composer tab was opened over."""
+    import_repository.finalize_import_session(
+        session,
+        {
+            "project_id": str(project.id),
+            "openings": [{"opening_number": "A01"}, {"opening_number": "A02"}],
+            "hardware_items": [{**_HINGE, "item_quantity": 4}],
+            "classifications": [{**_SHOP_HINGE, "classification": classification}],
+        },
+    )
+
+
+def _raise_directly(session, project):
+    """The request a stale tab sends: straight to the create, with the classification long since moved."""
+    return shop_assembly_repository.create_shop_assembly_request(
+        session, project.id, [{**_HINGE, "requested_quantity": 4}], created_by="pm"
+    )
+
+
+@pytest.mark.parametrize("classification", ["SITE_HARDWARE", None])
+def test_a_product_that_is_not_shop_hardware_is_refused(db_session, classification):
+    """Site hardware goes to site loose, and unclassified hardware is not guessed onto a bench - the
+    composer offers neither, so the server refuses both."""
+    with pytest.raises(ValidationError, match="not shop hardware on this opening") as excinfo:
+        _finalize(db_session, _project(db_session), [{**_HINGE, "quantity": 4}], classification=classification)
+    assert excinfo.value.field == "items"
+
+
+def test_a_product_moved_to_site_after_the_tab_opened_is_refused(db_session):
+    project = _project(db_session)
+    _schedule_only(db_session, project)
+    classification_override_repository.set_product_classifications(
+        db_session, project.id, [("HINGE", "HG-100", HardwareClassificationChoice.UCH_SITE)], changed_by="owner"
+    )
+
+    with pytest.raises(ValidationError, match="not shop hardware"):
+        _raise_directly(db_session, project)
+
+
+def test_a_product_marked_by_others_is_refused_whatever_its_rows_say(db_session):
+    """By Others leaves the rows' SHOP_HARDWARE in place; the exclusion is what says it is not ours."""
+    project = _project(db_session)
+    _schedule_only(db_session, project)
+    classification_override_repository.set_product_classifications(
+        db_session, project.id, [("HINGE", "HG-100", HardwareClassificationChoice.BY_OTHERS)], changed_by="owner"
+    )
+
+    with pytest.raises(ValidationError, match="By Others on this project") as excinfo:
+        _raise_directly(db_session, project)
+    assert excinfo.value.field == "items"
+
+
+def test_a_finalize_that_makes_the_product_shop_hardware_can_request_it(db_session):
+    """An assembly finalize's own classification lands before its request is checked."""
+    project = _project(db_session)
+    _schedule_only(db_session, project, classification="SITE_HARDWARE")
+
+    sar = _finalize(db_session, project, [{**_HINGE, "quantity": 4}])
+
+    assert [(i.product_code, i.requested_quantity) for i in sar.items] == [("HG-100", 4)]
+
+
+def test_the_composer_flags_a_by_others_product(db_session):
+    """The composer marks what the server would refuse, so the wizard never offers it."""
+    project = _project(db_session)
+    _schedule_only(db_session, project)
+    classification_override_repository.set_product_classifications(
+        db_session, project.id, [("HINGE", "HG-100", HardwareClassificationChoice.BY_OTHERS)], changed_by="owner"
+    )
+
+    rows = request_composer.get_request_coverage(db_session, project.id, ["A01"])
+
+    assert [(r["product_code"], r["by_others"]) for r in rows] == [("HG-100", True)]
+
+
+def test_creating_a_request_locks_the_project_before_reading_the_schedule(db_session, monkeypatch):
+    """The lock a classification change also takes, so the two cannot interleave."""
+    project = _project(db_session)
+    _schedule_only(db_session, project)
+    statements: list[str] = []
+    real_execute = db_session.execute
+
+    def spy(statement, *args, **kwargs):
+        try:
+            statements.append(str(statement.compile(dialect=db_session.get_bind().dialect)))
+        except Exception:  # a text() or other construct with nothing to tell
+            statements.append(str(statement))
+        return real_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "execute", spy)
+    _raise_directly(db_session, project)
+
+    lock = next(i for i, s in enumerate(statements) if "FOR NO KEY UPDATE" in s and "projects" in s)
+    schedule = next(i for i, s in enumerate(statements) if "hardware_items" in s and "sum(" in s)
+    assert lock < schedule
 
 
 # --- decisions lock the request (#1121) -----------------------------------------------------------
@@ -169,6 +281,7 @@ def _two_openings_both_batched(session):
                 {**_HINGE, "item_quantity": 2},
                 {**_HINGE, "opening_number": "A02", "item_quantity": 2},
             ],
+            "classifications": [{**_SHOP_HINGE, "classification": "SHOP_HARDWARE"}],
             "include_shop_assembly_request": True,
             "shop_assembly_items": [{**_HINGE, "quantity": 2}, {**_HINGE, "opening_number": "A02", "quantity": 2}],
         },
@@ -332,6 +445,7 @@ def test_a_second_batch_takes_the_next_sequence(db_session):
                 {**_HINGE, "item_quantity": 2},
                 {**_HINGE, "opening_number": "A02", "item_quantity": 2},
             ],
+            "classifications": [{**_SHOP_HINGE, "classification": "SHOP_HARDWARE"}],
             "include_shop_assembly_request": True,
             "shop_assembly_items": [{**_HINGE, "quantity": 2}, {**_HINGE, "opening_number": "A02", "quantity": 2}],
         },
