@@ -240,6 +240,29 @@ it('does not save a quantity that was not changed', async () => {
   expect(saves).toBe(0);
 });
 
+it('does not save a part door - a typed 2.5 goes back to the stored count (#1558)', async () => {
+  // parseInt used to save 2.5 as 2. Any save is counted, so a truncated one is seen.
+  let saves = 0;
+  const saveMock: MockedResponse = {
+    request: { query: SAVE_DOORS_ON_HAND, variables: () => true },
+    maxUsageCount: INFINITE,
+    result: () => {
+      saves += 1;
+      return { data: { saveDoorsOnHand: PAGE } };
+    },
+  };
+  renderPage([saveMock]);
+
+  // JOB-001 stores 3, so a truncated 2.5 would have been a real change and saved.
+  const input = await screen.findByLabelText('Doors on hand for JOB-001');
+  fireEvent.change(input, { target: { value: '2.5' } });
+  fireEvent.blur(input);
+
+  await new Promise((r) => setTimeout(r, 50));
+  expect(saves).toBe(0);
+  expect(input).toHaveValue(3);
+});
+
 it('saves the average door cost', async () => {
   let savedAmount: number | null = null;
   const costMock: MockedResponse = {

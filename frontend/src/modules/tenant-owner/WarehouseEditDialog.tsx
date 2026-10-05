@@ -177,7 +177,8 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
   return (
     <Modal open title={form.id ? 'Edit Warehouse' : 'Create Warehouse'} onClose={onClose} actions={actions} maxWidth="sm">
       <Stack spacing={2} sx={{ pt: 1 }}>
-        <Stack direction="row" spacing={2}>
+        {/* #1558: wraps, so on a phone the short fields drop under the long one instead of scrolling sideways. */}
+        <Stack direction="row" spacing={2} useFlexGap flexWrap="wrap">
           <TextField
             label="Name"
             value={form.name}
@@ -187,8 +188,8 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
             }}
             required
             autoFocus
-            fullWidth
             size="small"
+            sx={{ flex: '1 1 200px', minWidth: 0 }}
             error={!!fieldErrors.name}
             helperText={fieldErrors.name}
           />
@@ -203,7 +204,7 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
             size="small"
             error={!!fieldErrors.code}
             helperText={fieldErrors.code}
-            sx={{ width: 140, '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
+            sx={{ width: 140, maxWidth: '100%', '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
             inputProps={{ maxLength: 20 }}
           />
           {/* #637: which GP company owns the building. Never picked here (#845): it is the company
@@ -216,7 +217,7 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
             disabled
             error={!!fieldErrors.company}
             helperText={fieldErrors.company}
-            sx={{ width: 140, '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
+            sx={{ width: 140, maxWidth: '100%', '& .MuiInputBase-input': { fontFamily: FONT_MONO } }}
           />
         </Stack>
         <Typography component="div" sx={{ ...microLabelSx, pt: 0.5 }}>
@@ -229,33 +230,34 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
           fullWidth
           size="small"
         />
-        <Stack direction="row" spacing={2}>
+        {/* #1558: wraps, so on a phone the short fields drop under the long one instead of scrolling sideways. */}
+        <Stack direction="row" spacing={2} useFlexGap flexWrap="wrap">
           <TextField
             label="City"
             value={form.city ?? ''}
             onChange={(e) => setForm((f) => ({ ...f, city: e.target.value }))}
-            fullWidth
             size="small"
+            sx={{ flex: '1 1 200px', minWidth: 0 }}
           />
           <TextField
             label="Province"
             value={form.province ?? ''}
             onChange={(e) => setForm((f) => ({ ...f, province: e.target.value }))}
             size="small"
-            sx={{ width: 140 }}
+            sx={{ width: 140, maxWidth: '100%' }}
           />
           <TextField
             label="Postal Code"
             value={form.postalCode ?? ''}
             onChange={(e) => setForm((f) => ({ ...f, postalCode: e.target.value }))}
             size="small"
-            sx={{ width: 140 }}
+            sx={{ width: 140, maxWidth: '100%' }}
           />
         </Stack>
         <Typography component="div" sx={{ ...microLabelSx, pt: 0.5 }}>
           Flags
         </Typography>
-        <Stack direction="row" spacing={2}>
+        <Stack direction="row" spacing={2} useFlexGap flexWrap="wrap">
           <FormControlLabel
             control={
               <Checkbox
