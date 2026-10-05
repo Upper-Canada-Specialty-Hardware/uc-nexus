@@ -771,6 +771,17 @@ class DeliveryRequestHeaderInput:
 
 
 @strawberry.input
+class ExpectedContainerContentsInput:
+    """What the confirm dialog showed for one container (#1583): the ids of the lines on it.
+
+    Every save rewrites a container's lines under new ids, so the set of ids pins its contents exactly.
+    """
+
+    container_id: strawberry.ID
+    item_ids: list[strawberry.ID] = strawberry.field(default_factory=list)
+
+
+@strawberry.input
 class ConfirmShipmentFromContainersInput(DeliveryRequestHeaderInput):
     """Ship whole containers as one shipment (#451).
 
@@ -786,6 +797,10 @@ class ConfirmShipmentFromContainersInput(DeliveryRequestHeaderInput):
         deprecation_reason="Ignored; the server mints the packing slip number from a global counter.",
     )
     container_ids: list[strawberry.ID] = strawberry.field(default_factory=list)
+    # #1583: what the dialog's manifest showed, per container. A container whose lines changed since is
+    # refused rather than shipped with contents nobody checked. Optional so the check is skipped only
+    # when nothing was sent; the screen always sends it.
+    expected_contents: list[ExpectedContainerContentsInput] | None = None
 
 
 @strawberry.input

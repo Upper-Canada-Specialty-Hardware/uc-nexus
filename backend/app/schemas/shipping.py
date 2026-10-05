@@ -486,6 +486,14 @@ class ShippingMutations:
                 [uuid.UUID(str(cid)) for cid in input.container_ids],
                 shipped_by=actor,
                 details=_delivery_details(input),
+                expected_contents=(
+                    None
+                    if input.expected_contents is None
+                    else {
+                        uuid.UUID(str(e.container_id)): {uuid.UUID(str(i)) for i in e.item_ids}
+                        for e in input.expected_contents
+                    }
+                ),
             )
             session.commit()
             refreshed = shipping_repository.get_packing_slip(session, slip.id)
