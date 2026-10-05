@@ -47,6 +47,7 @@ import { isStatusCardActive, toggleStatusCard } from './statusCardFilter';
 import { HIGHLIGHT_PARAM, PROJECT_PARAM, parseHighlightParam } from './poTableLinks';
 import { Routes, Route, useNavigate, useSearchParams } from 'react-router-dom';
 import { useIdentity } from '../../hooks/useIdentity';
+import { useDropProjectOnCompanySwitch } from '../../hooks/useDropProjectOnCompanySwitch';
 import PODocumentSettingsPage from './PODocumentSettingsPage';
 import { useToast } from '../../components/Toast';
 import { monoSx, tabularSx, microLabelSx } from '../../theme';
@@ -510,6 +511,8 @@ function POListPage() {
   // page opens the table on its own project, and the Sidebar's plain link lands unscoped even while
   // this page is already mounted, because the scope is read from the URL on every render.
   const projectId = searchParams.get(PROJECT_PARAM);
+  // #1528: a company switch takes the scoped project with it, as on Inventory and Shipping Requests.
+  useDropProjectOnCompanySwitch();
   // #851: the import wizard's new drafts, tinted and scrolled to when the table opens on them.
   const highlightParam = searchParams.get(HIGHLIGHT_PARAM);
   const highlightIds = useMemo(() => new Set(parseHighlightParam(highlightParam)), [highlightParam]);
