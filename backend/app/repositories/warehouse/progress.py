@@ -283,7 +283,9 @@ def get_project_progress_by_product(session: Session, project_id: uuid.UUID) -> 
                 case(
                     (
                         POModel.status.in_(OPEN_PO_STATUSES),
-                        POLineItemModel.ordered_quantity - POLineItemModel.received_quantity,
+                        # #1605: an over-received line (the vendor over-shipped, or GP trimmed the line below
+                        # what arrived) owes nothing; it must not take units off the other lines' count.
+                        func.greatest(POLineItemModel.ordered_quantity - POLineItemModel.received_quantity, 0),
                     ),
                     else_=0,
                 )
@@ -495,7 +497,9 @@ def get_hardware_status_by_product(session: Session, project_ids: list[uuid.UUID
                 case(
                     (
                         POModel.status.in_(OPEN_PO_STATUSES),
-                        POLineItemModel.ordered_quantity - POLineItemModel.received_quantity,
+                        # #1605: an over-received line (the vendor over-shipped, or GP trimmed the line below
+                        # what arrived) owes nothing; it must not take units off the other lines' count.
+                        func.greatest(POLineItemModel.ordered_quantity - POLineItemModel.received_quantity, 0),
                     ),
                     else_=0,
                 )

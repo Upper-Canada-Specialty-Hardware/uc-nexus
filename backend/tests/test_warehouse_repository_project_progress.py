@@ -354,6 +354,22 @@ def test_back_ordered_excludes_closed_pos(db_session):
     assert rows[0]["back_ordered"] == 6  # 4 + 2, NOT counting CLOSED's 3
 
 
+def test_an_over_received_line_does_not_take_units_off_back_ordered(db_session):
+    """#1605: a vendor over-ship (received above ordered) owes nothing - it must not reduce the other lines."""
+    project = _make_project(db_session)
+    opening = _make_opening(db_session, project.id)
+    _make_hardware_item(
+        db_session, project_id=project.id, opening_id=opening.id, product_code="HG-100", item_quantity=20
+    )
+    over = _make_po(db_session, project_id=project.id, status=POStatus.PARTIALLY_RECEIVED)
+    _make_line_item(db_session, po_id=over.id, product_code="HG-100", ordered_quantity=10, received_quantity=12)
+    still_owed = _make_po(db_session, project_id=project.id, status=POStatus.GP_REGISTERED)
+    _make_line_item(db_session, po_id=still_owed.id, product_code="HG-100", ordered_quantity=5, received_quantity=0)
+
+    rows = warehouse_repository.get_project_progress_by_product(db_session, project.id)
+    assert rows[0]["back_ordered"] == 5
+
+
 def test_shipped_out_sums_packing_slip_items(db_session):
     """shipped_out aggregates packing_slip_items.quantity scoped to the project."""
     project = _make_project(db_session)
