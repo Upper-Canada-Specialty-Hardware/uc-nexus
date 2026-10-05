@@ -222,9 +222,11 @@ function GpPickField({
   options,
   readOnly,
   readOnlyHelper,
-  minWidth,
+  minWidth: minWidthPx,
   error,
 }: GpPickFieldProps) {
+  // #1525: never wider than the row it sits in, so a phone does not scroll the dialog sideways.
+  const minWidth = minWidthPx == null ? undefined : `min(${minWidthPx}px, 100%)`;
   if (readOnly) {
     return (
       <TextField
@@ -1818,14 +1820,16 @@ export default function GpPurchaseOrderDialog({
             sx={{ minWidth: 180, ...MONO_FIELD_SX }}
             disabled
           />
-          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
+          {/* #1525: the pair is sized, not the select inside it - a percentage on the select resolved against
+              this content-sized box and collapsed it on desktop. 300px where there is room, the row's width on a phone. */}
+          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5, flex: '0 1 300px', minWidth: 0, maxWidth: '100%' }}>
             <TextField
               select
               label="Cost code for all lines"
               value={costCode}
               onChange={(e) => handleAllLinesCostCode(e.target.value)}
               size="small"
-              sx={{ minWidth: 260, '& .MuiSelect-select': monoSx }}
+              sx={{ flex: 1, minWidth: 0, '& .MuiSelect-select': monoSx }}
               disabled={!isJob || !relayConnected || costCodesLoading || costCodes.length === 0}
               error={!!errors.costCode}
               helperText={errors.costCode || costCodeHelper}
@@ -1916,7 +1920,7 @@ export default function GpPurchaseOrderDialog({
               setContact(e.target.value);
             }}
             size="small"
-            sx={{ minWidth: 220, flex: 1 }}
+            sx={{ minWidth: 'min(220px, 100%)', flex: 1 }}
             slotProps={{ htmlInput: { maxLength: MAX_CONTACT } }}
             error={!!errors.contact}
             helperText={errors.contact || (contactEdited ? '' : "From the GP vendor, else your buyer id")}
@@ -1977,7 +1981,7 @@ export default function GpPurchaseOrderDialog({
               value={taxScheduleManual}
               onChange={(e) => setTaxScheduleManual(e.target.value)}
               size="small"
-              sx={{ minWidth: 260, ...MONO_FIELD_SX }}
+              sx={{ minWidth: 'min(260px, 100%)', ...MONO_FIELD_SX }}
               error={!!errors.taxDetail}
               helperText={
                 errors.taxDetail ||
@@ -1998,7 +2002,7 @@ export default function GpPurchaseOrderDialog({
               value={isForeignCurrency ? '' : taxScheduleId}
               onChange={(e) => setTaxScheduleId(e.target.value)}
               size="small"
-              sx={{ minWidth: 260 }}
+              sx={{ minWidth: 'min(260px, 100%)' }}
               disabled={!relayConnected || isForeignCurrency || gpTaxSchedules.length === 0}
               error={!!errors.taxDetail}
               helperText={
