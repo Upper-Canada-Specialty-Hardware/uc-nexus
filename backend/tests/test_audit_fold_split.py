@@ -81,5 +81,26 @@ def test_a_split_is_audited_on_both_rows(db_session):
         (AuditAction.ADJUSTMENT, 10, 6)
     ]
     assert on_source[0].detail["splitInto"] == str(remainder.id)
+    # The drawer renders an adjustment as old -> new (signed change).
+    assert on_source[0].detail["adjustment"] == -4
     on_remainder = warehouse_repository.get_audit_log(db_session, entity_id=remainder.id)
     assert [e.detail["reason"] for e in on_remainder] == ["split"]
+
+
+def test_a_fold_shows_once_on_the_shelf_history(db_session):
+    """Both rows carry the fold's locations; the shelf strip lists the move once, not twice."""
+    first, second = _aisle(), _aisle()
+    define_location(db_session, None, first, "1", "1")
+    define_location(db_session, None, second, "1", "1")
+    moving = make_stock_item(db_session, quantity=3, code="HG-ONCE", aisle=first, row="1", bay="1")
+    make_stock_item(db_session, quantity=4, code="HG-ONCE", aisle=second, row="1", bay="1")
+
+    stock_repository.move_stock_location(
+        db_session, stock_item_id=moving.id, new_aisle=second, new_row="1", new_bay="1", performed_by="wh"
+    )
+    db_session.flush()
+
+    on_shelf = warehouse_repository.get_location_audit_history(
+        db_session, second, "1", "1", company=_company(db_session)
+    )
+    assert [e.action for e in on_shelf].count(AuditAction.MOVE) == 1

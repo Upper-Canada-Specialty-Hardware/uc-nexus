@@ -374,6 +374,9 @@ def get_location_audit_history(
                 InventoryAuditLog.detail["targetLocation"].contains(to_match),
                 InventoryAuditLog.detail["location"].contains(to_match),
             ),
+            # #1574: a fold is logged on both rows with the same locations; the shelf shows it once, from the
+            # source's entry. The surviving row's mirror stays in its own drawer.
+            ~InventoryAuditLog.detail.has_key("foldedFromStockItemId"),
         )
         .order_by(InventoryAuditLog.created_at.desc())
     )
@@ -791,6 +794,8 @@ def split_inventory_location(
             "reason": "split",
             "splitInto": str(remainder.id),
             "quantity": quantity,
+            # The history drawer renders an adjustment as old -> new (signed change).
+            "adjustment": -quantity,
             "oldQuantity": old_quantity,
             "newQuantity": il.quantity,
         },
