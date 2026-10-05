@@ -211,6 +211,13 @@ describe('ShipmentsList', () => {
     expect(await screen.findByRole('button', { name: 'Expand PS-0019' })).toBeInTheDocument();
   });
 
+  it('names its project filter for a screen reader (#1547)', async () => {
+    renderList([packingSlipsMock([slip()])]);
+
+    await screen.findByText('PS-0019');
+    expect(screen.getByRole('combobox', { name: /^Project/ })).toBeInTheDocument();
+  });
+
   it('shows where each shipment has got to, with its dates and carrier', async () => {
     renderList([
       packingSlipsMock([

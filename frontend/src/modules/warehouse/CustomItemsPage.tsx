@@ -38,6 +38,7 @@ import {
   type InventoryItemType,
 } from '../../hooks/useCustomItems';
 import { userMessage } from '../../graphql/userMessage';
+import { openRowOnEnter } from '../../components/openRowOnEnter';
 
 /**
  * The catalog of inventory that the hardware schedule never describes (#454).
@@ -303,6 +304,7 @@ function TypePanel({
 
   // #909: the columns fit the grid's width and never scroll sideways; resized widths are remembered.
   const { setContainer, gridProps } = useGridColumnFit('warehouse.custom-items.items', columns);
+  const openItem = (params: GridRowParams) => onEditItem(params.row as CustomInventoryItem);
 
   return (
     <Box>
@@ -425,7 +427,9 @@ function TypePanel({
         autoHeight
         density="compact"
         disableRowSelectionOnClick
-        onRowClick={(params: GridRowParams) => onEditItem(params.row as CustomInventoryItem)}
+        onRowClick={openItem}
+        // #1547: Enter on a focused cell opens the item, as a click does.
+        onCellKeyDown={openRowOnEnter(openItem, gridProps.columns)}
         pageSizeOptions={[10, 25, 50]}
         initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
         sx={[gridProps.sx, { '& .MuiDataGrid-row': { cursor: 'pointer' } }]}

@@ -69,6 +69,25 @@ const warehousesMock: MockedResponse = {
 };
 
 describe('ReturnShipmentDialog', () => {
+  it("names each line's disposition by its product, and the destination warehouse (#1547)", async () => {
+    render(
+      <MockedProvider mocks={[linesMock, warehousesMock]}>
+        <ToastProvider>
+          <ReturnShipmentDialog
+            slip={{ id: 'ps-1', packingSlipNumber: 'PS-0019', projectName: 'Cowichan District Hospital' }}
+            onClose={() => {}}
+            onCompleted={() => {}}
+          />
+        </ToastProvider>
+      </MockedProvider>,
+    );
+
+    await screen.findByText('HG-2');
+    expect(screen.getByRole('combobox', { name: /^Disposition HG-1/ })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /^Disposition HG-2/ })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /^Destination warehouse/ })).toBeInTheDocument();
+  });
+
   it('refuses a quantity that is not a whole number instead of returning only the other lines (#1177)', async () => {
     const createReturn = vi.fn(() => ({ data: { createShipmentReturn: null } }));
     const createMock: MockedResponse = {

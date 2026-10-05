@@ -688,8 +688,8 @@ export default function PutAwayTab() {
       {/* Filters */}
       <Box sx={{ display: 'flex', gap: 2, mb: 3, flexWrap: 'wrap' }}>
         <FormControl size="small" sx={{ minWidth: 250 }}>
-          <InputLabel>Filter by Project</InputLabel>
-          <Select
+          <InputLabel id="putaway-project-filter-label">Filter by Project</InputLabel>
+          <Select labelId="putaway-project-filter-label"
             value={projectFilter}
             label="Filter by Project"
             onChange={(e) => setProjectFilter(e.target.value)}

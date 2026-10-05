@@ -1170,8 +1170,8 @@ export default function PODetailModal({
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
             <FormControl fullWidth size="small">
-              <InputLabel>Document Type</InputLabel>
-              <Select
+              <InputLabel id="po-document-type-label">Document Type</InputLabel>
+              <Select labelId="po-document-type-label"
                 value={uploadDocType}
                 label="Document Type"
                 onChange={(e) => setUploadDocType(e.target.value)}

@@ -237,8 +237,8 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
 
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
           <FormControl size="small" sx={{ minWidth: 200 }} required>
-            <InputLabel>Destination warehouse</InputLabel>
-            <Select
+            <InputLabel id="return-destination-warehouse-label">Destination warehouse</InputLabel>
+            <Select labelId="return-destination-warehouse-label"
               label="Destination warehouse"
               value={effectiveWarehouseId}
               onChange={(e) => setWarehouseId(e.target.value)}
@@ -302,7 +302,9 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
                         borderColor: 'divider',
                       }}
                     >
-                      <Typography sx={{ ...monoSx, fontWeight: 600 }}>{line.productCode}</Typography>
+                      <Typography id={`return-line-${line.packingSlipItemId}`} sx={{ ...monoSx, fontWeight: 600 }}>
+                        {line.productCode}
+                      </Typography>
                       <Typography variant="body2" color="text.secondary">
                         {line.hardwareCategory}
                         {line.openingNumber ? ` · opening ${line.openingNumber}` : ''}
@@ -321,8 +323,11 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
                         sx={{ width: 90 }}
                       />
                       <FormControl size="small" sx={{ minWidth: 210 }}>
-                        <InputLabel>Disposition</InputLabel>
+                        <InputLabel id={`return-disposition-${line.packingSlipItemId}`}>Disposition</InputLabel>
+                        {/* #1547: named with its line's product code - every line has one, and "Disposition"
+                            alone left a screen reader user unable to tell them apart. */}
                         <Select
+                          labelId={`return-disposition-${line.packingSlipItemId} return-line-${line.packingSlipItemId}`}
                           label="Disposition"
                           value={draft.disposition}
                           onChange={(e) =>
