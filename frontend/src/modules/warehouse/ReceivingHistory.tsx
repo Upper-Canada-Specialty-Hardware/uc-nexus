@@ -17,6 +17,7 @@ import {
   Typography,
 } from '@mui/material';
 import { ChevronRight } from 'lucide-react';
+import { userMessage } from '../../graphql/userMessage';
 import { motion } from 'motion/react';
 import { useQuery } from '@apollo/client/react';
 import { formatPoStatus, poStatusChipColor } from '../po/poStatus';
@@ -144,7 +145,7 @@ function ReceivesPanel({ poId }: { poId: string }) {
     );
   }
   if (error) {
-    return <Alert severity="error">Error loading receives: {error.message}</Alert>;
+    return <Alert severity="error">Error loading receives: {userMessage(error)}</Alert>;
   }
 
   const receives = data?.poReceivingDetails?.receiveRecords ?? [];
@@ -405,7 +406,7 @@ export default function ReceivingHistory({ projects }: ReceivingHistoryProps) {
       )}
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          Error loading receiving history: {error.message}
+          Error loading receiving history: {userMessage(error)}
         </Alert>
       )}
       {!loading && !error && rows.length === 0 && (

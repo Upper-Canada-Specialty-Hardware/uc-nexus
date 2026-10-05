@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import { useSearchParams } from 'react-router-dom';
 import {
   Alert,
@@ -382,7 +383,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
       setLifecycle(null);
       void refetch();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to update the shipment', 'error');
+      showToast(err instanceof Error ? userMessage(err) : 'Failed to update the shipment', 'error');
     }
   }, [lifecycle, markPickedUp, markDelivered, cancelShipment, showToast, refetch]);
 
@@ -455,7 +456,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
           ))}
         </Stack>
       ) : error && !current ? (
-        <Alert severity="error">Error loading shipments: {error.message}</Alert>
+        <Alert severity="error">Error loading shipments: {userMessage(error)}</Alert>
       ) : (
         <FitTable storageKey="shipments-list" columns={shipmentColumns(isGlobal)}>
           {visible.length === 0 && (

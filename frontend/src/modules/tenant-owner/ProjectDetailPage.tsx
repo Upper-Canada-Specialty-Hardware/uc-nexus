@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Alert,
   Box,
@@ -167,7 +168,7 @@ export default function ProjectDetailPage() {
     },
     onError: (err) => {
       setArchiveConfirmOpen(false);
-      showToast(err.message, 'error');
+      showToast(userMessage(err), 'error');
     },
   });
 
@@ -210,7 +211,7 @@ export default function ProjectDetailPage() {
   }
 
   if (error) {
-    return <Alert severity="error">Could not load this project: {error.message}</Alert>;
+    return <Alert severity="error">Could not load this project: {userMessage(error)}</Alert>;
   }
 
   if (!project) {

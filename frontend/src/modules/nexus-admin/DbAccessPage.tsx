@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Box,
   Button,
@@ -176,7 +177,7 @@ export default function DbAccessPage() {
       refreshAuditIfOpen();
       showToast('Database login minted', 'success');
     },
-    onError: (err) => showToast(err.message, 'error'),
+    onError: (err) => showToast(userMessage(err), 'error'),
   });
 
   const [rotate] = useMutation<{ rotatePostgresAdmin: Credential }>(ROTATE_POSTGRES_ADMIN, {
@@ -190,7 +191,7 @@ export default function DbAccessPage() {
     },
     onError: (err) => {
       setRotatingRole(null);
-      showToast(err.message, 'error');
+      showToast(userMessage(err), 'error');
     },
   });
 
@@ -211,7 +212,7 @@ export default function DbAccessPage() {
     },
     onError: (err) => {
       setRevokeTarget(null);
-      showToast(err.message, 'error');
+      showToast(userMessage(err), 'error');
     },
   });
 
@@ -418,7 +419,7 @@ export default function DbAccessPage() {
           rather than on a blank grid; the backend's FEATURE_DISABLED message reads plainly. */}
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          {error.message}
+          {userMessage(error)}
         </Alert>
       )}
 

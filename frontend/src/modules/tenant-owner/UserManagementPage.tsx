@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Box,
   Typography,
@@ -397,7 +398,7 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
       showToast('User updated successfully', 'success');
       closeDialog();
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : 'Failed to update user', 'error');
+      showToast(err instanceof Error ? userMessage(err) : 'Failed to update user', 'error');
     } finally {
       setSaving(false);
     }

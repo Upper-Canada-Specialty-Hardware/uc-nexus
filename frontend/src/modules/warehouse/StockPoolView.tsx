@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Box,
   Typography,
@@ -375,7 +376,7 @@ export default function StockPoolView() {
         </FormControl>
       </Stack>
 
-      {error && <Alert severity="error">{error.message}</Alert>}
+      {error && <Alert severity="error">{userMessage(error)}</Alert>}
 
       {rows.length === 0 && !loading ? (
         <Card variant="outlined" sx={{ maxWidth: 620 }}>

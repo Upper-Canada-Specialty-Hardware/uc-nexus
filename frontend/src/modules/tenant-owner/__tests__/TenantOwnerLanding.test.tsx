@@ -54,3 +54,11 @@ it('says so when the stats fail to load', async () => {
 
   expect(await screen.findByText(/Error loading company stats/)).toBeInTheDocument();
 });
+
+// #1555: a request that never reached the server said "Failed to fetch"; it now says what happened.
+it('words a network failure instead of showing the browser text', async () => {
+  renderLanding([{ request: { query: GET_ADMIN_STATS }, error: new TypeError('Failed to fetch') }]);
+
+  expect(await screen.findByText(/Couldn't reach Nexus/)).toBeInTheDocument();
+  expect(screen.queryByText(/Failed to fetch/)).not.toBeInTheDocument();
+});

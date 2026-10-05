@@ -1,4 +1,5 @@
 import { useMemo, type ReactNode } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Alert,
   Box,
@@ -316,7 +317,7 @@ export default function NexusGpTrafficPage() {
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          {error.message}
+          {userMessage(error)}
         </Alert>
       )}
 

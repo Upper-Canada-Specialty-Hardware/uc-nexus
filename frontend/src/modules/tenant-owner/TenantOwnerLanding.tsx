@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import { Alert, Box, Typography, Card, CardActionArea, Grid } from '@mui/material';
 import {
   ClipboardList,
@@ -122,7 +123,7 @@ export default function TenantOwnerLanding() {
 
       {error && !s && (
         <Alert severity="error" sx={{ mb: 3 }}>
-          Error loading company stats: {error.message}
+          Error loading company stats: {userMessage(error)}
         </Alert>
       )}
 

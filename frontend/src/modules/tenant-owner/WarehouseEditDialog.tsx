@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import { Button, Stack, TextField, FormControlLabel, Checkbox, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import type { ApolloCache } from '@apollo/client/core';
@@ -98,7 +99,7 @@ function WarehouseEditDialogContent({ initialWarehouse, onClose, onSaved }: Cont
     if (refused && typeof field === 'string' && isWarehouseField(field)) {
       setFieldErrors({ [field]: refused.message });
     } else {
-      showToast(err.message, 'error');
+      showToast(userMessage(err), 'error');
     }
   };
 

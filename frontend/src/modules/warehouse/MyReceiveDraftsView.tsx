@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Alert,
   Box,
@@ -104,7 +105,7 @@ export default function MyReceiveDraftsView() {
       showToast('Draft deleted.', 'success');
       await client.refetchQueries({ include: RECEIVE_DRAFT_REFETCH_QUERIES });
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : 'Deleting this draft failed', 'error');
+      showToast(err instanceof Error ? userMessage(err) : 'Deleting this draft failed', 'error');
     } finally {
       setDeleting(null);
     }
@@ -119,7 +120,7 @@ export default function MyReceiveDraftsView() {
       )}
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          Error loading your drafts: {error.message}
+          Error loading your drafts: {userMessage(error)}
         </Alert>
       )}
       {!loading && !error && drafts.length === 0 && (

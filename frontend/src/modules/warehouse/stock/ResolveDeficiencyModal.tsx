@@ -126,7 +126,7 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
       }
     >
       <Stack spacing={2}>
-        {error && <Alert severity="error">{error.message}</Alert>}
+        {error && <Alert severity="error">{userMessage(error)}</Alert>}
         <Box sx={{ pb: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
           <Typography component="div" sx={microLabelSx}>
             {row.source === 'PROJECT_INVENTORY' ? 'Project inventory' : 'Stock pool'} ·{' '}

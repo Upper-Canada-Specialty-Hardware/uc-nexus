@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Box,
   Alert,
@@ -198,7 +199,7 @@ export default function ProjectPurchasingProgressPage() {
 
       {projectsError && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          Error loading projects: {projectsError.message}
+          Error loading projects: {userMessage(projectsError)}
         </Alert>
       )}
 
@@ -209,7 +210,7 @@ export default function ProjectPurchasingProgressPage() {
       )}
 
       {selected && progressError && (
-        <Alert severity="error">Error loading progress: {progressError.message}</Alert>
+        <Alert severity="error">Error loading progress: {userMessage(progressError)}</Alert>
       )}
 
       {selected && !progressError && progressLoading && !progressData && (

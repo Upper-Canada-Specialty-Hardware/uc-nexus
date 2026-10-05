@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Alert,
   Box,
@@ -130,7 +131,7 @@ export default function InventoryValuePage() {
           You need the Tenant Owner or Shop Assembly Manager role to see inventory value.
         </Alert>
       ) : error ? (
-        <Alert severity="error">{error.message}</Alert>
+        <Alert severity="error">{userMessage(error)}</Alert>
       ) : !company && !loading ? (
         <Alert severity="info">There is no GP company to value yet.</Alert>
       ) : (
@@ -337,14 +338,14 @@ function DoorsOnHandTable({ company, value }: { company: string; value: Inventor
 
   const [saveRow] = useMutation<{ saveDoorsOnHand: InventoryValue }>(SAVE_DOORS_ON_HAND, {
     onCompleted: (data) => writePage(data.saveDoorsOnHand),
-    onError: (err) => showToast(err.message, 'error'),
+    onError: (err) => showToast(userMessage(err), 'error'),
   });
   const [removeRow] = useMutation<{ removeDoorsOnHand: InventoryValue }>(REMOVE_DOORS_ON_HAND, {
     onCompleted: (data) => {
       writePage(data.removeDoorsOnHand);
       showToast('Project removed from doors on hand', 'success');
     },
-    onError: (err) => showToast(err.message, 'error'),
+    onError: (err) => showToast(userMessage(err), 'error'),
   });
 
   const rows = value.doorsOnHand;
@@ -537,7 +538,7 @@ function AverageDoorCostCard({ company, value }: { company: string; value: Inven
         writePage(data.setAverageDoorCost);
         showToast('Average door cost saved', 'success');
       },
-      onError: (err) => showToast(err.message, 'error'),
+      onError: (err) => showToast(userMessage(err), 'error'),
     },
   );
 

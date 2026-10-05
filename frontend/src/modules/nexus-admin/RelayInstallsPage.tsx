@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Box,
   Button,
@@ -183,7 +184,7 @@ export default function RelayInstallsPage() {
         setLabel('');
         showToast('Enrollment token created', 'success');
       },
-      onError: (err) => showToast(err.message, 'error'),
+      onError: (err) => showToast(userMessage(err), 'error'),
     },
   );
 
@@ -219,7 +220,7 @@ export default function RelayInstallsPage() {
     },
     onError: (err) => {
       setAdoptTarget(null);
-      showToast(err.message, 'error');
+      showToast(userMessage(err), 'error');
     },
   });
 
@@ -228,7 +229,7 @@ export default function RelayInstallsPage() {
     {
       refetchQueries: [{ query: RELAY_ADOPT_WINDOW }],
       onCompleted: () => showToast('Adopt window closed', 'success'),
-      onError: (err) => showToast(err.message, 'error'),
+      onError: (err) => showToast(userMessage(err), 'error'),
     },
   );
 
@@ -242,7 +243,7 @@ export default function RelayInstallsPage() {
       },
       onError: (err) => {
         setDeleteTarget(null);
-        showToast(err.message, 'error');
+        showToast(userMessage(err), 'error');
       },
     },
   );

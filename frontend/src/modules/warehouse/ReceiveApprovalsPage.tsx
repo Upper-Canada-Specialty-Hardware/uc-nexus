@@ -1,4 +1,5 @@
 import { useState, type KeyboardEvent } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Alert,
   Box,
@@ -124,7 +125,7 @@ export default function ReceiveApprovalsPage() {
       )}
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          Error loading receive drafts: {error.message}
+          Error loading receive drafts: {userMessage(error)}
         </Alert>
       )}
       {!loading && !error && drafts.length === 0 && (

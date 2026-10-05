@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Box,
   Typography,
@@ -145,7 +146,7 @@ export default function LocationCleanupPage() {
       setDialog(null);
       refetch();
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Merge failed';
+      const message = err instanceof Error ? userMessage(err) : 'Merge failed';
       showToast(message, 'error');
     }
   }, [dialog, mergeLocations, refetch, showToast]);
@@ -157,7 +158,7 @@ export default function LocationCleanupPage() {
       </Box>
     );
   }
-  if (error) return <Alert severity="error">Error: {error.message}</Alert>;
+  if (error) return <Alert severity="error">Error: {userMessage(error)}</Alert>;
 
   return (
     <Box>

@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Alert,
   Button,
@@ -83,7 +84,7 @@ export default function RegisterGpBuyerDialog({
       handleClose();
     },
     onError: (err) => {
-      const gp = extractGpError(err) ?? { message: err.message };
+      const gp = extractGpError(err) ?? { message: userMessage(err) };
       setGpError(gp);
       // 'Already registered' is the answer to a retry after an ambiguous failure: the first attempt
       // committed and its reply was lost. GP holds the buyer, but the list this dialog feeds was read

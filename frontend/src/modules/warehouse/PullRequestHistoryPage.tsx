@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import { Alert, Box, Button, Chip, Stack, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
 import { ChevronRight } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
@@ -264,7 +265,7 @@ export default function PullRequestHistoryPage() {
           claim wrongly. */}
       {error && (
         <Alert severity="error" sx={{ mb: 1.5 }}>
-          Error loading pull request history: {error.message}
+          Error loading pull request history: {userMessage(error)}
         </Alert>
       )}
 

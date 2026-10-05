@@ -242,7 +242,7 @@ export default function PullRequestDetailModal({
         showToast('This pull was already cancelled.', 'warning');
         return;
       }
-      setCancelBlockedMessage(error.message);
+      setCancelBlockedMessage(userMessage(error));
     },
   });
 

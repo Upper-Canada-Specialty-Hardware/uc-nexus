@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import { Alert, Box, Button, CircularProgress, TextField, Typography } from '@mui/material';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { useApolloClient } from '@apollo/client/react';
@@ -132,7 +133,7 @@ export default function ReceiveDraftEditModal({ open, draft: draftProp, onClose 
         await reload().catch(() => undefined);
         return;
       }
-      setMutationError(err instanceof Error ? err.message : 'Saving this draft failed');
+      setMutationError(err instanceof Error ? userMessage(err) : 'Saving this draft failed');
     } finally {
       setSubmitting(false);
     }

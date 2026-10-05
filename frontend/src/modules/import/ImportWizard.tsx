@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Dialog,
   AppBar,
@@ -1335,7 +1336,7 @@ export default function ImportWizard({
     } catch (err: unknown) {
       // #646: a shop-assembly finalize can no longer bounce on availability - it reserves nothing -
       // so there is no rebuild-and-retry path left here. The message stands and the user decides.
-      const message = err instanceof Error ? err.message : 'An unknown error occurred';
+      const message = err instanceof Error ? userMessage(err) : 'An unknown error occurred';
       setMutationError(message);
       setFinalizeLoading(false);
       finalizeInFlight.current = false;

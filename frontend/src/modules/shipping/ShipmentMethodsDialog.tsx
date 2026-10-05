@@ -1,4 +1,5 @@
 import { useState, type ReactElement } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Alert,
   Box,
@@ -92,15 +93,15 @@ export default function ShipmentMethodsDialog({ open, onClose }: Props) {
       setNewName('');
       settle('Shipment method added');
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => setError(userMessage(e)),
   });
   const [updateMethod] = useMutation(UPDATE_SHIPMENT_METHOD, {
     onCompleted: () => settle('Shipment method updated'),
-    onError: (e) => setError(e.message),
+    onError: (e) => setError(userMessage(e)),
   });
   const [deleteMethod] = useMutation(DELETE_SHIPMENT_METHOD, {
     onCompleted: () => settle('Shipment method removed'),
-    onError: (e) => setError(e.message),
+    onError: (e) => setError(userMessage(e)),
   });
 
   const methods = data?.shipmentMethods ?? [];

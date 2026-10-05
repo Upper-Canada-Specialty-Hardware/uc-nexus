@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Alert,
   Box,
@@ -161,7 +162,7 @@ export default function HardwareClassificationsPage() {
       showToast(`${changes.length === 1 ? '1 product' : `${changes.length} products`} set to ${LABEL[choice]}`, 'success');
       setSelection({ type: 'include', ids: new Set() });
     } catch (e) {
-      setRefusal(e instanceof Error ? e.message : String(e));
+      setRefusal(e instanceof Error ? userMessage(e) : String(e));
     } finally {
       setPending(null);
     }
@@ -189,7 +190,7 @@ export default function HardwareClassificationsPage() {
       if (touches) setPending({ choice, changes, impact });
       else await save(choice, changes);
     } catch (e) {
-      setRefusal(e instanceof Error ? e.message : String(e));
+      setRefusal(e instanceof Error ? userMessage(e) : String(e));
     } finally {
       setPlanning(false);
     }
@@ -322,7 +323,7 @@ export default function HardwareClassificationsPage() {
           {refusal}
         </Alert>
       )}
-      {error && <Alert severity="error">Error loading classifications: {error.message}</Alert>}
+      {error && <Alert severity="error">Error loading classifications: {userMessage(error)}</Alert>}
 
       {loading && !data ? (
         <Box>
