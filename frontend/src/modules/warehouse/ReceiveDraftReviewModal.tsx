@@ -93,7 +93,6 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
   const [rejectReason, setRejectReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
-  const [gpError, setGpError] = useState<GpError | null>(null);
   const [slipLoading, setSlipLoading] = useState(false);
 
   // Outcome state, mirroring what ReceiveModal used to show at this moment.
@@ -107,6 +106,15 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
   // mutationError, which the re-read draft's hydration clears, and tied to the draft it was raised on.
   const [countChanged, setCountChanged] = useState<{ on: ReceiveDraft | null; message: string } | null>(null);
   const countChangedNotice = countChanged && countChanged.on === draftProp ? countChanged.message : null;
+  // #1582: what a failed approval left behind - refused and let go, or claimed with no answer. Held apart
+  // from mutationError, like the count notice above: the approval's catch re-reads the draft, the
+  // fresh draft re-hydrates the editor, and that clears the editor's own messages.
+  const [approveNotice, setApproveNotice] = useState<{
+    on: ReceiveDraft | null;
+    message: string;
+    gpError: GpError | null;
+  } | null>(null);
+  const approveOutcome = approveNotice && approveNotice.on === draftProp ? approveNotice : null;
 
   const [approveDraft] = useMutation<{
     approveReceiveDraft: {
@@ -154,7 +162,6 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
     setWarehouseId(draft.warehouseId ?? '');
     setInitialSignature(JSON.stringify([state.receiveQuantities, draft.warehouseId ?? '']));
     setMutationError(null);
-    setGpError(null);
     setPosted(null);
     setQueued(false);
     setApproveFailed(false);
@@ -222,8 +229,8 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
     if (!draft) return;
     setConfirmOpen(false);
     setMutationError(null);
-    setGpError(null);
     setCountChanged(null);
+    setApproveNotice(null);
     setSubmitting(true);
     let approveSent = false;
     // #1497: the version the approval is checked against - what the reviewer loaded, or what their
@@ -296,20 +303,45 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
       // Key kept: GP may have committed even if the mutation reported failure, so the retry must
       // carry the same key. A failed edit never reached GP, so the draft stays editable; a failed
       // approve may have claimed it, so from here on it is only retried (#1353).
-      if (approveSent) setApproveFailed(true);
+      //
+      // #1582: unless the server let go. A plain refusal - the PO closed or cancelled in GP, GP turning
+      // the receipt down - releases the claim and the draft is pending again: nothing was posted, a retry
+      // is refused the same way, and the reviewer needs the count and Reject back. Only a draft still
+      // APPROVING (an answer that never came back) is the retry case.
       const captured = extractGpError(err);
+      const serverSays = captured ? userMessage(captured) : err instanceof Error ? userMessage(err) : '';
+      if (approveSent) {
+        const fresh = await reload().catch(() => undefined);
+        if (fresh && fresh.status !== 'APPROVING') {
+          delete idempotencyKeyRef.current[draft.id];
+          // Pending again: nothing reached GP and the reviewer decides. Approved or rejected: another
+          // manager finished it meanwhile - there is nothing here to fix or reject.
+          const lead =
+            fresh.status === 'PENDING_APPROVAL'
+              ? 'Nothing was posted to GP - fix the count or reject the draft.'
+              : `This draft was ${fresh.status === 'APPROVED' ? 'approved' : 'rejected'} elsewhere - refresh to see it.`;
+          setApproveNotice({
+            on: draftProp,
+            message: `${lead} ${serverSays}`.trim(),
+            gpError: captured && captured.code !== GP_JOB_NOT_OPEN ? captured : null,
+          });
+          return;
+        }
+        setApproveFailed(true);
+      }
       if (captured?.code === GP_JOB_NOT_OPEN) {
         // #730: the server's refusal names the job and its state; there is no GP detail to show and
         // nothing a retry would change.
-        setMutationError(userMessage(captured));
+        setApproveNotice({ on: draftProp, message: userMessage(captured), gpError: null });
         return;
       }
-      setGpError(captured);
-      setMutationError(
-        captured
+      setApproveNotice({
+        on: draftProp,
+        message: captured
           ? "Approving this receive failed - see the GP error detail below. A retry won't post a duplicate receipt."
-          : `Approving this receive failed: ${err instanceof Error ? userMessage(err) : 'An unknown error occurred'}. A retry won't post a duplicate receipt.`,
-      );
+          : `Approving this receive failed: ${serverSays || 'An unknown error occurred'}. A retry won't post a duplicate receipt.`,
+        gpError: captured,
+      });
     } finally {
       setSubmitting(false);
     }
@@ -482,22 +514,24 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
             {countChangedNotice}
           </Alert>
         )}
-        {mutationError && (
-          <Alert severity="error" sx={{ mb: gpError ? 1 : 2 }}>
-            {mutationError}
+        {approveOutcome && (
+          <Alert severity="error" sx={{ mb: approveOutcome.gpError ? 1 : 2 }}>
+            {approveOutcome.message}
           </Alert>
         )}
-        {gpError && (
+        {approveOutcome?.gpError && (
           <Box sx={{ mb: 2 }}>
             <GpErrorAlert
-              error={gpError}
+              error={approveOutcome.gpError}
               title="GP could not complete the receipt"
-              onClose={() => {
-                setGpError(null);
-                setMutationError(null);
-              }}
+              onClose={() => setApproveNotice(null)}
             />
           </Box>
+        )}
+        {mutationError && (
+          <Alert severity="error" sx={{ mb: 2 }}>
+            {mutationError}
+          </Alert>
         )}
 
         {poLoading && (

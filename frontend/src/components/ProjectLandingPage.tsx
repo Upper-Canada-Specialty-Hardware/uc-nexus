@@ -1,5 +1,6 @@
 import { type ReactNode, useMemo, useState } from 'react';
-import { userMessage } from '../graphql/userMessage';
+import LoadError from './LoadError';
+import RefreshFailedNote from './RefreshFailedNote';
 import {
   Box,
   Typography,
@@ -60,7 +61,7 @@ export default function ProjectLandingPage({
   emptyStateText,
   parent,
 }: ProjectLandingPageProps) {
-  const { data, loading, error } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
+  const { data, loading, error, refetch } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const projects = useMemo(() => data?.projects ?? [], [data?.projects]);
   const [query, setQuery] = useState('');
 
@@ -122,7 +123,8 @@ export default function ProjectLandingPage({
     />
   );
 
-  if (loading) {
+  // #1584: only before anything loaded - a refetch keeps the cards, and a failed refresh keeps them too.
+  if (loading && !data) {
     return (
       <Box>
         {header}
@@ -140,13 +142,19 @@ export default function ProjectLandingPage({
     );
   }
 
-  if (error) {
-    return <Alert severity="error">Error loading projects: {userMessage(error, { reading: true })}</Alert>;
+  if (error && !data) {
+    return (
+      <Box>
+        {header}
+        <LoadError what="the projects" error={error} onRetry={() => refetch()} />
+      </Box>
+    );
   }
 
   return (
     <Box>
       {header}
+      {error && <RefreshFailedNote what="the projects" error={error} />}
 
       {/* One box turns a 22-card scroll into a keystroke. Only earns its space once there is enough
           to hunt through - a handful of jobs is faster to eyeball than to filter. */}

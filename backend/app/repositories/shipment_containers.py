@@ -17,6 +17,7 @@ Nothing here moves inventory. The hardware left when its pull was picked (#367).
 import uuid
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
@@ -111,8 +112,7 @@ def create_container(
         name=name,
         created_by=created_by,
     )
-    session.add(container)
-    session.flush()
+    _save_name(session, name, lambda: session.add(container))
     return container
 
 
@@ -121,8 +121,7 @@ def rename_container(session: Session, container_id: uuid.UUID, name: str) -> Sh
     name = _clean_name(name)
     if name != container.name:
         _check_name_free(session, container.project_id, name)
-        container.name = name
-    session.flush()
+        _save_name(session, name, lambda: setattr(container, "name", name))
     return container
 
 
@@ -247,6 +246,7 @@ def confirm_shipment_from_containers(
     *,
     shipped_by: str,
     details: dict | None,
+    expected_contents: dict[uuid.UUID, set[uuid.UUID]] | None = None,
 ):
     """Ship the named containers as one shipment (#451).
 
@@ -281,6 +281,16 @@ def confirm_shipment_from_containers(
         if not container.items:
             raise ValidationError(
                 f"{container.name} is empty. Put something in it or leave it behind.",
+                field="containerIds",
+            )
+        # #1583: the dialog's manifest was drawn from the screen's last read, and the lines shipped are the
+        # ones held now, under the lock. Another user loading the skid in between would have put lines on
+        # the slip nobody checked, so a container whose lines changed since is refused instead.
+        if expected_contents is not None and {i.id for i in container.items} != expected_contents.get(
+            container.id, set()
+        ):
+            raise ConflictError(
+                f"{container.name} changed since you opened this - check its contents and confirm again.",
                 field="containerIds",
             )
 
@@ -416,6 +426,34 @@ def _open_container(session: Session, container_id: uuid.UUID) -> ShipmentContai
     return container
 
 
+# The partial unique index that backs `_check_name_free` against a race between two saves of one name.
+OPEN_NAME_INDEX = "uq_shipment_containers_open_name"
+
+
+def _name_taken(name: str) -> ConflictError:
+    return ConflictError(f"An open container named {name} already exists on this project", field="name")
+
+
+def _save_name(session: Session, name: str, apply) -> None:
+    """Apply and flush a container's name inside a savepoint, the index's refusal worded like the
+    pre-check's (#1583).
+
+    `_check_name_free` is an unlocked read, so two people creating or renaming to the same name at once
+    both pass it and the second flush hits the unique index - which reached the user as the generic
+    server error. The change is made inside the savepoint because opening one flushes whatever is
+    already pending: an insert or rename made before it would fail outside the savepoint and leave the
+    whole transaction unusable.
+    """
+    try:
+        with session.begin_nested():
+            apply()
+            session.flush()
+    except IntegrityError as e:
+        if getattr(getattr(e.orig, "diag", None), "constraint_name", None) == OPEN_NAME_INDEX:
+            raise _name_taken(name) from e
+        raise
+
+
 def _check_name_free(session: Session, project_id: uuid.UUID, name: str) -> None:
     """One open container per name per project, so "Skid 1" cannot be built twice at once."""
     existing = session.scalars(
@@ -426,4 +464,4 @@ def _check_name_free(session: Session, project_id: uuid.UUID, name: str) -> None
         )
     ).first()
     if existing is not None:
-        raise ConflictError(f"An open container named {name} already exists on this project", field="name")
+        raise _name_taken(name)
