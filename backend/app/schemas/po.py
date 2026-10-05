@@ -179,38 +179,42 @@ def _resolve_line_manufacturers(session, project_id, line_items_data) -> list[st
     if project_id is None:
         return [None] * len(line_items_data)
 
-    from sqlalchemy import select
+    from sqlalchemy import select, tuple_
 
     from app.models.hardware import HardwareItem
 
+    keys = list(dict.fromkeys((li["hardware_category"], li["product_code"]) for li in line_items_data))
+    # #1530: one read for every distinct product on the PO, not one per product - a 40-line PO was 40 round
+    # trips over the database hop. Ordered as the per-product read was, so each product's rows still arrive
+    # in (created_at, id) order and "first non-null" picks the same manufacturer.
+    found: dict[tuple[str, str], list[str | None]] = {key: [] for key in keys}
+    if keys:
+        rows = session.execute(
+            select(HardwareItem.hardware_category, HardwareItem.product_code, HardwareItem.manufacturer)
+            .where(
+                HardwareItem.project_id == project_id,
+                tuple_(HardwareItem.hardware_category, HardwareItem.product_code).in_(keys),
+            )
+            .order_by(HardwareItem.created_at, HardwareItem.id)
+        ).all()
+        for category, code, manufacturer in rows:
+            found[(category, code)].append(manufacturer)
+
     cache: dict[tuple[str, str], str | None] = {}
-    resolved: list[str | None] = []
-    for li in line_items_data:
-        key = (li["hardware_category"], li["product_code"])
-        if key not in cache:
-            rows = session.scalars(
-                select(HardwareItem.manufacturer)
-                .where(
-                    HardwareItem.project_id == project_id,
-                    HardwareItem.hardware_category == key[0],
-                    HardwareItem.product_code == key[1],
-                )
-                .order_by(HardwareItem.created_at, HardwareItem.id)
-            ).all()
-            distinct = list(dict.fromkeys(m.strip() for m in rows if m and m.strip()))
-            chosen = distinct[0] if distinct else None
-            if len(distinct) > 1:
-                logger.warning(
-                    "manufacturer disagreement for line %s/%s in project %s: %s; using %r",
-                    key[0],
-                    key[1],
-                    project_id,
-                    distinct,
-                    chosen,
-                )
-            cache[key] = chosen
-        resolved.append(cache[key])
-    return resolved
+    for key in keys:
+        distinct = list(dict.fromkeys(m.strip() for m in found[key] if m and m.strip()))
+        chosen = distinct[0] if distinct else None
+        if len(distinct) > 1:
+            logger.warning(
+                "manufacturer disagreement for line %s/%s in project %s: %s; using %r",
+                key[0],
+                key[1],
+                project_id,
+                distinct,
+                chosen,
+            )
+        cache[key] = chosen
+    return [cache[(li["hardware_category"], li["product_code"])] for li in line_items_data]
 
 
 def _assert_buyer_identity(caller_gp_buyer_id: str | None, input_buyer_id: str) -> None:
