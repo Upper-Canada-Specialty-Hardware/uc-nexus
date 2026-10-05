@@ -174,6 +174,31 @@ describe('BatchReviewPanel', () => {
     expect(screen.getByRole('button', { name: 'Dismiss remaining' })).toBeInTheDocument();
   });
 
+  it('turns off a line no longer shop work and says why, before the batch is refused (#1540)', () => {
+    const reason = 'this product is not shop hardware on this opening, so it cannot go to the shop.';
+    const props = renderPanel({
+      review: {
+        ...REVIEW,
+        openings: [
+          {
+            openingNumber: 'A01',
+            lines: [line('A01', 'HG-100', 2, 3), { ...line('A01', 'HG-200', 2, 3), notShopWorkReason: reason }],
+          },
+        ],
+      },
+    });
+
+    expect(screen.getByLabelText('Send HG-200 for A01')).toBeDisabled();
+    expect(screen.getByLabelText('Send HG-100 for A01')).toBeEnabled();
+    expect(screen.getByText(/HG-200 \(HINGE\) cannot go on a batch/)).toHaveTextContent(reason);
+
+    fireEvent.change(screen.getByLabelText('Send HG-100 for A01'), { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: /Create batch/ }));
+    expect(props.onCreateBatch).toHaveBeenCalledWith([
+      { openingNumber: 'A01', hardwareCategory: 'HINGE', productCode: 'HG-100', allocatedQuantity: 2 },
+    ]);
+  });
+
   it('says so rather than rendering an empty walk when nothing is waiting', () => {
     renderPanel({ review: { ...REVIEW, openings: [] } });
 
