@@ -224,6 +224,7 @@ class ShippingQueries:
         info: strawberry.Info,
         project_id: strawberry.ID,
         opening_numbers: list[str],
+        exclude_request_id: strawberry.ID | None = None,
     ) -> list[RequestCoverageLine]:
         """What the selected openings still have coming: `max(owed - sent - claimed, 0)` per product.
 
@@ -231,8 +232,15 @@ class ShippingQueries:
         composition time. See `app.repositories.request_composer` for how each term is derived.
         """
         with SessionLocal() as session:
-            tenancy.require_project_in_scope(session, uuid.UUID(str(project_id)), tenant_scope(info))
-            rows = request_composer.get_request_coverage(session, uuid.UUID(str(project_id)), opening_numbers)
+            scope = tenant_scope(info)
+            tenancy.require_project_in_scope(session, uuid.UUID(str(project_id)), scope)
+            # #1592: the edit composer leaves its own request out of "claimed by somebody else".
+            excluded = uuid.UUID(str(exclude_request_id)) if exclude_request_id else None
+            if excluded is not None:
+                tenancy.require_shipping_out_request_in_scope(session, excluded, scope)
+            rows = request_composer.get_request_coverage(
+                session, uuid.UUID(str(project_id)), opening_numbers, exclude_request_id=excluded
+            )
             return [
                 RequestCoverageLine(
                     opening_number=row["opening_number"],

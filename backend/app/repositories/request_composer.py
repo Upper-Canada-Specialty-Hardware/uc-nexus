@@ -93,6 +93,8 @@ def get_request_coverage(
     session: Session,
     project_id: uuid.UUID,
     opening_numbers: list[str],
+    *,
+    exclude_request_id: uuid.UUID | None = None,
 ) -> list[dict]:
     """One row per (opening, category, product) the given openings are owed or have been sent.
 
@@ -118,7 +120,7 @@ def get_request_coverage(
 
     owed = _owed_quantities(session, project_id, opening_number_by_id)
     sent = _sent_quantities(session, project_id, known)
-    claimed = _claimed_quantities(session, project_id, known)
+    claimed = _claimed_quantities(session, project_id, known, exclude_request_id=exclude_request_id)
     on_order = _on_order_quantities(session, project_id)
     by_others = by_others_products(session, project_id)
 
@@ -335,12 +337,18 @@ def _claimed_quantities(
     session: Session,
     project_id: uuid.UUID,
     opening_numbers: list[str],
+    *,
+    exclude_request_id: uuid.UUID | None = None,
 ) -> dict[str, dict[_ComboKey, int]]:
     """Units somebody else is already holding, per {opening: {(cat, code): quantity}}.
 
     Three reads, arranged so nothing is counted alongside the pull it minted: live pulls (the
     dispatched half), a PENDING shop-assembly request's openings that are still pending (the half
     with no pull yet, #646), and PENDING shipping-out requests.
+
+    `exclude_request_id` leaves out one PENDING shipping-out request: the one being edited (#1592). Its
+    own lines are not somebody else's - counted here they shrank its suggested figure by itself, and the
+    product field, which clamps to that figure, wiped the lines it already held.
     """
     if not opening_numbers:
         return {}
@@ -418,6 +426,7 @@ def _claimed_quantities(
             ShippingOutRequest.project_id == project_id,
             ShippingOutRequest.status == ShippingOutRequestStatus.PENDING,
             ShippingOutRequestItem.opening_number.in_(opening_numbers),
+            *([ShippingOutRequest.id != exclude_request_id] if exclude_request_id is not None else []),
         )
         .group_by(
             ShippingOutRequestItem.opening_number,

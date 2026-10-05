@@ -315,6 +315,7 @@ def _prepare_register_po(
     contact=None,
     comment=None,
     idempotency_key=None,
+    digest_out: dict | None = None,
 ) -> dict:
     """Read-only pre-flight for register_po_in_gp: confirm the PO is a registerable DRAFT, resolve the
     job number, pre-validate, and build the relay create_po payload (po_number=None; GP assigns it).
@@ -396,6 +397,10 @@ def _prepare_register_po(
         project_repository.require_gp_job_open(session, effective_project_id)
 
         manufacturers = _resolve_line_manufacturers(session, effective_project_id, line_items_data)
+        # #1599: the draft as this payload is built from it, read under the same lock - the worker refuses to
+        # push the snapshot of a draft that changed since. Handed back beside the payload, never sent to GP.
+        if digest_out is not None:
+            digest_out["registration_digest"] = po_repository.registration_digest(session, po.id)
 
     gp_po.validate_create_po_inputs(
         job_number=job_number,
@@ -987,6 +992,7 @@ class POMutations:
         await asyncio.to_thread(_validate_line_catalog_items, line_items_data, (input.gp_company or "").strip().upper())
         tax_detail_ids = _fold_tax_detail_ids(input)
         tax_schedule_id = _tax_schedule_id(input, tax_detail_ids)
+        digest: dict = {}
         payload = await asyncio.to_thread(
             _prepare_register_po,
             po_id=pid,
@@ -1009,6 +1015,7 @@ class POMutations:
             contact=input.contact,
             comment=input.comment,
             idempotency_key=key,
+            digest_out=digest,
         )
 
         # #1274: one registration attempt per draft at a time. Taken under the PO's row lock and
@@ -1057,6 +1064,9 @@ class POMutations:
                 "shipping_cost": input.shipping_cost,
                 "tariff_amount": input.tariff_amount,
                 "project_id": str(register_project_id) if register_project_id else None,
+                # #1599: the draft as the payload was built from it (taken in the pre-flight); the worker
+                # refuses to push a snapshot of a draft that changed since.
+                "registration_digest": digest.get("registration_digest"),
             }
 
             if state is not None and state.relay_result is not None:
