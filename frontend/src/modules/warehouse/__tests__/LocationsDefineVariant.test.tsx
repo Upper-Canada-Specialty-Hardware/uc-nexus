@@ -31,8 +31,10 @@ vi.mock('@apollo/client/react', () => ({
 }));
 
 vi.mock('../../../components/Toast', () => ({ useToast: () => ({ showToast: vi.fn() }) }));
+// A Warehouse Manager manages locations but cannot open Location Cleanup (a Tenant Owner's page).
+let ownsTenant = true;
 vi.mock('../../../hooks/useIdentity', () => ({
-  useIdentity: () => ({ ownsTenant: true, hasRole: () => true }),
+  useIdentity: () => ({ ownsTenant, hasRole: () => true }),
 }));
 
 beforeEach(() => {
@@ -65,4 +67,23 @@ it('points a variant of a defined location to cleanup, and says why a partial on
   const defines = screen.getAllByRole('button', { name: 'Define' });
   expect(defines).toHaveLength(1);
   expect(defines[0]).toBeDisabled();
+});
+
+it('does not send a Warehouse Manager to a cleanup page they cannot open - it says who can merge', () => {
+  ownsTenant = false;
+  try {
+    render(
+      <ThemeProvider theme={theme}>
+        <MemoryRouter>
+          <LocationsTab />
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+
+    expect(screen.queryByRole('link', { name: /merge it on Location Cleanup/i })).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/ask a Tenant Owner to merge it/i)).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Define' }).every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
+  } finally {
+    ownsTenant = true;
+  }
 });

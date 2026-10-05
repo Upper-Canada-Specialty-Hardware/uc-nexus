@@ -176,6 +176,8 @@ function buildUtilColumns(
   manage?: {
     onDeactivate: (row: UtilRow) => void;
     onDefine: (row: UtilRow) => void;
+    /** Location Cleanup (merge) is a Tenant Owner's page; anyone else is pointed at one. */
+    canMerge: boolean;
   },
 ): GridColDef<UtilRow>[] {
   if (compact) {
@@ -249,7 +251,19 @@ function buildUtilColumns(
             sortable: false,
             renderCell: ({ row }: { row: UtilRow }) => {
               if (!row.definedId && row.variantOf) {
-                // #1587: defining a variant is refused as already defined - it wants a merge.
+                // #1587: defining a variant is refused as already defined - it wants a merge, which is a
+                // Tenant Owner's (locationDuplicates / mergeLocations).
+                if (!manage.canMerge) {
+                  return (
+                    <Tooltip title={`Variant of ${row.variantOf} - ask a Tenant Owner to merge it on Location Cleanup.`}>
+                      <span>
+                        <Button size="small" variant="text" disabled>
+                          Define
+                        </Button>
+                      </span>
+                    </Tooltip>
+                  );
+                }
                 return (
                   <Tooltip title={`Variant of ${row.variantOf} - merge it on Location Cleanup.`}>
                     <Button
@@ -932,9 +946,9 @@ export default function LocationsTab() {
         selected !== null,
         warehouseCode,
         !warehouseFilter,
-        canManage ? { onDeactivate: handleDeactivate, onDefine: handleDefineRow } : undefined,
+        canManage ? { onDeactivate: handleDeactivate, onDefine: handleDefineRow, canMerge: ownsTenant } : undefined,
       ),
-    [selected, warehouseCode, warehouseFilter, canManage, handleDeactivate, handleDefineRow],
+    [selected, warehouseCode, warehouseFilter, canManage, ownsTenant, handleDeactivate, handleDefineRow],
   );
 
   // #909: the columns fit the grid's width and never scroll sideways; resized widths are remembered.
