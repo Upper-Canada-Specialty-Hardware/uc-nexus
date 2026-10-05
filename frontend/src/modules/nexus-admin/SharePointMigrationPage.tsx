@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { userMessage } from '../../graphql/userMessage';
+import RefreshFailedNote from '../../components/RefreshFailedNote';
 import {
   Box,
   Typography,
@@ -488,7 +489,8 @@ export default function SharePointMigrationPage() {
     );
   }
 
-  if (error) {
+  // #1584: only when nothing loaded; a failed re-read keeps the plan on screen with a note.
+  if (error && !data) {
     return (
       <Alert
         severity="error"
@@ -516,6 +518,7 @@ export default function SharePointMigrationPage() {
 
   return (
     <Box>
+      {error && <RefreshFailedNote what="SharePoint" error={error} />}
       <FadeIn>
         <PageHeader
           title="SharePoint Inventory Migration"

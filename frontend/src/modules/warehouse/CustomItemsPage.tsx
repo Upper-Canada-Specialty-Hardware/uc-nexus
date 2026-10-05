@@ -22,6 +22,7 @@ import Modal from '../../components/Modal';
 import { useToast } from '../../components/Toast';
 import { FadeIn } from '../../motion';
 import PageHeader from '../../components/PageHeader';
+import LoadError from '../../components/LoadError';
 import { microLabelSx, monoSx } from '../../theme';
 import {
   CREATE_CUSTOM_INVENTORY_ITEM,
@@ -115,10 +116,21 @@ export default function CustomItemsPage() {
 
       {/* #1341: a failed read is said, not shown as an empty catalog someone might re-create. */}
       {(typesError || itemsError) && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          Couldn't load the custom items catalog: {(typesError ?? itemsError)?.message}. Reload to try again
-          before adding anything - what is shown may be incomplete.
-        </Alert>
+        <>
+          {/* #1589: in plain words, with a retry - not the raw error and a page reload. */}
+          <LoadError
+            what="the custom items catalog"
+            error={typesError ?? itemsError}
+            onRetry={() => {
+              void refetchTypes();
+              void refetchItems();
+            }}
+            sx={{ mb: 1 }}
+          />
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            Don&apos;t add anything until it loads - what is shown may be incomplete.
+          </Alert>
+        </>
       )}
 
       {typesLoading && types.length === 0 ? (
