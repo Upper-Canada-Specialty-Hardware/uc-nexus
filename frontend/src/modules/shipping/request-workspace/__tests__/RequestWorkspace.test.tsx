@@ -710,6 +710,103 @@ describe('edit mode', () => {
   });
 });
 
+describe('edit mode version conflict (#1597)', () => {
+  it('offers to reload a request someone else changed, re-seeds from it, and saves against the new version', async () => {
+    // What the server holds: v1 with 2 hinges until someone else saves v2 with 3.
+    let server = { version: 'v1', quantity: 2 };
+    const liveRequest: MockedResponse = {
+      request: { query: GET_SHIPPING_OUT_REQUEST, variables: { id: 'req-1' } },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: () => ({
+        data: {
+          shippingOutRequest: {
+            __typename: 'ShippingOutRequest',
+            id: 'req-1',
+            requestNumber: 'JOB-1-003',
+            projectId: 'proj-1',
+            status: 'PENDING',
+            createdBy: 'Shipper',
+            createdAt: '2026-08-03T00:00:00',
+            integrityNote: null,
+            linesVersion: server.version,
+            project: null,
+            reservedByProduct: null,
+            items: [
+              {
+                __typename: 'ShippingOutRequestItem',
+                id: `item-${server.version}`,
+                openingNumber: null,
+                hardwareCategory: 'HINGE',
+                productCode: 'HG-100',
+                requestedQuantity: server.quantity,
+              },
+            ],
+          },
+        },
+      }),
+    };
+    const refused: MockedResponse = {
+      request: {
+        query: EDIT_SHIPPING_OUT_REQUEST,
+        variables: {
+          input: {
+            id: 'req-1',
+            items: [{ openingNumber: null, hardwareCategory: 'HINGE', productCode: 'HG-100', requestedQuantity: 2 }],
+            expectedLinesVersion: 'v1',
+          },
+        },
+      },
+      result: () => {
+        server = { version: 'v2', quantity: 3 };
+        return {
+          errors: [
+            {
+              message:
+                'Shipping-out request JOB-1-003 was changed by someone else since you opened it. Reload it to see the current lines, then make your change again.',
+              extensions: { code: 'CONFLICT', field: 'items' },
+            },
+          ],
+        };
+      },
+    };
+    const saved = vi.fn();
+    const accepted: MockedResponse = {
+      request: {
+        query: EDIT_SHIPPING_OUT_REQUEST,
+        variables: {
+          input: {
+            id: 'req-1',
+            items: [{ openingNumber: null, hardwareCategory: 'HINGE', productCode: 'HG-100', requestedQuantity: 3 }],
+            expectedLinesVersion: 'v2',
+          },
+        },
+      },
+      result: () => {
+        saved();
+        return { data: { editShippingOutRequest: null } };
+      },
+    };
+    renderAt('/app/shipping/requests/req-1/edit', [
+      projectsMock(),
+      availabilityMock(),
+      openingsMock(),
+      liveRequest,
+      refused,
+      accepted,
+    ]);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Save request' }, SLOW));
+    const reload = await screen.findByRole('button', { name: 'Reload request' }, SLOW);
+    expect(screen.getByText(/your unsaved changes here will be lost/i)).toBeInTheDocument();
+
+    fireEvent.click(reload);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Reload request' })).not.toBeInTheDocument(), SLOW);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Save request' }, SLOW));
+    await waitFor(() => expect(saved).toHaveBeenCalled(), SLOW);
+  });
+});
+
 // The extras lane (#610): loose stock demoted to a bottom accordion, opening on its own only when
 // the cart already carries loose lines.
 
