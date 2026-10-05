@@ -8,6 +8,10 @@ import { GET_STOCK_ITEMS } from '../../../graphql/warehouse';
 import { GET_WAREHOUSES } from '../../../graphql/shared';
 import { GET_INVENTORY_ITEM_TYPES } from '../../../graphql/customItems';
 
+// The page clears its filter on an acting-company switch (#1537); outside the app shell there is no company
+// provider, so the acting company is stood in for.
+vi.mock('../../../company/ActingCompanyContext', () => ({ useActingCompany: () => ({ company: 'TUBC' }) }));
+
 vi.setConfig({ testTimeout: 60_000 });
 configure({ asyncUtilTimeout: 15_000 });
 

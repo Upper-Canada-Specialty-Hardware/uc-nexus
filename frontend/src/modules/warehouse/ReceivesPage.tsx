@@ -18,6 +18,7 @@ import { GET_PROJECTS } from '../../graphql/shared';
 import PageHeader from '../../components/PageHeader';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
+import { useOnCompanySwitch } from '../../hooks/useDropProjectOnCompanySwitch';
 import type { Project } from '../../types/project';
 
 /**
@@ -71,6 +72,9 @@ const PAGE_SIZE = 200;
 
 export default function ReceivesPage() {
   const [projectId, setProjectId] = useState('');
+  // #1537: the picked project belongs to the company it was picked in; kept across a switch, the list read
+  // under the new company comes back empty, as if it had none.
+  useOnCompanySwitch(() => setProjectId(''));
   const [statusFilter, setStatusFilter] = useState('');
   const [poSearch, setPoSearch] = useState('');
 
