@@ -444,6 +444,20 @@ def test_a_pending_shipping_request_is_a_claim_too(db_session):
     assert _row(db_session, project)["claimed_quantity"] == 4
 
 
+def test_the_request_being_edited_is_not_its_own_claim(db_session):
+    """#1592: editing a request, its own lines are not somebody else's; another request's still are."""
+    project = _project(db_session)
+    opening = _opening(db_session, project)
+    _owe(db_session, project, opening, 6)
+    editing = _pending_sor(db_session, project, opening_number="A01", quantity=4)
+    _pending_sor(db_session, project, opening_number="A01", quantity=1)
+
+    rows = request_composer.get_request_coverage(db_session, project.id, ["A01"], exclude_request_id=editing.id)
+    (row,) = [r for r in rows if r["product_code"] == CODE]
+    assert row["claimed_quantity"] == 1
+    assert row["suggested_quantity"] == 5
+
+
 def test_a_live_pull_is_a_claim(db_session):
     project = _project(db_session)
     opening = _opening(db_session, project)
