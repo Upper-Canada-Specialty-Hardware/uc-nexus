@@ -643,6 +643,11 @@ function PoolRow({
   quantity?: { value: number; max: number; onChange: (value: number) => void };
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: dragId });
+  // #1604: the quantity is typed as text. A whole number from 1 is taken as it is typed (capped at what is
+  // unplaced); a blank or anything else is held until the field is left, which puts the last quantity
+  // back. A blank used to become 1 at once, so clearing "4" to type "3" placed 13.
+  const [qtyText, setQtyText] = useState<string | null>(null);
+  const qtyNotWhole = qtyText !== null && qtyText.trim() !== '' && !Number.isInteger(Number(qtyText));
   return (
     <Box
       ref={setNodeRef}
@@ -685,16 +690,29 @@ function PoolRow({
             size="small"
             type="number"
             label="Qty"
-            value={quantity.value}
+            value={qtyText ?? String(quantity.value)}
             onChange={(e) => {
-              const next = Number.parseInt(e.target.value, 10);
-              quantity.onChange(Number.isNaN(next) ? 1 : Math.max(1, Math.min(next, quantity.max)));
+              const raw = e.target.value;
+              const next = Number(raw);
+              if (raw.trim() !== '' && Number.isInteger(next) && next >= 1) {
+                setQtyText(null);
+                quantity.onChange(Math.min(next, quantity.max));
+              } else {
+                setQtyText(raw);
+              }
             }}
+            onBlur={() => setQtyText(null)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') setQtyText(null);
+            }}
+            error={qtyNotWhole}
+            helperText={qtyNotWhole ? 'Whole numbers only' : undefined}
             inputProps={{ min: 1, max: quantity.max, 'aria-label': `Quantity of ${itemLabel} to place` }}
             sx={{ width: 88 }}
           />
         )}
-        <PlaceMenu containers={containers} onPick={onPick} disabledFor={disabledFor} />
+        {/* While the typed quantity isn't one yet, placing would use the last one - so nothing is placed. */}
+        <PlaceMenu containers={containers} onPick={onPick} disabledFor={qtyText !== null ? () => true : disabledFor} />
       </Stack>
     </Box>
   );
@@ -820,15 +838,19 @@ function ManualLineForm({
   const [productCode, setProductCode] = useState('');
   const [hardwareCategory, setHardwareCategory] = useState('');
   const [opening, setOpening] = useState('');
-  const [quantity, setQuantity] = useState(1);
+  // #1604: held as typed text, so clearing it to retype doesn't jump to 1 ("13" for a typed 3).
+  const [quantityText, setQuantityText] = useState('1');
+  const quantity = Number(quantityText);
+  const quantityOk = quantityText.trim() !== '' && Number.isInteger(quantity) && quantity >= 1;
+  const quantityNotWhole = quantityText.trim() !== '' && !Number.isInteger(quantity);
 
-  const canAdd = productCode.trim() !== '' && hardwareCategory.trim() !== '' && quantity >= 1;
+  const canAdd = productCode.trim() !== '' && hardwareCategory.trim() !== '' && quantityOk;
 
   const reset = () => {
     setProductCode('');
     setHardwareCategory('');
     setOpening('');
-    setQuantity(1);
+    setQuantityText('1');
     setOpen(false);
   };
 
@@ -887,11 +909,10 @@ function ManualLineForm({
           size="small"
           type="number"
           label="Qty"
-          value={quantity}
-          onChange={(e) => {
-            const next = Number.parseInt(e.target.value, 10);
-            setQuantity(Number.isNaN(next) ? 1 : Math.max(1, next));
-          }}
+          value={quantityText}
+          onChange={(e) => setQuantityText(e.target.value)}
+          error={quantityNotWhole}
+          helperText={quantityNotWhole ? 'Whole numbers only' : undefined}
           inputProps={{ min: 1, 'aria-label': `Quantity of the manual line for ${containerName}` }}
           sx={{ width: 80 }}
         />
@@ -939,6 +960,8 @@ function ContainerRow({
   const label = item.openingNumber ? `${item.openingNumber} · ${item.productCode}` : item.productCode;
   // null while not editing; the box then shows what the container holds.
   const [draft, setDraft] = useState<string | null>(null);
+  // #1604: a part unit typed here is refused with a word, not saved cut down.
+  const [notWhole, setNotWhole] = useState(false);
   // #1459: Escape blurs to leave the box, and the blur runs commitDraft before React has applied the
   // cleared draft - so the cancel is a flag the commit reads, not the state it cannot see yet.
   const cancelEdit = useRef(false);
@@ -948,8 +971,13 @@ function ContainerRow({
     if (draft === null) return;
     setDraft(null);
     if (cancelled) return;
-    const next = Number.parseInt(draft, 10);
-    if (Number.isNaN(next) || next < 0 || next === item.quantity) return;
+    // #1604: a part unit isn't a quantity - say so rather than saving 2.5 as 2.
+    const next = Number(draft);
+    if (draft.trim() === '' || next < 0 || next === item.quantity) return;
+    if (!Number.isInteger(next)) {
+      setNotWhole(true);
+      return;
+    }
     onSetQuantity(next);
   };
 
@@ -1002,7 +1030,10 @@ function ContainerRow({
           type="number"
           value={draft ?? String(item.quantity)}
           onFocus={() => setDraft(String(item.quantity))}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setNotWhole(false);
+            setDraft(e.target.value);
+          }}
           onBlur={commitDraft}
           onKeyDown={(e) => {
             if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
@@ -1011,6 +1042,8 @@ function ContainerRow({
               (e.target as HTMLInputElement).blur();
             }
           }}
+          error={notWhole}
+          helperText={notWhole ? 'Whole numbers only' : undefined}
           inputProps={{ min: 0, 'aria-label': `Quantity of ${label} in ${containerName}` }}
           sx={{ width: 80 }}
         />

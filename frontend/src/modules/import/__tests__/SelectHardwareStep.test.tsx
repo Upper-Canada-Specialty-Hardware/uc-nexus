@@ -254,7 +254,7 @@ describe('SelectHardwareStep - Order Qty', () => {
     expect(orderQtyInput('Hinges|HNG-100')).not.toBeDisabled();
   });
 
-  it('clamps the entered quantity to 1..total', () => {
+  it('clamps the entered quantity to the total and holds a 0 until the field is left', () => {
     const onOrderQty = vi.fn();
     render(<Harness onOrderQty={onOrderQty} />);
 
@@ -264,9 +264,14 @@ describe('SelectHardwareStep - Order Qty', () => {
     fireEvent.change(orderQtyInput('Hinges|HNG-100'), { target: { value: '99' } });
     expect(onOrderQty).toHaveBeenLastCalledWith('Hinges|HNG-100', 5);
 
-    // Below 1 clamps up to 1.
+    // #1604: a 0 (or a blank) is a step on the way to another number, not an order of 1 - jumping to 1
+    // at once put a 1 in front of what was typed next. It is held until the field is left, and leaving
+    // it puts the last quantity back.
+    onOrderQty.mockClear();
     fireEvent.change(orderQtyInput('Hinges|HNG-100'), { target: { value: '0' } });
-    expect(onOrderQty).toHaveBeenLastCalledWith('Hinges|HNG-100', 1);
+    expect(onOrderQty).not.toHaveBeenCalled();
+    fireEvent.blur(orderQtyInput('Hinges|HNG-100'));
+    expect(orderQtyInput('Hinges|HNG-100').value).toBe('5');
   });
 
   it('accepts a valid reduced quantity', () => {

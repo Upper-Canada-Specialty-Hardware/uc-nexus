@@ -139,6 +139,26 @@ describe('splitting loose hardware', () => {
     await waitFor(() => expect(fired).toHaveBeenCalled());
   });
 
+  // #1604: a cleared box became 1 at once, so the next keystroke typed after it - backspacing 4 to type 3
+  // placed 13. The box stays blank while it is being retyped.
+  it('lets the quantity be cleared and retyped without a 1 appearing in front', async () => {
+    const fired = vi.fn();
+    renderWorkspace([
+      poolMock({ looseItems: [looseRow()], containers: [container()] }),
+      setItemsMock('c-1', [looseInput(3)], fired),
+    ]);
+
+    const qty = await screen.findByRole('spinbutton', { name: 'Quantity of HG-100 for 101 to place' });
+    fireEvent.change(qty, { target: { value: '' } });
+    expect(qty).toHaveValue(null);
+    fireEvent.change(qty, { target: { value: '3' } });
+
+    fireEvent.mouseDown(within(poolRow('HG-100 for 101')).getByRole('combobox'));
+    fireEvent.click(await screen.findByRole('option', { name: 'Box 1' }));
+
+    await waitFor(() => expect(fired).toHaveBeenCalled());
+  });
+
   it('defaults to everything unplaced, which is the ordinary case', async () => {
     const fired = vi.fn();
     renderWorkspace([

@@ -162,13 +162,29 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
       }
       const taken = used.get(row.productKey) ?? 0;
       const cap = Math.min(untiedOf(li), Math.max(picked.availableQuantity - taken, 0));
-      const typed = parseInt(row.tieQuantity, 10);
-      const tie = !row.tieEdited ? cap : Number.isNaN(typed) ? 0 : Math.max(0, Math.min(typed, cap));
+      // #1604: a part unit is not cut down to a whole one - it ties nothing and the row says why.
+      const typed = Number(row.tieQuantity);
+      const tie =
+        !row.tieEdited ? cap : row.tieQuantity.trim() === '' || !Number.isInteger(typed) ? 0 : Math.max(0, Math.min(typed, cap));
       used.set(row.productKey, taken + tie);
       map.set(li.id, { cap, tie });
     }
     return map;
   }, [openLines, rowFor, productsByKey, untiedOf]);
+
+  /** #1604: rows whose typed tie isn't a whole number - registering waits until they are. */
+  const notWholeTies = useMemo(
+    () =>
+      new Set(
+        openLines
+          .filter((li) => {
+            const row = rowFor(li.id);
+            return row.tieEdited && row.tieQuantity.trim() !== '' && !Number.isInteger(Number(row.tieQuantity));
+          })
+          .map((li) => li.id),
+      ),
+    [openLines, rowFor],
+  );
 
   /** The lines to send: the ones somebody has actually named a product for. */
   const pendingLines = useMemo(
@@ -315,6 +331,8 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
                 value={row.tieEdited ? row.tieQuantity : String(tie)}
                 onChange={(e) => setRow(li.id, { tieQuantity: e.target.value, tieEdited: true })}
                 disabled={!row.productKey}
+                error={notWholeTies.has(li.id)}
+                helperText={notWholeTies.has(li.id) ? 'Whole numbers only' : undefined}
                 slotProps={{ htmlInput: { min: 0, max: cap, 'aria-label': 'Tie quantity' } }}
                 // Gives way before the note does when the column is scaled down (#909).
                 sx={{ width: 76, flexShrink: 1, minWidth: 48 }}
@@ -425,7 +443,7 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
           variant="contained"
           size="small"
           onClick={handleSave}
-          disabled={pendingLines.length === 0 || loading}
+          disabled={pendingLines.length === 0 || loading || notWholeTies.size > 0}
         >
           {loading ? 'Registering…' : 'Register in Nexus'}
         </Button>

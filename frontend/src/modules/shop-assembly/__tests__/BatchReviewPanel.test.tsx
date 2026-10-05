@@ -97,6 +97,20 @@ describe('BatchReviewPanel', () => {
     ]);
   });
 
+  // #1604: a part unit was floored to 2 and dispatched; it is held with a word and nothing goes out.
+  it('refuses a part unit instead of cutting it down', () => {
+    const props = renderPanel();
+
+    fireEvent.change(screen.getByLabelText('Send HG-100 for A01'), { target: { value: '2.5' } });
+
+    expect(screen.getByLabelText('Send HG-100 for A01')).toHaveValue(2.5);
+    expect(screen.getAllByText(/Whole numbers only/).length).toBeGreaterThan(0);
+    const create = screen.getByRole('button', { name: /^Create batch/ });
+    expect(create).toBeDisabled();
+    fireEvent.click(create);
+    expect(props.onCreateBatch).not.toHaveBeenCalled();
+  });
+
   it('lowers what the next opening can take as the first one takes units', () => {
     // Three hinges for two doors owed two each: once A01 holds 2, only 1 is left for A02.
     renderPanel();
