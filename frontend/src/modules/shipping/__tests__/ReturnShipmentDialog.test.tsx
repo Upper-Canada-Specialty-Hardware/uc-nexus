@@ -118,3 +118,44 @@ describe('ReturnShipmentDialog', () => {
     expect(onCompleted).not.toHaveBeenCalled();
   });
 });
+
+// #1578: a failed read is not an empty shipment, and the full-return shortcut says what it will do.
+describe('ReturnShipmentDialog honesty (#1578)', () => {
+  const renderWith = (mocks: MockedResponse[], status?: string) =>
+    render(
+      <MockedProvider mocks={mocks}>
+        <ToastProvider>
+          <ReturnShipmentDialog
+            slip={{ id: 'ps-1', packingSlipNumber: 'PS-0019', projectName: 'Cowichan District Hospital', status }}
+            onClose={() => {}}
+            onCompleted={() => {}}
+          />
+        </ToastProvider>
+      </MockedProvider>,
+    );
+
+  it('says the returnable lines could not be read, with a retry, not "nothing left to return"', async () => {
+    const failedLines: MockedResponse = {
+      request: { query: GET_RETURNABLE_LINES, variables: { packingSlipId: 'ps-1' } },
+      maxUsageCount: INFINITE,
+      error: new TypeError('Failed to fetch'),
+    };
+    renderWith([failedLines, warehousesMock], 'PICKED_UP');
+
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing left to return/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Record return' })).toBeDisabled();
+  });
+
+  it('names the full-return shortcut for what it does at each status', async () => {
+    const { unmount } = renderWith([linesMock, warehousesMock], 'PICKED_UP');
+    await screen.findByText('HG-2');
+    expect(screen.getByRole('button', { name: 'Return everything' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel whole shipment' })).not.toBeInTheDocument();
+    unmount();
+
+    renderWith([linesMock, warehousesMock], 'SCHEDULED');
+    await screen.findByText('HG-2');
+    expect(screen.getByRole('button', { name: 'Cancel whole shipment' })).toBeInTheDocument();
+  });
+});

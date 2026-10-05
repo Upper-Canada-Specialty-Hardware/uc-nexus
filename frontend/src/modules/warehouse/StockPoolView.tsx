@@ -41,6 +41,7 @@ import PageHeader from '../../components/PageHeader';
 import { microLabelSx, monoSx } from '../../theme';
 import { useInventoryItemTypes } from '../../hooks/useCustomItems';
 import { useOnCompanySwitch } from '../../hooks/useDropProjectOnCompanySwitch';
+import { naturalSortComparator } from '../../utils/naturalCompare';
 
 interface WarehouseOption {
   id: string;
@@ -298,6 +299,8 @@ export default function StockPoolView() {
       minWidth: 160,
       valueGetter: (_value, row) =>
         [row.aisle, row.row, row.bay].filter(Boolean).join(' / ') || '— Unlocated —',
+      // #1569: A / 1 / 2 before A / 1 / 10.
+      sortComparator: naturalSortComparator,
       renderCell: ({ value }) => (
         <Typography component="span" sx={monoSx}>
           {value as string}
