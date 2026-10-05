@@ -131,7 +131,7 @@ export default function InventoryValuePage() {
           You need the Tenant Owner or Shop Assembly Manager role to see inventory value.
         </Alert>
       ) : error ? (
-        <Alert severity="error">{userMessage(error)}</Alert>
+        <Alert severity="error">{userMessage(error, { reading: true })}</Alert>
       ) : !company && !loading ? (
         <Alert severity="info">There is no GP company to value yet.</Alert>
       ) : (
@@ -449,8 +449,9 @@ function DoorRow({
   }
 
   const commit = () => {
-    const parsed = Number.parseInt(draft, 10);
-    if (Number.isNaN(parsed) || parsed < 0) {
+    // #1558: a whole count or nothing - parseInt saved a typed 2.5 as 2 and 1e3 as 1.
+    const parsed = draft.trim() === '' ? NaN : Number(draft);
+    if (!Number.isInteger(parsed) || parsed < 0) {
       setDraft(String(row.quantity));
       return;
     }

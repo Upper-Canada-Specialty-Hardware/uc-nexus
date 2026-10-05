@@ -766,3 +766,13 @@ test('checking DB Admin pulls UC Nexus Admin in, and unchecking it drops DB Admi
   await waitFor(() => expect(nexusAdmin.checked).toBe(false));
   expect(dbAdmin.checked).toBe(false);
 });
+
+// #1558: a failed users read said "No rows" - as if the company had no users - with nothing to retry.
+it('says the users could not be loaded and offers a retry, instead of an empty grid', async () => {
+  renderPage([
+    { request: { query: GET_USERS, variables: () => true }, error: new TypeError('Failed to fetch') },
+  ]);
+
+  expect(await screen.findByRole('button', { name: 'Retry' }, GRID_TIMEOUT)).toBeInTheDocument();
+  expect(screen.queryByText(/no rows/i)).not.toBeInTheDocument();
+});

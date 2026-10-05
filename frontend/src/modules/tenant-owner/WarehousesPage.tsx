@@ -22,6 +22,8 @@ import { useIdentity } from '../../hooks/useIdentity';
 import { monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import { useGridColumnFit } from '../../components/useGridColumnFit';
+import LoadError from '../../components/LoadError';
+import { openRowOnEnter } from '../../components/openRowOnEnter';
 import WarehouseEditDialog, { type WarehouseFormValue } from './WarehouseEditDialog';
 
 interface Warehouse {
@@ -49,7 +51,7 @@ export default function WarehousesPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Warehouse | null>(null);
 
-  const { data, loading } = useQuery<{ warehouses: Warehouse[] }>(GET_WAREHOUSES, {
+  const { data, loading, error, refetch } = useQuery<{ warehouses: Warehouse[] }>(GET_WAREHOUSES, {
     variables: GET_WAREHOUSES_VARS,
   });
   const warehouses = useMemo(() => data?.warehouses ?? [], [data]);
@@ -205,18 +207,25 @@ export default function WarehousesPage() {
         />
       </FadeIn>
 
-      <DataGrid
-        ref={setContainer}
-        {...gridProps}
-        rows={warehouses}
-        loading={loading}
-        onRowClick={handleRowClick}
-        autoHeight
-        disableRowSelectionOnClick
-        pageSizeOptions={[10, 25, 50]}
-        initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-        sx={[gridProps.sx, { '& .MuiDataGrid-row': { cursor: 'pointer' } }]}
-      />
+      {/* #1558: a failed read said "No rows" - as if there were none - with nothing to retry. */}
+      {error && !data ? (
+        <LoadError what="the warehouses" error={error} onRetry={() => refetch()} />
+      ) : (
+        <DataGrid
+          ref={setContainer}
+          {...gridProps}
+          rows={warehouses}
+          loading={loading}
+          onRowClick={handleRowClick}
+          // #1558: Enter on a focused cell opens the row, as a click does.
+          onCellKeyDown={openRowOnEnter(handleRowClick, gridProps.columns)}
+          autoHeight
+          disableRowSelectionOnClick
+          pageSizeOptions={[10, 25, 50]}
+          initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
+          sx={[gridProps.sx, { '& .MuiDataGrid-row': { cursor: 'pointer' } }]}
+        />
+      )}
 
       <WarehouseEditDialog open={editOpen} warehouse={editing} onClose={() => setEditOpen(false)} />
 

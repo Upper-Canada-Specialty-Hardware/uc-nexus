@@ -122,3 +122,20 @@ describe('ClassificationStep disclaimer', () => {
     expect(screen.getByText('If unsure of UCH classification, assign Shop.')).toBeInTheDocument();
   });
 });
+
+// #1563: a PO re-import mounts the step before the reconcile's auto-select hands it rows, so the phase
+// has to be settled on the first rows that arrive, not on the empty mount.
+describe('ClassificationStep phase on late rows', () => {
+  it('opens the guided walk-through when unclassified rows arrive after mount', () => {
+    const props = {
+      onClassify: vi.fn(),
+      onClassifySiteShop: vi.fn(),
+      purpose: 'po' as ImportPurpose,
+      isReimport: true,
+    };
+    const { rerender } = render(<ClassificationStep classificationRows={[]} itemCount={0} {...props} />);
+    rerender(<ClassificationStep classificationRows={ONE_ROW} itemCount={1} {...props} />);
+
+    expect(screen.getByRole('button', { name: 'Start classifying' })).toBeInTheDocument();
+  });
+});
