@@ -718,8 +718,10 @@ describe('ImportWizard reconciliation failure', () => {
     await flushApollo();
 
     expect(screen.queryByText(/stack depth limit exceeded/)).not.toBeInTheDocument();
-    // Both products still have a gap, so both are preselected and Classification is handed them.
-    expect(screen.getByText(/0 of 2 classified/)).toBeInTheDocument();
+    // Both products still have a gap, so both are preselected and Classification is handed them - and,
+    // with nothing classified yet, it opens on the guided walk-through (#1563).
+    expect(screen.getByText(/2 lines need ordering/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start classifying' })).toBeInTheDocument();
   });
 });
 
@@ -756,14 +758,16 @@ describe('ImportWizard back and forth', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
     clickNext();
     await flushApollo();
-    expect(screen.getByText(/0 of 2 classified/)).toBeInTheDocument();
+    expect(screen.getByText(/2 lines need ordering/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start classifying' })).toBeInTheDocument();
 
     clickBack();
     clickNext();
     await flushApollo();
 
     expect(screen.getByRole('heading', { name: 'Classification' })).toBeInTheDocument();
-    expect(screen.getByText(/0 of 2 classified/)).toBeInTheDocument();
+    expect(screen.getByText(/2 lines need ordering/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start classifying' })).toBeInTheDocument();
   });
 });
 
@@ -881,7 +885,8 @@ describe('ImportWizard AppBar nav', () => {
 
     mockedUseParser.mockReturnValue(makeParser({ parseResult: null }));
     fireEvent.click(screen.getByRole('button', { name: /Finish Import Session/i }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Finalize' }));
+    // A new file on a re-import replaces the stored schedule (#1562), so the confirm says so.
+    fireEvent.click(await screen.findByRole('button', { name: 'Replace Schedule' }));
     await flushApollo();
 
     expect(screen.queryByText('Finalizing import session...')).not.toBeInTheDocument();
@@ -992,5 +997,69 @@ describe('ImportWizard deep link', () => {
 
     expect(hydrate).not.toHaveBeenCalled();
     expect(screen.getByRole('heading', { name: 'Hardware Schedule' })).toBeInTheDocument();
+  });
+});
+
+// #1562: a failed read of the stored schedule is not "nothing on file".
+describe('ImportWizard stored schedule read failure', () => {
+  it('says the stored schedule could not be read and offers it again', async () => {
+    // Nothing parsed yet: the upload step is choosing a source.
+    mockedUseParser.mockReturnValue(makeParser({ state: 'idle', parseResult: null, progress: { percent: 0, phase: '' } }));
+    renderWizard({
+      project: reimportProject,
+      mocks: [
+        {
+          request: { query: GET_PROJECT_HARDWARE_SCHEDULE, variables: { projectId: 'proj-1' } },
+          error: new Error('backend down'),
+        },
+      ],
+    });
+    await flushApollo();
+
+    expect(await screen.findByText(/Couldn.t load this project.s stored schedule/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+});
+
+// #1563: a shop assembly request with no lines is refused by the server, so Finish holds and says why.
+describe('ImportWizard empty shop assembly request', () => {
+  it('holds Finish when none of the selected openings is owed Shop hardware', async () => {
+    const siteOnlyCoverage: MockedResponse = {
+      request: { query: GET_REQUEST_COVERAGE, variables: { projectId: 'proj-1', openingNumbers: ['O-1', 'O-2'] } },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: {
+        data: {
+          requestCoverage: [
+            coverageLine({ openingNumber: 'O-2', hardwareCategory: 'Locks', productCode: 'LCK-200', classification: 'SITE_HARDWARE' }),
+          ],
+        },
+      },
+    };
+    renderWizard({ project: reimportProject, mocks: [...reimportBaseMocks, siteOnlyCoverage], purpose: 'assembly' });
+    await flushApollo();
+    clickNext();
+    fireEvent.click(screen.getByRole('button', { name: 'Select All' }));
+    clickNext();
+    await flushApollo();
+
+    expect(screen.getByTestId('assembly-empty')).toHaveTextContent(/None of the selected openings is owed Shop hardware/);
+    expect(screen.getByRole('button', { name: /Finish Import Session/i })).toBeDisabled();
+  });
+});
+
+// #1563: past Upload the session holds work that only lives in the wizard, so leaving asks first.
+describe('ImportWizard leaving with work', () => {
+  it('asks before Escape discards the session, and Keep working keeps it', async () => {
+    const { onClose } = renderWizard({ project: reimportProject, mocks: [...reimportBaseMocks, requestCoverageMock], purpose: 'assembly' });
+    await flushApollo();
+    clickNext();
+
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(await screen.findByText('Leave the import?')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep working' }));
+
+    expect(onClose).not.toHaveBeenCalled();
+    // The wizard stays hidden from the accessibility tree until the confirm's exit transition ends.
+    expect(await screen.findByRole('button', { name: 'Select All' })).toBeInTheDocument();
   });
 });

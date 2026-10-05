@@ -24,6 +24,7 @@ import { useLazyQuery, useMutation, useQuery } from '@apollo/client/react';
 import { useWizard } from '../../contexts/WizardContext';
 import { useToast } from '../../components/Toast';
 import ConfirmDialog from '../../components/ConfirmDialog';
+import LoadError from '../../components/LoadError';
 import ProgressBar from '../../components/ProgressBar';
 import ValidationSummaryDisplay from '../../components/ValidationSummaryDisplay';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
@@ -74,6 +75,7 @@ import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
 import { seedScheduleClassifications } from './scheduleClassificationSeed';
 import { exclusionsBlockFinalize as blocksFinalize, type ExclusionsPrefill } from './exclusionsGate';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
+import { sendsScheduleReplace } from './replaceDecision';
 import { isDoorFrameItem } from '../../types/hardwareSchedule';
 import SelectOpeningsStep from './SelectOpeningsStep';
 import SelectHardwareStep from './SelectHardwareStep';
@@ -314,7 +316,7 @@ export default function ImportWizard({
     projectExcludedItems: Array<{ hardwareCategory: string; productCode: string }>;
   }>(GET_PROJECT_EXCLUDED_ITEMS);
 
-  const [fetchProjectSchedule, { data: scheduleData, loading: scheduleLoading }] = useLazyQuery<{
+  const [fetchProjectSchedule, { data: scheduleData, loading: scheduleLoading, error: scheduleError }] = useLazyQuery<{
     projectHardwareSchedule: ProjectHardwareScheduleResponse | null;
   }>(GET_PROJECT_HARDWARE_SCHEDULE, { fetchPolicy: 'network-only' });
 
@@ -342,6 +344,7 @@ export default function ImportWizard({
   const persistedScheduleFilename = scheduleData?.projectHardwareSchedule?.project.scheduleFilename ?? null;
   const canStartFromLatest = isReimport && persistedHardwareItemCount > 0;
   const [hydratedFromPersisted, setHydratedFromPersisted] = useState(false);
+  const replaceSchedule = sendsScheduleReplace(isReimport, hydratedFromPersisted);
 
   const [finalizeImport] = useMutation<{
     finalizeImportSession: {
@@ -623,7 +626,12 @@ export default function ImportWizard({
   // composition moved to the shipping request workspace.
   const requestPurpose = purpose === 'assembly';
   const coverageActive = open && requestPurpose && !!existingProjectId && selectedOpenings.size > 0;
-  const { data: coverageData } = useQuery<{ requestCoverage: CoverageRow[] }>(GET_REQUEST_COVERAGE, {
+  const {
+    data: coverageData,
+    loading: coverageLoading,
+    error: coverageError,
+    refetch: refetchCoverage,
+  } = useQuery<{ requestCoverage: CoverageRow[] }>(GET_REQUEST_COVERAGE, {
     variables: { projectId: existingProjectId, openingNumbers: Array.from(selectedOpenings) },
     skip: !coverageActive,
     fetchPolicy: 'cache-and-network',
@@ -651,6 +659,20 @@ export default function ImportWizard({
     () => (requestPurpose ? buildFlagLines(composerRows) : []),
     [requestPurpose, composerRows],
   );
+
+  // #1563: why a shop assembly request can't be finished yet. A request with no lines is refused by the
+  // server, and a coverage read still in flight or failed read the same as "these openings need nothing",
+  // so each holds Finish with its own reason rather than leaving it to a red refusal after the confirm.
+  const assemblyHold: 'loading' | 'error' | 'empty' | null =
+    purpose !== 'assembly'
+      ? null
+      : coverageError && !coverageData
+        ? 'error'
+        : coverageLoading && !coverageData
+          ? 'loading'
+          : requestLines.length === 0
+            ? 'empty'
+            : null;
 
   // Classification rows for DataGrid (one row per aggregated hardware item)
   const classificationRows = useMemo<ClassificationRow[]>(() => {
@@ -1243,10 +1265,9 @@ export default function ImportWizard({
       includeShopAssemblyRequest: purpose === 'assembly',
       // #493: deprecated and ignored by the server, which mints the number itself.
       shopAssemblyRequestNumber: null,
-      // True when the user uploaded a fresh XML on a project that already has a persisted
-      // schedule (i.e., they did not pick "Use last uploaded schedule"). The backend wipes all
-      // existing HardwareItems and openings absent from the new input.
-      replaceSchedule: canStartFromLatest && !hydratedFromPersisted,
+      // #1562: a re-import that did not load the stored schedule back replaces it - decided by the
+      // project, not by whether the stored schedule happened to be read (see sendsScheduleReplace).
+      replaceSchedule,
       // #627: the source file name, sent only when the schedule came from a fresh parse. A hydrate
       // run leaves this null, so the backend keeps the stored name.
       scheduleFilename: uploadedFileName,
@@ -1254,7 +1275,7 @@ export default function ImportWizard({
       // numbers per line, and already minus the excluded and unallocated ones.
       shopAssemblyItems: purpose === 'assembly' ? requestLines : null,
     };
-  }, [parsed, project.id, purpose, poDraftBuild, unitCostOverrides, classifications, siteShopClassifications, requestLines, canStartFromLatest, hydratedFromPersisted, uploadedFileName]);
+  }, [parsed, project.id, purpose, poDraftBuild, unitCostOverrides, classifications, siteShopClassifications, requestLines, replaceSchedule, uploadedFileName]);
 
   const handleFinalize = useCallback(async () => {
     // #1313: one finalize per click. The confirm closes on this call but its button still takes clicks
@@ -1387,6 +1408,25 @@ export default function ImportWizard({
     if (returnTo) navigate(returnTo);
   }, [onClose, parser, resetDownstreamWizardState, returnTo, navigate]);
 
+  // #1563: past Upload the session holds picks, classifications and PO drafts that only live here, so
+  // Escape and the close X ask first, and a reload or tab close gets the browser's own prompt. The
+  // success dialog's close is the finished path and goes straight through.
+  const holdsWork = open && activeStepId !== 'upload' && !postSuccessOpen;
+  const [leaveConfirmOpen, setLeaveConfirmOpen] = useState(false);
+  const requestClose = useCallback(() => {
+    if (holdsWork) setLeaveConfirmOpen(true);
+    else handleClose();
+  }, [holdsWork, handleClose]);
+  useEffect(() => {
+    if (!holdsWork) return undefined;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [holdsWork]);
+
   // ---- Step validations ----
 
   // #855: a file for another job holds step 1 until the user says, on purpose, to import it here. The
@@ -1480,10 +1520,10 @@ export default function ImportWizard({
 
   return (
     <>
-      <Dialog fullScreen open={open} onClose={handleClose}>
+      <Dialog fullScreen open={open} onClose={requestClose}>
         <AppBar sx={{ position: 'relative' }}>
           <Toolbar sx={{ gap: 2 }}>
-            <IconButton edge="start" color="inherit" onClick={handleClose} aria-label="close">
+            <IconButton edge="start" color="inherit" onClick={requestClose} aria-label="close">
               <X size={20} strokeWidth={1.75} />
             </IconButton>
             {/* #859: the header names the job the wizard was opened for - step 1 on a project with no
@@ -1685,6 +1725,18 @@ export default function ImportWizard({
                     </Typography>
                   </Paper>
                 </Box>
+              )}
+
+              {/* #1562: a failed read of the stored schedule is not "nothing on file" - say so and offer it
+                  again, so "use last uploaded" can come back. The upload below still works: a new file
+                  on a re-import replaces the stored schedule whether or not it was read. */}
+              {parser.state === 'idle' && isReimport && scheduleError && !scheduleLoading && (
+                <LoadError
+                  what="this project's stored schedule"
+                  error={scheduleError}
+                  onRetry={() => fetchProjectSchedule({ variables: { projectId: project.id } })}
+                  sx={{ mb: 2 }}
+                />
               )}
 
               {parser.state === 'idle' && !canStartFromLatest && !scheduleLoading && (
@@ -1983,6 +2035,28 @@ export default function ImportWizard({
                       A flag, not a reservation - the Shop Assembly Manager batches these openings
                       against free stock, and that creates the warehouse pull.
                     </Typography>
+                    {assemblyHold === 'loading' && (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
+                        <CircularProgress size={16} />
+                        <Typography variant="body2" color="text.secondary">
+                          Working out what the selected openings are owed...
+                        </Typography>
+                      </Box>
+                    )}
+                    {assemblyHold === 'error' && (
+                      <LoadError
+                        what="what the selected openings are owed"
+                        error={coverageError}
+                        onRetry={() => refetchCoverage()}
+                        sx={{ mt: 1 }}
+                      />
+                    )}
+                    {assemblyHold === 'empty' && (
+                      <Alert severity="warning" sx={{ mt: 1 }} data-testid="assembly-empty">
+                        None of the selected openings is owed Shop hardware - nothing to raise. Go back and pick
+                        openings with Shop-classified hardware.
+                      </Alert>
+                    )}
                   </Box>
                 )}
               </Paper>
@@ -2009,7 +2083,7 @@ export default function ImportWizard({
                   variant="contained"
                   size="large"
                   startIcon={<FileUp size={18} strokeWidth={1.75} />}
-                  disabled={finalizeLoading || isGpSetupBroken(project) || exclusionsBlockFinalize}
+                  disabled={finalizeLoading || isGpSetupBroken(project) || exclusionsBlockFinalize || assemblyHold !== null}
                   onClick={() => (finalizeOverBuy.length > 0 ? setOverBuyOpen(true) : setConfirmOpen(true))}
                 >
                   Finish Import Session
@@ -2021,12 +2095,26 @@ export default function ImportWizard({
         </Box>
       </Dialog>
 
+      {/* #1563: leaving with work in hand */}
+      <ConfirmDialog
+        open={leaveConfirmOpen}
+        title="Leave the import?"
+        message="Your selections and PO drafts will be lost."
+        confirmLabel="Leave"
+        cancelLabel="Keep working"
+        onConfirm={() => {
+          setLeaveConfirmOpen(false);
+          handleClose();
+        }}
+        onCancel={() => setLeaveConfirmOpen(false)}
+      />
+
       {/* Confirm Dialog */}
       <ConfirmDialog
         open={confirmOpen}
-        title={canStartFromLatest && !hydratedFromPersisted ? 'Replace Hardware Schedule' : 'Finalize Import'}
+        title={replaceSchedule ? 'Replace Hardware Schedule' : 'Finalize Import'}
         message={
-          canStartFromLatest && !hydratedFromPersisted
+          replaceSchedule
             ? "You're uploading a NEW hardware schedule that will REPLACE the previously stored one. Existing purchase orders, receiving records, shop assembly requests, and warehouse inventory will be preserved, and hardware already ordered stays ordered. Openings absent from the new schedule will be removed, unless they still hold ordered hardware. Continue?"
             : purpose === 'schedule'
               // #642: the purpose creates no POs or requests, so the generic message would name
@@ -2037,7 +2125,7 @@ export default function ImportWizard({
                 ? 'This raises the shop assembly request. Nothing is reserved - the Shop Assembly Manager batches it against free stock. Continue?'
                 : 'This will create the selected purchase orders. Continue?'
         }
-        confirmLabel={canStartFromLatest && !hydratedFromPersisted ? 'Replace Schedule' : 'Finalize'}
+        confirmLabel={replaceSchedule ? 'Replace Schedule' : 'Finalize'}
         busy={finalizeLoading}
         onConfirm={handleFinalize}
         onCancel={() => setConfirmOpen(false)}
