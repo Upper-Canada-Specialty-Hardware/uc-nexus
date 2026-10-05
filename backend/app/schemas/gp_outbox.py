@@ -9,7 +9,7 @@ import strawberry
 
 from app.auth import PO_MANAGERS, TENANT_OWNERS, WAREHOUSE_MANAGERS, require_any_role, tenant_scope
 from app.database import SessionLocal
-from app.errors import NotFoundError
+from app.errors import AppError, ConflictError, NotFoundError
 from app.repositories import gp_outbox_repository, user_repository
 
 from .converters import gp_outbox_entry_to_type, gp_outbox_summary_to_type
@@ -37,6 +37,28 @@ _ROLES_BY_RELAY_OP: dict[str, frozenset[str]] = {
 # so the two cannot be told apart from outside.
 _NO_RETRYABLE_ENTRY = "No retryable GP write queue entry with that id"
 _NO_CANCELLABLE_ENTRY = "No cancellable GP write queue entry with that id"
+
+# #1556: a row that is there but in the wrong state is not "not found" - worded as missing, the screen
+# told the person the entry no longer existed while it was being sent, or had already posted.
+_WRONG_STATE = {
+    ("retry", "PENDING"): "This write is already queued to post - there is nothing to retry.",
+    ("retry", "IN_FLIGHT"): "This write is already queued to post - there is nothing to retry.",
+    ("retry", "SUCCEEDED"): "This write has already posted to GP - there is nothing to retry.",
+    ("cancel", "IN_FLIGHT"): "This write is being sent to GP right now, so it can't be cancelled.",
+    ("cancel", "SUCCEEDED"): "This write has already posted to GP - there is nothing to cancel.",
+    ("cancel", "CANCELLED"): "This write was already cancelled.",
+}
+
+
+def _refusal(session, entry_id: uuid.UUID, action: str, missing_message: str) -> AppError:
+    """Why a retry or cancel did nothing. The repository locked and re-read the row before refusing it, so
+    the session's copy here is that locked read - the status it refused on, not a second, racing one. A
+    row that is gone, or out of scope (already checked by the caller), stays NOT FOUND."""
+    current = gp_outbox_repository.get_entry(session, entry_id)
+    if current is None:
+        return NotFoundError(missing_message)
+    message = _WRONG_STATE.get((action, current.status))
+    return ConflictError(message) if message else NotFoundError(missing_message)
 
 
 def _authorize_entry(info: strawberry.Info, entry, absent_message: str) -> None:
@@ -116,7 +138,7 @@ class GpOutboxMutations:
 
             row = gp_outbox_repository.retry_entry(session, uuid.UUID(str(id)))
             if row is None:
-                raise NotFoundError(_NO_RETRYABLE_ENTRY)
+                raise _refusal(session, uuid.UUID(str(id)), "retry", _NO_RETRYABLE_ENTRY)
             entry = gp_outbox_entry_to_type(row)
             session.commit()
         # Drain immediately rather than waiting for the next poll tick.
@@ -137,7 +159,7 @@ class GpOutboxMutations:
 
             row = gp_outbox_repository.cancel_entry(session, uuid.UUID(str(id)))
             if row is None:
-                raise NotFoundError(_NO_CANCELLABLE_ENTRY)
+                raise _refusal(session, uuid.UUID(str(id)), "cancel", _NO_CANCELLABLE_ENTRY)
             entry = gp_outbox_entry_to_type(row)
             session.commit()
             return entry
