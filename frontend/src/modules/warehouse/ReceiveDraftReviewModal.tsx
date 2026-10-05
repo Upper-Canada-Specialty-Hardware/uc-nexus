@@ -222,6 +222,8 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
   // retried, not edited or rejected. The backend refuses both on APPROVING, and an edit sent first
   // would stop the same-key approve, the only way to finish the post, from ever being reached.
   const retrying = draft?.status === 'APPROVING' || approveFailed;
+  // #1593: approved or rejected by someone else meanwhile - there is nothing left to approve or edit here.
+  const finishedElsewhere = draft?.status === 'APPROVED' || draft?.status === 'REJECTED';
 
   // ---- Actions ----
 
@@ -328,6 +330,15 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
           return;
         }
         setApproveFailed(true);
+      } else {
+        // #1593: the save of the edited counts failed before any approval was sent - nothing was claimed
+        // or posted, so there is no duplicate-receipt question to answer.
+        setApproveNotice({
+          on: draftProp,
+          message: `Saving the counts failed - nothing was approved. ${serverSays || 'An unknown error occurred'}`.trim(),
+          gpError: null,
+        });
+        return;
       }
       if (captured?.code === GP_JOB_NOT_OPEN) {
         // #730: the server's refusal names the job and its state; there is no GP detail to show and
@@ -412,6 +423,12 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
   ) : (
     <>
       <Button onClick={onClose}>Cancel</Button>
+      {/* #1593 / #981: the reason the approve button is off. */}
+      {finishedElsewhere && (
+        <Typography variant="caption" color="text.secondary" data-testid="approve-finished-reason">
+          This draft was {draft.status === 'APPROVED' ? 'approved' : 'rejected'} elsewhere.
+        </Typography>
+      )}
       {/* #1353: only a draft still waiting on a manager can be sent back; one being posted may already
           be a receipt in GP. */}
       {draft.status === 'PENDING_APPROVAL' && !retrying && (
@@ -425,7 +442,12 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
       <Button
         variant="contained"
         disabled={
-          totalUnits === 0 || (hasQuantityErrors && !retrying) || quarantined || jobNotOpen || submitting
+          totalUnits === 0 ||
+          (hasQuantityErrors && !retrying) ||
+          quarantined ||
+          jobNotOpen ||
+          submitting ||
+          finishedElsewhere
         }
         onClick={() => setConfirmOpen(true)}
       >
@@ -576,7 +598,7 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
                 labelId="review-warehouse-label"
                 label="Receive into warehouse"
                 value={warehouseId}
-                disabled={retrying}
+                disabled={retrying || finishedElsewhere}
                 onChange={(e) => setWarehouseId(e.target.value)}
               >
                 {warehouses.map((w) => (
@@ -592,7 +614,7 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
                 receiveQuantities={receiveQuantities}
                 onQuantityChange={handleQuantityChange}
                 showPoHeaders={false}
-                readOnly={retrying}
+                readOnly={retrying || finishedElsewhere}
               />
             )}
           </>
