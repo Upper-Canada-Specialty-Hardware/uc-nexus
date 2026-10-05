@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback, type ReactNode } from 'react';
 import { userMessage } from '../../graphql/userMessage';
+import { isStaleRowRefusal } from '../../graphql/staleRow';
 import {
   Box,
   Checkbox,
@@ -442,8 +443,9 @@ export default function PutAwayTab() {
           showToast(message, 'error');
           // #1567: a refused assign usually means the row moved on - another worker already put it away -
           // so the queue is redrawn rather than left offering it again. A refused split (#1378) keeps the
-          // screen as it is, with the typed quantity, for another try.
-          if (!partial) refetch();
+          // screen as it is, with the typed quantity, for another try - unless it was refused because the row
+          // was already shelved, which is the same stale queue.
+          if (!partial || isStaleRowRefusal(err)) refetch();
         }
       } finally {
         setAssigningId(null);

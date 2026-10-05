@@ -584,6 +584,21 @@ def test_put_away_of_an_inventory_row_already_shelved_is_refused(db_session):
     assert il.aisle == first, "nothing moved"
 
 
+def test_a_partial_put_away_of_a_row_already_shelved_is_refused_at_the_split(db_session):
+    """The partial path splits first: it must not carve units off a row another worker already shelved."""
+    project = make_project(db_session)
+    first = _aisle()
+    define_location(db_session, None, first, "R1", "B1")
+    il = make_il(db_session, project, aisle=first, row="R1", bay="B1")
+    before = il.quantity
+
+    with pytest.raises(ConflictError) as excinfo:
+        warehouse_repository.split_inventory_location(db_session, il.id, 1, performed_by="wh")
+
+    assert f"already put away at {first}-R1-B1" in excinfo.value.message
+    assert il.quantity == before, "nothing split off"
+
+
 def test_put_away_of_a_stock_row_already_shelved_is_refused(db_session):
     first, second = _aisle(), _aisle()
     define_location(db_session, None, first, "R1", "B1")

@@ -738,6 +738,8 @@ def split_inventory_location(
     il = lock_inventory_combo(session, inv_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inv_id} not found")
+    # #1567: a partial put-away splits first; a row someone else already shelved must not be split off it.
+    refuse_if_already_located(il.aisle, il.row, il.bay)
     deficient = il.deficient_quantity or 0
     if quantity >= il.quantity:
         # Equal is refused too: splitting off everything is a no-op that leaves an empty row behind.
