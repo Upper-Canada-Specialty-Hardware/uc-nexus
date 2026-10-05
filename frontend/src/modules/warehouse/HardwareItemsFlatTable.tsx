@@ -174,7 +174,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
   useEffect(() => {
     const api = apiRef.current;
     if (!hasGrid || !api) return undefined;
-    return api.subscribeEvent('filteredRowsSet', () => {
+    const sync = () => {
       const ids = new Set(gridFilteredSortedRowIdsSelector(apiRef).map(String));
       // The grid re-reports on every rows change; keep the same set when nothing moved, or each report
       // would re-render and re-filter without end.
@@ -185,7 +185,15 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
         const next = new Set([...prev].filter((id) => ids.has(id)));
         return next.size === prev.size ? prev : next;
       });
-    });
+    };
+    // The grid reports its first filtered set while it first renders, before this subscribes - so read it
+    // once now. A grid that unmounted (a project switch, an empty project) leaves no ids behind for the next.
+    sync();
+    const unsubscribe = api.subscribeEvent('filteredRowsSet', sync);
+    return () => {
+      unsubscribe();
+      setVisibleIds(null);
+    };
   }, [apiRef, hasGrid]);
   const shownRows = useMemo(
     () => (visibleIds ? rows.filter((r) => visibleIds.has(r.id)) : rows),

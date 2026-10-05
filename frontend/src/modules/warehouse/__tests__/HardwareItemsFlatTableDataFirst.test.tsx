@@ -113,3 +113,18 @@ it('totals the rows the filter leaves, and drops a filtered-out row from the sel
   await waitFor(() => expect(units()).toHaveTextContent('4'));
   expect(screen.queryByText('1 selected')).not.toBeInTheDocument();
 });
+
+it('totals a different project after the grid came back from a spinner (a project switch)', async () => {
+  state = { data: loaded, loading: false };
+  const { rerender } = render(<HardwareItemsFlatTable projectId="p-1" />);
+  const units = () => screen.getByText('Total units').nextElementSibling as HTMLElement;
+  expect(units()).toHaveTextContent('10');
+
+  // An uncached project: no data while it loads, so the grid unmounts for the spinner.
+  state = { data: undefined, loading: true };
+  rerender(<HardwareItemsFlatTable projectId="p-2" />);
+  state = { data: { inventoryRows: [row('r-9', 'CL-300', 7, 70)] }, loading: false };
+  rerender(<HardwareItemsFlatTable projectId="p-2" />);
+
+  await waitFor(() => expect(units()).toHaveTextContent('7'));
+});
