@@ -268,6 +268,7 @@ def gate_on_available_inventory(
             shortfalls=result.shortfalls,
             project_id=project_id,
             request_number=request_number,
+            label=label,
         )
 
 

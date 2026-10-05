@@ -354,3 +354,90 @@ def test_gate2_full_pick_stamps_picked_and_deducts_the_rows_dictated(db_session)
     assert older.quantity == 0
     assert newer.quantity == 4
     assert _po_shortfall_notifs(db_session, project.id) == []
+
+
+# --- the import refusal's backfill signal (#1533) ----------------------------------------------
+
+
+def _gate_refusal(session, project_id, needs, *, label="shipping-out request") -> InventoryShortfallError:
+    with pytest.raises(InventoryShortfallError) as exc:
+        warehouse_repository.gate_on_available_inventory(session, project_id, needs, label=label, request_number=None)
+    return exc.value
+
+
+def test_gate_refusal_notice_names_what_was_refused(db_session):
+    """The import finish is refused by the shipping-out gate; purchasing's notice used to call it "A
+    shop-assembly task", sending somebody to the Shop Assembly board for a request that never existed."""
+    from app.services import notification_service
+
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=1)
+    error = _gate_refusal(db_session, project.id, [("HINGE", "HG-100", 4)])
+
+    assert error.label == "shipping-out request"
+    notif = notification_service.notify_gate_shortfall(db_session, error)
+
+    assert notif is not None
+    assert notif.message.startswith("A shipping-out request couldn't be created - backfill needed.")
+    assert "shop-assembly" not in notif.message
+    assert notif.pull_request_id is None
+
+
+def test_a_refused_retry_does_not_raise_the_same_notice_again(db_session):
+    from app.services import notification_service
+
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=1)
+
+    first = notification_service.notify_gate_shortfall(
+        db_session, _gate_refusal(db_session, project.id, [("HINGE", "HG-100", 4)])
+    )
+    db_session.flush()
+    again = notification_service.notify_gate_shortfall(
+        db_session, _gate_refusal(db_session, project.id, [("HINGE", "HG-100", 4)])
+    )
+    db_session.flush()
+
+    assert first is not None
+    assert again is None
+    assert len(_po_shortfall_notifs(db_session, project.id)) == 1
+
+
+def test_a_different_shortfall_or_a_read_notice_is_raised_again(db_session):
+    from app.services import notification_service
+
+    project = _make_project(db_session)
+    _seed_inventory(db_session, project.id, quantity=1)
+
+    first = notification_service.notify_gate_shortfall(
+        db_session, _gate_refusal(db_session, project.id, [("HINGE", "HG-100", 4)])
+    )
+    db_session.flush()
+    # A trimmed selection that is still short is a different gap.
+    trimmed = notification_service.notify_gate_shortfall(
+        db_session, _gate_refusal(db_session, project.id, [("HINGE", "HG-100", 3)])
+    )
+    db_session.flush()
+    assert first is not None and trimmed is not None
+
+    # Once somebody has read the first one, the same gap coming back is worth raising again.
+    first.is_read = True
+    db_session.flush()
+    repeat = notification_service.notify_gate_shortfall(
+        db_session, _gate_refusal(db_session, project.id, [("HINGE", "HG-100", 4)])
+    )
+    assert repeat is not None
+    db_session.flush()
+    assert len(_po_shortfall_notifs(db_session, project.id)) == 3
+
+
+def test_pick_shortfall_wording_is_unchanged(db_session):
+    """The pull path keeps its own headline - only the pull-less fallback changed."""
+    from app.services import notification_service
+
+    project = _make_project(db_session)
+    error = _gate_refusal(db_session, project.id, [("HINGE", "HG-100", 2)])
+    notif = notification_service.notify_po_shortfall(
+        db_session, project_id=project.id, request_number="PR-0042", shortfalls=error.shortfalls
+    )
+    assert notif.message.startswith("Pull Request PR-0042 couldn't be fulfilled - backfill needed.")

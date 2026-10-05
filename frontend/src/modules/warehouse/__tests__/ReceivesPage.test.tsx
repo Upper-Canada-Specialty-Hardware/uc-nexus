@@ -6,6 +6,10 @@ import ReceivesPage from '../ReceivesPage';
 import { GET_RECEIVES } from '../../../graphql/warehouse';
 import { GET_PROJECTS } from '../../../graphql/shared';
 
+// The page clears its filter on an acting-company switch (#1537); outside the app shell there is no company
+// provider, so the acting company is stood in for.
+vi.mock('../../../company/ActingCompanyContext', () => ({ useActingCompany: () => ({ company: 'TUBC' }) }));
+
 vi.setConfig({ testTimeout: 60_000 });
 configure({ asyncUtilTimeout: 15_000 });
 

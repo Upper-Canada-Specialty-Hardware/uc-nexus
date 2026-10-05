@@ -39,6 +39,7 @@ import { POOL_KIND_LABEL, otherPoolKind, type PoolKind } from '../../types/poolK
 import PageHeader from '../../components/PageHeader';
 import { microLabelSx, monoSx } from '../../theme';
 import { useInventoryItemTypes } from '../../hooks/useCustomItems';
+import { useOnCompanySwitch } from '../../hooks/useDropProjectOnCompanySwitch';
 
 interface WarehouseOption {
   id: string;
@@ -104,6 +105,9 @@ export default function StockPoolView() {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [onlyDeficient, setOnlyDeficient] = useState(false);
   const [warehouseFilter, setWarehouseFilter] = useState('');
+  // #1537: the picked warehouse belongs to the company it was picked in; kept across a switch, the list read
+  // under the new company comes back empty, as if it had none.
+  useOnCompanySwitch(() => setWarehouseFilter(''));
   const [kindFilter, setKindFilter] = useState<KindFilter>('ALL');
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
