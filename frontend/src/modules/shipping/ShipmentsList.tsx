@@ -425,8 +425,8 @@ export default function ShipmentsList({ projectId, heading }: Props) {
         )}
         {isGlobal && (
           <FormControl size="small" sx={{ minWidth: 220 }}>
-            <InputLabel>Project</InputLabel>
-            <Select
+            <InputLabel id="shipments-project-filter-label">Project</InputLabel>
+            <Select labelId="shipments-project-filter-label"
               label="Project"
               value={projectFilter}
               onChange={(e) => {

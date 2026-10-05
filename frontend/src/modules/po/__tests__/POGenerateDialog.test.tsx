@@ -211,6 +211,9 @@ describe('POGenerateDialog shipping method', () => {
     // A MUI Select renders a combobox rather than a textbox; only the buyer and the currency,
     // neither of them in scope here, still do.
     expect(screen.getAllByRole('combobox')).toHaveLength(2);
+    // #1547: both named by their labels, not just their current value.
+    expect(screen.getByRole('combobox', { name: /^Buyer/ })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /^Currency/ })).toBeInTheDocument();
   });
 
   it('sends a typed shipping method with the saved document data (issue #703)', async () => {

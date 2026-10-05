@@ -2178,7 +2178,7 @@ export default function GpPurchaseOrderDialog({
               placeholder="e.g. Hinges"
               disabled={Boolean(li.catalogItemId)}
               // #909: a column narrower than the value scrolls the input's own text, never the grid.
-              slotProps={{ htmlInput: { maxLength: MAX_ITEM_NUMBER } }}
+              slotProps={{ htmlInput: { maxLength: MAX_ITEM_NUMBER, 'aria-label': `Item number line ${idx + 1}` } }}
               sx={li.catalogItemId ? MONO_FIELD_SX : undefined}
             />
             <TextField
@@ -2189,7 +2189,7 @@ export default function GpPurchaseOrderDialog({
               helperText={gridErrors[`li_${idx}_code`]}
               placeholder="e.g. AB123"
               disabled={Boolean(li.catalogItemId)}
-              slotProps={{ htmlInput: { maxLength: MAX_DESCRIPTION } }}
+              slotProps={{ htmlInput: { maxLength: MAX_DESCRIPTION, 'aria-label': `Description line ${idx + 1}` } }}
               sx={MONO_FIELD_SX}
             />
             {/* Qty and Unit Cost are text boxes, not number boxes (#833): a number box shows a pasted
@@ -2272,6 +2272,7 @@ export default function GpPurchaseOrderDialog({
                 value={li.orderAs}
                 onChange={(e) => updateLineItem(li.key, 'orderAs', e.target.value)}
                 placeholder="e.g. ML2010"
+                slotProps={{ htmlInput: { 'aria-label': `Order as line ${idx + 1}` } }}
                 sx={MONO_FIELD_SX}
               />
             )}

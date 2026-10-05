@@ -414,8 +414,8 @@ function GenerateForm({
           />
           <Stack direction="row" spacing={2}>
             <FormControl fullWidth size="small">
-              <InputLabel>Buyer</InputLabel>
-              <Select label="Buyer" value={buyerName} onChange={(e) => setBuyerName(e.target.value)}>
+              <InputLabel id="po-generate-buyer-label">Buyer</InputLabel>
+              <Select labelId="po-generate-buyer-label" label="Buyer" value={buyerName} onChange={(e) => setBuyerName(e.target.value)}>
                 <MenuItem value=""><em>None</em></MenuItem>
                 {buyerOptions.map((b) => (
                   <MenuItem key={b} value={b}>{b}</MenuItem>
@@ -428,8 +428,8 @@ function GenerateForm({
               )}
             </FormControl>
             <FormControl size="small" sx={{ minWidth: 140 }}>
-              <InputLabel>Currency</InputLabel>
-              <Select label="Currency" value={currency} onChange={(e) => setCurrency(e.target.value)}>
+              <InputLabel id="po-generate-currency-label">Currency</InputLabel>
+              <Select labelId="po-generate-currency-label" label="Currency" value={currency} onChange={(e) => setCurrency(e.target.value)}>
                 <MenuItem value="CAD">CAD ($)</MenuItem>
                 <MenuItem value="USD">USD ($US)</MenuItem>
               </Select>

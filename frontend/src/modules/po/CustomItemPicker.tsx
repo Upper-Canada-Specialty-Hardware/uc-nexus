@@ -99,8 +99,8 @@ function PickerBody({
       ) : (
         <>
           <FormControl size="small" fullWidth>
-            <InputLabel>Type</InputLabel>
-            <Select
+            <InputLabel id="custom-item-picker-type-label">Type</InputLabel>
+            <Select labelId="custom-item-picker-type-label"
               label="Type"
               value={typeId}
               onChange={(e) => {
