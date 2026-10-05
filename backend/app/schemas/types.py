@@ -1125,6 +1125,9 @@ class ShopAssemblyAllocationLine:
     # figure the batch gate applies. Project-wide and NOT split per opening: two openings wanting the
     # same hinge compete for one pool, and the review has to show that rather than hide it.
     available_quantity: int
+    # #1540: why this line may not go on a batch - its product moved to site or By Others since the request
+    # was raised - or None while it is still shop work. The batch refuses such a line, so the review says so first.
+    not_shop_work_reason: str | None = None
 
 
 @strawberry.type

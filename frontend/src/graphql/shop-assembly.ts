@@ -106,6 +106,7 @@ export const GET_SHOP_ASSEMBLY_ALLOCATION_REVIEW = gql`
           productCode
           requestedQuantity
           availableQuantity
+          notShopWorkReason
         }
       }
     }
