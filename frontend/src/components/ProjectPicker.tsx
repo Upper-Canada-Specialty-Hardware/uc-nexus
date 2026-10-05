@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { userMessage } from '../graphql/userMessage';
 import type { ReactNode } from 'react';
 import { Autocomplete, Box, TextField, Typography, createFilterOptions } from '@mui/material';
 import type { SxProps, Theme } from '@mui/material';
@@ -90,7 +91,7 @@ export default function ProjectPicker({
       // #1503: a failed read is not "no projects yet".
       noOptionsText={
         error && !data
-          ? `Couldn't load the projects, so this is not an empty list - the read failed. ${error.message}`
+          ? `Couldn't load the projects, so this is not an empty list - the read failed. ${userMessage(error)}`
           : options.length === 0
             ? 'No projects yet - projects appear for every job in GP once the job sync runs.'
             : 'No matching project'

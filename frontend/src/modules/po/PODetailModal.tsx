@@ -325,7 +325,7 @@ export default function PODetailModal({
     try {
       await Promise.all([...aliasPromises, ...unitCostPromises]);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to update line items';
+      const message = err instanceof Error ? userMessage(err) : 'Failed to update line items';
       showToast(message, 'error');
       return;
     }
@@ -418,7 +418,7 @@ export default function PODetailModal({
       // failure (mail server, GP, storage) is an error, which stays until it is dismissed.
       showToast(result?.message ?? 'Sent', result?.sent ? 'success' : result?.failed ? 'error' : 'info');
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Could not send the purchase order', 'error');
+      showToast(err instanceof Error ? userMessage(err) : 'Could not send the purchase order', 'error');
     } finally {
       setEmailing(false);
     }
@@ -443,7 +443,7 @@ export default function PODetailModal({
         else window.open(url, '_blank', 'noopener,noreferrer');
       } catch (err) {
         tab?.close();
-        showToast(err instanceof Error ? err.message : 'Could not open the document.', 'error');
+        showToast(err instanceof Error ? userMessage(err) : 'Could not open the document.', 'error');
       }
     },
     [apollo, showToast],

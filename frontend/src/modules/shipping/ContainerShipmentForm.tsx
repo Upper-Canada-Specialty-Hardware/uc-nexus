@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Alert,
   Box,
@@ -96,7 +97,7 @@ export default function ContainerShipmentForm({
       );
       onShipped();
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => setError(userMessage(e)),
   });
 
   const submit = () => {

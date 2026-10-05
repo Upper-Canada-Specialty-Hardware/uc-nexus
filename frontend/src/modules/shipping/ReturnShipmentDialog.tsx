@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Alert,
   Box,
@@ -118,7 +119,7 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
       showToast(`Return recorded for ${slip.packingSlipNumber}`, 'success');
       onCompleted();
     },
-    onError: (err) => setFormError(err.message),
+    onError: (err) => setFormError(userMessage(err)),
   });
 
   // Pre-fill a full return-to-project for every line (shipment cancellation shortcut).
@@ -223,7 +224,7 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
     >
       <Stack spacing={2}>
         {formError && <Alert severity="error">{formError}</Alert>}
-        {error && <Alert severity="error">{error.message}</Alert>}
+        {error && <Alert severity="error">{userMessage(error)}</Alert>}
 
         <Box>
           <Typography sx={microLabelSx}>Packing slip</Typography>

@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, type ReactNode } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Dialog, DialogTitle, DialogContent, DialogActions, Button, TextField,
   Typography, Box, Stack, MenuItem, Select, FormControl, InputLabel,
@@ -343,7 +344,7 @@ function GenerateForm({
       tab.show(blob);
     } catch (err) {
       tab.cancel();
-      showToast(err instanceof Error ? err.message : 'Failed to generate document', 'error');
+      showToast(err instanceof Error ? userMessage(err) : 'Failed to generate document', 'error');
     } finally {
       setBusy(false);
     }
@@ -368,7 +369,7 @@ function GenerateForm({
       showToast('Generated PO document saved', 'success');
       onClose();
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to save document', 'error');
+      showToast(err instanceof Error ? userMessage(err) : 'Failed to save document', 'error');
     } finally {
       setBusy(false);
     }

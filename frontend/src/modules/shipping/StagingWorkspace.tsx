@@ -391,7 +391,7 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
         {error && (
           <Alert severity="error" sx={{ mb: 2 }}>
             The staging pool could not be loaded, so this is not an empty floor - it is a failed read.
-            Retry, and if it persists report it. {error.message}
+            Retry, and if it persists report it. {userMessage(error)}
           </Alert>
         )}
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, mb: 2 }}>

@@ -103,7 +103,7 @@ export default function FlagDeficientModal({ item, onClose, onSuccess }: Props) 
       }
     >
       <Stack spacing={2}>
-        {error && <Alert severity="error">{error.message}</Alert>}
+        {error && <Alert severity="error">{userMessage(error)}</Alert>}
         <Box sx={{ pb: 1, borderBottom: '1px solid', borderColor: 'divider' }}>
           <Typography component="div" sx={microLabelSx}>
             Currently available · {item.available} of {item.quantity}

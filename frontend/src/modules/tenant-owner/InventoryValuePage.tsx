@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Alert,
   Box,
@@ -130,7 +131,7 @@ export default function InventoryValuePage() {
           You need the Tenant Owner or Shop Assembly Manager role to see inventory value.
         </Alert>
       ) : error ? (
-        <Alert severity="error">{error.message}</Alert>
+        <Alert severity="error">{userMessage(error, { reading: true })}</Alert>
       ) : !company && !loading ? (
         <Alert severity="info">There is no GP company to value yet.</Alert>
       ) : (
@@ -337,14 +338,14 @@ function DoorsOnHandTable({ company, value }: { company: string; value: Inventor
 
   const [saveRow] = useMutation<{ saveDoorsOnHand: InventoryValue }>(SAVE_DOORS_ON_HAND, {
     onCompleted: (data) => writePage(data.saveDoorsOnHand),
-    onError: (err) => showToast(err.message, 'error'),
+    onError: (err) => showToast(userMessage(err), 'error'),
   });
   const [removeRow] = useMutation<{ removeDoorsOnHand: InventoryValue }>(REMOVE_DOORS_ON_HAND, {
     onCompleted: (data) => {
       writePage(data.removeDoorsOnHand);
       showToast('Project removed from doors on hand', 'success');
     },
-    onError: (err) => showToast(err.message, 'error'),
+    onError: (err) => showToast(userMessage(err), 'error'),
   });
 
   const rows = value.doorsOnHand;
@@ -448,8 +449,9 @@ function DoorRow({
   }
 
   const commit = () => {
-    const parsed = Number.parseInt(draft, 10);
-    if (Number.isNaN(parsed) || parsed < 0) {
+    // #1558: a whole count or nothing - parseInt saved a typed 2.5 as 2 and 1e3 as 1.
+    const parsed = draft.trim() === '' ? NaN : Number(draft);
+    if (!Number.isInteger(parsed) || parsed < 0) {
       setDraft(String(row.quantity));
       return;
     }
@@ -537,7 +539,7 @@ function AverageDoorCostCard({ company, value }: { company: string; value: Inven
         writePage(data.setAverageDoorCost);
         showToast('Average door cost saved', 'success');
       },
-      onError: (err) => showToast(err.message, 'error'),
+      onError: (err) => showToast(userMessage(err), 'error'),
     },
   );
 

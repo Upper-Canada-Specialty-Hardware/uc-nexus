@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Box,
   Typography,
@@ -145,7 +146,7 @@ export default function DeficientItemsReview() {
         }
       />
 
-      {error && <Alert severity="error">{error.message}</Alert>}
+      {error && <Alert severity="error">{userMessage(error)}</Alert>}
 
       {rows.length === 0 && !loading ? (
         <Card variant="outlined" sx={{ maxWidth: 620 }}>

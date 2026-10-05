@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, type ReactNode } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Box,
   Checkbox,
@@ -423,7 +424,7 @@ export default function PutAwayTab() {
         });
         refetch();
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : 'Failed to assign location';
+        const message = err instanceof Error ? userMessage(err) : 'Failed to assign location';
         if (splitDone) {
           // The split committed but the assign was refused: the piece is already its own row, so
           // redraw the queue and clear the typed quantity, or a retry would split the wrong row.
@@ -463,7 +464,7 @@ export default function PutAwayTab() {
         });
         refetchStock();
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : 'Failed to assign location';
+        const message = err instanceof Error ? userMessage(err) : 'Failed to assign location';
         showToast(message, 'error');
       } finally {
         setAssigningId(null);
@@ -632,7 +633,7 @@ export default function PutAwayTab() {
         failures.push({
           key: r.key,
           productCode: r.productCode,
-          message: err instanceof Error ? err.message : 'Failed to put away',
+          message: err instanceof Error ? userMessage(err) : 'Failed to put away',
         });
       }
     }

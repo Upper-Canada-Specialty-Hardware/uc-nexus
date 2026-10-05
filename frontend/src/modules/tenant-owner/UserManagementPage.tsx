@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Box,
   Typography,
@@ -32,6 +33,8 @@ import { useIdentity } from '../../hooks/useIdentity';
 import { microLabelSx, monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import { useGridColumnFit } from '../../components/useGridColumnFit';
+import LoadError from '../../components/LoadError';
+import { openRowOnEnter } from '../../components/openRowOnEnter';
 import GpIdentityChooser from './GpIdentityChooser';
 import { useGpBuyers, type GpBuyersState } from './useGpBuyers';
 import GpCompanyLabel from '../../relay/GpCompanyLabel';
@@ -251,7 +254,7 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
   const [chooserOpen, setChooserOpen] = useState(false);
   const [chooserPick, setChooserPick] = useState<string | null>(null);
 
-  const { data, loading } = useQuery<{ users: ClerkUser[] }>(GET_USERS);
+  const { data, loading, error, refetch } = useQuery<{ users: ClerkUser[] }>(GET_USERS);
   const users = useMemo(() => data?.users ?? [], [data]);
 
   // Issue #409: GP's live buyer master backs the buyer field below. Only polled while the edit dialog
@@ -397,7 +400,7 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
       showToast('User updated successfully', 'success');
       closeDialog();
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : 'Failed to update user', 'error');
+      showToast(err instanceof Error ? userMessage(err) : 'Failed to update user', 'error');
     } finally {
       setSaving(false);
     }
@@ -463,25 +466,32 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
         />
       </FadeIn>
 
-      <DataGrid
-        ref={setContainer}
-        {...gridProps}
-        rows={users}
-        loading={loading}
-        onRowClick={handleRowClick}
-        autoHeight
-        getRowHeight={() => 'auto'}
-        disableRowSelectionOnClick
-        pageSizeOptions={[10, 25, 50]}
-        initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-        sx={[
-          gridProps.sx,
-          {
-            '& .MuiDataGrid-row': { cursor: 'pointer' },
-            '& .MuiDataGrid-cell': { py: 0.75 },
-          },
-        ]}
-      />
+      {/* #1558: a failed read said "No rows" - as if there were none - with nothing to retry. */}
+      {error && !data ? (
+        <LoadError what="the users" error={error} onRetry={() => refetch()} />
+      ) : (
+        <DataGrid
+          ref={setContainer}
+          {...gridProps}
+          rows={users}
+          loading={loading}
+          onRowClick={handleRowClick}
+          // #1558: Enter on a focused cell opens the row, as a click does.
+          onCellKeyDown={openRowOnEnter(handleRowClick, gridProps.columns)}
+          autoHeight
+          getRowHeight={() => 'auto'}
+          disableRowSelectionOnClick
+          pageSizeOptions={[10, 25, 50]}
+          initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
+          sx={[
+            gridProps.sx,
+            {
+              '& .MuiDataGrid-row': { cursor: 'pointer' },
+              '& .MuiDataGrid-cell': { py: 0.75 },
+            },
+          ]}
+        />
+      )}
 
       {/* #699: two columns so the whole account fits a normal screen without scrolling, and the
           buyer chooser takes over this same dialog's body instead of stacking a second one on it. */}

@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Box,
   Typography,
@@ -737,7 +738,7 @@ function POListPage() {
       handleRefetch();
     } catch (e) {
       const message =
-        e instanceof CombinedGraphQLErrors ? e.errors[0]?.message : e instanceof Error ? e.message : 'GP sync failed';
+        e instanceof CombinedGraphQLErrors ? e.errors[0]?.message : e instanceof Error ? userMessage(e) : 'GP sync failed';
       showToast(message ?? 'GP sync failed', 'error');
     }
   };

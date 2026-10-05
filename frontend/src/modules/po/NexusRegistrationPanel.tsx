@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import { Box, Button, Chip, TextField, Typography } from '@mui/material';
 import { useMutation, useQuery } from '@apollo/client/react';
 import { CombinedGraphQLErrors } from '@apollo/client/errors';
@@ -223,7 +224,7 @@ export default function NexusRegistrationPanel({ po, onRefetch }: Props) {
         e instanceof CombinedGraphQLErrors
           ? e.errors[0]?.message
           : e instanceof Error
-            ? e.message
+            ? userMessage(e)
             : 'Registration failed';
       showToast(message ?? 'Registration failed', 'error');
     }
