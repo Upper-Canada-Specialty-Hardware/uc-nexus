@@ -5,6 +5,7 @@ import { useQuery, useMutation } from '@apollo/client/react';
 import { GET_GP_OUTBOX, GET_GP_OUTBOX_SUMMARY } from '../graphql/shared';
 import { RETRY_GP_OUTBOX_ENTRY, CANCEL_GP_OUTBOX_ENTRY } from '../graphql/admin';
 import ConfirmDialog from './ConfirmDialog';
+import LoadError from './LoadError';
 import { useGridColumnFit } from './useGridColumnFit';
 import { buildGpWriteQueueColumns, type OutboxEntry } from './gpWriteQueueColumns';
 import { useToast } from './Toast';
@@ -74,7 +75,7 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
 
   const variables = useMemo(() => ({ ...(ops ? { ops } : {}), ...(statuses ? { statuses } : {}) }), [ops, statuses]);
 
-  const { data, loading, error } = useQuery<{ gpOutbox: OutboxEntry[] }>(GET_GP_OUTBOX, {
+  const { data, loading, error, refetch } = useQuery<{ gpOutbox: OutboxEntry[] }>(GET_GP_OUTBOX, {
     variables,
     fetchPolicy: 'cache-and-network',
     // Long enough not to be chatty, short enough that a drain shows up while an admin is watching.
@@ -162,23 +163,29 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
           : 'Receives and PO registrations that were accepted while the GP relay was unreachable. These post themselves when it reconnects; only a failed entry needs a person.'}
       </Typography>
 
-      <DataGrid
-        ref={setContainer}
-        {...fit}
-        rows={entries}
-        loading={loading}
-        autoHeight
-        // A handful of rows in the normal case, and the row actions must always be reachable - see
-        // the same note on the installs grid.
-        disableVirtualization
-        disableRowSelectionOnClick
-        // Inside a module every row is already on the one page, so the paginator would be a band of
-        // chrome under a two-row grid.
-        hideFooter={compact && entries.length <= 10}
-        pageSizeOptions={[10, 25, 50]}
-        initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-        sx={[fit.sx, { '& .ts-cell': { ...monoSx, ...tabularSx, color: 'text.secondary' } }]}
-      />
+      {/* #1545: the admin queue keeps its table, but a failed read with nothing on screen is not an empty
+          queue - "No rows" there read as nothing held or failed. */}
+      {error && !data ? (
+        <LoadError what="the GP write queue" error={error} onRetry={() => refetch()} />
+      ) : (
+        <DataGrid
+          ref={setContainer}
+          {...fit}
+          rows={entries}
+          loading={loading}
+          autoHeight
+          // A handful of rows in the normal case, and the row actions must always be reachable - see
+          // the same note on the installs grid.
+          disableVirtualization
+          disableRowSelectionOnClick
+          // Inside a module every row is already on the one page, so the paginator would be a band of
+          // chrome under a two-row grid.
+          hideFooter={compact && entries.length <= 10}
+          pageSizeOptions={[10, 25, 50]}
+          initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
+          sx={[fit.sx, { '& .ts-cell': { ...monoSx, ...tabularSx, color: 'text.secondary' } }]}
+        />
+      )}
 
       <ConfirmDialog
         open={retryTarget !== null}
