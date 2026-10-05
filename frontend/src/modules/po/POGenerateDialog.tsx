@@ -296,11 +296,13 @@ function GenerateForm({
       confirmWith: settings.confirmWith,
       buyerName: buyerName || null,
       currency,
+      // #1523: the line's own unit (a box of screws is not one screw), and its product code when it has no
+      // Order As - a catalog line never does, and printed bare it named only its category ("FRAME").
       lineItems: po.lineItems.map((li) => ({
         itemNumber: li.hardwareCategory,
-        reference: li.orderAs,
+        reference: li.orderAs || li.productCode,
         date: requiredByLabel,
-        uom: 'Each',
+        uom: li.uofm || 'Each',
         ordered: li.orderedQuantity,
         unitPrice: li.unitCost,
       })),
