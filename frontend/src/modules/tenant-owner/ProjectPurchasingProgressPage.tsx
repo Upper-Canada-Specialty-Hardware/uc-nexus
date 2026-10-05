@@ -111,7 +111,7 @@ const columns: GridColDef[] = [
     minWidth: 120,
     headerAlign: 'right',
     align: 'right',
-    renderHeader: infoHeader('Shipped Out', 'Total quantity shipped out for this project across all packing slips.'),
+    renderHeader: infoHeader('Shipped Out', 'Shipped out, net of what came back: units returned to the project and anything on a cancelled shipment are owed again. Manual lines are not counted.'),
   },
 ];
 
