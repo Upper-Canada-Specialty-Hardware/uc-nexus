@@ -474,7 +474,7 @@ function ContentsPanel({ selected, warehouseLabel, onClose, onChanged }: Content
           <CircularProgress size={24} />
         </Box>
       )}
-      {error && <Alert severity="error">Error: {userMessage(error)}</Alert>}
+      {error && <Alert severity="error">Error: {userMessage(error, { reading: true })}</Alert>}
       {!loading && totalCount === 0 && (
         <Alert severity="info">No items at this location.</Alert>
       )}

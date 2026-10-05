@@ -208,7 +208,7 @@ export default function WarehouseLanding() {
           counts, so the floor can still get where it is going. */}
       {error && !dashboard && (
         <Alert severity="error" sx={{ mb: 3 }}>
-          Error loading warehouse dashboard: {userMessage(error)}
+          Error loading warehouse dashboard: {userMessage(error, { reading: true })}
         </Alert>
       )}
 

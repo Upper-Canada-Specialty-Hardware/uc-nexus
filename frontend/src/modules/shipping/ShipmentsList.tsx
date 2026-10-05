@@ -456,7 +456,7 @@ export default function ShipmentsList({ projectId, heading }: Props) {
           ))}
         </Stack>
       ) : error && !current ? (
-        <Alert severity="error">Error loading shipments: {userMessage(error)}</Alert>
+        <Alert severity="error">Error loading shipments: {userMessage(error, { reading: true })}</Alert>
       ) : (
         <FitTable storageKey="shipments-list" columns={shipmentColumns(isGlobal)}>
           {visible.length === 0 && (

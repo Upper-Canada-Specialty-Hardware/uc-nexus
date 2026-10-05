@@ -148,7 +148,7 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
     if (!error) return null;
     return (
       <Alert severity="warning" sx={{ mb: 2.5 }}>
-        Could not load held GP writes: {userMessage(error)}
+        Could not load held GP writes: {userMessage(error, { reading: true })}
       </Alert>
     );
   }

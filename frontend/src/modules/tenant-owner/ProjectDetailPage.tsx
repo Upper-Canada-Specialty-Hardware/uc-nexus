@@ -211,7 +211,7 @@ export default function ProjectDetailPage() {
   }
 
   if (error) {
-    return <Alert severity="error">Could not load this project: {userMessage(error)}</Alert>;
+    return <Alert severity="error">Could not load this project: {userMessage(error, { reading: true })}</Alert>;
   }
 
   if (!project) {

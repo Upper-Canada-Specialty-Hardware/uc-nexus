@@ -224,7 +224,7 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
     >
       <Stack spacing={2}>
         {formError && <Alert severity="error">{formError}</Alert>}
-        {error && <Alert severity="error">{userMessage(error)}</Alert>}
+        {error && <Alert severity="error">{userMessage(error, { reading: true })}</Alert>}
 
         <Box>
           <Typography sx={microLabelSx}>Packing slip</Typography>

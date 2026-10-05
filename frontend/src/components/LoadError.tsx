@@ -33,6 +33,8 @@ export default function LoadError({ what, error, onRetry, sx }: LoadErrorProps) 
       }
     >
       Couldn&apos;t load {what}, so this is not an empty list - the read failed. {userMessage(error, { reading: true })}
+      {/* #1561: the read line promises no button; this banner has one, so it says so. */}
+      {onRetry ? ' Press Retry when the connection is back.' : null}
     </Alert>
   );
 }

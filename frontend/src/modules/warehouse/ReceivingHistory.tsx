@@ -145,7 +145,7 @@ function ReceivesPanel({ poId }: { poId: string }) {
     );
   }
   if (error) {
-    return <Alert severity="error">Error loading receives: {userMessage(error)}</Alert>;
+    return <Alert severity="error">Error loading receives: {userMessage(error, { reading: true })}</Alert>;
   }
 
   const receives = data?.poReceivingDetails?.receiveRecords ?? [];
@@ -406,7 +406,7 @@ export default function ReceivingHistory({ projects }: ReceivingHistoryProps) {
       )}
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          Error loading receiving history: {userMessage(error)}
+          Error loading receiving history: {userMessage(error, { reading: true })}
         </Alert>
       )}
       {!loading && !error && rows.length === 0 && (

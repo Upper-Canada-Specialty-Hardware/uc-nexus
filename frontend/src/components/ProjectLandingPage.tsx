@@ -141,7 +141,7 @@ export default function ProjectLandingPage({
   }
 
   if (error) {
-    return <Alert severity="error">Error loading projects: {userMessage(error)}</Alert>;
+    return <Alert severity="error">Error loading projects: {userMessage(error, { reading: true })}</Alert>;
   }
 
   return (
