@@ -330,3 +330,17 @@ describe('documents a finalize would leave behind (#1602)', () => {
     expect(draftOps.describeUnattached(draftOps.unattachedDocuments(groups, new Set(['ok', 'p', 'h'])))).toBeNull();
   });
 });
+
+describe('explicit removal and the reason a document is left behind (#1602 review)', () => {
+  it('removes an empty draft on an explicit Remove even when it holds a cost code', () => {
+    const coded = draftOps.updateInfo([draft('a', {}, true)], 'a', 'costCode', '05-100');
+    expect(draftOps.removeDraft(coded, 'a')).toHaveLength(0);
+  });
+
+  it('says an included draft with lines but nothing to order has no openings to order', () => {
+    const groups = draftOps.addAttachments([{ ...draft('x', { HG: 2 }, true), label: 'Ives' }], 'x', [att('q')]);
+    expect(draftOps.describeUnattached(draftOps.unattachedDocuments(groups, new Set()))).toBe(
+      "1 document on 'Ives' (no openings to order) will not be attached.",
+    );
+  });
+});

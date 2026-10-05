@@ -283,6 +283,21 @@ describe('PurchaseOrdersStep organizing', () => {
     expect(qtyInputs()[0]).toHaveValue(20);
   });
 
+  // #1602: an emptied card that holds documents stays; its explicit Remove asks before taking them.
+  it('asks before removing a draft that still holds documents, then removes it', () => {
+    const withDoc = draftOps.addAttachments([makeDraft('a', 'ACME', {})], 'a', [
+      { id: 'd1', file: new File(['x'], 'quote.pdf', { type: 'application/pdf' }) },
+    ]);
+    render(<Harness initial={withDoc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Draft actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove draft' }));
+
+    expect(screen.getByText("Remove 'ACME' and its 1 document?")).toBeInTheDocument();
+    expect(screen.getByDisplayValue('ACME')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(screen.queryByDisplayValue('ACME')).not.toBeInTheDocument();
+  });
+
   it('caps a line at the pool MINUS what a sibling draft holds of the same product', () => {
     render(
       <Harness

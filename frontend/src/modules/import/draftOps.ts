@@ -125,7 +125,9 @@ export function createDraft(groups: DraftGroup[], id: string, label = 'New PO'):
 /** Remove a draft only when it holds no lines - a draft with lines would lose quantity, which merge
  *  covers instead. A no-op on a non-empty draft. */
 export function removeDraft(groups: DraftGroup[], id: string): DraftGroup[] {
-  return groups.filter((g) => !(g.id === id && g.lines.size === 0 && !hasEdits(g)));
+  // An explicit Remove is deliberate, so any empty draft goes - the card asks first when it holds
+  // documents or info (#1602). Only the implicit paths (a line set to 0, removed or moved) keep one.
+  return groups.filter((g) => !(g.id === id && g.lines.size === 0));
 }
 
 export function renameDraft(groups: DraftGroup[], id: string, label: string): DraftGroup[] {
@@ -211,7 +213,7 @@ export function mergeAddedProducts(existing: DraftGroup[], seeded: DraftGroup[])
 
 // ---- #1314: a re-seed keeps what the buyer typed and attached ----
 
-function hasEdits(g: DraftGroup): boolean {
+export function hasEdits(g: DraftGroup): boolean {
   const { notes, preferredDeliveryDate, costCode, vendorQuoteNumber } = g.info;
   return (
     (g.attachments?.length ?? 0) > 0 ||
@@ -249,7 +251,7 @@ export function carryDraftEdits(previous: DraftGroup[], seeded: DraftGroup[]): D
 export interface UnattachedDocuments {
   label: string;
   count: number;
-  reason: 'no lines' | 'not included';
+  reason: 'no lines' | 'not included' | 'no openings to order';
 }
 
 /**
@@ -262,7 +264,8 @@ export function unattachedDocuments(groups: DraftGroup[], builtDraftIds: Readonl
     .map((g) => ({
       label: g.label,
       count: g.attachments?.length ?? 0,
-      reason: g.included ? 'no lines' : 'not included',
+      // buildPoDrafts also skips an included draft whose lines resolve to no openings to order.
+      reason: !g.included ? 'not included' : g.lines.size === 0 ? 'no lines' : 'no openings to order',
     }));
 }
 

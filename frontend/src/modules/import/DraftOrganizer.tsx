@@ -31,6 +31,7 @@ import {
 import { AlertTriangle, FileText, MoreVertical, Paperclip, X } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
+import ConfirmDialog from '../../components/ConfirmDialog';
 import InfoHeaderLabel from '../../components/InfoHeaderLabel';
 import ColumnResizeHandle from '../../components/ColumnResizeHandle';
 import { useFitColumns, type FitColumn } from '../../components/fitColumns';
@@ -40,6 +41,7 @@ import type { OverBuyRisk } from './overBuy';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import type { DraftAttachmentType, DraftGroup, DraftInfoField } from './types';
+import { hasEdits } from './draftOps';
 import { Appear } from '../../motion';
 
 export interface GpCostCode {
@@ -215,6 +217,18 @@ export function SplitLineDialog({ ctx, targets, onClose, onConfirm }: SplitLineD
 // fixed - cqw resolves against the grid's own size container, so the row shrinks to fit a narrow card
 // instead of pushing the page sideways. The mono ramp stays one step under the UI ramp, as elsewhere.
 const FS_CELL = 'clamp(0.7rem, 1.5cqw, 0.875rem)';
+
+/** "Remove 'Hager' and its 2 documents and notes?" - what an explicit Remove takes with it (#1602). */
+function removeDraftMessage(draft: DraftGroup): string {
+  const docs = draft.attachments?.length ?? 0;
+  const { notes, preferredDeliveryDate, costCode, vendorQuoteNumber } = draft.info;
+  const hasInfo = [notes, preferredDeliveryDate, costCode, vendorQuoteNumber ?? ''].some((v) => v.trim() !== '');
+  const parts = [
+    ...(docs > 0 ? [`its ${docs} ${docs === 1 ? 'document' : 'documents'}`] : []),
+    ...(hasInfo ? [docs > 0 ? 'details (cost code, notes, quote #)' : 'its details (cost code, notes, quote #)'] : []),
+  ];
+  return `Remove '${draft.label}'${parts.length ? ` and ${parts.join(' and ')}` : ''}?`;
+}
 
 /**
  * A draft line's quantity (#1602). It used to commit every keystroke, so editing 10 in place to 20 passed
@@ -393,6 +407,9 @@ export function DraftCard({
   // Card-level actions menu (merge / remove) and the per-row menu (move whole / split / remove), each
   // a single anchored Menu; the row menu remembers which line it was opened for.
   const [cardMenuAnchor, setCardMenuAnchor] = useState<HTMLElement | null>(null);
+  // #1602: removing a draft that holds documents or info asks first - the card stays on purpose when a
+  // line operation empties it, so its Remove is the one place those go.
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const [rowMenu, setRowMenu] = useState<{ anchor: HTMLElement; line: DraftLine } | null>(null);
 
   // #856: the ledger always fits the card - no sideways scroll - with columns a person can resize.
@@ -523,13 +540,26 @@ export function DraftCard({
           <MenuItem
             disabled={!isEmpty}
             onClick={() => {
-              onRemoveDraft(draft.id);
               setCardMenuAnchor(null);
+              if (hasEdits(draft)) setConfirmRemove(true);
+              else onRemoveDraft(draft.id);
             }}
           >
             {isEmpty ? 'Remove draft' : 'Remove (empty it first)'}
           </MenuItem>
         </Menu>
+        <ConfirmDialog
+          open={confirmRemove}
+          title="Remove draft"
+          message={removeDraftMessage(draft)}
+          confirmLabel="Remove"
+          confirmColor="error"
+          onConfirm={() => {
+            setConfirmRemove(false);
+            onRemoveDraft(draft.id);
+          }}
+          onCancel={() => setConfirmRemove(false)}
+        />
       </Box>
 
       {/* Delivery date + cost code + notes */}
