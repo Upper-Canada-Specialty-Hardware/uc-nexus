@@ -153,7 +153,10 @@ export default function InventoryCorrectionModal({
 
   // --- Computed values ---
 
-  const newQtyNum = parseInt(newQty, 10);
+  // #1558: whole units only - parseInt quietly overrode a typed 4.5 to 4, and the confirmation said 4.
+  const parsedQty = newQty.trim() === '' ? NaN : Number(newQty);
+  const qtyNotWhole = newQty.trim() !== '' && !Number.isInteger(parsedQty);
+  const newQtyNum = Number.isInteger(parsedQty) ? parsedQty : NaN;
   const delta = Number.isNaN(newQtyNum) ? 0 : newQtyNum - item.quantity;
   const itemDeficient = item.deficientQuantity ?? 0;
 
@@ -397,9 +400,11 @@ export default function InventoryCorrectionModal({
               onChange={(e) => setNewQty(e.target.value)}
               size="small"
               fullWidth
-              error={!Number.isNaN(newQtyNum) && (newQtyNum < 0 || (delta < 0 && newQtyNum < itemDeficient))}
+              error={qtyNotWhole || (!Number.isNaN(newQtyNum) && (newQtyNum < 0 || (delta < 0 && newQtyNum < itemDeficient)))}
               helperText={
-                Number.isNaN(newQtyNum)
+                qtyNotWhole
+                  ? 'Whole numbers only.'
+                  : Number.isNaN(newQtyNum)
                   ? `Current quantity: ${item.quantity}`
                   : delta === 0
                     ? 'Enter a quantity different from the current one'
