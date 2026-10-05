@@ -331,3 +331,60 @@ def test_a_cancel_and_a_queue_cannot_cross(_migrate_database):
         assert "refused" in outcome and "entry" not in outcome
     finally:
         _cleanup_po(po_id)
+
+
+# --- #1595: a queued registration posts its snapshot, so edits it would overwrite are refused ---
+
+
+def _line(session, po) -> POLineItem:
+    li = POLineItem(
+        id=uuid.uuid4(),
+        po_id=po.id,
+        hardware_category="HINGE",
+        product_code=f"HG-{uuid.uuid4().hex[:4]}",
+        ordered_quantity=4,
+        unit_cost=Decimal("12.00"),
+    )
+    session.add(li)
+    session.flush()
+    return li
+
+
+def test_a_queued_drafts_line_cost_and_order_as_cannot_change(db_session):
+    from app.errors import ConflictError
+
+    po = _po(db_session)
+    li = _line(db_session, po)
+    _queue_registration(db_session, po.id)
+
+    with pytest.raises(ConflictError, match="registration is queued for GP"):
+        po_repository.update_line_item_unit_cost(db_session, li.id, 10.5)
+    with pytest.raises(ConflictError, match="registration is queued for GP"):
+        po_repository.update_line_item_order_as(db_session, li.id, "ML2010")
+
+
+def test_a_queued_drafts_shipping_cost_cannot_change_but_its_notes_can(db_session):
+    from app.errors import ConflictError
+
+    po = _po(db_session)
+    _queue_registration(db_session, po.id)
+
+    with pytest.raises(ConflictError, match="registration is queued for GP"):
+        po_repository.update_po(db_session, po.id, shipping_cost=85)
+
+    saved = po_repository.update_po(db_session, po.id, notes="call before delivery", vendor_quote_number="Q-77")
+    assert saved.notes == "call before delivery"
+    assert saved.vendor_quote_number == "Q-77"
+    # A resent unchanged value is not a change.
+    po_repository.update_po(db_session, po.id, shipping_cost=None)
+
+
+def test_once_the_queue_drained_the_draft_rules_apply_again(db_session):
+    po = _po(db_session)
+    li = _line(db_session, po)
+    row = _queue_registration(db_session, po.id)
+    row.status = "FAILED"
+    db_session.flush()
+
+    po_repository.update_line_item_unit_cost(db_session, li.id, 10.5)
+    assert li.unit_cost == 10.5

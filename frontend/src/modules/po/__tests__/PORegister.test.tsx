@@ -472,6 +472,27 @@ it('opens the detail of the purchase order named in the link', async () => {
   expect(await screen.findByText('PO detail for po-registered')).toBeInTheDocument();
 });
 
+// #1595: a failed detail read said "Could not load this purchase order: Failed to fetch" with no retry.
+it('says a linked purchase order could not be loaded, with a retry, not the raw error', async () => {
+  const failing = mocks([]).map((m) =>
+    m.request.query === GET_PURCHASE_ORDER
+      ? { request: m.request, maxUsageCount: INFINITE, error: new TypeError('Failed to fetch') }
+      : m,
+  );
+  render(
+    <MemoryRouter initialEntries={['/?po=po-registered']}>
+      <MockedProvider mocks={failing}>
+        <ToastProvider>
+          <POModule />
+        </ToastProvider>
+      </MockedProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  expect(screen.queryByText(/Failed to fetch/)).not.toBeInTheDocument();
+});
+
 // --- #851: everything by default, search across statuses and projects, highlighted new drafts -----
 
 /** The variables of the table's latest page read. */

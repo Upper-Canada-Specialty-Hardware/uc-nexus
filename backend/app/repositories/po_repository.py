@@ -1416,6 +1416,19 @@ def _lock_po_row(session: Session, po: PurchaseOrder) -> None:
     session.refresh(po)
 
 
+QUEUED_REGISTRATION_EDIT_REFUSAL = "This PO's registration is queued for GP, so it can't be changed until it posts."
+
+
+def _refuse_while_registration_queued(session: Session, po: PurchaseOrder) -> None:
+    """A draft whose GP registration is queued (#1595) posts the snapshot taken when it was queued, and the
+    registration save then writes those lines, costs and project back - so a change made meanwhile never
+    reaches GP and is overwritten. Called under the PO row lock, the order cancel and the queue take."""
+    from app.repositories import gp_outbox_repository
+
+    if po.status == POStatus.DRAFT and gp_outbox_repository.queued_po_registration(session, po.id) is not None:
+        raise ConflictError(QUEUED_REGISTRATION_EDIT_REFUSAL)
+
+
 def update_po(
     session: Session,
     po_id: uuid.UUID,
@@ -1452,6 +1465,17 @@ def update_po(
     receive_count = session.scalar(receive_count_stmt)
     if receive_count and receive_count > 0:
         raise InvalidStateTransitionError("Cannot edit PO after receiving has started")
+
+    # #1595: what the queued registration will write back - lines live in their own updates; here the
+    # PO number, project, shipping cost and tariff. Notes, vendor quote # and the preferred date are
+    # Nexus's own and stay editable. Only a real change is refused, so a resent unchanged value saves.
+    if (
+        (po_number is not None and (po_number.strip() or None) != po.po_number)
+        or (project_id is not _UNSET and project_id is not None and project_id != po.project_id)
+        or (shipping_cost is not _UNSET and _coerce_order_cost(shipping_cost, "shipping_cost") != po.shipping_cost)
+        or (tariff_amount is not _UNSET and _coerce_order_cost(tariff_amount, "tariff_amount") != po.tariff_amount)
+    ):
+        _refuse_while_registration_queued(session, po)
 
     # Update project_id if provided (sentinel _UNSET means "not provided")
     if project_id is not _UNSET and project_id is not None:
@@ -1740,11 +1764,14 @@ def update_line_item_order_as(
     po = get_purchase_order(session, poli.po_id)
     if po is None:
         raise NotFoundError("Parent purchase order not found")
+    # #1595: the PO row before its line, the order every PO writer takes; the status is read fresh.
+    _lock_po_row(session, po)
 
     if po.status != POStatus.DRAFT:
         raise InvalidStateTransitionError(
             f"Order As can only change on a draft PO; this one is {status_label(po.status)}. {REFRESH_HINT}"
         )
+    _refuse_while_registration_queued(session, po)
 
     poli.order_as = order_as
     return poli
@@ -1768,11 +1795,14 @@ def update_line_item_unit_cost(
     po = get_purchase_order(session, poli.po_id)
     if po is None:
         raise NotFoundError("Parent purchase order not found")
+    # #1595: the PO row before its line, the order every PO writer takes; the status is read fresh.
+    _lock_po_row(session, po)
 
     if po.status != POStatus.DRAFT:
         raise InvalidStateTransitionError(
             f"Unit cost can only change on a draft PO; this one is {status_label(po.status)}. {REFRESH_HINT}"
         )
+    _refuse_while_registration_queued(session, po)
 
     poli.unit_cost = unit_cost
     return poli
