@@ -10,7 +10,9 @@ import asyncio
 import uuid
 from decimal import Decimal
 
-from app.models.enums import POStatus
+from app.models.enums import NotificationType, POStatus
+from app.models.notification import Notification
+from app.models.project import Project
 from app.models.purchase_order import POLineItem, PurchaseOrder
 from app.repositories import gp_outbox_repository, po_repository
 from app.services import gp_outbox_worker
@@ -19,13 +21,17 @@ CHANGED = "changed after its registration was queued"
 
 
 def _queued(*, row_status="IN_FLIGHT", with_digest=True):
-    """A committed draft with one line, and its registration queued with the draft's digest."""
+    """A committed draft with one line on a project, and its registration queued with the draft's digest."""
     from app.database import SessionLocal
 
     with SessionLocal() as session:
+        project = Project(id=uuid.uuid4(), project_id=f"PROJ-{uuid.uuid4().hex[:6]}", description="T", company="TUBC")
+        session.add(project)
+        session.flush()
         po = PurchaseOrder(
             id=uuid.uuid4(),
             request_number=f"PO-REQ-{uuid.uuid4().hex[:6]}",
+            project_id=project.id,
             status=POStatus.DRAFT,
             company="TUBC",
         )
@@ -55,6 +61,7 @@ def _queued(*, row_status="IN_FLIGHT", with_digest=True):
             persist_context=context,
             entity_key=f"po:{po.id}",
             label="Register PO in GP",
+            project_id=project.id,
         )
         row.status = row_status
         session.commit()
@@ -89,7 +96,22 @@ def _row(row_id):
 
     with SessionLocal() as session:
         row = gp_outbox_repository.get_entry(session, row_id)
-        return row.status, row.last_error
+        return row.status, row.last_error, row.failure_kind
+
+
+def _failure_notices(po_id) -> int:
+    from app.database import SessionLocal
+
+    with SessionLocal() as session:
+        project_id = session.get(PurchaseOrder, po_id).project_id
+        return (
+            session.query(Notification)
+            .filter(
+                Notification.project_id == project_id,
+                Notification.type == NotificationType.GP_WRITE_FAILED,
+            )
+            .count()
+        )
 
 
 def _cleanup(po_id, row_id):
@@ -103,8 +125,15 @@ def _cleanup(po_id, row_id):
         for line in session.query(POLineItem).filter(POLineItem.po_id == po_id).all():
             session.delete(line)
         po = session.get(PurchaseOrder, po_id)
+        project_id = po.project_id if po is not None else None
         if po is not None:
             session.delete(po)
+        if project_id is not None:
+            session.query(Notification).filter(Notification.project_id == project_id).delete()
+            session.flush()
+            project = session.get(Project, project_id)
+            if project is not None:
+                session.delete(project)
         session.commit()
 
 
@@ -118,9 +147,12 @@ def test_a_registration_whose_draft_changed_is_not_pushed(_migrate_database, mon
         asyncio.run(gp_outbox_worker._drain_one(row_id))
 
         assert calls == []  # nothing reached GP
-        status, error = _row(row_id)
-        assert status == "CANCELLED"
+        # Still a draft that wants registering: held as FAILED (on the held-registrations panel) and
+        # announced, not closed quietly as a cancelled PO's is.
+        status, error, kind = _row(row_id)
+        assert status == "FAILED" and kind == "po_changed"
         assert CHANGED in error and "register it again" in error
+        assert _failure_notices(po_id) == 1
     finally:
         _cleanup(po_id, row_id)
 
@@ -155,7 +187,8 @@ def test_a_failed_registration_retried_after_an_edit_is_not_pushed(_migrate_data
         asyncio.run(gp_outbox_worker._drain_one(row_id))
 
         assert calls == []
-        assert CHANGED in _row(row_id)[1]
+        status, error, _kind = _row(row_id)
+        assert status == "FAILED" and CHANGED in error
     finally:
         _cleanup(po_id, row_id)
 

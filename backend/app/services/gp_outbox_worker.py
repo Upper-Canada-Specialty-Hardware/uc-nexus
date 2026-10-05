@@ -185,6 +185,13 @@ def _notify_failure(row_id: uuid.UUID) -> None:
         session.commit()
 
 
+# #1599: unlike a cancelled or registered PO, a changed draft still needs registering - so the row is held as
+# FAILED, on the held-registrations panel and in a notification, rather than closed quietly.
+REGISTRATION_CHANGED_REASON = (
+    "The purchase order changed after its registration was queued - register it again; nothing was sent to GP"
+)
+
+
 def _registration_stale_reason(context: dict) -> str | None:
     """Why a queued PO registration must not be sent any more, or None when it still applies.
 
@@ -216,10 +223,7 @@ def _registration_stale_reason(context: dict) -> str | None:
         # existed carries none and goes on as before.
         queued_digest = context.get("registration_digest")
         if queued_digest and po_repository.registration_digest(session, po_id) != queued_digest:
-            return (
-                "The purchase order changed after its registration was queued - register it again; "
-                "nothing was sent to GP"
-            )
+            return REGISTRATION_CHANGED_REASON
     return None
 
 
@@ -323,8 +327,15 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
         else:
             if op == "register_po_in_gp":
                 stale = await asyncio.to_thread(_registration_stale_reason, context)
+                if stale == REGISTRATION_CHANGED_REASON:
+                    # Still a draft that wants registering: held where the buyer will see it. A retry checks
+                    # again and is held again, and the reason says to register it again.
+                    logger.warning("gp outbox: registration held, po changed since queued", extra={"label": label})
+                    await asyncio.to_thread(_finish, row_id, "mark_failed", kind="po_changed", error=stale)
+                    await asyncio.to_thread(_notify_failure, row_id)
+                    return
                 if stale is not None:
-                    logger.warning("gp outbox: registration skipped, po changed or left draft", extra={"label": label})
+                    logger.warning("gp outbox: registration skipped, po no longer a draft", extra={"label": label})
                     await asyncio.to_thread(_finish, row_id, "mark_skipped", error=stale)
                     return
             if relay_op == "create_po":
