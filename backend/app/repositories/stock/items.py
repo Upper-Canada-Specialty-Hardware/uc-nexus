@@ -22,6 +22,7 @@ from .common import (
     fold_into_same_key_row,
     lock_for_shelf_move,
     lock_pool_source,
+    log_stock_shelf_event,
 )
 
 
@@ -184,19 +185,18 @@ def move_stock_location(
     detail = {"fromLocation": old, "toLocation": location_detail(new_aisle, new_row, new_bay, si.warehouse_id)}
     # A same-key row already on the target shelf takes this one's units (#1377), so the shelf never
     # holds two rows of one product at one price.
+    source_id, moved, moved_deficient = si.id, si.quantity, si.deficient_quantity
     target = fold_into_same_key_row(session, si, aisle=new_aisle, row=new_row, bay=new_bay)
     if target is None:
         si.aisle = new_aisle
         si.row = new_row
         si.bay = new_bay
-    else:
-        detail["foldedIntoStockItemId"] = str(target.id)
-
-    _log_audit_event(
+    log_stock_shelf_event(
         session,
-        project_id=None,
-        entity_type=AuditEntityType.STOCK_ITEM,
-        entity_id=si.id,
+        source_id=source_id,
+        target=target,
+        moved_quantity=moved,
+        moved_deficient=moved_deficient,
         action=AuditAction.MOVE,
         performed_by=performed_by,
         detail=detail,
@@ -216,18 +216,18 @@ def mark_stock_item_unlocated(session: Session, *, stock_item_id: uuid.UUID, per
         raise ValidationError("performed_by is required", field="performed_by")
     si = lock_for_shelf_move(session, stock_item_id, aisle=None, row=None, bay=None)
     detail = {"fromLocation": location_detail(si.aisle, si.row, si.bay, si.warehouse_id)}
+    source_id, moved, moved_deficient = si.id, si.quantity, si.deficient_quantity
     target = fold_into_same_key_row(session, si, aisle=None, row=None, bay=None)
     if target is None:
         si.aisle = None
         si.row = None
         si.bay = None
-    else:
-        detail["foldedIntoStockItemId"] = str(target.id)
-    _log_audit_event(
+    log_stock_shelf_event(
         session,
-        project_id=None,
-        entity_type=AuditEntityType.STOCK_ITEM,
-        entity_id=si.id,
+        source_id=source_id,
+        target=target,
+        moved_quantity=moved,
+        moved_deficient=moved_deficient,
         action=AuditAction.UNLOCATE,
         performed_by=performed_by,
         detail=detail,
@@ -258,18 +258,18 @@ def assign_stock_item_location(
     ensure_registered_location(session, si.warehouse_id, aisle, row, bay)
     detail = {"toLocation": location_detail(aisle, row, bay, si.warehouse_id)}
     # Put away onto a shelf that already holds this row's key: fold into it (#1377).
+    source_id, moved, moved_deficient = si.id, si.quantity, si.deficient_quantity
     target = fold_into_same_key_row(session, si, aisle=aisle, row=row, bay=bay)
     if target is None:
         si.aisle = aisle
         si.row = row
         si.bay = bay
-    else:
-        detail["foldedIntoStockItemId"] = str(target.id)
-    _log_audit_event(
+    log_stock_shelf_event(
         session,
-        project_id=None,
-        entity_type=AuditEntityType.STOCK_ITEM,
-        entity_id=si.id,
+        source_id=source_id,
+        target=target,
+        moved_quantity=moved,
+        moved_deficient=moved_deficient,
         action=AuditAction.PUT_AWAY,
         performed_by=performed_by,
         detail=detail,

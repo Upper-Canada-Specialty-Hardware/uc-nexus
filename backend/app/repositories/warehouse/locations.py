@@ -544,7 +544,12 @@ def merge_locations(
         )
     counts["inventory_locations"] = len(inv_rows)
 
-    from app.repositories.stock.common import _find_stock_row, fold_into_same_key_row, lock_pool_rows
+    from app.repositories.stock.common import (
+        _find_stock_row,
+        fold_into_same_key_row,
+        lock_pool_rows,
+        log_stock_shelf_event,
+    )
 
     found = list(
         session.scalars(
@@ -592,18 +597,17 @@ def merge_locations(
         # A row already on the target shelf with this row's key takes its units (#1164), through the
         # same fold a single move or put-away uses (#1377).
         detail = {"fromLocation": from_loc, "toLocation": to_loc, "reason": "location_merge"}
-        moved = {"quantity": si.quantity, "deficientQuantity": si.deficient_quantity}
+        source_id, moved, moved_deficient = si.id, si.quantity, si.deficient_quantity
         target = fold_into_same_key_row(session, si, aisle=to_aisle, row=to_row, bay=to_bay)
-        if target is not None:
-            detail = {**detail, "foldedIntoStockItemId": str(target.id), **moved}
-        else:
+        if target is None:
             si.aisle, si.row, si.bay = to_aisle, to_row, to_bay
         session.flush()
-        _log_audit_event(
+        log_stock_shelf_event(
             session,
-            project_id=None,
-            entity_type=AuditEntityType.STOCK_ITEM,
-            entity_id=si.id,
+            source_id=source_id,
+            target=target,
+            moved_quantity=moved,
+            moved_deficient=moved_deficient,
             action=AuditAction.MOVE,
             performed_by=performed_by,
             detail=detail,
@@ -769,10 +773,28 @@ def split_inventory_location(
         bay=None,
         received_at=il.received_at,
     )
+    old_quantity = il.quantity
     il.quantity -= quantity
     session.add(remainder)
     session.flush()
 
+    # #1574: both rows, so the original's history explains the units that left it - not only the new
+    # row's. The split is a step of a put-away, not one: the remainder is still unlocated here.
+    _log_audit_event(
+        session,
+        project_id=il.project_id,
+        entity_type=AuditEntityType.INVENTORY_LOCATION,
+        entity_id=il.id,
+        action=AuditAction.ADJUSTMENT,
+        performed_by=performed_by,
+        detail={
+            "reason": "split",
+            "splitInto": str(remainder.id),
+            "quantity": quantity,
+            "oldQuantity": old_quantity,
+            "newQuantity": il.quantity,
+        },
+    )
     _log_audit_event(
         session,
         project_id=il.project_id,
@@ -780,6 +802,6 @@ def split_inventory_location(
         entity_id=remainder.id,
         action=AuditAction.PUT_AWAY,
         performed_by=performed_by,
-        detail={"splitFrom": str(il.id), "quantity": quantity},
+        detail={"reason": "split", "splitFrom": str(il.id), "quantity": quantity},
     )
     return il, remainder
