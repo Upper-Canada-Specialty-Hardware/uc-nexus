@@ -38,8 +38,9 @@ export function useReloadableDraft(draftProp: ReceiveDraft | null) {
   const [reloaded, setReloaded] = useState<{ base: ReceiveDraft; fresh: ReceiveDraft } | null>(null);
   const draft = reloaded && reloaded.base === draftProp ? reloaded.fresh : draftProp;
 
-  const reload = useCallback(async () => {
-    if (!draftProp) return;
+  // Resolves to the draft as it now stands (#1582: a refused approval reads whether its claim was kept).
+  const reload = useCallback(async (): Promise<ReceiveDraft | undefined> => {
+    if (!draftProp) return undefined;
     const [res] = await Promise.all([
       client.query<{ receiveDraft: ReceiveDraft }>({
         query: GET_RECEIVE_DRAFT,
@@ -50,6 +51,7 @@ export function useReloadableDraft(draftProp: ReceiveDraft | null) {
     ]);
     const fresh = res.data?.receiveDraft;
     if (fresh) setReloaded({ base: draftProp, fresh });
+    return fresh;
   }, [client, draftProp]);
 
   return { draft, reload };

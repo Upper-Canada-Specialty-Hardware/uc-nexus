@@ -14,6 +14,7 @@ import {
 import { DataGrid, type GridColDef } from '@mui/x-data-grid';
 import { useGridColumnFit } from '../../components/useGridColumnFit';
 import { useQuery } from '@apollo/client/react';
+import LoadError from '../../components/LoadError';
 import { GET_RECEIVES } from '../../graphql/warehouse';
 import { GET_PROJECTS } from '../../graphql/shared';
 import PageHeader from '../../components/PageHeader';
@@ -82,7 +83,7 @@ export default function ReceivesPage() {
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   // Every filter, status included, is applied by the server (#1267). Status used to narrow the first
   // page in the browser, so past one page an older rejected receive read as "nothing matches".
-  const { data, loading, error, fetchMore } = useQuery<{ receives: ReceiveRow[] }>(GET_RECEIVES, {
+  const { data, loading, error, fetchMore, refetch } = useQuery<{ receives: ReceiveRow[] }>(GET_RECEIVES, {
     variables: {
       limit: PAGE_SIZE,
       offset: 0,
@@ -224,9 +225,11 @@ export default function ReceivesPage() {
         />
       </Stack>
 
-      {error && <Alert severity="error">{userMessage(error, { reading: true })}</Alert>}
+      {/* #1582: a failed read is not an empty filter result - say so, with a retry. */}
+      {error && !data && <LoadError what="the receives" error={error} onRetry={() => refetch()} />}
+      {error && data && <Alert severity="warning">{userMessage(error, { reading: true })}</Alert>}
 
-      {loading && !data ? (
+      {error && !data ? null : loading && !data ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>
           <CircularProgress />
         </Box>
