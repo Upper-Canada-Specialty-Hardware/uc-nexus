@@ -1,5 +1,6 @@
 import { useQuery } from '@apollo/client/react';
 import { userMessage } from '../../graphql/userMessage';
+import RefreshFailedNote from '../../components/RefreshFailedNote';
 import { Box, Typography, List, ListItem, ListItemText, Skeleton, Alert, Chip } from '@mui/material';
 import { GET_LOCATION_AUDIT_HISTORY } from '../../graphql/warehouse';
 import { microLabelSx, tabularSx } from '../../theme';
@@ -95,7 +96,8 @@ export default function LocationAuditStrip({ aisle, row, bay, warehouseId }: Pro
     );
   }
 
-  if (error) {
+  // #1584: only when nothing loaded; a failed refresh keeps the history on screen with a note.
+  if (error && !data) {
     return (
       <Box sx={{ mt: 2 }}>
         <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>Recent activity</Typography>
@@ -118,6 +120,7 @@ export default function LocationAuditStrip({ aisle, row, bay, warehouseId }: Pro
 
   return (
     <Box sx={{ mt: 2 }}>
+      {error && <RefreshFailedNote what="this location's history" error={error} sx={{ mb: 1 }} />}
       <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>
         Recent activity (last {entries.length})
       </Typography>

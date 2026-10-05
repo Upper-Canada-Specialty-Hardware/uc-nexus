@@ -405,6 +405,16 @@ def get_location_audit_history(
     return list(session.scalars(stmt.limit(limit)).all())
 
 
+def _holds_something(model):
+    """A row that holds something, as the contents and utilization views count it (#1587): an inventory row
+    with units, or a pool row with sound or deficient units. An emptied row - picked down to 0, or a stock
+    row a fold kept because something still points at it - is hidden everywhere else, so it must not keep a
+    duplicate group listed (or be offered for a merge that can only fold 0)."""
+    if model is StockItemModel:
+        return StockItemModel.quantity + StockItemModel.deficient_quantity > 0
+    return InventoryLocationModel.quantity > 0
+
+
 def get_distinct_location_values(session: Session, *, company: str | None = None) -> dict[str, list[str]]:
     """Return distinct aisle/row/bay values across inventory and stock tables for autocomplete,
     within the caller's company (#637)."""
@@ -413,7 +423,11 @@ def get_distinct_location_values(session: Session, *, company: str | None = None
     bays: set[str] = set()
 
     for model in (InventoryLocationModel, StockItemModel):
-        stmt = select(model.aisle, model.row, model.bay).where(model.aisle.is_not(None)).distinct()
+        stmt = (
+            select(model.aisle, model.row, model.bay)
+            .where(model.aisle.is_not(None), _holds_something(model))
+            .distinct()
+        )
         if company is not None:
             stmt = stmt.where(model.warehouse_id.in_(tenancy.warehouse_ids_for(company)))
         records = session.execute(stmt).all()
@@ -445,7 +459,11 @@ def get_location_duplicates(session: Session, *, company: str | None = None) -> 
 
     quads: set[tuple[uuid.UUID | None, str, str | None, str | None]] = set()
     for model in (InventoryLocationModel, StockItemModel):
-        stmt = select(model.warehouse_id, model.aisle, model.row, model.bay).where(model.aisle.is_not(None)).distinct()
+        stmt = (
+            select(model.warehouse_id, model.aisle, model.row, model.bay)
+            .where(model.aisle.is_not(None), _holds_something(model))
+            .distinct()
+        )
         if company is not None:
             stmt = stmt.where(model.warehouse_id.in_(tenancy.warehouse_ids_for(company)))
         for wh, a, b, c in session.execute(stmt).all():
@@ -580,6 +598,10 @@ def merge_locations(
                 StockItemModel.aisle == from_aisle,
                 _matches_from(StockItemModel.row, from_row),
                 _matches_from(StockItemModel.bay, from_bay),
+                # #1587: an empty pool row a fold kept (still referenced) stays hidden where it is. Moving it
+                # onto the destination would put two rows of one key on one shelf (#1164); folding it moves 0
+                # units and only writes another entry and a misleading count.
+                _holds_something(StockItemModel),
             )
         ).all()
     )

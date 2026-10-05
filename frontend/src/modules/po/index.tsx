@@ -1056,11 +1056,17 @@ function POListPage() {
               <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>
                 <CircularProgress />
               </Box>
+            ) : selectedError ? (
+              // #1595: in plain words with a retry, not the raw error.
+              <LoadError
+                what="this purchase order"
+                error={selectedError}
+                onRetry={() => refetchSelected()}
+                sx={{ my: 1 }}
+              />
             ) : (
-              <Alert severity={selectedError ? 'error' : 'info'} sx={{ my: 1 }}>
-                {selectedError
-                  ? `Could not load this purchase order: ${selectedError.message}`
-                  : 'This purchase order could not be found. It may have been cancelled or removed.'}
+              <Alert severity="info" sx={{ my: 1 }}>
+                This purchase order could not be found. It may have been cancelled or removed.
               </Alert>
             )}
           </Modal>

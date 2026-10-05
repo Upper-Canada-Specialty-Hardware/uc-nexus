@@ -83,3 +83,21 @@ describe('ReceivesPage server paging (#1267)', () => {
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 });
+
+// #1582: a failed read said "No receives match these filters." under its own error.
+it('says the receives could not be read instead of "no receives match"', async () => {
+  const mocks: MockedResponse[] = [
+    projectsMock,
+    { request: { query: GET_RECEIVES, variables: { limit: 200, offset: 0 } }, error: new TypeError('Failed to fetch') },
+  ];
+  render(
+    <MockedProvider mocks={mocks}>
+      <MemoryRouter>
+        <ReceivesPage />
+      </MemoryRouter>
+    </MockedProvider>,
+  );
+
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  expect(screen.queryByText('No receives match these filters.')).not.toBeInTheDocument();
+});

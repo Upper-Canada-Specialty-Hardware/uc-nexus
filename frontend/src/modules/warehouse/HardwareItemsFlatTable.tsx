@@ -1,5 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
-import { userMessage } from '../../graphql/userMessage';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { Box, Alert, CircularProgress, Typography } from '@mui/material';
 import {
   DataGrid,
@@ -7,8 +6,12 @@ import {
   type GridColumnVisibilityModel,
   type GridRowSelectionModel,
   GridToolbar,
+  gridFilteredSortedRowIdsSelector,
+  useGridApiRef,
 } from '@mui/x-data-grid';
 import { useGridColumnFit } from '../../components/useGridColumnFit';
+import LoadError from '../../components/LoadError';
+import RefreshFailedNote from '../../components/RefreshFailedNote';
 import { useQuery } from '@apollo/client/react';
 import { GET_INVENTORY_ROWS } from '../../graphql/warehouse';
 import { useCustomInventoryItems, catalogKey } from '../../hooks/useCustomItems';
@@ -162,6 +165,41 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
     [selectedIds],
   );
 
+  // #1584: the rows the grid's filters leave on screen (every page, not just this one). Null until the grid
+  // reports, which is the unfiltered set. Kept from the grid's own event rather than recomputed here, so the
+  // quick filter, column filters and hidden-column search all count the same way the grid does.
+  const apiRef = useGridApiRef();
+  const [visibleIds, setVisibleIds] = useState<Set<string> | null>(null);
+  const hasGrid = rows.length > 0;
+  useEffect(() => {
+    const api = apiRef.current;
+    if (!hasGrid || !api) return undefined;
+    const sync = () => {
+      const ids = new Set(gridFilteredSortedRowIdsSelector(apiRef).map(String));
+      // The grid re-reports on every rows change; keep the same set when nothing moved, or each report
+      // would re-render and re-filter without end.
+      setVisibleIds((prev) => (prev && prev.size === ids.size && [...ids].every((id) => prev.has(id)) ? prev : ids));
+      // A row the filter now hides drops out of the selection, so a bulk action never reaches what the
+      // worker can no longer see.
+      setSelectedIds((prev) => {
+        const next = new Set([...prev].filter((id) => ids.has(id)));
+        return next.size === prev.size ? prev : next;
+      });
+    };
+    // The grid reports its first filtered set while it first renders, before this subscribes - so read it
+    // once now. A grid that unmounted (a project switch, an empty project) leaves no ids behind for the next.
+    sync();
+    const unsubscribe = api.subscribeEvent('filteredRowsSet', sync);
+    return () => {
+      unsubscribe();
+      setVisibleIds(null);
+    };
+  }, [apiRef, hasGrid]);
+  const shownRows = useMemo(
+    () => (visibleIds ? rows.filter((r) => visibleIds.has(r.id)) : rows),
+    [rows, visibleIds],
+  );
+
   const selectedRows = useMemo(() => rows.filter((r) => selectedIds.has(r.id)), [rows, selectedIds]);
   const selectionRows = useMemo<SelectionRow[]>(
     () =>
@@ -184,14 +222,14 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
     [selectedRows],
   );
 
-  // Totals for the filtered set are deliberately over the loaded rows: the grid filters client-side,
-  // so a server-side total would disagree with what is on screen.
+  // Totals over the rows the grid's filters leave on screen (#1584): the grid filters client-side, so a
+  // server-side total - or one over every loaded row - would disagree with what is on screen.
   const totals = useMemo(
     () => ({
-      units: rows.reduce((sum, r) => sum + r.quantity, 0),
-      value: rows.reduce((sum, r) => sum + r.lineValue, 0),
+      units: shownRows.reduce((sum, r) => sum + r.quantity, 0),
+      value: shownRows.reduce((sum, r) => sum + r.lineValue, 0),
     }),
-    [rows],
+    [shownRows],
   );
 
   const columns = useMemo(() => buildHardwareItemColumns(projectId), [projectId]);
@@ -206,15 +244,18 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
     columnVisibilityModel,
   });
 
-  if (loading) {
+  // #1584: Apollo sets `loading` on every refetch and keeps the last rows beside a failed one. Swapping the
+  // grid for a spinner on each refetch unmounted it - page, sort and filter lost after every row action - and
+  // a failed refresh hid rows that were already on screen. Both only take over when there is nothing to show.
+  if (loading && !data) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>
         <CircularProgress />
       </Box>
     );
   }
-  if (error) {
-    return <Alert severity="error">{userMessage(error, { reading: true })}</Alert>;
+  if (error && !data) {
+    return <LoadError what="the inventory" error={error} onRetry={() => refetch()} />;
   }
   if (rows.length === 0) {
     return <Alert severity="info">No inventory on hand.</Alert>;
@@ -222,10 +263,12 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
 
   return (
     <>
+      {error && <RefreshFailedNote what="the inventory" error={error} sx={{ mb: 1 }} />}
       <Box sx={{ position: 'relative', height: 'calc(100vh - 320px)', minHeight: 360 }}>
         <DataGrid
           ref={setContainer}
           {...gridProps}
+          apiRef={apiRef}
           rows={rows}
           density="compact"
           checkboxSelection

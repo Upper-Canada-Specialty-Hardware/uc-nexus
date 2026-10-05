@@ -376,6 +376,121 @@ describe('ReceiveDraftReviewModal', () => {
     expect(within(screen.getByRole('table')).queryByRole('spinbutton')).toBeNull();
   });
 
+  it('keeps the count and Reject after a refusal the server let go of - nothing was posted (#1582)', async () => {
+    // The PO closed in GP after the dock counted it: the approval is refused and the claim released.
+    const approveMock: MockedResponse = {
+      request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+      result: {
+        errors: [
+          new GraphQLError('PO-3001 is closed in GP, so it cannot be received against.', {
+            extensions: { code: 'VALIDATION_ERROR' },
+          }),
+        ],
+      },
+    };
+    const rereadMock: MockedResponse = {
+      request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+      result: { data: { receiveDraft: { ...draft(), __typename: 'ReceiveDraft', status: 'PENDING_APPROVAL' } } },
+    };
+    await openModal([approveMock, rereadMock]);
+
+    await approveViaConfirm();
+
+    // The refusal, then the re-read: two round trips, slow under a full parallel run.
+    await vi.waitFor(() => expect(document.body.textContent).toMatch(/Nothing was posted to GP/), { timeout: 15_000 });
+    expect(document.body.textContent).toMatch(/closed in GP/);
+    expect(screen.queryByRole('button', { name: 'Retry posting' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
+  });
+
+  it('keeps the failure and the GP detail when the re-read finds the draft still claimed (#1582)', async () => {
+    // No answer came back: the server still holds the claim, so the only way on is the same-key retry -
+    // and the reviewer must still see why.
+    const approveMock: MockedResponse = {
+      request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+      result: {
+        errors: [
+          new GraphQLError('GP did not answer in time while posting the receipt.', {
+            extensions: { code: 'RELAY_TIMEOUT' },
+          }),
+        ],
+      },
+    };
+    const rereadMock: MockedResponse = {
+      request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+      result: {
+        data: { receiveDraft: { ...draft(), __typename: 'ReceiveDraft', status: 'APPROVING', approvalIdempotencyKey: 'k-1' } },
+      },
+    };
+    await openModal([approveMock, rereadMock]);
+
+    await approveViaConfirm();
+
+    expect(await screen.findByRole('button', { name: 'Retry posting' }, { timeout: 15_000 })).toBeInTheDocument();
+    await vi.waitFor(() => expect(document.body.textContent).toMatch(/Approving this receive failed/), SLOW);
+    expect(screen.getByText('GP could not complete the receipt')).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/Nothing was posted to GP/);
+  });
+
+  it('says another manager finished it, not "fix or reject", when the re-read is approved (#1582)', async () => {
+    const approveMock: MockedResponse = {
+      request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+      result: {
+        errors: [
+          new GraphQLError('This draft was already approved.', { extensions: { code: 'INVALID_STATE_TRANSITION' } }),
+        ],
+      },
+    };
+    const rereadMock: MockedResponse = {
+      request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+      result: { data: { receiveDraft: { ...draft(), __typename: 'ReceiveDraft', status: 'APPROVED' } } },
+    };
+    await openModal([approveMock, rereadMock]);
+
+    await approveViaConfirm();
+
+    await vi.waitFor(() => expect(document.body.textContent).toMatch(/approved elsewhere - refresh/), { timeout: 15_000 });
+    expect(document.body.textContent).not.toMatch(/fix the count or reject/);
+  });
+
+  it('turns Approve off once the draft was approved elsewhere, and says why (#1593)', async () => {
+    const approveMock: MockedResponse = {
+      request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+      result: {
+        errors: [
+          new GraphQLError('This draft was already approved.', { extensions: { code: 'INVALID_STATE_TRANSITION' } }),
+        ],
+      },
+    };
+    const rereadMock: MockedResponse = {
+      request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+      result: { data: { receiveDraft: { ...draft(), __typename: 'ReceiveDraft', status: 'APPROVED' } } },
+    };
+    await openModal([approveMock, rereadMock]);
+
+    await approveViaConfirm();
+
+    await screen.findByTestId('approve-finished-reason', undefined, SLOW);
+    expect(screen.getByTestId('approve-finished-reason')).toHaveTextContent('This draft was approved elsewhere.');
+    expect(screen.getByRole('button', { name: 'Approve & Post to GP' })).toBeDisabled();
+  });
+
+  it('says a failed save approved nothing, without the duplicate-receipt assurance (#1593)', async () => {
+    const updateMock: MockedResponse = {
+      request: { query: UPDATE_RECEIVE_DRAFT, variables: () => true },
+      result: { errors: [new GraphQLError('Quantity must be whole', { extensions: { code: 'VALIDATION_ERROR' } })] },
+    };
+    await openModal([updateMock]);
+
+    fireEvent.change(within(screen.getByRole('table')).getByRole('spinbutton'), { target: { value: '3' } });
+    await approveViaConfirm();
+
+    await vi.waitFor(() => expect(document.body.textContent).toMatch(/Saving the counts failed - nothing was approved/), {
+      timeout: 15_000,
+    });
+    expect(document.body.textContent).not.toMatch(/duplicate receipt/);
+  });
+
   it('will not reject without a reason, and sends it back to the author with one', async () => {
     let captured: { input: { draftId: string; reason: string } } | null = null;
     const rejectMock: MockedResponse<Record<string, unknown>, { input: { draftId: string; reason: string } }> = {

@@ -89,9 +89,13 @@ const uploadMock: MockedResponse = {
   },
 };
 
-function renderModal(warehouses: unknown[]) {
+function renderModal(warehouses: unknown[] | Error) {
+  const warehouseRead: MockedResponse =
+    warehouses instanceof Error
+      ? { request: { query: GET_WAREHOUSES, variables: { includeInactive: false } }, error: warehouses }
+      : warehousesMock(warehouses);
   render(
-    <MockedProvider mocks={[warehousesMock(warehouses), uploadMock, poDetailsMock]}>
+    <MockedProvider mocks={[warehouseRead, uploadMock, poDetailsMock]}>
       <MemoryRouter>
         <ToastProvider>
           <ReceiveModal open onClose={vi.fn()} poIds={['po-1']} />
@@ -127,5 +131,15 @@ describe('ReceiveModal with no active warehouse', () => {
     countAndAttach();
     expect(screen.queryByText(/No active warehouse to receive into/)).toBeNull();
     expect(screen.getByRole('button', { name: 'Submit for Approval' })).toBeEnabled();
+  });
+
+  // #1582: an unread list is not "the default building" - the draft would have landed there unasked.
+  it('says the warehouses could not be read and keeps submit disabled', async () => {
+    renderModal(new TypeError('Failed to fetch'));
+    await screen.findByText('HG-100', undefined, { timeout: 5000 });
+
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    countAndAttach();
+    expect(screen.getByRole('button', { name: 'Submit for Approval' })).toBeDisabled();
   });
 });

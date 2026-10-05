@@ -29,6 +29,7 @@ import { motion } from 'motion/react';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useGridColumnFit } from '../../components/useGridColumnFit';
 import { useQuery, useMutation } from '@apollo/client/react';
+import { Link as RouterLink } from 'react-router-dom';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import {
   GET_LOCATION_UTILIZATION,
@@ -51,6 +52,7 @@ import TransferDialog, { type TransferSource } from './TransferDialog';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { springs } from '../../motion';
 import LoadError from '../../components/LoadError';
+import RefreshFailedNote from '../../components/RefreshFailedNote';
 import type { WarehouseLocationDef } from './receiveDraftTypes';
 import {
   combineLocationRows,
@@ -130,6 +132,8 @@ function formatCurrency(value: number | null): string {
 
 type UtilRow = CombinedLocationRow & { id: string };
 
+const LOCATION_CLEANUP_PATH = '/app/tenant-owner/location-cleanup';
+
 function warehouseChip(id: string | null, warehouseCode: Map<string, string>) {
   return id ? (
     <Chip label={warehouseCode.get(id) ?? '—'} size="small" variant="outlined" />
@@ -149,7 +153,12 @@ function locationStatusChips(row: UtilRow) {
           <Chip label="Retired" size="small" color="warning" variant="outlined" />
         </Tooltip>
       )}
-      {!row.definedId && (
+      {!row.definedId && row.variantOf && (
+        <Tooltip title={`Stored as a variant of the defined location ${row.variantOf}. Merge it on Location Cleanup.`}>
+          <Chip label={`Variant of ${row.variantOf}`} size="small" color="default" variant="outlined" />
+        </Tooltip>
+      )}
+      {!row.definedId && !row.variantOf && (
         <Tooltip title="Not in the defined-locations registry, so it can't be picked for new put-aways. Define it to make it pickable.">
           <Chip label="Not defined" size="small" color="default" variant="outlined" />
         </Tooltip>
@@ -168,6 +177,8 @@ function buildUtilColumns(
   manage?: {
     onDeactivate: (row: UtilRow) => void;
     onDefine: (row: UtilRow) => void;
+    /** Location Cleanup (merge) is a Tenant Owner's page; anyone else is pointed at one. */
+    canMerge: boolean;
   },
 ): GridColDef<UtilRow>[] {
   if (compact) {
@@ -240,6 +251,46 @@ function buildUtilColumns(
             resizable: false,
             sortable: false,
             renderCell: ({ row }: { row: UtilRow }) => {
+              if (!row.definedId && row.variantOf) {
+                // #1587: defining a variant is refused as already defined - it wants a merge, which is a
+                // Tenant Owner's (locationDuplicates / mergeLocations).
+                if (!manage.canMerge) {
+                  return (
+                    <Tooltip title={`Variant of ${row.variantOf} - ask a Tenant Owner to merge it on Location Cleanup.`}>
+                      <span>
+                        <Button size="small" variant="text" disabled>
+                          Define
+                        </Button>
+                      </span>
+                    </Tooltip>
+                  );
+                }
+                return (
+                  <Tooltip title={`Variant of ${row.variantOf} - merge it on Location Cleanup.`}>
+                    <Button
+                      size="small"
+                      variant="text"
+                      component={RouterLink}
+                      to={LOCATION_CLEANUP_PATH}
+                      onClick={(e: React.MouseEvent) => e.stopPropagation()}
+                    >
+                      Merge
+                    </Button>
+                  </Tooltip>
+                );
+              }
+              if (!row.definedId && (!row.row || !row.bay)) {
+                // #1587 / #981: a location needs an aisle, row and bay, so this one can't be defined as stored.
+                return (
+                  <Tooltip title="Needs an aisle, row and bay to be defined - merge it onto a full location on Location Cleanup.">
+                    <span>
+                      <Button size="small" variant="text" disabled>
+                        Define
+                      </Button>
+                    </span>
+                  </Tooltip>
+                );
+              }
               if (!row.definedId) {
                 return (
                   <Button
@@ -896,9 +947,9 @@ export default function LocationsTab() {
         selected !== null,
         warehouseCode,
         !warehouseFilter,
-        canManage ? { onDeactivate: handleDeactivate, onDefine: handleDefineRow } : undefined,
+        canManage ? { onDeactivate: handleDeactivate, onDefine: handleDefineRow, canMerge: ownsTenant } : undefined,
       ),
-    [selected, warehouseCode, warehouseFilter, canManage, handleDeactivate, handleDefineRow],
+    [selected, warehouseCode, warehouseFilter, canManage, ownsTenant, handleDeactivate, handleDefineRow],
   );
 
   // #909: the columns fit the grid's width and never scroll sideways; resized widths are remembered.
@@ -925,7 +976,10 @@ export default function LocationsTab() {
       </Box>
     );
   }
-  if (utilError) return <LoadError what="the warehouse locations" error={utilError} onRetry={() => refetchUtil()} />;
+  // #1584: only when nothing loaded; a failed refresh keeps the rack on screen with a note.
+  if (utilError && !utilData) {
+    return <LoadError what="the warehouse locations" error={utilError} onRetry={() => refetchUtil()} />;
+  }
 
   const totalLocations = combined.length;
   const totalQty = combined.reduce((sum, r) => sum + r.totalQuantity, 0);
@@ -933,6 +987,7 @@ export default function LocationsTab() {
 
   return (
     <Box>
+      {utilError && <RefreshFailedNote what="the warehouse locations" error={utilError} />}
       <PageHeader
         title="Locations"
         parent={{ label: 'Warehouse', to: '/app/warehouse' }}
