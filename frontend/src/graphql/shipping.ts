@@ -184,8 +184,8 @@ export const GET_PROJECT_OPENINGS = gql`
 // is deliberately NOT here; it comes from projectInventoryAvailability, the single number the
 // creation gate is applied against (#342).
 export const GET_REQUEST_COVERAGE = gql`
-  query GetRequestCoverage($projectId: ID!, $openingNumbers: [String!]!) {
-    requestCoverage(projectId: $projectId, openingNumbers: $openingNumbers) {
+  query GetRequestCoverage($projectId: ID!, $openingNumbers: [String!]!, $excludeRequestId: ID) {
+    requestCoverage(projectId: $projectId, openingNumbers: $openingNumbers, excludeRequestId: $excludeRequestId) {
       openingNumber
       hardwareCategory
       productCode

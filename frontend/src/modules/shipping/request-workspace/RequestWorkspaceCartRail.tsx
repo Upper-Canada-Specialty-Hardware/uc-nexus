@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Box, Button, Chip, IconButton, LinearProgress, Stack, TextField, Tooltip, Typography } from '@mui/material';
 import { Trash2, X } from 'lucide-react';
 import {
@@ -41,6 +42,45 @@ interface Props {
  * frame - and its controls name themselves "cart" so they never collide with the identically shaped
  * quantity fields in the tables behind it.
  */
+/**
+ * #1592: the typed text is held here, so clearing the field to retype it does not take the line out - a
+ * blank used to parse as 0 and the line left mid-keystroke. A whole number commits as it is typed; an
+ * explicit 0 still takes the line out (as does the trash button); leaving the field blank puts the
+ * quantity back.
+ */
+function CartQuantityField({
+  quantity,
+  ariaLabel,
+  onCommit,
+}: {
+  quantity: number;
+  ariaLabel: string;
+  onCommit: (next: number) => void;
+}) {
+  const [text, setText] = useState<string | null>(null);
+  return (
+    <TextField
+      size="small"
+      type="number"
+      value={text ?? String(quantity)}
+      onChange={(e) => {
+        const raw = e.target.value;
+        const next = Number(raw);
+        if (raw.trim() !== '' && Number.isInteger(next) && next >= 0) {
+          // Committed: show the quantity as the cart holds it, which may be clamped to the stock free.
+          setText(null);
+          onCommit(next);
+        } else {
+          setText(raw);
+        }
+      }}
+      onBlur={() => setText(null)}
+      slotProps={{ htmlInput: { min: 0, 'aria-label': ariaLabel } }}
+      sx={{ width: 72, '& input': { textAlign: 'right' } }}
+    />
+  );
+}
+
 export default function RequestWorkspaceCartRail({
   cart,
   headroom,
@@ -92,8 +132,9 @@ export default function RequestWorkspaceCartRail({
         {groups.length === 0 ? (
           <Box sx={{ p: 2 }}>
             <Typography variant="body2" color="text.secondary">
-              Nothing added yet. Pick openings to see what the schedule still owes them, or take stock
-              from the extras lane.
+              {mode === 'edit'
+                ? 'Every line has been taken out. A request needs at least one line - add one back, or reject the request from Requests instead.'
+                : 'Nothing added yet. Pick openings to see what the schedule still owes them, or take stock from the extras lane.'}
             </Typography>
           </Box>
         ) : (
@@ -151,27 +192,10 @@ export default function RequestWorkspaceCartRail({
                                 />
                               )}
                             </Box>
-                            <TextField
-                              size="small"
-                              type="number"
-                              value={line.quantity}
-                              onChange={(e) =>
-                                onCartChange(
-                                  setLineQuantity(
-                                    cart,
-                                    line,
-                                    Number.parseInt(e.target.value, 10),
-                                    headroom,
-                                  ),
-                                )
-                              }
-                              slotProps={{
-                                htmlInput: {
-                                  min: 0,
-                                  'aria-label': `Cart quantity of ${line.productCode}${line.openingNumber ? ` for ${line.openingNumber}` : ' loose'}`,
-                                },
-                              }}
-                              sx={{ width: 72, '& input': { textAlign: 'right' } }}
+                            <CartQuantityField
+                              quantity={line.quantity}
+                              ariaLabel={`Cart quantity of ${line.productCode}${line.openingNumber ? ` for ${line.openingNumber}` : ' loose'}`}
+                              onCommit={(next) => onCartChange(setLineQuantity(cart, line, next, headroom))}
                             />
                             <Tooltip title="Remove" arrow>
                               <IconButton
@@ -213,6 +237,12 @@ export default function RequestWorkspaceCartRail({
         {mode === 'create' && (
           <Typography component="div" sx={{ ...microLabelSx, mt: 1, color: 'text.disabled' }}>
             The request number is assigned when you create it.
+          </Typography>
+        )}
+        {/* #1592 / #981: an emptied edit says why Save is off - the server would refuse an empty request. */}
+        {mode === 'edit' && cart.length === 0 && !submitting && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+            A request needs at least one line - reject it from Requests instead.
           </Typography>
         )}
       </Box>

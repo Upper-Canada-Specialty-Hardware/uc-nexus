@@ -678,6 +678,35 @@ describe('edit mode', () => {
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
   });
 
+  it("asks for coverage without the request's own claim (#1592)", async () => {
+    const asked: Record<string, unknown>[] = [];
+    const coverage: MockedResponse = {
+      request: {
+        query: GET_REQUEST_COVERAGE,
+        variables: (v: Record<string, unknown>) => {
+          asked.push(v);
+          return true;
+        },
+      },
+      maxUsageCount: Number.POSITIVE_INFINITY,
+      result: { data: { requestCoverage: [] } },
+    };
+    renderAt('/app/shipping/requests/req-1/edit', [
+      projectsMock(),
+      availabilityMock(),
+      scheduleOpeningsMock(),
+      requestMock(),
+      coverage,
+    ]);
+    const useCurrent = await screen.findByRole('button', { name: /use current schedule/i }, SLOW);
+    await screen.findByText(/2 openings/i, {}, SLOW);
+    fireEvent.click(useCurrent);
+    const paste = await screen.findByPlaceholderText('Paste opening numbers, one per line...', {}, SLOW);
+    fireEvent.change(paste, { target: { value: '101' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Filter' }));
+    await waitFor(() => expect(asked).toContainEqual(expect.objectContaining({ excludeRequestId: 'req-1' })), SLOW);
+  });
+
   it('sends back the lines version it loaded when saving', async () => {
     const saved = vi.fn();
     const editMock: MockedResponse = {
