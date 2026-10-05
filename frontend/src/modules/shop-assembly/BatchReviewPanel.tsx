@@ -409,8 +409,8 @@ export default function BatchReviewPanel({
                 .map((l) => (
                   <Alert key={lineKey(l)} severity="warning" sx={{ mt: 1 }}>
                     {l.productCode} ({l.hardwareCategory}) cannot go on a batch: {l.notShopWorkReason} It is left
-                    off: batching the rest of this opening forfeits it, and an opening with nothing else to send can
-                    only leave the queue through Dismiss remaining.
+                    off: batching the rest of this opening forfeits it. An opening with nothing else owed leaves the
+                    queue only with the request - Dismiss remaining, or Reject request before any batch.
                   </Alert>
                 ))}
               <Appear show={currentCoverage === 'PARTIAL'}>
