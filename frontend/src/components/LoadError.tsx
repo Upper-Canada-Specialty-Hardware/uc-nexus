@@ -32,7 +32,7 @@ export default function LoadError({ what, error, onRetry, sx }: LoadErrorProps) 
         ) : undefined
       }
     >
-      Couldn&apos;t load {what}, so this is not an empty list - the read failed. {userMessage(error)}
+      Couldn&apos;t load {what}, so this is not an empty list - the read failed. {userMessage(error, { reading: true })}
     </Alert>
   );
 }

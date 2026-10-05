@@ -354,13 +354,14 @@ def test_sync_from_gp_covers_the_callers_own_company(roles, expected_company, ex
     assert seen == {"all_companies": expected_all, "only_company": expected_company}
 
 
-def _outbox_entry(relay_op, company=MY_COMPANY):
+def _outbox_entry(relay_op, company=MY_COMPANY, status="FAILED"):
     class _Entry:
         pass
 
     entry = _Entry()
     entry.relay_op = relay_op
     entry.company = company
+    entry.status = status
     return entry
 
 
@@ -426,6 +427,49 @@ def test_a_warehouse_manager_may_retry_a_held_receive(monkeypatch):
     assert any("retry_entry" in m for m in _messages(result)), (
         f"a Warehouse Manager was refused a held GP RECEIVE ENTRY: {_messages(result)}"
     )
+
+
+# #1556: a held write in the wrong state for the button is there - "not found" told the person it was
+# gone while it was being sent, or had already posted.
+_CANCEL = 'mutation { cancelGpOutboxEntry(id: "00000000-0000-0000-0000-000000000000") { id } }'
+
+
+@pytest.mark.parametrize(
+    ("mutation", "repo_fn", "status", "expected"),
+    [
+        (_CANCEL, "cancel_entry", "IN_FLIGHT", "This write is being sent to GP right now, so it can't be cancelled."),
+        (_CANCEL, "cancel_entry", "SUCCEEDED", "This write has already posted to GP - there is nothing to cancel."),
+        (_CANCEL, "cancel_entry", "CANCELLED", "This write was already cancelled."),
+        (_RETRY, "retry_entry", "SUCCEEDED", "This write has already posted to GP - there is nothing to retry."),
+        (_RETRY, "retry_entry", "IN_FLIGHT", "This write is already queued to post - there is nothing to retry."),
+    ],
+)
+def test_a_held_write_in_the_wrong_state_says_which_state(monkeypatch, mutation, repo_fn, status, expected):
+    _caller(monkeypatch, ["Warehouse Manager"])
+    monkeypatch.setattr(gp_outbox_module, "SessionLocal", _NoSession)
+    monkeypatch.setattr(
+        gp_outbox_repository, "get_entry", lambda session, entry_id: _outbox_entry("create_receipt", status=status)
+    )
+    monkeypatch.setattr(gp_outbox_repository, repo_fn, lambda session, entry_id: None)
+
+    result = _execute(mutation)
+
+    assert _codes(result) == {"CONFLICT"}
+    assert _messages(result) == {expected}
+
+
+def test_a_held_write_that_vanished_mid_retry_still_reads_as_absent(monkeypatch):
+    """Gone between the scope check and the locked re-read: still NOT FOUND, the tenancy answer."""
+    _caller(monkeypatch, ["Warehouse Manager"])
+    monkeypatch.setattr(gp_outbox_module, "SessionLocal", _NoSession)
+    seen = iter([_outbox_entry("create_receipt"), None])
+    monkeypatch.setattr(gp_outbox_repository, "get_entry", lambda session, entry_id: next(seen))
+    monkeypatch.setattr(gp_outbox_repository, "retry_entry", lambda session, entry_id: None)
+
+    result = _execute(_RETRY)
+
+    assert _codes(result) == {"NOT_FOUND"}
+    assert _messages(result) == {"No retryable GP write queue entry with that id"}
 
 
 # --- the write queue is one company's ------------------------------------------------------------

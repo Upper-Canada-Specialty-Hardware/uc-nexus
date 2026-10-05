@@ -648,6 +648,9 @@ class RelayGateway:
             reply = await asyncio.wait_for(future, timeout=timeout)
         except TimeoutError:
             self._pending.pop(job_id, None)
+            # #1556: only a write can still finish on GP's side; a read is always safe to ask again.
+            if _is_read(op):
+                raise RelayTimeoutError("GP did not answer in time while reading from GP - try again.") from None
             raise RelayTimeoutError(
                 f"GP did not answer in time while {_op_label(op)}. It may still finish - check GP before trying again."
             ) from None
@@ -709,9 +712,13 @@ _OP_LABELS = {
 }
 
 
+def _is_read(op: str) -> bool:
+    return op not in _OP_LABELS and op.startswith(("list_", "read_", "get_"))
+
+
 def _op_label(op: str) -> str:
     if op in _OP_LABELS:
         return _OP_LABELS[op]
-    if op.startswith(("list_", "read_", "get_")):
+    if _is_read(op):
         return "reading from GP"
     return "this GP request"

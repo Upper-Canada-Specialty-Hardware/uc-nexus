@@ -109,6 +109,12 @@ def _failing_smtp(monkeypatch, fail):
         ("auth", "The mail account's sign-in was refused - ask an admin to check the email settings."),
         ("refused", "vendor@acme.test was refused by the mail server - check the address."),
         ("down", "The mail server could not be reached - try again."),
+        (
+            "too_big",
+            "The mail server refused the message (it may be too large) - ask an admin to check the email settings.",
+        ),
+        ("sender", "The mail server refused the sending address - ask an admin to check the email settings."),
+        ("two_refused", "a@acme.test and b@acme.test were refused by the mail server - check the addresses."),
     ],
 )
 def test_a_failed_send_is_worded_for_the_person_sending(monkeypatch, fail_name, expected):
@@ -118,6 +124,11 @@ def test_a_failed_send_is_worded_for_the_person_sending(monkeypatch, fail_name, 
         "auth": smtplib.SMTPAuthenticationError(535, b"5.7.8 Username and Password not accepted."),
         "refused": smtplib.SMTPRecipientsRefused({"vendor@acme.test": (550, b"5.1.1 User unknown")}),
         "down": ConnectionRefusedError(10061, "No connection could be made"),
+        "too_big": smtplib.SMTPDataError(552, b"5.3.4 Message size exceeds fixed limit"),
+        "sender": smtplib.SMTPSenderRefused(553, b"5.7.1 Sender address rejected", "po@ucsh.test"),
+        "two_refused": smtplib.SMTPRecipientsRefused(
+            {"b@acme.test": (550, b"5.1.1 User unknown"), "a@acme.test": (550, b"5.1.1 User unknown")}
+        ),
     }[fail_name]
     _failing_smtp(monkeypatch, fail)
 

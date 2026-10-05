@@ -157,6 +157,24 @@ def test_relay_call_times_out_when_no_reply_arrives():
     asyncio.run(run())
 
 
+def test_a_read_that_times_out_says_try_again_and_a_write_says_check_gp():
+    """#1556: only a write can still finish on GP's side; a read is always safe to ask again."""
+
+    async def run():
+        gateway = RelayGateway()
+        _connect(gateway, FakeWebSocket())
+        with pytest.raises(RelayTimeoutError) as read:
+            await gateway.relay_call("TUBC", "list_vendors", timeout=0.05)
+        assert str(read.value) == "GP did not answer in time while reading from GP - try again."
+
+        _connect(gateway, FakeWebSocket())
+        with pytest.raises(RelayTimeoutError) as write:
+            await gateway.relay_call("TUBC", "create_po", timeout=0.05)
+        assert "check GP before trying again" in str(write.value)
+
+    asyncio.run(run())
+
+
 def test_relay_call_raises_relay_call_error_on_ok_false():
     async def run():
         gateway = RelayGateway()

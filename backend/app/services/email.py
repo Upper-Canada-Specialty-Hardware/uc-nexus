@@ -122,6 +122,21 @@ def _worded_smtp_failure(exc: Exception) -> str:
     if isinstance(exc, smtplib.SMTPAuthenticationError):
         return "The mail account's sign-in was refused - ask an admin to check the email settings."
     if isinstance(exc, smtplib.SMTPRecipientsRefused):
-        addresses = ", ".join(sorted(exc.recipients)) or "The address"
-        return f"{addresses} was refused by the mail server - check the address."
+        addresses = sorted(exc.recipients)
+        if not addresses:
+            return "The address was refused by the mail server - check the address."
+        if len(addresses) == 1:
+            return f"{addresses[0]} was refused by the mail server - check the address."
+        names = ", ".join(addresses[:-1]) + f" and {addresses[-1]}"
+        return f"{names} were refused by the mail server - check the addresses."
+    # #1556: these are the server answering and saying no, so "could not be reached" sent people to retry a
+    # send that fails the same way every time.
+    if isinstance(exc, smtplib.SMTPDataError):
+        return "The mail server refused the message (it may be too large) - ask an admin to check the email settings."
+    if isinstance(exc, smtplib.SMTPSenderRefused):
+        return "The mail server refused the sending address - ask an admin to check the email settings."
+    if isinstance(exc, smtplib.SMTPNotSupportedError):
+        return (
+            "The mail server doesn't support the connection settings in use - ask an admin to check the email settings."
+        )
     return "The mail server could not be reached - try again."
