@@ -107,6 +107,11 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
   // mutationError, which the re-read draft's hydration clears, and tied to the draft it was raised on.
   const [countChanged, setCountChanged] = useState<{ on: ReceiveDraft | null; message: string } | null>(null);
   const countChangedNotice = countChanged && countChanged.on === draftProp ? countChanged.message : null;
+  // #1582: a refusal the server let go of. Held apart from mutationError, like the count notice above: the
+  // re-read that tells us the claim was released swaps in a fresh draft, and loading it clears the editor's
+  // own messages.
+  const [released, setReleased] = useState<{ on: ReceiveDraft | null; message: string } | null>(null);
+  const releasedNotice = released && released.on === draftProp ? released.message : null;
 
   const [approveDraft] = useMutation<{
     approveReceiveDraft: {
@@ -224,6 +229,7 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
     setMutationError(null);
     setGpError(null);
     setCountChanged(null);
+    setReleased(null);
     setSubmitting(true);
     let approveSent = false;
     // #1497: the version the approval is checked against - what the reviewer loaded, or what their
@@ -296,7 +302,26 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
       // Key kept: GP may have committed even if the mutation reported failure, so the retry must
       // carry the same key. A failed edit never reached GP, so the draft stays editable; a failed
       // approve may have claimed it, so from here on it is only retried (#1353).
-      if (approveSent) setApproveFailed(true);
+      //
+      // #1582: unless the server let go. A plain refusal - the PO closed or cancelled in GP, GP turning
+      // the receipt down - releases the claim and the draft is pending again: nothing was posted, a retry
+      // is refused the same way, and the reviewer needs the count and Reject back. Only a draft still
+      // APPROVING (an answer that never came back) is the retry case.
+      if (approveSent) {
+        const fresh = await reload().catch(() => undefined);
+        if (fresh && fresh.status !== 'APPROVING') {
+          delete idempotencyKeyRef.current[draft.id];
+          const captured = extractGpError(err);
+          setReleased({
+            on: draftProp,
+            message: `Nothing was posted to GP - fix the count or reject the draft. ${
+              captured ? userMessage(captured) : err instanceof Error ? userMessage(err) : ''
+            }`.trim(),
+          });
+          return;
+        }
+        setApproveFailed(true);
+      }
       const captured = extractGpError(err);
       if (captured?.code === GP_JOB_NOT_OPEN) {
         // #730: the server's refusal names the job and its state; there is no GP detail to show and
@@ -480,6 +505,11 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
         {countChangedNotice && (
           <Alert severity="warning" sx={{ mb: 2 }}>
             {countChangedNotice}
+          </Alert>
+        )}
+        {releasedNotice && (
+          <Alert severity="error" sx={{ mb: 2 }}>
+            {releasedNotice}
           </Alert>
         )}
         {mutationError && (

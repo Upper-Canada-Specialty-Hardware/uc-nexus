@@ -376,6 +376,33 @@ describe('ReceiveDraftReviewModal', () => {
     expect(within(screen.getByRole('table')).queryByRole('spinbutton')).toBeNull();
   });
 
+  it('keeps the count and Reject after a refusal the server let go of - nothing was posted (#1582)', async () => {
+    // The PO closed in GP after the dock counted it: the approval is refused and the claim released.
+    const approveMock: MockedResponse = {
+      request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+      result: {
+        errors: [
+          new GraphQLError('PO-3001 is closed in GP, so it cannot be received against.', {
+            extensions: { code: 'VALIDATION_ERROR' },
+          }),
+        ],
+      },
+    };
+    const rereadMock: MockedResponse = {
+      request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+      result: { data: { receiveDraft: { ...draft(), __typename: 'ReceiveDraft', status: 'PENDING_APPROVAL' } } },
+    };
+    await openModal([approveMock, rereadMock]);
+
+    await approveViaConfirm();
+
+    // The refusal, then the re-read: two round trips, slow under a full parallel run.
+    await vi.waitFor(() => expect(document.body.textContent).toMatch(/Nothing was posted to GP/), { timeout: 15_000 });
+    expect(document.body.textContent).toMatch(/closed in GP/);
+    expect(screen.queryByRole('button', { name: 'Retry posting' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
+  });
+
   it('will not reject without a reason, and sends it back to the author with one', async () => {
     let captured: { input: { draftId: string; reason: string } } | null = null;
     const rejectMock: MockedResponse<Record<string, unknown>, { input: { draftId: string; reason: string } }> = {

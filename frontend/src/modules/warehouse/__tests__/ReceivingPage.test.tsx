@@ -278,3 +278,24 @@ it('shows 25 POs a page', async () => {
 
   expect(await screen.findByText('1–25 of 30')).toBeInTheDocument();
 });
+
+// #1582: the dock's main list said "Error loading purchase orders: Failed to fetch" with nothing to press.
+it('says the awaiting POs could not be read, with a retry', async () => {
+  const failing = mocks().map((m) =>
+    m.request.query === GET_OPEN_POS_SUMMARY
+      ? { request: m.request, error: new TypeError('Failed to fetch'), maxUsageCount: INFINITE }
+      : m,
+  );
+  render(
+    <MemoryRouter initialEntries={['/app/warehouse/receiving']}>
+      <MockedProvider mocks={failing}>
+        <ToastProvider>
+          <ReceivingPage />
+        </ToastProvider>
+      </MockedProvider>
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  expect(screen.queryByText(/Failed to fetch/)).not.toBeInTheDocument();
+});
