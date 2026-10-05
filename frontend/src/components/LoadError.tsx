@@ -1,6 +1,6 @@
 import { Alert, Button } from '@mui/material';
 import type { SxProps, Theme } from '@mui/material';
-import { userMessage } from '../graphql/userMessage';
+import { isNetworkError, userMessage } from '../graphql/userMessage';
 
 interface LoadErrorProps {
   /** What failed to load, in the reader's words: "the shipping requests", "this project's schedule". */
@@ -33,8 +33,9 @@ export default function LoadError({ what, error, onRetry, sx }: LoadErrorProps) 
       }
     >
       Couldn&apos;t load {what}, so this is not an empty list - the read failed. {userMessage(error, { reading: true })}
-      {/* #1561: the read line promises no button; this banner has one, so it says so. */}
-      {onRetry ? ' Press Retry when the connection is back.' : null}
+      {/* #1561: the read line promises no button; this banner has one, so it says so - for a dropped
+          connection only. A record that isn't available is not waiting on the connection. */}
+      {onRetry && isNetworkError(error) ? ' Press Retry when the connection is back.' : null}
     </Alert>
   );
 }

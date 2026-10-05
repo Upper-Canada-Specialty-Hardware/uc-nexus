@@ -23,3 +23,11 @@ it('points at its Retry button only when it shows one', () => {
   render(<LoadError what="the pull requests" error={new TypeError('Failed to fetch')} />);
   expect(screen.getByRole('alert')).not.toHaveTextContent(/press retry/i);
 });
+
+// #1561: a record that isn't available (or a server refusal) is not waiting on the connection.
+it('does not blame the connection when the read was answered with a refusal', () => {
+  render(
+    <LoadError what="this project" error={new Error('Project is in another company')} onRetry={() => undefined} />,
+  );
+  expect(screen.getByRole('alert')).not.toHaveTextContent(/connection is back/i);
+});

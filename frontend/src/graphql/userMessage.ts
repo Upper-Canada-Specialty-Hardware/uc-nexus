@@ -22,6 +22,11 @@ export const READ_NOT_FOUND_MESSAGE =
  * (a redeploy, the wifi dropping) surfaced Apollo's own text - "Failed to fetch", "Response not successful:
  * Received status code 502" - which says nothing about whether a save went through.
  */
+/** True when the request never got an answer - a redeploy, the wifi dropping - rather than a refusal. */
+export function isNetworkError(err: unknown): boolean {
+  return ServerError.is(err) || ServerParseError.is(err) || err instanceof TypeError;
+}
+
 export function userMessage(err: unknown, { reading = false }: { reading?: boolean } = {}): string {
   const network = reading ? READ_NETWORK_MESSAGE : NETWORK_MESSAGE;
   if (CombinedGraphQLErrors.is(err)) {
