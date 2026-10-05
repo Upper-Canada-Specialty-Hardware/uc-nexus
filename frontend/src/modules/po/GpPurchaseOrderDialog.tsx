@@ -1820,14 +1820,16 @@ export default function GpPurchaseOrderDialog({
             sx={{ minWidth: 180, ...MONO_FIELD_SX }}
             disabled
           />
-          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
+          {/* #1525: the pair is sized, not the select inside it - a percentage on the select resolved against
+              this content-sized box and collapsed it on desktop. 300px where there is room, the row's width on a phone. */}
+          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5, flex: '0 1 300px', minWidth: 0, maxWidth: '100%' }}>
             <TextField
               select
               label="Cost code for all lines"
               value={costCode}
               onChange={(e) => handleAllLinesCostCode(e.target.value)}
               size="small"
-              sx={{ minWidth: 'min(260px, 100%)', '& .MuiSelect-select': monoSx }}
+              sx={{ flex: 1, minWidth: 0, '& .MuiSelect-select': monoSx }}
               disabled={!isJob || !relayConnected || costCodesLoading || costCodes.length === 0}
               error={!!errors.costCode}
               helperText={errors.costCode || costCodeHelper}
