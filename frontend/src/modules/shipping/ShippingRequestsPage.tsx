@@ -28,6 +28,7 @@ import RequestsReviewPage from '../../components/RequestsReviewPage';
 import PageHeader from '../../components/PageHeader';
 import ProjectPicker from '../../components/ProjectPicker';
 import { useIdentity } from '../../hooks/useIdentity';
+import { useDropProjectOnCompanySwitch } from '../../hooks/useDropProjectOnCompanySwitch';
 import type { Project } from '../../types/project';
 import { GET_PROJECTS } from '../../graphql/shared';
 import { monoSx, tabularSx } from '../../theme';
@@ -126,6 +127,8 @@ export default function ShippingRequestsPage() {
   // requests and a reload keeps the scope. The picker needs the whole project, read off the same
   // projects list it loads; the list itself scopes by the id alone, so it holds even before that read.
   const projectId = searchParams.get('project') || undefined;
+  // #1528: a company switch takes the scoped project with it, as on Inventory (#1469).
+  useDropProjectOnCompanySwitch();
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS, { skip: !projectId });
   const project = useMemo(
     () => (projectId ? (projectsData?.projects.find((p) => p.id === projectId) ?? null) : null),
