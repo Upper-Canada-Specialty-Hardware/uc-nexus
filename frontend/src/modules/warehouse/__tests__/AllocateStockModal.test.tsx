@@ -4,7 +4,7 @@ import { MockedProvider } from '@apollo/client/testing/react';
 import AllocateStockModal from '../stock/AllocateStockModal';
 import { ToastProvider } from '../../../components/Toast';
 import { GET_PROJECTS } from '../../../graphql/shared';
-import { GET_WAREHOUSE_LOCATIONS } from '../../../graphql/warehouse';
+import { ALLOCATE_STOCK_TO_PROJECT, GET_WAREHOUSE_LOCATIONS } from '../../../graphql/warehouse';
 import type { StockItem } from '../StockPoolView';
 
 // A MUI Dialog with three Autocompletes is slow to render under the full parallel suite, so lift the
@@ -144,5 +144,50 @@ describe('AllocateStockModal pre-locate bin (#1046)', () => {
 
     setBin('', '', '');
     expect(allocate).toBeEnabled();
+  });
+});
+
+// #1548: the quantity dialogs never took Enter, never focused the quantity, and Allocate went dead with
+// nothing saying why - 6 against "max 5" just left the button off.
+describe('AllocateStockModal keyboard (#1548)', () => {
+  it('focuses the quantity, says why Allocate is off, and sends once on Enter', async () => {
+    const result = vi.fn(() => ({ data: { allocateStockToProject: null } }));
+    render(
+      <MockedProvider
+        mocks={[
+          projectsMock,
+          registryMock,
+          { request: { query: ALLOCATE_STOCK_TO_PROJECT, variables: () => true }, result },
+        ]}
+      >
+        <ToastProvider>
+          <AllocateStockModal item={item} onClose={vi.fn()} onSuccess={vi.fn()} />
+        </ToastProvider>
+      </MockedProvider>,
+    );
+    const qty = screen.getByLabelText(/Quantity \(max 5\)/);
+    await waitFor(() => expect(qty).toHaveFocus());
+    expect(screen.getByTestId('blocked-reason')).toHaveTextContent('Pick the target project.');
+
+    // Enter while it is off sends nothing.
+    fireEvent.submit(qty.closest('form')!);
+
+    const project = screen.getByLabelText('Target project');
+    project.focus();
+    fireEvent.change(project, { target: { value: '24101' } });
+    fireEvent.click(await screen.findByText('Royal Inland Hospital'));
+
+    fireEvent.change(qty, { target: { value: '6' } });
+    expect(screen.getByTestId('blocked-reason')).toHaveTextContent('Enter a whole number from 1 to 5.');
+
+    fireEvent.change(qty, { target: { value: '2' } });
+    await waitFor(() => expect(screen.queryByTestId('blocked-reason')).toBeNull());
+    // Enter twice before the first answer lands: one allocation.
+    fireEvent.submit(qty.closest('form')!);
+    fireEvent.submit(qty.closest('form')!);
+
+    await waitFor(() => expect(result).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(result).toHaveBeenCalledTimes(1);
   });
 });
