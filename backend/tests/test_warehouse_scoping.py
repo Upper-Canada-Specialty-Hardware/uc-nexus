@@ -173,3 +173,62 @@ def test_unlocated_inventory_warehouse_filter(db_session):
     both = warehouse_repository.get_unlocated_inventory(db_session)
     codes_both = {r["inventory_location"].product_code for r in both}
     assert {"UNL-A", "UNL-B"} <= codes_both
+
+
+def test_a_merge_whose_fold_keeps_a_referenced_empty_row_clears_the_group(db_session):
+    """#1587: the fold keeps an emptied source a project row still points at; it stays hidden on the
+    variant, so it must not keep the group listed or be merged again for 0 units."""
+    wh = wh_id(db_session)
+    canonical = f"MK{uuid.uuid4().hex[:6].upper()}"
+    variant = canonical.lower()
+    define_location(db_session, wh, canonical, "R1", "B1")
+    project = make_project(db_session)
+    source = make_stock_item(db_session, quantity=3, code="HG-KEEP", aisle=variant, row="R1", bay="B1", warehouse_id=wh)
+    make_stock_item(db_session, quantity=4, code="HG-KEEP", aisle=canonical, row="R1", bay="B1", warehouse_id=wh)
+    # The source is the origin of an allocated project row, so the fold keeps it rather than deleting it.
+    make_il(db_session, project, stock_item_id=source.id, aisle=None, row=None, bay=None)
+
+    first = warehouse_repository.merge_locations(
+        db_session,
+        warehouse_id=wh,
+        from_aisle=variant,
+        from_row="R1",
+        from_bay="B1",
+        to_aisle=canonical,
+        to_row="R1",
+        to_bay="B1",
+        performed_by="admin",
+    )
+    db_session.flush()
+    assert first["stock_items"] == 1
+    assert source.quantity == 0, "the units folded into the canonical row"
+
+    groups = warehouse_repository.get_location_duplicates(db_session)
+    assert not [g for g in groups if g["canonical_aisle"] == canonical], "the group cleared"
+
+    again = warehouse_repository.merge_locations(
+        db_session,
+        warehouse_id=wh,
+        from_aisle=variant,
+        from_row="R1",
+        from_bay="B1",
+        to_aisle=canonical,
+        to_row="R1",
+        to_bay="B1",
+        performed_by="admin",
+    )
+    assert again["stock_items"] == 0, "nothing left to merge - no 0-unit fold, no misleading count"
+
+
+def test_an_empty_row_does_not_make_a_duplicate_group(db_session):
+    """#1587: a row picked down to 0 is hidden everywhere else, so it is not a variant to merge."""
+    wh = wh_id(db_session)
+    canonical = f"EM{uuid.uuid4().hex[:6].upper()}"
+    make_stock_item(
+        db_session, quantity=0, code="HG-EMPTY", aisle=canonical.lower(), row="R1", bay="B1", warehouse_id=wh
+    )
+    make_stock_item(db_session, quantity=2, code="HG-FULL", aisle=canonical, row="R1", bay="B1", warehouse_id=wh)
+
+    groups = warehouse_repository.get_location_duplicates(db_session)
+
+    assert not [g for g in groups if g["canonical_aisle"] == canonical]

@@ -15,7 +15,24 @@ export type CombinedLocationRow = LocationEntry & {
   definedId: string | null;
   active: boolean | null;
   isEmpty: boolean;
+  /** #1587: an occupied, undefined row whose normalized place IS defined (a-1-1 beside A-1-1) - the
+   *  defined location's label. Defining it is refused as already defined; it wants a merge instead. */
+  variantOf: string | null;
 };
+
+/** The server's normalize_location_value: trim, collapse inner spaces, uppercase. Blank is no value. */
+export function normalizeLocationValue(value: string | null | undefined): string {
+  return (value ?? '').trim().replace(/\s+/g, ' ').toUpperCase();
+}
+
+function normalizedKey(warehouseId: string | null, aisle: string | null, row: string | null, bay: string | null) {
+  return locationKey(
+    warehouseId,
+    normalizeLocationValue(aisle),
+    normalizeLocationValue(row),
+    normalizeLocationValue(bay),
+  );
+}
 
 /** A stable key for one rack position, shared between the utilization list and the product rows. */
 export function locationKey(
@@ -44,12 +61,24 @@ export function combineLocationRows(
     registryByKey.set(locationKey(def.warehouseId, def.aisle, def.row, def.bay), def);
   }
 
+  const registryByNormalized = new Map<string, WarehouseLocationDef>();
+  for (const def of registry) {
+    registryByNormalized.set(normalizedKey(def.warehouseId, def.aisle, def.row, def.bay), def);
+  }
+
   const occupiedKeys = new Set(
     occupied.map((loc) => locationKey(loc.warehouseId, loc.aisle, loc.row, loc.bay)),
   );
   const combined: CombinedLocationRow[] = occupied.map((loc) => {
     const def = registryByKey.get(locationKey(loc.warehouseId, loc.aisle, loc.row, loc.bay));
-    return { ...loc, definedId: def?.id ?? null, active: def?.active ?? null, isEmpty: false };
+    const variant = def ? undefined : registryByNormalized.get(normalizedKey(loc.warehouseId, loc.aisle, loc.row, loc.bay));
+    return {
+      ...loc,
+      definedId: def?.id ?? null,
+      active: def?.active ?? null,
+      isEmpty: false,
+      variantOf: variant ? [variant.aisle, variant.row, variant.bay].filter(Boolean).join('-') : null,
+    };
   });
   for (const def of registry) {
     if (occupiedKeys.has(locationKey(def.warehouseId, def.aisle, def.row, def.bay))) continue;
@@ -63,6 +92,7 @@ export function combineLocationRows(
       definedId: def.id,
       active: def.active ?? null,
       isEmpty: true,
+      variantOf: null,
     });
   }
   return combined;
