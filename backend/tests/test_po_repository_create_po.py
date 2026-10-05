@@ -113,6 +113,59 @@ def test_resolve_line_manufacturers_disagreeing_items_take_first_non_null_and_lo
     assert any("manufacturer disagreement" in r.message for r in caplog.records)
 
 
+def test_resolve_line_manufacturers_reads_every_product_in_one_query(db_session, caplog):
+    """#1530: one read for the whole PO, not one per product; each line still resolves as before."""
+    from sqlalchemy import event
+
+    project = _make_project(db_session)
+    _add_hardware_item(db_session, project, hardware_category="HINGE", product_code="HG-100", manufacturer="SCHLAGE")
+    _add_hardware_item(db_session, project, hardware_category="LOCK", product_code="LK-200", manufacturer="SARGENT")
+    _add_hardware_item(
+        db_session,
+        project,
+        hardware_category="CLOSER",
+        product_code="CL-300",
+        manufacturer="LCN",
+        created_at=datetime(2026, 1, 1, 0, 0, 0),
+    )
+    _add_hardware_item(
+        db_session,
+        project,
+        hardware_category="CLOSER",
+        product_code="CL-300",
+        manufacturer="NORTON",
+        created_at=datetime(2026, 1, 1, 0, 0, 1),
+    )
+    lines = [
+        _po_line("HINGE", "HG-100"),
+        _po_line("CLOSER", "CL-300"),
+        _po_line("LOCK", "LK-200"),
+        _po_line("HINGE", "HG-100"),
+        _po_line("STOP", "ST-999"),
+    ]
+
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db_session.get_bind(), "before_cursor_execute", record)
+    try:
+        with caplog.at_level(logging.WARNING):
+            resolved = po_schema._resolve_line_manufacturers(db_session, project.id, lines)
+    finally:
+        event.remove(db_session.get_bind(), "before_cursor_execute", record)
+
+    assert resolved == ["SCHLAGE", "LCN", "SARGENT", "SCHLAGE", None]
+    assert len([s for s in statements if "hardware_items" in s]) == 1, statements
+    assert any("manufacturer disagreement" in r.message and "CL-300" in r.message for r in caplog.records)
+
+
+def test_resolve_line_manufacturers_with_no_lines_reads_nothing(db_session):
+    project = _make_project(db_session)
+    assert po_schema._resolve_line_manufacturers(db_session, project.id, []) == []
+
+
 def test_resolve_line_manufacturers_without_a_project_sends_none(db_session):
     resolved = po_schema._resolve_line_manufacturers(db_session, None, [_po_line("HINGE", "HG-100")])
     assert resolved == [None]
