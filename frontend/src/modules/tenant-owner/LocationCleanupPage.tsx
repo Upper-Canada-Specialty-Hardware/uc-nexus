@@ -1,5 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { userMessage } from '../../graphql/userMessage';
+import LoadError from '../../components/LoadError';
+import RefreshFailedNote from '../../components/RefreshFailedNote';
 import {
   Box,
   Typography,
@@ -158,10 +160,12 @@ export default function LocationCleanupPage() {
       </Box>
     );
   }
-  if (error) return <Alert severity="error">Error: {userMessage(error, { reading: true })}</Alert>;
+  // #1584: only when nothing loaded; a failed refresh keeps the groups on screen with a note.
+  if (error && !data) return <LoadError what="the location duplicates" error={error} onRetry={() => refetch()} />;
 
   return (
     <Box>
+      {error && <RefreshFailedNote what="the location duplicates" error={error} />}
       <FadeIn>
         <PageHeader
           title="Location Cleanup"

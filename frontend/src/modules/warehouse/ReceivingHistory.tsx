@@ -18,6 +18,7 @@ import {
 } from '@mui/material';
 import { ChevronRight } from 'lucide-react';
 import { userMessage } from '../../graphql/userMessage';
+import RefreshFailedNote from '../../components/RefreshFailedNote';
 import { motion } from 'motion/react';
 import { useQuery } from '@apollo/client/react';
 import { formatPoStatus, poStatusChipColor } from '../po/poStatus';
@@ -144,7 +145,8 @@ function ReceivesPanel({ poId }: { poId: string }) {
       </Box>
     );
   }
-  if (error) {
+  // #1584: only when nothing loaded; a failed re-read keeps the receives on screen with a note.
+  if (error && !data) {
     return <Alert severity="error">Error loading receives: {userMessage(error, { reading: true })}</Alert>;
   }
 
@@ -159,6 +161,7 @@ function ReceivesPanel({ poId }: { poId: string }) {
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      {error && <RefreshFailedNote what="the receives" error={error} sx={{ mb: 0 }} />}
       {receives.map((receive) => (
         <Box key={receive.id}>
           <Box

@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { userMessage } from '../../graphql/userMessage';
+import RefreshFailedNote from '../../components/RefreshFailedNote';
 import {
   Alert,
   Box,
@@ -210,7 +211,8 @@ export default function ProjectDetailPage() {
     );
   }
 
-  if (error) {
+  // #1584: a failed refresh over a project already on screen keeps it, with a note.
+  if (error && !data) {
     return <Alert severity="error">Could not load this project: {userMessage(error, { reading: true })}</Alert>;
   }
 
@@ -231,6 +233,7 @@ export default function ProjectDetailPage() {
 
   return (
     <Box>
+      {error && <RefreshFailedNote what="this project" error={error} />}
       <FadeIn>
         <PageHeader
           parent={{ label: 'Projects', to: '/app/tenant-owner/projects' }}
