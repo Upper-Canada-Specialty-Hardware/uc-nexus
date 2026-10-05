@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { Box, Button, Chip, IconButton, LinearProgress, Stack, TextField, Tooltip, Typography } from '@mui/material';
+import { Box, Button, Chip, IconButton, LinearProgress, Stack, Tooltip, Typography } from '@mui/material';
 import { Trash2, X } from 'lucide-react';
 import {
   cartGroups,
@@ -13,6 +12,7 @@ import { monoSx, microLabelSx, tabularSx } from '../../../theme';
 import { plural } from '../../../utils/plural';
 import { AnimatePresence } from 'motion/react';
 import { PresenceItem } from '../../../motion';
+import QuantityField from '../../../components/QuantityField';
 
 interface Props {
   cart: CartLine[];
@@ -42,54 +42,6 @@ interface Props {
  * frame - and its controls name themselves "cart" so they never collide with the identically shaped
  * quantity fields in the tables behind it.
  */
-/**
- * #1592: the typed text is held here, so clearing the field to retype it does not take the line out - a
- * blank used to parse as 0 and the line left mid-keystroke. A whole number above 0 commits as it is typed;
- * a 0 takes the line out only when the field is left or Enter is pressed (as does the trash button); leaving
- * the field blank puts the quantity back.
- */
-function CartQuantityField({
-  quantity,
-  ariaLabel,
-  onCommit,
-}: {
-  quantity: number;
-  ariaLabel: string;
-  onCommit: (next: number) => void;
-}) {
-  const [text, setText] = useState<string | null>(null);
-  // A 0 only takes the line out once the worker means it - on leaving the field or pressing Enter. Typed
-  // mid-edit ("10" -> "0" -> "20") it is just a step on the way, so it is held, never committed then.
-  const settle = () => {
-    if (text !== null && text.trim() !== '' && Number(text) === 0) onCommit(0);
-    setText(null);
-  };
-  return (
-    <TextField
-      size="small"
-      type="number"
-      value={text ?? String(quantity)}
-      onChange={(e) => {
-        const raw = e.target.value;
-        const next = Number(raw);
-        if (raw.trim() !== '' && Number.isInteger(next) && next > 0) {
-          // Committed: show the quantity as the cart holds it, which may be clamped to the stock free.
-          setText(null);
-          onCommit(next);
-        } else {
-          setText(raw);
-        }
-      }}
-      onBlur={settle}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') settle();
-      }}
-      slotProps={{ htmlInput: { min: 0, 'aria-label': ariaLabel } }}
-      sx={{ width: 72, '& input': { textAlign: 'right' } }}
-    />
-  );
-}
-
 export default function RequestWorkspaceCartRail({
   cart,
   headroom,
@@ -201,7 +153,7 @@ export default function RequestWorkspaceCartRail({
                                 />
                               )}
                             </Box>
-                            <CartQuantityField
+                            <QuantityField
                               quantity={line.quantity}
                               ariaLabel={`Cart quantity of ${line.productCode}${line.openingNumber ? ` for ${line.openingNumber}` : ' loose'}`}
                               onCommit={(next) => onCartChange(setLineQuantity(cart, line, next, headroom))}

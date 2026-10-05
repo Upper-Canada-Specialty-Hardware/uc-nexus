@@ -11,7 +11,6 @@ import {
   TableCell,
   TableHead,
   TableRow,
-  TextField,
   Tooltip,
   Typography,
 } from '@mui/material';
@@ -43,6 +42,7 @@ import { monoSx, microLabelSx, tabularSx } from '../../../theme';
 import FitTable, { type FitTableColumn } from '../../../components/FitTable';
 import LoadError from '../../../components/LoadError';
 import { FIT_CELL_WRAP_SX } from '../../../components/fitColumns';
+import QuantityField from '../../../components/QuantityField';
 
 /** The thin projectOpenings row the picker reads (#608 review): opening fields + the two source-card
  *  counts, none of the HardwareItem detail the wizard's full schedule read materializes. */
@@ -685,21 +685,10 @@ function LaneTable({
                 </TableCell>
                 <TableCell align="right" sx={{ width: 1, whiteSpace: 'nowrap' }}>
                   {inCart > 0 ? (
-                    <TextField
-                      size="small"
-                      type="number"
-                      value={inCart}
-                      onChange={(e) =>
-                        onCartChange(
-                          setProductQuantity(cart, agg.rows, Number.parseInt(e.target.value, 10), headroom),
-                        )
-                      }
-                      slotProps={{
-                        htmlInput: {
-                          min: 0,
-                          'aria-label': `Quantity of ${agg.productCode} across selected openings`,
-                        },
-                      }}
+                    <QuantityField
+                      quantity={inCart}
+                      ariaLabel={`Quantity of ${agg.productCode} across selected openings`}
+                      onCommit={(next) => onCartChange(setProductQuantity(cart, agg.rows, next, headroom))}
                       sx={{ width: 68, '& input': { textAlign: 'right', px: 1 } }}
                     />
                   ) : (
@@ -826,19 +815,10 @@ function ProductOpeningBreakdown({ agg, cart, cartIndex, headroom, onCartChange,
                 </TableCell>
                 <TableCell align="right" sx={{ width: 1, whiteSpace: 'nowrap' }}>
                   {inCart > 0 ? (
-                    <TextField
-                      size="small"
-                      type="number"
-                      value={inCart}
-                      onChange={(e) =>
-                        onCartChange(setLineQuantity(cart, row, Number.parseInt(e.target.value, 10), headroom))
-                      }
-                      slotProps={{
-                        htmlInput: {
-                          min: 0,
-                          'aria-label': `Quantity of ${row.productCode} for ${row.openingNumber}`,
-                        },
-                      }}
+                    <QuantityField
+                      quantity={inCart}
+                      ariaLabel={`Quantity of ${row.productCode} for ${row.openingNumber}`}
+                      onCommit={(next) => onCartChange(setLineQuantity(cart, row, next, headroom))}
                       sx={{ width: 68, '& input': { textAlign: 'right', px: 1 } }}
                     />
                   ) : (

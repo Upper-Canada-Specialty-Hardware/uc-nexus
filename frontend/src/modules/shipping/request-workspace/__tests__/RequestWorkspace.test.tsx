@@ -491,6 +491,27 @@ describe('composer collapse', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show per-opening breakdown for HG-100' }));
     expect(await screen.findByRole('spinbutton', { name: 'Quantity of HG-100 for 101' }, SLOW)).toHaveValue(2);
   });
+
+  // #1604: clearing a quantity to retype it used to send a blank as 0, removing the line and its field
+  // under the cursor.
+  it('keeps a per-opening line while its quantity is cleared and retyped', async () => {
+    sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify([{ openingNumber: '101', hardwareCategory: 'HINGE', productCode: 'HG-100', quantity: 2 }]),
+    );
+    await reachCoverage([coverageMockRows([coverageRow({ suggestedQuantity: 0, sentQuantity: 4 })])]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Show per-opening breakdown for HG-100' }, SLOW));
+    const qty = await screen.findByRole('spinbutton', { name: 'Quantity of HG-100 for 101' }, SLOW);
+
+    fireEvent.change(qty, { target: { value: '' } });
+    expect(screen.getByRole('spinbutton', { name: 'Quantity of HG-100 for 101' })).toBeInTheDocument();
+    fireEvent.change(qty, { target: { value: '1' } });
+
+    await waitFor(() => {
+      const saved = JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? '[]');
+      expect(saved).toEqual([{ openingNumber: '101', hardwareCategory: 'HINGE', productCode: 'HG-100', quantity: 1 }]);
+    });
+  });
 });
 
 // #647: the offer splits into a site table and a shop table, both driven by the openings picked

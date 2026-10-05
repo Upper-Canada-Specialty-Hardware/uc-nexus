@@ -118,6 +118,8 @@ export default function BatchReviewPanel({
 
   const [allocation, setAllocation] = useState<Allocation>(new Map());
   const [cursor, setCursor] = useState(0);
+  // #1604: a typed part unit (2.5) is kept as text with a word, not floored to 2 and sent.
+  const [notWhole, setNotWhole] = useState<Map<string, string>>(new Map());
   // The offer the state below belongs to. Clearing on every render would throw away what the
   // manager has typed; clearing on a genuinely different offer (a batch landed, stock arrived) is
   // the correct answer rather than a loss, because the quantities were chosen against the old one.
@@ -138,6 +140,7 @@ export default function BatchReviewPanel({
   if (review && clearedFor !== signature) {
     setClearedFor(signature);
     setAllocation(new Map());
+    setNotWhole(new Map());
     setCursor(0);
   }
 
@@ -165,7 +168,9 @@ export default function BatchReviewPanel({
   const leftWaiting = openings.length - batchOpenings.length;
   const actionHint =
     disabledReason ??
-    (overAllocated.length > 0
+    (notWhole.size > 0
+      ? 'Whole numbers only - fix the quantity before dispatching.'
+      : overAllocated.length > 0
       ? overAllocated.length === 1
         ? 'One product is allocated past what is free - lower it before dispatching.'
         : `${overAllocated.length} products are allocated past what is free - lower them before dispatching.`
@@ -371,13 +376,25 @@ export default function BatchReviewPanel({
                           type="number"
                           // Empty rather than a zero: a box showing 0 reads as an answer already
                           // given, and none has been given until the manager types one.
-                          value={allocated > 0 ? allocated : ''}
+                          value={notWhole.get(key) ?? (allocated > 0 ? allocated : '')}
+                          error={notWhole.has(key)}
+                          helperText={notWhole.has(key) ? 'Whole numbers only' : undefined}
                           // #1540: a line no longer shop work cannot go on a batch; the note under
                           // the table says why.
                           disabled={busy || Boolean(line.notShopWorkReason)}
                           onChange={(e) => {
-                            const raw = Number(e.target.value);
-                            const next = Number.isFinite(raw) ? Math.floor(raw) : 0;
+                            const text = e.target.value;
+                            const raw = Number(text);
+                            const whole = text.trim() === '' || Number.isInteger(raw);
+                            setNotWhole((prev) => {
+                              if (whole && !prev.has(key)) return prev;
+                              const next = new Map(prev);
+                              if (whole) next.delete(key);
+                              else next.set(key, text);
+                              return next;
+                            });
+                            // A part unit is held off the batch until it is fixed.
+                            const next = whole && Number.isFinite(raw) ? raw : 0;
                             setLineQuantity(key, Math.max(0, Math.min(ceiling, next)));
                           }}
                           inputProps={{
@@ -491,7 +508,9 @@ export default function BatchReviewPanel({
       <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
         <Button
           variant="contained"
-          disabled={busy || batchLines.length === 0 || overAllocated.length > 0 || Boolean(disabledReason)}
+          disabled={
+            busy || batchLines.length === 0 || overAllocated.length > 0 || notWhole.size > 0 || Boolean(disabledReason)
+          }
           onClick={() => onCreateBatch(batchLines)}
         >
           {`Create batch (${plural(batchOpenings.length, 'opening')})`}

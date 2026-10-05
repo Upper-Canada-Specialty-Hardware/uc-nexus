@@ -32,6 +32,7 @@ import { classificationChip, isShopClassified, SHOP_FRAMING, shopRowTintSx } fro
 import { monoSx, microLabelSx, tabularSx } from '../../../theme';
 import FitTable, { type FitTableColumn } from '../../../components/FitTable';
 import { FIT_CELL_WRAP_SX } from '../../../components/fitColumns';
+import QuantityField from '../../../components/QuantityField';
 
 interface Props {
   cart: CartLine[];
@@ -293,21 +294,10 @@ export default function RequestWorkspaceInventoryTab({
                             <TableCell align="right" sx={{ px: 1 }}>
                               <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end">
                                 {current > 0 ? (
-                                  <TextField
-                                    size="small"
-                                    type="number"
-                                    value={current}
-                                    onChange={(e) =>
-                                      onCartChange(
-                                        setLineQuantity(cart, loose, Number.parseInt(e.target.value, 10), headroom),
-                                      )
-                                    }
-                                    slotProps={{
-                                      htmlInput: {
-                                        min: 0,
-                                        'aria-label': `Quantity of ${row.productCode} to send loose`,
-                                      },
-                                    }}
+                                  <QuantityField
+                                    quantity={current}
+                                    ariaLabel={`Quantity of ${row.productCode} to send loose`}
+                                    onCommit={(next) => onCartChange(setLineQuantity(cart, loose, next, headroom))}
                                     sx={{ width: 76, '& input': { textAlign: 'right' } }}
                                   />
                                 ) : (

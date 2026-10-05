@@ -73,16 +73,33 @@ function OrderQtyCell({
   disabled: boolean;
   onChange: (id: string, qty: number) => void;
 }) {
+  // #1604: held as typed text. A whole number from 1 is taken as it is typed (capped at the pool); a blank
+  // or a part unit is held until the field is left, which puts the quantity back. A blank used to snap
+  // straight back, so clearing "4" to type "3" read "43".
+  const [text, setText] = useState<string | null>(null);
+  const notWhole = text !== null && text.trim() !== '' && !Number.isInteger(Number(text));
   return (
     <TextField
       variant="standard"
       type="number"
-      value={value}
+      value={text ?? String(value)}
       disabled={disabled}
       onChange={(e) => {
-        const v = parseInt(e.target.value, 10);
-        if (!Number.isNaN(v)) onChange(id, Math.max(1, Math.min(max, v)));
+        const raw = e.target.value;
+        const v = Number(raw);
+        if (raw.trim() !== '' && Number.isInteger(v) && v >= 1) {
+          setText(null);
+          onChange(id, Math.min(max, v));
+        } else {
+          setText(raw);
+        }
       }}
+      onBlur={() => setText(null)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') setText(null);
+      }}
+      error={notWhole}
+      helperText={notWhole ? 'Whole numbers only' : undefined}
       slotProps={{
         htmlInput: {
           min: 1,
