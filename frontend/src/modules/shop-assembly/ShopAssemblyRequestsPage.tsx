@@ -55,6 +55,7 @@ import {
   type RequestStage,
 } from './requestStages';
 import type { AllocationReview, BatchLineInput, RequestItem, ShopAssemblyRequest } from './types';
+import { userMessage } from '../../graphql/userMessage';
 
 type View = 'PENDING' | 'APPROVED' | 'REJECTED';
 
@@ -203,22 +204,22 @@ export default function ShopAssemblyRequestsPage() {
   const [createBatch, { loading: batching }] = useMutation(CREATE_SHOP_ASSEMBLY_BATCH, {
     ...evictReservationAndPullReads,
     onCompleted: () => settle('Batch created - the warehouse pull is on the floor', 'success'),
-    onError: (e) => settle(e.message, 'error'),
+    onError: (e) => settle(userMessage(e), 'error'),
   });
   const [dismissOpenings, { loading: dismissing }] = useMutation(DISMISS_SHOP_ASSEMBLY_OPENINGS, {
     ...evictReservationReads,
     onCompleted: () => settle('Remaining openings dismissed', 'success'),
-    onError: (e) => settle(e.message, 'error'),
+    onError: (e) => settle(userMessage(e), 'error'),
   });
   const [rejectRequest, { loading: rejecting }] = useMutation(REJECT_SHOP_ASSEMBLY_REQUEST, {
     ...evictReservationReads,
     onCompleted: () => settle('Request rejected', 'success'),
-    onError: (e) => settle(e.message, 'error'),
+    onError: (e) => settle(userMessage(e), 'error'),
   });
   const [discardBatch, { loading: discarding }] = useMutation(DISCARD_SHOP_ASSEMBLY_BATCH, {
     ...evictReservationAndPullReads,
     onCompleted: () => settle('Batch discarded - its openings are back on the board', 'success'),
-    onError: (e) => settle(e.message, 'error'),
+    onError: (e) => settle(userMessage(e), 'error'),
   });
   const busy = batching || dismissing || rejecting || discarding;
   // #1156: the dismiss confirm carries an optional reason, shown against the openings afterwards.

@@ -916,6 +916,7 @@ class POMutations:
                 ],
             )
         except email_service.EmailError as exc:
+            # #1553: already worded for the person sending; the raw SMTP text is in the log.
             return EmailPoResult(sent=False, failed=True, message=f"Sending failed: {exc}")
 
         return EmailPoResult(sent=True, message=f"Purchase order {po_number} sent to {address}.", sent_to=address)

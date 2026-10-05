@@ -34,6 +34,7 @@ import { isCancellable, pullPhase } from './pullPhase';
 import type { PullRequest } from './PullRequestQueue';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { parseServerDate } from '../../utils/serverDate';
+import { userMessage } from '../../graphql/userMessage';
 
 // --- Status config ---
 
@@ -178,7 +179,7 @@ export default function PullRequestDetailModal({
       // the user is about to leave would be ceremony.
       navigate(`/app/warehouse/pull-requests/${pr.id}/pick`);
     },
-    onError: (error) => showToast(error.message, 'error'),
+    onError: (error) => showToast(userMessage(error), 'error'),
   });
 
   const [completePR, { loading: completeLoading }] = useMutation(COMPLETE_PULL_REQUEST, {
@@ -190,7 +191,7 @@ export default function PullRequestDetailModal({
     },
     onError: (error) => {
       setConfirmCompleteOpen(false);
-      showToast(error.message, 'error');
+      showToast(userMessage(error), 'error');
     },
   });
 

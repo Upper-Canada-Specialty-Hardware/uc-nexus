@@ -27,6 +27,7 @@ import PickSheetDocument from './PickSheetDocument';
 import { entriesFromDraft, pickTotals, toPickLines, type PickEntries, type PickSheet } from './pick';
 import { parseServerDate } from '../../utils/serverDate';
 import { openPdfWindow } from '../../utils/openPdf';
+import { userMessage } from '../../graphql/userMessage';
 
 interface Shortfall {
   hardwareCategory: string;
@@ -114,7 +115,7 @@ export default function PickPage() {
 
   const [saveDraft, { loading: saving }] = useMutation(SAVE_PICK_DRAFT, {
     onCompleted: () => showToast('Draft saved. Your entries will be here when you come back.', 'success'),
-    onError: (e) => showToast(e.message, 'error'),
+    onError: (e) => showToast(userMessage(e), 'error'),
   });
 
   const [confirmPick, { loading: confirming }] = useMutation(CONFIRM_PICK, {
@@ -160,7 +161,7 @@ export default function PickPage() {
         return;
       }
       confirmInFlight.current = false;
-      showToast(e.message, 'error');
+      showToast(userMessage(e), 'error');
     },
   });
 
@@ -186,7 +187,7 @@ export default function PickPage() {
       );
       navigate('/app/warehouse/pull-requests');
     },
-    onError: (e) => showToast(e.message, 'error'),
+    onError: (e) => showToast(userMessage(e), 'error'),
   });
 
   const handleEntryChange = useCallback((key: string, value: string) => {

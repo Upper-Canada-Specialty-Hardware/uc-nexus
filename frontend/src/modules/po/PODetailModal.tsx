@@ -47,6 +47,7 @@ import { FadeIn } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
 import { PoolKindToggle } from '../../components/PoolKind';
 import { POOL_KIND_LABEL, type PoolKind } from '../../types/poolKind';
+import { userMessage } from '../../graphql/userMessage';
 
 const ICON = { size: 18, strokeWidth: 1.75 } as const;
 
@@ -183,13 +184,13 @@ export default function PODetailModal({
           if (field === 'po_number') {
             setPoNumberError(error.errors?.[0]?.message ?? 'Invalid PO number');
           } else {
-            showToast(error.message, 'error');
+            showToast(userMessage(error), 'error');
           }
         } else {
-          showToast(error.message, 'error');
+          showToast(userMessage(error), 'error');
         }
       } else {
-        showToast(error.message, 'error');
+        showToast(userMessage(error), 'error');
       }
     },
   });
@@ -200,7 +201,7 @@ export default function PODetailModal({
       setNotesEditing(false);
     },
     onError: (error) => {
-      showToast(error.message, 'error');
+      showToast(userMessage(error), 'error');
     },
   });
 
@@ -216,7 +217,7 @@ export default function PODetailModal({
     },
     onError: (error) => {
       setConfirmCancelOpen(false);
-      showToast(error.message, 'error');
+      showToast(userMessage(error), 'error');
     },
   });
 
@@ -234,7 +235,7 @@ export default function PODetailModal({
       onRefetch();
     },
     onError: (error) => {
-      showToast(error.message, 'error');
+      showToast(userMessage(error), 'error');
     },
   });
 
@@ -248,7 +249,7 @@ export default function PODetailModal({
       onRefetch();
     },
     onError: (error) => {
-      showToast(error.message, 'error');
+      showToast(userMessage(error), 'error');
     },
   });
 

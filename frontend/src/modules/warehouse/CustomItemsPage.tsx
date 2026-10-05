@@ -37,6 +37,7 @@ import {
   type CustomInventoryItem,
   type InventoryItemType,
 } from '../../hooks/useCustomItems';
+import { userMessage } from '../../graphql/userMessage';
 import { openRowOnEnter } from '../../components/openRowOnEnter';
 
 /**
@@ -85,7 +86,7 @@ export default function CustomItemsPage() {
       showToast('Type updated', 'success');
       refetchTypes();
     },
-    onError: (e) => showToast(e.message, 'error'),
+    onError: (e) => showToast(userMessage(e), 'error'),
   });
 
   const openItemDialog = useCallback((item: CustomInventoryItem | null) => {
@@ -237,11 +238,11 @@ function TypePanel({
       setNewAttribute('');
       settle('Attribute added');
     },
-    onError: (e) => showToast(e.message, 'error'),
+    onError: (e) => showToast(userMessage(e), 'error'),
   });
   const [updateAttribute] = useMutation(UPDATE_INVENTORY_ITEM_ATTRIBUTE, {
     onCompleted: () => settle('Attribute updated'),
-    onError: (e) => showToast(e.message, 'error'),
+    onError: (e) => showToast(userMessage(e), 'error'),
   });
 
   /**

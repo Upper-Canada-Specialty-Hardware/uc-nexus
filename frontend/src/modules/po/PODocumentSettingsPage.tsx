@@ -9,6 +9,7 @@ import { useIdentity } from '../../hooks/useIdentity';
 import PageHeader from '../../components/PageHeader';
 import { microLabelSx } from '../../theme';
 import { FadeIn } from '../../motion';
+import { userMessage } from '../../graphql/userMessage';
 
 /** A 2px ink rule with a micro-label heading — the section separator used across the PO module. */
 function SectionHeading({ children }: { children: ReactNode }) {
@@ -93,7 +94,7 @@ function SettingsForm({ settings }: { settings: PODocumentSettings }) {
 
   const [updateSettings, { loading: saving }] = useMutation(UPDATE_PO_DOCUMENT_SETTINGS, {
     onCompleted: () => showToast('PO document settings saved', 'success'),
-    onError: (err) => showToast(err.message, 'error'),
+    onError: (err) => showToast(userMessage(err), 'error'),
   });
 
   const handleSave = () => {

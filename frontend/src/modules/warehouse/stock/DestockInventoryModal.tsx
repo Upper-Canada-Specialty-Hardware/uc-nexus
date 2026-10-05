@@ -21,6 +21,7 @@ import { microLabelSx, monoSx } from '../../../theme';
 import { ReservationNotice, useComboReservation } from '../reservationNotice';
 import DestockCostChoice, { type DestockCost } from './DestockCostChoice';
 import { useDefinedLocationPick } from '../useDefinedLocationPick';
+import { userMessage } from '../../../graphql/userMessage';
 
 export interface DestockSource {
   id: string;
@@ -72,7 +73,7 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
     },
     onError: (err) => {
       inFlight.current = false;
-      showToast(err.message, 'error');
+      showToast(userMessage(err), 'error');
     },
   });
 

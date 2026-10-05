@@ -19,6 +19,7 @@ import { microLabelSx, monoSx } from '../../../theme';
 import type { Project } from '../../../types/project';
 import type { StockItem } from '../StockPoolView';
 import { useDefinedLocationPick } from '../useDefinedLocationPick';
+import { userMessage } from '../../../graphql/userMessage';
 
 interface Props {
   item: StockItem;
@@ -66,7 +67,7 @@ export default function AllocateStockModal({
     },
     onError: (err) => {
       inFlight.current = false;
-      showToast(err.message, 'error');
+      showToast(userMessage(err), 'error');
     },
   });
 

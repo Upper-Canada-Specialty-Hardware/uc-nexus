@@ -11,6 +11,7 @@ import { buildGpWriteQueueColumns, type OutboxEntry } from './gpWriteQueueColumn
 import { useToast } from './Toast';
 import { microLabelSx, monoSx, tabularSx } from '../theme';
 import { useIdentity } from '../hooks/useIdentity';
+import { userMessage } from '../graphql/userMessage';
 
 interface GpWriteQueuePanelProps {
   /**
@@ -98,7 +99,7 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
     },
     onError: (err) => {
       setRetryTarget(null);
-      showToast(err.message, 'error');
+      showToast(userMessage(err), 'error');
     },
   });
 
@@ -110,7 +111,7 @@ export default function GpWriteQueuePanel({ ops, statuses, heading, compact }: G
     },
     onError: (err) => {
       setCancelTarget(null);
-      showToast(err.message, 'error');
+      showToast(userMessage(err), 'error');
     },
   });
 

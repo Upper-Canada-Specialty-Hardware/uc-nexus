@@ -1,10 +1,12 @@
 import { Alert, Button } from '@mui/material';
 import type { SxProps, Theme } from '@mui/material';
+import { userMessage } from '../graphql/userMessage';
 
 interface LoadErrorProps {
   /** What failed to load, in the reader's words: "the shipping requests", "this project's schedule". */
   what: string;
-  error: { message: string };
+  /** The query's error. Shown through userMessage (#1553): a network failure in plain words, not Apollo's. */
+  error: unknown;
   /** Re-runs the read - usually the query's refetch. A retry that fails again leaves this banner up
    *  (the query keeps its error), so the rejection is swallowed here rather than left unhandled. */
   onRetry?: () => unknown;
@@ -30,7 +32,7 @@ export default function LoadError({ what, error, onRetry, sx }: LoadErrorProps) 
         ) : undefined
       }
     >
-      Couldn&apos;t load {what}, so this is not an empty list - the read failed. {error.message}
+      Couldn&apos;t load {what}, so this is not an empty list - the read failed. {userMessage(error)}
     </Alert>
   );
 }

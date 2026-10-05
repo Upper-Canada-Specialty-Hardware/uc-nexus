@@ -113,4 +113,15 @@ def send_email(
     except (smtplib.SMTPException, OSError) as exc:
         # The address is logged, the body is not: a PO document is commercial information.
         logger.warning("Email to %s failed: %s", to, exc)
-        raise EmailError(str(exc)) from exc
+        raise EmailError(_worded_smtp_failure(exc)) from exc
+
+
+def _worded_smtp_failure(exc: Exception) -> str:
+    """What the person sending sees (#1553). The library's own text is a tuple or a dict - "(535, b'5.7.8
+    Username and Password not accepted.')" - so it goes to the log above and this says what to do."""
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return "The mail account's sign-in was refused - ask an admin to check the email settings."
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        addresses = ", ".join(sorted(exc.recipients)) or "The address"
+        return f"{addresses} was refused by the mail server - check the address."
+    return "The mail server could not be reached - try again."

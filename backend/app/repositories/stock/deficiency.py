@@ -140,7 +140,7 @@ def resolve_deficiency(
         )
     if rma_reference and len(rma_reference) > 100:
         # The column is String(100); a longer one failed at flush as a raw server error (#1209).
-        raise ValidationError("rma_reference must be 100 characters or fewer", field="rma_reference")
+        raise ValidationError("RMA reference must be 100 characters or fewer", field="rma_reference")
     if resolution == DeficiencyResolution.SEND_TO_STOCK and destock_source is None:
         # default to DEFICIENT_SWAP for project sources if not specified
         destock_source = DestockSource.DEFICIENT_SWAP
@@ -158,8 +158,10 @@ def resolve_deficiency(
         if il is None:
             raise NotFoundError(f"Inventory location {inventory_location_id} not found")
         if quantity > (il.deficient_quantity or 0):
+            # #1553: reached when two reviewers resolve the same units, so it says what happened in words.
             raise ValidationError(
-                "Resolved quantity exceeds current deficient_quantity",
+                f"Only {il.deficient_quantity or 0} of these units are still flagged deficient - someone else "
+                "resolved some. Reopen to see the current count.",
                 field="quantity",
             )
         project_for_audit = il.project_id
@@ -198,8 +200,10 @@ def resolve_deficiency(
     else:
         si = lock_stock_item(session, stock_item_id)
         if quantity > (si.deficient_quantity or 0):
+            # #1553: reached when two reviewers resolve the same units, so it says what happened in words.
             raise ValidationError(
-                "Resolved quantity exceeds current deficient_quantity",
+                f"Only {si.deficient_quantity or 0} of these units are still flagged deficient - someone else "
+                "resolved some. Reopen to see the current count.",
                 field="quantity",
             )
         hardware_category = si.hardware_category

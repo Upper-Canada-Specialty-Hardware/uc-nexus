@@ -40,6 +40,7 @@ import { plural } from '../../../utils/plural';
 import RequestWorkspaceScheduleTab from './RequestWorkspaceScheduleTab';
 import RequestWorkspaceInventoryTab from './RequestWorkspaceInventoryTab';
 import RequestWorkspaceCartRail from './RequestWorkspaceCartRail';
+import { userMessage } from '../../../graphql/userMessage';
 
 interface SeededItem {
   openingNumber: string | null;
@@ -372,12 +373,12 @@ function Composer({
         ?.createShippingOutRequest?.requestNumber;
       settle(minted ? `Request ${minted} created` : 'Request created');
     },
-    onError: (e) => showToast(e.message, 'error'),
+    onError: (e) => showToast(userMessage(e), 'error'),
   });
   const [editRequest, { loading: saving }] = useMutation(EDIT_SHIPPING_OUT_REQUEST, {
     ...cacheUpdate,
     onCompleted: () => settle('Request updated'),
-    onError: (e) => showToast(e.message, 'error'),
+    onError: (e) => showToast(userMessage(e), 'error'),
   });
 
   const submitting = creating || saving;

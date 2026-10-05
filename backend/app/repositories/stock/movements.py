@@ -72,7 +72,7 @@ def destock_inventory(
     if is_deficient_swap:
         if quantity > (il.deficient_quantity or 0):
             raise ValidationError(
-                "DEFICIENT_SWAP destock quantity exceeds deficient_quantity on source row",
+                f"Only {il.deficient_quantity or 0} flagged units are left on this row to swap out.",
                 field="quantity",
             )
     elif quantity > il.quantity - (il.deficient_quantity or 0):
