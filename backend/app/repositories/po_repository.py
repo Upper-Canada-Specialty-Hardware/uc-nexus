@@ -1527,7 +1527,16 @@ def update_po(
         po.notes = notes if notes.strip() else None
     # Issue #156: null clears the value, 0 is a valid entered value - so these use the _UNSET sentinel.
     if shipping_cost is not _UNSET:
-        po.shipping_cost = _coerce_order_cost(shipping_cost, "shipping_cost")
+        new_shipping = _coerce_order_cost(shipping_cost, "shipping_cost")
+        # #1572: once registered, shipping cost is GP's freight - the PO sync writes GP's value back on
+        # every pass, so a Nexus edit was saved and then silently undone. Only a change is refused, so
+        # an older tab that still sends the unchanged value keeps saving.
+        if po.status != POStatus.DRAFT and new_shipping != po.shipping_cost:
+            raise ValidationError(
+                "Shipping cost on a registered PO is held in GP - change it there; Nexus picks it up on the next sync.",
+                field="shipping_cost",
+            )
+        po.shipping_cost = new_shipping
     if tariff_amount is not _UNSET:
         po.tariff_amount = _coerce_order_cost(tariff_amount, "tariff_amount")
 

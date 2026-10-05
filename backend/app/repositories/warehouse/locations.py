@@ -1,6 +1,7 @@
 """Physical locations: normalization, the defined-locations registry, browse/utilization/duplicates,
 moves, merges."""
 
+import re
 import uuid
 from collections import defaultdict
 
@@ -69,6 +70,16 @@ def ensure_registered_location(session: Session, warehouse_id: uuid.UUID, aisle:
         )
 
 
+def _natural_key(value: str | None) -> tuple:
+    """Natural order for a location part (#1569): digit runs as numbers, so bay 2 sorts before bay 10.
+
+    Aisle, row and bay are text; a plain sort listed A-1-10 before A-1-2. The split always alternates text
+    and digits starting with text, so the parts line up by type and the tuples compare safely.
+    """
+    parts = re.split(r"(\d+)", (value or "").casefold())
+    return tuple(int(p) if i % 2 else p for i, p in enumerate(parts))
+
+
 def get_warehouse_locations(
     session: Session,
     warehouse_id: uuid.UUID | None = None,
@@ -78,16 +89,18 @@ def get_warehouse_locations(
 ) -> list[WarehouseLocationModel]:
     """The registry, ordered for pickers and the Locations tab. Scoped to the caller's company
     (#637) through the warehouse each location belongs to."""
-    stmt = select(WarehouseLocationModel).order_by(
-        WarehouseLocationModel.aisle, WarehouseLocationModel.row, WarehouseLocationModel.bay
-    )
+    stmt = select(WarehouseLocationModel)
     if warehouse_id is not None:
         stmt = stmt.where(WarehouseLocationModel.warehouse_id == warehouse_id)
     if active_only:
         stmt = stmt.where(WarehouseLocationModel.active.is_(True))
     if company is not None:
         stmt = stmt.where(WarehouseLocationModel.warehouse_id.in_(tenancy.warehouse_ids_for(company)))
-    return list(session.scalars(stmt).all())
+    # #1569: natural order (A-1-2 before A-1-10), which SQL's text ordering can't give; the registry is small.
+    return sorted(
+        session.scalars(stmt).all(),
+        key=lambda loc: (_natural_key(loc.aisle), _natural_key(loc.row), _natural_key(loc.bay)),
+    )
 
 
 def create_warehouse_location(
@@ -326,7 +339,13 @@ def get_location_utilization(
 
     return sorted(
         aggregated.values(),
-        key=lambda entry: (str(entry["warehouse_id"]), entry["aisle"] or "", entry["row"] or "", entry["bay"] or ""),
+        # #1569: natural order within a warehouse, so A-1-2 comes before A-1-10.
+        key=lambda entry: (
+            str(entry["warehouse_id"]),
+            _natural_key(entry["aisle"]),
+            _natural_key(entry["row"]),
+            _natural_key(entry["bay"]),
+        ),
     )
 
 

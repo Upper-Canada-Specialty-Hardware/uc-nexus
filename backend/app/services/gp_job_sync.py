@@ -191,6 +191,14 @@ def _overwrite_existing(
             )
         ).all()
         for project in projects:
+            # #1573: GP's record was read when the pass began. A project saved since then - an edit wrote GP
+            # first and kept GP's read-back - is newer than that record, and overwriting it put the old name
+            # back until the next pass. Skipping is always safe: the next pass applies GP's record again.
+            if project.updated_at is not None and project.updated_at >= pass_started_at:
+                logger.debug(
+                    "gp job sync: %s changed since this pass read GP; left for the next pass", project.project_id
+                )
+                continue
             project_repository.apply_gp_job_record(project, seen[project.project_id])
         noted = {"marked": [], "not_in_gp": []}
         if seen:

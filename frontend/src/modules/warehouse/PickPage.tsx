@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Alert, Box, Button, Chip, Skeleton, Stack, Typography } from '@mui/material';
 import { ClipboardList, Package, Printer, Save } from 'lucide-react';
 import { useMutation, useQuery } from '@apollo/client/react';
+import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import { pdf } from '@react-pdf/renderer';
 import {
   COMPLETE_PULL_REQUEST,
@@ -28,6 +29,7 @@ import { entriesFromDraft, pickTotals, toPickLines, type PickEntries, type PickS
 import { parseServerDate } from '../../utils/serverDate';
 import { openPdfWindow } from '../../utils/openPdf';
 import { userMessage } from '../../graphql/userMessage';
+import LoadError from '../../components/LoadError';
 
 interface Shortfall {
   hardwareCategory: string;
@@ -76,7 +78,7 @@ export default function PickPage() {
   const [shortfalls, setShortfalls] = useState<Shortfall[]>([]);
   const [printing, setPrinting] = useState(false);
 
-  const { data, loading, error } = useQuery<{ pullPickSheet: PickSheet }>(
+  const { data, loading, error, refetch } = useQuery<{ pullPickSheet: PickSheet }>(
     GET_PULL_PICK_SHEET,
     { variables: { pullRequestId: id }, fetchPolicy: 'cache-and-network', skip: !id },
   );
@@ -113,9 +115,22 @@ export default function PickPage() {
   const isPicked = Boolean(pr?.pickedAt);
   const isOpen = pr?.status === 'IN_PROGRESS' && !isPicked;
 
+  // #1576: a refusal means the floor moved under this sheet - a shelf emptied, the pull cancelled - so the
+  // sheet is read again rather than left showing the figures that were refused (#1302). The typed boxes
+  // stay: they are only re-seeded when the server's applied totals change, which a refusal never does.
+  const redrawOnRefusal = useCallback(
+    (e: unknown) => {
+      if (CombinedGraphQLErrors.is(e)) void refetch().catch(() => undefined);
+    },
+    [refetch],
+  );
+
   const [saveDraft, { loading: saving }] = useMutation(SAVE_PICK_DRAFT, {
     onCompleted: () => showToast('Draft saved. Your entries will be here when you come back.', 'success'),
-    onError: (e) => showToast(userMessage(e), 'error'),
+    onError: (e) => {
+      showToast(userMessage(e), 'error');
+      redrawOnRefusal(e);
+    },
   });
 
   const [confirmPick, { loading: confirming }] = useMutation(CONFIRM_PICK, {
@@ -162,6 +177,7 @@ export default function PickPage() {
       }
       confirmInFlight.current = false;
       showToast(userMessage(e), 'error');
+      redrawOnRefusal(e);
     },
   });
 
@@ -251,12 +267,11 @@ export default function PickPage() {
     );
   }
 
-  if (error || !pr) {
-    return (
-      <Alert severity="error">
-        {error?.message ?? 'That pull request could not be loaded.'}
-      </Alert>
-    );
+  // #1576: only a sheet that never loaded is replaced. A failed background refresh keeps the sheet on screen
+  // (Apollo keeps the last data beside the error), with a warning that its figures may be behind.
+  if (!pr) {
+    if (error) return <LoadError what="this pull's pick sheet" error={error} onRetry={() => refetch()} />;
+    return <Alert severity="error">That pull request could not be loaded.</Alert>;
   }
 
   // A pure fetch pull (shipping out assembled leaves) has nothing to deduct, so it is confirmable
@@ -375,6 +390,13 @@ export default function PickPage() {
               </Button>
             )}
           </Stack>
+        </Alert>
+      )}
+
+      {error && (
+        <Alert severity="warning" sx={{ mb: 2 }} data-testid="pick-sheet-stale">
+          Couldn&apos;t refresh this pick sheet, so the figures may be out of date.{' '}
+          {userMessage(error, { reading: true })}
         </Alert>
       )}
 

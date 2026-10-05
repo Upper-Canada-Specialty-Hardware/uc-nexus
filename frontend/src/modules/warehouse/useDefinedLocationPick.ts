@@ -1,7 +1,9 @@
+
 import { useMemo } from 'react';
 import { useQuery } from '@apollo/client/react';
 import { GET_WAREHOUSE_LOCATIONS } from '../../graphql/warehouse';
 import { type WarehouseLocationDef, normalizeLocationValue } from './receiveDraftTypes';
+import { naturalCompare } from '../../utils/naturalCompare';
 
 export interface DefinedLocationPick {
   aisleOptions: string[];
@@ -60,7 +62,8 @@ export function useDefinedLocationPick(
       if (!a || d.aisle === a) rows.add(d.row);
       if ((!a || d.aisle === a) && (!r || d.row === r)) bays.add(d.bay);
     }
-    const sort = (set: Set<string>) => Array.from(set).sort((x, y) => x.localeCompare(y));
+    // #1569: natural order, so bay 2 comes before bay 10.
+    const sort = (set: Set<string>) => Array.from(set).sort(naturalCompare);
     return { aisleOptions: sort(aisles), rowOptions: sort(rows), bayOptions: sort(bays) };
   }, [definedHere, aisle, row]);
 

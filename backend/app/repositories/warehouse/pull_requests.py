@@ -718,9 +718,15 @@ def _pickable_pull(session: Session, pr_id: uuid.UUID) -> PullRequestModel:
     pr = locked[0]
     if pr.deleted_at is not None:
         raise NotFoundError(f"Pull request {pr_id} not found")
-    if pr.status != PullRequestStatus.IN_PROGRESS:
+    if pr.status == PullRequestStatus.PENDING:
         raise InvalidStateTransitionError(
             f"This pull request is {status_label(pr.status)}, not in progress - start the pick first."
+        )
+    if pr.status != PullRequestStatus.IN_PROGRESS:
+        # #1576: cancelled or completed elsewhere while the sheet was open - there is nothing to start, so
+        # say what happened rather than "start the pick first".
+        raise InvalidStateTransitionError(
+            f"This pull was {status_label(pr.status)} - it can no longer be picked. Refresh to see it."
         )
     if pr.picked_at is not None:
         raise InvalidStateTransitionError(
