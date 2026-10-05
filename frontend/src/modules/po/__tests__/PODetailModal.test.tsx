@@ -882,3 +882,37 @@ describe('PODetailModal Generate PO Document', () => {
     expect(screen.getByRole('button', { name: 'Generate PO Document' })).toBeEnabled();
   });
 });
+
+// #1595: a queued registration posts the PO as it was queued, so an edit made meanwhile never reaches GP.
+describe('PODetailModal while a GP registration is queued', () => {
+  it('holds Edit with the reason', () => {
+    renderModal(draftPo, [], null, true);
+    const edit = screen.getByRole('button', { name: 'Edit' });
+    expect(edit).toBeDisabled();
+    expect(screen.getByLabelText(/registration is queued for GP/i)).toBeInTheDocument();
+  });
+
+  it('redraws the PO when the server refuses a save', async () => {
+    const mocks: MockedResponse[] = [
+      {
+        request: { query: UPDATE_PO, variables: () => true },
+        result: {
+          errors: [
+            {
+              message: "This PO's registration is queued for GP, so it can't be changed until it posts.",
+              extensions: { code: 'CONFLICT' },
+            },
+          ],
+        },
+      },
+    ];
+    const { onRefetch } = renderModal(draftPo, mocks);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByLabelText('Vendor Quote Number'), { target: { value: 'Q-300' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    expect(await screen.findByText(/registration is queued for GP/i)).toBeInTheDocument();
+    expect(onRefetch).toHaveBeenCalled();
+  });
+});
