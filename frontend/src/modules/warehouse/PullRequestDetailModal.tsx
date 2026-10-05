@@ -16,6 +16,7 @@ import {
   Divider,
 } from '@mui/material';
 import { useApolloClient, useMutation } from '@apollo/client/react';
+import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import {
   CANCEL_PULL_REQUEST,
   COMPLETE_PULL_REQUEST,
@@ -171,6 +172,12 @@ export default function PullRequestDetailModal({
     cache.gc();
   };
 
+  // #1576: a start or complete refused because the pull moved on elsewhere (cancelled, completed, already
+  // started) redraws the queue behind the modal, so the row stops offering the action that was refused.
+  const redrawQueueOnRefusal = (error: unknown) => {
+    if (CombinedGraphQLErrors.is(error)) void client.refetchQueries({ include: ['GetPullRequests'] });
+  };
+
   const [startPick, { loading: startLoading }] = useMutation(START_PULL_REQUEST_PICK, {
     update: evictPullLifecycleFields,
     onCompleted: () => {
@@ -179,7 +186,10 @@ export default function PullRequestDetailModal({
       // the user is about to leave would be ceremony.
       navigate(`/app/warehouse/pull-requests/${pr.id}/pick`);
     },
-    onError: (error) => showToast(userMessage(error), 'error'),
+    onError: (error) => {
+      showToast(userMessage(error), 'error');
+      redrawQueueOnRefusal(error);
+    },
   });
 
   const [completePR, { loading: completeLoading }] = useMutation(COMPLETE_PULL_REQUEST, {
@@ -192,6 +202,7 @@ export default function PullRequestDetailModal({
     onError: (error) => {
       setConfirmCompleteOpen(false);
       showToast(userMessage(error), 'error');
+      redrawQueueOnRefusal(error);
     },
   });
 
