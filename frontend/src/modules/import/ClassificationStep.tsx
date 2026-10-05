@@ -67,6 +67,14 @@ export default function ClassificationStep({
   const [phase, setPhase] = useState<Phase>(() =>
     rows.some((r) => !isRowClassified(r)) ? 'guided' : 'review',
   );
+  // #1563: a PO re-import mounts this step before its rows exist (the reconcile's auto-select runs just
+  // after), so the phase above was settled on nothing and always opened on review. Settle it once, on
+  // the first rows that arrive.
+  const [phaseSettled, setPhaseSettled] = useState(rows.length > 0);
+  if (!phaseSettled && rows.length > 0) {
+    setPhaseSettled(true);
+    if (rows.some((r) => !isRowClassified(r))) setPhase('guided');
+  }
   // #586: whether review was reached by finishing the guided walk-through (vs. landing straight on it
   // when nothing needed guiding). Drives the one-time hand-off confirmation so the two phases read as
   // one flow. Cleared on any hop back into guided.
