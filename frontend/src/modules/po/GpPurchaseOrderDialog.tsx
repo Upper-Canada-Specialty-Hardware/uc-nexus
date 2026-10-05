@@ -1821,8 +1821,11 @@ export default function GpPurchaseOrderDialog({
             disabled
           />
           {/* #1525: the pair is sized, not the select inside it - a percentage on the select resolved against
-              this content-sized box and collapsed it on desktop. 300px where there is room, the row's width on a phone. */}
-          <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5, flex: '0 1 300px', minWidth: 0, maxWidth: '100%' }}>
+              this content-sized box and collapsed it on desktop. It grows with a long cost code where there is
+              room, never below 298px unless the row itself is narrower, as on a phone. */}
+          <Box
+            sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5, flex: '0 1 auto', minWidth: 'min(298px, 100%)', maxWidth: '100%' }}
+          >
             <TextField
               select
               label="Cost code for all lines"
