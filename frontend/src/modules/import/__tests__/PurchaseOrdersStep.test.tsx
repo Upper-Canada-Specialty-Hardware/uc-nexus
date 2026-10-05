@@ -264,6 +264,25 @@ describe('PurchaseOrdersStep organizing', () => {
     expect(qtyInputs()[0]).toHaveValue(4);
   });
 
+  // #1602: editing 10 in place to 20 passes through "0", which used to commit and drop the line - and the
+  // draft with it. A 0 or a blank is held until the field is left.
+  it('keeps the line when an in-place edit passes through 0, and a blank puts the quantity back', () => {
+    render(
+      <Harness
+        initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 10 })]}
+        selectionTotals={new Map([['HG-100|HINGE', 20]])}
+      />,
+    );
+    fireEvent.change(qtyInputs()[0], { target: { value: '0' } });
+    expect(screen.getByDisplayValue('ACME')).toBeInTheDocument();
+    fireEvent.change(qtyInputs()[0], { target: { value: '20' } });
+    expect(qtyInputs()[0]).toHaveValue(20);
+
+    fireEvent.change(qtyInputs()[0], { target: { value: '' } });
+    fireEvent.blur(qtyInputs()[0]);
+    expect(qtyInputs()[0]).toHaveValue(20);
+  });
+
   it('caps a line at the pool MINUS what a sibling draft holds of the same product', () => {
     render(
       <Harness

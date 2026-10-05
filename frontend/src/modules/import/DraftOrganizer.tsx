@@ -215,6 +215,57 @@ export function SplitLineDialog({ ctx, targets, onClose, onConfirm }: SplitLineD
 // fixed - cqw resolves against the grid's own size container, so the row shrinks to fit a narrow card
 // instead of pushing the page sideways. The mono ramp stays one step under the UI ramp, as elsewhere.
 const FS_CELL = 'clamp(0.7rem, 1.5cqw, 0.875rem)';
+
+/**
+ * A draft line's quantity (#1602). It used to commit every keystroke, so editing 10 in place to 20 passed
+ * through "0" and removed the line - and the draft with it, info and attachments included. A whole number
+ * above 0 commits as typed; a blank or a 0 is held as text until the field is left or Enter is pressed,
+ * where a blank puts the quantity back and a 0 takes the line out.
+ */
+function DraftQtyField({
+  quantity,
+  max,
+  ariaLabel,
+  onCommit,
+}: {
+  quantity: number;
+  max: number;
+  ariaLabel: string;
+  onCommit: (next: number) => void;
+}) {
+  const [text, setText] = useState<string | null>(null);
+  const settle = () => {
+    if (text !== null && text.trim() !== '' && Number(text) === 0) onCommit(0);
+    setText(null);
+  };
+  return (
+    <TextField
+      size="small"
+      type="number"
+      value={text ?? String(quantity)}
+      onChange={(e) => {
+        const raw = e.target.value;
+        const next = Number(raw);
+        if (raw.trim() !== '' && Number.isInteger(next) && next > 0) {
+          setText(null);
+          onCommit(next);
+        } else {
+          setText(raw);
+        }
+      }}
+      onBlur={settle}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') settle();
+      }}
+      slotProps={{
+        input: { sx: tabularSx },
+        htmlInput: { min: 0, max, step: 1, 'aria-label': ariaLabel },
+      }}
+      sx={{ width: '100%' }}
+    />
+  );
+}
+
 const FS_MONO = 'clamp(0.66rem, 1.4cqw, 0.8125rem)';
 const FS_HEAD = 'clamp(0.5625rem, 1.1cqw, 0.6875rem)';
 
@@ -762,26 +813,14 @@ export function DraftCard({
                       {/* #632: Qty is editable in place, ceilinged at the product's selection pool minus
                           what sibling drafts hold. Lowering proceeds with less; widening the scope stays
                           the selection steps' job. */}
-                      <TextField
-                        size="small"
-                        type="number"
-                        value={line.qty}
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value, 10);
-                          if (!Number.isNaN(val)) onUpdateLineQty(draft.id, line.pk, val);
-                        }}
-                        slotProps={{
-                          input: { sx: tabularSx },
-                          htmlInput: {
-                            min: 0,
-                            max:
-                              (selectionTotals.get(line.pk) ?? line.qty) -
-                              ((heldByProduct.get(line.pk) ?? line.qty) - line.qty),
-                            step: 1,
-                            'aria-label': `Quantity of ${line.productCode}`,
-                          },
-                        }}
-                        sx={{ width: '100%' }}
+                      <DraftQtyField
+                        quantity={line.qty}
+                        max={
+                          (selectionTotals.get(line.pk) ?? line.qty) -
+                          ((heldByProduct.get(line.pk) ?? line.qty) - line.qty)
+                        }
+                        ariaLabel={`Quantity of ${line.productCode}`}
+                        onCommit={(val) => onUpdateLineQty(draft.id, line.pk, val)}
                       />
                     </Box>
                     <Box className="po-cell po-cell-right po-num">

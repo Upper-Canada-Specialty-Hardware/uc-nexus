@@ -284,3 +284,49 @@ describe('draftOps.carryDraftEdits (#1314)', () => {
     expect(draftOps.carryDraftEdits([draft('seed:Acme', { HG: 1 })], seeded)).toEqual(seeded);
   });
 });
+
+// #1602: a line operation dropped an emptied draft even when the buyer had attached its quote or typed its
+// cost code - the #1314 rule keeps such a draft as an empty card, and the line operations now follow it.
+describe('an emptied draft with info or attachments stays (#1602)', () => {
+  const withQuote = (): DraftGroup[] =>
+    draftOps.addAttachments([draft('a', { HG: 4 }, true), draft('b', {}, true)], 'a', [att('quote')]);
+
+  it('keeps it when its last line is set to 0', () => {
+    const next = draftOps.updateLineQty(withQuote(), 'a', 'HG', 0, 4);
+    const a = next.find((g) => g.id === 'a');
+    expect(a?.lines.size).toBe(0);
+    expect(a?.attachments?.map((x) => x.file.name)).toEqual(['quote.pdf']);
+  });
+
+  it('keeps it when its last line is removed or moved away', () => {
+    expect(draftOps.removeLine(withQuote(), 'a', 'HG').find((g) => g.id === 'a')?.attachments).toHaveLength(1);
+    const moved = draftOps.moveLine(withQuote(), 'a', 'HG', 4, 'b');
+    expect(moved.find((g) => g.id === 'a')?.attachments).toHaveLength(1);
+    expect(moved.find((g) => g.id === 'b')?.lines.get('HG')).toBe(4);
+  });
+
+  it('keeps one with a cost code typed, and still drops one with nothing on it (#639)', () => {
+    const coded = draftOps.updateInfo([draft('a', { HG: 4 }, true)], 'a', 'costCode', '05-100');
+    expect(draftOps.removeLine(coded, 'a', 'HG')).toHaveLength(1);
+    expect(draftOps.removeLine([draft('a', { HG: 4 }, true)], 'a', 'HG')).toHaveLength(0);
+  });
+});
+
+describe('documents a finalize would leave behind (#1602)', () => {
+  it('names the drafts whose documents have no PO to land on, and why', () => {
+    let groups: DraftGroup[] = [
+      { ...draft('p', {}, true), label: 'New PO' },
+      { ...draft('h', { HG: 2 }, false), label: 'Hager' },
+      { ...draft('ok', { HG: 1 }, true), label: 'Ives' },
+    ];
+    groups = draftOps.addAttachments(groups, 'p', [att('q1'), att('q2')]);
+    groups = draftOps.addAttachments(groups, 'h', [att('q3')]);
+    groups = draftOps.addAttachments(groups, 'ok', [att('q4')]);
+
+    const list = draftOps.unattachedDocuments(groups, new Set(['ok']));
+    expect(draftOps.describeUnattached(list)).toBe(
+      "2 documents on 'New PO' (no lines) and 1 on 'Hager' (not included) will not be attached.",
+    );
+    expect(draftOps.describeUnattached(draftOps.unattachedDocuments(groups, new Set(['ok', 'p', 'h'])))).toBeNull();
+  });
+});
