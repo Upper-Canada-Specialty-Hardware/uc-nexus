@@ -485,6 +485,11 @@ def _release_registration(po_id, key) -> None:
         logger.warning("po registration claim not released", extra={"po_id": str(po_id)}, exc_info=True)
 
 
+def _registration_digest(po_id: uuid.UUID) -> str | None:
+    with SessionLocal() as session:
+        return po_repository.registration_digest(session, po_id)
+
+
 def _persist_register_po(
     *,
     key,
@@ -1057,6 +1062,9 @@ class POMutations:
                 "shipping_cost": input.shipping_cost,
                 "tariff_amount": input.tariff_amount,
                 "project_id": str(register_project_id) if register_project_id else None,
+                # #1599: the draft as this payload was built from it; the worker refuses to push a snapshot
+                # of a draft that changed since (an edit during the relay attempt, or before a retry).
+                "registration_digest": await asyncio.to_thread(_registration_digest, pid),
             }
 
             if state is not None and state.relay_result is not None:
