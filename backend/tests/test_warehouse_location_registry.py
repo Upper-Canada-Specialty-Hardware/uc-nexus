@@ -636,3 +636,28 @@ def test_unlocating_a_stock_row_folds_into_the_unlocated_row_of_its_key(db_sessi
 def test_unlocating_a_stock_row_that_is_gone_is_not_found(db_session):
     with pytest.raises(NotFoundError):
         stock_repository.mark_stock_item_unlocated(db_session, stock_item_id=uuid.uuid4(), performed_by="wh")
+
+
+# --- natural order (#1569) ---------------------------------------------------------------------------
+
+
+def test_the_registry_lists_bay_2_before_bay_10(db_session):
+    """Aisle, row and bay are text: a plain sort listed A-1-10 before A-1-2 in every picker."""
+    aisle = _aisle()
+    for bay in ("10", "2", "1", "12"):
+        define_location(db_session, None, aisle, "1", bay)
+
+    bays = [loc.bay for loc in warehouse_repository.get_warehouse_locations(db_session) if loc.aisle == aisle]
+
+    assert bays == ["1", "2", "10", "12"]
+
+
+def test_location_utilization_lists_bay_2_before_bay_10(db_session):
+    project = make_project(db_session)
+    aisle = _aisle()
+    for bay in ("10", "2"):
+        make_il(db_session, project, aisle=aisle, row="1", bay=bay)
+
+    bays = [e["bay"] for e in warehouse_repository.get_location_utilization(db_session) if e["aisle"] == aisle]
+
+    assert bays == ["2", "10"]

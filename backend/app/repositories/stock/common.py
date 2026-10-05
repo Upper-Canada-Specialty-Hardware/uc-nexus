@@ -249,6 +249,52 @@ def fold_into_same_key_row(
     return target
 
 
+def log_stock_shelf_event(
+    session: Session,
+    *,
+    source_id: uuid.UUID,
+    target: StockItem | None,
+    moved_quantity: int,
+    moved_deficient: int,
+    action: AuditAction,
+    performed_by: str,
+    detail: dict,
+) -> None:
+    """Audit a shelf move, put-away, unlocate or merge of a pool row on every row it touched (#1574).
+
+    Without a fold that is the row itself. With one, `fold_into_same_key_row` emptied the source - and
+    usually deleted it - so an entry on the source alone left the surviving row's history silent about
+    the units it gained. Both rows get the entry: the source's says where its units went, the target's
+    where they came from.
+    """
+    if target is not None:
+        detail = {
+            **detail,
+            "foldedIntoStockItemId": str(target.id),
+            "quantity": moved_quantity,
+            "deficientQuantity": moved_deficient,
+        }
+    _log_audit_event(
+        session,
+        project_id=None,
+        entity_type=AuditEntityType.STOCK_ITEM,
+        entity_id=source_id,
+        action=action,
+        performed_by=performed_by,
+        detail=detail,
+    )
+    if target is not None:
+        _log_audit_event(
+            session,
+            project_id=None,
+            entity_type=AuditEntityType.STOCK_ITEM,
+            entity_id=target.id,
+            action=action,
+            performed_by=performed_by,
+            detail={**detail, "foldedFromStockItemId": str(source_id)},
+        )
+
+
 def _stock_row_is_referenced(session: Session, stock_item_id: uuid.UUID) -> bool:
     from app.models.deficiency_review import DeficiencyReview
     from app.models.shipping import ShipmentReturnItem

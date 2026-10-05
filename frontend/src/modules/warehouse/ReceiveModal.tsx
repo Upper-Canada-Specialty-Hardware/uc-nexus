@@ -30,6 +30,7 @@ import GpJobNotOpenBanner from '../../components/GpJobStateTag';
 import { extractGpError, GP_JOB_NOT_OPEN } from '../../graphql/gpError';
 import { gpJobStateLabel, isGpJobNotOpen, isGpSetupBroken, type Project } from '../../types/project';
 import ReceiveLinesEditor from './ReceiveLinesEditor';
+import LoadError from '../../components/LoadError';
 import PackingSlipPicker from './PackingSlipPicker';
 import {
   buildReceiveLineItemsInput,
@@ -120,7 +121,11 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   const uploadedSlipsRef = useRef<Record<string, { file: File; id: string }>>({});
 
   // Warehouse the received goods land in (active warehouses only). Defaults to the primary.
-  const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
+  const {
+    data: warehousesData,
+    error: warehousesError,
+    refetch: refetchWarehouses,
+  } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
     variables: { includeInactive: false },
   });
   const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
@@ -128,6 +133,8 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
   // #1344: with no active warehouse a draft could never be approved (nothing to receive into), so
   // the dock is told before it counts, not the manager after.
   const noActiveWarehouse = !!warehousesData && warehouses.length === 0;
+  // #1582: an unread warehouse list is not "the default building" - the draft would land there unasked.
+  const warehousesUnread = !!warehousesError && !warehousesData;
 
   // #425: the GP setup verdict lives on the project, and the PO only carries a project id. Read from
   // the shared projects query, which every other screen already primes, so this is normally a cache
@@ -590,6 +597,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
           blockedPos.length > 0 ||
           notOpenJobs.length > 0 ||
           noActiveWarehouse ||
+          warehousesUnread ||
           submitting
         }
         onClick={() => setConfirmOpen(true)}
@@ -680,6 +688,14 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
         )}
         {/* #831: the count posts into GP once approved, so the GP company it lands in sits on the same
             row as the warehouse it lands in. One tag per company, though a batch is almost always one. */}
+        {showEntry && warehousesUnread && (
+          <LoadError
+            what="the warehouses"
+            error={warehousesError}
+            onRetry={() => refetchWarehouses()}
+            sx={{ mb: 2 }}
+          />
+        )}
         {showEntry && noActiveWarehouse && (
           <Alert severity="warning" sx={{ mb: 2 }}>
             No active warehouse to receive into. A Tenant Owner must add one under Tenant Owner →

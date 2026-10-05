@@ -49,6 +49,7 @@ import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import LoadError from '../../components/LoadError';
 import RefreshFailedNote from '../../components/RefreshFailedNote';
 import { isPutAwaySplitValid } from './putAwaySplit';
+import { naturalCompare } from '../../utils/naturalCompare';
 
 // #856: at ~850 px Assign, the row's only action, sat past the right edge of the table's own scroll
 // area. Both tables now fit their width and never scroll sideways, so Assign is always in view; the
@@ -293,7 +294,8 @@ export default function PutAwayTab() {
         if (!a || d.aisle === a) rowsSet.add(d.row);
         if ((!a || d.aisle === a) && (!r || d.row === r)) bays.add(d.bay);
       }
-      const sort = (s: Set<string>) => Array.from(s).sort((x, y) => x.localeCompare(y));
+      // #1569: natural order, so bay 2 comes before bay 10.
+      const sort = (s: Set<string>) => Array.from(s).sort(naturalCompare);
       return { aisles: sort(aisles), rows: sort(rowsSet), bays: sort(bays) };
     },
     [registryByWarehouse, registry],

@@ -1,6 +1,7 @@
 """Physical locations: normalization, the defined-locations registry, browse/utilization/duplicates,
 moves, merges."""
 
+import re
 import uuid
 from collections import defaultdict
 
@@ -69,6 +70,16 @@ def ensure_registered_location(session: Session, warehouse_id: uuid.UUID, aisle:
         )
 
 
+def _natural_key(value: str | None) -> tuple:
+    """Natural order for a location part (#1569): digit runs as numbers, so bay 2 sorts before bay 10.
+
+    Aisle, row and bay are text; a plain sort listed A-1-10 before A-1-2. The split always alternates text
+    and digits starting with text, so the parts line up by type and the tuples compare safely.
+    """
+    parts = re.split(r"(\d+)", (value or "").casefold())
+    return tuple(int(p) if i % 2 else p for i, p in enumerate(parts))
+
+
 def get_warehouse_locations(
     session: Session,
     warehouse_id: uuid.UUID | None = None,
@@ -78,16 +89,18 @@ def get_warehouse_locations(
 ) -> list[WarehouseLocationModel]:
     """The registry, ordered for pickers and the Locations tab. Scoped to the caller's company
     (#637) through the warehouse each location belongs to."""
-    stmt = select(WarehouseLocationModel).order_by(
-        WarehouseLocationModel.aisle, WarehouseLocationModel.row, WarehouseLocationModel.bay
-    )
+    stmt = select(WarehouseLocationModel)
     if warehouse_id is not None:
         stmt = stmt.where(WarehouseLocationModel.warehouse_id == warehouse_id)
     if active_only:
         stmt = stmt.where(WarehouseLocationModel.active.is_(True))
     if company is not None:
         stmt = stmt.where(WarehouseLocationModel.warehouse_id.in_(tenancy.warehouse_ids_for(company)))
-    return list(session.scalars(stmt).all())
+    # #1569: natural order (A-1-2 before A-1-10), which SQL's text ordering can't give; the registry is small.
+    return sorted(
+        session.scalars(stmt).all(),
+        key=lambda loc: (_natural_key(loc.aisle), _natural_key(loc.row), _natural_key(loc.bay)),
+    )
 
 
 def create_warehouse_location(
@@ -326,7 +339,13 @@ def get_location_utilization(
 
     return sorted(
         aggregated.values(),
-        key=lambda entry: (str(entry["warehouse_id"]), entry["aisle"] or "", entry["row"] or "", entry["bay"] or ""),
+        # #1569: natural order within a warehouse, so A-1-2 comes before A-1-10.
+        key=lambda entry: (
+            str(entry["warehouse_id"]),
+            _natural_key(entry["aisle"]),
+            _natural_key(entry["row"]),
+            _natural_key(entry["bay"]),
+        ),
     )
 
 
@@ -374,6 +393,9 @@ def get_location_audit_history(
                 InventoryAuditLog.detail["targetLocation"].contains(to_match),
                 InventoryAuditLog.detail["location"].contains(to_match),
             ),
+            # #1574: a fold is logged on both rows with the same locations; the shelf shows it once, from the
+            # source's entry. The surviving row's mirror stays in its own drawer.
+            ~InventoryAuditLog.detail.has_key("foldedFromStockItemId"),
         )
         .order_by(InventoryAuditLog.created_at.desc())
     )
@@ -544,7 +566,12 @@ def merge_locations(
         )
     counts["inventory_locations"] = len(inv_rows)
 
-    from app.repositories.stock.common import _find_stock_row, fold_into_same_key_row, lock_pool_rows
+    from app.repositories.stock.common import (
+        _find_stock_row,
+        fold_into_same_key_row,
+        lock_pool_rows,
+        log_stock_shelf_event,
+    )
 
     found = list(
         session.scalars(
@@ -592,18 +619,17 @@ def merge_locations(
         # A row already on the target shelf with this row's key takes its units (#1164), through the
         # same fold a single move or put-away uses (#1377).
         detail = {"fromLocation": from_loc, "toLocation": to_loc, "reason": "location_merge"}
-        moved = {"quantity": si.quantity, "deficientQuantity": si.deficient_quantity}
+        source_id, moved, moved_deficient = si.id, si.quantity, si.deficient_quantity
         target = fold_into_same_key_row(session, si, aisle=to_aisle, row=to_row, bay=to_bay)
-        if target is not None:
-            detail = {**detail, "foldedIntoStockItemId": str(target.id), **moved}
-        else:
+        if target is None:
             si.aisle, si.row, si.bay = to_aisle, to_row, to_bay
         session.flush()
-        _log_audit_event(
+        log_stock_shelf_event(
             session,
-            project_id=None,
-            entity_type=AuditEntityType.STOCK_ITEM,
-            entity_id=si.id,
+            source_id=source_id,
+            target=target,
+            moved_quantity=moved,
+            moved_deficient=moved_deficient,
             action=AuditAction.MOVE,
             performed_by=performed_by,
             detail=detail,
@@ -769,10 +795,30 @@ def split_inventory_location(
         bay=None,
         received_at=il.received_at,
     )
+    old_quantity = il.quantity
     il.quantity -= quantity
     session.add(remainder)
     session.flush()
 
+    # #1574: both rows, so the original's history explains the units that left it - not only the new
+    # row's. The split is a step of a put-away, not one: the remainder is still unlocated here.
+    _log_audit_event(
+        session,
+        project_id=il.project_id,
+        entity_type=AuditEntityType.INVENTORY_LOCATION,
+        entity_id=il.id,
+        action=AuditAction.ADJUSTMENT,
+        performed_by=performed_by,
+        detail={
+            "reason": "split",
+            "splitInto": str(remainder.id),
+            "quantity": quantity,
+            # The history drawer renders an adjustment as old -> new (signed change).
+            "adjustment": -quantity,
+            "oldQuantity": old_quantity,
+            "newQuantity": il.quantity,
+        },
+    )
     _log_audit_event(
         session,
         project_id=il.project_id,
@@ -780,6 +826,6 @@ def split_inventory_location(
         entity_id=remainder.id,
         action=AuditAction.PUT_AWAY,
         performed_by=performed_by,
-        detail={"splitFrom": str(il.id), "quantity": quantity},
+        detail={"reason": "split", "splitFrom": str(il.id), "quantity": quantity},
     )
     return il, remainder

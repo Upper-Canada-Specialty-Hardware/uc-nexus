@@ -622,4 +622,58 @@ describe('confirming a shipment (#859)', () => {
     expect(screen.getByText('Shipment PS-00002 confirmed')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'View shipment' })).toBeInTheDocument();
   });
+
+  // #1583: the confirm ships what its manifest showed, and a refusal redraws the floor behind it.
+  it('sends the lines the manifest showed, and a refused confirm redraws the floor', async () => {
+    let poolReads = 0;
+    const countedPool: MockedResponse = {
+      ...poolMock({ containers: [loaded] }),
+      result: () => {
+        poolReads += 1;
+        return {
+          data: {
+            stagingPool: { __typename: 'StagingPool', looseItems: [], containers: [loaded] },
+          },
+        };
+      },
+    };
+    const sent: Record<string, unknown>[] = [];
+    const refused: MockedResponse = {
+      request: {
+        query: CONFIRM_SHIPMENT_FROM_CONTAINERS,
+        variables: (v: Record<string, unknown>) => {
+          sent.push(v);
+          return true;
+        },
+      },
+      result: { errors: [{ message: 'Box 1 changed since you opened this - check its contents and confirm again.' }] },
+    };
+    renderWorkspace([countedPool, methodsMock, refused]);
+
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Include Box 1 in this shipment' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Ship 1 container' }));
+    const readsBefore = poolReads;
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm shipment' }));
+
+    expect(await screen.findByText(/Box 1 changed since you opened this/)).toBeInTheDocument();
+    const input = (sent[0] as { input: { expectedContents: unknown } }).input;
+    expect(input.expectedContents).toEqual([{ containerId: 'c-1', itemIds: ['ci-1'] }]);
+    await waitFor(() => expect(poolReads).toBeGreaterThan(readsBefore));
+  });
+});
+
+// #1583: a failed read offered "Retry" with no button, and the ship caption read as an empty floor.
+describe('a failed staging read', () => {
+  it('says so with a Retry, and does not tell the user to create a container', async () => {
+    renderWorkspace([
+      {
+        request: { query: GET_STAGING_POOL, variables: { projectId: PROJECT_ID } },
+        maxUsageCount: INFINITE,
+        error: new TypeError('Failed to fetch'),
+      },
+    ]);
+
+    expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.queryByText('Create a container first')).not.toBeInTheDocument();
+  });
 });
