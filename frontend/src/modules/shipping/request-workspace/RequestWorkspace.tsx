@@ -41,6 +41,7 @@ import RequestWorkspaceScheduleTab from './RequestWorkspaceScheduleTab';
 import RequestWorkspaceInventoryTab from './RequestWorkspaceInventoryTab';
 import RequestWorkspaceCartRail from './RequestWorkspaceCartRail';
 import { userMessage } from '../../../graphql/userMessage';
+import RefreshFailedNote from '../../../components/RefreshFailedNote';
 
 interface SeededItem {
   openingNumber: string | null;
@@ -166,7 +167,8 @@ function EditRoute() {
       </Box>
     );
   }
-  if (error) {
+  // #1584: a failed refresh must not unmount an edit in progress; it keeps the request with a note.
+  if (error && !data) {
     return <Alert severity="error">Could not load this request: {userMessage(error, { reading: true })}</Alert>;
   }
   if (!request) {
@@ -206,6 +208,7 @@ function EditRoute() {
 
   return (
     <Box>
+      {error && <RefreshFailedNote what="this request" error={error} />}
       <PageHeader
         title={
           // #831: the project's GP company, inline in the title row rather than a row of its own.

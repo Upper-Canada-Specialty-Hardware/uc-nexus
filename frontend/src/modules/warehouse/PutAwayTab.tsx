@@ -47,6 +47,7 @@ import { parseServerDate } from '../../utils/serverDate';
 import { type WarehouseLocationDef, normalizeLocationValue } from './receiveDraftTypes';
 import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import LoadError from '../../components/LoadError';
+import RefreshFailedNote from '../../components/RefreshFailedNote';
 import { isPutAwaySplitValid } from './putAwaySplit';
 
 // #856: at ~850 px Assign, the row's only action, sat past the right edge of the table's own scroll
@@ -673,7 +674,8 @@ export default function PutAwayTab() {
     );
   }
 
-  if (error) {
+  // #1584: only when nothing loaded; a failed refresh keeps the queue on screen with a note.
+  if (error && !unlocatedData) {
     return <LoadError what="the unlocated inventory" error={error} onRetry={() => refetch()} />;
   }
 
@@ -681,6 +683,7 @@ export default function PutAwayTab() {
 
   return (
     <Box>
+      {error && <RefreshFailedNote what="the unlocated inventory" error={error} />}
       <PageHeader
         title="Put Away"
         parent={{ label: 'Warehouse', to: '/app/warehouse' }}

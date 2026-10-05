@@ -51,6 +51,7 @@ import TransferDialog, { type TransferSource } from './TransferDialog';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { springs } from '../../motion';
 import LoadError from '../../components/LoadError';
+import RefreshFailedNote from '../../components/RefreshFailedNote';
 import type { WarehouseLocationDef } from './receiveDraftTypes';
 import {
   combineLocationRows,
@@ -920,7 +921,10 @@ export default function LocationsTab() {
       </Box>
     );
   }
-  if (utilError) return <LoadError what="the warehouse locations" error={utilError} onRetry={() => refetchUtil()} />;
+  // #1584: only when nothing loaded; a failed refresh keeps the rack on screen with a note.
+  if (utilError && !utilData) {
+    return <LoadError what="the warehouse locations" error={utilError} onRetry={() => refetchUtil()} />;
+  }
 
   const totalLocations = combined.length;
   const totalQty = combined.reduce((sum, r) => sum + r.totalQuantity, 0);
@@ -928,6 +932,7 @@ export default function LocationsTab() {
 
   return (
     <Box>
+      {utilError && <RefreshFailedNote what="the warehouse locations" error={utilError} />}
       <PageHeader
         title="Locations"
         parent={{ label: 'Warehouse', to: '/app/warehouse' }}
