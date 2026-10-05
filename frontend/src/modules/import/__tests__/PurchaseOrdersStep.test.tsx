@@ -13,6 +13,8 @@ import type { GpCostCode } from '../DraftOrganizer';
 // heavy DataGrid suites run alongside. Give them room, the same as the sibling step tests do.
 vi.setConfig({ testTimeout: 30_000 });
 
+const unitCostSpy = vi.fn();
+
 const catalog: Map<string, ProductMeta> = new Map([
   ['HG-100|HINGE', { productCode: 'HG-100', hardwareCategory: 'HINGE', unitCost: 5 }],
 ]);
@@ -88,7 +90,7 @@ function Harness({
         onToggleIncluded={(id) => setGroups((g) => draftOps.toggleIncluded(g, id))}
         onRenameDraft={(id, l) => setGroups((g) => draftOps.renameDraft(g, id, l))}
         onUpdateDraftInfo={(id, f, v) => setGroups((g) => draftOps.updateInfo(g, id, f, v))}
-        onUpdateUnitCost={() => {}}
+        onUpdateUnitCost={(pk, v) => unitCostSpy(pk, v)}
         onUpdateOrderAs={() => {}}
         onMoveLine={(f, pk, q, t) => setGroups((g) => draftOps.moveLine(g, f, pk, q, t))}
         onUpdateLineQty={(id, pk, qty) =>
@@ -262,6 +264,53 @@ describe('PurchaseOrdersStep organizing', () => {
     // Raising past the pool (4) clamps: widening the scope is the selection steps' job.
     fireEvent.change(qtyInputs()[0], { target: { value: '9' } });
     expect(qtyInputs()[0]).toHaveValue(4);
+  });
+
+  // #1602: editing 10 in place to 20 passes through "0", which used to commit and drop the line - and the
+  // draft with it. A 0 or a blank is held until the field is left.
+  it('keeps the line when an in-place edit passes through 0, and a blank puts the quantity back', () => {
+    render(
+      <Harness
+        initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 10 })]}
+        selectionTotals={new Map([['HG-100|HINGE', 20]])}
+      />,
+    );
+    fireEvent.change(qtyInputs()[0], { target: { value: '0' } });
+    expect(screen.getByDisplayValue('ACME')).toBeInTheDocument();
+    fireEvent.change(qtyInputs()[0], { target: { value: '20' } });
+    expect(qtyInputs()[0]).toHaveValue(20);
+
+    fireEvent.change(qtyInputs()[0], { target: { value: '' } });
+    fireEvent.blur(qtyInputs()[0]);
+    expect(qtyInputs()[0]).toHaveValue(20);
+  });
+
+  // #1602: an emptied card that holds documents stays; its explicit Remove asks before taking them.
+  it('asks before removing a draft that still holds documents, then removes it', () => {
+    const withDoc = draftOps.addAttachments([makeDraft('a', 'ACME', {})], 'a', [
+      { id: 'd1', file: new File(['x'], 'quote.pdf', { type: 'application/pdf' }) },
+    ]);
+    render(<Harness initial={withDoc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Draft actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove draft' }));
+
+    expect(screen.getByText("Remove 'ACME' and its 1 document?")).toBeInTheDocument();
+    expect(screen.getByDisplayValue('ACME')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    expect(screen.queryByDisplayValue('ACME')).not.toBeInTheDocument();
+  });
+
+  // #1602: the unit cost parsed every keystroke and could not be cleared, so retyping 12.5 as 8.25 saved
+  // the wrong figure. It now commits once, on leaving the field, a finished number.
+  it('saves a retyped unit cost once, as typed, when the field is left', () => {
+    unitCostSpy.mockClear();
+    render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
+    const cost = screen.getByRole('spinbutton', { name: 'Unit cost of HG-100' });
+    for (const v of ['', '8', '8.', '8.2', '8.25']) fireEvent.change(cost, { target: { value: v } });
+    expect(unitCostSpy).not.toHaveBeenCalled();
+    fireEvent.blur(cost);
+    expect(unitCostSpy).toHaveBeenCalledTimes(1);
+    expect(unitCostSpy).toHaveBeenCalledWith('HG-100|HINGE', 8.25);
   });
 
   it('caps a line at the pool MINUS what a sibling draft holds of the same product', () => {

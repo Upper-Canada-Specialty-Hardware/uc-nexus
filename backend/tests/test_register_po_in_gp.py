@@ -579,6 +579,34 @@ def test_prepare_register_po_attaches_manufacturer_per_line(monkeypatch, db_sess
     assert [line["manufacturer"] for line in payload["lines"]] == ["SCHLAGE", "SARGENT"]
 
 
+def test_prepare_register_po_hands_back_the_drafts_digest_beside_the_payload(monkeypatch, db_session):
+    """#1599: the draft's fingerprint is taken in the pre-flight, under the lock the payload is built under,
+    and handed back beside the payload - never inside what goes to GP."""
+    project = _make_project(db_session)
+    _add_hardware_item(db_session, project, hardware_category="HINGE", product_code="HG-100", manufacturer="SCHLAGE")
+    draft = po_repository.create_po(
+        db_session,
+        line_items=[_register_line("HINGE", "HG-100", "ALIAS-100")],
+        project_id=project.id,
+        company="TUBC",
+    )
+    _use_test_session(monkeypatch, db_session)
+
+    digest: dict = {}
+    payload = po_schema._prepare_register_po(
+        po_id=draft.id,
+        gp_vendor_id="GPV1",
+        buyer_id="mira",
+        cost_code="210-200-2",
+        line_items_data=[_register_line("HINGE", "HG-100", "ALIAS-100")],
+        site="VANCOUVER",
+        digest_out=digest,
+    )
+
+    assert digest["registration_digest"] == po_repository.registration_digest(db_session, draft.id)
+    assert "registration_digest" not in payload
+
+
 def test_prepare_register_po_accepts_any_cost_code(monkeypatch, db_session):
     """Any cost code GP reports for the job registers. There is no Nexus-side list of codes a buyer
     is allowed to use, and no per-project gate on who may order - a code that no hand-maintained

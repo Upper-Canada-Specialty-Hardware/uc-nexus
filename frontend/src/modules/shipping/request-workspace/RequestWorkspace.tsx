@@ -12,6 +12,7 @@ import {
 import { ShoppingCart } from 'lucide-react';
 import { Link as RouterLink, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery } from '@apollo/client/react';
+import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import ProjectPicker from '../../../components/ProjectPicker';
 import { useScopedProject } from '../../../hooks/useScopedProject';
 import PageHeader from '../../../components/PageHeader';
@@ -141,13 +142,28 @@ function CreateRoute() {
   );
 }
 
+/** The lines-version guard's refusal (#1260): the request's lines changed since this edit loaded them. */
+function isLinesVersionConflict(err: unknown): boolean {
+  return (
+    CombinedGraphQLErrors.is(err) &&
+    err.errors.some((e) => e.extensions?.code === 'CONFLICT' && e.extensions?.field === 'items')
+  );
+}
+
 function EditRoute() {
   const { id } = useParams<{ id: string }>();
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
-  const { data, loading, error } = useQuery<{ shippingOutRequest: SeededRequest | null }>(
+  const { data, loading, error, refetch } = useQuery<{ shippingOutRequest: SeededRequest | null }>(
     GET_SHIPPING_OUT_REQUEST,
     { variables: { id }, fetchPolicy: 'cache-and-network' },
   );
+  // #1597: a save refused because someone else changed the lines (#1260) can only be retried against the
+  // request as it is now - so the composer is re-read and re-seeded, which a remount does (it seeds once).
+  const [seed, setSeed] = useState(0);
+  const reload = useCallback(async () => {
+    await refetch();
+    setSeed((n) => n + 1);
+  }, [refetch]);
 
   const request = data?.shippingOutRequest ?? null;
   // #1257: the request carries its own project, archived or not. The projects list (which leaves
@@ -222,7 +238,7 @@ function EditRoute() {
         parent={REQUESTS_PARENT}
         description={`${project.description || project.projectId}. Saving replaces the request with exactly what is in the cart.`}
       />
-      <Composer key={request.id} project={project} mode="edit" request={request} />
+      <Composer key={`${request.id}:${seed}`} project={project} mode="edit" request={request} onReload={reload} />
     </Box>
   );
 }
@@ -231,13 +247,19 @@ function Composer({
   project,
   mode,
   request,
+  onReload,
 }: {
   project: Project;
   mode: 'create' | 'edit';
   request?: SeededRequest;
+  /** Edit only: re-read the request and re-seed this composer from it (#1597). */
+  onReload?: () => Promise<void>;
 }) {
   const navigate = useNavigate();
   const { showToast } = useToast();
+  // #1597: set when a save was refused because the lines changed under this edit (#1260).
+  const [linesConflict, setLinesConflict] = useState<string | null>(null);
+  const [reloading, setReloading] = useState(false);
 
   // Which products the picked openings still owe, lifted from the catalog so the extras lane below can
   // nudge a loose add toward the door it is scheduled for (#610).
@@ -381,8 +403,24 @@ function Composer({
   const [editRequest, { loading: saving }] = useMutation(EDIT_SHIPPING_OUT_REQUEST, {
     ...cacheUpdate,
     onCompleted: () => settle('Request updated'),
-    onError: (e) => showToast(userMessage(e), 'error'),
+    onError: (e) => {
+      // #1597: the version guard's refusal names a stale edit; a retry from here is refused the same way,
+      // so it gets a way forward instead of a toast.
+      if (isLinesVersionConflict(e)) setLinesConflict(userMessage(e));
+      else showToast(userMessage(e), 'error');
+    },
   });
+
+  const reloadRequest = async () => {
+    if (!onReload) return;
+    setReloading(true);
+    try {
+      await onReload();
+    } catch (e) {
+      showToast(userMessage(e, { reading: true }), 'error');
+      setReloading(false);
+    }
+  };
 
   const submitting = creating || saving;
 
@@ -442,6 +480,20 @@ function Composer({
   // that is only unscheduled stock never has to pass the gate or pick an opening.
   return (
     <Box sx={{ minWidth: 0, pb: 8 /* room for the last rows to scroll clear of the launcher */ }}>
+      {linesConflict && (
+        <Alert
+          severity="warning"
+          sx={{ mb: 2 }}
+          action={
+            <Button color="inherit" size="small" onClick={() => void reloadRequest()} disabled={reloading}>
+              Reload request
+            </Button>
+          }
+        >
+          {linesConflict} Reloading replaces what is in the cart with the request as it is now - your unsaved
+          changes here will be lost.
+        </Alert>
+      )}
       {/* On md+ the tables yield the drawer's width instead of losing their right edge - the Add
           column - under it; the lanes are fit-column tables, so they shrink to what is left.
           Below md the drawer overlays, as the old temporary drawer did. */}

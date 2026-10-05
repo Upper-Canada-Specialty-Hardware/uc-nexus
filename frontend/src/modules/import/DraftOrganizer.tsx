@@ -31,6 +31,7 @@ import {
 import { AlertTriangle, FileText, MoreVertical, Paperclip, X } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
 import OrderAsAutocomplete from '../../components/OrderAsAutocomplete';
+import ConfirmDialog from '../../components/ConfirmDialog';
 import InfoHeaderLabel from '../../components/InfoHeaderLabel';
 import ColumnResizeHandle from '../../components/ColumnResizeHandle';
 import { useFitColumns, type FitColumn } from '../../components/fitColumns';
@@ -40,6 +41,7 @@ import type { OverBuyRisk } from './overBuy';
 import { GET_PRIOR_ORDER_AS_VALUES } from '../../graphql/shared';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import type { DraftAttachmentType, DraftGroup, DraftInfoField } from './types';
+import { hasEdits } from './draftOps';
 import { Appear } from '../../motion';
 
 export interface GpCostCode {
@@ -215,6 +217,114 @@ export function SplitLineDialog({ ctx, targets, onClose, onConfirm }: SplitLineD
 // fixed - cqw resolves against the grid's own size container, so the row shrinks to fit a narrow card
 // instead of pushing the page sideways. The mono ramp stays one step under the UI ramp, as elsewhere.
 const FS_CELL = 'clamp(0.7rem, 1.5cqw, 0.875rem)';
+
+/**
+ * A line's unit cost (#1602). It parsed every keystroke and ignored a blank, so it could not be cleared:
+ * retyping 12.5 as 8.25 left "1" behind and saved 18.25 for every line of the product. The text is held
+ * locally and committed on leaving the field or Enter, when it is a finished number of 0 or more; a blank
+ * puts the previous cost back.
+ */
+function DraftCostField({
+  cost,
+  ariaLabel,
+  onCommit,
+}: {
+  cost: number;
+  ariaLabel: string;
+  onCommit: (next: number) => void;
+}) {
+  const [text, setText] = useState<string | null>(null);
+  const settle = () => {
+    if (text !== null && text.trim() !== '') {
+      const next = Number(text);
+      if (Number.isFinite(next) && next >= 0) onCommit(next);
+    }
+    setText(null);
+  };
+  return (
+    <TextField
+      size="small"
+      type="number"
+      value={text ?? String(cost)}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={settle}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') settle();
+      }}
+      slotProps={{
+        input: {
+          startAdornment: <InputAdornment position="start">$</InputAdornment>,
+          sx: tabularSx,
+        },
+        htmlInput: { min: 0, step: 0.01, 'aria-label': ariaLabel },
+      }}
+      sx={{ width: '100%' }}
+    />
+  );
+}
+
+/** "Remove 'Hager' and its 2 documents and notes?" - what an explicit Remove takes with it (#1602). */
+function removeDraftMessage(draft: DraftGroup): string {
+  const docs = draft.attachments?.length ?? 0;
+  const { notes, preferredDeliveryDate, costCode, vendorQuoteNumber } = draft.info;
+  const hasInfo = [notes, preferredDeliveryDate, costCode, vendorQuoteNumber ?? ''].some((v) => v.trim() !== '');
+  const parts = [
+    ...(docs > 0 ? [`its ${docs} ${docs === 1 ? 'document' : 'documents'}`] : []),
+    ...(hasInfo ? [docs > 0 ? 'details (cost code, notes, quote #)' : 'its details (cost code, notes, quote #)'] : []),
+  ];
+  return `Remove '${draft.label}'${parts.length ? ` and ${parts.join(' and ')}` : ''}?`;
+}
+
+/**
+ * A draft line's quantity (#1602). It used to commit every keystroke, so editing 10 in place to 20 passed
+ * through "0" and removed the line - and the draft with it, info and attachments included. A whole number
+ * above 0 commits as typed; a blank or a 0 is held as text until the field is left or Enter is pressed,
+ * where a blank puts the quantity back and a 0 takes the line out.
+ */
+function DraftQtyField({
+  quantity,
+  max,
+  ariaLabel,
+  onCommit,
+}: {
+  quantity: number;
+  max: number;
+  ariaLabel: string;
+  onCommit: (next: number) => void;
+}) {
+  const [text, setText] = useState<string | null>(null);
+  const settle = () => {
+    if (text !== null && text.trim() !== '' && Number(text) === 0) onCommit(0);
+    setText(null);
+  };
+  return (
+    <TextField
+      size="small"
+      type="number"
+      value={text ?? String(quantity)}
+      onChange={(e) => {
+        const raw = e.target.value;
+        const next = Number(raw);
+        if (raw.trim() !== '' && Number.isInteger(next) && next > 0) {
+          setText(null);
+          onCommit(next);
+        } else {
+          setText(raw);
+        }
+      }}
+      onBlur={settle}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') settle();
+      }}
+      slotProps={{
+        input: { sx: tabularSx },
+        htmlInput: { min: 0, max, step: 1, 'aria-label': ariaLabel },
+      }}
+      sx={{ width: '100%' }}
+    />
+  );
+}
+
 const FS_MONO = 'clamp(0.66rem, 1.4cqw, 0.8125rem)';
 const FS_HEAD = 'clamp(0.5625rem, 1.1cqw, 0.6875rem)';
 
@@ -342,6 +452,9 @@ export function DraftCard({
   // Card-level actions menu (merge / remove) and the per-row menu (move whole / split / remove), each
   // a single anchored Menu; the row menu remembers which line it was opened for.
   const [cardMenuAnchor, setCardMenuAnchor] = useState<HTMLElement | null>(null);
+  // #1602: removing a draft that holds documents or info asks first - the card stays on purpose when a
+  // line operation empties it, so its Remove is the one place those go.
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const [rowMenu, setRowMenu] = useState<{ anchor: HTMLElement; line: DraftLine } | null>(null);
 
   // #856: the ledger always fits the card - no sideways scroll - with columns a person can resize.
@@ -472,13 +585,26 @@ export function DraftCard({
           <MenuItem
             disabled={!isEmpty}
             onClick={() => {
-              onRemoveDraft(draft.id);
               setCardMenuAnchor(null);
+              if (hasEdits(draft)) setConfirmRemove(true);
+              else onRemoveDraft(draft.id);
             }}
           >
             {isEmpty ? 'Remove draft' : 'Remove (empty it first)'}
           </MenuItem>
         </Menu>
+        <ConfirmDialog
+          open={confirmRemove}
+          title="Remove draft"
+          message={removeDraftMessage(draft)}
+          confirmLabel="Remove"
+          confirmColor="error"
+          onConfirm={() => {
+            setConfirmRemove(false);
+            onRemoveDraft(draft.id);
+          }}
+          onCancel={() => setConfirmRemove(false)}
+        />
       </Box>
 
       {/* Delivery date + cost code + notes */}
@@ -762,45 +888,21 @@ export function DraftCard({
                       {/* #632: Qty is editable in place, ceilinged at the product's selection pool minus
                           what sibling drafts hold. Lowering proceeds with less; widening the scope stays
                           the selection steps' job. */}
-                      <TextField
-                        size="small"
-                        type="number"
-                        value={line.qty}
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value, 10);
-                          if (!Number.isNaN(val)) onUpdateLineQty(draft.id, line.pk, val);
-                        }}
-                        slotProps={{
-                          input: { sx: tabularSx },
-                          htmlInput: {
-                            min: 0,
-                            max:
-                              (selectionTotals.get(line.pk) ?? line.qty) -
-                              ((heldByProduct.get(line.pk) ?? line.qty) - line.qty),
-                            step: 1,
-                            'aria-label': `Quantity of ${line.productCode}`,
-                          },
-                        }}
-                        sx={{ width: '100%' }}
+                      <DraftQtyField
+                        quantity={line.qty}
+                        max={
+                          (selectionTotals.get(line.pk) ?? line.qty) -
+                          ((heldByProduct.get(line.pk) ?? line.qty) - line.qty)
+                        }
+                        ariaLabel={`Quantity of ${line.productCode}`}
+                        onCommit={(val) => onUpdateLineQty(draft.id, line.pk, val)}
                       />
                     </Box>
                     <Box className="po-cell po-cell-right po-num">
-                      <TextField
-                        size="small"
-                        type="number"
-                        value={line.unitCost}
-                        onChange={(e) => {
-                          const val = parseFloat(e.target.value);
-                          if (!Number.isNaN(val) && val >= 0) onUpdateUnitCost(line.pk, val);
-                        }}
-                        slotProps={{
-                          input: {
-                            startAdornment: <InputAdornment position="start">$</InputAdornment>,
-                            sx: tabularSx,
-                          },
-                          htmlInput: { min: 0, step: 0.01, 'aria-label': `Unit cost of ${line.productCode}` },
-                        }}
-                        sx={{ width: '100%' }}
+                      <DraftCostField
+                        cost={line.unitCost}
+                        ariaLabel={`Unit cost of ${line.productCode}`}
+                        onCommit={(val) => onUpdateUnitCost(line.pk, val)}
                       />
                     </Box>
                     <Box className="po-cell po-cell-right po-num">

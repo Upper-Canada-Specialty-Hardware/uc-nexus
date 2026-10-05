@@ -17,7 +17,7 @@ import {
 } from '@mui/material';
 import { ArrowLeft, ChevronDown, ChevronRight, FileText, Upload } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { GridColDef } from '@mui/x-data-grid';
 import { GET_PROJECT_OPENINGS, GET_REQUEST_COVERAGE } from '../../../graphql/shipping';
 import type { CoverageRow } from '../../import/composer';
@@ -253,12 +253,15 @@ export default function RequestWorkspaceScheduleTab({
 
   const selected = useMemo(() => Array.from(selectedOpenings), [selectedOpenings]);
 
+  // Set only on /shipping/requests/:id/edit - the request this composer is editing.
+  const { id: editingRequestId } = useParams<{ id?: string }>();
   const {
     data: coverageData,
     loading: coverageLoading,
     error: coverageError,
   } = useQuery<{ requestCoverage: CoverageRow[] }>(GET_REQUEST_COVERAGE, {
-    variables: { projectId, openingNumbers: selected },
+    // #1592: on the edit route the request's own lines are not "claimed by somebody else".
+    variables: { projectId, openingNumbers: selected, ...(editingRequestId ? { excludeRequestId: editingRequestId } : {}) },
     skip: selected.length === 0,
     fetchPolicy: 'cache-and-network',
   });
