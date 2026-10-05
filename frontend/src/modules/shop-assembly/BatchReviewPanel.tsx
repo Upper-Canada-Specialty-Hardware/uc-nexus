@@ -408,8 +408,9 @@ export default function BatchReviewPanel({
                 .filter((l) => l.notShopWorkReason)
                 .map((l) => (
                   <Alert key={lineKey(l)} severity="warning" sx={{ mt: 1 }}>
-                    {l.productCode} ({l.hardwareCategory}) cannot go on a batch: {l.notShopWorkReason} It stays on
-                    the opening until the opening is dismissed.
+                    {l.productCode} ({l.hardwareCategory}) cannot go on a batch: {l.notShopWorkReason} It is left
+                    off: batching the rest of this opening forfeits it, and an opening with nothing else to send can
+                    only leave the queue through Dismiss remaining.
                   </Alert>
                 ))}
               <Appear show={currentCoverage === 'PARTIAL'}>
