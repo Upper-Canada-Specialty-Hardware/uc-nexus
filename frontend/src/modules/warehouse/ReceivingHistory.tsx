@@ -27,6 +27,7 @@ import FitTable, { type FitTableColumn } from '../../components/FitTable';
 import { FIT_CELL_WRAP_SX } from '../../components/fitColumns';
 import { springs } from '../../motion';
 import { parseServerDate } from '../../utils/serverDate';
+import { useOnCompanySwitch } from '../../hooks/useDropProjectOnCompanySwitch';
 
 // UI law 1 (#1231): a short value hugs its column, and the one text column takes the slack. A long
 // product code wraps inside its cell rather than pushing the table wider.
@@ -309,6 +310,9 @@ export default function ReceivingHistory({ projects }: ReceivingHistoryProps) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState('');
+  // #1537: the picked project belongs to the company it was picked in; kept across a switch, the list read
+  // under the new company comes back empty, as if it had none.
+  useOnCompanySwitch(() => setProjectFilter(''));
   const [shown, setShown] = useState(PAGE);
 
   // cache-and-network, because this view is unmounted while the user is receiving. A receive that

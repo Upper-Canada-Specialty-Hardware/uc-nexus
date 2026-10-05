@@ -88,6 +88,9 @@ export interface AllocationLine {
   requestedQuantity: number;
   /** Project-wide free stock for this product - a pool the openings compete for, not a share. */
   availableQuantity: number;
+  /** #1540: why this line may not go on a batch (its product moved to site or By Others since the request
+   *  was raised), or null while it is still shop work. The batch refuses such a line, so it is never sent. */
+  notShopWorkReason?: string | null;
 }
 
 export interface AllocationOpening {
@@ -148,6 +151,8 @@ export function freeFor(line: AllocationLine, allocation: Allocation, lines: All
  * owed. It is both the Send input's max and the clamp its every keystroke goes through.
  */
 export function ceilingFor(line: AllocationLine, allocation: Allocation, lines: AllocationLine[]): number {
+  // #1540: a line no longer shop work takes nothing - the batch would be refused for it.
+  if (line.notShopWorkReason) return 0;
   return Math.min(line.requestedQuantity, freeFor(line, allocation, lines));
 }
 
@@ -234,7 +239,8 @@ export function buildBatchLines(
   const lines: BatchLineInput[] = [];
   for (const line of allLines(review)) {
     const quantity = allocation.get(lineKey(line)) ?? 0;
-    if (quantity <= 0) continue;
+    // #1540: never sent, whatever the box held - the server refuses a line no longer shop work.
+    if (quantity <= 0 || line.notShopWorkReason) continue;
     lines.push({
       openingNumber: line.openingNumber,
       hardwareCategory: line.hardwareCategory,
