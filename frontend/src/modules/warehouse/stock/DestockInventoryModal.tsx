@@ -170,8 +170,8 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
           }
         />
         <FormControl size="small" required>
-          <InputLabel>Source</InputLabel>
-          <Select label="Source" value={source} onChange={(e) => setSource(e.target.value)}>
+          <InputLabel id="destock-source-label">Source</InputLabel>
+          <Select labelId="destock-source-label" label="Source" value={source} onChange={(e) => setSource(e.target.value)}>
             {SOURCES.map((s) => (
               <MenuItem key={s.value} value={s.value}>
                 {s.label}

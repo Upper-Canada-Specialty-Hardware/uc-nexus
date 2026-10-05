@@ -135,6 +135,8 @@ describe('BatchReviewPanel', () => {
     expect(screen.getByText('Enter a quantity on at least one opening.')).toBeInTheDocument();
     // The #645 case: an opening with nothing free is not dispatched as an empty cart.
     expect(screen.getByText(/it cannot go on a batch/)).toBeInTheDocument();
+    // #1547: the rail's red dot is said in words too.
+    expect(screen.getByRole('button', { name: 'Go to A01, nothing free' })).toBeInTheDocument();
   });
 
   it('has no include control to disagree with the quantities (#706)', () => {

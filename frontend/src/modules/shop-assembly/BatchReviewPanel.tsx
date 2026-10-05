@@ -224,12 +224,21 @@ export default function BatchReviewPanel({
           {openings.map((opening, index) => {
             const coverage = openingCoverage(opening.lines, allocation);
             const isCurrent = index === cursor;
+            // #1547: the dot's state in words, for its title and the row's accessible name - the hue alone
+            // said nothing to a screen reader or a colour-blind manager.
+            const state = !hasAnythingFree(opening.lines)
+              ? 'nothing free'
+              : coverage === 'PARTIAL'
+                ? 'partial batch'
+                : coverage === 'FULL'
+                  ? 'fully covered'
+                  : null;
             return (
               <Box
                 key={opening.openingNumber}
                 role="button"
                 tabIndex={0}
-                aria-label={`Go to ${opening.openingNumber}`}
+                aria-label={state ? `Go to ${opening.openingNumber}, ${state}` : `Go to ${opening.openingNumber}`}
                 aria-current={isCurrent || undefined}
                 onClick={() => setCursor(index)}
                 onKeyDown={(e) => {
@@ -266,6 +275,7 @@ export default function BatchReviewPanel({
                     typed into yet gets no dot at all, so a freshly opened request is quiet. */}
                 <Box
                   aria-hidden
+                  title={state ?? undefined}
                   sx={{
                     width: 7,
                     height: 7,

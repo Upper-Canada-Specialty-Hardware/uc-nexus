@@ -116,8 +116,8 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
           </Typography>
         </Box>
         <FormControl size="small" required>
-          <InputLabel>Resolution</InputLabel>
-          <Select
+          <InputLabel id="resolve-deficiency-resolution-label">Resolution</InputLabel>
+          <Select labelId="resolve-deficiency-resolution-label"
             label="Resolution"
             value={resolution}
             onChange={(e) => setResolution(e.target.value)}

@@ -57,6 +57,7 @@ import {
   type CombinedLocationRow,
   type LocationEntry,
 } from './locationRows';
+import { openRowOnEnter } from '../../components/openRowOnEnter';
 
 interface WarehouseOption {
   id: string;
@@ -1023,6 +1024,8 @@ export default function LocationsTab() {
               initialState={{ pagination: { paginationModel: { pageSize: 25 } } }}
               disableRowSelectionOnClick
               onRowClick={handleRowClick}
+              // #1547: Enter on a focused cell opens the position, as a click does.
+              onCellKeyDown={openRowOnEnter(handleRowClick, gridProps.columns)}
               density="compact"
               getRowClassName={(p) => (isSelectedRow(p.row) ? 'row-selected' : '')}
               sx={[
