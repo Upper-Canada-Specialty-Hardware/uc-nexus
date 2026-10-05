@@ -126,7 +126,7 @@ export default function BatchReviewPanel({
   const signature = useMemo(
     () =>
       lines
-        .map((l) => `${lineKey(l)}=${l.requestedQuantity}/${l.availableQuantity}`)
+        .map((l) => `${lineKey(l)}=${l.requestedQuantity}/${l.availableQuantity}/${l.notShopWorkReason ?? ''}`)
         .sort()
         .join(';'),
     [lines],
@@ -201,7 +201,8 @@ export default function BatchReviewPanel({
 
   return (
     <Stack spacing={2}>
-      {review.integrityNote && <Alert severity="warning">{review.integrityNote}</Alert>}
+      {/* #1539: the re-upload note is shown once, by the request above this panel - which also shows it while
+          this review is loading or has failed. */}
 
       <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start', flexWrap: { xs: 'wrap', lg: 'nowrap' } }}>
         {/* The walk, made addressable. Collapsed to a rail so the detail gets the width - it is the
@@ -361,7 +362,9 @@ export default function BatchReviewPanel({
                           // Empty rather than a zero: a box showing 0 reads as an answer already
                           // given, and none has been given until the manager types one.
                           value={allocated > 0 ? allocated : ''}
-                          disabled={busy}
+                          // #1540: a line no longer shop work cannot go on a batch; the note under
+                          // the table says why.
+                          disabled={busy || Boolean(line.notShopWorkReason)}
                           onChange={(e) => {
                             const raw = Number(e.target.value);
                             const next = Number.isFinite(raw) ? Math.floor(raw) : 0;
@@ -400,6 +403,17 @@ export default function BatchReviewPanel({
                   stays waiting until stock arrives.
                 </Alert>
               </Appear>
+              {/* #1540: the batch refuses a line whose product moved to site or By Others after the
+                  request was raised, so its box is off and this says why - before the batch, not after. */}
+              {current.lines
+                .filter((l) => l.notShopWorkReason)
+                .map((l) => (
+                  <Alert key={lineKey(l)} severity="warning" sx={{ mt: 1 }}>
+                    {l.productCode} ({l.hardwareCategory}) cannot go on a batch: {l.notShopWorkReason} It is left
+                    off: batching the rest of this opening forfeits it. An opening with nothing else owed leaves the
+                    queue only with the request - Dismiss remaining, or Reject request before any batch.
+                  </Alert>
+                ))}
               <Appear show={currentCoverage === 'PARTIAL'}>
                 <Alert severity="warning" sx={{ mt: 1 }}>
                   Batching this opening sends what is here and forfeits the rest - the batch is the
