@@ -271,6 +271,16 @@ describe('PODetailModal', () => {
     expect(onRefetch).toHaveBeenCalled();
   });
 
+  // #1572: the PO sync writes GP's freight back on every pass, so a registered PO's shipping cost is GP's.
+  it('shows shipping cost read-only on a registered PO, held in GP; tariffs stay editable', () => {
+    renderModal(registeredPo);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+
+    expect(screen.getByLabelText('Shipping Costs')).toBeDisabled();
+    expect(screen.getByText('Held in GP - change it there')).toBeInTheDocument();
+    expect(screen.getByLabelText('Tariffs')).toBeEnabled();
+  });
+
   it('edits the expected date (not preferred) once the PO is GP-registered', async () => {
     const calls: Record<string, unknown>[] = [];
     const mocks: MockedResponse[] = [

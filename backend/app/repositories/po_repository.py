@@ -1311,8 +1311,10 @@ def get_po_statistics(
 
 # Sortable columns for the server-driven register (gp-owned-po mirror). Client sort keys map here; an
 # unknown key falls back to created_at so a bad param can never 500.
+# #1568: "poNumber" is the PO / Request # column, which shows the request number on a draft (no PO number
+# yet), so it sorts on that same value - sorting on po_number alone put every draft in one unordered block.
 _PAGE_SORT_COLUMNS = {
-    "poNumber": PurchaseOrder.po_number,
+    "poNumber": func.coalesce(PurchaseOrder.po_number, PurchaseOrder.request_number),
     "status": PurchaseOrder.status,
     "orderedAt": PurchaseOrder.ordered_at,
     "createdAt": PurchaseOrder.created_at,
@@ -1376,7 +1378,9 @@ def get_purchase_orders_page(
     total = session.scalar(_with_project(select(func.count()).select_from(PurchaseOrder)).where(*filters)) or 0
 
     col = _PAGE_SORT_COLUMNS.get(sort_field, PurchaseOrder.created_at)
-    ordering = col.desc() if sort_dir == "desc" else col.asc()
+    # #1568: empty values last in either direction - Postgres puts NULLs first on a descending sort, so
+    # "Order Date, newest first" opened on every never-ordered draft.
+    ordering = (col.desc() if sort_dir == "desc" else col.asc()).nulls_last()
     limit = max(1, min(int(limit or 50), _MAX_PAGE_LIMIT))
     offset = max(0, int(offset or 0))
     rows = list(
@@ -1523,7 +1527,16 @@ def update_po(
         po.notes = notes if notes.strip() else None
     # Issue #156: null clears the value, 0 is a valid entered value - so these use the _UNSET sentinel.
     if shipping_cost is not _UNSET:
-        po.shipping_cost = _coerce_order_cost(shipping_cost, "shipping_cost")
+        new_shipping = _coerce_order_cost(shipping_cost, "shipping_cost")
+        # #1572: once registered, shipping cost is GP's freight - the PO sync writes GP's value back on
+        # every pass, so a Nexus edit was saved and then silently undone. Only a change is refused, so
+        # an older tab that still sends the unchanged value keeps saving.
+        if po.status != POStatus.DRAFT and new_shipping != po.shipping_cost:
+            raise ValidationError(
+                "Shipping cost on a registered PO is held in GP - change it there; Nexus picks it up on the next sync.",
+                field="shipping_cost",
+            )
+        po.shipping_cost = new_shipping
     if tariff_amount is not _UNSET:
         po.tariff_amount = _coerce_order_cost(tariff_amount, "tariff_amount")
 

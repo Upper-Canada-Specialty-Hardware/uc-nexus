@@ -131,7 +131,9 @@ export default function InventoryCorrectionModal({
     { key: 'overrideQuantity', label: 'Override Quantity' },
     { key: 'moveLocation', label: 'Move Location' },
     { key: 'markUnlocated', label: 'Mark Unlocated' },
-    { key: 'assignLocation', label: 'Assign Location' },
+    // #1567: assigning is put-away, for a row with no shelf; a shelved row is moved, and the server refuses
+    // an assign onto one that is already located.
+    ...(hasLocation(item) ? [] : [{ key: 'assignLocation' as const, label: 'Assign Location' }]),
   ];
 
   // Reset fields when correction type changes
