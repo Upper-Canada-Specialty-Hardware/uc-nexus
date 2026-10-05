@@ -9,7 +9,6 @@ interface WizardContextType {
   updateFormData: (key: string, value: unknown) => void;
   setTotalSteps: (total: number) => void;
   reset: () => void;
-  isActive: boolean;
 }
 
 const WizardContext = createContext<WizardContextType | undefined>(undefined);
@@ -40,7 +39,6 @@ export function WizardProvider({ children }: { children: ReactNode }) {
         updateFormData,
         setTotalSteps,
         reset,
-        isActive: totalSteps > 0,
       }}
     >
       {children}

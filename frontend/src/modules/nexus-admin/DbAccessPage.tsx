@@ -419,7 +419,7 @@ export default function DbAccessPage() {
           rather than on a blank grid; the backend's FEATURE_DISABLED message reads plainly. */}
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          {userMessage(error)}
+          {userMessage(error, { reading: true })}
         </Alert>
       )}
 

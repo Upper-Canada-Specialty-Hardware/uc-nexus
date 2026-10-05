@@ -376,7 +376,7 @@ export default function StockPoolView() {
         </FormControl>
       </Stack>
 
-      {error && <Alert severity="error">{userMessage(error)}</Alert>}
+      {error && <Alert severity="error">{userMessage(error, { reading: true })}</Alert>}
 
       {rows.length === 0 && !loading ? (
         <Card variant="outlined" sx={{ maxWidth: 620 }}>

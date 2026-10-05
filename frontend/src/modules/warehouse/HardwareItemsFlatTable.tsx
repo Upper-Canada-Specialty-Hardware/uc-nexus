@@ -214,7 +214,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
     );
   }
   if (error) {
-    return <Alert severity="error">{userMessage(error)}</Alert>;
+    return <Alert severity="error">{userMessage(error, { reading: true })}</Alert>;
   }
   if (rows.length === 0) {
     return <Alert severity="info">No inventory on hand.</Alert>;

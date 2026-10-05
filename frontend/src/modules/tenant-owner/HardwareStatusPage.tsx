@@ -142,7 +142,7 @@ export default function HardwareStatusPage() {
 
       {projectsError && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          Error loading projects: {userMessage(projectsError)}
+          Error loading projects: {userMessage(projectsError, { reading: true })}
         </Alert>
       )}
 
@@ -162,7 +162,7 @@ export default function HardwareStatusPage() {
       )}
 
       {hasSelection && statusError && (
-        <Alert severity="error">Error loading hardware status: {userMessage(statusError)}</Alert>
+        <Alert severity="error">Error loading hardware status: {userMessage(statusError, { reading: true })}</Alert>
       )}
 
       {hasSelection && !statusError && statusLoading && !statusData && (

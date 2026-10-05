@@ -412,3 +412,56 @@ def test_another_companys_project_is_not_named_in_the_scope(signed_in, db_sessio
     page = result.data["purchaseOrdersPage"]
     assert (page["scopeProjectNumber"], page["scopeProjectDescription"]) == (None, None)
     assert page["rows"] == []
+
+
+# --- #1568: the PO / Request # column sorts on the number it shows, and empty values sort last ---------
+
+
+def _make_sortable(session, *, tag, po_number=None, request_number=None, ordered_at=None):
+    po = PurchaseOrder(
+        id=uuid.uuid4(),
+        po_number=po_number,
+        request_number=request_number,
+        status=POStatus.GP_REGISTERED if po_number else POStatus.DRAFT,
+        gp_company="TUBC",
+        vendor_name_snapshot=f"Sortco {tag}",
+        company="TUBC",
+        ordered_at=ordered_at,
+    )
+    session.add(po)
+    session.flush()
+    return po
+
+
+def _shown(po):
+    return po.po_number or po.request_number
+
+
+def test_request_number_column_sorts_drafts_and_pos_by_the_number_shown(db_session):
+    tag = uuid.uuid4().hex[:8]
+    # Drafts and registered POs interleaved by the number shown, so a block of drafts can't pass as order.
+    _make_sortable(db_session, tag=tag, po_number=f"S{tag}-B")
+    _make_sortable(db_session, tag=tag, request_number=f"S{tag}-C")
+    _make_sortable(db_session, tag=tag, request_number=f"S{tag}-A")
+    _make_sortable(db_session, tag=tag, po_number=f"S{tag}-D")
+
+    rows, _c, _t = po_repository.get_purchase_orders_page(
+        db_session, search=f"Sortco {tag}", sort_field="poNumber", sort_dir="desc"
+    )
+
+    assert [_shown(r) for r in rows] == [f"S{tag}-D", f"S{tag}-C", f"S{tag}-B", f"S{tag}-A"]
+
+
+def test_newest_first_puts_ordered_pos_before_never_ordered_drafts(db_session):
+    from datetime import date
+
+    tag = uuid.uuid4().hex[:8]
+    draft = _make_sortable(db_session, tag=tag, request_number=f"S{tag}-R")
+    older = _make_sortable(db_session, tag=tag, po_number=f"S{tag}-1", ordered_at=date(2026, 1, 5))
+    newer = _make_sortable(db_session, tag=tag, po_number=f"S{tag}-2", ordered_at=date(2026, 3, 5))
+
+    for direction, expected in (("desc", [newer, older, draft]), ("asc", [older, newer, draft])):
+        rows, _c, _t = po_repository.get_purchase_orders_page(
+            db_session, search=f"Sortco {tag}", sort_field="orderedAt", sort_dir=direction
+        )
+        assert [r.id for r in rows] == [p.id for p in expected], direction
