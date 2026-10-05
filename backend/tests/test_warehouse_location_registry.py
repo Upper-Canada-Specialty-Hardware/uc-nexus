@@ -564,3 +564,75 @@ def test_a_transfer_is_checked_against_the_destination_warehouse(db_session):
         performed_by="wh",
     )
     assert il.quantity == 6
+
+
+# --- put-away of a row already shelved; unlocate folds (#1567) ----------------------------------
+
+
+def test_put_away_of_an_inventory_row_already_shelved_is_refused(db_session):
+    """Two workers on one stale put-away list: the second must not silently move what the first shelved."""
+    project = make_project(db_session)
+    first, second = _aisle(), _aisle()
+    define_location(db_session, None, first, "R1", "B1")
+    define_location(db_session, None, second, "R1", "B1")
+    il = make_il(db_session, project, aisle=first, row="R1", bay="B1")
+
+    with pytest.raises(ConflictError) as excinfo:
+        warehouse_repository.assign_inventory_location(db_session, il.id, second, "R1", "B1", performed_by="wh")
+
+    assert f"already put away at {first}-R1-B1" in excinfo.value.message
+    assert il.aisle == first, "nothing moved"
+
+
+def test_a_partial_put_away_of_a_row_already_shelved_is_refused_at_the_split(db_session):
+    """The partial path splits first: it must not carve units off a row another worker already shelved."""
+    project = make_project(db_session)
+    first = _aisle()
+    define_location(db_session, None, first, "R1", "B1")
+    il = make_il(db_session, project, aisle=first, row="R1", bay="B1")
+    before = il.quantity
+
+    with pytest.raises(ConflictError) as excinfo:
+        warehouse_repository.split_inventory_location(db_session, il.id, 1, performed_by="wh")
+
+    assert f"already put away at {first}-R1-B1" in excinfo.value.message
+    assert il.quantity == before, "nothing split off"
+
+
+def test_put_away_of_a_stock_row_already_shelved_is_refused(db_session):
+    first, second = _aisle(), _aisle()
+    define_location(db_session, None, first, "R1", "B1")
+    define_location(db_session, None, second, "R1", "B1")
+    si = make_stock_item(db_session, quantity=5, aisle=first, row="R1", bay="B1")
+
+    with pytest.raises(ConflictError) as excinfo:
+        stock_repository.assign_stock_item_location(
+            db_session, stock_item_id=si.id, aisle=second, row="R1", bay="B1", performed_by="wh"
+        )
+
+    assert f"already put away at {first}-R1-B1" in excinfo.value.message
+
+
+def test_unlocating_a_stock_row_folds_into_the_unlocated_row_of_its_key(db_session):
+    """Unlocating beside an unlocated row of the same product, kind and price used to leave two."""
+    from app.models.stock_item import StockItem
+
+    code = f"HG-{uuid.uuid4().hex[:6]}"
+    aisle = _aisle()
+    define_location(db_session, None, aisle, "R1", "B1")
+    loose = make_stock_item(db_session, quantity=4, code=code)
+    shelved = make_stock_item(db_session, quantity=3, code=code, aisle=aisle, row="R1", bay="B1")
+    shelved_id = shelved.id
+
+    result = stock_repository.mark_stock_item_unlocated(db_session, stock_item_id=shelved_id, performed_by="wh")
+
+    assert result.id == loose.id
+    assert result.quantity == 7
+    db_session.expire_all()
+    rows = db_session.query(StockItem).filter(StockItem.product_code == code, StockItem.quantity > 0).all()
+    assert [(r.aisle, r.quantity) for r in rows] == [(None, 7)]
+
+
+def test_unlocating_a_stock_row_that_is_gone_is_not_found(db_session):
+    with pytest.raises(NotFoundError):
+        stock_repository.mark_stock_item_unlocated(db_session, stock_item_id=uuid.uuid4(), performed_by="wh")

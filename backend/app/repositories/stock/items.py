@@ -11,6 +11,7 @@ from app.models.enums import AuditAction, AuditEntityType, PoolKind
 from app.models.stock_item import StockItem
 from app.repositories.warehouse import ensure_registered_location, location_detail, normalize_location_value
 from app.repositories.warehouse.inventory import check_expected_quantity
+from app.repositories.warehouse.locations import refuse_if_already_located
 
 from .common import (
     _find_or_create_stock_row,
@@ -204,14 +205,24 @@ def move_stock_location(
 
 
 def mark_stock_item_unlocated(session: Session, *, stock_item_id: uuid.UUID, performed_by: str) -> StockItem:
-    """Clear the aisle/row/bay on a StockItem."""
+    """Clear the aisle/row/bay on a StockItem.
+
+    #1567: taking a row off its shelf is a shelf move like any other - onto "unlocated" - so it is locked
+    with the warehouse's unlocated row of the same key, in id order, and folds into it (#1377). Read
+    unlocked, a row folded away by a concurrent move failed the flush as a generic error; written in place,
+    an unlocated row of the same product at the same price was left beside it twice.
+    """
     if not performed_by:
         raise ValidationError("performed_by is required", field="performed_by")
-    si = get_stock_item(session, stock_item_id)
-    old = location_detail(si.aisle, si.row, si.bay, si.warehouse_id)
-    si.aisle = None
-    si.row = None
-    si.bay = None
+    si = lock_for_shelf_move(session, stock_item_id, aisle=None, row=None, bay=None)
+    detail = {"fromLocation": location_detail(si.aisle, si.row, si.bay, si.warehouse_id)}
+    target = fold_into_same_key_row(session, si, aisle=None, row=None, bay=None)
+    if target is None:
+        si.aisle = None
+        si.row = None
+        si.bay = None
+    else:
+        detail["foldedIntoStockItemId"] = str(target.id)
     _log_audit_event(
         session,
         project_id=None,
@@ -219,9 +230,9 @@ def mark_stock_item_unlocated(session: Session, *, stock_item_id: uuid.UUID, per
         entity_id=si.id,
         action=AuditAction.UNLOCATE,
         performed_by=performed_by,
-        detail={"fromLocation": old},
+        detail=detail,
     )
-    return si
+    return target or si
 
 
 def assign_stock_item_location(
@@ -242,6 +253,8 @@ def assign_stock_item_location(
     _validate_location_fields(aisle, row, bay)
     # Locked with the same-key row on the target shelf, in id order (#1401).
     si = lock_for_shelf_move(session, stock_item_id, aisle=aisle, row=row, bay=bay)
+    # #1567: a row already on a shelf was put away by someone else; moving it is Move's job.
+    refuse_if_already_located(si.aisle, si.row, si.bay)
     ensure_registered_location(session, si.warehouse_id, aisle, row, bay)
     detail = {"toLocation": location_detail(aisle, row, bay, si.warehouse_id)}
     # Put away onto a shelf that already holds this row's key: fold into it (#1377).

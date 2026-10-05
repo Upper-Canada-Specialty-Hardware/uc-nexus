@@ -673,15 +673,28 @@ def mark_inventory_unlocated(session: Session, inv_id: uuid.UUID, *, performed_b
     return il
 
 
+def refuse_if_already_located(aisle: str | None, row: str | None, bay: str | None) -> None:
+    """Put-away is for a row with no shelf; one already on a shelf was put away by someone else (#1567)."""
+    if aisle is None:
+        return
+    label = "-".join(p for p in (aisle, row, bay) if p)
+    raise ConflictError(f"This was already put away at {label} - refresh to see it.")
+
+
 def assign_inventory_location(
     session: Session, inv_id: uuid.UUID, aisle: str, row: str, bay: str, *, performed_by: str
 ) -> InventoryLocationModel:
     """Assign aisle/row/bay to an InventoryLocation."""
-    il = session.get(InventoryLocationModel, inv_id)
-    if il is None:
-        raise NotFoundError(f"Inventory location {inv_id} not found")
+    from app.services.locking import lock_inventory_combo
 
     aisle, row, bay = _normalize_and_validate_location_fields(aisle, row, bay)
+    # #1567: locked, and refused once it is on a shelf. Two workers on the same put-away list both saw the
+    # row unlocated; the second silently moved hardware the first had already shelved, so Nexus named the
+    # wrong bin. Moving a shelved row is Move's job, and says so.
+    il = lock_inventory_combo(session, inv_id)
+    if il is None:
+        raise NotFoundError(f"Inventory location {inv_id} not found")
+    refuse_if_already_located(il.aisle, il.row, il.bay)
     ensure_registered_location(session, il.warehouse_id, aisle, row, bay)
 
     il.aisle = aisle
@@ -725,6 +738,8 @@ def split_inventory_location(
     il = lock_inventory_combo(session, inv_id)
     if il is None:
         raise NotFoundError(f"Inventory location {inv_id} not found")
+    # #1567: a partial put-away splits first; a row someone else already shelved must not be split off it.
+    refuse_if_already_located(il.aisle, il.row, il.bay)
     deficient = il.deficient_quantity or 0
     if quantity >= il.quantity:
         # Equal is refused too: splitting off everything is a no-op that leaves an empty row behind.

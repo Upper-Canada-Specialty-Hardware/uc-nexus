@@ -879,15 +879,19 @@ export default function PODetailModal({
                 slotProps={{ inputLabel: { shrink: true } }}
               />
             )}
-            <Stack direction="row" spacing={2}>
+            <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: 'wrap' }}>
+              {/* #1572: once registered, shipping cost is GP's freight - the PO sync writes GP's value back, so
+                  an edit here would be silently undone. Tariffs have no GP column and stay editable. */}
               <TextField
                 label="Shipping Costs"
                 value={shippingCost}
                 onChange={(e) => setShippingCost(e.target.value)}
                 size="small"
                 type="number"
+                disabled={po.status !== 'DRAFT'}
+                helperText={po.status !== 'DRAFT' ? 'Held in GP - change it there' : undefined}
                 slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
-                sx={{ width: 200 }}
+                sx={{ width: 200, maxWidth: '100%' }}
               />
               <TextField
                 label="Tariffs"
@@ -896,7 +900,7 @@ export default function PODetailModal({
                 size="small"
                 type="number"
                 slotProps={{ htmlInput: { min: 0, step: 0.01 } }}
-                sx={{ width: 200 }}
+                sx={{ width: 200, maxWidth: '100%' }}
               />
             </Stack>
             <TextField
