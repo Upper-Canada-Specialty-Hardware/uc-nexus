@@ -16,6 +16,7 @@ import {
 } from '@mui/material';
 import { Search } from 'lucide-react';
 import { useQuery } from '@apollo/client/react';
+import LoadError from '../../components/LoadError';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 import DataTable from '../../components/DataTable';
@@ -163,6 +164,7 @@ export default function ReceivingPage() {
     data: openPOsData,
     loading: openPOsLoading,
     error: openPOsError,
+    refetch: refetchOpenPOs,
   } = useQuery<{ openPosSummary: OpenPO[] }>(GET_OPEN_POS_SUMMARY, { skip: !showReceive });
 
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
@@ -171,6 +173,7 @@ export default function ReceivingPage() {
     data: recentData,
     loading: recentLoading,
     error: recentError,
+    refetch: refetchRecent,
   } = useQuery<{ recentReceiveRecords: RecentReceiveRecord[] }>(GET_RECENT_RECEIVE_RECORDS, {
     variables: { limit: 10 },
     skip: !showReceive,
@@ -182,6 +185,7 @@ export default function ReceivingPage() {
     data: backOrderData,
     loading: backOrderLoading,
     error: backOrderError,
+    refetch: refetchBackOrder,
   } = useQuery<{ backOrderedItems: BackOrderedItem[] }>(GET_BACK_ORDERED_ITEMS, {
     variables: { projectId: null },
     skip: !showReceive,
@@ -191,7 +195,7 @@ export default function ReceivingPage() {
   // rather than mine, because the point of the chip is to stop a SECOND person re-counting a
   // delivery that is already in the queue. Scalars only - this needs a count per PO, not every
   // line and rack row of every draft in the system.
-  const { data: pendingDraftsData } = useQuery<{
+  const { data: pendingDraftsData, error: pendingDraftsError } = useQuery<{
     receiveDrafts: { id: string; poId: string; totalQuantity: number }[];
   }>(GET_PENDING_DRAFT_SUMMARIES, {
     skip: !showReceive,
@@ -504,8 +508,19 @@ export default function ReceivingPage() {
         </Box>
       )}
       {openPOsError && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          Error loading purchase orders: {openPOsError.message}
+        <LoadError
+          what="the purchase orders awaiting receipt"
+          error={openPOsError}
+          onRetry={() => refetchOpenPOs()}
+          sx={{ mb: 2 }}
+        />
+      )}
+      {/* #1582: without the pending drafts there is no "already counted" mark, and a second worker could
+          count a delivery that is already in the queue. */}
+      {pendingDraftsError && !pendingDraftsData && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          Couldn&apos;t check which deliveries are already counted - before counting a PO, look in Approvals
+          for a pending draft.
         </Alert>
       )}
       {!openPOsLoading && !openPOsError && poRows.length === 0 && (
@@ -571,9 +586,12 @@ export default function ReceivingPage() {
         </Box>
       )}
       {backOrderError && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          Error loading back-ordered items: {backOrderError.message}
-        </Alert>
+        <LoadError
+          what="the back-ordered items"
+          error={backOrderError}
+          onRetry={() => refetchBackOrder()}
+          sx={{ mb: 2 }}
+        />
       )}
       {!backOrderLoading && !backOrderError && backOrderRows.length === 0 && (
         <Alert severity="info" sx={{ mb: 3 }}>
@@ -606,9 +624,7 @@ export default function ReceivingPage() {
         </Box>
       )}
       {recentError && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          Error loading recent activity: {recentError.message}
-        </Alert>
+        <LoadError what="the recent activity" error={recentError} onRetry={() => refetchRecent()} sx={{ mb: 2 }} />
       )}
       {!recentLoading && !recentError && recentRecords.length === 0 && (
         <Typography color="text.secondary">No recent receiving activity.</Typography>
