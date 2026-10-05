@@ -280,3 +280,26 @@ def test_a_shop_batch_refuses_a_product_that_is_no_longer_shop_hardware(db_sessi
 
     assert exc.value.field == "lines"
     assert "not shop hardware" in str(exc.value)
+    # #1540: the screen has no per-opening dismiss, so the refusal only says what the manager can do there.
+    assert "Take the line off the batch." in str(exc.value)
+    assert "Dismiss the opening" not in str(exc.value)
+
+
+def test_the_batch_review_flags_a_line_that_is_no_longer_shop_work(db_session):
+    """#1540: the review reads the batch's own rule, so the line's Send box is off with the reason rather
+    than the batch being refused after it is composed. A line still shop work carries no reason."""
+    project = _project(db_session)
+    _finalize(db_session, project, {"HG-100": Classification.SHOP_HARDWARE, "HG-200": Classification.SHOP_HARDWARE})
+    req = _waiting_request(db_session, project, ["HG-100", "HG-200"])
+    db_session.execute(
+        update(HardwareItem)
+        .where(HardwareItem.project_id == project.id, HardwareItem.product_code == "HG-100")
+        .values(classification=Classification.SITE_HARDWARE)
+    )
+    db_session.flush()
+
+    review = shop_assembly_repository.get_allocation_review(db_session, req.id)
+
+    reasons = {line["product_code"]: line["not_shop_work_reason"] for line in review["openings"][0]["lines"]}
+    assert reasons["HG-200"] is None
+    assert reasons["HG-100"] is not None and "not shop hardware" in reasons["HG-100"]

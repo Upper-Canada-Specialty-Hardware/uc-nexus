@@ -266,6 +266,34 @@ def _schedule_facts(
     return scheduled, by_classification, by_others_products(session, project_id)
 
 
+def not_shop_work_reason(
+    key: tuple[str, str, str],
+    by_classification: dict[tuple[str, str, str], dict[str | None, int]],
+    by_others: set[tuple[str, str]],
+) -> str | None:
+    """#1425's rule for one (opening, category, code), as the reason it fails, or None while it holds: the
+    product is not By Others, and the classification covering most of its units on that opening is
+    SHOP_HARDWARE - the composer's rule. Shared by the refusals below and the batch review (#1540), so the
+    screen and the server cannot disagree about which lines may go to the shop."""
+    from app.repositories.request_composer import dominant_classification
+
+    if (key[1], key[2]) in by_others:
+        return "this product is By Others on this project, so it is not assembled in the shop."
+    if dominant_classification(by_classification.get(key, {})) != Classification.SHOP_HARDWARE:
+        return "this product is not shop hardware on this opening, so it cannot go to the shop."
+    return None
+
+
+def _has_shop_work_evidence(
+    key: tuple[str, str, str],
+    by_classification: dict[tuple[str, str, str], dict[str | None, int]],
+    by_others: set[tuple[str, str]],
+) -> bool:
+    """#1442: a line is judged only on evidence - schedule rows for it on that opening, or a By Others
+    product. One whose opening holds no rows for it any more is the schedule replacement's business (#342)."""
+    return key in by_classification or (key[1], key[2]) in by_others
+
+
 def _refuse_if_not_shop_work(
     key: tuple[str, str, str],
     by_classification: dict[tuple[str, str, str], dict[str | None, int]],
@@ -274,22 +302,9 @@ def _refuse_if_not_shop_work(
     then: str,
     field: str = "items",
 ) -> None:
-    """#1425's rule for one (opening, category, code): the product is not By Others, and the
-    classification covering most of its units on that opening is SHOP_HARDWARE - the composer's rule."""
-    from app.repositories.request_composer import dominant_classification
-
-    if (key[1], key[2]) in by_others:
-        raise ValidationError(
-            f"{key[0]} {key[1]} {key[2]}: this product is By Others on this project, so it is not "
-            f"assembled in the shop. {then}",
-            field=field,
-        )
-    if dominant_classification(by_classification.get(key, {})) != Classification.SHOP_HARDWARE:
-        raise ValidationError(
-            f"{key[0]} {key[1]} {key[2]}: this product is not shop hardware on this opening, so it "
-            f"cannot go to the shop. {then}",
-            field=field,
-        )
+    reason = not_shop_work_reason(key, by_classification, by_others)
+    if reason is not None:
+        raise ValidationError(f"{key[0]} {key[1]} {key[2]}: {reason} {then}", field=field)
 
 
 # ---------------------------------------------------------------------------
@@ -511,8 +526,8 @@ def get_allocation_review(session: Session, request_id: uuid.UUID) -> dict:
     are competing for one pool, and the review has to show that competition rather than hide it
     behind a pre-split number. Whoever composes the batch spends the pool down as they walk.
 
-    Three statements regardless of how many openings the request holds: the request (with its
-    relationships), then the availability aggregate's own two.
+    A fixed number of statements regardless of how many openings the request holds: the request (with
+    its relationships), the availability aggregate's own two, and the schedule facts (#1540).
     """
     from app.repositories import warehouse as warehouse_repository
 
@@ -530,6 +545,16 @@ def get_allocation_review(session: Session, request_id: uuid.UUID) -> dict:
 
     combos = {(i.hardware_category, i.product_code) for lines in lines_by_opening.values() for i in lines}
     available = warehouse_repository.get_available_quantities(session, request.project_id, combos)
+    # #1540: the batch refuses a line that is no longer shop work (#1442); the review flags it first, from
+    # the same facts read the same way - one grouped read for every pending opening - so its Send box is
+    # off with the reason instead of being refused after the manager has composed the batch.
+    _scheduled, by_classification, by_others = _schedule_facts(session, request.project_id, pending_numbers)
+
+    def _reason(item: ShopAssemblyRequestItem) -> str | None:
+        key = (item.opening_number, item.hardware_category, item.product_code)
+        if not _has_shop_work_evidence(key, by_classification, by_others):
+            return None
+        return not_shop_work_reason(key, by_classification, by_others)
 
     return {
         "request": request,
@@ -543,6 +568,7 @@ def get_allocation_review(session: Session, request_id: uuid.UUID) -> dict:
                         "product_code": item.product_code,
                         "requested_quantity": item.requested_quantity,
                         "available_quantity": available.get((item.hardware_category, item.product_code), 0),
+                        "not_shop_work_reason": _reason(item),
                     }
                     for item in sorted(
                         lines_by_opening[opening.opening_number],
@@ -618,13 +644,13 @@ def create_shop_assembly_batch(
         session, request.project_id, {key[0] for key in allocations}
     )
     for key in sorted(allocations):
-        if key not in by_classification and (key[1], key[2]) not in by_others:
+        if not _has_shop_work_evidence(key, by_classification, by_others):
             continue
         _refuse_if_not_shop_work(
             key,
             by_classification,
             by_others,
-            then="Dismiss the opening or take the line off the batch.",
+            then="Take the line off the batch.",
             field="lines",
         )
 

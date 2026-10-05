@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Box,
   Button,
@@ -59,15 +59,21 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
   const [row, setRow] = useState('');
   const [bay, setBay] = useState('');
   const { showToast } = useToast();
+  // #1548: Enter and a click in the same moment must not send it twice; set before `loading` re-renders.
+  const inFlight = useRef(false);
 
   const [mutate, { loading, error }] = useMutation(DESTOCK_INVENTORY, {
     refetchQueries: WAREHOUSE_REFETCH_QUERIES,
     awaitRefetchQueries: true,
     onCompleted: () => {
+      inFlight.current = false;
       showToast('Inventory destocked to the stock pool', 'success');
       onSuccess();
     },
-    onError: (err) => showToast(err.message, 'error'),
+    onError: (err) => {
+      inFlight.current = false;
+      showToast(err.message, 'error');
+    },
   });
 
   const q = Number(quantity);
@@ -92,6 +98,17 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
     q <= maxQty &&
     destockCost !== null &&
     (!overrideLoc || isDefinedPick);
+  // #1548 (#981): a dead Destock says what it is waiting for. A row with nothing to move already says so on
+  // the quantity, and the override keeps its own caption.
+  const qtyOk = Number.isInteger(q) && q >= 1 && q <= maxQty;
+  const blockedReason =
+    maxQty === 0
+      ? null
+      : !qtyOk
+        ? `Enter a whole number from 1 to ${maxQty}.`
+        : destockCost === null
+          ? 'Choose what the units cost in the stock pool.'
+          : null;
 
   // A sound-unit destock shrinks the combo's sound on-hand (a DEFICIENT_SWAP nets to zero: it pulls
   // only already-condemned units). Surface what active requests have reserved, and warn when the
@@ -110,7 +127,8 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
         : reservation.soundOnHand - destockQty;
 
   const handleSubmit = () => {
-    if (!valid) return;
+    if (!valid || loading || inFlight.current) return;
+    inFlight.current = true;
     mutate({
       variables: {
         input: {
@@ -132,10 +150,14 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
       open
       onClose={onClose}
       title={`Destock ${inventoryLocation.productCode} to stock pool`}
+      // #1548: the primary action is the form's submit, so Enter in the quantity does what the button does,
+      // and is refused whenever the button is disabled.
+      onSubmit={handleSubmit}
+      submitDisabled={!valid || loading}
       actions={
         <>
           <Button onClick={onClose}>Cancel</Button>
-          <Button variant="contained" onClick={handleSubmit} disabled={!valid || loading}>
+          <Button type="submit" variant="contained" disabled={!valid || loading}>
             Destock
           </Button>
         </>
@@ -160,6 +182,8 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
           value={quantity}
           onChange={(e) => setQuantity(e.target.value)}
           required
+          autoFocus
+          error={maxQty > 0 && !qtyOk}
           inputProps={{ min: 1, max: maxQty }}
           helperText={
             maxQty === 0
@@ -206,6 +230,11 @@ export default function DestockInventoryModal({ inventoryLocation, onClose, onSu
               </Typography>
             )}
           </Stack>
+        )}
+        {blockedReason && !loading && (
+          <Typography variant="body2" color="text.secondary" data-testid="blocked-reason">
+            {blockedReason}
+          </Typography>
         )}
       </Stack>
     </Modal>

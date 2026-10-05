@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Box,
   Button,
@@ -51,15 +51,21 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
   // pool row's units are already in the pool at their own price, so it never asks.
   const [destockCost, setDestockCost] = useState<DestockCost | null>(null);
   const { showToast } = useToast();
+  // #1548: Enter and a click in the same moment must not send it twice; set before `loading` re-renders.
+  const inFlight = useRef(false);
 
   const [mutate, { loading, error }] = useMutation(RESOLVE_DEFICIENCY, {
     refetchQueries: WAREHOUSE_REFETCH_QUERIES,
     awaitRefetchQueries: true,
     onCompleted: () => {
+      inFlight.current = false;
       showToast('Deficiency resolved', 'success');
       onSuccess();
     },
-    onError: (err) => showToast(err.message, 'error'),
+    onError: (err) => {
+      inFlight.current = false;
+      showToast(err.message, 'error');
+    },
   });
 
   const q = Number(quantity);
@@ -71,9 +77,19 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
     q <= row.deficientQuantity &&
     (!needsRma || rma.trim().length > 0) &&
     (!needsCost || destockCost !== null);
+  // #1548 (#981): a dead Resolve says what it is waiting for.
+  const qtyOk = Number.isInteger(q) && q >= 1 && q <= row.deficientQuantity;
+  const blockedReason = !qtyOk
+    ? `Enter a whole number from 1 to ${row.deficientQuantity}.`
+    : needsCost && destockCost === null
+      ? 'Choose what the units cost in the stock pool.'
+      : needsRma && !rma.trim()
+        ? 'Enter the RMA reference for the return to vendor.'
+        : null;
 
   const handleSubmit = () => {
-    if (!valid) return;
+    if (!valid || loading || inFlight.current) return;
+    inFlight.current = true;
     mutate({
       variables: {
         input: {
@@ -95,10 +111,14 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
       open
       onClose={onClose}
       title={`Resolve deficient ${row.productCode}`}
+      // #1548: the primary action is the form's submit, so Enter in the quantity does what the button does,
+      // and is refused whenever the button is disabled.
+      onSubmit={handleSubmit}
+      submitDisabled={!valid || loading}
       actions={
         <>
           <Button onClick={onClose}>Cancel</Button>
-          <Button variant="contained" onClick={handleSubmit} disabled={!valid || loading}>
+          <Button type="submit" variant="contained" disabled={!valid || loading}>
             Resolve
           </Button>
         </>
@@ -136,6 +156,8 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
           value={quantity}
           onChange={(e) => setQuantity(e.target.value)}
           required
+          autoFocus
+          error={!qtyOk}
           inputProps={{ min: 1, max: row.deficientQuantity }}
         />
         <TextField
@@ -153,6 +175,11 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
             required
             helperText="Required for return-to-vendor"
           />
+        )}
+        {blockedReason && !loading && (
+          <Typography variant="body2" color="text.secondary" data-testid="blocked-reason">
+            {blockedReason}
+          </Typography>
         )}
       </Stack>
     </Modal>

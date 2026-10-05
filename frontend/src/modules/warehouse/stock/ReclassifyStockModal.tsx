@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Box, Button, Stack, TextField, Alert, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
@@ -20,15 +20,21 @@ export default function ReclassifyStockModal({ item, onClose, onSuccess }: Props
   const [quantity, setQuantity] = useState<string>(String(item.available));
   const [reason, setReason] = useState('');
   const { showToast } = useToast();
+  // #1548: Enter and a click in the same moment must not send it twice; set before `loading` re-renders.
+  const inFlight = useRef(false);
 
   const [mutate, { loading, error }] = useMutation(RECLASSIFY_STOCK_ITEM, {
     refetchQueries: WAREHOUSE_REFETCH_QUERIES,
     awaitRefetchQueries: true,
     onCompleted: () => {
+      inFlight.current = false;
       showToast('Stock reclassified', 'success');
       onSuccess();
     },
-    onError: (err) => showToast(err.message, 'error'),
+    onError: (err) => {
+      inFlight.current = false;
+      showToast(err.message, 'error');
+    },
   });
 
   const q = Number(quantity);
@@ -40,9 +46,20 @@ export default function ReclassifyStockModal({ item, onClose, onSuccess }: Props
     newCategory.trim() &&
     newCode.trim() &&
     (newCategory.trim() !== item.hardwareCategory || newCode.trim() !== item.productCode);
+  // #1548 (#981): a dead Reclassify says what it is waiting for.
+  const qtyOk = Number.isInteger(q) && q >= 1 && q <= item.available;
+  const blockedReason =
+    !newCategory.trim() || !newCode.trim()
+      ? 'Enter the new category and product code.'
+      : newCategory.trim() === item.hardwareCategory && newCode.trim() === item.productCode
+        ? 'Change the category or product code - this is what the row already is.'
+        : !qtyOk
+          ? `Enter a whole number from 1 to ${item.available}.`
+          : null;
 
   const handleSubmit = () => {
-    if (!valid) return;
+    if (!valid || loading || inFlight.current) return;
+    inFlight.current = true;
     mutate({
       variables: {
         input: {
@@ -61,10 +78,14 @@ export default function ReclassifyStockModal({ item, onClose, onSuccess }: Props
       open
       onClose={onClose}
       title={`Reclassify ${item.productCode}`}
+      // #1548: the primary action is the form's submit, so Enter in the quantity does what the button does,
+      // and is refused whenever the button is disabled.
+      onSubmit={handleSubmit}
+      submitDisabled={!valid || loading}
       actions={
         <>
           <Button onClick={onClose}>Cancel</Button>
-          <Button variant="contained" onClick={handleSubmit} disabled={!valid || loading}>
+          <Button type="submit" variant="contained" disabled={!valid || loading}>
             Reclassify {isSplit ? '(split)' : ''}
           </Button>
         </>
@@ -94,6 +115,7 @@ export default function ReclassifyStockModal({ item, onClose, onSuccess }: Props
             onChange={(e) => setNewCode(e.target.value)}
             fullWidth
             required
+            autoFocus
           />
         </Stack>
         <TextField
@@ -116,6 +138,11 @@ export default function ReclassifyStockModal({ item, onClose, onSuccess }: Props
           multiline
           minRows={2}
         />
+        {blockedReason && !loading && (
+          <Typography variant="body2" color="text.secondary" data-testid="blocked-reason">
+            {blockedReason}
+          </Typography>
+        )}
       </Stack>
     </Modal>
   );

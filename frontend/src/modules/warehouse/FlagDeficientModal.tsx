@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Box, Button, Stack, TextField, Alert, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
@@ -39,6 +39,8 @@ export default function FlagDeficientModal({ item, onClose, onSuccess }: Props) 
   const { showToast } = useToast();
   const [quantity, setQuantity] = useState('1');
   const [reason, setReason] = useState('');
+  // #1548: Enter and a click in the same moment must not send it twice; set before `loading` re-renders.
+  const inFlight = useRef(false);
 
   const q = Number(quantity);
   const valid = Number.isInteger(q) && q >= 1 && q <= item.available;
@@ -55,14 +57,19 @@ export default function FlagDeficientModal({ item, onClose, onSuccess }: Props) 
     refetchQueries: WAREHOUSE_REFETCH_QUERIES,
     awaitRefetchQueries: true,
     onCompleted: () => {
+      inFlight.current = false;
       showToast('Deficient quantity flagged on row', 'success');
       onSuccess();
     },
-    onError: (err) => showToast(err.message, 'error'),
+    onError: (err) => {
+      inFlight.current = false;
+      showToast(err.message, 'error');
+    },
   });
 
   const handleSubmit = () => {
-    if (!valid) return;
+    if (!valid || loading || inFlight.current) return;
+    inFlight.current = true;
     mutate({
       variables: {
         input: {
@@ -79,17 +86,16 @@ export default function FlagDeficientModal({ item, onClose, onSuccess }: Props) 
       open
       onClose={onClose}
       title={`Flag deficient on ${item.productCode}`}
+      // #1548: the primary action is the form's submit, so Enter in the quantity does what the button does,
+      // and is refused whenever the button is disabled.
+      onSubmit={handleSubmit}
+      submitDisabled={!valid || loading}
       actions={
         <>
           <Button onClick={onClose} disabled={loading}>
             Cancel
           </Button>
-          <Button
-            variant="contained"
-            color="warning"
-            onClick={handleSubmit}
-            disabled={!valid || loading}
-          >
+          <Button type="submit" variant="contained" color="warning" disabled={!valid || loading}>
             {loading ? 'Flagging...' : 'Flag deficient'}
           </Button>
         </>
@@ -110,6 +116,7 @@ export default function FlagDeficientModal({ item, onClose, onSuccess }: Props) 
         </Typography>
         <TextField
           label={`Quantity to flag (max ${item.available})`}
+          autoFocus
           type="number"
           value={quantity}
           onChange={(e) => setQuantity(e.target.value)}

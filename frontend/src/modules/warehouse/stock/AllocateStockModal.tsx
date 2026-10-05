@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Box,
   Button,
@@ -47,6 +47,8 @@ export default function AllocateStockModal({
   const [row, setRow] = useState('');
   const [bay, setBay] = useState('');
   const { showToast } = useToast();
+  // #1548: Enter and a click in the same moment must not send it twice; set before `loading` re-renders.
+  const inFlight = useRef(false);
 
   const { data: projectsData } = useQuery<{ projects: Project[] }>(GET_PROJECTS);
   const project =
@@ -58,10 +60,14 @@ export default function AllocateStockModal({
     refetchQueries: WAREHOUSE_REFETCH_QUERIES,
     awaitRefetchQueries: true,
     onCompleted: () => {
+      inFlight.current = false;
       showToast('Stock allocated to project inventory', 'success');
       onSuccess();
     },
-    onError: (err) => showToast(err.message, 'error'),
+    onError: (err) => {
+      inFlight.current = false;
+      showToast(err.message, 'error');
+    },
   });
 
   // #1046: the pre-locate bin is optional, but when given it is a strict pick from the stock item's
@@ -84,9 +90,20 @@ export default function AllocateStockModal({
     q >= 1 &&
     q <= item.available &&
     binOk;
+  // #1548 (#981): a dead Allocate says what it is waiting for.
+  const blockedReason = !projectId
+    ? 'Pick the target project.'
+    : !category.trim() || !productCode.trim()
+      ? 'Enter the target hardware category and product code.'
+      : !(Number.isInteger(q) && q >= 1 && q <= item.available)
+        ? `Enter a whole number from 1 to ${item.available}.`
+        : !binOk
+          ? 'Pick an aisle, row and bay defined on the Locations tab, or clear all three to leave it unlocated.'
+          : null;
 
   const handleSubmit = () => {
-    if (!valid) return;
+    if (!valid || loading || inFlight.current) return;
+    inFlight.current = true;
     mutate({
       variables: {
         input: {
@@ -108,10 +125,14 @@ export default function AllocateStockModal({
       open
       onClose={onClose}
       title={`Allocate ${item.productCode} to a project`}
+      // #1548: the primary action is the form's submit, so Enter in the quantity does what the button does,
+      // and is refused whenever the button is disabled.
+      onSubmit={handleSubmit}
+      submitDisabled={!valid || loading}
       actions={
         <>
           <Button onClick={onClose}>Cancel</Button>
-          <Button variant="contained" onClick={handleSubmit} disabled={!valid || loading}>
+          <Button type="submit" variant="contained" disabled={!valid || loading}>
             Allocate
           </Button>
         </>
@@ -148,6 +169,7 @@ export default function AllocateStockModal({
         </Stack>
         <TextField
           label={`Quantity (max ${item.available})`}
+          autoFocus
           type="number"
           value={quantity}
           onChange={(e) => setQuantity(e.target.value)}
@@ -162,9 +184,9 @@ export default function AllocateStockModal({
           <LocationAutocomplete label="Row" value={row} onChange={setRow} options={rowOptions} freeSolo={false} />
           <LocationAutocomplete label="Bay" value={bay} onChange={setBay} options={bayOptions} freeSolo={false} />
         </Stack>
-        {!binOk && (
-          <Typography variant="caption" color="text.secondary">
-            Pick an aisle, row and bay defined on the Locations tab, or clear all three to leave it unlocated.
+        {blockedReason && !loading && (
+          <Typography variant="body2" color="text.secondary" data-testid="blocked-reason">
+            {blockedReason}
           </Typography>
         )}
       </Stack>
