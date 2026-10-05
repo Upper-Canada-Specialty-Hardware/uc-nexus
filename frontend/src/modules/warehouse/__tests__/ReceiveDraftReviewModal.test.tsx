@@ -403,6 +403,56 @@ describe('ReceiveDraftReviewModal', () => {
     expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
   });
 
+  it('keeps the failure and the GP detail when the re-read finds the draft still claimed (#1582)', async () => {
+    // No answer came back: the server still holds the claim, so the only way on is the same-key retry -
+    // and the reviewer must still see why.
+    const approveMock: MockedResponse = {
+      request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+      result: {
+        errors: [
+          new GraphQLError('GP did not answer in time while posting the receipt.', {
+            extensions: { code: 'RELAY_TIMEOUT' },
+          }),
+        ],
+      },
+    };
+    const rereadMock: MockedResponse = {
+      request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+      result: {
+        data: { receiveDraft: { ...draft(), __typename: 'ReceiveDraft', status: 'APPROVING', approvalIdempotencyKey: 'k-1' } },
+      },
+    };
+    await openModal([approveMock, rereadMock]);
+
+    await approveViaConfirm();
+
+    expect(await screen.findByRole('button', { name: 'Retry posting' }, { timeout: 15_000 })).toBeInTheDocument();
+    await vi.waitFor(() => expect(document.body.textContent).toMatch(/Approving this receive failed/), SLOW);
+    expect(screen.getByText('GP could not complete the receipt')).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/Nothing was posted to GP/);
+  });
+
+  it('says another manager finished it, not "fix or reject", when the re-read is approved (#1582)', async () => {
+    const approveMock: MockedResponse = {
+      request: { query: APPROVE_RECEIVE_DRAFT, variables: () => true },
+      result: {
+        errors: [
+          new GraphQLError('This draft was already approved.', { extensions: { code: 'INVALID_STATE_TRANSITION' } }),
+        ],
+      },
+    };
+    const rereadMock: MockedResponse = {
+      request: { query: GET_RECEIVE_DRAFT, variables: { id: 'draft-1' } },
+      result: { data: { receiveDraft: { ...draft(), __typename: 'ReceiveDraft', status: 'APPROVED' } } },
+    };
+    await openModal([approveMock, rereadMock]);
+
+    await approveViaConfirm();
+
+    await vi.waitFor(() => expect(document.body.textContent).toMatch(/approved elsewhere - refresh/), { timeout: 15_000 });
+    expect(document.body.textContent).not.toMatch(/fix the count or reject/);
+  });
+
   it('will not reject without a reason, and sends it back to the author with one', async () => {
     let captured: { input: { draftId: string; reason: string } } | null = null;
     const rejectMock: MockedResponse<Record<string, unknown>, { input: { draftId: string; reason: string } }> = {
