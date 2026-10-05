@@ -357,6 +357,34 @@ function gpTotalsWithHeader(delay = 0): MockedResponse {
   };
 }
 
+describe('POGenerateDialog lines (#1523)', () => {
+  beforeEach(() => {
+    printed.props = null;
+    URL.createObjectURL = vi.fn(() => 'blob:generated-po');
+    window.open = vi.fn();
+  });
+
+  it("prints each line's own unit, and its product code when it has no Order As", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const { onRefetch } = renderDialog([settingsMock(), buyersMock(), totalsMock(), saveMock(calls)], {
+      lineItems: [
+        { ...po.lineItems[0], uofm: 'Box', orderAs: 'ML2010' },
+        { ...po.lineItems[0], id: 'li-2', hardwareCategory: 'FRAME', productCode: 'FR-100', orderAs: null, uofm: null },
+      ],
+    });
+
+    await screen.findByRole('textbox', { name: 'Shipping method' });
+    fireEvent.click(screen.getByRole('button', { name: 'Generate & preview' }));
+
+    await waitFor(() => expect(onRefetch).toHaveBeenCalled());
+    const lines = printed.props?.lineItems as { itemNumber: string; reference: string | null; uom: string }[];
+    expect(lines.map((l) => [l.itemNumber, l.reference, l.uom])).toEqual([
+      ['Hinges', 'ML2010', 'Box'],
+      ['FRAME', 'FR-100', 'Each'],
+    ]);
+  });
+});
+
 describe('POGenerateDialog prefill from GP (#858)', () => {
   it('fills the empty fields from what GP holds on the PO', async () => {
     renderDialog([settingsMock(), buyersMock(), gpTotalsWithHeader()]);
