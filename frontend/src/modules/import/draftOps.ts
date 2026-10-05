@@ -5,7 +5,8 @@
  * invariant - the quantities of a productKey summed across every draft stay constant under a move or
  * split, and no draft is dropped while it still holds lines - is unit-testable without rendering.
  * The converse holds since #639: a line operation that empties a draft drops the draft in the same
- * pass, so the only empty card on screen is one the buyer created on purpose to move lines into.
+ * pass - unless the buyer gave it info or attachments (#1602, the #1314 rule), which then stays on as
+ * an empty card rather than vanishing with its documents.
  * Every reducer returns a new array; the untouched groups keep their identity.
  */
 import type { DraftAttachment, DraftAttachmentType, DraftGroup, DraftInfoField } from './types';
@@ -42,7 +43,7 @@ export function moveLine(
       }
       return g;
     })
-    .filter((g) => !(g.id === fromId && g.lines.size === 0));
+    .filter((g) => !(g.id === fromId && g.lines.size === 0 && !hasEdits(g)));
 }
 
 /** Set a line's quantity directly (#632). The ceiling is the product's selection total minus what
@@ -71,7 +72,7 @@ export function updateLineQty(
       else lines.delete(pk);
       return { ...g, lines };
     })
-    .filter((g) => !(g.id === id && g.lines.size === 0));
+    .filter((g) => !(g.id === id && g.lines.size === 0 && !hasEdits(g)));
 }
 
 /** Drop a line from a draft outright (#632) - "we are not ordering this here". Unlike moveLine the
@@ -88,7 +89,7 @@ export function removeLine(groups: DraftGroup[], id: string, pk: string): DraftG
       lines.delete(pk);
       return { ...g, lines };
     })
-    .filter((g) => !(g.id === id && g.lines.size === 0));
+    .filter((g) => !(g.id === id && g.lines.size === 0 && !hasEdits(g)));
 }
 
 /** Fold one draft's lines into another and drop it - the way to clear a non-empty draft. The target
@@ -124,6 +125,8 @@ export function createDraft(groups: DraftGroup[], id: string, label = 'New PO'):
 /** Remove a draft only when it holds no lines - a draft with lines would lose quantity, which merge
  *  covers instead. A no-op on a non-empty draft. */
 export function removeDraft(groups: DraftGroup[], id: string): DraftGroup[] {
+  // An explicit Remove is deliberate, so any empty draft goes - the card asks first when it holds
+  // documents or info (#1602). Only the implicit paths (a line set to 0, removed or moved) keep one.
   return groups.filter((g) => !(g.id === id && g.lines.size === 0));
 }
 
@@ -210,7 +213,7 @@ export function mergeAddedProducts(existing: DraftGroup[], seeded: DraftGroup[])
 
 // ---- #1314: a re-seed keeps what the buyer typed and attached ----
 
-function hasEdits(g: DraftGroup): boolean {
+export function hasEdits(g: DraftGroup): boolean {
   const { notes, preferredDeliveryDate, costCode, vendorQuoteNumber } = g.info;
   return (
     (g.attachments?.length ?? 0) > 0 ||
@@ -241,4 +244,37 @@ export function carryDraftEdits(previous: DraftGroup[], seeded: DraftGroup[]): D
     next.push({ ...g, id: seedIds.has(g.id) ? `${g.id}:kept` : g.id, lines: new Map() });
   }
   return next;
+}
+
+// ---- #1602: documents a finalize would leave behind ----
+
+export interface UnattachedDocuments {
+  label: string;
+  count: number;
+  reason: 'no lines' | 'not included' | 'no openings to order';
+}
+
+/**
+ * Drafts holding documents that mint no PO at finalize - not included, or with no lines left - so their
+ * files have nowhere to land. `builtDraftIds` are the drafts buildPoDrafts turned into POs.
+ */
+export function unattachedDocuments(groups: DraftGroup[], builtDraftIds: ReadonlySet<string>): UnattachedDocuments[] {
+  return groups
+    .filter((g) => (g.attachments?.length ?? 0) > 0 && !builtDraftIds.has(g.id))
+    .map((g) => ({
+      label: g.label,
+      count: g.attachments?.length ?? 0,
+      // buildPoDrafts also skips an included draft whose lines resolve to no openings to order.
+      reason: !g.included ? 'not included' : g.lines.size === 0 ? 'no lines' : 'no openings to order',
+    }));
+}
+
+/** "2 documents on 'New PO' (no lines) and 1 on 'Hager' (not included) will not be attached." */
+export function describeUnattached(list: UnattachedDocuments[]): string | null {
+  if (list.length === 0) return null;
+  const parts = list.map(
+    (u, i) => `${u.count}${i === 0 ? (u.count === 1 ? ' document' : ' documents') : ''} on '${u.label}' (${u.reason})`,
+  );
+  const joined = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+  return `${joined} will not be attached.`;
 }
