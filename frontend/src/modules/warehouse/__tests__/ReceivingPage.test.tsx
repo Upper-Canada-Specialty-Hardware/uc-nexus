@@ -186,7 +186,10 @@ it('shows the held GP receive entries on the dock', async () => {
   ]);
 
   expect(await screen.findByText('Held GP receive entries')).toBeInTheDocument();
-  await waitFor(() => expect(outboxAsked).toContainEqual({ ops: ['create_receipt'] }));
+  // #1545: only entries that still need someone - finished ones would keep the panel on the dock for good.
+  await waitFor(() =>
+    expect(outboxAsked).toContainEqual({ ops: ['create_receipt'], statuses: ['PENDING', 'IN_FLIGHT', 'FAILED'] }),
+  );
 });
 
 // The normal state: nothing is held, and the dock looks exactly as it did.

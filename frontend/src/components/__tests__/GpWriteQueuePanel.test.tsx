@@ -222,3 +222,20 @@ it('warns inside a module when the held writes cannot be loaded', async () => {
 
   expect(await screen.findByText(/Could not load held GP writes/)).toBeInTheDocument();
 });
+
+// #1545: the admin queue keeps its table, but a failed read is not an empty queue - "No rows" read as nothing
+// held or failed.
+it('says the admin queue could not be loaded, with a retry, instead of an empty table', async () => {
+  render(
+    <MockedProvider
+      mocks={[{ request: { query: GET_GP_OUTBOX, variables: () => true }, error: new Error('backend down') }]}
+    >
+      <ToastProvider>
+        <GpWriteQueuePanel />
+      </ToastProvider>
+    </MockedProvider>,
+  );
+
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  expect(screen.queryByText(/no rows/i)).not.toBeInTheDocument();
+});

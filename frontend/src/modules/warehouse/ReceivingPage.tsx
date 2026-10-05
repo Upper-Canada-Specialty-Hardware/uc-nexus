@@ -92,6 +92,9 @@ const RECEIVING_VIEWS: ReceivingView[] = ['receive', 'drafts', 'history'];
 // The one write this page is answerable for: a GP RECEIVE ENTRY that has not reached GP yet. A
 // constant rather than an inline array so the panel's query keeps one identity across renders.
 const HELD_GP_RECEIVE_ENTRY_OPS = ['create_receipt'];
+// #1545: only entries that still need someone, as the PO table's held registrations (#854); finished ones drop
+// off, so the panel leaves the dock's screen once the relay has caught up.
+const HELD_GP_RECEIVE_ENTRY_STATUSES = ['PENDING', 'IN_FLIGHT', 'FAILED'];
 
 // #909: Recent Activity fits its width and never scrolls sideways; columns are resizable and
 // remembered per person. Minimums hold a local date and time, a PO number, a GP receipt number and
@@ -444,7 +447,12 @@ export default function ReceivingPage() {
 
       {/* #754: the receives GP has not taken yet, on the dock they were counted on rather than only
           on the admin queue. It renders nothing while there are none. */}
-      <GpWriteQueuePanel ops={HELD_GP_RECEIVE_ENTRY_OPS} compact heading="Held GP receive entries" />
+      <GpWriteQueuePanel
+        ops={HELD_GP_RECEIVE_ENTRY_OPS}
+        statuses={HELD_GP_RECEIVE_ENTRY_STATUSES}
+        compact
+        heading="Held GP receive entries"
+      />
 
       {view === 'drafts' && <MyReceiveDraftsView />}
       {view === 'history' && <ReceivingHistory projects={projects} />}
