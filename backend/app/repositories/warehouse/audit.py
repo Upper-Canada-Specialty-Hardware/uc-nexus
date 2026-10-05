@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import ColumnElement, and_, or_, select
+from sqlalchemy import ColumnElement, String, and_, cast, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.audit_log import InventoryAuditLog
@@ -37,18 +37,35 @@ def audit_scope(company: str) -> ColumnElement[bool]:
 
     A row with a project belongs to that project's company. A row with no project is a stock event
     (every project-less write is a STOCK_ITEM row), and stock belongs to its WAREHOUSE, so it is kept
-    when the stock item's warehouse is in the company. A stock row whose item no longer exists has
-    nothing left to attribute it with and drops out."""
+    when the stock item's warehouse is in the company.
+
+    #1574: a stock row folded into another on its shelf is usually deleted, and with it went the only
+    way to attribute its entries - the fold itself, and the row's whole past, vanished from every
+    scoped view. An entry that recorded where it happened (`location_detail` stamps the warehouse into
+    fromLocation / toLocation / location) is kept by that warehouse too, so a deleted row's moves,
+    put-aways and receipts stay visible to its company. Entries with no location on a deleted row (an
+    adjust, a reclassify) still drop - they name no warehouse to attribute them with."""
     from app.models.stock_item import StockItem
+    from app.models.warehouse import Warehouse
     from app.repositories import tenancy
 
+    company_warehouses = select(cast(Warehouse.id, String)).where(Warehouse.company == company)
+    recorded_in_company = or_(
+        *(
+            InventoryAuditLog.detail[key]["warehouseId"].astext.in_(company_warehouses)
+            for key in ("fromLocation", "toLocation", "location")
+        )
+    )
     return or_(
         InventoryAuditLog.project_id.in_(tenancy.project_ids_for(company)),
         and_(
             InventoryAuditLog.project_id.is_(None),
             InventoryAuditLog.entity_type == AuditEntityType.STOCK_ITEM,
-            InventoryAuditLog.entity_id.in_(
-                select(StockItem.id).where(StockItem.warehouse_id.in_(tenancy.warehouse_ids_for(company)))
+            or_(
+                InventoryAuditLog.entity_id.in_(
+                    select(StockItem.id).where(StockItem.warehouse_id.in_(tenancy.warehouse_ids_for(company)))
+                ),
+                recorded_in_company,
             ),
         ),
     )
