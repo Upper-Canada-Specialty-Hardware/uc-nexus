@@ -74,3 +74,22 @@ describe('combineLocationRows', () => {
     expect(combineLocationRows([], [])).toEqual([]);
   });
 });
+
+// #1587: an occupied variant of a defined place (a-1-1 beside A-1-1) can't be defined - it wants a merge.
+describe('combineLocationRows variants (#1587)', () => {
+  it('marks an occupied case/space variant of a defined location with that location', () => {
+    const rows = combineLocationRows([occupied({ aisle: 'a', row: ' 1 ' })], [def()]);
+    const variant = rows.find((r) => r.aisle === 'a');
+    expect(variant).toMatchObject({ definedId: null, variantOf: 'A-1-1' });
+  });
+
+  it('leaves a genuinely undefined location without a variant', () => {
+    const rows = combineLocationRows([occupied({ aisle: 'B' })], [def()]);
+    expect(rows.find((r) => r.aisle === 'B')).toMatchObject({ definedId: null, variantOf: null });
+  });
+
+  it('never marks the defined row itself as a variant', () => {
+    const rows = combineLocationRows([occupied()], [def()]);
+    expect(rows[0]).toMatchObject({ definedId: 'd1', variantOf: null });
+  });
+});
