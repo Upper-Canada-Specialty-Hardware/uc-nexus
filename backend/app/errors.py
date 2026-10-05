@@ -64,13 +64,23 @@ class InventoryShortfallError(AppError):
     """A hard inventory-sufficiency gate (#224) refused an operation because available units can't
     cover the request. Carries the per-combo shortfall so the resolver can surface it inline to the
     caller and notify the PO for backfill. `project_id` / `request_number` let the resolver mint that
-    PO notification in a fresh session after the refused work rolls back."""
+    PO notification in a fresh session after the refused work rolls back. `label` is what the gate was
+    refusing to create ("shipping-out request", "shop-assembly batch"), so that notification can say so
+    (#1533)."""
 
-    def __init__(self, message: str, shortfalls: list, project_id=None, request_number: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        shortfalls: list,
+        project_id=None,
+        request_number: str | None = None,
+        label: str | None = None,
+    ):
         super().__init__(message, "INSUFFICIENT_INVENTORY")
         self.shortfalls = shortfalls
         self.project_id = project_id
         self.request_number = request_number
+        self.label = label
 
 
 class InvalidStateTransitionError(AppError):
