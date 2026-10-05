@@ -185,9 +185,13 @@ export default function PODetailModal({
             setPoNumberError(error.errors?.[0]?.message ?? 'Invalid PO number');
           } else {
             showToast(userMessage(error), 'error');
+            onRefetch();
           }
         } else {
           showToast(userMessage(error), 'error');
+          // #1595 / #1302: a refusal usually means the PO moved on (registered, queued for GP, received)
+          // while this form was open - redraw it, and the form closes itself once editing is no longer allowed.
+          onRefetch();
         }
       } else {
         showToast(userMessage(error), 'error');
@@ -327,6 +331,8 @@ export default function PODetailModal({
     } catch (err: unknown) {
       const message = err instanceof Error ? userMessage(err) : 'Failed to update line items';
       showToast(message, 'error');
+      // #1595: a server refusal means the PO changed under this form - redraw it (#1302).
+      if (CombinedGraphQLErrors.is(err)) onRefetch();
       return;
     }
 
@@ -564,7 +570,8 @@ export default function PODetailModal({
 
   // --- Edit-mode line item columns (with editable Order As + unit cost) ---
 
-  const canEditItems = po.status === 'DRAFT';
+  // #1595: a queued registration posts the lines as they were when it was queued, so they are held too.
+  const canEditItems = po.status === 'DRAFT' && !registrationQueued;
   const poNumberLocked = po.origin === 'GP' || po.status !== 'DRAFT';
 
   const distinctProductCodes = useMemo(
@@ -651,10 +658,16 @@ export default function PODetailModal({
 
   // --- Visibility rules ---
 
+  // #1595: a Draft whose GP registration is queued is held as it was queued - the queue posts that
+  // snapshot and writes it back, so an edit made meanwhile never reaches GP. Notes keep their own path.
+  const heldForQueuedRegistration = po.status === 'DRAFT' && registrationQueued;
   const canEdit =
-    po.status === 'DRAFT' ||
+    (po.status === 'DRAFT' && !registrationQueued) ||
     (po.status === 'GP_REGISTERED' && po.receiveRecords.length === 0) ||
     (po.status === 'VENDOR_CONFIRMED' && po.receiveRecords.length === 0);
+  // A refetch that finds the PO no longer editable (moved on, or queued for GP) closes an open edit form.
+  // Adjusted during render (guarded), the way React recommends for state derived from props.
+  if (editing && !canEdit) setEditing(false);
 
   const canUploadDocs = po.status !== 'CANCELLED' && po.status !== 'CLOSED';
   // #500: the PO can be sent once it exists in GP and there is a generated document to attach.
@@ -744,6 +757,15 @@ export default function PODetailModal({
             <Button variant={primaryIsRegister ? 'outlined' : 'contained'} onClick={handleStartEdit}>
               Edit
             </Button>
+          )}
+          {heldForQueuedRegistration && (
+            <Tooltip title="This PO's registration is queued for GP, so it can't be changed until it posts." arrow>
+              <span>
+                <Button variant="outlined" disabled>
+                  Edit
+                </Button>
+              </span>
+            </Tooltip>
           )}
           {/* Stays gated on the relay, unlike the receive modal (#376). Registering needs LIVE GP reads
               to compose at all - the company comes from the connected relay, and the vendor list, tax
