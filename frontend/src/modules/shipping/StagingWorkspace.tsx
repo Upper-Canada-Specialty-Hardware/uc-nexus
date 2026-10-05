@@ -42,6 +42,7 @@ import {
   MOVE_CONTAINER_ITEMS,
 } from '../../graphql/shipping';
 import ConfirmDialog from '../../components/ConfirmDialog';
+import LoadError from '../../components/LoadError';
 import { useToast } from '../../components/Toast';
 import ContainerShipmentForm from './ContainerShipmentForm';
 import {
@@ -388,12 +389,8 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
             this component swallowed it - the floor rendered empty and the warehouse concluded the
             pull never arrived. A failed read is a different state from an empty floor and must never
             look like one. */}
-        {error && (
-          <Alert severity="error" sx={{ mb: 2 }}>
-            The staging pool could not be loaded, so this is not an empty floor - it is a failed read.
-            Retry, and if it persists report it. {userMessage(error, { reading: true })}
-          </Alert>
-        )}
+        {/* #1583: with the Retry it promised, through the shared banner. */}
+        {error && <LoadError what="the staging pool" error={error} onRetry={() => refetch()} sx={{ mb: 2 }} />}
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 2, mb: 2 }}>
           <Typography variant="body2" color="text.secondary">
             Everything pulled for shipping and not yet sent. Put it into the skids, carts and boxes
@@ -410,7 +407,8 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
               Ship {selectedContainers.length || ''} container{selectedContainers.length === 1 ? '' : 's'}
             </Button>
             {/* Why the button is grey, said beside it. The GP quarantine case keeps its banner above. */}
-            {selectedContainers.length === 0 && !isGpSetupBroken(project) && (
+            {/* #1583: not on a failed read - no containers there is not an empty floor. */}
+            {selectedContainers.length === 0 && !isGpSetupBroken(project) && !(error && !pool) && (
               <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
                 {containers.length === 0 ? 'Create a container first' : 'Tick a container to ship it'}
               </Typography>
@@ -600,6 +598,7 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
               setShipOpen(false);
               refetch();
             }}
+            onRefused={() => refetch()}
           />
         )}
       </Box>

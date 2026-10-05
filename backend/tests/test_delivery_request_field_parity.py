@@ -86,6 +86,8 @@ def test_both_mutation_inputs_carry_the_whole_header():
         "projectId",
         "packingSlipNumber",
         "containerIds",
+        # #1583: what the dialog's manifest showed, so a changed container is refused, not shipped.
+        "expectedContents",
     }
     assert _input_fields("UpdateShipmentDetailsInput") == header | {"id"}
 

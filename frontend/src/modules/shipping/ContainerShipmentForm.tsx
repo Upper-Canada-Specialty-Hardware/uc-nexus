@@ -13,6 +13,7 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
+import { CombinedGraphQLErrors } from '@apollo/client/errors';
 import { useNavigate } from 'react-router-dom';
 import { CONFIRM_SHIPMENT_FROM_CONTAINERS } from '../../graphql/shipping';
 import { SHIPPING_REFETCH_QUERIES, SHIPPING_STALE_ROOT_FIELDS } from '../../graphql/refetch';
@@ -37,6 +38,8 @@ interface Props {
   projectId: string;
   containers: Container[];
   onShipped: () => void;
+  /** #1583: the server refused the confirm - the floor moved under this dialog, so redraw it. */
+  onRefused?: () => void;
 }
 
 /**
@@ -53,6 +56,7 @@ export default function ContainerShipmentForm({
   projectId,
   containers,
   onShipped,
+  onRefused,
 }: Props) {
   const { showToast } = useToast();
   const navigate = useNavigate();
@@ -97,7 +101,12 @@ export default function ContainerShipmentForm({
       );
       onShipped();
     },
-    onError: (e) => setError(userMessage(e)),
+    onError: (e) => {
+      setError(userMessage(e));
+      // #1583: a refusal means a container shipped, emptied or changed under this dialog - the floor
+      // behind it is stale too. A network failure says nothing about the floor, so it is left alone.
+      if (CombinedGraphQLErrors.is(e)) onRefused?.();
+    },
   });
 
   const submit = () => {
@@ -111,6 +120,9 @@ export default function ContainerShipmentForm({
         input: {
           projectId,
           containerIds: containers.map((c) => c.id),
+          // #1583: the lines the manifest above shows. A container loaded further since is refused,
+          // not shipped with lines nobody checked.
+          expectedContents: containers.map((c) => ({ containerId: c.id, itemIds: c.items.map((i) => i.id) })),
           ...deliveryDetailsInput(details),
         },
       },
