@@ -199,7 +199,7 @@ export default function ProjectPurchasingProgressPage() {
 
       {projectsError && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          Error loading projects: {userMessage(projectsError)}
+          Error loading projects: {userMessage(projectsError, { reading: true })}
         </Alert>
       )}
 
@@ -210,7 +210,7 @@ export default function ProjectPurchasingProgressPage() {
       )}
 
       {selected && progressError && (
-        <Alert severity="error">Error loading progress: {userMessage(progressError)}</Alert>
+        <Alert severity="error">Error loading progress: {userMessage(progressError, { reading: true })}</Alert>
       )}
 
       {selected && !progressError && progressLoading && !progressData && (

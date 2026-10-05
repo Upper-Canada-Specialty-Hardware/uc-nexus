@@ -123,7 +123,7 @@ export default function TenantOwnerLanding() {
 
       {error && !s && (
         <Alert severity="error" sx={{ mb: 3 }}>
-          Error loading company stats: {userMessage(error)}
+          Error loading company stats: {userMessage(error, { reading: true })}
         </Alert>
       )}
 

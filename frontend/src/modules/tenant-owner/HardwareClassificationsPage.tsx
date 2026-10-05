@@ -323,7 +323,7 @@ export default function HardwareClassificationsPage() {
           {refusal}
         </Alert>
       )}
-      {error && <Alert severity="error">Error loading classifications: {userMessage(error)}</Alert>}
+      {error && <Alert severity="error">Error loading classifications: {userMessage(error, { reading: true })}</Alert>}
 
       {loading && !data ? (
         <Box>

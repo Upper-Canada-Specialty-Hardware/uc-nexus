@@ -11,3 +11,23 @@ it('says a read that never reached Nexus failed for a connection reason, in plai
   expect(screen.getByRole('alert')).not.toHaveTextContent(NETWORK_MESSAGE);
   expect(screen.getByRole('alert')).not.toHaveTextContent('Failed to fetch');
 });
+
+// #1561: the read line itself promises no button, so the banner - which has one - points at it, and only then.
+it('points at its Retry button only when it shows one', () => {
+  const { unmount } = render(
+    <LoadError what="the pull requests" error={new TypeError('Failed to fetch')} onRetry={() => undefined} />,
+  );
+  expect(screen.getByRole('alert')).toHaveTextContent('Press Retry when the connection is back.');
+  unmount();
+
+  render(<LoadError what="the pull requests" error={new TypeError('Failed to fetch')} />);
+  expect(screen.getByRole('alert')).not.toHaveTextContent(/press retry/i);
+});
+
+// #1561: a record that isn't available (or a server refusal) is not waiting on the connection.
+it('does not blame the connection when the read was answered with a refusal', () => {
+  render(
+    <LoadError what="this project" error={new Error('Project is in another company')} onRetry={() => undefined} />,
+  );
+  expect(screen.getByRole('alert')).not.toHaveTextContent(/connection is back/i);
+});

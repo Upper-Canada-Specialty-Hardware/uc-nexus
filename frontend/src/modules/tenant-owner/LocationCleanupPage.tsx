@@ -158,7 +158,7 @@ export default function LocationCleanupPage() {
       </Box>
     );
   }
-  if (error) return <Alert severity="error">Error: {userMessage(error)}</Alert>;
+  if (error) return <Alert severity="error">Error: {userMessage(error, { reading: true })}</Alert>;
 
   return (
     <Box>
