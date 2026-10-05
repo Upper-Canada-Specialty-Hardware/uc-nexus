@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Alert,
   Box,
@@ -261,7 +262,7 @@ export default function InventoryCorrectionModal({
       onClose();
     },
     onError: (error) => {
-      showToast(error.message, 'error');
+      showToast(userMessage(error), 'error');
       if (isStaleRowRefusal(error)) {
         // "This row changed from X to Y" (#1318): the count here is the parent's snapshot, so close;
         // the refetch redraws the grid and reopening works from the current count.
@@ -280,7 +281,7 @@ export default function InventoryCorrectionModal({
       onClose();
     },
     onError: (error) => {
-      showToast(error.message, 'error');
+      showToast(userMessage(error), 'error');
     },
   });
 
@@ -293,7 +294,7 @@ export default function InventoryCorrectionModal({
       onClose();
     },
     onError: (error) => {
-      showToast(error.message, 'error');
+      showToast(userMessage(error), 'error');
     },
   });
 
@@ -306,7 +307,7 @@ export default function InventoryCorrectionModal({
       onClose();
     },
     onError: (error) => {
-      showToast(error.message, 'error');
+      showToast(userMessage(error), 'error');
     },
   });
 

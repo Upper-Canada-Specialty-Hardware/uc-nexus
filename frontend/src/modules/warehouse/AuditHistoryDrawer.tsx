@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Drawer,
   Box,
@@ -400,7 +401,7 @@ export default function AuditHistoryDrawer({
             <CircularProgress size={24} />
           </Box>
         )}
-        {error && <Alert severity="error">Error loading audit log: {error.message}</Alert>}
+        {error && <Alert severity="error">Error loading audit log: {userMessage(error)}</Alert>}
         {!loading && !error && entries.length === 0 && (
           <Alert severity="info">No audit history for this item</Alert>
         )}

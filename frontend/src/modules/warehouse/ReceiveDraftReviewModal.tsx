@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Typography,
   Box,
@@ -300,14 +301,14 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
       if (captured?.code === GP_JOB_NOT_OPEN) {
         // #730: the server's refusal names the job and its state; there is no GP detail to show and
         // nothing a retry would change.
-        setMutationError(captured.message);
+        setMutationError(userMessage(captured));
         return;
       }
       setGpError(captured);
       setMutationError(
         captured
           ? "Approving this receive failed - see the GP error detail below. A retry won't post a duplicate receipt."
-          : `Approving this receive failed: ${err instanceof Error ? err.message : 'An unknown error occurred'}. A retry won't post a duplicate receipt.`,
+          : `Approving this receive failed: ${err instanceof Error ? userMessage(err) : 'An unknown error occurred'}. A retry won't post a duplicate receipt.`,
       );
     } finally {
       setSubmitting(false);
@@ -339,7 +340,7 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
       setRejectOpen(false);
       onClose();
     } catch (err: unknown) {
-      setMutationError(err instanceof Error ? err.message : 'Rejecting this draft failed');
+      setMutationError(err instanceof Error ? userMessage(err) : 'Rejecting this draft failed');
       setRejectOpen(false);
     } finally {
       setSubmitting(false);
@@ -361,7 +362,7 @@ export default function ReceiveDraftReviewModal({ open, draft: draftProp, onClos
       if (url) window.open(url, '_blank', 'noopener,noreferrer');
       else showToast('Could not open the packing slip.', 'error');
     } catch (err: unknown) {
-      showToast(err instanceof Error ? err.message : 'Could not open the packing slip.', 'error');
+      showToast(err instanceof Error ? userMessage(err) : 'Could not open the packing slip.', 'error');
     } finally {
       setSlipLoading(false);
     }

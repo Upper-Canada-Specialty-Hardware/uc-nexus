@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import { Alert, Button, CircularProgress, Stack } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../components/Modal';
@@ -40,7 +41,7 @@ export default function EditShipmentDialog({ slip, onClose }: Props) {
       showToast(`Delivery Request ${slip.packingSlipNumber} updated`, 'success');
       onClose();
     },
-    onError: (err) => setError(err.message),
+    onError: (err) => setError(userMessage(err)),
   });
 
   // Twenty fields against the shipment as it is stored. Anything typed here is gone the moment the

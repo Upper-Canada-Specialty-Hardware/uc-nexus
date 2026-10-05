@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import { Alert, Box, Typography, Card, CardActionArea, Grid, Skeleton } from '@mui/material';
 import {
   Boxes,
@@ -207,7 +208,7 @@ export default function WarehouseLanding() {
           counts, so the floor can still get where it is going. */}
       {error && !dashboard && (
         <Alert severity="error" sx={{ mb: 3 }}>
-          Error loading warehouse dashboard: {error.message}
+          Error loading warehouse dashboard: {userMessage(error)}
         </Alert>
       )}
 

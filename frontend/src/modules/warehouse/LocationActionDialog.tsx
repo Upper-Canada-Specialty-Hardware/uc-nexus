@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Box,
   Typography,
@@ -263,7 +264,7 @@ export default function LocationActionDialog({
       onSuccess();
       onClose();
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : `Failed to ${mode}`;
+      const message = err instanceof Error ? userMessage(err) : `Failed to ${mode}`;
       if (finished.length > 0) {
         // Part of the batch went through: say how much, drop those rows, and refresh so the grid
         // shows them where they now are (#1317).

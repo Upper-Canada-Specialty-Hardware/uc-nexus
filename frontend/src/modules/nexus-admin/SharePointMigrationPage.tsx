@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Box,
   Typography,
@@ -246,7 +247,7 @@ export default function SharePointMigrationPage() {
         setPosByNumber(merged);
       } catch (e) {
         if (!cancelled) {
-          setPoLookupError(e instanceof Error ? e.message : 'Could not read the purchase orders');
+          setPoLookupError(e instanceof Error ? userMessage(e) : 'Could not read the purchase orders');
         }
       } finally {
         if (!cancelled) setPoLookupLoading(false);
@@ -465,7 +466,7 @@ export default function SharePointMigrationPage() {
         showToast(`Migrated ${r.totalUnits} units`, 'success');
       }
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Migration failed', 'error');
+      showToast(e instanceof Error ? userMessage(e) : 'Migration failed', 'error');
     }
   }, [
     built.entries,
@@ -498,7 +499,7 @@ export default function SharePointMigrationPage() {
         }
       >
         <AlertTitle>Could not read SharePoint</AlertTitle>
-        {error.message}
+        {userMessage(error)}
       </Alert>
     );
   }

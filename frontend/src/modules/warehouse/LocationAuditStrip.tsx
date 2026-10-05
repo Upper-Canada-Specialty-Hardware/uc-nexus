@@ -1,4 +1,5 @@
 import { useQuery } from '@apollo/client/react';
+import { userMessage } from '../../graphql/userMessage';
 import { Box, Typography, List, ListItem, ListItemText, Skeleton, Alert, Chip } from '@mui/material';
 import { GET_LOCATION_AUDIT_HISTORY } from '../../graphql/warehouse';
 import { microLabelSx, tabularSx } from '../../theme';
@@ -98,7 +99,7 @@ export default function LocationAuditStrip({ aisle, row, bay, warehouseId }: Pro
     return (
       <Box sx={{ mt: 2 }}>
         <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>Recent activity</Typography>
-        <Alert severity="error">Could not load history: {error.message}</Alert>
+        <Alert severity="error">Could not load history: {userMessage(error)}</Alert>
       </Box>
     );
   }

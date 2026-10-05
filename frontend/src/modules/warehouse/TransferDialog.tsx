@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Box,
   Button,
@@ -177,7 +178,7 @@ export default function TransferDialog({ sources, onClose, onSuccess }: Transfer
       onSuccess?.();
       onClose();
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Transfer failed';
+      const message = err instanceof Error ? userMessage(err) : 'Transfer failed';
       const summary = multi
         ? `${message} — ${done.size} of ${sources.length - alreadyThere.size} transferred. Transfer again to move the rest.`
         : message;

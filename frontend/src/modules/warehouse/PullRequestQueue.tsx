@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import { Alert, Box, Button, Typography, Chip, Stack } from '@mui/material';
 import { Link as RouterLink } from 'react-router-dom';
 import { ChevronRight, History } from 'lucide-react';
@@ -201,7 +202,7 @@ function PullRequestColumn({ source, heading }: PullRequestColumnProps) {
           never claim wrongly. */}
       {error && (
         <Alert severity="error" sx={{ mb: 1.5 }}>
-          Error loading pull requests: {error.message}
+          Error loading pull requests: {userMessage(error)}
         </Alert>
       )}
       <DataTable

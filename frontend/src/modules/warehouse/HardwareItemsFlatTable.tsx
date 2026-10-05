@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import { Box, Alert, CircularProgress, Typography } from '@mui/material';
 import {
   DataGrid,
@@ -213,7 +214,7 @@ export default function HardwareItemsFlatTable({ projectId }: HardwareItemsFlatT
     );
   }
   if (error) {
-    return <Alert severity="error">{error.message}</Alert>;
+    return <Alert severity="error">{userMessage(error)}</Alert>;
   }
   if (rows.length === 0) {
     return <Alert severity="info">No inventory on hand.</Alert>;

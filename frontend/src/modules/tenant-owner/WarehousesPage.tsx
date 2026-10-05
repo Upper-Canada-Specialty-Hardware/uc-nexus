@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Box,
   Button,
@@ -60,7 +61,7 @@ export default function WarehousesPage() {
       setPendingDelete(null);
     },
     onError: (err) => {
-      showToast(err.message, 'error');
+      showToast(userMessage(err), 'error');
       setPendingDelete(null);
     },
   });

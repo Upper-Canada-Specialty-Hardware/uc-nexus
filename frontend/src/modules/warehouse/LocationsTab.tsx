@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useLayoutEffect } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Box,
   Typography,
@@ -473,7 +474,7 @@ function ContentsPanel({ selected, warehouseLabel, onClose, onChanged }: Content
           <CircularProgress size={24} />
         </Box>
       )}
-      {error && <Alert severity="error">Error: {error.message}</Alert>}
+      {error && <Alert severity="error">Error: {userMessage(error)}</Alert>}
       {!loading && totalCount === 0 && (
         <Alert severity="info">No items at this location.</Alert>
       )}
@@ -754,7 +755,7 @@ export default function LocationsTab() {
         setDefineBay('');
         refetchRegistry();
       } catch (err: unknown) {
-        showToast(err instanceof Error ? err.message : 'Defining the location failed', 'error');
+        showToast(err instanceof Error ? userMessage(err) : 'Defining the location failed', 'error');
       }
     },
     [createLocation, showToast, refetchRegistry],
@@ -768,7 +769,7 @@ export default function LocationsTab() {
         showToast(`${formatLocation(row.aisle, row.row, row.bay)} retired from the pickers`, 'success');
         refetchRegistry();
       } catch (err: unknown) {
-        showToast(err instanceof Error ? err.message : 'Retiring the location failed', 'error');
+        showToast(err instanceof Error ? userMessage(err) : 'Retiring the location failed', 'error');
       }
     },
     [deactivateLocation, showToast, refetchRegistry],

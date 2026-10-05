@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Typography,
   Box,
@@ -166,7 +167,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
         }
         setPoDetailsMap(map);
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : 'Failed to load PO details';
+        const message = err instanceof Error ? userMessage(err) : 'Failed to load PO details';
         setPoDetailsError(message);
       } finally {
         setPoDetailsLoading(false);
@@ -435,7 +436,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
             uploadedSlipsRef.current[poId] = { file, id: packingSlipDocumentId };
           }
         } catch (err: unknown) {
-          failureMessage = `Uploading the packing slip for ${poLabel} failed: ${err instanceof Error ? err.message : 'An unknown error occurred'}`;
+          failureMessage = `Uploading the packing slip for ${poLabel} failed: ${err instanceof Error ? userMessage(err) : 'An unknown error occurred'}`;
           break;
         }
 
@@ -471,7 +472,7 @@ export default function ReceiveModal({ open, onClose, poIds, pendingDraftsByPoId
             break;
           }
           // Keep this PO's key so the retry reuses it.
-          failureMessage = `Submitting ${poLabel} failed: ${err instanceof Error ? err.message : 'An unknown error occurred'}. Retrying is safe - it won't submit the same count twice.`;
+          failureMessage = `Submitting ${poLabel} failed: ${err instanceof Error ? userMessage(err) : 'An unknown error occurred'}. Retrying is safe - it won't submit the same count twice.`;
           break;
         }
 

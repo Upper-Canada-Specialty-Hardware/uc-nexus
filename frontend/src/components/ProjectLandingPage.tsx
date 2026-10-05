@@ -1,4 +1,5 @@
 import { type ReactNode, useMemo, useState } from 'react';
+import { userMessage } from '../graphql/userMessage';
 import {
   Box,
   Typography,
@@ -140,7 +141,7 @@ export default function ProjectLandingPage({
   }
 
   if (error) {
-    return <Alert severity="error">Error loading projects: {error.message}</Alert>;
+    return <Alert severity="error">Error loading projects: {userMessage(error)}</Alert>;
   }
 
   return (

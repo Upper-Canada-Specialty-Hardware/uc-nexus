@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { userMessage } from '../../graphql/userMessage';
 import {
   Alert,
   Box,
@@ -223,7 +224,7 @@ export default function ReceivesPage() {
         />
       </Stack>
 
-      {error && <Alert severity="error">{error.message}</Alert>}
+      {error && <Alert severity="error">{userMessage(error)}</Alert>}
 
       {loading && !data ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>

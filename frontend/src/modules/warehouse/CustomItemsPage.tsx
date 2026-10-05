@@ -479,7 +479,7 @@ function TypeForm({
     CREATE_INVENTORY_ITEM_TYPE,
     {
       onCompleted: (data) => onCreated(data.createInventoryItemType),
-      onError: (e) => setError(e.message),
+      onError: (e) => setError(userMessage(e)),
     },
   );
 
@@ -596,11 +596,11 @@ export function ItemForm({
 
   const [createItem, { loading: creating }] = useMutation(CREATE_CUSTOM_INVENTORY_ITEM, {
     onCompleted: onSaved,
-    onError: (e) => setError(e.message),
+    onError: (e) => setError(userMessage(e)),
   });
   const [updateItem, { loading: updating }] = useMutation(UPDATE_CUSTOM_INVENTORY_ITEM, {
     onCompleted: onSaved,
-    onError: (e) => setError(e.message),
+    onError: (e) => setError(userMessage(e)),
   });
   const saving = creating || updating;
 
