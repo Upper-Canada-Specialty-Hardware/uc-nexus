@@ -1060,6 +1060,7 @@ describe('ImportWizard leaving with work', () => {
 
     expect(onClose).not.toHaveBeenCalled();
     // The wizard stays hidden from the accessibility tree until the confirm's exit transition ends.
-    expect(await screen.findByRole('button', { name: 'Select All' })).toBeInTheDocument();
+    // The exit transition runs on the CI runner's clock, which is far slower than a laptop's (1s was not enough).
+    expect(await screen.findByRole('button', { name: 'Select All' }, { timeout: 10_000 })).toBeInTheDocument();
   });
 });
