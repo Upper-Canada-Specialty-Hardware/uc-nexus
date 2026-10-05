@@ -2,6 +2,8 @@
 
 import base64
 import binascii
+import hashlib
+import json
 import logging
 import re
 import uuid
@@ -1414,6 +1416,35 @@ def _lock_po_row(session: Session, po: PurchaseOrder) -> None:
     receipt all take it first), so this never waits on a line while holding the PO."""
     session.execute(select(PurchaseOrder.id).where(PurchaseOrder.id == po.id).with_for_update())
     session.refresh(po)
+
+
+def _digest_decimal(value) -> str | None:
+    """12, 12.00 and 12.00000 are the same money; the digest must not tell them apart."""
+    if value is None:
+        return None
+    return format(Decimal(value).normalize(), "f")
+
+
+def registration_digest(session: Session, po_id: uuid.UUID) -> str | None:
+    """A fingerprint of everything a queued registration writes back onto its draft (#1599).
+
+    The registration's payload is taken when it is built, and the save after GP answers writes those lines,
+    costs, project and PO number back. A draft changed after that - an edit while the registration was
+    queued, after it failed and before a retry, or during the relay attempt that ended in queueing it -
+    would be posted to GP as it was and then overwritten. The worker compares this at drain time and
+    refuses the push when it no longer matches. None when the PO is gone."""
+    po = session.get(PurchaseOrder, po_id)
+    if po is None:
+        return None
+    lines = session.scalars(select(POLineItem).where(POLineItem.po_id == po_id)).all()
+    snapshot = {
+        "po_number": po.po_number,
+        "project_id": str(po.project_id) if po.project_id else None,
+        "shipping_cost": _digest_decimal(po.shipping_cost),
+        "tariff_amount": _digest_decimal(po.tariff_amount),
+        "lines": sorted([str(li.id), _digest_decimal(li.unit_cost), li.order_as, li.ordered_quantity] for li in lines),
+    }
+    return hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()
 
 
 QUEUED_REGISTRATION_EDIT_REFUSAL = "This PO's registration is queued for GP, so it can't be changed until it posts."

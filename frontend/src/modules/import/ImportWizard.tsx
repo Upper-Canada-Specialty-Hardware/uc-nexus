@@ -67,7 +67,7 @@ import {
 } from './types';
 import { buildPoDrafts, toPoDraftInput } from './poDrafts';
 import * as draftOps from './draftOps';
-import { carryDraftEdits, mergeAddedProducts } from './draftOps';
+import { carryDraftEdits, describeUnattached, mergeAddedProducts, unattachedDocuments } from './draftOps';
 import type { Project } from '../../types/project';
 import { monoSx, microLabelSx, tabularSx } from '../../theme';
 import { plural } from '../../utils/plural';
@@ -1178,6 +1178,15 @@ export default function ImportWizard({
     () => (purpose === 'po' ? buildPoDrafts(draftGroups, vendorGroups, orderAsValues) : null),
     [purpose, draftGroups, vendorGroups, orderAsValues],
   );
+  // #1602: documents on a draft that mints no PO (not included, or no lines left) are never uploaded -
+  // named on the Finalize step and in the confirm rather than dropped without a word.
+  const unattachedNote = useMemo(
+    () =>
+      poDraftBuild
+        ? describeUnattached(unattachedDocuments(draftGroups, new Set(poDraftBuild.map((d) => d.sourceDraftId))))
+        : null,
+    [poDraftBuild, draftGroups],
+  );
 
   const buildFinalizeInput = useCallback(() => {
     if (!parsed) return null;
@@ -2021,6 +2030,11 @@ export default function ImportWizard({
                     <Typography variant="body2" sx={{ fontWeight: 600 }}>
                       {includedDraftCount} Purchase Order draft(s)
                     </Typography>
+                    {unattachedNote && (
+                      <Alert severity="warning" sx={{ mt: 1 }} data-testid="unattached-documents">
+                        {unattachedNote}
+                      </Alert>
+                    )}
                   </Box>
                 )}
 
@@ -2124,7 +2138,7 @@ export default function ImportWizard({
               ? "This will save this file as the project's hardware schedule. Continue?"
               : purpose === 'assembly'
                 ? 'This raises the shop assembly request. Nothing is reserved - the Shop Assembly Manager batches it against free stock. Continue?'
-                : 'This will create the selected purchase orders. Continue?'
+                : `This will create the selected purchase orders.${unattachedNote ? ` ${unattachedNote}` : ''} Continue?`
         }
         confirmLabel={replaceSchedule ? 'Replace Schedule' : 'Finalize'}
         busy={finalizeLoading}
