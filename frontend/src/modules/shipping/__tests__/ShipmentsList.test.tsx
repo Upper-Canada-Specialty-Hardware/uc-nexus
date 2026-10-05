@@ -25,6 +25,10 @@ vi.mock('@react-pdf/renderer', () => ({
   StyleSheet: { create: (s: unknown) => s },
 }));
 
+// The list resets its project filter on an acting-company switch (#1532); outside the app shell there is
+// no company provider, so the acting company is stood in for.
+vi.mock('../../../company/ActingCompanyContext', () => ({ useActingCompany: () => ({ company: 'TUBC' }) }));
+
 const INFINITE = Number.POSITIVE_INFINITY;
 
 const HEADER = {

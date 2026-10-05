@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
-import { useDropProjectOnCompanySwitch } from '../useDropProjectOnCompanySwitch';
+import { useDropProjectOnCompanySwitch, useOnCompanySwitch } from '../useDropProjectOnCompanySwitch';
 
 // #1528: Shipping Requests kept the old company's ?project= after a switch, as Inventory did before #1469.
 let actingCompany: string | null = 'TUBC';
@@ -43,4 +43,22 @@ it('keeps the project while the company stays the same, and on the first company
   rerender(page());
 
   expect(screen.getByTestId('search')).toHaveTextContent('project=proj-1');
+});
+
+it("runs a page's own reset on a switch, not on the first company or a same-company render (#1532)", () => {
+  const reset = vi.fn();
+  function Filtered() {
+    useOnCompanySwitch(reset);
+    return null;
+  }
+  actingCompany = null;
+  const { rerender } = render(<Filtered />);
+  actingCompany = 'TUBC';
+  rerender(<Filtered />);
+  rerender(<Filtered />);
+  expect(reset).not.toHaveBeenCalled();
+
+  actingCompany = 'UCSH';
+  rerender(<Filtered />);
+  expect(reset).toHaveBeenCalledTimes(1);
 });

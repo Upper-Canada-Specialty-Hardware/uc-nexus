@@ -4,6 +4,10 @@ import { MockedProvider } from '@apollo/client/testing/react';
 import ReceivingHistory from '../ReceivingHistory';
 import { GET_PO_RECEIVING_DETAILS, GET_RECEIVING_HISTORY_POS } from '../../../graphql/warehouse';
 
+// The page clears its filter on an acting-company switch (#1537); outside the app shell there is no company
+// provider, so the acting company is stood in for.
+vi.mock('../../../company/ActingCompanyContext', () => ({ useActingCompany: () => ({ company: 'TUBC' }) }));
+
 /**
  * The Receiving page's History view (#447).
  *

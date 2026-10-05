@@ -76,6 +76,7 @@ import { FIT_CELL_WRAP_SX } from '../../components/fitColumns';
 import { FadeIn } from '../../motion';
 import { parseServerDate, parseServerDay } from '../../utils/serverDate';
 import { openPdfWindow } from '../../utils/openPdf';
+import { useOnCompanySwitch } from '../../hooks/useDropProjectOnCompanySwitch';
 
 // UI law 1 (#1231): a short value hugs its column, and the one text column takes the slack. A long
 // product code wraps inside its cell rather than pushing the table wider.
@@ -244,6 +245,9 @@ export default function ShipmentsList({ projectId, heading }: Props) {
     return () => window.clearTimeout(timer);
   }, [search, query]);
   const [projectFilter, setProjectFilter] = useState('');
+  // #1532: the picked project belongs to the company it was picked in; a switch would refetch it under the
+  // new one, be refused, and fail the list with a blank select.
+  useOnCompanySwitch(() => setProjectFilter(''));
   const [shown, setShown] = useState(PAGE);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [activeSlip, setActiveSlip] = useState<ReturnSlip | null>(null);

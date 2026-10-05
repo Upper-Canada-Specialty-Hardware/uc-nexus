@@ -181,7 +181,9 @@ def notify_po_shortfall(
     `has_unread_notification_for_pull` able to dedupe it (#367): a short pick is resumable, so the
     same gap can be re-reported every time the picker keys in another handful.
     """
-    label = f"Pull Request {request_number}" if request_number else "A shop-assembly task"
+    # #1533: no longer defaults to "A shop-assembly task" - the one caller without a pull number is the
+    # creation gate, which names what it refused through notify_gate_shortfall.
+    label = f"Pull Request {request_number}" if request_number else "A request"
     headline = (
         f"{label} was sent short of what the schedule calls for - backfill needed."
         if sent_short
@@ -196,4 +198,58 @@ def notify_po_shortfall(
         notification_type=NotificationType.INVENTORY_SHORTFALL,
         message=message,
         pull_request_id=pull_request_id,
+    )
+
+
+def notify_gate_shortfall(session: Session, error) -> Notification | None:
+    """PO backfill signal for a request the creation gate refused (#342, #1533), or None when there is
+    nothing to raise.
+
+    Only the part genuinely not in the building goes to purchasing: the gate's `short` is measured against
+    *available* (on-hand - deficient - reservations), so a combo short only because another request holds
+    it is not a purchasing problem, and for the rest `short - reserved` is what the shelf is missing.
+
+    The headline names what was refused - "A shipping-out request couldn't be created" - from the gate's
+    own label. It used to fall back to "A shop-assembly task", which was never true on the import path and
+    sent purchasing looking on the Shop Assembly board for a request that did not exist.
+
+    A refused creation writes nothing, so there is no pull to key a dedupe on the way
+    `has_unread_notification_for_pull` does. The creator retries the same selection instead, and every
+    refusal used to raise another copy. So a notice is skipped while an identical one - same project, same
+    audience, no pull, word for word the same message - is still unread. Unread for the same reason as the
+    pull dedupe: once somebody has read it the signal has done its job, and the same gap coming back after
+    that is worth raising again. A different shortfall reads differently and is raised.
+    """
+    from dataclasses import replace
+
+    unstocked = [replace(s, short=max(0, s.short - s.reserved)) for s in error.shortfalls if s.short > s.reserved]
+    if not unstocked:
+        return None
+    subject = getattr(error, "label", None)
+    headline = (
+        f"A {subject} couldn't be created - backfill needed."
+        if subject
+        else "A request couldn't be fulfilled - backfill needed."
+    )
+    message = f"{headline} {format_shortfall_lines(unstocked)}"
+    already = session.scalar(
+        select(
+            exists().where(
+                Notification.project_id == error.project_id,
+                Notification.type == NotificationType.INVENTORY_SHORTFALL,
+                Notification.recipient_role == PO_RECIPIENT_ROLE,
+                Notification.pull_request_id.is_(None),
+                Notification.is_read == False,
+                Notification.message == message,
+            )
+        )
+    )
+    if already:
+        return None
+    return create_notification(
+        session,
+        project_id=error.project_id,
+        recipient_role=PO_RECIPIENT_ROLE,
+        notification_type=NotificationType.INVENTORY_SHORTFALL,
+        message=message,
     )
