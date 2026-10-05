@@ -19,6 +19,7 @@ import { GET_DEFICIENT_ITEMS } from '../../graphql/warehouse';
 import ResolveDeficiencyModal, { type DeficientRow } from './stock/ResolveDeficiencyModal';
 import PageHeader from '../../components/PageHeader';
 import { microLabelSx, monoSx } from '../../theme';
+import { naturalSortComparator } from '../../utils/naturalCompare';
 
 type SourceFilter = 'ALL' | 'PROJECT_INVENTORY' | 'STOCK_POOL';
 
@@ -97,6 +98,8 @@ export default function DeficientItemsReview() {
       minWidth: 160,
       valueGetter: (_v, row) =>
         [row.aisle, row.row, row.bay].filter(Boolean).join(' / ') || '— Unlocated —',
+      // #1569: A / 1 / 2 before A / 1 / 10.
+      sortComparator: naturalSortComparator,
       renderCell: ({ value }) => (
         <Typography component="span" sx={monoSx}>
           {value as string}
