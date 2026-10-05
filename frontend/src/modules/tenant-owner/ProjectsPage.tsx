@@ -8,6 +8,7 @@ import { GET_ADMIN_PROJECTS, SYNC_GP_JOBS } from '../../graphql/admin';
 import { useIdentity } from '../../hooks/useIdentity';
 import { useToast } from '../../components/Toast';
 import PageHeader from '../../components/PageHeader';
+import LoadError from '../../components/LoadError';
 import { extractGpError } from '../../graphql/gpError';
 import { FadeIn } from '../../motion';
 import { useGridColumnFit } from '../../components/useGridColumnFit';
@@ -31,7 +32,7 @@ export default function ProjectsPage() {
   // people go to upload a hardware schedule.
   const [createOpen, setCreateOpen] = useState(false);
 
-  const { data, loading, refetch } = useQuery<{ adminProjects: ProjectFormValue[] }>(GET_ADMIN_PROJECTS, {
+  const { data, loading, error, refetch } = useQuery<{ adminProjects: ProjectFormValue[] }>(GET_ADMIN_PROJECTS, {
     skip: !ownsTenant,
   });
   const allProjects = useMemo(() => data?.adminProjects ?? [], [data]);
@@ -90,7 +91,8 @@ export default function ProjectsPage() {
           parent={{ label: 'Tenant Owner', to: '/app/tenant-owner' }}
           description="Every job in GP becomes a project automatically, in the company that holds it. Click a row to open the project - details, archiving, and what it currently holds."
           actions={
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            // #1543: wraps, so on a phone Create GP Job drops to a second line instead of being clipped.
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
               {/* #637: archived jobs are off every picker, so they are out of the way by default and
                   one switch away when someone needs to un-archive one. */}
               <FormControlLabel
@@ -126,26 +128,31 @@ export default function ProjectsPage() {
         />
       </FadeIn>
 
-      <DataGrid
-        ref={setContainer}
-        {...gridProps}
-        rows={projects}
-        loading={loading}
-        onRowClick={handleRowClick}
-        autoHeight
-        disableRowSelectionOnClick
-        pageSizeOptions={[10, 25, 50]}
-        initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
-        sx={[
-          gridProps.sx,
-          {
-            '& .MuiDataGrid-row': { cursor: 'pointer' },
-            // An archived row is still legible, just visibly out of play.
-            '& .archived-row': { opacity: 0.62 },
-          },
-        ]}
-        getRowClassName={(params) => (params.row.archived ? 'archived-row' : '')}
-      />
+      {/* #1543: a failed read said "No rows" - as if the company had no projects - with nothing to retry. */}
+      {error && !data ? (
+        <LoadError what="the projects" error={error} onRetry={() => refetch()} />
+      ) : (
+        <DataGrid
+          ref={setContainer}
+          {...gridProps}
+          rows={projects}
+          loading={loading}
+          onRowClick={handleRowClick}
+          autoHeight
+          disableRowSelectionOnClick
+          pageSizeOptions={[10, 25, 50]}
+          initialState={{ pagination: { paginationModel: { pageSize: 10 } } }}
+          sx={[
+            gridProps.sx,
+            {
+              '& .MuiDataGrid-row': { cursor: 'pointer' },
+              // An archived row is still legible, just visibly out of play.
+              '& .archived-row': { opacity: 0.62 },
+            },
+          ]}
+          getRowClassName={(params) => (params.row.archived ? 'archived-row' : '')}
+        />
+      )}
 
       {/* The dialog refetches the shared project list itself; this grid reads the admin one, so it
           is re-read here once GP has answered and the new job is a project. */}

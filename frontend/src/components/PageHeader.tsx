@@ -94,7 +94,9 @@ export default function PageHeader({
         )}
         {children}
       </Box>
-      {actions && <Box sx={{ flexShrink: 0 }}>{actions}</Box>}
+      {/* #1543: capped at the row's width. Without it the box took its content's one-line width even on a line of
+          its own, so a page's wrapping action row never wrapped and a phone clipped the last button. */}
+      {actions && <Box sx={{ flexShrink: 0, maxWidth: '100%', minWidth: 0 }}>{actions}</Box>}
     </Box>
   );
 }
