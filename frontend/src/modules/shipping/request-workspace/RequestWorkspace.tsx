@@ -167,7 +167,7 @@ function EditRoute() {
     );
   }
   if (error) {
-    return <Alert severity="error">Could not load this request: {userMessage(error)}</Alert>;
+    return <Alert severity="error">Could not load this request: {userMessage(error, { reading: true })}</Alert>;
   }
   if (!request) {
     return <Alert severity="warning">This request no longer exists.</Alert>;

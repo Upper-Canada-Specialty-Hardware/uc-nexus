@@ -317,7 +317,7 @@ export default function NexusGpTrafficPage() {
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          {userMessage(error)}
+          {userMessage(error, { reading: true })}
         </Alert>
       )}
 

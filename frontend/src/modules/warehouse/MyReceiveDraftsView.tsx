@@ -120,7 +120,7 @@ export default function MyReceiveDraftsView() {
       )}
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          Error loading your drafts: {userMessage(error)}
+          Error loading your drafts: {userMessage(error, { reading: true })}
         </Alert>
       )}
       {!loading && !error && drafts.length === 0 && (

@@ -125,7 +125,7 @@ export default function ReceiveApprovalsPage() {
       )}
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          Error loading receive drafts: {userMessage(error)}
+          Error loading receive drafts: {userMessage(error, { reading: true })}
         </Alert>
       )}
       {!loading && !error && drafts.length === 0 && (

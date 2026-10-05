@@ -401,7 +401,7 @@ export default function AuditHistoryDrawer({
             <CircularProgress size={24} />
           </Box>
         )}
-        {error && <Alert severity="error">Error loading audit log: {userMessage(error)}</Alert>}
+        {error && <Alert severity="error">Error loading audit log: {userMessage(error, { reading: true })}</Alert>}
         {!loading && !error && entries.length === 0 && (
           <Alert severity="info">No audit history for this item</Alert>
         )}
