@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Alert, Box, Button, Stack, TextField, Typography } from '@mui/material';
 import { useMutation } from '@apollo/client/react';
 import Modal from '../../../components/Modal';
@@ -25,6 +25,8 @@ export default function SetStockKindModal({ item, onClose, onSuccess }: Props) {
   const target = otherPoolKind(current);
   const [quantity, setQuantity] = useState<string>(String(item.available));
   const { showToast } = useToast();
+  // #1548: Enter and a click in the same moment must not send it twice; set before `loading` re-renders.
+  const inFlight = useRef(false);
   const q = Number(quantity);
   const valid = Number.isInteger(q) && q >= 1 && q <= item.available;
   const remaining = item.quantity - q;
@@ -33,14 +35,19 @@ export default function SetStockKindModal({ item, onClose, onSuccess }: Props) {
     refetchQueries: WAREHOUSE_REFETCH_QUERIES,
     awaitRefetchQueries: true,
     onCompleted: () => {
+      inFlight.current = false;
       showToast(`Marked ${q} as ${POOL_KIND_LABEL[target]}`, 'success');
       onSuccess();
     },
-    onError: (err) => showToast(err.message, 'error'),
+    onError: (err) => {
+      inFlight.current = false;
+      showToast(err.message, 'error');
+    },
   });
 
   const handleSubmit = () => {
-    if (!valid) return;
+    if (!valid || loading || inFlight.current) return;
+    inFlight.current = true;
     mutate({ variables: { input: { stockItemId: item.id, kind: target, quantity: q } } });
   };
 
@@ -49,10 +56,14 @@ export default function SetStockKindModal({ item, onClose, onSuccess }: Props) {
       open
       onClose={onClose}
       title={`Mark ${item.productCode} as ${POOL_KIND_LABEL[target]}`}
+      // #1548: the primary action is the form's submit, so Enter in the quantity does what the button does,
+      // and is refused whenever the button is disabled.
+      onSubmit={handleSubmit}
+      submitDisabled={!valid || loading}
       actions={
         <>
           <Button onClick={onClose}>Cancel</Button>
-          <Button variant="contained" onClick={handleSubmit} disabled={!valid || loading}>
+          <Button type="submit" variant="contained" disabled={!valid || loading}>
             Mark as {POOL_KIND_LABEL[target]}
           </Button>
         </>
@@ -74,6 +85,7 @@ export default function SetStockKindModal({ item, onClose, onSuccess }: Props) {
           value={quantity}
           onChange={(e) => setQuantity(e.target.value)}
           required
+          autoFocus
           error={quantity !== '' && !valid}
           slotProps={{ htmlInput: { min: 1, max: item.available } }}
           sx={{ maxWidth: 260 }}
@@ -82,7 +94,7 @@ export default function SetStockKindModal({ item, onClose, onSuccess }: Props) {
               ? `${remaining} stay ${POOL_KIND_LABEL[current]} on this shelf`
               : valid
                 ? `The whole row becomes ${POOL_KIND_LABEL[target]}`
-                : `Between 1 and ${item.available}`
+                : `Enter a whole number from 1 to ${item.available}`
           }
         />
         {item.deficientQuantity > 0 && (

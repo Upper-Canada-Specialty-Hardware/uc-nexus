@@ -105,3 +105,28 @@ describe('ResolveDeficiencyModal', () => {
     await waitFor(() => expect(result).toHaveBeenCalled());
   });
 });
+
+// #1548: Enter submits, the quantity has the focus, and a dead Resolve says what it is waiting for.
+describe('ResolveDeficiencyModal keyboard (#1548)', () => {
+  it('says why Resolve is off and sends once on Enter', async () => {
+    const result = vi.fn(() => ({ data: { resolveDeficiency: null } }));
+    renderModal(projectRow, [{ request: { query: RESOLVE_DEFICIENCY, variables: () => true }, result }]);
+    const qty = screen.getByLabelText(/Quantity \(max 3\)/);
+    await waitFor(() => expect(qty).toHaveFocus());
+    expect(screen.getByTestId('blocked-reason')).toHaveTextContent('Choose what the units cost in the stock pool.');
+
+    fireEvent.change(qty, { target: { value: '4' } });
+    expect(screen.getByTestId('blocked-reason')).toHaveTextContent('Enter a whole number from 1 to 3.');
+    fireEvent.submit(qty.closest('form')!);
+
+    fireEvent.change(qty, { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Left behind - $0 cost' }));
+    expect(screen.queryByTestId('blocked-reason')).toBeNull();
+    fireEvent.submit(qty.closest('form')!);
+    fireEvent.submit(qty.closest('form')!);
+
+    await waitFor(() => expect(result).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(result).toHaveBeenCalledTimes(1);
+  });
+});
