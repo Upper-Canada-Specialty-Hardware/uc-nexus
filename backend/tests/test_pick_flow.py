@@ -630,6 +630,22 @@ def test_a_pull_cannot_be_picked_before_it_is_started(db_session):
         warehouse_repository.confirm_pick(db_session, pr.id, [_line(row, 2)], "picker")
 
 
+def test_a_pull_cancelled_mid_pick_says_so_rather_than_start_the_pick(db_session):
+    """#1576: a manager cancels while the picker's sheet is open; the picker's confirm must not tell them to
+    start a pull that is cancelled."""
+    project = _make_project(db_session)
+    row = _seed_inventory(db_session, project.id, quantity=5)
+    pr = _started_pull(db_session, project.id, needs=[(*HINGE, 2, "A01")])
+    pr.status = PullRequestStatus.CANCELLED
+    db_session.flush()
+
+    with pytest.raises(InvalidStateTransitionError) as excinfo:
+        warehouse_repository.confirm_pick(db_session, pr.id, [_line(row, 2)], "picker")
+
+    assert "was cancelled - it can no longer be picked" in excinfo.value.message
+    assert "start the pick first" not in excinfo.value.message
+
+
 # --- the short path ----------------------------------------------------------------------------
 
 

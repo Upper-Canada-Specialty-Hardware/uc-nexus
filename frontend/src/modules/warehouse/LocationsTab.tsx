@@ -59,6 +59,7 @@ import {
   type LocationEntry,
 } from './locationRows';
 import { openRowOnEnter } from '../../components/openRowOnEnter';
+import { naturalSortComparator } from '../../utils/naturalCompare';
 
 interface WarehouseOption {
   id: string;
@@ -177,6 +178,8 @@ function buildUtilColumns(
         flex: 1,
         minWidth: 0,
         valueGetter: (_v, row) => formatLocation(row.aisle, row.row, row.bay),
+        // #1569: A-1-2 before A-1-10.
+        sortComparator: naturalSortComparator,
         renderCell: ({ row }) => (
           <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, width: '100%' }}>
             <Box sx={{ display: 'flex', color: 'text.secondary' }}>
@@ -201,6 +204,8 @@ function buildUtilColumns(
       flex: 1,
       minWidth: 140,
       valueGetter: (_v, row) => formatLocation(row.aisle, row.row, row.bay),
+        // #1569: A-1-2 before A-1-10.
+        sortComparator: naturalSortComparator,
       renderCell: (p) => (
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
           <Box sx={{ display: 'flex', color: 'text.secondary' }}>

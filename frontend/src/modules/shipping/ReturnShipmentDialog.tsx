@@ -17,6 +17,7 @@ import {
 } from '@mui/material';
 import { useMutation, useQuery } from '@apollo/client/react';
 import Modal from '../../components/Modal';
+import LoadError from '../../components/LoadError';
 import { useToast } from '../../components/Toast';
 import { GET_WAREHOUSES } from '../../graphql/shared';
 import { GET_RETURNABLE_LINES, CREATE_SHIPMENT_RETURN } from '../../graphql/shipping';
@@ -68,6 +69,8 @@ export interface ReturnSlip {
   id: string;
   packingSlipNumber: string;
   projectName: string;
+  /** #1578: a full return cancels only a SCHEDULED slip, so the shortcut is named for what it will do. */
+  status?: string;
 }
 
 interface Props {
@@ -79,7 +82,7 @@ interface Props {
 export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Props) {
   const { showToast } = useToast();
 
-  const { data, loading, error } = useQuery<{ returnableLines: ReturnableLine[] }>(GET_RETURNABLE_LINES, {
+  const { data, loading, error, refetch } = useQuery<{ returnableLines: ReturnableLine[] }>(GET_RETURNABLE_LINES, {
     variables: { packingSlipId: slip.id },
     fetchPolicy: 'cache-and-network',
   });
@@ -88,7 +91,11 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
     [data],
   );
 
-  const { data: warehousesData } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
+  const {
+    data: warehousesData,
+    error: warehousesError,
+    refetch: refetchWarehouses,
+  } = useQuery<{ warehouses: WarehouseOption[] }>(GET_WAREHOUSES, {
     variables: { includeInactive: false },
   });
   const warehouses = useMemo(() => warehousesData?.warehouses ?? [], [warehousesData]);
@@ -104,6 +111,10 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
     return primary?.id ?? '';
   }, [warehouses]);
   const effectiveWarehouseId = warehouseId || defaultWarehouseId;
+  // #1578: with the warehouse list unread there is nowhere to send the return.
+  const warehousesUnread = !!warehousesError && warehouses.length === 0;
+  // Only a SCHEDULED slip is cancelled by a full return (#973); after pick-up it stays where it is.
+  const cancelsShipment = slip.status === 'SCHEDULED';
 
   // Drafts are created lazily on first edit; unedited lines fall back to DEFAULT_DRAFT.
   const getDraft = (id: string): LineDraft => drafts[id] ?? DEFAULT_DRAFT;
@@ -122,7 +133,7 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
     onError: (err) => setFormError(userMessage(err)),
   });
 
-  // Pre-fill a full return-to-project for every line (shipment cancellation shortcut).
+  // Pre-fill a full return-to-project for every line. On a SCHEDULED slip that cancels the shipment (#973).
   const handleCancelShipment = () => {
     setDrafts((prev) => {
       const next = { ...prev };
@@ -214,7 +225,7 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
           <Button
             variant="contained"
             onClick={handleSubmit}
-            disabled={submitting || loading || lines.length === 0}
+            disabled={submitting || loading || lines.length === 0 || warehousesUnread}
             startIcon={submitting ? <CircularProgress size={16} /> : undefined}
           >
             {submitting ? 'Recording…' : 'Record return'}
@@ -224,7 +235,14 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
     >
       <Stack spacing={2}>
         {formError && <Alert severity="error">{formError}</Alert>}
-        {error && <Alert severity="error">{userMessage(error, { reading: true })}</Alert>}
+        {/* #1578: a failed read is not an empty shipment - say so, with a retry. */}
+        {error && lines.length === 0 && (
+          <LoadError what="the shipment's returnable lines" error={error} onRetry={() => refetch()} />
+        )}
+        {error && lines.length > 0 && <Alert severity="warning">{userMessage(error, { reading: true })}</Alert>}
+        {warehousesUnread && (
+          <LoadError what="the warehouses" error={warehousesError} onRetry={() => refetchWarehouses()} />
+        )}
 
         <Box>
           <Typography sx={microLabelSx}>Packing slip</Typography>
@@ -264,7 +282,7 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
             disabled={lines.length === 0}
             sx={{ whiteSpace: 'nowrap' }}
           >
-            Cancel whole shipment
+            {cancelsShipment ? 'Cancel whole shipment' : 'Return everything'}
           </Button>
         </Stack>
 
@@ -274,7 +292,7 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
           </Box>
         )}
 
-        {!loading && lines.length === 0 && (
+        {!loading && !error && lines.length === 0 && (
           <Alert severity="info">Nothing left to return on this shipment.</Alert>
         )}
 

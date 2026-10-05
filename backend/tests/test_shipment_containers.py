@@ -616,3 +616,71 @@ def test_a_slip_cut_without_containers_simply_has_none(db_session):
     db_session.refresh(slip)
 
     assert slip.containers == []
+
+
+# --- what the confirm dialog showed (#1583) ----------------------------------------------------
+
+
+def test_a_container_that_changed_since_the_manifest_was_drawn_is_refused(db_session):
+    """Another user loaded the skid while the dialog was open: those lines must not ship unseen."""
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=6)
+    skid = _container(db_session, project, name="Skid 1")
+    containers.set_container_items(db_session, skid.id, [_loose_item(2)])
+    db_session.refresh(skid)
+    shown = {skid.id: {i.id for i in skid.items}}
+
+    # Someone else adds to it (a save rewrites its lines under new ids).
+    containers.set_container_items(db_session, skid.id, [_loose_item(2), _loose_item(4, code="HG-100", opening="101")])
+
+    with pytest.raises(ConflictError, match="Skid 1 changed since you opened this"):
+        containers.confirm_shipment_from_containers(
+            db_session, project.id, [skid.id], shipped_by="shipper", details=None, expected_contents=shown
+        )
+
+
+def test_a_container_unchanged_since_the_manifest_ships(db_session):
+    project = _project(db_session)
+    _staged_loose(db_session, project, qty=2)
+    skid = _container(db_session, project, name="Skid 1")
+    containers.set_container_items(db_session, skid.id, [_loose_item(2)])
+    db_session.refresh(skid)
+
+    slip = containers.confirm_shipment_from_containers(
+        db_session,
+        project.id,
+        [skid.id],
+        shipped_by="shipper",
+        details=None,
+        expected_contents={skid.id: {i.id for i in skid.items}},
+    )
+    assert [i.quantity for i in slip.items] == [2]
+
+
+def test_two_saves_racing_to_one_open_name_get_the_readable_conflict(db_session):
+    """The pre-check is an unlocked read; the unique index catches the race, worded like the check."""
+    from app.models.shipment_container import ShipmentContainer
+
+    project = _project(db_session)
+    # The other save got there first, past this one's pre-check.
+    db_session.add(
+        ShipmentContainer(
+            id=uuid.uuid4(),
+            project_id=project.id,
+            container_type=ShipmentContainerType.SKID,
+            name="Skid 9",
+            created_by="other",
+        )
+    )
+    db_session.flush()
+    skid = _container(db_session, project, name="Skid 2")
+
+    original = containers._check_name_free
+    containers._check_name_free = lambda *a, **k: None
+    try:
+        with pytest.raises(ConflictError, match="An open container named Skid 9 already exists"):
+            _container(db_session, project, name="Skid 9")
+        with pytest.raises(ConflictError, match="An open container named Skid 9 already exists"):
+            containers.rename_container(db_session, skid.id, "Skid 9")
+    finally:
+        containers._check_name_free = original
