@@ -499,7 +499,7 @@ export default function SharePointMigrationPage() {
         }
       >
         <AlertTitle>Could not read SharePoint</AlertTitle>
-        {userMessage(error)}
+        {userMessage(error, { reading: true })}
       </Alert>
     );
   }

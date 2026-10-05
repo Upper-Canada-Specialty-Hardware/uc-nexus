@@ -99,7 +99,7 @@ export default function LocationAuditStrip({ aisle, row, bay, warehouseId }: Pro
     return (
       <Box sx={{ mt: 2 }}>
         <Typography component="div" sx={{ ...microLabelSx, mb: 1 }}>Recent activity</Typography>
-        <Alert severity="error">Could not load history: {userMessage(error)}</Alert>
+        <Alert severity="error">Could not load history: {userMessage(error, { reading: true })}</Alert>
       </Box>
     );
   }

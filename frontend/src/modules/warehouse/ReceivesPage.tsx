@@ -224,7 +224,7 @@ export default function ReceivesPage() {
         />
       </Stack>
 
-      {error && <Alert severity="error">{userMessage(error)}</Alert>}
+      {error && <Alert severity="error">{userMessage(error, { reading: true })}</Alert>}
 
       {loading && !data ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>

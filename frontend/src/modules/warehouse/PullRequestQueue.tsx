@@ -202,7 +202,7 @@ function PullRequestColumn({ source, heading }: PullRequestColumnProps) {
           never claim wrongly. */}
       {error && (
         <Alert severity="error" sx={{ mb: 1.5 }}>
-          Error loading pull requests: {userMessage(error)}
+          Error loading pull requests: {userMessage(error, { reading: true })}
         </Alert>
       )}
       <DataTable

@@ -265,7 +265,7 @@ export default function PullRequestHistoryPage() {
           claim wrongly. */}
       {error && (
         <Alert severity="error" sx={{ mb: 1.5 }}>
-          Error loading pull request history: {userMessage(error)}
+          Error loading pull request history: {userMessage(error, { reading: true })}
         </Alert>
       )}
 

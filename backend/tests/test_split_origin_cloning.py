@@ -13,7 +13,8 @@ from .inventory_fixtures import make_il, make_project, make_return_item
 def test_split_clones_the_return_origin_onto_the_remainder(db_session):
     project = make_project(db_session)
     ret = make_return_item(db_session, project)
-    il = make_il(db_session, project, quantity=10, shipment_return_item_id=ret.id, aisle="A", row="1", bay="1")
+    # Unlocated: a split is the partial put-away's first step, and a shelved row is refused (#1567).
+    il = make_il(db_session, project, quantity=10, shipment_return_item_id=ret.id, aisle=None, row=None, bay=None)
 
     kept, remainder = warehouse_repository.split_inventory_location(db_session, il.id, 4, performed_by="picker")
     db_session.flush()
@@ -32,7 +33,7 @@ def test_split_clones_the_return_origin_onto_the_remainder(db_session):
 
 def test_split_clones_a_stock_origin_onto_the_remainder(db_session):
     project = make_project(db_session)
-    il = make_il(db_session, project, quantity=10, aisle="A", row="1", bay="1")
+    il = make_il(db_session, project, quantity=10, aisle=None, row=None, bay=None)
 
     _kept, remainder = warehouse_repository.split_inventory_location(db_session, il.id, 3, performed_by="picker")
     db_session.flush()
