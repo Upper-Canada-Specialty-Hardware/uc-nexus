@@ -1311,8 +1311,10 @@ def get_po_statistics(
 
 # Sortable columns for the server-driven register (gp-owned-po mirror). Client sort keys map here; an
 # unknown key falls back to created_at so a bad param can never 500.
+# #1568: "poNumber" is the PO / Request # column, which shows the request number on a draft (no PO number
+# yet), so it sorts on that same value - sorting on po_number alone put every draft in one unordered block.
 _PAGE_SORT_COLUMNS = {
-    "poNumber": PurchaseOrder.po_number,
+    "poNumber": func.coalesce(PurchaseOrder.po_number, PurchaseOrder.request_number),
     "status": PurchaseOrder.status,
     "orderedAt": PurchaseOrder.ordered_at,
     "createdAt": PurchaseOrder.created_at,
@@ -1376,7 +1378,9 @@ def get_purchase_orders_page(
     total = session.scalar(_with_project(select(func.count()).select_from(PurchaseOrder)).where(*filters)) or 0
 
     col = _PAGE_SORT_COLUMNS.get(sort_field, PurchaseOrder.created_at)
-    ordering = col.desc() if sort_dir == "desc" else col.asc()
+    # #1568: empty values last in either direction - Postgres puts NULLs first on a descending sort, so
+    # "Order Date, newest first" opened on every never-ordered draft.
+    ordering = (col.desc() if sort_dir == "desc" else col.asc()).nulls_last()
     limit = max(1, min(int(limit or 50), _MAX_PAGE_LIMIT))
     offset = max(0, int(offset or 0))
     rows = list(
