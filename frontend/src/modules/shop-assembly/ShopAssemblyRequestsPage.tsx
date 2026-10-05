@@ -19,6 +19,7 @@ import {
   TextField,
   ToggleButton,
   ToggleButtonGroup,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import { ChevronDown, Undo2 } from 'lucide-react';
@@ -160,7 +161,7 @@ export default function ShopAssemblyRequestsPage() {
   const canManage = ownsTenant || hasRole('Shop Assembly Manager');
   const managerGateReason = canManage
     ? null
-    : 'Allocating, dismissing and rejecting are the Shop Assembly Manager’s.';
+    : 'Allocating, dismissing, rejecting and discarding are the Shop Assembly Manager’s.';
 
   const { data, loading, error, refetch } = useQuery<{ shopAssemblyRequests: ShopAssemblyRequest[] }>(
     GET_SHOP_ASSEMBLY_REQUESTS,
@@ -300,7 +301,8 @@ export default function ShopAssemblyRequestsPage() {
         title={
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
             <Typography variant="h5">Shop Assembly Requests</Typography>
-            {data !== undefined && requests.length > 0 && (
+            {/* #1539: a queue is the Pending tab's; worked and rejected requests are not waiting on anyone. */}
+            {view === 'PENDING' && data !== undefined && requests.length > 0 && (
               <Chip size="small" label={`${requests.length} in queue`} />
             )}
           </Box>
@@ -513,28 +515,34 @@ export default function ShopAssemblyRequestsPage() {
                                   </Typography>
                                   <Box sx={{ flexGrow: 1 }} />
                                   {discardable && (
-                                    <Button
-                                      size="small"
-                                      variant="outlined"
-                                      color="warning"
-                                      disabled={busy || !canManage}
-                                      startIcon={
-                                        discarding ? (
-                                          <CircularProgress size={14} color="inherit" />
-                                        ) : (
-                                          <Undo2 size={16} strokeWidth={1.75} />
-                                        )
-                                      }
-                                      onClick={() =>
-                                        setConfirm({
-                                          kind: 'discard',
-                                          batchId: batch.id,
-                                          batchNumber: batch.batchNumber,
-                                        })
-                                      }
-                                    >
-                                      Discard
-                                    </Button>
+                                    // #1539 (#981): a non-manager sees why Discard is off; the span lets a disabled button
+                                    // still show the tooltip.
+                                    <Tooltip title={managerGateReason ?? ''}>
+                                      <span>
+                                        <Button
+                                          size="small"
+                                          variant="outlined"
+                                          color="warning"
+                                          disabled={busy || !canManage}
+                                          startIcon={
+                                            discarding ? (
+                                              <CircularProgress size={14} color="inherit" />
+                                            ) : (
+                                              <Undo2 size={16} strokeWidth={1.75} />
+                                            )
+                                          }
+                                          onClick={() =>
+                                            setConfirm({
+                                              kind: 'discard',
+                                              batchId: batch.id,
+                                              batchNumber: batch.batchNumber,
+                                            })
+                                          }
+                                        >
+                                          Discard
+                                        </Button>
+                                      </span>
+                                    </Tooltip>
                                   )}
                                 </Stack>
                               );

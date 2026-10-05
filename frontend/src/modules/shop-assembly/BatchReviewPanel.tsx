@@ -201,7 +201,8 @@ export default function BatchReviewPanel({
 
   return (
     <Stack spacing={2}>
-      {review.integrityNote && <Alert severity="warning">{review.integrityNote}</Alert>}
+      {/* #1539: the re-upload note is shown once, by the request above this panel - which also shows it while
+          this review is loading or has failed. */}
 
       <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start', flexWrap: { xs: 'wrap', lg: 'nowrap' } }}>
         {/* The walk, made addressable. Collapsed to a rail so the detail gets the width - it is the

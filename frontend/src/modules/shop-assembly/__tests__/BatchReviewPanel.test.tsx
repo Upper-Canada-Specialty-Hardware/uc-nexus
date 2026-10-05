@@ -190,3 +190,10 @@ describe('BatchReviewPanel', () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('BatchReviewPanel re-upload note (#1539)', () => {
+  it('leaves the re-upload note to the request above it, so it is not shown twice', () => {
+    renderPanel({ review: { ...REVIEW, integrityNote: 'The schedule was re-uploaded after this request.' } });
+    expect(screen.queryByText('The schedule was re-uploaded after this request.')).not.toBeInTheDocument();
+  });
+});
