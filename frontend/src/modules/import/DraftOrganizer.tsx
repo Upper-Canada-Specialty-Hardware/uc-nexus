@@ -218,6 +218,51 @@ export function SplitLineDialog({ ctx, targets, onClose, onConfirm }: SplitLineD
 // instead of pushing the page sideways. The mono ramp stays one step under the UI ramp, as elsewhere.
 const FS_CELL = 'clamp(0.7rem, 1.5cqw, 0.875rem)';
 
+/**
+ * A line's unit cost (#1602). It parsed every keystroke and ignored a blank, so it could not be cleared:
+ * retyping 12.5 as 8.25 left "1" behind and saved 18.25 for every line of the product. The text is held
+ * locally and committed on leaving the field or Enter, when it is a finished number of 0 or more; a blank
+ * puts the previous cost back.
+ */
+function DraftCostField({
+  cost,
+  ariaLabel,
+  onCommit,
+}: {
+  cost: number;
+  ariaLabel: string;
+  onCommit: (next: number) => void;
+}) {
+  const [text, setText] = useState<string | null>(null);
+  const settle = () => {
+    if (text !== null && text.trim() !== '') {
+      const next = Number(text);
+      if (Number.isFinite(next) && next >= 0) onCommit(next);
+    }
+    setText(null);
+  };
+  return (
+    <TextField
+      size="small"
+      type="number"
+      value={text ?? String(cost)}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={settle}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') settle();
+      }}
+      slotProps={{
+        input: {
+          startAdornment: <InputAdornment position="start">$</InputAdornment>,
+          sx: tabularSx,
+        },
+        htmlInput: { min: 0, step: 0.01, 'aria-label': ariaLabel },
+      }}
+      sx={{ width: '100%' }}
+    />
+  );
+}
+
 /** "Remove 'Hager' and its 2 documents and notes?" - what an explicit Remove takes with it (#1602). */
 function removeDraftMessage(draft: DraftGroup): string {
   const docs = draft.attachments?.length ?? 0;
@@ -854,22 +899,10 @@ export function DraftCard({
                       />
                     </Box>
                     <Box className="po-cell po-cell-right po-num">
-                      <TextField
-                        size="small"
-                        type="number"
-                        value={line.unitCost}
-                        onChange={(e) => {
-                          const val = parseFloat(e.target.value);
-                          if (!Number.isNaN(val) && val >= 0) onUpdateUnitCost(line.pk, val);
-                        }}
-                        slotProps={{
-                          input: {
-                            startAdornment: <InputAdornment position="start">$</InputAdornment>,
-                            sx: tabularSx,
-                          },
-                          htmlInput: { min: 0, step: 0.01, 'aria-label': `Unit cost of ${line.productCode}` },
-                        }}
-                        sx={{ width: '100%' }}
+                      <DraftCostField
+                        cost={line.unitCost}
+                        ariaLabel={`Unit cost of ${line.productCode}`}
+                        onCommit={(val) => onUpdateUnitCost(line.pk, val)}
                       />
                     </Box>
                     <Box className="po-cell po-cell-right po-num">

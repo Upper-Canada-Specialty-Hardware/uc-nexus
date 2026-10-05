@@ -13,6 +13,8 @@ import type { GpCostCode } from '../DraftOrganizer';
 // heavy DataGrid suites run alongside. Give them room, the same as the sibling step tests do.
 vi.setConfig({ testTimeout: 30_000 });
 
+const unitCostSpy = vi.fn();
+
 const catalog: Map<string, ProductMeta> = new Map([
   ['HG-100|HINGE', { productCode: 'HG-100', hardwareCategory: 'HINGE', unitCost: 5 }],
 ]);
@@ -88,7 +90,7 @@ function Harness({
         onToggleIncluded={(id) => setGroups((g) => draftOps.toggleIncluded(g, id))}
         onRenameDraft={(id, l) => setGroups((g) => draftOps.renameDraft(g, id, l))}
         onUpdateDraftInfo={(id, f, v) => setGroups((g) => draftOps.updateInfo(g, id, f, v))}
-        onUpdateUnitCost={() => {}}
+        onUpdateUnitCost={(pk, v) => unitCostSpy(pk, v)}
         onUpdateOrderAs={() => {}}
         onMoveLine={(f, pk, q, t) => setGroups((g) => draftOps.moveLine(g, f, pk, q, t))}
         onUpdateLineQty={(id, pk, qty) =>
@@ -296,6 +298,19 @@ describe('PurchaseOrdersStep organizing', () => {
     expect(screen.getByDisplayValue('ACME')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
     expect(screen.queryByDisplayValue('ACME')).not.toBeInTheDocument();
+  });
+
+  // #1602: the unit cost parsed every keystroke and could not be cleared, so retyping 12.5 as 8.25 saved
+  // the wrong figure. It now commits once, on leaving the field, a finished number.
+  it('saves a retyped unit cost once, as typed, when the field is left', () => {
+    unitCostSpy.mockClear();
+    render(<Harness initial={[makeDraft('a', 'ACME', { 'HG-100|HINGE': 4 })]} />);
+    const cost = screen.getByRole('spinbutton', { name: 'Unit cost of HG-100' });
+    for (const v of ['', '8', '8.', '8.2', '8.25']) fireEvent.change(cost, { target: { value: v } });
+    expect(unitCostSpy).not.toHaveBeenCalled();
+    fireEvent.blur(cost);
+    expect(unitCostSpy).toHaveBeenCalledTimes(1);
+    expect(unitCostSpy).toHaveBeenCalledWith('HG-100|HINGE', 8.25);
   });
 
   it('caps a line at the pool MINUS what a sibling draft holds of the same product', () => {
