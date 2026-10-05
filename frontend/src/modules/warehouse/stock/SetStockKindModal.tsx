@@ -8,6 +8,7 @@ import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import { microLabelSx, monoSx } from '../../../theme';
 import { POOL_KIND_LABEL, otherPoolKind } from '../../../types/poolKind';
 import type { StockItem } from '../StockPoolView';
+import { userMessage } from '../../../graphql/userMessage';
 
 interface Props {
   item: StockItem;
@@ -41,7 +42,7 @@ export default function SetStockKindModal({ item, onClose, onSuccess }: Props) {
     },
     onError: (err) => {
       inFlight.current = false;
-      showToast(err.message, 'error');
+      showToast(userMessage(err), 'error');
     },
   });
 

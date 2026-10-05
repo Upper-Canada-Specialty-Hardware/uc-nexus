@@ -58,6 +58,7 @@ import {
 import { isGpSetupBroken, type GpSetupStatus } from '../../types/project';
 import GpSetupQuarantineBanner from '../../components/GpSetupQuarantineBanner';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
+import { userMessage } from '../../graphql/userMessage';
 
 const CONTAINER_TYPES: ContainerType[] = ['SKID', 'DOOR_CART', 'BOX', 'ENVELOPE', 'BUNDLE'];
 
@@ -132,7 +133,7 @@ export default function StagingWorkspace({ projectId, project = null }: Props) {
   // for the same stale numbers.
   const onError = useCallback(
     (e: { message: string }) => {
-      showToast(e.message, 'error');
+      showToast(userMessage(e), 'error');
       afterChange();
     },
     [showToast, afterChange],

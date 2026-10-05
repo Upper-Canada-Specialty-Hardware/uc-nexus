@@ -18,6 +18,7 @@ import { RESOLVE_DEFICIENCY } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import { microLabelSx, monoSx } from '../../../theme';
 import DestockCostChoice, { type DestockCost } from './DestockCostChoice';
+import { userMessage } from '../../../graphql/userMessage';
 
 export interface DeficientRow {
   source: 'PROJECT_INVENTORY' | 'STOCK_POOL';
@@ -64,7 +65,7 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
     },
     onError: (err) => {
       inFlight.current = false;
-      showToast(err.message, 'error');
+      showToast(userMessage(err), 'error');
     },
   });
 
@@ -174,6 +175,8 @@ export default function ResolveDeficiencyModal({ row, onClose, onSuccess }: Prop
             onChange={(e) => setRma(e.target.value)}
             required
             helperText="Required for return-to-vendor"
+            // #1553: the server holds 100 characters; a longer paste was refused naming the column.
+            slotProps={{ htmlInput: { maxLength: 100 } }}
           />
         )}
         {blockedReason && !loading && (

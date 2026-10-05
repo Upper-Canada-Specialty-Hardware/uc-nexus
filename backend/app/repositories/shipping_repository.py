@@ -697,7 +697,7 @@ def create_shipment_return(
             )
         rma_ref = item.get("rma_reference")
         if rma_ref is not None and len(rma_ref) > 100:
-            raise ValidationError("rma_reference must be 100 characters or fewer", field="rma_reference")
+            raise ValidationError("RMA reference must be 100 characters or fewer", field="rma_reference")
         requested_per_psi[psi.id] += qty
 
     for psi_id, requested in requested_per_psi.items():

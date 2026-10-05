@@ -7,6 +7,7 @@ import { REPORT_STOCK_DEFICIENCY } from '../../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../../graphql/refetch';
 import { microLabelSx, monoSx } from '../../../theme';
 import type { StockItem } from '../StockPoolView';
+import { userMessage } from '../../../graphql/userMessage';
 
 interface Props {
   item: StockItem;
@@ -31,7 +32,7 @@ export default function ReportStockDeficiencyModal({ item, onClose, onSuccess }:
     },
     onError: (err) => {
       inFlight.current = false;
-      showToast(err.message, 'error');
+      showToast(userMessage(err), 'error');
     },
   });
 

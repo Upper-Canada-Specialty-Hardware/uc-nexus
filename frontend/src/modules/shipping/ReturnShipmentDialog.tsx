@@ -347,6 +347,8 @@ export default function ReturnShipmentDialog({ slip, onClose, onCompleted }: Pro
                             setDraft(line.packingSlipItemId, { rmaReference: e.target.value })
                           }
                           sx={{ minWidth: 220 }}
+                          // #1553: the server holds 100 characters; a longer paste was refused naming the column.
+                          slotProps={{ htmlInput: { maxLength: 100 } }}
                         />
                       )}
                       <TextField

@@ -7,6 +7,7 @@ import { REPORT_INVENTORY_DEFICIENCY } from '../../graphql/warehouse';
 import { WAREHOUSE_REFETCH_QUERIES } from '../../graphql/refetch';
 import { microLabelSx, monoSx } from '../../theme';
 import { ReservationNotice, useComboReservation } from './reservationNotice';
+import { userMessage } from '../../graphql/userMessage';
 
 /** The project inventory row being flagged. `available` is on-hand minus already-deficient units. */
 export interface FlagDeficientItem {
@@ -63,7 +64,7 @@ export default function FlagDeficientModal({ item, onClose, onSuccess }: Props) 
     },
     onError: (err) => {
       inFlight.current = false;
-      showToast(err.message, 'error');
+      showToast(userMessage(err), 'error');
     },
   });
 

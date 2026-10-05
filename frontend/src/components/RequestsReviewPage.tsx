@@ -23,6 +23,7 @@ import { parseServerDate } from '../utils/serverDate';
 import { PULL_MINTED_STALE_ROOT_FIELDS, RESERVATION_STALE_ROOT_FIELDS } from '../graphql/refetch';
 import { monoSx } from '../theme';
 import { FadeIn, StaggerList, StaggerItem } from '../motion';
+import { userMessage } from '../graphql/userMessage';
 
 interface ReviewableRequest {
   id: string;
@@ -154,7 +155,7 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   const [acceptRequest] = useMutation(acceptMutation, {
     update: evictPullQueue,
     onCompleted: () => settle('Request accepted - pull request created', 'success'),
-    onError: (e) => settle(e.message, 'error'),
+    onError: (e) => settle(userMessage(e), 'error'),
   });
 
   // Rejecting RELEASES the request's inventory reservation (#342), so the project's availability
@@ -168,7 +169,7 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
       cache.gc();
     },
     onCompleted: () => settle('Request rejected', 'success'),
-    onError: (e) => settle(e.message, 'error'),
+    onError: (e) => settle(userMessage(e), 'error'),
   });
 
   // Falls back to acceptMutation so the hook always has a valid document; only fired in approved mode,
@@ -176,7 +177,7 @@ export default function RequestsReviewPage<TRequest extends ReviewableRequest>({
   const [reopenRequest] = useMutation(reopenMutation ?? acceptMutation, {
     update: evictPullQueue,
     onCompleted: () => settle('Request reopened - back to pending', 'success'),
-    onError: (e) => settle(e.message, 'error'),
+    onError: (e) => settle(userMessage(e), 'error'),
   });
 
   const handleAccept = (id: string) => {

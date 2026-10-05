@@ -639,13 +639,18 @@ class RelayGateway:
             )
         except Exception as e:
             self._pending.pop(job_id, None)
-            raise RelayUnavailableError(f"failed to send job to relay: {e}") from e
+            logger.warning("relay send for %s failed: %s", op, e)
+            raise RelayUnavailableError(
+                f"The GP relay connection dropped before {_op_label(op)} was sent; nothing reached GP. Try again."
+            ) from e
 
         try:
             reply = await asyncio.wait_for(future, timeout=timeout)
         except TimeoutError:
             self._pending.pop(job_id, None)
-            raise RelayTimeoutError(f"relay did not answer {op!r} within {timeout}s") from None
+            raise RelayTimeoutError(
+                f"GP did not answer in time while {_op_label(op)}. It may still finish - check GP before trying again."
+            ) from None
 
         # Before the ok check, deliberately: the refusal replies carry the sample too.
         meta = self._note_reply_meta(reply)
@@ -661,7 +666,7 @@ class RelayGateway:
             if error.get("error") == "server_busy":
                 context = error.get("context") or {}
                 raise RelayBusyError(
-                    error.get("message") or f"GP server is too busy to run {op!r} right now",
+                    error.get("message") or f"GP is too busy for {_op_label(op)} right now - try again in a minute.",
                     detail=error,
                     sql_cpu_pct=context.get("sql_cpu_pct"),
                     ceiling_pct=context.get("ceiling_pct"),
@@ -692,3 +697,21 @@ class RelayGateway:
 
 
 gateway = RelayGateway()
+
+
+# #1553: these messages reach the person who pressed the button, so they name the work, not the op.
+_OP_LABELS = {
+    "create_po": "registering the PO",
+    "create_receipt": "posting the receipt",
+    "create_job": "creating the job",
+    "update_job": "saving the job",
+    "update_job_site": "saving the job site",
+}
+
+
+def _op_label(op: str) -> str:
+    if op in _OP_LABELS:
+        return _OP_LABELS[op]
+    if op.startswith(("list_", "read_", "get_")):
+        return "reading from GP"
+    return "this GP request"

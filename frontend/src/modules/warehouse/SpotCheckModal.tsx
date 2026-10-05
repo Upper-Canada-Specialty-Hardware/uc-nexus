@@ -10,6 +10,7 @@ import { isStaleRowRefusal } from '../../graphql/staleRow';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
 import { ReservationGateNotice, useComboReservation, useReservationGate } from './reservationNotice';
 import { Appear } from '../../motion';
+import { userMessage } from '../../graphql/userMessage';
 
 interface SpotCheckItem {
   id: string;
@@ -87,7 +88,7 @@ export default function SpotCheckModal({ open, onClose, item, onSuccess }: SpotC
     onError: (err) => {
       adjustInFlight.current = false;
       setConfirmOpen(false);
-      showToast(err.message, 'error');
+      showToast(userMessage(err), 'error');
       if (isStaleRowRefusal(err)) {
         // The row moved since this opened (#1315). The count shown here is the parent's snapshot, so
         // close: the refetch redraws the grid and reopening counts against what the shelf now holds.
