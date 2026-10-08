@@ -20,6 +20,7 @@ from app.repositories import custom_items_repository, project_repository, tenanc
 from app.repositories import warehouse as warehouse_repository
 from app.repositories.project_labels import project_labels
 from app.services import gp_idempotency, gp_outbox_enqueue, gp_po
+from app.services.relay_gateway import CREATE_RECEIPT_IDEMPOTENCY_FEATURE
 from app.services.relay_gateway import gateway as relay_gateway
 
 from .converters import (
@@ -137,9 +138,11 @@ def _load_receive_type(receive_id: uuid.UUID) -> ReceiveRecord:
         return receive_record_to_type(rec)
 
 
-def _prepare_create_receive(*, po_id, received_by, line_items_data, warehouse_id=None) -> tuple[str, dict]:
+def _prepare_create_receive(
+    *, po_id, received_by, line_items_data, warehouse_id=None, idempotency_key=None
+) -> tuple[str, dict]:
     """Read-only: validate the receive is eligible (before the GP receipt is posted) and build the relay
-    create_receipt payload. Returns (gp_company, payload).
+    create_receipt payload, carrying the approval's key (#1389). Returns (gp_company, payload).
 
     The warehouse code rides along because put-away happens after approval now (#501): a line
     normally has no bin yet, and the warehouse is what GP gets told instead of nothing."""
@@ -171,6 +174,7 @@ def _prepare_create_receive(*, po_id, received_by, line_items_data, warehouse_id
         received_by=received_by,
         line_items=receipt_line_items,
         warehouse_code=warehouse_code,
+        idempotency_key=idempotency_key,
     )
     return gp_company, payload
 
@@ -1170,10 +1174,14 @@ class WarehouseMutations:
         - Whether a failure releases that claim is decided by ONE question: can GP be holding the
           receipt? Everything that answers "no" - validation, an eConnect refusal, a relay too old
           for the op - releases, because a draft parked where nobody can act on it is worse than the
-          error itself. Everything ambiguous - a dispatched disconnect, a timeout - keeps the claim,
+          error itself. Everything ambiguous - a dispatched disconnect, a timeout - never releases,
           because releasing it invites a second receipt for hardware GP may already have booked.
-          A parked draft is recoverable: `approvalIdempotencyKey` is on the type, so the reviewer's
-          retry resumes through the ledger rather than starting a new approval.
+        - Since #1389 an ambiguous failure is QUEUED rather than surfaced: the receipt carries the
+          approval's key into GP, and the relay answers a repeat of the key with the receipt it already
+          posted, so the outbox asking again cannot post twice. A relay too old to read the key is
+          never sent a receipt at all; the receipt is queued until the workstation updates. A draft
+          parked by an ambiguous failure before then still resumes through the ledger:
+          `approvalIdempotencyKey` is on the type, so the reviewer's retry reuses the same key.
 
         Approval is a Warehouse Manager (or Admin) gate, full stop: a count is approved, the GP
         receipt posts, and the units book into inventory. There is no per-shipment decision ahead of
@@ -1221,6 +1229,7 @@ class WarehouseMutations:
                     received_by=ctx.author_name,
                     line_items_data=ctx.line_items_data,
                     warehouse_id=ctx.warehouse_id,
+                    idempotency_key=key,
                 )
             except Exception:
                 # Nothing reached GP, so the draft belongs back in the queue with the reason surfaced
@@ -1228,32 +1237,7 @@ class WarehouseMutations:
                 await asyncio.to_thread(_release_draft_claim, draft_id, key)
                 raise
 
-            try:
-                relay_result = await relay_gateway.relay_call(gp_company, "create_receipt", payload)
-            except (RelayCallError, RelayOpUnsupportedError) as e:
-                # The relay answered: eConnect refused it, or this build cannot run the op. Either
-                # way GP did not commit, so the draft goes back in the queue for whoever fixes the
-                # cause - the #425 quarantine being the usual one.
-                await asyncio.to_thread(_release_draft_claim, draft_id, key)
-                if isinstance(e, RelayCallError):
-                    # #730: GP found the job inactive, closed or gone at the moment of writing. Worded
-                    # the way the up-front check words it.
-                    job_number = await asyncio.to_thread(_po_job_number, ctx.po_id)
-                    refusal = project_repository.gp_job_refusal(e, job_number)
-                    if refusal is not None:
-                        raise refusal from e
-                raise
-            except RelayTimeoutError:
-                # Ambiguous: the job was on the wire and GP may have posted it. Keep the claim so
-                # nobody else approves it, and let the same key resume.
-                raise
-            except RelayUnavailableError as e:
-                # #353 PR E: the receipt never left the backend, so GP cannot have posted it - queue
-                # it rather than failing a warehouse user who has already counted the hardware. A
-                # DISPATCHED failure is re-raised WITH the claim held: GP may hold the receipt, and a
-                # blind retry would double-count inventory.
-                if not gp_outbox_enqueue.may_enqueue(e):
-                    raise
+            async def _queue() -> ApproveReceiveDraftResult:
                 json_line_items = _json_line_items(ctx.line_items_data)
                 project_id, label = await asyncio.to_thread(_receive_outbox_identity, ctx.po_id)
                 entry_id = await asyncio.to_thread(
@@ -1288,6 +1272,37 @@ class WarehouseMutations:
                     receive_record=None,
                     draft=draft,
                 )
+
+            if not relay_gateway.has_feature(CREATE_RECEIPT_IDEMPOTENCY_FEATURE):
+                # #1389: a relay that would ignore the key is never sent a receipt, because the safety of
+                # every retry below rests on it. Nothing has left the backend, so the receipt waits on
+                # the queue for the workstation to update - and when no relay is connected at all, this
+                # is the same queue the undispatched failure below would have reached.
+                return await _queue()
+
+            try:
+                relay_result = await relay_gateway.relay_call(gp_company, "create_receipt", payload)
+            except (RelayCallError, RelayOpUnsupportedError) as e:
+                # The relay answered: eConnect refused it, or this build cannot run the op. Either
+                # way GP did not commit, so the draft goes back in the queue for whoever fixes the
+                # cause - the #425 quarantine being the usual one.
+                await asyncio.to_thread(_release_draft_claim, draft_id, key)
+                if isinstance(e, RelayCallError):
+                    # #730: GP found the job inactive, closed or gone at the moment of writing. Worded
+                    # the way the up-front check words it.
+                    job_number = await asyncio.to_thread(_po_job_number, ctx.po_id)
+                    refusal = project_repository.gp_job_refusal(e, job_number)
+                    if refusal is not None:
+                        raise refusal from e
+                raise
+            except (RelayTimeoutError, RelayUnavailableError):
+                # #353 PR E queued the receipt that never left the backend; #1389 queues the other two as
+                # well - the socket dying with the job on the wire, and the relay not answering in time.
+                # Those used to be re-raised with the claim held, because a retry might post a second
+                # receipt; the relay now recognises the approval's key and hands back the receipt it
+                # already posted, so the outbox asking again cannot double-count. The queued row keeps
+                # the draft from a second approval, as the claim did.
+                return await _queue()
             await asyncio.to_thread(gp_idempotency.record_relay_result, key, "create_receive", relay_result)
 
         record = await asyncio.to_thread(

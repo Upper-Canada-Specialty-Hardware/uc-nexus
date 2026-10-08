@@ -231,6 +231,20 @@ def get_entry_locked(session: Session, entry_id: uuid.UUID) -> GpWriteOutbox | N
 STALE_IN_FLIGHT_SECONDS = 600
 
 
+def retry_is_safe(relay_op: str, payload: dict | None) -> bool:
+    """Whether a write that may already be in GP can simply be sent again.
+
+    True when the relay recognises the attempt by its key and hands back what the first attempt made:
+    every PO registration, and since #1389 every receipt whose stored payload carries the key. A
+    receipt queued before the key existed carries none - the outbox replays the STORED payload - so it
+    stays an ambiguous failure a person checks in GP. Everything else may duplicate."""
+    if relay_op == "create_po":
+        return True
+    if relay_op == "create_receipt":
+        return bool((payload or {}).get("idempotency_key"))
+    return False
+
+
 def recover_in_flight(session: Session, *, older_than_seconds: float = STALE_IN_FLIGHT_SECONDS) -> list[GpWriteOutbox]:
     """Settle rows a stopped worker left IN_FLIGHT (#1192).
 
@@ -240,10 +254,10 @@ def recover_in_flight(session: Session, *, older_than_seconds: float = STALE_IN_
     is older than `older_than_seconds` is touched, so a drain still running on another instance is left
     alone; the worker sweeps periodically, so such a row is still recovered once it is truly stuck.
 
-    A PO registration goes back on the queue: the relay recognises the attempt's key and hands back the
-    PO it already made, so asking again cannot order twice. Anything else (a receipt) carries no such
-    key, so it may already be in GP and fails as ambiguous for a person to check there. Returns the
-    rows it failed, so the caller can tell somebody."""
+    A row the relay recognises by its key (see `retry_is_safe`: a PO registration, or a keyed receipt)
+    goes back on the queue: the relay hands back what the first attempt made, so asking again cannot
+    write twice. Anything else may already be in GP and fails as ambiguous for a person to check there.
+    Returns the rows it failed, so the caller can tell somebody."""
     rows = list(
         session.scalars(
             select(GpWriteOutbox)
@@ -257,7 +271,7 @@ def recover_in_flight(session: Session, *, older_than_seconds: float = STALE_IN_
     )
     failed = []
     for row in rows:
-        if row.relay_op == "create_po":
+        if retry_is_safe(row.relay_op, row.payload):
             row.status = "PENDING"
             row.next_attempt_at = datetime.utcnow()
             row.last_error = "The worker stopped while this was being sent; it is asked again"

@@ -22,8 +22,9 @@ from app.services import gp_outbox_worker
 from main import schema
 
 
-def _row(op="register_po_in_gp", status="IN_FLIGHT", age_seconds=0) -> uuid.UUID:
-    """`age_seconds` backdates the claim, the way a row a stopped worker left behind looks."""
+def _row(op="register_po_in_gp", status="IN_FLIGHT", age_seconds=0, payload=None) -> uuid.UUID:
+    """`age_seconds` backdates the claim, the way a row a stopped worker left behind looks. `payload`
+    is the stored relay payload; a receipt's carries the approval's key only since #1389."""
     with SessionLocal() as session:
         row = gp_outbox_repository.enqueue(
             session,
@@ -31,7 +32,7 @@ def _row(op="register_po_in_gp", status="IN_FLIGHT", age_seconds=0) -> uuid.UUID
             op=op,
             relay_op="create_po" if op == "register_po_in_gp" else "create_receipt",
             company="TUBC",
-            payload={"header": {}},
+            payload=payload if payload is not None else {"header": {}},
             persist_context={"po_id": str(uuid.uuid4())},
             entity_key=f"po:{uuid.uuid4()}",
             label="Outbox recovery test",
@@ -49,6 +50,8 @@ def _row(op="register_po_in_gp", status="IN_FLIGHT", age_seconds=0) -> uuid.UUID
 
 
 STALE = gp_outbox_repository.STALE_IN_FLIGHT_SECONDS + 60
+
+_KEYED_RECEIPT = {"po_number": "0000123", "idempotency_key": "a1b2c3d4-key"}
 
 
 def _read(row_id):
@@ -76,15 +79,19 @@ def test_the_sweep_puts_a_stale_registration_back_and_fails_a_stale_receipt_as_a
     monkeypatch.setattr(gp_outbox_worker, "_notify_failure", lambda row_id: notified.append(row_id))
     registration = _row(age_seconds=STALE)
     receipt = _row(op="create_receive", age_seconds=STALE)
+    keyed_receipt = _row(op="create_receive", age_seconds=STALE, payload=_KEYED_RECEIPT)
     pending = _row(status="PENDING", age_seconds=STALE)
     try:
         gp_outbox_worker._recover_in_flight()
         assert _read(registration)["status"] == "PENDING"  # the relay's key makes asking again safe
+        # #1389: so does a receipt that carries the approval's key; one queued before it does not.
+        assert _read(keyed_receipt)["status"] == "PENDING"
         assert _read(receipt) == {"status": "FAILED", "failure_kind": "ambiguous", "attempts": 0}
         assert _read(pending)["status"] == "PENDING"
         assert receipt in notified
+        assert keyed_receipt not in notified
     finally:
-        _delete(registration, receipt, pending)
+        _delete(registration, receipt, keyed_receipt, pending)
 
 
 def test_the_sweep_leaves_a_drain_that_may_still_be_running_alone(_migrate_database, monkeypatch):
@@ -119,16 +126,21 @@ def test_a_success_that_lands_after_the_sweep_is_still_recorded(_migrate_databas
 
 
 @pytest.mark.parametrize(
-    ("op", "expected"),
-    [("register_po_in_gp", ("PENDING", None)), ("create_receive", ("FAILED", "ambiguous"))],
+    ("op", "payload", "expected"),
+    [
+        ("register_po_in_gp", None, ("PENDING", None)),
+        ("create_receive", None, ("FAILED", "ambiguous")),
+        ("create_receive", {"po_number": "0000123", "idempotency_key": "a1b2c3d4-key"}, ("PENDING", None)),
+    ],
+    ids=["registration", "unkeyed-receipt", "keyed-receipt"],
 )
-def test_an_unexpected_error_never_leaves_the_row_in_flight(_migrate_database, monkeypatch, op, expected):
+def test_an_unexpected_error_never_leaves_the_row_in_flight(_migrate_database, monkeypatch, op, payload, expected):
     async def _boom(row_id):
         raise RuntimeError("something nobody planned for")
 
     monkeypatch.setattr(gp_outbox_worker, "_drain_one_claimed", _boom)
     monkeypatch.setattr(gp_outbox_worker, "_notify_failure", lambda row_id: None)
-    row_id = _row(op=op)
+    row_id = _row(op=op, payload=payload)
     try:
         asyncio.run(gp_outbox_worker._drain_one(row_id))
         state = _read(row_id)

@@ -110,8 +110,9 @@ def test_a_relay_down_row_stays_pending_and_does_not_burn_an_attempt(_migrate_da
 
 
 def test_a_dispatched_disconnect_fails_as_ambiguous_and_is_never_retried(_migrate_database, monkeypatch):
-    # A GP RECEIVE ENTRY that was already on the wire: GP may hold the receipt, nothing on it carries
-    # the attempt's key, so an automatic retry could post a second one.
+    # A GP RECEIVE ENTRY queued before #1389, already on the wire: GP may hold the receipt, and its
+    # stored payload carries no key for the relay to find it by, so an automatic retry could post a
+    # second one.
     row_id, _key = _enqueue_committed()
     try:
         _stub_relay(monkeypatch, raises=RelayUnavailableError("relay disconnected", dispatched=True))
@@ -133,6 +134,75 @@ def test_a_timeout_fails_as_ambiguous(_migrate_database, monkeypatch):
         assert _read(row_id)["failure_kind"] == "ambiguous"
     finally:
         _delete(row_id)
+
+
+# --- a KEYED receipt is asked again (#1389) --------------------------------------------------------
+# The receipt carries the approval's key into GP on its record note, and the relay answers a repeat of
+# the key with the receipt it already posted. So for a receipt whose stored payload carries the key,
+# the two ambiguous failures above are merely unanswered, exactly as for a create_po.
+
+_KEYED_RECEIPT = {"po_number": "0000123", "idempotency_key": "a1b2c3d4-key"}
+
+
+@pytest.mark.parametrize(
+    "raises",
+    [RelayTimeoutError("relay did not answer"), RelayUnavailableError("relay disconnected", dispatched=True)],
+    ids=["timeout", "dispatched"],
+)
+def test_a_keyed_receipt_that_went_unanswered_is_asked_again(_migrate_database, monkeypatch, raises):
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    try:
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
+        _stub_relay(monkeypatch, raises=raises)
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        state = _read(row_id)
+        assert state["status"] == "PENDING"
+        assert state["failure_kind"] is None
+        assert state["attempts"] == 1
+    finally:
+        _delete(row_id)
+
+
+def test_a_keyed_receipt_is_never_pushed_to_a_relay_that_cannot_recognise_the_key(_migrate_database, monkeypatch):
+    """An older build would accept the key and ignore it, and post a second receipt; the row waits for
+    the workstation to update instead, as a registration does."""
+    row_id, _key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    try:
+        _stub_relay_features(monkeypatch)
+        calls: list = []
+        _stub_relay(monkeypatch, result={"receipt_number": "RCT000900"}, calls=calls)
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        assert calls == []
+        assert _read(row_id)["status"] == "PENDING"
+    finally:
+        _delete(row_id)
+
+
+def test_a_keyed_receipt_the_relay_already_posted_is_persisted_from_its_answer(_migrate_database, monkeypatch):
+    """The retry that finds the first attempt's receipt: the relay's answer is booked like any other,
+    so Nexus records the receipt GP holds - once."""
+    row_id, key = _enqueue_committed(payload=_KEYED_RECEIPT)
+    seen: list = []
+    try:
+        _stub_relay_features(monkeypatch, "create_receipt_idempotency")
+        _stub_relay(monkeypatch, result={"receipt_number": "RCT000111", "existing": True})
+        _stub_persist(monkeypatch, seen=seen)
+        asyncio.run(gp_outbox_worker._drain_one(row_id))
+        assert _read(row_id)["status"] == "SUCCEEDED"
+        ((_context, relay_result, persisted_key),) = seen
+        assert relay_result["receipt_number"] == "RCT000111"
+        assert persisted_key == key
+    finally:
+        _delete(row_id)
+
+
+def test_retry_is_safe_reads_the_stored_payload():
+    assert gp_outbox_repository.retry_is_safe("create_po", {}) is True
+    assert gp_outbox_repository.retry_is_safe("create_receipt", _KEYED_RECEIPT) is True
+    assert gp_outbox_repository.retry_is_safe("create_receipt", {"po_number": "0000123"}) is False
+    assert gp_outbox_repository.retry_is_safe("create_receipt", {"idempotency_key": None}) is False
+    assert gp_outbox_repository.retry_is_safe("create_receipt", None) is False
+    assert gp_outbox_repository.retry_is_safe("update_job_site", {"idempotency_key": "k"}) is False
 
 
 # --- PO REGISTRATION is the exception ------------------------------------------------------------

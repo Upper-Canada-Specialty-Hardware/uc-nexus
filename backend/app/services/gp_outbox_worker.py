@@ -30,6 +30,7 @@ from app.services.relay_gateway import (
     CREATE_PO_IDEMPOTENCY_FEATURE,
     CREATE_PO_TAX_ROWS_FEATURE,
     CREATE_PO_TAX_SCHEDULE_FEATURE,
+    CREATE_RECEIPT_IDEMPOTENCY_FEATURE,
 )
 from app.services.relay_gateway import gateway as relay_gateway
 from app.status_labels import status_label
@@ -277,9 +278,9 @@ async def _drain_one(row_id: uuid.UUID) -> None:
     """Run one claimed row through, and never leave it IN_FLIGHT on an error nobody planned for (#1192).
 
     An exception escaping the drain used to leave the row claimed for good: cancel and retry refuse
-    IN_FLIGHT, and every later write for the same PO waited behind it. A registration is asked again
-    (the relay's key makes that safe); anything else may have reached GP, so it waits for a person.
-    A cancellation (shutdown) is let through; the next worker start recovers the row."""
+    IN_FLIGHT, and every later write for the same PO waited behind it. A registration or a keyed
+    receipt is asked again (the relay's key makes that safe); anything else may have reached GP, so it
+    waits for a person. A cancellation (shutdown) is let through; the next worker start recovers the row."""
     try:
         await _drain_one_claimed(row_id)
     except asyncio.CancelledError:
@@ -289,7 +290,7 @@ async def _drain_one(row_id: uuid.UUID) -> None:
         row = await asyncio.to_thread(_load_row, row_id)
         if row is None or row.status != "IN_FLIGHT":
             return
-        if row.relay_op == "create_po":
+        if gp_outbox_repository.retry_is_safe(row.relay_op, row.payload):
             await asyncio.to_thread(_finish, row_id, "mark_retry", error=str(e), bump_attempts=True)
             await _fail_if_exhausted(row_id)
         else:
@@ -315,6 +316,7 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
         return
     key, op, relay_op, company = row.idempotency_key, row.op, row.relay_op, row.company
     payload, context, label = row.payload, row.persist_context, row.label
+    retry_safe = gp_outbox_repository.retry_is_safe(relay_op, payload)
 
     state = await asyncio.to_thread(gp_idempotency.load, key)
     if state is not None and state.result_id is not None:
@@ -354,18 +356,24 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
                 # #763: a schedule is only read by a relay that expands it; an older one would drop it.
                 if registration_carries_tax_schedule(payload):
                     relay_gateway.require_feature(CREATE_PO_TAX_SCHEDULE_FEATURE, relay_op)
+            elif relay_op == "create_receipt" and retry_safe:
+                # #1389: a keyed receipt is only safe to ask again of a relay that reads the key; an older
+                # build would ignore it and post a second receipt. Held for the workstation to update,
+                # through the RelayOpUnsupportedError branch below, exactly like a registration.
+                relay_gateway.require_feature(CREATE_RECEIPT_IDEMPOTENCY_FEATURE, relay_op)
             relay_result = await relay_gateway.relay_call(company, relay_op, payload)
             if isinstance(relay_result, dict) and relay_result.get("existing"):
-                # The earlier attempt did reach GP after all; this one got that PO back rather than a
-                # second one. Worth a line, because it is the only visible trace of the double push.
-                logger.info("gp outbox: relay returned the PO it already made for this key", extra={"label": label})
+                # The earlier attempt did reach GP after all; this one got that PO or receipt back
+                # rather than a second one. Worth a line, because it is the only visible trace of the
+                # double push.
+                logger.info("gp outbox: relay returned the write it already made for this key", extra={"label": label})
             await asyncio.to_thread(gp_idempotency.record_relay_result, key, op, relay_result)
     except RelayUnavailableError as e:
         if e.dispatched:
-            if relay_op == "create_po":
-                # The job was on the wire when the socket died, so GP may already hold this PO - but
-                # it holds it under this key, and the relay hands that same PO back instead of
-                # reserving a second number. Asking again is safe; the attempt budget still bounds a
+            if retry_safe:
+                # The job was on the wire when the socket died, so GP may already hold this PO or
+                # receipt - but it holds it under this key, and the relay hands that same one back
+                # instead of writing a second. Asking again is safe; the attempt budget still bounds a
                 # GP that is permanently too slow to answer.
                 await asyncio.to_thread(
                     _finish,
@@ -398,9 +406,9 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
         )
         return
     except RelayTimeoutError as e:
-        if relay_op == "create_po":
-            # Same reasoning as the dispatched disconnect above: the relay finds the PO it already
-            # made for this key, so asking again cannot order twice. Bounded by the attempt budget.
+        if retry_safe:
+            # Same reasoning as the dispatched disconnect above: the relay finds what it already made
+            # for this key, so asking again cannot write twice. Bounded by the attempt budget.
             await asyncio.to_thread(
                 _finish,
                 row_id,

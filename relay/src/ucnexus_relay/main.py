@@ -268,7 +268,8 @@ def create_app() -> FastAPI:
         """Receive against a PO - see ops.create_receipt_op for the orchestration."""
         _check_company(request.company)
         try:
-            with db.get_connection(request.company) as conn:
+            # The per-company lock the channel create holds (#1389), for the reason the PO route holds its own.
+            with channel._create_receipt_lock(request.company), db.get_connection(request.company) as conn:
                 try:
                     response = ops.create_receipt_op(conn, company=request.company, request=request)
                     conn.commit()
