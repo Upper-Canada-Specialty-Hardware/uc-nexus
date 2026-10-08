@@ -146,6 +146,16 @@ and then `POP30100`: a key it finds comes back as that PO with `existing: true`,
 written. that is what makes a retry safe when the backend gave up waiting on a create GP went on to
 finish. a request with no key writes no note and runs no lookup, exactly as before.
 
+`create_receipt` takes an `idempotency_key` the same way (#1389). the key goes into the receipt's
+record note (`taPopRcptHdrInsert NOTETEXT`) and, before any check or write, the relay looks it up over
+`POP10300` and then `POP30300` for that PO's receipts, matching any of the header's eight note slots
+(`RCPTNOTE_1..8`; the proc is encrypted, so which one it fills is not observed). a key it finds comes
+back as that receipt with `existing: true`, and nothing is written, `WHRECLINE101` rows included. the
+lookup sits ahead of the remaining-quantity check on purpose: GP counts an unposted receipt toward a
+line's received quantity, so a retry of a full receipt would otherwise be refused. receipt creates run
+one at a time per company, under their own lock. the hello frame advertises
+`create_receipt_idempotency`, and the backend sends no receipt to a relay without it.
+
 the two reads that feed that dialog are `list_po_entry_options` (the company's shipping methods,
 sites and units of measure in one answer) and `list_vendor_addresses` (one vendor's address codes).
 `list_vendors` also carries each vendor's own `shipping_method`, `purchase_address_code` and

@@ -174,6 +174,11 @@ class ReceiptRequest(BaseModel):
     batch_prefix: str = "EC"  # BACHNUMB = f"{batch_prefix}-{yyyy/MM/dd}" (legacy convention)
     receipt_date: date | None = None  # defaults to today
     received_by: str | None = Field(default=None, max_length=255)  # WHRECLINE101.UpdatingUser; default = SQL login
+    # The key identifying this receive attempt, so a retry of it is recognised rather than posted a
+    # second time (#1389). The relay stamps it on the receipt's record note in GP and looks it up before
+    # anything else - see econnect.find_receipt_by_note. Absent is exactly the behaviour a relay had
+    # before this field existed: no note is written and no lookup is run.
+    idempotency_key: str | None = Field(default=None, max_length=64)
 
 
 class ReceiptResponse(BaseModel):
@@ -183,6 +188,9 @@ class ReceiptResponse(BaseModel):
     company: str
     lines_received: int
     custom_db_written: bool  # whether the WHRECLINE101 rows were written (false for sandboxes / unmapped companies)
+    # True when this receipt was FOUND by its key rather than created: an earlier attempt the backend
+    # stopped waiting for had already posted it, and this call wrote nothing at all.
+    existing: bool = False
 
 
 # --- vendor sync (feeds Vendor.gp_vendor_id in UC Nexus) ---

@@ -586,6 +586,17 @@ def _create_po_lock(company: str) -> threading.Lock:
         return _CREATE_PO_LOCKS.setdefault(company, threading.Lock())
 
 
+# The same per-company serialisation for create_receipt (#1389), and for the same reason: a retry finds
+# the first attempt by the receipt that attempt committed, so the two must not run side by side. Its
+# own locks, so a receipt never waits behind a PO registration or the other way round.
+_CREATE_RECEIPT_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _create_receipt_lock(company: str) -> threading.Lock:
+    with _CREATE_PO_LOCKS_GUARD:
+        return _CREATE_RECEIPT_LOCKS.setdefault(company, threading.Lock())
+
+
 def _run_create_po(company: str, payload: dict) -> dict:
     ops.check_company_served(company)
     request = models.CreatePoRequest(company=company, **payload)
@@ -733,7 +744,8 @@ def _run_update_job(company: str, payload: dict) -> dict:
 def _run_create_receipt(company: str, payload: dict) -> dict:
     ops.check_company_served(company)
     request = models.ReceiptRequest(company=company, **payload)
-    with db.get_connection(company) as conn:
+    # One receipt at a time per company, held around the whole connection block - see _run_create_po.
+    with _create_receipt_lock(company), db.get_connection(company) as conn:
         try:
             response = ops.create_receipt_op(conn, company=company, request=request)
             conn.commit()
@@ -1021,6 +1033,12 @@ def _served_companies(channel_allowed: list[str] | None) -> tuple[list[str], dic
 # one. A backend that does not see this string is talking to a relay where a retry is not safe.
 CREATE_PO_IDEMPOTENCY_FEATURE = "create_po_idempotency"
 
+# The same for create_receipt (#1389): this build stamps the key on the receipt's record note and looks
+# it up before anything else, so a retry returns the receipt the first attempt posted. An older build
+# accepts the key and ignores it - ReceiptRequest does not forbid extra fields - so the backend must
+# not send a receipt it might retry to a relay that does not advertise this.
+CREATE_RECEIPT_IDEMPOTENCY_FEATURE = "create_receipt_idempotency"
+
 # The feature string saying this build writes a PO's tax the way GP's own PO entry does (issue
 # #762): reads a LIST of purchase tax details off the create_po header, taxes freight and misc, nets
 # the trade discount, and writes a tax row per line per detail with no summary row. A backend that
@@ -1075,6 +1093,7 @@ def _hello_frame(channel_allowed: list[str] | None = None) -> dict:
         "features": [
             "gp_sync_state",
             CREATE_PO_IDEMPOTENCY_FEATURE,
+            CREATE_RECEIPT_IDEMPOTENCY_FEATURE,
             CREATE_PO_TAX_ROWS_FEATURE,
             CREATE_PO_TAX_SCHEDULE_FEATURE,
             JOB_MIRROR_FEATURE,

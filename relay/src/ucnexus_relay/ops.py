@@ -925,6 +925,31 @@ def create_receipt_op(conn, *, company: str, request: models.ReceiptRequest) -> 
     batch = f"{request.batch_prefix}-{rdate:%Y/%m/%d}"
     custom_db = get_settings().gp.custom_db.get(company)  # None for sandboxes / unmapped companies
 
+    # The receipt's record note, when the backend named this receive attempt (#1389): the key goes into
+    # GP behind the note icon on the receipt, and the lookup below reads it back to recognise a retry.
+    note = f"UC Nexus receipt key {request.idempotency_key}" if request.idempotency_key else None
+
+    # 0. a retry of an attempt GP may already have finished. The backend stops waiting after 30 seconds,
+    #    but the relay and GP carry on and the receipt lands, so a plain retry would post it twice. This
+    #    runs FIRST, ahead of every check below, and that order is load-bearing: GP counts a receipt in
+    #    an unposted batch toward the line's received quantity (POP10500 is written at entry), so a
+    #    retry of a full receipt would otherwise be refused as qty_exceeds_remaining - and the backend
+    #    would release a draft whose receipt GP holds. Nothing is written on this path, the WHRECLINE101
+    #    rows included: the first attempt wrote them in the same transaction as its receipt.
+    if request.idempotency_key:
+        found = econnect.find_receipt_by_note(conn, key=request.idempotency_key, po_number=request.po_number)
+        if found:
+            receipt_number, found_batch = found
+            return models.ReceiptResponse(
+                receipt_number=receipt_number,
+                batch_number=found_batch,
+                po_number=request.po_number,
+                company=company,
+                lines_received=len(request.lines),
+                custom_db_written=bool(custom_db),
+                existing=True,
+            )
+
     vendor_id, vendor_name, po_lines = econnect.read_po_receipt_context(conn, request.po_number)
     if vendor_id is None:
         raise RelayOpError("po_not_found", f"PO {request.po_number} not found in {company}")
@@ -1011,6 +1036,7 @@ def create_receipt_op(conn, *, company: str, request: models.ReceiptRequest) -> 
         receipt_date=rdate,
         batch_number=batch,
         subtotal=subtotal,
+        note=note,
     )
 
     # custom warehouse store (WHRECLINE101) - SAME transaction as the GP receipt, so a failure here

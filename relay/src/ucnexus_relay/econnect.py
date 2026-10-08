@@ -87,6 +87,14 @@ _NOTE_TABLE = "SY03900"
 # arrive later than this, which is what the backend's own retry window decides.
 _REGISTRATION_NOTE_DAYS = 7
 
+# Where a receipt's record note can live, for the receipt-key lookup below (#1389). A receipt header
+# (POP10300 unposted, POP30300 posted) has no NOTEINDX: it carries eight note indexes, RCPTNOTE_1..8.
+# Read on TUBC (2026-10-08): RCPTNOTE_1 is the receipt's own slot, reserved fresh for every receipt,
+# and 2..5 are inherited from the PO and the masters it names. taPopRcptHdrInsert is encrypted, so
+# which slot its NOTETEXT fills was not observed; the lookup matches all eight rather than lean on that
+# guess. Matching an inherited slot cannot misfire, because the key is a UUID under its own prefix.
+_RECEIPT_NOTE_COLUMNS = tuple(f"RCPTNOTE_{i}" for i in range(1, 9))
+
 
 def find_po_by_registration_note(conn, *, key: str, buyer_id: str, doc_date: date) -> str | None:
     """Read-only: the PO carrying this registration key on its record note, or None.
@@ -122,6 +130,37 @@ def find_po_by_registration_note(conn, *, key: str, buyer_id: str, doc_date: dat
         )
         if row is not None:
             return (row[0] or "").strip()
+    return None
+
+
+def find_receipt_by_note(conn, *, key: str, po_number: str) -> tuple[str, str] | None:
+    """Read-only: (receipt number, batch) of the receipt carrying this key on its record note, or None.
+
+    What makes a create_receipt retry safe (#1389), the receipt twin of find_po_by_registration_note.
+    The receipt the first attempt made is found in the unposted batch (POP10300) first, then in history
+    (POP30300) for one somebody posted in GP before the retry arrived.
+
+    VNDDOCNM is what keeps this cheap: create_receipt_header writes the PO number there, so the join
+    reads the handful of receipts against one PO and only their notes. NOTEINDX 0 is excluded because
+    it is where GP leaves orphan notes no document can reach (see _note_fields) - a slot holding 0 is an
+    empty slot, never a match. Table and column names are compile-time constants; only the PO number
+    and the key are bound."""
+    like = f"%{key}%"
+    slots = ", ".join(f"h.{column}" for column in _RECEIPT_NOTE_COLUMNS)
+    for table in ("POP10300", "POP30300"):
+        row = (
+            conn.cursor()
+            .execute(
+                f"SELECT TOP 1 h.POPRCTNM, h.BACHNUMB FROM dbo.{table} h "
+                f"JOIN dbo.{_NOTE_TABLE} n ON n.NOTEINDX IN ({slots}) "
+                f"WHERE h.VNDDOCNM = ? AND n.NOTEINDX <> 0 AND CAST(n.TXTFIELD AS varchar(max)) LIKE ?",
+                po_number,
+                like,
+            )
+            .fetchone()
+        )
+        if row is not None:
+            return (row[0] or "").strip(), (row[1] or "").strip()
     return None
 
 
@@ -2449,8 +2488,20 @@ def _exec_customer_address(conn, fields: dict, *, update_if_exists: bool) -> Non
         )
 
 
-def create_receipt_header(conn, *, receipt_number, po_number, vendor_id, receipt_date, batch_number, subtotal) -> None:
-    sql = """
+def create_receipt_header(
+    conn, *, receipt_number, po_number, vendor_id, receipt_date, batch_number, subtotal, note: str | None = None
+) -> None:
+    """The receipt header, written after its lines. note is the receipt's record note (#1389), the
+    taPopRcptHdrInsert NOTETEXT parameter (confirmed on TUBC, varchar(8000)); it is left out of the EXEC
+    entirely when None, for the reason _note_fields gives: a receipt that sets no note sends GP exactly
+    what it always did. The header is inserted once, so the orphan-note trap of taPoHdr's second call
+    does not arise here."""
+    params = [receipt_number, po_number, receipt_date, batch_number, vendor_id, subtotal]
+    note_line = ""
+    if note is not None:
+        note_line = f"\n        @I_v{_NOTE_TEXT_PARAM}   = ?,"
+        params.append(note)
+    sql = f"""
     DECLARE @err int = 0;
     DECLARE @err_str varchar(255) = '';
     EXEC dbo.taPopRcptHdrInsert
@@ -2460,16 +2511,12 @@ def create_receipt_header(conn, *, receipt_number, po_number, vendor_id, receipt
         @I_vreceiptdate = ?,
         @I_vBACHNUMB    = ?,
         @I_vVENDORID    = ?,
-        @I_vSUBTOTAL    = ?,
+        @I_vSUBTOTAL    = ?,{note_line}
         @O_iErrorState  = @err OUTPUT,
         @oErrString     = @err_str OUTPUT;
     SELECT @err AS error_state, @err_str AS err_string;
     """
-    row = (
-        conn.cursor()
-        .execute(sql, receipt_number, po_number, receipt_date, batch_number, vendor_id, subtotal)
-        .fetchone()
-    )
+    row = conn.cursor().execute(sql, *params).fetchone()
     if row.error_state != 0:
         raise EConnectError(
             f"taPopRcptHdrInsert failed: {row.err_string.strip()}",
