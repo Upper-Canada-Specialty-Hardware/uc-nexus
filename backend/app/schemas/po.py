@@ -102,8 +102,8 @@ _EMAILABLE_PO_STATUSES = frozenset(
 # idempotency key on the create_po payload, stamps it on the PO it creates, and returns that same PO
 # when the key comes back, so a retry can no longer double-order - which is why this resolver refuses
 # to push to a relay that has not advertised CREATE_PO_IDEMPOTENCY_FEATURE at all. GP RECEIVE ENTRY
-# has no such key and is unchanged: a receipt that timed out is still an ambiguous failure a human
-# has to look up in GP.
+# carries the approval's key the same way since #1389 (CREATE_RECEIPT_IDEMPOTENCY_FEATURE), so a
+# receipt that timed out is queued and asked again too, rather than left for a human to look up in GP.
 
 
 def _load_po_type(po_id: uuid.UUID, scope: str | None = None) -> PurchaseOrder:

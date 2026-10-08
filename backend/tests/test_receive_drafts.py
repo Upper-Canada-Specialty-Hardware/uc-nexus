@@ -34,6 +34,7 @@ from app.models.receive_draft import ReceiveDraft
 from app.repositories import po_repository
 from app.repositories import warehouse as warehouse_repository
 from app.schemas import warehouse as warehouse_module
+from app.services.relay_gateway import CREATE_RECEIPT_IDEMPOTENCY_FEATURE
 
 AUTHOR = "u_author"
 AUTHOR_NAME = "Wendy Warehouse"
@@ -643,12 +644,18 @@ def test_an_approved_draft_cannot_be_approved_again(db_session):
 
 
 class _StubRelay:
-    """Stands in for the GP relay. `fail_with` makes the call raise instead of answering."""
+    """Stands in for the GP relay. `fail_with` makes the call raise instead of answering. `features` is
+    what its hello frame advertised; by default a build that reads the receipt key (#1389), which is
+    the only build a receipt is sent to."""
 
-    def __init__(self, result=None, fail_with=None):
+    def __init__(self, result=None, fail_with=None, features=(CREATE_RECEIPT_IDEMPOTENCY_FEATURE,)):
         self.result = result if result is not None else {"receipt_number": "RCT000123", "batch_number": "B1"}
         self.fail_with = fail_with
+        self.features = frozenset(features)
         self.calls = []
+
+    def has_feature(self, name):
+        return name in self.features
 
     async def relay_call(self, company, op, payload=None, timeout=30.0):
         self.calls.append((company, op, payload))
@@ -913,22 +920,69 @@ def test_an_econnect_refusal_puts_the_draft_back_in_the_queue(committed, monkeyp
     assert len(relay.calls) == 1, "the refusal has to come from GP, not from skipping the call"
 
 
-def test_an_ambiguous_relay_failure_keeps_the_claim_and_the_key_that_resumes_it(committed, monkeypatch, approve_env):
-    """A timeout or a dispatched disconnect means GP MAY hold the receipt. Releasing would let a
-    fresh approval post a second one, so the draft stays claimed - and the key it is claimed under is
-    on the row, which is what makes the retry a resume rather than a new approval."""
+def _queued_row(result):
+    from app.database import SessionLocal
+    from app.models.gp_outbox import GpWriteOutbox
+
+    with SessionLocal() as session:
+        return session.get(GpWriteOutbox, uuid.UUID(str(result.draft.outbox_entry_id)))
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["timeout", "dispatched"],
+)
+def test_an_ambiguous_relay_failure_queues_the_receipt_under_its_key(committed, monkeypatch, approve_env, failure):
+    """#1389: a timeout or a dispatched disconnect means GP MAY hold the receipt. It used to be raised
+    with the claim held, for a person to check GP. The receipt now carries the approval's key into GP
+    and the relay hands back the receipt it already posted, so it is queued for the outbox to ask
+    again - under the SAME key, which the stored payload carries - and the draft is closed to a second
+    approval exactly as a queued receipt always was."""
     from app.errors import RelayTimeoutError
 
+    error = RelayTimeoutError() if failure == "timeout" else RelayUnavailableError("socket died", dispatched=True)
     f = committed()
-    monkeypatch.setattr(warehouse_module, "relay_gateway", _StubRelay(fail_with=RelayTimeoutError()))
+    relay = _StubRelay(fail_with=error)
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
 
     key = str(uuid.uuid4())
-    with pytest.raises(AppError):
-        _approve(f.draft_id, key=key)
+    result = _approve(f.draft_id, key=key)
 
-    parked = _read_draft(f.draft_id)
-    assert parked.status == ReceiveDraftStatus.APPROVING
-    assert parked.approval_idempotency_key == key
+    assert result.queued is True
+    assert result.receive_record is None
+    assert result.draft.status.value == "APPROVED"
+    assert len(relay.calls) == 1
+    row = _queued_row(result)
+    assert row.idempotency_key == key
+    assert row.payload["idempotency_key"] == key, "the retry must carry the key GP got on the first attempt"
+
+
+def test_the_receipt_payload_carries_the_approvals_key(committed, monkeypatch, approve_env):
+    f = committed()
+    relay = _StubRelay()
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    key = str(uuid.uuid4())
+    _approve(f.draft_id, key=key)
+
+    ((_, op, payload),) = relay.calls
+    assert op == "create_receipt"
+    assert payload["idempotency_key"] == key
+
+
+def test_a_relay_that_cannot_read_the_key_is_never_sent_the_receipt(committed, monkeypatch, approve_env):
+    """An older relay accepts the key and ignores it, so every retry above would be a second receipt.
+    Nothing is sent to it; the receipt is queued until the workstation updates, and the outbox worker
+    holds it the same way."""
+    f = committed()
+    relay = _StubRelay(features=())
+    monkeypatch.setattr(warehouse_module, "relay_gateway", relay)
+
+    result = _approve(f.draft_id)
+
+    assert relay.calls == []
+    assert result.queued is True
+    assert result.draft.status.value == "APPROVED"
 
 
 def test_a_resumed_approval_does_not_re_validate_what_gp_has_already_run(committed, monkeypatch, approve_env):
@@ -959,8 +1013,8 @@ def test_a_persist_failure_after_gp_posted_keeps_the_claim_and_resumes_without_r
     committed, monkeypatch, approve_env
 ):
     """#1348: GP posted the receipt and only the Nexus persist failed. Releasing the claim here would
-    let a fresh approval, under a new key, post a second GP receipt - receipts carry no key of their
-    own on the GP side (#1213). So the draft stays APPROVING under its key, the ledger keeps GP's
+    let a fresh approval, under a new key, post a second GP receipt - the relay recognises a receipt
+    only by the key it was posted under (#1389). So the draft stays APPROVING under its key, the ledger keeps GP's
     answer, and the retry with that key persists from the ledger without calling GP again."""
     from app.services import gp_idempotency
 

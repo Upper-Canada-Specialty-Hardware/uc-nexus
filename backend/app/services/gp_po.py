@@ -225,6 +225,7 @@ def build_create_receipt_payload(
     line_items: list[dict],
     warehouse_code: str | None = None,
     receipt_date: date | None = None,
+    idempotency_key: str | None = None,
 ) -> dict:
     """line_items: each with gp_line_ord, quantity, and locations (the same aisle/row/bay dicts the
     createReceive input carries for the UC Nexus put-away) - rack_location composes the distinct
@@ -262,4 +263,9 @@ def build_create_receipt_payload(
         "lines": lines,
         "received_by": received_by,
         "receipt_date": (receipt_date or gp_window.local_today()).isoformat(),
+        # #1389: the approval's key, which the relay stamps on the receipt's record note so the same key
+        # coming back returns that receipt instead of posting a second. In the payload, as on create_po,
+        # because a queued write replays the STORED payload; and its presence is what tells the outbox a
+        # retry of this row is safe - a row queued before the key existed carries none.
+        "idempotency_key": idempotency_key,
     }

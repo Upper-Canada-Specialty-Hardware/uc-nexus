@@ -99,6 +99,13 @@ GP_SYNC_STATE_FEATURE = "gp_sync_state"
 # the relay, not this backend, can tell a retry from a new order.
 CREATE_PO_IDEMPOTENCY_FEATURE = "create_po_idempotency"
 
+# The same for GP RECEIVE ENTRY (#1389): the relay reads the `idempotency_key` on a create_receipt
+# payload, stamps it on the receipt's record note, and answers a repeat of the key with the receipt it
+# already posted. An older build accepts the key and ignores it, so a receipt is never sent to one: it
+# is queued until the workstation updates, and a timed-out receipt can be asked again only because of
+# this.
+CREATE_RECEIPT_IDEMPOTENCY_FEATURE = "create_receipt_idempotency"
+
 # The hello feature flag a relay sets to say it reads the LIST of purchase tax details on a create_po
 # header and writes the PO's tax the way GP's own PO entry does (#762): a row per line per detail,
 # freight and misc taxed, the trade discount netted, no summary row. A relay without it ignores

@@ -409,6 +409,10 @@ def _stub_the_approval(monkeypatch, relay_error):
         raise relay_error
 
     monkeypatch.setattr(warehouse_schema.relay_gateway, "relay_call", _relay_call)
+    # A relay that reads the receipt key (#1389), the only build a receipt is sent to.
+    monkeypatch.setattr(
+        warehouse_schema.relay_gateway, "_features", frozenset({warehouse_schema.CREATE_RECEIPT_IDEMPOTENCY_FEATURE})
+    )
     return released
 
 
