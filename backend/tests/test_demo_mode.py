@@ -254,6 +254,22 @@ def test_demo_numbering_leaves_the_real_sequences_alone(seeded):
         assert slips and all(n.startswith("PS-D") for n in slips)
 
 
+def test_the_seed_leaves_hardware_staged_for_shipping(seeded):
+    # Read the way the Staging screen reads it, as a caller in the demo company.
+    from app.services.demo_seed import Seeder
+
+    async def _staged():
+        s = Seeder()
+        projects = (await s.gql("{ projects { id projectId } }"))["projects"]
+        tower = next(p["id"] for p in projects if p["projectId"] == "DEMO-1001")
+        ready = await s.gql(
+            "query R($p: ID) { shipReadyItems(projectId: $p) { looseItems { availableQuantity } } }", p=tower
+        )
+        return sum(i["availableQuantity"] for i in ready["shipReadyItems"]["looseItems"])
+
+    assert asyncio.run(_staged()) > 0
+
+
 def test_a_reset_leaves_no_demo_row_and_no_real_row_behind(seeded):
     from app.database import SessionLocal
     from app.models.demo_gp_record import DemoGpRecord
