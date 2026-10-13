@@ -76,6 +76,7 @@ const CLERK_USER_FIELDS = `
   roles
   gpBuyerId
   company
+  demoMode
   imageUrl
 `;
 
@@ -705,6 +706,16 @@ export const GET_GP_SYNC_STATE = gql`
         oldestPendingAt
         lastDrainedAt
       }
+    }
+  }
+`;
+
+// #1608: put an account into demo mode or take it out - the UC Nexus Admin's switch, which is how a
+// product owner holding neither admin role gets in.
+export const UPDATE_USER_DEMO_MODE = gql`
+  mutation UpdateUserDemoMode($userId: String!, $enabled: Boolean!) {
+    updateUserDemoMode(userId: $userId, enabled: $enabled) {
+      ${CLERK_USER_FIELDS}
     }
   }
 `;

@@ -7,7 +7,8 @@
  * publishes the value here and the link reads it at request time.
  *
  * Null means "send no header": every scoped user (the backend scopes them by their own assignment and
- * would ignore the header anyway), and an admin whose company is not known yet.
+ * would ignore the header anyway), and an admin whose company is not known yet. Anybody in demo mode
+ * (#1608) sends the demo company.
  */
 
 /** The request header the backend reads the admin's acting company from. */

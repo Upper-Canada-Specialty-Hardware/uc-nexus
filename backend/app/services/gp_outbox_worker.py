@@ -345,22 +345,22 @@ async def _drain_one_claimed(row_id: uuid.UUID) -> None:
                 # on the relay recognising the attempt's key. A build that does not is refused here,
                 # and the RelayOpUnsupportedError branch below leaves the row waiting for the
                 # workstation to update rather than pushing a PO that could be ordered twice.
-                relay_gateway.require_feature(CREATE_PO_IDEMPOTENCY_FEATURE, relay_op)
+                relay_gateway.require_feature(CREATE_PO_IDEMPOTENCY_FEATURE, relay_op, company)
                 # #762: a taxed registration is only right against a relay that writes the tax rows;
                 # an older build ignores the detail list and would register the PO with no tax. A row
                 # queued before #762 carries the single `tax_detail_id`, which the new relay folds in
                 # - so it waits for the same build, rather than being pushed to one that would still
                 # write the summary-only shape GP doubles on save.
                 if registration_carries_tax(payload):
-                    relay_gateway.require_feature(CREATE_PO_TAX_ROWS_FEATURE, relay_op)
+                    relay_gateway.require_feature(CREATE_PO_TAX_ROWS_FEATURE, relay_op, company)
                 # #763: a schedule is only read by a relay that expands it; an older one would drop it.
                 if registration_carries_tax_schedule(payload):
-                    relay_gateway.require_feature(CREATE_PO_TAX_SCHEDULE_FEATURE, relay_op)
+                    relay_gateway.require_feature(CREATE_PO_TAX_SCHEDULE_FEATURE, relay_op, company)
             elif relay_op == "create_receipt" and retry_safe:
                 # #1389: a keyed receipt is only safe to ask again of a relay that reads the key; an older
                 # build would ignore it and post a second receipt. Held for the workstation to update,
                 # through the RelayOpUnsupportedError branch below, exactly like a registration.
-                relay_gateway.require_feature(CREATE_RECEIPT_IDEMPOTENCY_FEATURE, relay_op)
+                relay_gateway.require_feature(CREATE_RECEIPT_IDEMPOTENCY_FEATURE, relay_op, company)
             relay_result = await relay_gateway.relay_call(company, relay_op, payload)
             if isinstance(relay_result, dict) and relay_result.get("existing"):
                 # The earlier attempt did reach GP after all; this one got that PO or receipt back

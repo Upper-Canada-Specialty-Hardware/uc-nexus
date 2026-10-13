@@ -34,6 +34,7 @@ from datetime import datetime
 
 from fastapi import WebSocket
 
+from app.demo import is_demo_company
 from app.errors import (
     RelayBusyError,
     RelayCallError,
@@ -447,19 +448,24 @@ class RelayGateway:
             return {}
         return {normalize_company(k): v for k, v in value.items() if normalize_company(k)}
 
-    def has_feature(self, name: str) -> bool:
+    def has_feature(self, name: str, company: str | None = None) -> bool:
         """Did the connected relay advertise this capability on its hello frame? False for a build old
         enough not to list any, which is the answer every push path wants: say nothing to a relay that
-        cannot read it."""
+        cannot read it.
+
+        A call for the demo company (#1608) is never sent to the relay, so the relay's build has no say
+        in it: the simulated GP is always current, and every capability is there."""
+        if is_demo_company(company):
+            return True
         return self._features is not None and name in self._features
 
-    def require_feature(self, name: str, op: str) -> None:
+    def require_feature(self, name: str, op: str, company: str | None = None) -> None:
         """Refuse an op whose safety depends on a relay capability.
 
         Used by the write paths that are only correct against a relay advertising the feature, so an
         older build is turned away with the existing update-the-relay message before anything is sent
         - rather than after GP has already run the write."""
-        if not self.has_feature(name):
+        if not self.has_feature(name, company):
             raise RelayOpUnsupportedError(op)
 
     async def push_gp_sync_state(self, snapshot: dict) -> None:
@@ -614,7 +620,16 @@ class RelayGateway:
         that names the fix. An EMPTY company opts out of both checks: it means "this op is not routed
         to a company", which the relay exempts from its channel pin (server_load is the one such op).
         That exemption is what lets the load probe run before a hello has landed, or after discovery
-        failed - the two states where asking how the server is doing matters most."""
+        failed - the two states where asking how the server is doing matters most.
+
+        A call for the demo company (#1608) is answered by the simulated GP in this process and never
+        goes near the socket, whatever relay is or is not connected - which is the whole guarantee
+        that demo mode cannot reach a real GP."""
+        if is_demo_company(company):
+            # Imported here: the simulated GP reaches the database, which this module otherwise never does.
+            from app.services import demo_gp
+
+            return await demo_gp.call(op, payload or {}), {"cost": None, "server": None}
         if self._socket is None:
             raise RelayUnavailableError()
         if company:

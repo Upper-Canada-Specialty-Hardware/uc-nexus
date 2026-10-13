@@ -1273,7 +1273,7 @@ class WarehouseMutations:
                     draft=draft,
                 )
 
-            if not relay_gateway.has_feature(CREATE_RECEIPT_IDEMPOTENCY_FEATURE):
+            if not relay_gateway.has_feature(CREATE_RECEIPT_IDEMPOTENCY_FEATURE, gp_company):
                 # #1389: a relay that would ignore the key is never sent a receipt, because the safety of
                 # every retry below rests on it. Nothing has left the backend, so the receipt waits on
                 # the queue for the workstation to update - and when no relay is connected at all, this

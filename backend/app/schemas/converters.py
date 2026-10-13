@@ -444,6 +444,7 @@ def clerk_user_to_type(u: dict) -> ClerkUser:
         gp_buyer_id=u.get("gp_buyer_id"),
         company=u.get("company"),
         image_url=u["image_url"],
+        demo_mode=bool(u.get("demo_mode")),
     )
 
 

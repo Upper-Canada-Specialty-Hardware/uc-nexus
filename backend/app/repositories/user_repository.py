@@ -3,6 +3,7 @@
 import httpx
 
 from app.config import CLERK_SECRET_KEY
+from app.demo import DEMO_MODE_METADATA_KEY, is_demo_company
 from app.errors import AppError, ConflictError, ValidationError
 
 CLERK_API_BASE = "https://api.clerk.com/v1"
@@ -64,6 +65,8 @@ def _user_summary(u: dict) -> dict:
         # #637: the GP company this account belongs to - its tenant. Same storage pattern as
         # gpBuyerId: one publicMetadata key, null until an admin assigns it.
         "company": metadata.get("company") or None,
+        # #1608: whether the account is working in demo mode, on the synthesized DEMO company.
+        "demo_mode": bool(metadata.get(DEMO_MODE_METADATA_KEY)),
         "image_url": u.get("image_url") or "",
     }
 
@@ -209,6 +212,10 @@ def update_user_company(user_id: str, company: str | None) -> dict:
     write (#1255), as losing PO User does: a BUYERID belongs to one company's GP buyer master, so the
     old one is not a buyer in the new company. A first assignment (no company before) keeps it."""
     cleaned = normalize_company(company)
+    if is_demo_company(cleaned):
+        # #1608: DEMO is not a company anybody belongs to. An account reaches it through demo mode,
+        # which leaves its real company where it is for when demo mode is turned off.
+        raise ValidationError("DEMO is the demo company; turn on demo mode instead of assigning it.", field="company")
     patch: dict = {"company": cleaned}
     previous = normalize_company(_public_metadata(user_id).get("company"))
     if previous is not None and previous != cleaned:
@@ -219,6 +226,25 @@ def update_user_company(user_id: str, company: str | None) -> dict:
 def get_user_company(user_id: str) -> str | None:
     """#637: the caller's GP company (their tenant) from Clerk publicMetadata, or None if unassigned."""
     return normalize_company(_public_metadata(user_id).get("company"))
+
+
+def get_user_demo_mode(user_id: str) -> bool:
+    """#1608: whether the account is in demo mode, from Clerk publicMetadata. False when unset."""
+    return bool(_public_metadata(user_id).get(DEMO_MODE_METADATA_KEY))
+
+
+def update_user_demo_mode(user_id: str, enabled: bool) -> dict:
+    """#1608: turn demo mode on or off for an account. A merge write like every other metadata key, so
+    the account's real company, roles and buyer identity are untouched and come back as they were the
+    moment demo mode is turned off. Off removes the key rather than storing false."""
+    return _merge_public_metadata(user_id, {DEMO_MODE_METADATA_KEY: True if enabled else None})
+
+
+def get_user_tenancy(user_id: str) -> tuple[str | None, bool]:
+    """#1608: the account's company and whether it is in demo mode - two keys of one metadata object,
+    read together so a request that needs both makes one Clerk round trip."""
+    metadata = _public_metadata(user_id)
+    return normalize_company(metadata.get("company")), bool(metadata.get(DEMO_MODE_METADATA_KEY))
 
 
 def _public_metadata(user_id: str) -> dict:

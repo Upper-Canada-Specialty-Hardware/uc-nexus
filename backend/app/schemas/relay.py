@@ -5,8 +5,9 @@ import uuid
 
 import strawberry
 
-from app.auth import current_user, tenant_scope
+from app.auth import ACTING_COMPANY_HEADER, current_user, tenant_scope
 from app.database import SessionLocal
+from app.demo import DEMO_COMPANY, DEMO_COMPANY_NAME, is_demo_company
 from app.errors import (
     ConflictError,
     NotFoundError,
@@ -88,12 +89,30 @@ _GP_ADDRESS_FIELDS = (
 )
 
 
-def _sole_relay_company() -> str:
+def _in_demo(info: strawberry.Info) -> bool:
+    """Whether the caller's tab is working in the demo company (#1608), from the acting-company header
+    the frontend sends for anybody in demo mode.
+
+    Read straight off the request, deliberately: `relayStatus` is polled by every open tab and answers
+    from memory, so it must not ask Clerk who the caller is. Nothing is decided on it but which status
+    to show - every read and write of GP data is still scoped by `tenant_scope` and
+    `resolve_gp_company`, which a header alone never gets past."""
+    request = info.context.get("request")
+    headers = getattr(request, "headers", None) or {}
+    raw = headers.get(ACTING_COMPANY_HEADER) or headers.get(ACTING_COMPANY_HEADER.lower())
+    return is_demo_company(raw)
+
+
+def _sole_relay_company(info: strawberry.Info) -> str:
     """The connected relay's company when it serves exactly one, for the two GP writes that predate
     multi-company and take no company of their own (#637).
 
     An install serving several has no default and says so: guessing which GP company a buyer or a
-    customer address is written into is not a mistake that can be undone from here."""
+    customer address is written into is not a mistake that can be undone from here.
+
+    A caller in demo mode (#1608) has exactly one: the demo company."""
+    if _in_demo(info):
+        return DEMO_COMPANY
     available = relay_gateway.companies
     if len(available) == 1:
         return available[0]
@@ -121,6 +140,13 @@ def resolve_gp_company(info: strawberry.Info, company: str) -> str:
     requested = relay_gateway_module.normalize_company(company)
     if not requested:
         raise ValidationError("A GP company is required.", field="company")
+
+    if is_demo_company(requested):
+        # #1608: the simulated GP serves the demo company whatever relay is connected, and only to a
+        # caller working in it - nobody reads the demo company's GP from a real company.
+        if tenant_scope(info) != DEMO_COMPANY:
+            raise ValidationError("Turn on demo mode to read the demo company's GP.", field="company")
+        return DEMO_COMPANY
 
     available = relay_gateway.companies
     if not available:
@@ -205,6 +231,20 @@ class RelayQueries:
         by every open tab, so it has to stay cheap enough to be, and the gateway is the only thing that
         can be right about a live socket anyway (#654)."""
         live_install = relay_gateway.install_id
+        if _in_demo(info):
+            # #1608: a caller in demo mode works against the simulated GP, which is always there and
+            # serves the demo company alone. The real relay is none of their business while they are.
+            return RelayStatus(
+                connected=True,
+                companies=[DEMO_COMPANY],
+                gp_companies=[GpCompany(id=DEMO_COMPANY, name=DEMO_COMPANY_NAME)],
+                companies_error=None,
+                build="simulated",
+                install_id=None,
+                last_connected_at=None,
+                last_disconnected_at=None,
+                last_disconnect_reason=None,
+            )
         companies = relay_gateway.companies
         names = relay_gateway.company_names
         return RelayStatus(
@@ -459,7 +499,7 @@ class RelayMutations:
         Note there is no delete counterpart: eConnect exposes no proc for it, and removing a buyer
         rows-deep in POP00101 by hand would bypass the business logic that rule exists to protect."""
 
-        target = resolve_gp_company(info, company or _sole_relay_company())
+        target = resolve_gp_company(info, company or _sole_relay_company(info))
 
         # Bounded here as well as in the relay's CreateBuyerRequest: an over-length id would otherwise
         # travel a full round-trip to come back as a generic invalid_payload, and GP's char widths are
@@ -515,7 +555,7 @@ class RelayMutations:
         this can never overwrite an address accounting maintains in GP.
         """
 
-        company = resolve_gp_company(info, input.company or _sole_relay_company())
+        company = resolve_gp_company(info, input.company or _sole_relay_company(info))
 
         # Trimmed and bounded here as well as in the relay's CreateCustomerAddressRequest, for the
         # reason create_gp_buyer gives above: the relay's model is the server-side truth, but it can
