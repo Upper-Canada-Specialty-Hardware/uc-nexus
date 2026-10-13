@@ -3,15 +3,12 @@ import { FlaskConical } from 'lucide-react';
 import { useDemoMode } from './useDemoMode';
 
 /**
- * The user menu entry that turns demo mode on or off for the signed-in account (#1608).
- *
- * Turning it on is for a UC Nexus Admin or Tenant Owner; anybody in demo mode sees the entry to leave
- * it, as they do on the demo banner.
+ * The user menu entry that turns demo mode on or off for the signed-in account (#1608). Every user has
+ * it, and needs nobody's help to use it (#1629): demo mode only ever narrows an account to the demo
+ * company's made-up data.
  */
 export default function DemoModeUserButton() {
-  const { demoMode, canEnter, busy, enter, leave } = useDemoMode();
-
-  if (!demoMode && !canEnter) return <UserButton />;
+  const { demoMode, busy, enter, leave } = useDemoMode();
 
   return (
     <UserButton>

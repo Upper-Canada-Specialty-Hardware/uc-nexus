@@ -2,11 +2,9 @@
 
 Who may do what was ruled on the issue:
 
-  - a UC NEXUS ADMIN or TENANT OWNER turns demo mode on for themselves (`setMyDemoMode`);
-  - anybody in demo mode may turn it off again, whatever their roles - leaving must never need a
-    role somebody might not have;
-  - a UC NEXUS ADMIN turns it on or off for any account (`updateUserDemoMode`), which is how a
-    product owner holding neither role gets in;
+  - every signed-in user turns demo mode on and off for themselves (`setMyDemoMode`), with no admin
+    involved (#1629, replacing #1617's tenant-owner-only rule);
+  - a UC NEXUS ADMIN turns it on or off for any account (`updateUserDemoMode`);
   - a TENANT OWNER or UC NEXUS ADMIN who is in demo mode resets the demo company (`resetDemoData`).
 
 Turning demo mode on seeds the demo company the first time anybody does, so there is always a starting
@@ -18,9 +16,7 @@ import asyncio
 import strawberry
 
 from app.auth import (
-    TENANT_OWNERS,
     ForbiddenError,
-    caller_roles,
     current_user,
     tenant_scope,
 )
@@ -36,15 +32,14 @@ from .types import ClerkUser
 class DemoMutations:
     @strawberry.mutation
     async def set_my_demo_mode(self, info: strawberry.Info, enabled: bool) -> ClerkUser:
-        """Turn demo mode on or off for the caller's own account.
+        """Turn demo mode on or off for the caller's own account - any signed-in account (#1629).
 
-        On is for a TENANT OWNER or UC NEXUS ADMIN; off is for anybody. The demo company is seeded on the
-        way in when it never has been. The account's real company, roles and buyer identity are left as
-        they are, so turning it off puts the caller back exactly where they were."""
+        Safe for anybody because demo mode narrows what an account reaches rather than widening it: the
+        caller is pinned to the demo company, keeps their own roles, and GP is simulated. The demo company
+        is seeded on the way in when it never has been. The account's real company, roles and buyer
+        identity are left as they are, so turning it off puts the caller back exactly where they were."""
         user_id = current_user(info)["user_id"]
         if enabled:
-            if not TENANT_OWNERS & set(await asyncio.to_thread(caller_roles, info.context)):
-                raise ForbiddenError(f"{' or '.join(sorted(TENANT_OWNERS))} role required to turn on demo mode")
             await demo_reset.reset(only_if_empty=True)
         return clerk_user_to_type(await asyncio.to_thread(user_repository.update_user_demo_mode, user_id, enabled))
 
