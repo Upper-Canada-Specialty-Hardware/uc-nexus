@@ -7,7 +7,7 @@ from datetime import date
 
 import strawberry
 
-from app.auth import current_user, resolve_display_name, tenant_scope
+from app.auth import ForbiddenError, current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
 from app.demo import DEMO_BUYER_ID, is_demo_company
 from app.errors import (
@@ -887,8 +887,18 @@ class POMutations:
         if is_demo_company(company):
             # #1608: a demo vendor is made up and so is its address. The send is answered as the real
             # one would be, and nothing is mailed - demo mode never reaches a mailbox.
-            contact = await relay_gateway.relay_call(company, "get_vendor_contact", {"vendor_id": vendor_id})
-            address = (contact or {}).get("email") or "vendor@example.com"
+            try:
+                contact = await relay_gateway.relay_call(company, "get_vendor_contact", {"vendor_id": vendor_id})
+            except RelayCallError as exc:
+                return EmailPoResult(
+                    sent=False, failed=True, message=f"Could not reach GP for the vendor's email: {exc}"
+                )
+            address = (contact or {}).get("email")
+            if not address:
+                return EmailPoResult(
+                    sent=False,
+                    message=f"GP has no email on file for vendor {vendor_id}. Ask accounting to add one.",
+                )
             return EmailPoResult(
                 sent=True,
                 message=f"Demo mode: purchase order {po_number} would be sent to {address}. Nothing was mailed.",
@@ -1335,7 +1345,12 @@ class POMutations:
         self, info: strawberry.Info, input: UpdatePODocumentSettingsInput
     ) -> PODocumentSettings:
         """Patch the single-row PO-document boilerplate (issue #230). Admin-only. Only fields the client
-        actually sent (not UNSET) are written, so a partial edit leaves the rest intact."""
+        actually sent (not UNSET) are written, so a partial edit leaves the rest intact.
+
+        The row is shared by every GP company (ruled #1107 / #1142), so it is refused from demo mode
+        (#1608): nothing done there may reach a real company, and a reset could not undo it."""
+        if is_demo_company(tenant_scope(info)):
+            raise ForbiddenError("PO document settings are shared by every company; leave demo mode to change them.")
         fields = {
             name: getattr(input, name)
             for name in (

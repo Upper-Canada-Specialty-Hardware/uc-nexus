@@ -468,13 +468,6 @@ class RelayGateway:
         if not self.has_feature(name, company):
             raise RelayOpUnsupportedError(op)
 
-    def serves(self, company: str | None) -> bool:
-        """Whether a call for `company` can be answered right now: the demo company always (#1608), a
-        real one while the connected relay reported it."""
-        if is_demo_company(company):
-            return True
-        return self._socket is not None and bool(company) and company in self._companies
-
     async def push_gp_sync_state(self, snapshot: dict) -> None:
         """Hand the connected relay this backend's own GP SYNC STATE (#679), so the NEXUS GP TRAFFIC tab
         on the workstation can show MIRROR PROGRESS and pacing and not only the traffic the relay itself

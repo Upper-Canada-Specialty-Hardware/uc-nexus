@@ -265,6 +265,10 @@ def _jobs(session: Session) -> list[dict]:
     """Every job, the fixed ones written in on first use so a job update has a row to change."""
     rows = _all(session, "job")
     if not rows:
+        # Under the job lock and read again: two first calls at once must not both write the fixed jobs.
+        _lock(session, "job")
+        rows = _all(session, "job")
+    if not rows:
         for job in JOBS:
             _put(session, "job", job["job_number"], _job_record(job))
         rows = _all(session, "job")
@@ -278,15 +282,21 @@ def _vendor(vendor_id: str) -> dict:
     return vendor
 
 
-def _po_with_receipts(session: Session, po: dict) -> dict:
-    """A PO as the relay reads it back: its lines, each with what has been received against it."""
-    received: dict[int, float] = {}
+def _received(session: Session) -> dict[str, dict[int, float]]:
+    """What every receipt has received, by PO number and line ord - read once for a whole answer."""
+    received: dict[str, dict[int, float]] = {}
     for receipt in _all(session, "receipt"):
-        if receipt.data.get("po_number") != po["po_number"]:
-            continue
+        by_ord = received.setdefault(receipt.data.get("po_number"), {})
         for line in receipt.data.get("lines") or []:
-            received[int(line["po_line_ord"])] = received.get(int(line["po_line_ord"]), 0.0) + float(line["quantity"])
-    lines = [{**ln, "received": received.get(int(ln["ord"]), 0.0)} for ln in po["lines"]]
+            ord_ = int(line["po_line_ord"])
+            by_ord[ord_] = by_ord.get(ord_, 0.0) + float(line["quantity"])
+    return received
+
+
+def _po_with_receipts(po: dict, received: dict[str, dict[int, float]]) -> dict:
+    """A PO as the relay reads it back: its lines, each with what has been received against it."""
+    by_ord = received.get(po["po_number"]) or {}
+    lines = [{**ln, "received": by_ord.get(int(ln["ord"]), 0.0)} for ln in po["lines"]]
     return {**po, "lines": lines}
 
 
@@ -606,7 +616,7 @@ def _create_receipt(session: Session, payload: dict) -> dict:
     po_row = _get(session, "po", po_number)
     if po_row is None:
         raise _refuse("po_not_found", f"PO '{po_number}' does not exist in {DEMO_COMPANY}", po_number=po_number)
-    po = _po_with_receipts(session, po_row.data)
+    po = _po_with_receipts(po_row.data, _received(session))
     by_ord = {int(ln["ord"]): ln for ln in po["lines"]}
     for line in lines:
         target = by_ord.get(int(line.get("po_line_ord") or 0))
@@ -647,19 +657,21 @@ def _receipt_response(receipt: dict) -> dict:
 def _read_pos_by_number(session: Session, payload: dict) -> dict:
     asked = [str(n).strip() for n in payload.get("po_numbers") or [] if str(n).strip()]
     pos, missing = [], []
+    received = _received(session)
     for number in asked:
         row = _get(session, "po", number)
         if row is None:
             missing.append(number)
         else:
-            pos.append(_strip(_po_with_receipts(session, row.data)))
+            pos.append(_strip(_po_with_receipts(row.data, received)))
     return {"company": DEMO_COMPANY, "pos": pos, "missing": missing}
 
 
 def _sync_pos(session: Session, payload: dict) -> dict:
+    received = _received(session)
     return {
         "company": DEMO_COMPANY,
-        "pos": [_strip(_po_with_receipts(session, r.data)) for r in _all(session, "po")],
+        "pos": [_strip(_po_with_receipts(r.data, received)) for r in _all(session, "po")],
         "next_cursor": None,
     }
 

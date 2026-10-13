@@ -17,6 +17,7 @@ is what keeps that from happening. Deleted children first, in one transaction.
 
 import asyncio
 import logging
+import uuid
 import warnings
 from collections import defaultdict
 
@@ -28,6 +29,7 @@ from app.database import SessionLocal, engine
 from app.demo import DEMO_COMPANY
 from app.errors import ConflictError
 from app.models import Base
+from app.models.audit_log import InventoryAuditLog
 from app.models.project import Project
 from app.models.purchase_order import PODocument
 from app.services import demo_gp, storage
@@ -155,6 +157,14 @@ def wipe(session: Session) -> dict[str, int]:
         if len(blocked) == len(statements):
             raise last_error
         statements = blocked
+    # The audit log names what an event was about by id rather than by foreign key, so a stock row's
+    # history (which carries no project) is found by the ids of the rows deleted above.
+    doomed_ids = {i for ids in doomed.values() for i in ids if isinstance(i, uuid.UUID)}
+    if doomed_ids:
+        audit = InventoryAuditLog.__table__
+        counts[audit.name] = (
+            counts.get(audit.name, 0) + session.execute(delete(audit).where(audit.c.entity_id.in_(doomed_ids))).rowcount
+        )
     counts["demo_gp_records"] = demo_gp.wipe(session)
     return {name: n for name, n in counts.items() if n}
 
@@ -219,7 +229,15 @@ async def reset(*, only_if_empty: bool = False) -> bool:
             return False
         counts = await asyncio.to_thread(_wipe_committed)
         logger.info("demo reset: wiped %s", counts)
-        await demo_seed.seed()
+        try:
+            await demo_seed.seed()
+        except Exception:
+            # A seed that stops part way leaves a demo company nobody should walk into, and one that
+            # has projects, so the next first entry would take it as seeded. Wiped again, the next
+            # entry or reset seeds it from the start - and the error still reaches whoever asked.
+            logger.exception("demo reset: the seed failed; wiping what it left")
+            await asyncio.to_thread(_wipe_committed)
+            raise
         logger.info("demo reset: seeded")
         return True
     finally:

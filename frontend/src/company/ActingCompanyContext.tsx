@@ -65,7 +65,9 @@ export function ActingCompanyProvider({ children }: { children: ReactNode }) {
   // Published during render, not in an effect: child effects run before this component's, and a page
   // whose query subscribes first would otherwise go out without the header - unscoped, every company
   // mixed together. The assignment is idempotent, so a re-render repeating it is harmless.
-  publishActingCompanyHeader(isNexusAdmin ? company : null);
+  // #1608: anybody in demo mode sends it too. The backend pins a scoped user without it, but the polled
+  // relay status reads it to answer for the simulated GP without asking Clerk who is calling.
+  publishActingCompanyHeader(isNexusAdmin || demoMode ? company : null);
 
   // A switch (or the list correcting a stored pick it no longer holds) empties the cache and refetches
   // what is on screen, so no row from the previous company lingers beside the new one. The first

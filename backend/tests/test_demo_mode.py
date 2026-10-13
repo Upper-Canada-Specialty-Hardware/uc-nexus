@@ -119,8 +119,8 @@ def test_a_demo_call_never_reaches_the_relay_socket(monkeypatch):
     monkeypatch.setattr(demo_gp, "call", _fake)
     assert asyncio.run(gateway.relay_call(DEMO_COMPANY, "list_vendors")) == {"company": DEMO_COMPANY, "vendors": []}
     assert calls == ["list_vendors"]
-    assert gateway.serves(DEMO_COMPANY) and gateway.has_feature("create_po_idempotency", DEMO_COMPANY)
-    assert not gateway.serves("TUBC") and not gateway.has_feature("create_po_idempotency", "TUBC")
+    assert gateway.has_feature("create_po_idempotency", DEMO_COMPANY)
+    assert not gateway.has_feature("create_po_idempotency", "TUBC")
 
 
 def test_the_simulated_gp_answers_every_op_the_backend_sends():
@@ -276,3 +276,28 @@ def test_a_reset_leaves_no_demo_row_and_no_real_row_behind(seeded):
             session.rollback()
             session.execute(text("DELETE FROM projects WHERE id = :id"), {"id": real_id})
             session.commit()
+
+
+def test_relay_status_tells_demo_from_the_header_alone():
+    # Polled by every tab, so it must answer without asking Clerk who is calling: no identity memo here.
+    assert relay_module._in_demo(SimpleNamespace(context={"request": _Request(DEMO_COMPANY)}))
+    assert not relay_module._in_demo(SimpleNamespace(context={"request": _Request("TUBC")}))
+    assert not relay_module._in_demo(SimpleNamespace(context={"request": None}))
+
+
+def test_a_seed_that_fails_part_way_leaves_nothing_behind(_migrate_database, monkeypatch):
+    from app.database import SessionLocal
+    from app.models.project import Project
+    from app.services import demo_reset, demo_seed
+
+    async def _half_a_seed():
+        with SessionLocal() as session:
+            session.add(Project(company=DEMO_COMPANY, project_id="DEMO-HALF", description="half"))
+            session.commit()
+        raise RuntimeError("a workflow changed under the seed")
+
+    monkeypatch.setattr(demo_seed, "seed", _half_a_seed)
+    with pytest.raises(RuntimeError):
+        asyncio.run(demo_reset.reset())
+    # Nothing half-built is left, so the next first entry seeds from the start.
+    assert not demo_reset.has_demo_data()

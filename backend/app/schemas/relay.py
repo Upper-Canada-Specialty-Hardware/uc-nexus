@@ -5,7 +5,7 @@ import uuid
 
 import strawberry
 
-from app.auth import ForbiddenError, current_user, tenant_scope
+from app.auth import ACTING_COMPANY_HEADER, current_user, tenant_scope
 from app.database import SessionLocal
 from app.demo import DEMO_COMPANY, DEMO_COMPANY_NAME, is_demo_company
 from app.errors import (
@@ -90,12 +90,17 @@ _GP_ADDRESS_FIELDS = (
 
 
 def _in_demo(info: strawberry.Info) -> bool:
-    """Whether the caller is working in the demo company (#1608). A caller with no company at all is
-    not, rather than refused here: the fields that ask are status reads, not tenant-scoped ones."""
-    try:
-        return tenant_scope(info) == DEMO_COMPANY
-    except ForbiddenError:
-        return False
+    """Whether the caller's tab is working in the demo company (#1608), from the acting-company header
+    the frontend sends for anybody in demo mode.
+
+    Read straight off the request, deliberately: `relayStatus` is polled by every open tab and answers
+    from memory, so it must not ask Clerk who the caller is. Nothing is decided on it but which status
+    to show - every read and write of GP data is still scoped by `tenant_scope` and
+    `resolve_gp_company`, which a header alone never gets past."""
+    request = info.context.get("request")
+    headers = getattr(request, "headers", None) or {}
+    raw = headers.get(ACTING_COMPANY_HEADER) or headers.get(ACTING_COMPANY_HEADER.lower())
+    return is_demo_company(raw)
 
 
 def _sole_relay_company(info: strawberry.Info) -> str:

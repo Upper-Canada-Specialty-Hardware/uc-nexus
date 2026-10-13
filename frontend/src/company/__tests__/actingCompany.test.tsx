@@ -133,13 +133,14 @@ describe('ActingCompanyProvider', () => {
     expect(readActingCompanyHeader()).toBe('DEMO');
   });
 
-  it('sends no header for a scoped user in demo mode; the backend pins them itself', async () => {
+  // The backend pins them without it; the relay status poll reads it to answer for the simulated GP.
+  it('sends the demo company as the header for a scoped user in demo mode too', async () => {
     identity.isNexusAdmin = false;
     identity.company = 'DEMO';
     identity.demoMode = true;
     const { result } = renderActing([]);
     await waitFor(() => expect(result.current.acting.company).toBe('DEMO'));
-    expect(readActingCompanyHeader()).toBeNull();
+    expect(readActingCompanyHeader()).toBe('DEMO');
   });
 
   it("lands an admin in their assigned company and sends it as the header", async () => {

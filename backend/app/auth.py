@@ -349,12 +349,11 @@ def caller_company(context) -> str | None:
     """
     cached = context.get(_COMPANY_KEY, _UNRESOLVED)
     if cached is _UNRESOLVED:
-        user_id = authenticated_user_id(context)
-        cached = context[_COMPANY_KEY] = user_repository.get_user_company(user_id)
-        # The demo flag (#1608) is a key of the same metadata object, which the repository has just read
-        # and still holds, so filling its memo here costs nothing more.
+        # The demo flag (#1608) is a key of the same metadata object, so one read fills both memos.
+        cached, demo = user_repository.get_user_tenancy(authenticated_user_id(context))
+        context[_COMPANY_KEY] = cached
         if context.get(_DEMO_KEY) is None:
-            context[_DEMO_KEY] = user_repository.get_user_demo_mode(user_id)
+            context[_DEMO_KEY] = demo
     return cached
 
 

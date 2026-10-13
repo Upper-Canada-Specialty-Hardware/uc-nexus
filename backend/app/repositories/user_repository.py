@@ -1,7 +1,5 @@
 """Repository for Clerk user management via Clerk Backend API."""
 
-import time
-
 import httpx
 
 from app.config import CLERK_SECRET_KEY
@@ -139,7 +137,6 @@ def _merge_public_metadata(user_id: str, patch: dict) -> dict:
         json={"public_metadata": patch},
     )
     resp.raise_for_status()
-    _metadata_cache.pop(user_id, None)
     return _user_summary(resp.json())
 
 
@@ -240,24 +237,19 @@ def update_user_demo_mode(user_id: str, enabled: bool) -> dict:
     """#1608: turn demo mode on or off for an account. A merge write like every other metadata key, so
     the account's real company, roles and buyer identity are untouched and come back as they were the
     moment demo mode is turned off. Off removes the key rather than storing false."""
-    _metadata_cache.pop(user_id, None)
     return _merge_public_metadata(user_id, {DEMO_MODE_METADATA_KEY: True if enabled else None})
 
 
-# One request asks for an account's company and its demo flag in turn, and both are keys of the same
-# publicMetadata object. A short-lived copy lets the second read reuse the first's Clerk round trip;
-# a few seconds is shorter than any change an admin makes and then expects to see.
-_METADATA_TTL_SECONDS = 3.0
-_metadata_cache: dict[str, tuple[float, dict]] = {}
+def get_user_tenancy(user_id: str) -> tuple[str | None, bool]:
+    """#1608: the account's company and whether it is in demo mode - two keys of one metadata object,
+    read together so a request that needs both makes one Clerk round trip."""
+    metadata = _public_metadata(user_id)
+    return normalize_company(metadata.get("company")), bool(metadata.get(DEMO_MODE_METADATA_KEY))
 
 
 def _public_metadata(user_id: str) -> dict:
     """One Clerk user's publicMetadata. The HTTP failure is mapped rather than surfaced raw, for the
     reason `get_user` gives: an opaque 500 couples every caller to Clerk's availability."""
-    cached = _metadata_cache.get(user_id)
-    now = time.monotonic()
-    if cached is not None and now - cached[0] < _METADATA_TTL_SECONDS:
-        return cached[1]
     try:
         resp = _client.get(f"/users/{user_id}", headers=_headers())
         resp.raise_for_status()
@@ -266,6 +258,4 @@ def _public_metadata(user_id: str) -> dict:
         raise AppError(
             "Could not load your user profile from Clerk; please try again.", code="CLERK_UNAVAILABLE"
         ) from e
-    metadata = u.get("public_metadata") or {}
-    _metadata_cache[user_id] = (now, metadata)
-    return metadata
+    return u.get("public_metadata") or {}
