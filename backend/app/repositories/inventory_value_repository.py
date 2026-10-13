@@ -29,6 +29,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.demo import DEMO_COMPANY
 from app.errors import NotFoundError, ValidationError
 from app.models.enums import PoolKind, PullPickLineState, PullRequestSource, PullRequestStatus
 from app.models.inventory import InventoryLocation as InventoryLocationModel
@@ -483,4 +484,7 @@ def list_companies_with_projects(session: Session, scope: str | None) -> list[st
     stmt = select(Project.company).distinct()
     if scope is not None:
         stmt = stmt.where(Project.company == scope)
+    else:
+        # #1608: the demo company is offered only to a caller working in it.
+        stmt = stmt.where(Project.company != DEMO_COMPANY)
     return sorted(c for c in session.scalars(stmt).all() if c)

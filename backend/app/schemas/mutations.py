@@ -16,6 +16,7 @@ import strawberry
 from .classification_override import ClassificationOverrideMutations
 from .custom_items import CustomItemMutations
 from .db_access import DbAccessMutations
+from .demo import DemoMutations
 from .gp_outbox import GpOutboxMutations
 from .imports import ImportMutations
 from .inventory_value import InventoryValueMutations
@@ -36,6 +37,7 @@ class Mutation(
     ClassificationOverrideMutations,
     CustomItemMutations,
     DbAccessMutations,
+    DemoMutations,
     GpOutboxMutations,
     ImportMutations,
     InventoryValueMutations,

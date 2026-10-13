@@ -2076,6 +2076,8 @@ class ClerkUser:
     # company assigned can read nothing until an admin gives them one.
     company: str | None
     image_url: str
+    # #1608: whether the account is in demo mode, working on the demo company's synthesized data.
+    demo_mode: bool = False
 
 
 @strawberry.type

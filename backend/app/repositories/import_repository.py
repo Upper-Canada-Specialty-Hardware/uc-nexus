@@ -986,10 +986,11 @@ def finalize_import_session(
     created_pos: list[POModel] = []
     if po_drafts:
         # Generate request_number sequence for new POs
-        from app.repositories.po_repository import generate_next_request_number
+        from app.repositories.po_repository import generate_next_request_number, request_number_prefix
 
-        next_request_number = generate_next_request_number(session)
-        next_seq = int(next_request_number.replace("PO-REQ-", ""))
+        request_prefix = request_number_prefix(project.company)
+        next_request_number = generate_next_request_number(session, project.company)
+        next_seq = int(next_request_number[len(request_prefix) :])
 
         for draft_idx, po_draft in enumerate(po_drafts):
             # #640: a draft that claims nothing would persist as a PO with zero line items - a blank PO
@@ -1022,7 +1023,7 @@ def finalize_import_session(
                 po_number = None
 
             # Auto-generate request_number
-            request_number = f"PO-REQ-{next_seq:03d}"
+            request_number = f"{request_prefix}{next_seq:03d}"
             next_seq += 1
 
             # Create PO. The wizard's per-draft vendor label seeds vendor_name_snapshot (#632) so the

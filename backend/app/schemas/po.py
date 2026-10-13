@@ -9,6 +9,7 @@ import strawberry
 
 from app.auth import current_user, resolve_display_name, tenant_scope
 from app.database import SessionLocal
+from app.demo import DEMO_BUYER_ID, is_demo_company
 from app.errors import (
     GpSetupInvalidError,
     InvalidStateTransitionError,
@@ -759,6 +760,11 @@ class POMutations:
         # actually serves it, so an account pinned to a company GP is not reporting gets the message
         # naming what IS available instead of a silent zero-count pass.
         scope = tenant_scope(info)
+        if is_demo_company(scope):
+            # #1608: every demo PO was registered from Nexus into the simulated GP, which holds nothing
+            # of its own to mirror back. A pass finds nothing new, the same answer a real one gives a
+            # company whose open book is already up to date.
+            return GpPoSyncResult(mode="incremental", created=0, updated=0, backfill_done=True)
         result = await gp_po_sync.run_once(
             backfill_max_pages=gp_po_sync.ADMIN_SYNC_BACKFILL_PAGES,
             all_companies=scope is None,
@@ -878,6 +884,17 @@ class POMutations:
             return ctx
         po_number, company, vendor_id = ctx["po_number"], ctx["company"], ctx["vendor_id"]
 
+        if is_demo_company(company):
+            # #1608: a demo vendor is made up and so is its address. The send is answered as the real
+            # one would be, and nothing is mailed - demo mode never reaches a mailbox.
+            contact = await relay_gateway.relay_call(company, "get_vendor_contact", {"vendor_id": vendor_id})
+            address = (contact or {}).get("email") or "vendor@example.com"
+            return EmailPoResult(
+                sent=True,
+                message=f"Demo mode: purchase order {po_number} would be sent to {address}. Nothing was mailed.",
+                sent_to=address,
+            )
+
         if not email_service.is_configured():
             # #1278: not something the buyer can fix from here, so it reads as a failure.
             return EmailPoResult(sent=False, failed=True, message="Email is not configured on this deployment.")
@@ -956,7 +973,12 @@ class POMutations:
         inside GP's own transaction where it cannot be stale at all."""
         auth = current_user(info)
         # Issue #216: the PO is registered as the caller's own GP buyer identity, never a free pick.
-        caller_buyer = await asyncio.to_thread(user_repository.get_user_gp_buyer_id, auth["user_id"])
+        if is_demo_company(input.gp_company):
+            # #1608: in demo mode everybody registers as the simulated GP's own buyer. A real BUYERID
+            # belongs to a real company's buyer master and means nothing to the demo company's GP.
+            caller_buyer = DEMO_BUYER_ID
+        else:
+            caller_buyer = await asyncio.to_thread(user_repository.get_user_gp_buyer_id, auth["user_id"])
         _assert_buyer_identity(caller_buyer, input.buyer_id)
         key = gp_idempotency.validate_key(input.idempotency_key)
 
@@ -1081,16 +1103,16 @@ class POMutations:
                 # Nothing is lost by waiting: the worker asks the same question before it drains the row,
                 # so an out-of-date relay still never gets the push.
                 if relay_gateway.connected:
-                    relay_gateway.require_feature(CREATE_PO_IDEMPOTENCY_FEATURE, "create_po")
+                    relay_gateway.require_feature(CREATE_PO_IDEMPOTENCY_FEATURE, "create_po", input.gp_company)
                     # #762: the detail list only means anything to a relay that writes the tax rows. An
                     # older build ignores it and would register a CAD PO with no tax, so a taxed
                     # registration is turned away with the same update-the-relay message. An untaxed one
                     # (no pick, or a USD vendor) has nothing for that build to ignore and goes through.
                     if tax_detail_ids or tax_schedule_id:
-                        relay_gateway.require_feature(CREATE_PO_TAX_ROWS_FEATURE, "create_po")
+                        relay_gateway.require_feature(CREATE_PO_TAX_ROWS_FEATURE, "create_po", input.gp_company)
                     # #763: likewise a schedule, which only a relay that expands it will read.
                     if tax_schedule_id:
-                        relay_gateway.require_feature(CREATE_PO_TAX_SCHEDULE_FEATURE, "create_po")
+                        relay_gateway.require_feature(CREATE_PO_TAX_SCHEDULE_FEATURE, "create_po", input.gp_company)
                 try:
                     # From here GP may hold the write, so a failure that is not settled below leaves
                     # the claim to go stale rather than letting another window push a second PO.

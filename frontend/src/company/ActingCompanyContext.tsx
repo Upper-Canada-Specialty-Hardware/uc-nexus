@@ -42,22 +42,25 @@ const ActingCompanyContext = createContext<ActingCompanyState | null>(null);
  * a switch) and ClerkProvider (it reads the identity).
  */
 export function ActingCompanyProvider({ children }: { children: ReactNode }) {
-  const { isNexusAdmin, company: own } = useIdentity();
+  const { isNexusAdmin, company: own, demoMode } = useIdentity();
+  // #1608: an admin in demo mode works in the demo company and nowhere else, so there is nothing to
+  // switch between; the switcher's own rules apply again the moment demo mode is turned off.
+  const switching = isNexusAdmin && !demoMode;
   const client = useApolloClient();
   const [tabPick, setTabPick] = useState<string | null>(readTabPick);
   // Read once: a pick another tab makes later must not move this one.
   const [lastPick] = useState<string | null>(readLastPick);
 
   const { data, loading } = useQuery<{ nexusCompanies: GpCompany[] }>(GET_NEXUS_COMPANIES, {
-    skip: !isNexusAdmin,
+    skip: !switching,
     fetchPolicy: 'cache-first',
   });
-  const companies = isNexusAdmin ? (data?.nexusCompanies ?? NO_COMPANIES) : NO_COMPANIES;
+  const companies = switching ? (data?.nexusCompanies ?? NO_COMPANIES) : NO_COMPANIES;
   // A failed read (a backend that predates the list) leaves this null, and the stored pick or the own
   // assignment is taken on trust - the same as before the list arrives.
   const available = useMemo(() => (data ? data.nexusCompanies.map((c) => c.id) : null), [data]);
 
-  const company = isNexusAdmin ? resolveActingCompany({ tabPick, own, lastPick, available }) : own;
+  const company = switching ? resolveActingCompany({ tabPick, own, lastPick, available }) : own;
 
   // Published during render, not in an effect: child effects run before this component's, and a page
   // whose query subscribes first would otherwise go out without the header - unscoped, every company
@@ -66,35 +69,36 @@ export function ActingCompanyProvider({ children }: { children: ReactNode }) {
 
   // A switch (or the list correcting a stored pick it no longer holds) empties the cache and refetches
   // what is on screen, so no row from the previous company lingers beside the new one. The first
-  // company an admin lands in is not a switch: nothing was cached for another one yet.
+  // company an admin lands in is not a switch: nothing was cached for another one yet. Turning demo
+  // mode on or off (#1608) moves any user between their company and the demo one, and is a switch too.
   const previous = useRef<string | null>(null);
   useEffect(() => {
     const before = previous.current;
     previous.current = company;
-    if (!isNexusAdmin || before === null || before === company) return;
+    if (before === null || before === company) return;
     void client.resetStore().catch(() => {
       // An in-flight query cancelled by the reset rejects here; the refetch that follows is what counts.
     });
-  }, [client, company, isNexusAdmin]);
+  }, [client, company]);
 
   const setCompany = useCallback(
     (next: string) => {
-      if (!isNexusAdmin) return;
+      if (!switching) return;
       rememberPick(next);
       setTabPick(next);
     },
-    [isNexusAdmin],
+    [switching],
   );
 
   const value = useMemo<ActingCompanyState>(
     () => ({
       company,
       companies,
-      canSwitch: isNexusAdmin,
+      canSwitch: switching,
       setCompany,
-      resolving: isNexusAdmin && company === null && loading,
+      resolving: switching && company === null && loading,
     }),
-    [company, companies, isNexusAdmin, setCompany, loading],
+    [company, companies, switching, setCompany, loading],
   );
 
   return <ActingCompanyContext.Provider value={value}>{children}</ActingCompanyContext.Provider>;

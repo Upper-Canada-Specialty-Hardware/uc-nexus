@@ -14,6 +14,8 @@ vi.mock('../CompanyGate', () => ({ default: ({ children }: { children: React.Rea
 vi.mock('../Sidebar', () => ({ default: () => null, NavRail: () => null }));
 vi.mock('../../relay/GpQueueChip', () => ({ default: () => null }));
 vi.mock('../../relay/GpOutboxWatcher', () => ({ default: () => null }));
+vi.mock('../../demo/DemoBanner', () => ({ default: () => null }));
+vi.mock('../../demo/DemoModeUserButton', () => ({ default: () => null }));
 
 // This runner exposes no web storage at all (see src/test/setup.ts), and the bar reads the nav
 // rail's collapsed flag out of it on its first render.

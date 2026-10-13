@@ -359,6 +359,14 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "reportStockDeficiency": SIGNED_IN,
     "resolveDeficiency": SIGNED_IN,
     "transferInventory": SIGNED_IN,
+    # --- demo.py --------------------------------------------------------------------------
+    # #1608. `setMyDemoMode` is signed-in because LEAVING demo mode must be open to anybody in it; the
+    # body refuses turning it ON to anyone but a TENANT OWNER or UC NEXUS ADMIN. `resetDemoData` is
+    # tenant-owner tier, and its body refuses a caller who is not in demo mode, so a reset only ever
+    # touches the demo company. Putting any account into it is the admin's call alone.
+    "resetDemoData": TENANT_OWNERS,
+    "setMyDemoMode": SIGNED_IN,
+    "updateUserDemoMode": NEXUS_ADMIN_ROLE,
     # --- user.py --------------------------------------------------------------------------
     # All four shipped ungated before #415. `updateUserRoles` is the one that matters most: it grants
     # the roles every other entry in this table is gated on, so an open copy is a self-service

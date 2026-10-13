@@ -15,6 +15,7 @@ from sqlalchemy import BigInteger, case, cast, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, selectinload
 
+from app.demo import is_demo_company
 from app.errors import ConflictError, InvalidStateTransitionError, NotFoundError, ValidationError
 from app.models.enums import (
     Classification,
@@ -163,7 +164,14 @@ def _learn_manufacturer_vendor_mappings(
 _PO_REQUEST_NUMBER_LOCK_KEY = 1_118_001
 
 
-def generate_next_request_number(session: Session) -> str:
+def request_number_prefix(company: str | None) -> str:
+    """The prefix a company's PO request numbers take. The demo company's are numbered on their own
+    (#1608), so demo activity never moves the next real number: `PO-REQ-D001` is not matched by the
+    real sequence's pattern, and the real ones are not matched by the demo one."""
+    return "PO-REQ-D" if is_demo_company(company) else "PO-REQ-"
+
+
+def generate_next_request_number(session: Session, company: str | None = None) -> str:
     """Claim the next PO-REQ-NNN request number.
 
     Two things used to be wrong here (#1118). The max was taken over the TEXT column, so once
@@ -177,9 +185,10 @@ def generate_next_request_number(session: Session) -> str:
     import wizard) holds it for all of them. Suffixes that are not all digits are ignored.
     """
     session.execute(select(func.pg_advisory_xact_lock(_PO_REQUEST_NUMBER_LOCK_KEY)))
-    suffix = func.substring(PurchaseOrder.request_number, r"^PO-REQ-([0-9]+)$")
+    prefix = request_number_prefix(company)
+    suffix = func.substring(PurchaseOrder.request_number, f"^{prefix}([0-9]+)$")
     max_seq = session.scalar(select(func.max(cast(suffix, BigInteger))).where(suffix.is_not(None)))
-    return f"PO-REQ-{(max_seq or 0) + 1:03d}"
+    return f"{prefix}{(max_seq or 0) + 1:03d}"
 
 
 def _assert_po_number_available(
@@ -372,7 +381,7 @@ def create_po(
     if not company:
         raise ValidationError("A GP company is required for a purchase order", field="company")
 
-    request_number = generate_next_request_number(session)
+    request_number = generate_next_request_number(session, company)
 
     cleaned_cost_code = cost_code.strip() if cost_code and cost_code.strip() else None
     # A line books to the job exactly when the PO has one, unless the caller says otherwise per line.

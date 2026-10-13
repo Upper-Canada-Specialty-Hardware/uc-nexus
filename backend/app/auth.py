@@ -40,6 +40,7 @@ from fastapi import Request
 from jwt import PyJWKSet
 
 from app.config import CLERK_SECRET_KEY
+from app.demo import DEMO_COMPANY, is_demo_company
 from app.errors import AppError, ValidationError
 from app.repositories import user_repository
 
@@ -286,6 +287,7 @@ _ROLES_KEY = "_auth_roles"
 _ROSTER_KEY = "_auth_user_roster"
 _COMPANY_KEY = "_auth_company"
 _ACTING_COMPANY_KEY = "_auth_acting_company"
+_DEMO_KEY = "_auth_demo_mode"
 # The request header a UC NEXUS ADMIN names the one GP company they are working in with (#845).
 ACTING_COMPANY_HEADER = "X-Nexus-Company"
 # Distinguishes "not looked up yet" from "looked up and there is none", which None cannot: an
@@ -347,7 +349,25 @@ def caller_company(context) -> str | None:
     """
     cached = context.get(_COMPANY_KEY, _UNRESOLVED)
     if cached is _UNRESOLVED:
-        cached = context[_COMPANY_KEY] = user_repository.get_user_company(authenticated_user_id(context))
+        user_id = authenticated_user_id(context)
+        cached = context[_COMPANY_KEY] = user_repository.get_user_company(user_id)
+        # The demo flag (#1608) is a key of the same metadata object, which the repository has just read
+        # and still holds, so filling its memo here costs nothing more.
+        if context.get(_DEMO_KEY) is None:
+            context[_DEMO_KEY] = user_repository.get_user_demo_mode(user_id)
+    return cached
+
+
+def caller_demo_mode(context) -> bool:
+    """Whether the caller's account is in demo mode (#1608), looked up once per request.
+
+    The flag is a key of the same publicMetadata object as the company, so it is read with it: by
+    `caller_company`, or by the roster entry that filled the company memo. A company memo filled any
+    other way says nothing about demo mode, and is read as out of it."""
+    cached = context.get(_DEMO_KEY)
+    if cached is None:
+        caller_company(context)
+        cached = context[_DEMO_KEY] = bool(context.get(_DEMO_KEY))
     return cached
 
 
@@ -379,7 +399,12 @@ def admin_acting_company(context) -> str | None:
         headers = getattr(request, "headers", None) or {}
         raw = headers.get(ACTING_COMPANY_HEADER) or headers.get(ACTING_COMPANY_HEADER.lower())
         company = user_repository.normalize_company(raw)
-        if company is not None and not nexus_companies.is_known_company(company):
+        if is_demo_company(company):
+            # #1608: an admin works in DEMO by being in demo mode, and the header is how their tab says
+            # so. Accepted from nobody else: the demo company is not one more company to switch to.
+            if not caller_demo_mode(context):
+                raise ValidationError("Turn on demo mode to work in the demo company.")
+        elif company is not None and not nexus_companies.is_known_company(company):
             raise ValidationError(f"Unknown GP company '{company}'.")
     except AppError as e:
         context[_ACTING_COMPANY_KEY] = e
@@ -406,11 +431,19 @@ def tenant_scope(info, *, cross_tenant: bool = False) -> str | None:
 
     The frontend gates an unassigned user at the app shell, so the raise here is the backstop for a
     direct GraphQL call or a stale tab, not the primary UX.
+
+    Demo mode (#1608) pins a caller to the demo company. A scoped caller whose account is in demo
+    mode reads and writes `DEMO` and nothing else, whatever company it is assigned to; an admin is
+    in it by sending `DEMO` as the header, which `admin_acting_company` accepts only in demo mode.
+    The company-less tools keep their usual scope: demo mode is about the data, not about whose
+    accounts a tenant owner manages.
     """
     if NEXUS_ADMIN_ROLE in caller_roles(info.context):
         if cross_tenant:
             return None
         return admin_acting_company(info.context)
+    if not cross_tenant and caller_demo_mode(info.context):
+        return DEMO_COMPANY
     company = caller_company(info.context)
     if not company:
         raise ForbiddenError("No company assigned to your account. Ask an admin to assign one.")
@@ -433,6 +466,8 @@ def remember_roster_entry(context, entry: dict) -> list[str]:
     context[_ROLES_KEY] = roles
     if context.get(_COMPANY_KEY, _UNRESOLVED) is _UNRESOLVED:
         context[_COMPANY_KEY] = user_repository.normalize_company(entry.get("company"))
+    if context.get(_DEMO_KEY) is None:
+        context[_DEMO_KEY] = bool(entry.get("demo_mode"))
     return roles
 
 
@@ -475,6 +510,9 @@ def resolve_display_name(user_id: str) -> str:
     could attribute their action to anyone: `completePullRequest(id, completedBy: "Someone Else")`
     put that name on every opening the pull staged. The client no longer gets a say - the name comes
     from the same Clerk token the gate already verified."""
+    fixed = _fixed_display_names.get(user_id)
+    if fixed is not None:
+        return fixed
     cached = _display_name_cache.get(user_id)
     now = time.monotonic()
     if cached is not None and (now - cached[0]) < _DISPLAY_NAME_TTL_SECONDS:
@@ -484,6 +522,16 @@ def resolve_display_name(user_id: str) -> str:
     name = full_name or profile["email"] or user_id
     _display_name_cache[user_id] = (now, name)
     return name
+
+
+# Names for the identities that are not Clerk accounts - the demo seed (#1608) - which would otherwise
+# send resolve_display_name to Clerk for a user that does not exist there.
+_fixed_display_names: dict[str, str] = {}
+
+
+def remember_display_name(user_id: str, name: str) -> None:
+    """Give a non-Clerk identity its display name, for as long as the process runs."""
+    _fixed_display_names[user_id] = name
 
 
 def invalidate_display_name(user_id: str) -> None:

@@ -20,6 +20,7 @@ from app.models.enums import (
     ShippingOutRequestStatus,
 )
 from app.models.inventory import InventoryLocation as InventoryLocationModel
+from app.models.project import Project as ProjectModel
 from app.models.pull_request import (
     PullRequest as PullRequestModel,
 )
@@ -318,7 +319,9 @@ def confirm_shipment(
     # value a legacy hand-typed slip occupies, so this only ever fires on a genuine bug.
     from app.repositories import packing_slip_numbers
 
-    packing_slip_number = packing_slip_numbers.mint_packing_slip_number(session)
+    packing_slip_number = packing_slip_numbers.mint_packing_slip_number(
+        session, session.scalar(select(ProjectModel.company).where(ProjectModel.id == project_id))
+    )
     existing_stmt = select(PackingSlip).where(PackingSlip.packing_slip_number == packing_slip_number)
     if session.scalars(existing_stmt).first() is not None:
         raise ConflictError(
@@ -669,7 +672,6 @@ def create_shipment_return(
     # 2. Validate destination warehouse: it exists, is active, and is the slip's project's company's own
     # building (#1376) - compared directly, so an unscoped admin cannot book a return into another
     # tenant's warehouse either.
-    from app.models.project import Project as ProjectModel
     from app.repositories import warehouse_admin_repository
 
     project_company = session.scalar(select(ProjectModel.company).where(ProjectModel.id == ps.project_id))

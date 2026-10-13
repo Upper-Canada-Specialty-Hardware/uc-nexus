@@ -152,6 +152,12 @@ Some behaviour that looks like a gap has been ruled intentional by the product o
 - Shipment returns are allowed from a picked-up (in-transit) shipment (`create_shipment_return` in `backend/app/repositories/shipping_repository.py`).
 - PO document settings are one row shared by every GP company (`backend/app/repositories/po_document_settings_repository.py`).
 
+## Demo Mode
+
+Demo mode (#1608) puts an account on made-up data in a reserved GP company, `DEMO` (`backend/app/demo.py`). Tenant scoping is what keeps it apart: a demo-mode account is pinned to `DEMO` by `tenant_scope`, and `DEMO` is never an assignable company. GP for `DEMO` is simulated in-process (`backend/app/services/demo_gp.py`); the relay gateway answers a `DEMO` call itself and never puts it on the socket. Demo POs and packing slips number from their own sequences (`PO-REQ-D…`, `PS-D…`).
+
+The starting state is built by `backend/app/services/demo_seed.py`, which runs the app's own GraphQL mutations as a demo identity, and reset (`demo_reset.py`) deletes every row that is `DEMO`'s or hangs off one, then reseeds. When a workflow changes shape, `tests/test_demo_mode.py` fails on the seed: fix the seed in the same change. When a new relay op is added, give the simulated GP an answer for it; the same test checks every relay op is covered.
+
 ## Testing
 
 See [testing/CLAUDE.md](testing/CLAUDE.md) for the simulated user testing guide (app workflows, interaction patterns). End-to-end testing happens only after the PR is merged and deployed to production, driven against TUBC through the Claude in Chrome extension in the owner's signed-in Chrome; before the merge, verification is CI and code review only. Read the `testing/` knowledgebase only when testing actually begins - not during planning or implementation - to avoid consuming context prematurely; testing, when done, is performed by the main agent directly, not the `tester` subagent.

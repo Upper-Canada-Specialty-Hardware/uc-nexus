@@ -40,6 +40,7 @@ import time
 from collections import defaultdict, deque
 from datetime import datetime
 
+from app.demo import is_demo_company
 from app.errors import RelayBusyError, RelayOpUnsupportedError
 from app.services.relay_gateway import gateway as relay_gateway
 
@@ -504,7 +505,12 @@ async def paced_call(
     needs for its own log line without reaching into the meta itself.
 
     A `server_busy` refusal enters the pause here rather than at each call site, so no caller can
-    forget to; the error still propagates, because the caller's pass genuinely did not happen."""
+    forget to; the error still propagates, because the caller's pass genuinely did not happen.
+
+    The demo company (#1608) is simulated in this process, so it costs GP nothing and is not paced."""
+    if is_demo_company(company):
+        result, meta = await relay_gateway.relay_call_with_meta(company, op, payload)
+        return {"result": result, "meta": meta, "elapsed_ms": 0.0, "cpu_ms": None, "sql_cpu_pct": None, "waited": 0.0}
     waited = await policy.acquire(reads)
 
     started = time.monotonic()

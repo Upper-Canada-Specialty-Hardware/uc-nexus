@@ -56,7 +56,7 @@ class _FakeGateway:
         self._features = set(features)
         self.pushed: list[dict] = []
 
-    def has_feature(self, name: str) -> bool:
+    def has_feature(self, name: str, company: str | None = None) -> bool:
         return name in self._features
 
     async def push_gp_sync_state(self, snapshot: dict) -> None:

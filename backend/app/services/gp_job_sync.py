@@ -26,6 +26,7 @@ from datetime import datetime
 from sqlalchemy import select
 
 from app.database import SessionLocal
+from app.demo import DEMO_COMPANY, is_demo_company
 from app.errors import ConflictError, RelayBusyError, RelayTimeoutError, RelayUnavailableError
 from app.models.project import Project as ProjectModel
 from app.repositories import project_repository
@@ -341,11 +342,15 @@ async def run_once(*, background: bool = False, only_company: str | None = None)
     button pressed by an account pinned to one company reads and adopts that company's jobs only, and
     the totals it shows are that company's. The caller checks the relay serves it."""
     global _activity
-    companies = relay_gateway.companies
-    if not companies:
-        raise RelayUnavailableError(
-            "The GP relay is not connected, so jobs cannot be synced from GP. Start the relay and try again."
-        )
+    if is_demo_company(only_company):
+        # #1608: the demo company's GP is simulated here, so it is served whatever relay is connected.
+        companies = [DEMO_COMPANY]
+    else:
+        companies = relay_gateway.companies
+        if not companies:
+            raise RelayUnavailableError(
+                "The GP relay is not connected, so jobs cannot be synced from GP. Start the relay and try again."
+            )
     if only_company:
         wanted = only_company.strip().upper()
         companies = [c for c in companies if c.strip().upper() == wanted]
@@ -373,7 +378,7 @@ async def run_once(*, background: bool = False, only_company: str | None = None)
                 _persist_missing,
                 jobs,
                 company,
-                mirror=relay_gateway.has_feature(JOB_MIRROR_FEATURE),
+                mirror=relay_gateway.has_feature(JOB_MIRROR_FEATURE, company),
                 pass_started_at=pass_started_at,
             )
             total += company_total

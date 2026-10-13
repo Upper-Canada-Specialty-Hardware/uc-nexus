@@ -11,14 +11,28 @@ slip already occupies (the uniqueness guard in confirm_shipment stays as the bac
 hand-typed "PS-00007" from before this change never collides with the sequence catching up to it.
 """
 
-from sqlalchemy import select
+from sqlalchemy import BigInteger, cast, func, select
 from sqlalchemy.orm import Session
 
+from app.demo import is_demo_company
 from app.models.packing_slip_counter import PackingSlipCounter
 from app.models.shipping import PackingSlip
 
+# Key for the transaction-scoped advisory lock the demo company's own sequence is minted under.
+_DEMO_PACKING_SLIP_LOCK_KEY = 1_608_001
 
-def mint_packing_slip_number(session: Session) -> str:
+
+def _mint_demo_packing_slip_number(session: Session) -> str:
+    """The demo company's next slip number, PS-DNNNNN (#1608). Its own sequence, read off the demo
+    slips themselves, so a demo shipment never takes a value from the real counter and a reset that
+    deletes the demo slips starts the demo numbers over."""
+    session.execute(select(func.pg_advisory_xact_lock(_DEMO_PACKING_SLIP_LOCK_KEY)))
+    suffix = func.substring(PackingSlip.packing_slip_number, r"^PS-D([0-9]+)$")
+    max_seq = session.scalar(select(func.max(cast(suffix, BigInteger))).where(suffix.is_not(None)))
+    return f"PS-D{(max_seq or 0) + 1:05d}"
+
+
+def mint_packing_slip_number(session: Session, company: str | None = None) -> str:
     """Claim the next packing-slip number.
 
     The singleton counter row is locked FOR UPDATE, so two concurrent confirms serialize here rather
@@ -28,7 +42,11 @@ def mint_packing_slip_number(session: Session) -> str:
     Each claimed value is checked against existing slip numbers: a hand-typed slip from before the
     server owned the sequence may sit on a value the counter is about to hand out, and the mint walks
     past any such collision to the next free number, advancing the counter as it goes.
+
+    The demo company (#1608) mints from its own sequence and leaves the counter alone.
     """
+    if is_demo_company(company):
+        return _mint_demo_packing_slip_number(session)
     counter = session.scalars(select(PackingSlipCounter).with_for_update()).first()
     if counter is None:
         # Only reachable if the seed row is missing (a database built before the migration seeded it).

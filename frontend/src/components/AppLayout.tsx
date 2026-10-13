@@ -10,7 +10,6 @@ import {
 } from '@mui/material';
 import { PanelLeftClose, PanelLeftOpen, Menu as MenuIcon, Moon, Sun } from 'lucide-react';
 import { useColorScheme } from '@mui/material/styles';
-import { UserButton } from '@clerk/clerk-react';
 import NotificationBell from './NotificationBell';
 import TopBarCompany from './TopBarCompany';
 import GpQueueChip from '../relay/GpQueueChip';
@@ -18,6 +17,8 @@ import GpOutboxWatcher from '../relay/GpOutboxWatcher';
 import Sidebar, { NavRail } from './Sidebar';
 import { PageTransition } from '../motion';
 import CompanyGate from './CompanyGate';
+import DemoBanner from '../demo/DemoBanner';
+import DemoModeUserButton from '../demo/DemoModeUserButton';
 
 const RAIL_COLLAPSED_KEY = 'uc-nexus-rail-collapsed';
 
@@ -117,8 +118,11 @@ export default function AppLayout() {
             {mode === 'dark' ? <Sun size={20} strokeWidth={1.75} /> : <Moon size={20} strokeWidth={1.75} />}
           </IconButton>
 
-          <UserButton />
+          {/* #1608: the account menu, with the switch into and out of demo mode. */}
+          <DemoModeUserButton />
         </Toolbar>
+        {/* #1608: sticks with the bar, so nobody forgets the data on screen is made up. */}
+        <DemoBanner />
       </AppBar>
 
       {/* Renders nothing; watches for a background GP-outbox drain and evicts what it invalidates,

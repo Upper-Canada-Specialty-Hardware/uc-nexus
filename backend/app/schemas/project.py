@@ -337,7 +337,7 @@ class ProjectMutations:
 
         record = None
         if changes:
-            relay_gateway.require_feature(JOB_MIRROR_FEATURE, "update_job")
+            relay_gateway.require_feature(JOB_MIRROR_FEATURE, "update_job", company)
             try:
                 result = await relay_gateway.relay_call(company, "update_job", {"job_number": job_number, **changes})
             except RelayCallError as e:

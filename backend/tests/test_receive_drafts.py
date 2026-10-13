@@ -654,7 +654,7 @@ class _StubRelay:
         self.features = frozenset(features)
         self.calls = []
 
-    def has_feature(self, name):
+    def has_feature(self, name, company=None):
         return name in self.features
 
     async def relay_call(self, company, op, payload=None, timeout=30.0):

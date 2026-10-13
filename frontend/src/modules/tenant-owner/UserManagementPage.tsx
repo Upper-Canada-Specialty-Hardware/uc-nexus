@@ -17,12 +17,14 @@ import {
   TextField,
   MenuItem,
   Chip,
+  Switch,
 } from '@mui/material';
 import { DataGrid, type GridColDef, type GridRowParams } from '@mui/x-data-grid';
 import { useQuery, useMutation } from '@apollo/client/react';
 import {
   GET_USERS,
   UPDATE_USER_COMPANY,
+  UPDATE_USER_DEMO_MODE,
   UPDATE_USER_GP_BUYER_ID,
   UPDATE_USER_NAME,
   UPDATE_USER_ROLES,
@@ -30,6 +32,7 @@ import {
 import { useToast } from '../../components/Toast';
 import PageHeader from '../../components/PageHeader';
 import { useIdentity } from '../../hooks/useIdentity';
+import { DEMO_COMPANY } from '../../demo/demoMode';
 import { microLabelSx, monoSx } from '../../theme';
 import { FadeIn } from '../../motion';
 import { useGridColumnFit } from '../../components/useGridColumnFit';
@@ -98,6 +101,8 @@ interface ClerkUser {
   // #637: the GP company (tenant) this account is scoped to, or null - which leaves the holder
   // behind the "no company assigned" notice with nothing to see.
   company: string | null;
+  // #1608: the account is working in demo mode, on the demo company's made-up data.
+  demoMode: boolean;
   imageUrl: string;
 }
 
@@ -113,14 +118,19 @@ const COMPANY_COLUMN: GridColDef = {
   width: 130,
   minWidth: 120,
   valueGetter: (_value: unknown, row: ClerkUser) => row.company || '',
-  renderCell: (params) =>
-    params.row.company ? (
-      <Box component="span" sx={monoSx}>
-        {params.row.company}
-      </Box>
-    ) : (
-      <Chip label="Unassigned" size="small" color="warning" />
-    ),
+  renderCell: (params) => (
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
+      {params.row.company ? (
+        <Box component="span" sx={monoSx}>
+          {params.row.company}
+        </Box>
+      ) : (
+        <Chip label="Unassigned" size="small" color="warning" />
+      )}
+      {/* #1608: an account in demo mode is working in the demo company, whatever its own is. */}
+      {params.row.demoMode && <Chip label="Demo" size="small" color="info" />}
+    </Box>
+  ),
 };
 
 // The GP buyer id closes the list, and the company slots in ahead of it on the UC Nexus Admin page.
@@ -222,7 +232,7 @@ function sameRoles(a: string[], b: string[]): boolean {
 }
 
 export default function UserManagementPage({ scope }: UserManagementPageProps) {
-  const { isNexusAdmin, ownsTenant, isDbAdmin } = useIdentity();
+  const { isNexusAdmin, ownsTenant, isDbAdmin, demoMode: inDemo } = useIdentity();
   const nexusScope = scope === 'nexus';
   const allowed = nexusScope ? isNexusAdmin : ownsTenant;
   const roleOptions = useMemo<readonly string[]>(
@@ -244,6 +254,8 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
   const [editGpBuyerId, setEditGpBuyerId] = useState<string | null>(null);
   // #637: the tenant this account is scoped to. '' is the deliberate "no company" choice.
   const [editCompany, setEditCompany] = useState<string>(NO_COMPANY);
+  // #1608: whether the account is in demo mode. The UC Nexus Admin's switch only.
+  const [editDemoMode, setEditDemoMode] = useState(false);
   // Issue #240: admin-editable display name (Clerk first/last name).
   const [editFirstName, setEditFirstName] = useState('');
   const [editLastName, setEditLastName] = useState('');
@@ -266,15 +278,17 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
   // #637: the companies GP handed the live relay, plus whatever this user already holds - a stored
   // company must not vanish from the list just because the relay that serves it is between runs.
   const companyOptions = useMemo(() => {
-    const list = [...gpBuyers.companies];
+    // #1608: the demo company is not one an account can belong to; demo mode is how it gets there.
+    const list = gpBuyers.companies.filter((c) => c !== DEMO_COMPANY);
     if (editCompany && !list.includes(editCompany)) list.push(editCompany);
     return list;
   }, [gpBuyers.companies, editCompany]);
-  const companyLocked = gpBuyers.companies.length === 0;
+  const companyLocked = gpBuyers.companies.filter((c) => c !== DEMO_COMPANY).length === 0;
   // Why it is locked, when the relay said. Otherwise the field just sits disabled with no reason.
-  const companyLockedReason =
-    gpBuyers.companiesError ??
-    'The GP relay must be connected and reporting its GP companies to change this.';
+  // #1608: in demo mode the GP on hand is the simulated one, which serves the demo company alone.
+  const companyLockedReason = inDemo
+    ? 'Leave demo mode to change which company an account belongs to.'
+    : (gpBuyers.companiesError ?? 'The GP relay must be connected and reporting its GP companies to change this.');
 
   const [updateRoles] = useMutation(UPDATE_USER_ROLES);
   const [updateName] = useMutation(UPDATE_USER_NAME);
@@ -284,12 +298,16 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
   const [updateCompany] = useMutation(UPDATE_USER_COMPANY, {
     refetchQueries: [{ query: GET_USERS }],
   });
+  const [updateDemoMode] = useMutation(UPDATE_USER_DEMO_MODE, {
+    refetchQueries: [{ query: GET_USERS }],
+  });
 
   const handleRowClick = useCallback((params: GridRowParams<ClerkUser>) => {
     setSelectedUser(params.row);
     setEditRoles(params.row.roles);
     setEditGpBuyerId(params.row.gpBuyerId);
     setEditCompany(params.row.company ?? NO_COMPANY);
+    setEditDemoMode(params.row.demoMode ?? false);
     setEditFirstName(params.row.firstName ?? '');
     setEditLastName(params.row.lastName ?? '');
     setChooserOpen(false);
@@ -397,6 +415,11 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
         await updateGpBuyerId({ variables: { userId: landed.id, gpBuyerId: gpBuyerIdToSave } });
         keep({ gpBuyerId: gpBuyerIdToSave });
       }
+      // #1608: the same only-when-changed rule. Last, because turning it on may seed the demo company.
+      if (nexusScope && editDemoMode !== (landed.demoMode ?? false)) {
+        await updateDemoMode({ variables: { userId: landed.id, enabled: editDemoMode } });
+        keep({ demoMode: editDemoMode });
+      }
       showToast('User updated successfully', 'success');
       closeDialog();
     } catch (err: unknown) {
@@ -411,10 +434,13 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
     editLastName,
     editGpBuyerId,
     editCompany,
+    editDemoMode,
+    nexusScope,
     updateRoles,
     updateName,
     updateGpBuyerId,
     updateCompany,
+    updateDemoMode,
     showToast,
     closeDialog,
   ]);
@@ -622,6 +648,20 @@ export default function UserManagementPage({ scope }: UserManagementPageProps) {
                         ))}
                       </TextField>
                     )}
+                    {/* #1608: demo mode puts the account on the demo company's made-up data, with GP
+                        simulated, and leaves its own company exactly as set above. */}
+                    <FormControlLabel
+                      sx={{ mb: 1.5 }}
+                      control={<Switch checked={editDemoMode} onChange={(e) => setEditDemoMode(e.target.checked)} />}
+                      label={
+                        <Box>
+                          <Typography variant="body2">Demo mode</Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Works on made-up data in the demo company, with GP simulated. Their own company is kept.
+                          </Typography>
+                        </Box>
+                      }
+                    />
                     </>
                   )}
                   {/* Issue #409: chosen from GP's live buyer master rather than typed, with an inline

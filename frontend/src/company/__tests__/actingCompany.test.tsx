@@ -15,7 +15,7 @@ import {
 // #845: a UC NEXUS ADMIN works in one GP company at a time. These pin which company they land in,
 // that the Apollo header follows it, and that a scoped user never gets one to switch or send.
 
-const identity = vi.hoisted(() => ({ isNexusAdmin: true, company: null as string | null }));
+const identity = vi.hoisted(() => ({ isNexusAdmin: true, company: null as string | null, demoMode: false }));
 
 vi.mock('../../hooks/useIdentity', () => ({
   useIdentity: () => ({
@@ -29,6 +29,7 @@ vi.mock('../../hooks/useIdentity', () => ({
     isDbAdmin: false,
     gpBuyerId: null,
     company: identity.company,
+    demoMode: identity.demoMode,
     user: { id: 'user_1' },
   }),
 }));
@@ -81,6 +82,7 @@ let local: Storage;
 beforeEach(() => {
   identity.isNexusAdmin = true;
   identity.company = null;
+  identity.demoMode = false;
   session = memoryStorage();
   local = memoryStorage();
   vi.stubGlobal('sessionStorage', session);
@@ -118,6 +120,28 @@ describe('resolveActingCompany', () => {
 });
 
 describe('ActingCompanyProvider', () => {
+  // #1608: identity already reports the demo company for an account in demo mode; an admin there is
+  // pinned to it, sends it as the header, and has nothing to switch to - whatever they last picked.
+  it('pins an admin in demo mode to the demo company and sends it', async () => {
+    identity.company = 'DEMO';
+    identity.demoMode = true;
+    local.setItem(ACTING_COMPANY_STORAGE_KEY, 'UCSH');
+    const { result } = renderActing();
+    await waitFor(() => expect(result.current.acting.company).toBe('DEMO'));
+    expect(result.current.acting.canSwitch).toBe(false);
+    expect(result.current.acting.companies).toEqual([]);
+    expect(readActingCompanyHeader()).toBe('DEMO');
+  });
+
+  it('sends no header for a scoped user in demo mode; the backend pins them itself', async () => {
+    identity.isNexusAdmin = false;
+    identity.company = 'DEMO';
+    identity.demoMode = true;
+    const { result } = renderActing([]);
+    await waitFor(() => expect(result.current.acting.company).toBe('DEMO'));
+    expect(readActingCompanyHeader()).toBeNull();
+  });
+
   it("lands an admin in their assigned company and sends it as the header", async () => {
     identity.company = 'UCSH';
     const { result } = renderActing();

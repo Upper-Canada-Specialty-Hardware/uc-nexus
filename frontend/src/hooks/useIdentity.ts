@@ -1,4 +1,5 @@
 import { useUser } from '@clerk/clerk-react';
+import { DEMO_BUYER_ID, DEMO_COMPANY } from '../demo/demoMode';
 
 interface PublicMetadata {
   roles?: string[];
@@ -8,6 +9,8 @@ interface PublicMetadata {
   // this decides which rows the server will return. UC NEXUS ADMIN is the only unscoped role and
   // may hold none.
   company?: string | null;
+  // #1608: the account is working in demo mode, on the demo company's synthesized data.
+  demoMode?: boolean;
 }
 
 export function useIdentity() {
@@ -30,10 +33,14 @@ export function useIdentity() {
   // shorthand. It stacks on UC NEXUS ADMIN, but db-access mints internet-reachable read-write
   // credentials, so only a real holder of "DB Admin" sees the page and its entry point.
   const isDbAdmin = hasRole('DB Admin');
-  const gpBuyerId = metadata.gpBuyerId || null;
+  // #1608: in demo mode the account works in the demo company as the simulated GP's own buyer. Its own
+  // company and buyer id are still there, as `ownCompany`, for the one place that needs them.
+  const demoMode = metadata.demoMode === true;
+  const gpBuyerId = demoMode ? DEMO_BUYER_ID : metadata.gpBuyerId || null;
   // #637: null is a real state, not a default - a scoped user without one is shown the unassigned
   // notice rather than an empty app, because every scoped read would come back empty.
-  const company = metadata.company || null;
+  const ownCompany = metadata.company || null;
+  const company = demoMode ? DEMO_COMPANY : ownCompany;
   return {
     displayName,
     userId,
@@ -45,6 +52,8 @@ export function useIdentity() {
     isDbAdmin,
     gpBuyerId,
     company,
+    ownCompany,
+    demoMode,
     user,
   };
 }

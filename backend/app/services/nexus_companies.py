@@ -11,11 +11,15 @@ The answer is a union of two sources, and each covers the other's blind spot:
     from - but empty whenever the relay is down;
   - the distinct `projects.company` values, which survive a relay outage - an admin must still be
     able to open a company's projects while GP is unreachable.
+
+The demo company (#1608) is in neither answer. It owns projects, but it is not a company to switch
+to: an admin reaches it by turning on demo mode (see app/demo.py).
 """
 
 from sqlalchemy import distinct, select
 
 from app.database import SessionLocal
+from app.demo import is_demo_company
 from app.models.project import Project
 from app.services.relay_gateway import gateway as relay_gateway
 
@@ -23,7 +27,7 @@ from app.services.relay_gateway import gateway as relay_gateway
 def project_companies() -> set[str]:
     """Every company that owns at least one project. One indexed DISTINCT over `projects.company`."""
     with SessionLocal() as session:
-        return {c for c in session.scalars(select(distinct(Project.company))) if c}
+        return {c for c in session.scalars(select(distinct(Project.company))) if c and not is_demo_company(c)}
 
 
 def relay_companies() -> set[str]:
