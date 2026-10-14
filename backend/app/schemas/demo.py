@@ -33,6 +33,9 @@ from app.services import demo_reset, demo_snapshot
 from .converters import clerk_user_to_type
 from .types import ClerkUser, DemoInventorySnapshotSummary
 
+# The legacy export is about 1 MB; this is room to grow, and a stop for the wrong file.
+_MAX_EXPORT_CHARS = 20_000_000
+
 
 def _summary(snapshot: DemoInventorySnapshot) -> DemoInventorySnapshotSummary:
     rows = [demo_snapshot.SnapshotRow.from_dict(r) for r in snapshot.rows]
@@ -98,12 +101,26 @@ class DemoMutations:
         """UC NEXUS ADMIN: store the legacy inventory export (#1638), replacing the one stored. Only what
         the seed reads is kept. The demo data is not touched until its next reset, which seeds from it."""
         actor = resolve_display_name(current_user(info)["user_id"])
+        if len(csv_text) > _MAX_EXPORT_CHARS:
+            raise ValidationError(
+                f"The export is over {_MAX_EXPORT_CHARS // 1_000_000} MB; the legacy export is about one.",
+                field="csvText",
+            )
         try:
             rows = demo_snapshot.parse_csv(csv_text)
         except demo_snapshot.SnapshotError as e:
             raise ValidationError(str(e), field="csvText") from e
-        with SessionLocal() as session:
+        with demo_reset.no_reset_running(), SessionLocal() as session:
             snapshot = demo_snapshot_repository.store(session, file_name=file_name, rows=rows, uploaded_by=actor)
             session.commit()
             session.refresh(snapshot)
             return _summary(snapshot)
+
+    @strawberry.mutation
+    def remove_demo_inventory_snapshot(self, info: strawberry.Info) -> bool:
+        """UC NEXUS ADMIN: drop the stored export (#1638). The next demo reset seeds the made-up demo alone -
+        the way back when an export turns out to be one the seed cannot run from."""
+        with demo_reset.no_reset_running(), SessionLocal() as session:
+            removed = demo_snapshot_repository.clear(session)
+            session.commit()
+            return removed

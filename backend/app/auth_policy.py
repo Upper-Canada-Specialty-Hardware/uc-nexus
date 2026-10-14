@@ -369,6 +369,7 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "updateUserDemoMode": NEXUS_ADMIN_ROLE,
     # #1638: the legacy inventory export is the company's real data, so only an admin loads or reads it.
     "uploadDemoInventorySnapshot": NEXUS_ADMIN_ROLE,
+    "removeDemoInventorySnapshot": NEXUS_ADMIN_ROLE,
     "demoInventorySnapshot": NEXUS_ADMIN_ROLE,
     # --- user.py --------------------------------------------------------------------------
     # All four shipped ungated before #415. `updateUserRoles` is the one that matters most: it grants

@@ -56,6 +56,8 @@ _ROWS = [
     ("", "HM DOOR 3070", "", "", "With Somebody", 0, 2, 0, 0, 0, 0, 0, "Door", "", "Door"),
     ("", "FRAME 3070 16GA", "", "", "F-59, F-44", 0, 0, 0, 0, 3, 0, 0, "Frame", "", "Frame"),
     ("", "SILICONE", "", "", "Coast rack H under non stock", 0, 0, 0, 0, 12, 0, 0, "Consumable", "", "Sealant"),
+    # A shelf the made-up warehouse already defines: A-1 02 is A / 1 / 2.
+    ("", "KICK PLATE 34", "", "", "A-1 02", 0, 0, 0, 0, 5, 0, 0, "Door Hardware", "", "Kick Plate"),
     # Nothing on hand and nothing on order: dropped.
     ("OLD 1", "OLD 1", "T-100", "Test Tower", "K-1R", 0, 0, 0, 9, 0, 9, 9, "Door Hardware", "", "Hinge"),
 ]
@@ -121,6 +123,13 @@ def test_only_what_the_seed_reads_is_kept(rows):
 def test_something_else_is_refused_as_an_export():
     with pytest.raises(ds.SnapshotError, match="not the legacy inventory export"):
         ds.parse_csv("Part,Qty\nA,1\n")
+    with pytest.raises(ds.SnapshotError, match="could not be read as CSV"):
+        ds.parse_csv(_HEADER + '\n"' + "x" * 200_000 + '",1\n')
+
+
+@pytest.mark.parametrize("cell, quantity", [("1,000", 1000), ("inf", 0), ("1e400", 0), ("abc", 0), ("1e12", 1_000_000)])
+def test_a_quantity_cell_reads_as_whole_units_on_a_shelf(cell, quantity):
+    assert ds._qty(cell) == quantity
 
 
 def test_ongoing_projects_are_the_jobs_that_held_hardware(rows):
@@ -218,12 +227,33 @@ def seeded_from_snapshot(_migrate_database):
 def test_the_upload_reports_what_the_reset_will_seed(seeded_from_snapshot):
     assert seeded_from_snapshot == {
         "fileName": "Inventory.csv",
-        "rowCount": 12,
+        "rowCount": 13,
         "projectUnits": 7,
-        "poolUnits": 6 + 3 + 3 + 3 + 2 + 1 + 1000 + 2 + 3 + 12,
+        "poolUnits": 6 + 3 + 3 + 3 + 2 + 1 + 1000 + 2 + 3 + 12 + 5,
         "projectCount": 3,
         "scheduleCount": 2,
     }
+
+
+def test_a_demo_reset_is_not_the_real_migration_having_run(seeded_from_snapshot):
+    from app.database import SessionLocal
+    from app.repositories import sharepoint_migration_repository
+
+    runs = "SELECT count(*) FROM sharepoint_migration_runs WHERE company "
+    with SessionLocal() as session:
+        assert session.scalar(text(runs + f"= '{DEMO_COMPANY}'"))
+        real = session.scalar(text(runs + f"IS DISTINCT FROM '{DEMO_COMPANY}'"))
+        assert sharepoint_migration_repository.has_migration_run(session) == bool(real)
+
+
+def test_the_export_is_not_replaced_while_a_reset_runs(seeded_from_snapshot):
+    from app.services import demo_reset
+    from main import schema
+
+    upload = 'mutation U($c: String!) { uploadDemoInventorySnapshot(fileName: "x.csv", csvText: $c) { rowCount } }'
+    with demo_reset.no_reset_running():
+        result = asyncio.run(schema.execute(upload, variable_values={"c": _csv()}, context_value=dict(_ADMIN)))
+    assert result.errors and "being reset" in result.errors[0].message
 
 
 def test_the_snapshot_survives_the_reset_it_seeded(seeded_from_snapshot):
@@ -282,7 +312,8 @@ def test_the_snapshot_is_the_pool_and_the_specialties_are_on_their_job(seeded_fr
     assert pool.get("GRAB BAR 36", 0) == 0
     assert on_job == {"T-300": 7}
     assert nothing_on_tower == 0
-    assert {("K", "17", "R"), ("F", "40", "-"), ("NS", "K", "-"), ("IS", "A", "4")} <= defined
+    assert {("K", "17", "R"), ("F", "40", "-"), ("NS", "K", "-"), ("IS", "A", "4"), ("A", "1", "2")} <= defined
+    assert pool["KICK PLATE 34"] == 5  # on the made-up warehouse's own A / 1 / 2
 
 
 def test_a_job_offers_its_schedule_and_takes_hardware_pulled_back_from_the_pool(seeded_from_snapshot):
@@ -346,3 +377,10 @@ def test_the_demo_leaves_a_real_company_its_own_type_codes(seeded_from_snapshot)
                 custom_items_repository.create_item_type(session, name=name, code=code, company="REALCO")
         finally:
             session.rollback()
+
+
+def test_an_admin_removes_the_export_and_the_demo_goes_back_to_made_up(seeded_from_snapshot):
+    # Last: it takes away what the tests above read.
+    assert _run("mutation { removeDemoInventorySnapshot }") == {"removeDemoInventorySnapshot": True}
+    assert _run("{ demoInventorySnapshot { fileName } }") == {"demoInventorySnapshot": None}
+    assert _run("mutation { removeDemoInventorySnapshot }") == {"removeDemoInventorySnapshot": False}

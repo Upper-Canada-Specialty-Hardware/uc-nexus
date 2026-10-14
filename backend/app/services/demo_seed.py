@@ -389,6 +389,7 @@ _DESTOCK = "mutation DestockInventory($input: DestockInventoryInput!) { destockI
 _CREATE_RETURN = """
 mutation CreateShipmentReturn($input: CreateShipmentReturnInput!) { createShipmentReturn(input: $input) { id } }
 """
+_LOCATIONS = "query L($warehouseId: ID) { warehouseLocations(warehouseId: $warehouseId) { aisle row bay } }"
 _MIGRATE_LEGACY_INVENTORY = """
 mutation MigrateSharepointInventory($input: MigrateSharepointInventoryInput!) {
   migrateSharepointInventory(input: $input) { stockItems projectLocations totalUnits }
@@ -720,8 +721,18 @@ class _Demo:
             rows = demo_snapshot_repository.rows(session)
         if not rows:
             return
+        # Every snapshot project was adopted from the simulated GP's jobs; one that was not is named here
+        # rather than failing the seed further on as a missing key.
+        missing = sorted(set(demo_snapshot.ongoing_projects(rows)) - set(self.projects))
+        if missing:
+            raise SeedError(f"legacy inventory: projects not adopted from the simulated GP: {', '.join(missing)}")
+
+        # A legacy location can land on one the made-up warehouse already defines (A-1 02 is A / 1 / 2).
+        listed = await self.s.gql(_LOCATIONS, warehouseId=self.warehouse_id)
+        defined = {(loc["aisle"], loc["row"], loc["bay"]) for loc in listed["warehouseLocations"]}
         for aisle, row, bay in demo_snapshot.locations(rows):
-            await self.s.gql(_CREATE_LOCATION, warehouseId=self.warehouse_id, aisle=aisle, row=row, bay=bay)
+            if (aisle, row, bay) not in defined:
+                await self.s.gql(_CREATE_LOCATION, warehouseId=self.warehouse_id, aisle=aisle, row=row, bay=bay)
 
         # The non-schedule kinds are catalogued under item types of their own, whose codes are their
         # rows' categories - as the migration wizard maps them.

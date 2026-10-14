@@ -69,14 +69,19 @@ NON_SCHEDULE_TYPES = {
     "Consumable": ("Consumables", "DEMO_CONSUMABLE"),
 }
 SPECIALTIES = "Specialties"
-_TYPE_CODES = {code for _name, code in NON_SCHEDULE_TYPES.values()}
+# Every item type code the demo company has: these, and the made-up seed's own frame type
+# (demo_seed.catalog). A schedule category may be none of them (#1343).
+_TYPE_CODES = {code for _name, code in NON_SCHEDULE_TYPES.values()} | {"DFRAME"}
 
 # The longest product code the catalog takes (custom_items_repository.MAX_PRODUCT_CODE_LENGTH). The export
 # has a few part "numbers" that are whole descriptions.
 _MAX_PRODUCT_CODE = 100
 
-# The category of a door hardware row the export gave no Part Category 1.
-UNCATEGORIZED = "UNCATEGORIZED"
+# The category of a door hardware row the export gave no Part Category 1 - the demo's own, like its codes.
+UNCATEGORIZED = "DEMO_UNCATEGORIZED"
+
+# No shelf holds more than this of one thing; a larger cell is a typo, and would overflow the count columns.
+_MAX_QTY = 1_000_000
 
 # Project numbers that are not jobs: the warehouse's own stock, retail orders, and the blanks.
 _NOT_A_JOB = re.compile(r"^(|UNKNOWN|BCS|RTLORD.*)$", re.IGNORECASE)
@@ -146,8 +151,8 @@ def _qty(value) -> int:
     if not text:
         return 0
     try:
-        return max(0, int(float(text)))
-    except ValueError:
+        return min(_MAX_QTY, max(0, int(float(text))))
+    except (ValueError, OverflowError):  # not a number, or inf
         return 0
 
 
@@ -155,9 +160,16 @@ def parse_csv(content: str) -> list[SnapshotRow]:
     """The export's rows that still have something to say: hardware on hand, or hardware an ongoing
     project is still waiting on. Nothing else is kept - not the PO, the notes, or who entered the row."""
     reader = csv.DictReader(io.StringIO(content.lstrip("﻿")))
-    missing = [c for c in _REQUIRED_COLUMNS if c not in (reader.fieldnames or [])]
-    if missing:
-        raise SnapshotError(f"This is not the legacy inventory export: it has no {', '.join(missing)} column.")
+    try:
+        missing = [c for c in _REQUIRED_COLUMNS if c not in (reader.fieldnames or [])]
+        if missing:
+            raise SnapshotError(f"This is not the legacy inventory export: it has no {', '.join(missing)} column.")
+        return _rows(reader)
+    except csv.Error as e:
+        raise SnapshotError(f"The export could not be read as CSV: {e}.") from e
+
+
+def _rows(reader: csv.DictReader) -> list[SnapshotRow]:
     rows = []
     for raw in reader:
         # Cut to the catalog's limit, the same for every row, so a long code still names one product.

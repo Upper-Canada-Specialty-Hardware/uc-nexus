@@ -4,7 +4,11 @@ import { MockedProvider } from '@apollo/client/testing/react';
 import { MemoryRouter } from 'react-router-dom';
 import DemoInventorySnapshotPage from '../DemoInventorySnapshotPage';
 import { ToastProvider } from '../../../components/Toast';
-import { GET_DEMO_INVENTORY_SNAPSHOT, UPLOAD_DEMO_INVENTORY_SNAPSHOT } from '../../../graphql/admin';
+import {
+  GET_DEMO_INVENTORY_SNAPSHOT,
+  REMOVE_DEMO_INVENTORY_SNAPSHOT,
+  UPLOAD_DEMO_INVENTORY_SNAPSHOT,
+} from '../../../graphql/admin';
 
 /**
  * #1638: the page an admin loads the legacy inventory export through. Pinned here: who may open it,
@@ -101,4 +105,26 @@ test('a chosen file is uploaded as its text, under its name', async () => {
   fireEvent.change(input, { target: { files: [new File([CSV], 'Inventory.csv', { type: 'text/csv' })] } });
 
   await waitFor(() => expect(screen.getByText(/Export stored/)).toBeInTheDocument());
+});
+
+test('a failed read says so, rather than that nothing is stored', async () => {
+  renderPage([{ request: { query: GET_DEMO_INVENTORY_SNAPSHOT }, error: new Error('network down') }]);
+  await waitFor(() => expect(screen.getByText(/Could not read the stored export/)).toBeInTheDocument());
+  expect(screen.queryByText(/None stored/)).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Load export' })).toBeDisabled();
+});
+
+test('the export is removed only after the confirm', async () => {
+  const removeMock: MockedResponse = {
+    request: { query: REMOVE_DEMO_INVENTORY_SNAPSHOT },
+    result: { data: { removeDemoInventorySnapshot: true } },
+  };
+  renderPage([stored(STORED), removeMock]);
+  await waitFor(() => expect(screen.getByText('Inventory.csv')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByRole('button', { name: 'Remove export' }));
+  expect(screen.getByText('Remove the demo inventory export?')).toBeInTheDocument();
+  fireEvent.click(screen.getAllByRole('button', { name: 'Remove export' }).at(-1)!);
+
+  await waitFor(() => expect(screen.getByText(/Export removed/)).toBeInTheDocument());
 });

@@ -32,3 +32,8 @@ def rows(session: Session) -> list[SnapshotRow]:
     """The stored snapshot's rows, or none when nothing has been uploaded."""
     snapshot = current(session)
     return [SnapshotRow.from_dict(r) for r in snapshot.rows] if snapshot else []
+
+
+def clear(session: Session) -> bool:
+    """Drop the stored snapshot. The caller commits. Whether there was one."""
+    return session.execute(delete(DemoInventorySnapshot)).rowcount > 0

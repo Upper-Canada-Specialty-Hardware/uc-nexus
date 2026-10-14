@@ -1,9 +1,14 @@
 import { useRef, useState } from 'react';
 import { Alert, Box, Button, Paper, Stack, Typography } from '@mui/material';
 import { useMutation, useQuery } from '@apollo/client/react';
+import ConfirmDialog from '../../components/ConfirmDialog';
 import PageHeader from '../../components/PageHeader';
 import { useToast } from '../../components/Toast';
-import { GET_DEMO_INVENTORY_SNAPSHOT, UPLOAD_DEMO_INVENTORY_SNAPSHOT } from '../../graphql/admin';
+import {
+  GET_DEMO_INVENTORY_SNAPSHOT,
+  REMOVE_DEMO_INVENTORY_SNAPSHOT,
+  UPLOAD_DEMO_INVENTORY_SNAPSHOT,
+} from '../../graphql/admin';
 import { userMessage } from '../../graphql/userMessage';
 import { useIdentity } from '../../hooks/useIdentity';
 import { microLabelSx, monoSx, tabularSx } from '../../theme';
@@ -43,8 +48,9 @@ export default function DemoInventorySnapshotPage() {
   const { showToast } = useToast();
   const fileInput = useRef<HTMLInputElement>(null);
   const [reading, setReading] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
-  const { data, loading } = useQuery<{ demoInventorySnapshot: DemoInventorySnapshot | null }>(
+  const { data, loading, error } = useQuery<{ demoInventorySnapshot: DemoInventorySnapshot | null }>(
     GET_DEMO_INVENTORY_SNAPSHOT,
     { skip: !isNexusAdmin },
   );
@@ -58,7 +64,17 @@ export default function DemoInventorySnapshotPage() {
     },
   );
 
-  const busy = reading || uploading;
+  const [remove, { loading: removing }] = useMutation<{ removeDemoInventorySnapshot: boolean }>(
+    REMOVE_DEMO_INVENTORY_SNAPSHOT,
+    {
+      refetchQueries: [{ query: GET_DEMO_INVENTORY_SNAPSHOT }],
+      awaitRefetchQueries: true,
+      onCompleted: () => showToast('Export removed. The next demo reset seeds the made-up demo alone.', 'success'),
+      onError: (err) => showToast(userMessage(err), 'error'),
+    },
+  );
+
+  const busy = reading || uploading || removing;
 
   const handleFile = async (file: File | undefined) => {
     if (!file || busy) return;
@@ -103,6 +119,9 @@ export default function DemoInventorySnapshotPage() {
             <Typography variant="body2" color="text.secondary">
               Loading…
             </Typography>
+          ) : error ? (
+            // Never read a failed load as "nothing stored": that invites an upload over a good export.
+            <Alert severity="error">Could not read the stored export: {userMessage(error)}</Alert>
           ) : snapshot ? (
             <Stack spacing={1.5}>
               <Box sx={{ minWidth: 0 }}>
@@ -157,13 +176,35 @@ export default function DemoInventorySnapshotPage() {
                 hidden
                 onChange={(e) => void handleFile(e.target.files?.[0])}
               />
-              <Button variant="contained" disabled={busy} onClick={() => fileInput.current?.click()}>
-                {busy ? 'Loading…' : snapshot ? 'Replace export' : 'Load export'}
-              </Button>
+              <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap', rowGap: 1 }}>
+                <Button variant="contained" disabled={busy || !!error} onClick={() => fileInput.current?.click()}>
+                  {reading || uploading ? 'Loading…' : snapshot ? 'Replace export' : 'Load export'}
+                </Button>
+                {snapshot && (
+                  <Button variant="outlined" color="error" disabled={busy} onClick={() => setConfirmRemove(true)}>
+                    Remove export
+                  </Button>
+                )}
+              </Stack>
             </Box>
           </Stack>
         </Paper>
       </Box>
+
+      <ConfirmDialog
+        open={confirmRemove}
+        title="Remove the demo inventory export?"
+        message="The next demo reset seeds the made-up demo alone, with no legacy inventory, until an export is loaded again."
+        confirmLabel="Remove export"
+        confirmColor="error"
+        cancelLabel="Cancel"
+        busy={removing}
+        onConfirm={() => {
+          setConfirmRemove(false);
+          void remove().catch(() => undefined);
+        }}
+        onCancel={() => setConfirmRemove(false)}
+      />
     </Box>
   );
 }

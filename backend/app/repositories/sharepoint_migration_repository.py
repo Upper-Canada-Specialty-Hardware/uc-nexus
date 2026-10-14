@@ -30,6 +30,7 @@ from decimal import Decimal
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
+from app.demo import DEMO_COMPANY
 from app.errors import ConflictError, NotFoundError, ValidationError
 from app.models.enums import AuditAction, AuditEntityType, Classification, HardwareItemState, POOrigin
 from app.models.hardware import HardwareItem
@@ -940,9 +941,13 @@ def has_migration_run(session: Session, *, company: str | None = None) -> bool:
     preserved), which is what lets the cutover run the migration again after resetting.
 
     With `company`, only runs into that company count (#1399), plus legacy runs with no company: those
-    could not be attributed, so they keep guarding every company. Without it, any run counts.
+    could not be attributed, so they keep guarding every company. Without it, any run counts but the demo
+    company's: every demo reset seeds through the migration (#1638), and that says nothing about whether the
+    real one has run.
     """
     stmt = select(SharepointMigrationRun.id)
     if company is not None:
         stmt = stmt.where(or_(SharepointMigrationRun.company == company, SharepointMigrationRun.company.is_(None)))
+    else:
+        stmt = stmt.where(SharepointMigrationRun.company.is_distinct_from(DEMO_COMPANY))
     return session.scalar(stmt.limit(1)) is not None

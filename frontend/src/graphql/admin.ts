@@ -744,3 +744,9 @@ export const UPLOAD_DEMO_INVENTORY_SNAPSHOT = gql`
     uploadDemoInventorySnapshot(fileName: $fileName, csvText: $csvText) { ${DEMO_INVENTORY_SNAPSHOT_FIELDS} }
   }
 `;
+
+export const REMOVE_DEMO_INVENTORY_SNAPSHOT = gql`
+  mutation RemoveDemoInventorySnapshot {
+    removeDemoInventorySnapshot
+  }
+`;

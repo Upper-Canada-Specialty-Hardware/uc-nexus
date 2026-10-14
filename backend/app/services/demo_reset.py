@@ -20,6 +20,7 @@ import logging
 import uuid
 import warnings
 from collections import defaultdict
+from contextlib import contextmanager
 
 from sqlalchemy import Table, delete, or_, select, text
 from sqlalchemy.exc import IntegrityError
@@ -201,6 +202,20 @@ def _release_lock(conn) -> None:
         conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _RESET_LOCK_KEY})
     finally:
         conn.close()
+
+
+@contextmanager
+def no_reset_running():
+    """The reset lock, held around a change to what the next reset seeds from (#1638): the stored inventory
+    snapshot. A reset reads it at two moments, so a change between them would seed half of one and half of
+    another. Refused rather than waited for, as a second reset is, and two changes at once are refused too."""
+    lock = _acquire_lock()
+    if lock is None:
+        raise ConflictError("The demo data is being reset, or the demo inventory changed. Wait a moment and retry.")
+    try:
+        yield
+    finally:
+        _release_lock(lock)
 
 
 def _wipe_committed() -> dict[str, int]:
