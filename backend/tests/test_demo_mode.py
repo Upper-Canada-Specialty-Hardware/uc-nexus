@@ -105,6 +105,46 @@ def test_only_a_caller_in_demo_mode_reads_the_demo_company_gp():
     )
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_any_account_turns_demo_mode_on_and_off_for_itself(monkeypatch, enabled):
+    # #1629: no admin role needed either way - a Warehouse Manager is enough.
+    from app.schemas import demo as demo_schema
+    from main import schema
+
+    resets, writes = [], []
+
+    async def _reset(*, only_if_empty=False):
+        resets.append(only_if_empty)
+        return True
+
+    def _write(user_id, on):
+        writes.append((user_id, on))
+        return {
+            "id": user_id,
+            "first_name": "",
+            "last_name": "",
+            "email": "",
+            "roles": [],
+            "image_url": "",
+            "demo_mode": on,
+        }
+
+    monkeypatch.setattr(demo_schema.demo_reset, "reset", _reset)
+    monkeypatch.setattr(demo_schema.user_repository, "update_user_demo_mode", _write)
+    result = asyncio.run(
+        schema.execute(
+            "mutation M($on: Boolean!) { setMyDemoMode(enabled: $on) { demoMode } }",
+            variable_values={"on": enabled},
+            context_value={"request": None, "_auth_user_id": "u_wm", "_auth_roles": ["Warehouse Manager"]},
+        )
+    )
+    assert result.errors is None
+    assert result.data == {"setMyDemoMode": {"demoMode": enabled}}
+    assert writes == [("u_wm", enabled)]
+    # Turning it on seeds a demo company nobody has seeded yet; turning it off touches nothing.
+    assert resets == ([True] if enabled else [])
+
+
 # --- the simulated GP ----------------------------------------------------------------------------------
 
 
@@ -252,6 +292,22 @@ def test_demo_numbering_leaves_the_real_sequences_alone(seeded):
             )
         )
         assert slips and all(n.startswith("PS-D") for n in slips)
+
+
+def test_the_seed_leaves_hardware_staged_for_shipping(seeded):
+    # Read the way the Staging screen reads it, as a caller in the demo company.
+    from app.services.demo_seed import Seeder
+
+    async def _staged():
+        s = Seeder()
+        projects = (await s.gql("{ projects { id projectId } }"))["projects"]
+        tower = next(p["id"] for p in projects if p["projectId"] == "DEMO-1001")
+        ready = await s.gql(
+            "query R($p: ID) { shipReadyItems(projectId: $p) { looseItems { availableQuantity } } }", p=tower
+        )
+        return sum(i["availableQuantity"] for i in ready["shipReadyItems"]["looseItems"])
+
+    assert asyncio.run(_staged()) > 0
 
 
 def test_a_reset_leaves_no_demo_row_and_no_real_row_behind(seeded):

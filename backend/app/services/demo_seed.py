@@ -689,7 +689,7 @@ async def seed() -> None:
 
     # Tower A: everything ordered and received, then worked through the shop and out the door.
     tower = "DEMO-1001"
-    await demo.import_schedule(tower, "A1", 8, 2, 4)
+    await demo.import_schedule(tower, "A1", 10, 2, 4)
     for vendor in list(demo.pos[tower]):
         await demo.register(tower, vendor)
         await demo.receive(tower, vendor)
@@ -737,10 +737,13 @@ async def seed() -> None:
             ],
         },
     )
-    # What came back off the cancelled delivery is asked for again: accepted, its pull not started.
-    again = await demo.shipping_request(tower, ["A105"])
-    await demo.s.gql(_ACCEPT_SHIPPING_REQUEST, id=again)
-    # And requests for the last openings: one waiting on the shipping manager, one turned down.
+    # What came back off the cancelled delivery is pulled again and staged, waiting to be loaded.
+    await demo.stage(tower, ["A105"])
+    # A request accepted with its pull not started yet.
+    accepted = await demo.shipping_request(tower, ["A109"])
+    await demo.s.gql(_ACCEPT_SHIPPING_REQUEST, id=accepted)
+    # And requests for the other openings: one waiting on the shipping manager, one turned down. A110 is
+    # left for whoever tries a request of their own.
     await demo.shipping_request(tower, ["A106", "A107"])
     rejected = await demo.shipping_request(tower, ["A108"])
     await demo.s.gql(_REJECT_SHIPPING_REQUEST, id=rejected, reason="Site is not ready for this floor yet.")

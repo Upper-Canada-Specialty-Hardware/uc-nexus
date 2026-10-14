@@ -360,8 +360,8 @@ ROOT_FIELD_POLICY: dict[str, str | frozenset[str]] = {
     "resolveDeficiency": SIGNED_IN,
     "transferInventory": SIGNED_IN,
     # --- demo.py --------------------------------------------------------------------------
-    # #1608. `setMyDemoMode` is signed-in because LEAVING demo mode must be open to anybody in it; the
-    # body refuses turning it ON to anyone but a TENANT OWNER or UC NEXUS ADMIN. `resetDemoData` is
+    # #1608. `setMyDemoMode` is signed-in: every user turns demo mode on and off for themselves (#1629),
+    # and it only ever narrows an account to the demo company's made-up data. `resetDemoData` is
     # tenant-owner tier, and its body refuses a caller who is not in demo mode, so a reset only ever
     # touches the demo company. Putting any account into it is the admin's call alone.
     "resetDemoData": TENANT_OWNERS,

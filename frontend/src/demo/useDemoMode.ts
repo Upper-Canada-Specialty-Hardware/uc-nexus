@@ -63,8 +63,7 @@ export function useDemoMode() {
 
   return {
     demoMode,
-    /** A UC Nexus Admin or Tenant Owner turns it on for themselves, and resets it. */
-    canEnter: ownsTenant,
+    /** A Tenant Owner or UC Nexus Admin resets the demo data. Turning demo mode on and off is anybody's (#1629). */
     canReset: ownsTenant && demoMode,
     busy,
     enter: () => switchTo(true),
