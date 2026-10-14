@@ -262,14 +262,21 @@ def _job_record(job: dict) -> dict:
 
 
 def _jobs(session: Session) -> list[dict]:
-    """Every job, the fixed ones written in on first use so a job update has a row to change."""
+    """Every job, the fixed ones written in on first use so a job update has a row to change. The ongoing
+    projects of the stored inventory snapshot (#1638) are jobs from the start too: the seed adopts them
+    like the fixed ones, and puts their hardware on them."""
     rows = _all(session, "job")
     if not rows:
         # Under the job lock and read again: two first calls at once must not both write the fixed jobs.
         _lock(session, "job")
         rows = _all(session, "job")
     if not rows:
-        for job in JOBS:
+        from app.repositories import demo_snapshot_repository
+        from app.services import demo_snapshot
+
+        fixed = {job["job_number"] for job in JOBS}
+        snapshot_jobs = demo_snapshot.gp_jobs(demo_snapshot_repository.rows(session))
+        for job in JOBS + [j for j in snapshot_jobs if j["job_number"] not in fixed]:
             _put(session, "job", job["job_number"], _job_record(job))
         rows = _all(session, "job")
     return [r.data for r in rows]

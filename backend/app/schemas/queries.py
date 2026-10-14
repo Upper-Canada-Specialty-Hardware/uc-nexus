@@ -17,6 +17,7 @@ from .classification_override import ClassificationOverrideQueries
 from .custom_items import CustomItemQueries
 from .dashboard import DashboardQueries
 from .db_access import DbAccessQueries
+from .demo import DemoQueries
 from .gp_outbox import GpOutboxQueries
 from .gp_sync_state import GpSyncStateQueries
 from .imports import ImportQueries
@@ -39,6 +40,7 @@ class Query(
     CustomItemQueries,
     DashboardQueries,
     DbAccessQueries,
+    DemoQueries,
     GpOutboxQueries,
     GpSyncStateQueries,
     ImportQueries,

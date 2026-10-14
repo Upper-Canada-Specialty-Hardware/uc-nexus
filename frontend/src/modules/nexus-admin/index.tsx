@@ -4,6 +4,7 @@ import RelayInstallsPage from './RelayInstallsPage';
 import NexusGpTrafficPage from './NexusGpTrafficPage';
 import SharePointMigrationPage from './SharePointMigrationPage';
 import DbAccessPage from './DbAccessPage';
+import DemoInventorySnapshotPage from './DemoInventorySnapshotPage';
 import ResetDataPage from './ResetDataPage';
 import NexusAdminLanding from './NexusAdminLanding';
 
@@ -20,6 +21,7 @@ export default function NexusAdminModule() {
       <Route path="nexus-gp-traffic" element={<NexusGpTrafficPage />} />
       <Route path="sharepoint-migration" element={<SharePointMigrationPage />} />
       <Route path="db-access" element={<DbAccessPage />} />
+      <Route path="demo-inventory" element={<DemoInventorySnapshotPage />} />
       <Route path="reset-data" element={<ResetDataPage />} />
       <Route path="*" element={<Navigate to="/app/nexus-admin" replace />} />
     </Routes>

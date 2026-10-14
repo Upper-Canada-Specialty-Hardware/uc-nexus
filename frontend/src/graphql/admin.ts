@@ -719,3 +719,34 @@ export const UPDATE_USER_DEMO_MODE = gql`
     }
   }
 `;
+
+// #1638: the legacy inventory export the demo warehouse is seeded from. Its figures are what the next demo
+// reset seeds, worked out from the stored rows.
+const DEMO_INVENTORY_SNAPSHOT_FIELDS = `
+  fileName
+  uploadedBy
+  uploadedAt
+  rowCount
+  projectUnits
+  poolUnits
+  projectCount
+  scheduleCount
+`;
+
+export const GET_DEMO_INVENTORY_SNAPSHOT = gql`
+  query DemoInventorySnapshot {
+    demoInventorySnapshot { ${DEMO_INVENTORY_SNAPSHOT_FIELDS} }
+  }
+`;
+
+export const UPLOAD_DEMO_INVENTORY_SNAPSHOT = gql`
+  mutation UploadDemoInventorySnapshot($fileName: String!, $csvText: String!) {
+    uploadDemoInventorySnapshot(fileName: $fileName, csvText: $csvText) { ${DEMO_INVENTORY_SNAPSHOT_FIELDS} }
+  }
+`;
+
+export const REMOVE_DEMO_INVENTORY_SNAPSHOT = gql`
+  mutation RemoveDemoInventorySnapshot {
+    removeDemoInventorySnapshot
+  }
+`;

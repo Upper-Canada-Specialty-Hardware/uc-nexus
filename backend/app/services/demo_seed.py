@@ -18,6 +18,9 @@ What it leaves behind, by module:
   - Shop assembly: requests waiting, batched with a pull being picked, batched and pulled, rejected.
   - Shipping: requests waiting, rejected and accepted; shipments scheduled, picked up, delivered and
     cancelled; a return.
+  - The legacy inventory snapshot (#1638), when an admin has stored one: the company's real warehouse as
+    the stock pool, specialties on their projects, and every ongoing project with a made-up hardware
+    schedule to start an import from (see app/services/demo_snapshot.py).
 
 The demo identity is not a Clerk account: its roles, company and demo flag are written straight into the
 request context's memos, which is where `app.auth` would have put them after asking Clerk.
@@ -28,8 +31,11 @@ import base64
 import logging
 from datetime import date, timedelta
 
-from app.auth import DEMO_SEEDING_KEY, TENANT_OWNER_ROLE, remember_display_name
+from app.auth import DEMO_SEEDING_KEY, NEXUS_ADMIN_ROLE, TENANT_OWNER_ROLE, remember_display_name
+from app.database import SessionLocal
 from app.demo import DEMO_BUYER_ID, DEMO_COMPANY
+from app.repositories import demo_snapshot_repository
+from app.services import demo_snapshot
 from app.services.demo_gp import COST_CODE_MASTER
 
 logger = logging.getLogger(__name__)
@@ -67,7 +73,17 @@ class Seeder:
         remember_display_name(SEED_USER_ID, SEED_USER_NAME)
 
     async def gql(self, document: str, **variables) -> dict:
-        result = await self._schema.execute(document, variable_values=variables, context_value=self._context)
+        return await self._execute(document, variables, self._context)
+
+    async def gql_as_admin(self, document: str, **variables) -> dict:
+        """`gql` as a UC NEXUS ADMIN working in the demo company, for the one admin-only mutation the seed
+        sends (the legacy inventory migration, #1638). An admin's company is the one it acts in, so that
+        memo is written as well: unwritten, the admin would act in every company."""
+        context = {**seed_context(), "_auth_roles": [NEXUS_ADMIN_ROLE], "_auth_acting_company": DEMO_COMPANY}
+        return await self._execute(document, variables, context)
+
+    async def _execute(self, document: str, variables: dict, context: dict) -> dict:
+        result = await self._schema.execute(document, variable_values=variables, context_value=context)
         if result.errors:
             raise SeedError(f"{document.split('(')[0].strip()}: {[e.message for e in result.errors]}")
         return result.data
@@ -372,6 +388,12 @@ mutation MarkInventoryUnlocated($id: ID!) { markInventoryUnlocated(inventoryLoca
 _DESTOCK = "mutation DestockInventory($input: DestockInventoryInput!) { destockInventory(input: $input) { id } }"
 _CREATE_RETURN = """
 mutation CreateShipmentReturn($input: CreateShipmentReturnInput!) { createShipmentReturn(input: $input) { id } }
+"""
+_LOCATIONS = "query L($warehouseId: ID) { warehouseLocations(warehouseId: $warehouseId) { aisle row bay } }"
+_MIGRATE_LEGACY_INVENTORY = """
+mutation MigrateSharepointInventory($input: MigrateSharepointInventoryInput!) {
+  migrateSharepointInventory(input: $input) { stockItems projectLocations totalUnits }
+}
 """
 
 
@@ -687,6 +709,81 @@ class _Demo:
             },
         )
 
+    async def legacy_inventory(self) -> None:
+        """The stored legacy inventory snapshot (#1638), as a company that has just adopted Nexus holds it:
+        every ongoing project's hardware moved into the stock pool to be pulled back from there, its
+        specialties already on it, and a hardware schedule on file to start the import from.
+
+        The inventory goes in through the legacy migration - the mutation that brought the real warehouse
+        across - and the schedules through the import's own finalize. Nothing is done without a stored
+        snapshot: the demo keeps only its made-up projects."""
+        with SessionLocal() as session:
+            rows = demo_snapshot_repository.rows(session)
+        if not rows:
+            return
+        # Every snapshot project was adopted from the simulated GP's jobs; one that was not is named here
+        # rather than failing the seed further on as a missing key.
+        missing = sorted(set(demo_snapshot.ongoing_projects(rows)) - set(self.projects))
+        if missing:
+            raise SeedError(f"legacy inventory: projects not adopted from the simulated GP: {', '.join(missing)}")
+
+        # A legacy location can land on one the made-up warehouse already defines (A-1 02 is A / 1 / 2).
+        listed = await self.s.gql(_LOCATIONS, warehouseId=self.warehouse_id)
+        defined = {(loc["aisle"], loc["row"], loc["bay"]) for loc in listed["warehouseLocations"]}
+        for aisle, row, bay in demo_snapshot.locations(rows):
+            if (aisle, row, bay) not in defined:
+                await self.s.gql(_CREATE_LOCATION, warehouseId=self.warehouse_id, aisle=aisle, row=row, bay=bay)
+
+        # The non-schedule kinds are catalogued under item types of their own, whose codes are their
+        # rows' categories - as the migration wizard maps them.
+        present = {r.inventory_type for r in rows if not r.is_schedule_hardware}
+        type_ids = {}
+        for legacy, (name, code) in demo_snapshot.NON_SCHEDULE_TYPES.items():
+            if legacy in present:
+                created = await self.s.gql(_CREATE_ITEM_TYPE, name=name, code=code)
+                type_ids[legacy] = created["createInventoryItemType"]["id"]
+        catalog = [
+            {
+                "typeId": type_ids[legacy],
+                "productCode": code,
+                "description": description or None,
+                "values": [{"attributeName": "Finish", "value": finish}] if finish else None,
+            }
+            for legacy, code, description, finish in demo_snapshot.catalog_items(rows)
+        ]
+        entries = []
+        for entry in demo_snapshot.inventory_entries(rows):
+            aisle, row, bay = entry.location or (None, None, None)
+            entries.append(
+                {
+                    "destination": "PROJECT" if entry.project_number else "STOCK",
+                    "projectId": self.projects[entry.project_number] if entry.project_number else None,
+                    "warehouseId": self.warehouse_id,
+                    "hardwareCategory": entry.row.hardware_category,
+                    "productCode": entry.row.product_code,
+                    "quantity": entry.quantity,
+                    "aisle": aisle,
+                    "row": row,
+                    "bay": bay,
+                }
+            )
+        # A re-run on purpose: a run with no company recorded counts against every company, the demo one
+        # included, and the demo company was wiped before this.
+        await self.s.gql_as_admin(
+            _MIGRATE_LEGACY_INVENTORY, input={"entries": entries, "catalogItems": catalog, "allowRerun": True}
+        )
+
+        for schedule in demo_snapshot.schedules(rows):
+            await self.s.gql(
+                _FINALIZE,
+                input={
+                    "projectId": self.projects[schedule.project_number],
+                    "openings": schedule.openings,
+                    "hardwareItems": schedule.hardware_items,
+                    "scheduleFilename": f"{schedule.project_number}-hardware-schedule.xml",
+                },
+            )
+
 
 async def seed() -> None:
     """Build the demo company's starting state. Assumes it is empty - `demo_reset.reset` wipes it first."""
@@ -782,6 +879,8 @@ async def seed() -> None:
     await demo.s.gql(_REJECT_SHOP_REQUEST, id=demo.shop_requests[school], reason="Openings are being re-specified.")
 
     # Office Retrofit is left with no schedule: the project to try an import on.
+
+    await demo.legacy_inventory()
 
 
 def seed_blocking() -> None:

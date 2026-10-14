@@ -2442,6 +2442,22 @@ class ProjectScheduleProduct:
 
 
 @strawberry.type
+class DemoInventorySnapshotSummary:
+    """The stored demo inventory snapshot (#1638), as the next demo reset will seed it."""
+
+    file_name: str
+    uploaded_by: str
+    uploaded_at: datetime
+    row_count: int
+    # Units the reset puts on specialties projects, and units it puts in the stock pool.
+    project_units: int
+    pool_units: int
+    # Ongoing projects it adopts as demo projects, and how many of them get a made-up hardware schedule.
+    project_count: int
+    schedule_count: int
+
+
+@strawberry.type
 class MigrationResult:
     stock_items: int
     project_locations: int
