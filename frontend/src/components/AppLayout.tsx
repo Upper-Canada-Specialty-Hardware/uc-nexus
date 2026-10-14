@@ -19,6 +19,7 @@ import { PageTransition } from '../motion';
 import CompanyGate from './CompanyGate';
 import DemoBanner from '../demo/DemoBanner';
 import DemoModeUserButton from '../demo/DemoModeUserButton';
+import companyLogo from '../assets/brand/ucsh-logo-mark.png';
 
 const RAIL_COLLAPSED_KEY = 'uc-nexus-rail-collapsed';
 
@@ -84,6 +85,9 @@ export default function AppLayout() {
             variant="h6"
             sx={{
               mr: 3,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 1.25,
               letterSpacing: '0.01em',
               color: 'inherit',
               textDecoration: 'none',
@@ -92,6 +96,9 @@ export default function AppLayout() {
               '&:focus-visible': { outline: '2px solid currentColor', outlineOffset: 4 },
             }}
           >
+            {/* The company logo. Its white keyline ring is what carries it on the ink bar. alt is
+                empty because the wordmark beside it already names the link. */}
+            <Box component="img" src={companyLogo} alt="" sx={{ height: { xs: 28, sm: 32 }, display: 'block' }} />
             UC Nexus
           </Typography>
 

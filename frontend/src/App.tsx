@@ -4,6 +4,7 @@ import { Box, Skeleton } from '@mui/material';
 import { SignedIn, SignedOut, SignIn, RedirectToSignIn } from '@clerk/clerk-react';
 import AppLayout from './components/AppLayout';
 import { LazyRoute } from './components/LazyBoundary';
+import companyLogo from './assets/brand/ucsh-logo-mark.png';
 
 // Lazy-loaded module imports
 const HomeModule = React.lazy(() => import('./modules/home'));
@@ -40,7 +41,8 @@ function SuspenseFallback() {
 
 function SignInPage() {
   return (
-    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: 3, minHeight: '100vh' }}>
+      <Box component="img" src={companyLogo} alt="Upper Canada Specialty Hardware" sx={{ height: 96, display: 'block' }} />
       <SignIn routing="hash" />
     </Box>
   );
