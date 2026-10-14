@@ -156,7 +156,7 @@ Some behaviour that looks like a gap has been ruled intentional by the product o
 
 Demo mode (#1608) puts an account on made-up data in a reserved GP company, `DEMO` (`backend/app/demo.py`). Tenant scoping is what keeps it apart: a demo-mode account is pinned to `DEMO` by `tenant_scope`, and `DEMO` is never an assignable company. GP for `DEMO` is simulated in-process (`backend/app/services/demo_gp.py`); the relay gateway answers a `DEMO` call itself and never puts it on the socket. Demo POs and packing slips number from their own sequences (`PO-REQ-D…`, `PS-D…`).
 
-The starting state is built by `backend/app/services/demo_seed.py`, which runs the app's own GraphQL mutations as a demo identity, and reset (`demo_reset.py`) deletes every row that is `DEMO`'s or hangs off one, then reseeds. When a workflow changes shape, `tests/test_demo_mode.py` fails on the seed: fix the seed in the same change. When a new relay op is added, give the simulated GP an answer for it; the same test checks every relay op is covered.
+The starting state is built by `backend/app/services/demo_seed.py`, which runs the app's own GraphQL mutations as a demo identity, and reset (`demo_reset.py`) deletes every row that is `DEMO`'s or hangs off one, then reseeds. When a workflow changes shape, `tests/test_demo_mode.py` fails on the seed: fix the seed in the same change. When a new relay op is added, give the simulated GP an answer for it; the same test checks every relay op is covered. Every tab sends the company it believes it is in, and the backend refuses a request on the wrong side of the account's demo flag with `DEMO_MODE_CHANGED`, which makes the tab reload its user (#1633).
 
 ## Testing
 

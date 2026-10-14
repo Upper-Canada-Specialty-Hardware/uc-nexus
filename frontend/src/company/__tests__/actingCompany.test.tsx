@@ -196,7 +196,7 @@ describe('ActingCompanyProvider', () => {
     await waitFor(() => expect(resetStore).toHaveBeenCalledTimes(1));
   });
 
-  it('a scoped user is always in their own company and never sends the header', () => {
+  it('a scoped user is always in their own company and sends it, never another', () => {
     identity.isNexusAdmin = false;
     identity.company = 'TUBC';
     session.setItem(ACTING_COMPANY_STORAGE_KEY, 'UCSH');
@@ -206,11 +206,12 @@ describe('ActingCompanyProvider', () => {
     expect(result.current.acting.company).toBe('TUBC');
     expect(result.current.acting.canSwitch).toBe(false);
     expect(result.current.acting.companies).toEqual([]);
-    expect(readActingCompanyHeader()).toBeNull();
+    // #1633: their own company, so the backend can tell a tab on the wrong side of demo mode.
+    expect(readActingCompanyHeader()).toBe('TUBC');
 
     act(() => result.current.acting.setCompany('UCSH'));
     expect(result.current.acting.company).toBe('TUBC');
-    expect(readActingCompanyHeader()).toBeNull();
+    expect(readActingCompanyHeader()).toBe('TUBC');
   });
 
   it('survives storage that throws', async () => {

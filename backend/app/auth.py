@@ -40,8 +40,8 @@ from fastapi import Request
 from jwt import PyJWKSet
 
 from app.config import CLERK_SECRET_KEY
-from app.demo import DEMO_COMPANY, is_demo_company
-from app.errors import AppError, ValidationError
+from app.demo import DEMO_COMPANY, demo_reset_running, is_demo_company
+from app.errors import AppError, ConflictError, DemoModeChangedError, ValidationError
 from app.repositories import user_repository
 
 # The two halves of the retired "Admin/Manager" role (#729). That one string bundled an all-modules
@@ -370,6 +370,29 @@ def caller_demo_mode(context) -> bool:
     return cached
 
 
+_LEFT_DEMO_MODE = "Demo mode was turned off for your account in another tab or window. Reloading it here."
+_ENTERED_DEMO_MODE = "Demo mode was turned on for your account in another tab or window. Reloading it here."
+
+# The context flag the demo seed's own requests carry past a running reset (#1635).
+DEMO_SEEDING_KEY = "_demo_seeding"
+
+
+def _acting_company_header(context) -> str | None:
+    """The company the caller's tab says it is working in, normalized, or None when it sends none."""
+    request = context.get("request")
+    headers = getattr(request, "headers", None) or {}
+    raw = headers.get(ACTING_COMPANY_HEADER) or headers.get(ACTING_COMPANY_HEADER.lower())
+    return user_repository.normalize_company(raw)
+
+
+def _refuse_while_demo_resets(context) -> None:
+    """A request for the demo company while a reset is wiping and reseeding it is refused (#1635): what it
+    would read is half a company, and what it would write the seed is about to delete or trip over. The
+    seed's own requests carry `DEMO_SEEDING_KEY` past it."""
+    if demo_reset_running() and not context.get(DEMO_SEEDING_KEY):
+        raise ConflictError("The demo data is being reset. Wait a moment, then reload.", code="DEMO_RESETTING")
+
+
 def admin_acting_company(context) -> str | None:
     """The GP company a UC NEXUS ADMIN has chosen to work in, from the `X-Nexus-Company` header (#845),
     or None when the request carries none.
@@ -394,15 +417,13 @@ def admin_acting_company(context) -> str | None:
     from app.services import nexus_companies
 
     try:
-        request = context.get("request")
-        headers = getattr(request, "headers", None) or {}
-        raw = headers.get(ACTING_COMPANY_HEADER) or headers.get(ACTING_COMPANY_HEADER.lower())
-        company = user_repository.normalize_company(raw)
+        company = _acting_company_header(context)
         if is_demo_company(company):
             # #1608: an admin works in DEMO by being in demo mode, and the header is how their tab says
-            # so. Accepted from nobody else: the demo company is not one more company to switch to.
+            # so. Accepted from nobody else: the demo company is not one more company to switch to. A tab
+            # still sending it after demo mode was turned off elsewhere is told so by its own code (#1633).
             if not caller_demo_mode(context):
-                raise ValidationError("Turn on demo mode to work in the demo company.")
+                raise DemoModeChangedError(_LEFT_DEMO_MODE)
         elif company is not None and not nexus_companies.is_known_company(company):
             raise ValidationError(f"Unknown GP company '{company}'.")
     except AppError as e:
@@ -440,9 +461,21 @@ def tenant_scope(info, *, cross_tenant: bool = False) -> str | None:
     if NEXUS_ADMIN_ROLE in caller_roles(info.context):
         if cross_tenant:
             return None
-        return admin_acting_company(info.context)
-    if not cross_tenant and caller_demo_mode(info.context):
-        return DEMO_COMPANY
+        acting = admin_acting_company(info.context)
+        if is_demo_company(acting):
+            _refuse_while_demo_resets(info.context)
+        return acting
+    if not cross_tenant:
+        # #1633: everybody's tab sends the company it believes it is in. A scoped caller's header never
+        # widens what they reach, but a tab on the wrong side of demo mode is refused rather than shown the
+        # other side's rows under its own banner - a real company's, under a banner saying none is real.
+        sent = _acting_company_header(info.context)
+        in_demo = caller_demo_mode(info.context)
+        if sent is not None and is_demo_company(sent) != in_demo:
+            raise DemoModeChangedError(_ENTERED_DEMO_MODE if in_demo else _LEFT_DEMO_MODE)
+        if in_demo:
+            _refuse_while_demo_resets(info.context)
+            return DEMO_COMPANY
     company = caller_company(info.context)
     if not company:
         raise ForbiddenError("No company assigned to your account. Ask an admin to assign one.")

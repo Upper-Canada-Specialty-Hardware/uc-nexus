@@ -28,8 +28,9 @@ import base64
 import logging
 from datetime import date, timedelta
 
-from app.auth import TENANT_OWNER_ROLE, remember_display_name
+from app.auth import DEMO_SEEDING_KEY, TENANT_OWNER_ROLE, remember_display_name
 from app.demo import DEMO_BUYER_ID, DEMO_COMPANY
+from app.services.demo_gp import COST_CODE_MASTER
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,8 @@ def seed_context() -> dict:
         "_auth_roles": [TENANT_OWNER_ROLE],
         "_auth_company": DEMO_COMPANY,
         "_auth_demo_mode": True,
+        # Past the refusal every other demo request meets while a reset runs (#1635): the seed IS the reset.
+        DEMO_SEEDING_KEY: True,
     }
 
 
@@ -82,6 +85,12 @@ CLOSER = ("CLOSER", "4040XP RW/PA AL", "DEMOLCN", "LCN", 185.0, "SHOP_HARDWARE")
 LOCKSET = ("LOCKSET", "ND50PD RHO 626", "DEMOSCHLAGE", "Schlage", 240.0, "SHOP_HARDWARE")
 # Supplied by somebody else, so it is on the schedule and never ordered.
 WEATHERSTRIP = ("WSTRIP", "DOOR SEAL SET", None, "Pemko", 35.0, None)
+
+# The job cost code every demo PO books to, in the phase-step-element form the import wizard and the
+# register dialog carry it in - `210-100-2`, not `210-100` (#1630) - taken from the simulated GP's own
+# master so the two cannot disagree.
+_FINISH = next(c for c in COST_CODE_MASTER if c["cost_code"] == "210-100")
+DEMO_COST_CODE = f"{_FINISH['cost_code']}-{_FINISH['cost_element']}"
 
 VENDOR_NAMES = {
     "DEMOHAGER": "Demo Hager Hinges",
@@ -143,7 +152,7 @@ def _po_drafts(hardware: list[dict]) -> list[dict]:
     return [
         {
             "vendorName": VENDOR_NAMES[vendor],
-            "costCode": "210-100",
+            "costCode": DEMO_COST_CODE,
             "preferredDeliveryDate": (date.today() + timedelta(days=21)).isoformat(),
             "hardwareItemRefs": [
                 {
@@ -470,7 +479,7 @@ class _Demo:
                     "gpCompany": DEMO_COMPANY,
                     "buyerId": DEMO_BUYER_ID,
                     "projectId": self.projects[job],
-                    "costCode": "210-100",
+                    "costCode": DEMO_COST_CODE,
                     "shippingMethod": "LOCAL DELIVERY",
                     "vendorAddressCode": "PRIMARY",
                     "site": "MAIN",

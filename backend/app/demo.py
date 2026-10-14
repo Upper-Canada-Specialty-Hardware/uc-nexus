@@ -20,6 +20,8 @@ itself and never puts it on the socket, so nothing reaches a real GP.
 switcher, and is skipped by every loop that walks the relay's real companies.
 """
 
+import threading
+
 DEMO_COMPANY = "DEMO"
 
 # What GP calls the company, for the pickers that label a code with its name.
@@ -36,3 +38,14 @@ DEMO_MODE_METADATA_KEY = "demoMode"
 def is_demo_company(company: str | None) -> bool:
     """Whether `company` is the demo company. Normalized the way every company code is compared."""
     return (company or "").strip().upper() == DEMO_COMPANY
+
+
+# Set while a reset is wiping and reseeding the demo company (app/services/demo_reset.py). In-process on
+# purpose: the backend runs as one process - the relay socket lives in its memory - and the reset holds
+# its own advisory lock across the whole of it, so this is the same fact read without a query (#1635).
+_reset_running = threading.Event()
+
+
+def demo_reset_running() -> bool:
+    """Whether a demo reset is under way in this process."""
+    return _reset_running.is_set()

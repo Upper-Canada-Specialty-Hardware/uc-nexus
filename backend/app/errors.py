@@ -21,6 +21,17 @@ class ConflictError(AppError):
         super().__init__(message, code, field)
 
 
+class DemoModeChangedError(AppError):
+    """The tab asked for the demo company, or for a real one, and the account is on the other side (#1633).
+
+    Demo mode is a flag on the account, and a tab only learns it when it reloads the user, so a tab left
+    open while demo mode was turned on or off in another one asks for the wrong company. Its own code is
+    what tells the frontend to reload the user rather than show the refusal as a broken page."""
+
+    def __init__(self, message: str):
+        super().__init__(message, "DEMO_MODE_CHANGED")
+
+
 class GpSetupInvalidError(ConflictError):
     """This project's GP job is not set up well enough to act on (#425).
 

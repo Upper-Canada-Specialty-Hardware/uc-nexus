@@ -20,7 +20,7 @@ from sqlalchemy import func, select, text
 
 from app.auth import NEXUS_ADMIN_ROLE, TENANT_OWNER_ROLE, tenant_scope
 from app.demo import DEMO_COMPANY
-from app.errors import ValidationError
+from app.errors import ConflictError, DemoModeChangedError, ValidationError
 from app.repositories import user_repository
 from app.schemas import relay as relay_module
 from app.services import demo_gp, nexus_companies
@@ -61,7 +61,10 @@ def test_the_company_less_tools_keep_the_real_company_in_demo_mode():
 
 
 def test_a_scoped_account_cannot_reach_the_demo_company_by_header():
-    assert tenant_scope(_Info([TENANT_OWNER_ROLE], company="TUBC", header=DEMO_COMPANY)) == "TUBC"
+    # Refused, not answered with the account's own company (#1633): that answer was a real company's rows
+    # under a tab that still believed it was in demo mode.
+    with pytest.raises(DemoModeChangedError):
+        tenant_scope(_Info([TENANT_OWNER_ROLE], company="TUBC", header=DEMO_COMPANY))
 
 
 def test_an_admin_in_demo_mode_works_in_it_by_header():
@@ -69,8 +72,45 @@ def test_an_admin_in_demo_mode_works_in_it_by_header():
 
 
 def test_an_admin_out_of_demo_mode_is_refused_the_demo_company():
-    with pytest.raises(ValidationError, match="demo mode"):
+    # Its own code, so a tab still sending DEMO after demo mode was turned off elsewhere reloads (#1633).
+    with pytest.raises(DemoModeChangedError, match="turned off"):
         tenant_scope(_Info([NEXUS_ADMIN_ROLE], header=DEMO_COMPANY))
+
+
+def test_a_scoped_tab_left_in_demo_mode_is_refused_rather_than_shown_the_real_company():
+    # #1633: the account left demo mode in another tab; this one still shows the banner and sends DEMO.
+    # Before, the header was ignored and the real company's rows came back under the demo banner.
+    with pytest.raises(DemoModeChangedError, match="turned off"):
+        tenant_scope(_Info([TENANT_OWNER_ROLE], company="TUBC", header=DEMO_COMPANY))
+
+
+def test_a_scoped_tab_that_missed_demo_mode_turning_on_is_refused():
+    with pytest.raises(DemoModeChangedError, match="turned on"):
+        tenant_scope(_Info([TENANT_OWNER_ROLE], company="TUBC", demo=True, header="TUBC"))
+
+
+def test_a_scoped_tab_on_the_right_side_of_demo_mode_is_answered():
+    assert tenant_scope(_Info([TENANT_OWNER_ROLE], company="TUBC", header="TUBC")) == "TUBC"
+    assert tenant_scope(_Info([TENANT_OWNER_ROLE], company="TUBC", demo=True, header=DEMO_COMPANY)) == DEMO_COMPANY
+    # No header at all (a script, an old tab) is answered by the account alone, as before.
+    assert tenant_scope(_Info([TENANT_OWNER_ROLE], company="TUBC", demo=True)) == DEMO_COMPANY
+
+
+def test_the_demo_company_is_refused_while_a_reset_runs_except_to_the_seed(monkeypatch):
+    # #1635: half a company is not shown or written to; the seed itself goes through.
+    from app import demo
+    from app.auth import DEMO_SEEDING_KEY
+
+    monkeypatch.setattr(demo, "_reset_running", SimpleNamespace(is_set=lambda: True))
+    with pytest.raises(ConflictError, match="being reset"):
+        tenant_scope(_Info([TENANT_OWNER_ROLE], company="TUBC", demo=True))
+    with pytest.raises(ConflictError, match="being reset"):
+        tenant_scope(_Info([NEXUS_ADMIN_ROLE], demo=True, header=DEMO_COMPANY))
+    seeding = _Info([TENANT_OWNER_ROLE], company=DEMO_COMPANY, demo=True)
+    seeding.context[DEMO_SEEDING_KEY] = True
+    assert tenant_scope(seeding) == DEMO_COMPANY
+    # A real company is never held up by a demo reset.
+    assert tenant_scope(_Info([TENANT_OWNER_ROLE], company="TUBC")) == "TUBC"
 
 
 def test_the_demo_company_is_not_in_the_admin_switcher(monkeypatch):
@@ -294,6 +334,19 @@ def test_demo_numbering_leaves_the_real_sequences_alone(seeded):
         assert slips and all(n.startswith("PS-D") for n in slips)
 
 
+def test_seeded_drafts_carry_a_cost_code_the_job_offers(seeded):
+    # #1630: the register dialog matches a draft's code against GP's list as `code-element`; a bare
+    # `210-100` matched nothing, so every seeded draft opened in an error state.
+    from app.database import SessionLocal
+    from app.models.purchase_order import PurchaseOrder
+    from app.services.demo_gp import COST_CODE_MASTER
+
+    offered = {f"{c['cost_code']}-{c['cost_element']}" for c in COST_CODE_MASTER}
+    with SessionLocal() as session:
+        codes = set(session.scalars(select(PurchaseOrder.cost_code).where(PurchaseOrder.company == DEMO_COMPANY)))
+    assert codes and codes <= offered
+
+
 def test_the_seed_leaves_hardware_staged_for_shipping(seeded):
     # Read the way the Staging screen reads it, as a caller in the demo company.
     from app.services.demo_seed import Seeder
@@ -323,10 +376,23 @@ def test_a_reset_leaves_no_demo_row_and_no_real_row_behind(seeded):
         real_id = real.id
         try:
             assert demo_reset.demo_rows(session)
+            # The seed's GP-first writes left ledger rows for the demo company; a real one stays (#1635).
+            from app.models.gp_write import GpWriteIdempotency
+
+            demo_ledger = (
+                select(func.count())
+                .select_from(GpWriteIdempotency)
+                .where(GpWriteIdempotency.relay_result["company"].as_string() == DEMO_COMPANY)
+            )
+            assert session.scalar(demo_ledger) > 0
+            session.add(GpWriteIdempotency(key="real-ledger-row", op="create_po", relay_result={"company": "TUBC"}))
+            session.flush()
             demo_reset.wipe(session)
             session.flush()
             assert demo_reset.demo_rows(session) == {}
             assert session.scalar(select(func.count()).select_from(DemoGpRecord)) == 0
+            assert session.scalar(demo_ledger) == 0
+            assert session.get(GpWriteIdempotency, "real-ledger-row") is not None
             assert session.get(Project, real_id) is not None
         finally:
             session.rollback()
@@ -357,3 +423,19 @@ def test_a_seed_that_fails_part_way_leaves_nothing_behind(_migrate_database, mon
         asyncio.run(demo_reset.reset())
     # Nothing half-built is left, so the next first entry seeds from the start.
     assert not demo_reset.has_demo_data()
+
+
+def test_the_full_reset_is_refused_from_demo_mode(monkeypatch):
+    # #1634: it wipes every real company, and from demo mode the reset anybody means is the demo one.
+    from fastapi.testclient import TestClient
+
+    import app.config
+    import main
+
+    monkeypatch.setattr(app.config, "TESTING_ENABLED", True, raising=False)
+    admin = {"user_id": "u_admin", "roles": [NEXUS_ADMIN_ROLE]}
+    monkeypatch.setattr(main, "require_admin_request", lambda request: admin)
+    monkeypatch.setattr(user_repository, "get_user_demo_mode", lambda user_id: True)
+    resp = TestClient(main.app).post("/admin/reset-data")
+    assert resp.status_code == 403
+    assert "demo mode" in resp.json()["error"]

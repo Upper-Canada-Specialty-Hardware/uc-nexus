@@ -3,6 +3,7 @@ import { useApolloClient, useMutation } from '@apollo/client/react';
 import { RESET_DEMO_DATA, SET_MY_DEMO_MODE } from '../graphql/demo';
 import { userMessage } from '../graphql/userMessage';
 import { useIdentity } from '../hooks/useIdentity';
+import { announceDemoModeChange } from './demoSync';
 import { useToast } from '../components/Toast';
 
 /**
@@ -29,6 +30,8 @@ export function useDemoMode() {
       try {
         await setMyDemoMode({ variables: { enabled } });
         await user?.reload();
+        // #1633: every other open tab reloads too, rather than stay on the side this one just left.
+        announceDemoModeChange();
         showToast(
           enabled
             ? 'Demo mode is on. Everything you see is made up, and GP is simulated.'

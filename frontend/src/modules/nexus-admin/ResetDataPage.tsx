@@ -24,7 +24,7 @@ interface Outcome {
 }
 
 export default function ResetDataPage() {
-  const { isNexusAdmin } = useIdentity();
+  const { isNexusAdmin, demoMode } = useIdentity();
   const { showToast } = useToast();
 
   const [phrase, setPhrase] = useState('');
@@ -96,16 +96,35 @@ export default function ResetDataPage() {
     );
   }
 
+  const header = (
+    <FadeIn>
+      <PageHeader
+        title="Reset data"
+        parent={{ label: 'UC Nexus Admin', to: '/app/nexus-admin' }}
+        allCompanies
+        description="Empty this deployment's Nexus data and start it again from its setup and from GP."
+      />
+    </FadeIn>
+  );
+
+  // #1634: this empties every real company, and from demo mode the reset anybody means is the demo one,
+  // which is on the banner. The server refuses it from demo mode as well.
+  if (demoMode) {
+    return (
+      <Box>
+        {header}
+        <Alert severity="info">
+          You are in demo mode, so this reset is not available here: it empties every real company&apos;s
+          data, not the demo company&apos;s. To put the demo data back to its starting state, use Reset demo
+          data on the demo banner. To reset all Nexus data, leave demo mode first.
+        </Alert>
+      </Box>
+    );
+  }
+
   return (
     <Box>
-      <FadeIn>
-        <PageHeader
-          title="Reset data"
-          parent={{ label: 'UC Nexus Admin', to: '/app/nexus-admin' }}
-          allCompanies
-          description="Empty this deployment's Nexus data and start it again from its setup and from GP."
-        />
-      </FadeIn>
+      {header}
 
       {/* Two panels rather than one long column: what the reset does is read once, and the procedure
           beside it is what the page is opened for. They stack on a narrow screen. */}

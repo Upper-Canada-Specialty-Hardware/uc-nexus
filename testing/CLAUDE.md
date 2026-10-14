@@ -318,6 +318,16 @@ caught two failures that all three stacked PRs were reporting as clean:
   legitimately shows Backend as skipped. A change to `ci.yml` and every push to master run
   everything, and so does a failed `Changes` job.
 
+### Demo mode (#1608)
+
+Demo mode puts an account on made-up data in the reserved company `DEMO`, with GP simulated in-process, so a demo walk needs no relay and writes nothing to GP. Anybody turns it on and off from the user menu or the banner; an admin or tenant owner resets it from the banner.
+
+- **Turning it on moves the tab, not the switcher.** The banner appears, every request carries `X-Nexus-Company: DEMO`, and the company switcher is gone. Scripted reads send `DEMO` the same way; a request on the wrong side of the account's flag is refused with `DEMO_MODE_CHANGED` and the tab reloads its user (#1633).
+- **Other tabs follow.** Turning demo mode on or off tells every open tab of the browser to reload its user. A tab the broadcast missed catches up on its next request.
+- **Reset is the starting state.** Reset demo data wipes every DEMO row and reseeds (~7s); requests for DEMO meanwhile get a `DEMO_RESETTING` conflict. The full Reset data page is refused from demo mode.
+- **What the seed leaves to try:** Office Retrofit (DEMO-1004) has no schedule - in demo mode the import wizard offers a made-up sample schedule for it. Tower A has staged hardware waiting to load (A105), an accepted request with its pull not started (A109) and A110 free to request; seeded draft POs register as they stand.
+- **An admin request with no company header is unscoped and includes DEMO rows** (the `None` scope contract, #845). The app always sends the header, so this only shows in a script that forgets it.
+
 ## Getting Started (Every Session)
 
 1. **Confirm the change is on production.** The PR is merged, master CI is green, and the newest

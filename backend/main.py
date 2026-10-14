@@ -634,10 +634,24 @@ def reset_data(request: Request):
         return JSONResponse(status_code=403, content={"error": "Data reset is not enabled on this deployment"})
 
     try:
-        require_admin_request(request)
+        caller = require_admin_request(request)
     except AppError as e:
         status = 403 if e.code == "FORBIDDEN" else 401
         return JSONResponse(status_code=status, content={"error": str(e), "code": e.code})
+
+    # #1634: from demo mode the only reset a caller means is the demo one, and this one wipes every real
+    # company too. Asked of Clerk directly - a plain route has no request context to read the flag from.
+    from app.repositories import user_repository
+
+    if caller and user_repository.get_user_demo_mode(caller["user_id"]):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": "You are in demo mode. Leave demo mode to reset all Nexus data; to reset the demo "
+                "data, use Reset demo data on the demo banner.",
+                "code": "FORBIDDEN",
+            },
+        )
 
     # #1319: one reset at a time. Two overlapping resets interleaved their snapshot, drop, upgrade and
     # restore: the second snapshot could read a half-rebuilt schema, and its drop could land under the

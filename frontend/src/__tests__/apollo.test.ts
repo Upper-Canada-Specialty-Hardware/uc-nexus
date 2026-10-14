@@ -209,7 +209,7 @@ describe('acting company header (#845)', () => {
     expect(seen).toEqual(['TUBC']);
   });
 
-  it('never sends it when there is no acting company to send - every scoped user', async () => {
+  it('never sends it when there is no acting company to send - an unassigned account', async () => {
     publishAuthBridge({ isLoaded: true, isSignedIn: true, getToken: vi.fn(async () => 'good') });
     publishActingCompanyHeader(null);
     const { link, seen } = companyBackend();
@@ -229,6 +229,30 @@ describe('acting company header (#845)', () => {
     await run(link);
 
     expect(seen).toEqual(['TUBC', 'UCSH']);
+  });
+});
+
+describe('demo mode changed elsewhere (#1633)', () => {
+  it('asks the tab to reload its user when the backend says it is on the wrong side', async () => {
+    publishAuthBridge({ isLoaded: true, isSignedIn: true, getToken: vi.fn(async () => 'good') });
+    const heard = vi.fn();
+    window.addEventListener('uc-nexus:refresh-identity', heard);
+    const link = new ApolloLink(
+      () =>
+        new Observable<ApolloLink.Result>((observer) => {
+          observer.next({
+            data: null,
+            errors: [{ message: 'Demo mode was turned off', extensions: { code: 'DEMO_MODE_CHANGED' } }],
+          } as unknown as ApolloLink.Result);
+          observer.complete();
+        }),
+    );
+    try {
+      await run(link).catch(() => {});
+      expect(heard).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener('uc-nexus:refresh-identity', heard);
+    }
   });
 });
 

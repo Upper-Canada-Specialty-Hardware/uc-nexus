@@ -916,12 +916,24 @@ export default function GpPurchaseOrderDialog({
     [],
   );
 
+  // #1631: a field's error is about the value it held at the last submit; once the field changes, that
+  // error no longer describes it, so it goes rather than staying red over a valid pick.
+  const clearError = useCallback((field: string) => {
+    setErrors((prev) => {
+      if (!(field in prev)) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+  }, []);
+
   // One pick above the grid fills every line GP will book to the job, which is how a PO whose lines
   // all book to the same code is entered without touching each row.
   const handleAllLinesCostCode = useCallback((value: string) => {
     setCostCode(value);
+    clearError('costCode');
     setLineItems((prev) => prev.map((li) => (li.jobCost ? { ...li, costCode: value } : li)));
-  }, []);
+  }, [clearError]);
 
   /**
    * #833: put rows pasted from a spreadsheet onto the grid. They are free text - never matched to the
@@ -1889,7 +1901,10 @@ export default function GpPurchaseOrderDialog({
           <GpPickField
             label="Site"
             value={effectiveSite}
-            onChange={setSite}
+            onChange={(value) => {
+              setSite(value);
+              clearError('site');
+            }}
             options={sites.map((st) => ({
               value: st.code,
               label: st.description ? `${st.code} · ${st.description}` : st.code,

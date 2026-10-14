@@ -26,10 +26,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, engine
-from app.demo import DEMO_COMPANY
+from app.demo import DEMO_COMPANY, _reset_running
 from app.errors import ConflictError
 from app.models import Base
 from app.models.audit_log import InventoryAuditLog
+from app.models.gp_write import GpWriteIdempotency
 from app.models.project import Project
 from app.models.purchase_order import PODocument
 from app.services import demo_gp, storage
@@ -165,6 +166,17 @@ def wipe(session: Session) -> dict[str, int]:
         counts[audit.name] = (
             counts.get(audit.name, 0) + session.execute(delete(audit).where(audit.c.entity_id.in_(doomed_ids))).rowcount
         )
+    # The GP-first write ledger has no company column and no foreign key - its rows are keyed by the
+    # caller's own idempotency key - so the walk above never reaches it (#1635). A demo row is one the
+    # simulated GP answered, which names its company, or one whose result is a row deleted above.
+    ledger = GpWriteIdempotency.__table__
+    demo_answer = ledger.c.relay_result["company"].as_string() == DEMO_COMPANY
+    doomed_result_ids = {str(i) for i in doomed_ids}
+    counts[ledger.name] = session.execute(
+        delete(ledger).where(
+            or_(demo_answer, ledger.c.result_id.in_(doomed_result_ids)) if doomed_result_ids else demo_answer
+        )
+    ).rowcount
     counts["demo_gp_records"] = demo_gp.wipe(session)
     return {name: n for name, n in counts.items() if n}
 
@@ -227,6 +239,9 @@ async def reset(*, only_if_empty: bool = False) -> bool:
     try:
         if only_if_empty and await asyncio.to_thread(has_demo_data):
             return False
+        # Held up to the end of the seed: every other request for the demo company is refused meanwhile
+        # (app.auth._refuse_while_demo_resets), so nobody reads half a company or writes into one (#1635).
+        _reset_running.set()
         counts = await asyncio.to_thread(_wipe_committed)
         logger.info("demo reset: wiped %s", counts)
         try:
@@ -241,4 +256,5 @@ async def reset(*, only_if_empty: bool = False) -> bool:
         logger.info("demo reset: seeded")
         return True
     finally:
+        _reset_running.clear()
         await asyncio.to_thread(_release_lock, lock)
