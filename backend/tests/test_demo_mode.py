@@ -347,6 +347,31 @@ def test_seeded_drafts_carry_a_cost_code_the_job_offers(seeded):
     assert codes and codes <= offered
 
 
+def test_the_waiting_shop_request_can_be_batched_as_it_stands(seeded):
+    # #1649: read the way the batch review reads it. Every opening of the request nobody has started has
+    # its shop hardware free, so Create batch is open the moment a demo user opens it.
+    from app.services.demo_seed import Seeder
+
+    async def _review():
+        s = Seeder()
+        waiting = (await s.gql("{ shopAssemblyRequests(status: PENDING) { id requestNumber } }"))[
+            "shopAssemblyRequests"
+        ]
+        assert waiting
+        review = await s.gql(
+            "query R($id: ID!) { shopAssemblyAllocationReview(requestId: $id) { openings { openingNumber"
+            " lines { requestedQuantity availableQuantity notShopWorkReason } } } }",
+            id=waiting[0]["id"],
+        )
+        return review["shopAssemblyAllocationReview"]["openings"]
+
+    openings = asyncio.run(_review())
+    assert openings
+    for opening in openings:
+        shop_lines = [ln for ln in opening["lines"] if not ln["notShopWorkReason"]]
+        assert shop_lines and all(ln["availableQuantity"] >= ln["requestedQuantity"] for ln in shop_lines), opening
+
+
 def test_the_seed_leaves_hardware_staged_for_shipping(seeded):
     # Read the way the Staging screen reads it, as a caller in the demo company.
     from app.services.demo_seed import Seeder

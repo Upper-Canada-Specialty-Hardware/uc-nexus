@@ -760,14 +760,17 @@ async def seed() -> None:
     await demo.shelf_work(tower)
 
     # Hospital Wing: POs on their way - partially received, vendor confirmed, a count to approve - and a
-    # shop request nobody has started.
+    # shop request nobody has started. Its shop hardware (closers, locksets) is on the shelf, so the
+    # request can be batched as it stands (#1649); what is still on its way is site hardware.
     hospital = "DEMO-1002"
     await demo.import_schedule(hospital, "H2", 6, 1, 3)
     for vendor in list(demo.pos[hospital]):
         await demo.register(hospital, vendor)
+    await demo.receive(hospital, "DEMOLCN")
+    await demo.receive(hospital, "DEMOSCHLAGE")
     await demo.receive(hospital, "DEMOHAGER", fraction=0.5)
-    await demo.receive(hospital, "DEMOLCN", approve=False)
-    await demo.vendor_confirm(hospital, "DEMOSCHLAGE")
+    await demo.receive(hospital, "DEMOIVES", approve=False)
+    await demo.vendor_confirm(hospital, "DEMOVONDUP")
 
     # East High School: just imported - requests still to register, one cancelled, a rejected count, and
     # its shop request turned down.
