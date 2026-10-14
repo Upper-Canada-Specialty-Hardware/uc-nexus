@@ -19,7 +19,7 @@ import {
   Checkbox,
   FormControlLabel,
 } from '@mui/material';
-import { CheckCircle2, CloudUpload, FileText, FileUp, History, X } from 'lucide-react';
+import { CheckCircle2, CloudUpload, FileText, FileUp, FlaskConical, History, X } from 'lucide-react';
 import { checkJobNumber } from './jobNumberCheck';
 import { useLazyQuery, useMutation, useQuery } from '@apollo/client/react';
 import { useWizard } from '../../contexts/WizardContext';
@@ -76,6 +76,8 @@ import type { ProjectHardwareScheduleResponse } from './hydrateSchedule';
 import { seedScheduleClassifications } from './scheduleClassificationSeed';
 import { exclusionsBlockFinalize as blocksFinalize, type ExclusionsPrefill } from './exclusionsGate';
 import { mapScheduleResponseToParseResult } from './hydrateSchedule';
+import { DEMO_COMPANY } from '../../demo/demoMode';
+import { SAMPLE_SCHEDULE_OPENING_COUNT, demoSampleScheduleFile } from '../../demo/sampleSchedule';
 import { sendsScheduleReplace } from './replaceDecision';
 import { isDoorFrameItem } from '../../types/hardwareSchedule';
 import SelectOpeningsStep from './SelectOpeningsStep';
@@ -1441,7 +1443,9 @@ export default function ImportWizard({
 
   // #855: a file for another job holds step 1 until the user says, on purpose, to import it here. The
   // confirmation belongs to the parsed file itself, so a new upload asks again without a reset effect.
-  const jobCheck = checkJobNumber(parsed?.project?.submittal_job_no, project.projectId);
+  // #1636: the check is about an uploaded file. The project's own stored schedule is its own by
+  // definition, and carries no job number to read, so it was always "can't be checked".
+  const jobCheck = hydratedFromPersisted ? 'match' : checkJobNumber(parsed?.project?.submittal_job_no, project.projectId);
   const mismatchConfirmed = parsed != null && mismatchConfirmedFor === parsed;
   const canProceedStep0 = parser.state === 'done' && (jobCheck !== 'mismatch' || mismatchConfirmed);
   const canProceedStep2 = selectedOpenings.size > 0;
@@ -1633,6 +1637,29 @@ export default function ImportWizard({
                 <Box sx={{ mt: 3, display: 'flex', justifyContent: 'center', py: 4 }}>
                   <CircularProgress />
                 </Box>
+              )}
+
+              {/* #1637: in demo mode there is no TITAN export to hand, so a made-up one is offered, stamped
+                  with this project's number. It is parsed exactly like an uploaded file. */}
+              {parser.state === 'idle' && !scheduleLoading && project.company === DEMO_COMPANY && (
+                <Alert
+                  severity="info"
+                  icon={<FlaskConical size={18} strokeWidth={1.75} />}
+                  sx={{ mb: 2, flexWrap: 'wrap', '& .MuiAlert-message': { minWidth: 0, flex: '1 1 260px' } }}
+                  action={
+                    <Button
+                      color="inherit"
+                      size="small"
+                      variant="outlined"
+                      onClick={() => handleFileSelect(demoSampleScheduleFile(project.projectId))}
+                    >
+                      Use the demo sample schedule
+                    </Button>
+                  }
+                >
+                  No TITAN file to hand? Use a made-up one: {SAMPLE_SCHEDULE_OPENING_COUNT} openings for{' '}
+                  {project.projectId}, from the demo company&apos;s own catalog.
+                </Alert>
               )}
 
               {parser.state === 'idle' && canStartFromLatest && !scheduleLoading && (

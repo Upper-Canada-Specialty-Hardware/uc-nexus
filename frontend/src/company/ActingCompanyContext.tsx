@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useApolloClient, useQuery } from '@apollo/client/react';
 import { GET_NEXUS_COMPANIES } from '../graphql/shared';
+import { useDemoModeSync } from '../demo/demoSync';
 import { useIdentity } from '../hooks/useIdentity';
 import type { GpCompany } from '../relay/useRelayStatus';
 import {
@@ -42,7 +43,10 @@ const ActingCompanyContext = createContext<ActingCompanyState | null>(null);
  * a switch) and ClerkProvider (it reads the identity).
  */
 export function ActingCompanyProvider({ children }: { children: ReactNode }) {
-  const { isNexusAdmin, company: own, demoMode } = useIdentity();
+  const { isNexusAdmin, company: own, demoMode, user } = useIdentity();
+  // #1633: a change of demo mode in another tab, or the backend saying this tab is on the wrong side of
+  // it, reloads the user - which moves `own` and so the company below.
+  useDemoModeSync(user);
   // #1608: an admin in demo mode works in the demo company and nowhere else, so there is nothing to
   // switch between; the switcher's own rules apply again the moment demo mode is turned off.
   const switching = isNexusAdmin && !demoMode;
@@ -65,9 +69,10 @@ export function ActingCompanyProvider({ children }: { children: ReactNode }) {
   // Published during render, not in an effect: child effects run before this component's, and a page
   // whose query subscribes first would otherwise go out without the header - unscoped, every company
   // mixed together. The assignment is idempotent, so a re-render repeating it is harmless.
-  // #1608: anybody in demo mode sends it too. The backend pins a scoped user without it, but the polled
-  // relay status reads it to answer for the simulated GP without asking Clerk who is calling.
-  publishActingCompanyHeader(isNexusAdmin || demoMode ? company : null);
+  // #1608 / #1633: everybody sends it - a scoped user's own company, or the demo one. It never widens what
+  // a scoped user reaches; it is how the backend tells a tab on the wrong side of demo mode to catch up,
+  // and how the polled relay status answers for the simulated GP without asking Clerk who is calling.
+  publishActingCompanyHeader(company);
 
   // A switch (or the list correcting a stored pick it no longer holds) empties the cache and refetches
   // what is on screen, so no row from the previous company lingers beside the new one. The first

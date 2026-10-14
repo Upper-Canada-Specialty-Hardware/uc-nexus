@@ -30,9 +30,19 @@ export default function DemoBanner() {
       <Alert
         severity="warning"
         icon={<FlaskConical size={18} strokeWidth={1.75} />}
-        sx={{ borderRadius: 0, py: 0, alignItems: 'center', '& .MuiAlert-message': { minWidth: 0 } }}
+        // #1632: the text and the buttons wrap rather than run past the viewport, where the page's
+        // overflow-x clip hid part of Leave demo mode on a narrow window. The message takes the row's
+        // slack; on a narrow screen the buttons drop under it, right-aligned.
+        sx={{
+          borderRadius: 0,
+          py: 0,
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          '& .MuiAlert-message': { minWidth: 0, flex: '1 1 260px' },
+          '& .MuiAlert-action': { ml: 'auto', pl: 0, py: 0.5 },
+        }}
         action={
-          <Box sx={{ display: 'flex', gap: 1, flexShrink: 0 }}>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 1 }}>
             {canReset && (
               <Button color="inherit" size="small" disabled={busy} onClick={() => setConfirming(true)}>
                 Reset demo data

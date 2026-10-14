@@ -1064,3 +1064,29 @@ describe('ImportWizard leaving with work', () => {
     expect(await screen.findByRole('button', { name: 'Select All' }, { timeout: 10_000 })).toBeInTheDocument();
   });
 });
+
+describe('demo mode sample schedule (#1637)', () => {
+  it('offers a demo project a made-up schedule, parsed like any uploaded file', async () => {
+    const parseFile = vi.fn();
+    mockedUseParser.mockReturnValue(
+      makeParser({ state: 'idle', parseResult: null, parseFile, progress: { percent: 0, phase: '' } }),
+    );
+    renderWizard({ project: { ...firstImportProject, company: 'DEMO', projectId: 'DEMO-1004' }, purpose: 'schedule' });
+    await flushApollo();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use the demo sample schedule' }));
+    expect(parseFile).toHaveBeenCalledTimes(1);
+    const file = parseFile.mock.calls[0][0] as File;
+    expect(file.name).toBe('DEMO-1004-demo-sample-schedule.xml');
+  });
+
+  it("is not offered on a real company's project", async () => {
+    mockedUseParser.mockReturnValue(
+      makeParser({ state: 'idle', parseResult: null, progress: { percent: 0, phase: '' } }),
+    );
+    renderWizard({ purpose: 'schedule' });
+    await flushApollo();
+
+    expect(screen.queryByRole('button', { name: 'Use the demo sample schedule' })).not.toBeInTheDocument();
+  });
+});

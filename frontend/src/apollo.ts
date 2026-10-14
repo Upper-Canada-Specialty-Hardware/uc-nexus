@@ -10,6 +10,7 @@ import {
   shouldSuspendQuery,
 } from './authBridge';
 import { ACTING_COMPANY_HEADER, readActingCompanyHeader } from './company/actingCompany';
+import { DEMO_MODE_CHANGED, requestIdentityRefresh } from './demo/demoSync';
 
 const httpLink = new HttpLink({
   uri: import.meta.env.VITE_GRAPHQL_URL || '/graphql',
@@ -112,8 +113,8 @@ const authLink = new ApolloLink((operation, forward) => {
         delete headers.Authorization;
         if (token) headers.Authorization = `Bearer ${token}`;
         // #845: the GP company a UC NEXUS ADMIN is working in. Read on every attempt, so a replay
-        // after a switch goes out in the new company. Null for every
-        // scoped user, who never sends it: their company is their assignment, not a header.
+        // after a switch goes out in the new company. A scoped user sends their own, or the demo one
+        // (#1633): it never widens what they reach, and it lets the backend say the tab is stale.
         delete headers[ACTING_COMPANY_HEADER];
         const actingCompany = readActingCompanyHeader();
         if (actingCompany) headers[ACTING_COMPANY_HEADER] = actingCompany;
@@ -123,6 +124,8 @@ const authLink = new ApolloLink((operation, forward) => {
         next: (result) => {
           // Any answer that is not a sign-in refusal proves the session works again (#1329).
           if (isAuthLapsed() && !carriesUnauthenticated(result)) markAuthRecovered();
+          // #1633: demo mode changed for this account elsewhere; reload the user so the tab catches up.
+          if ((result.errors ?? []).some((e) => e.extensions?.code === DEMO_MODE_CHANGED)) requestIdentityRefresh();
           observer.next(result);
         },
         error: (e) => observer.error(e),

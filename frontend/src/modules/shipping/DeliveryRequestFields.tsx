@@ -106,7 +106,12 @@ export default function DeliveryRequestFields({
                 ? 'No shipment methods have been set up yet - add them from the Shipping module.'
                 : undefined
             }
-            slotProps={{ select: { displayEmpty: true } }}
+            // displayEmpty renders "(none)" in the field, so the label has to sit above it rather than on
+            // top of it (#1650) - the same shrink the date fields beside it take.
+            slotProps={{
+              select: { displayEmpty: true },
+              inputLabel: shipmentMethods.length > 0 ? { shrink: true } : undefined,
+            }}
           >
             {shipmentMethods.length > 0 && <MenuItem value="">(none)</MenuItem>}
             {/* A slip booked under a method that has since been retired keeps showing it, or the

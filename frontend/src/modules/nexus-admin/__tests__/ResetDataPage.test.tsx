@@ -10,7 +10,7 @@ import { publishAuthBridge, resetAuthBridge } from '../../../authBridge';
  * opening it and a request that empties the database.
  */
 
-const identity = vi.hoisted(() => ({ isNexusAdmin: true }));
+const identity = vi.hoisted(() => ({ isNexusAdmin: true, demoMode: false }));
 
 vi.mock('../../../hooks/useIdentity', () => ({
   useIdentity: () => ({
@@ -19,6 +19,7 @@ vi.mock('../../../hooks/useIdentity', () => ({
     roles: identity.isNexusAdmin ? ['UC Nexus Admin'] : ['Tenant Owner'],
     hasRole: (role: string) => identity.isNexusAdmin && role === 'UC Nexus Admin',
     isNexusAdmin: identity.isNexusAdmin,
+    demoMode: identity.demoMode,
     isTenantOwner: !identity.isNexusAdmin,
     ownsTenant: true,
     isDbAdmin: false,
@@ -34,6 +35,7 @@ let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   identity.isNexusAdmin = true;
+  identity.demoMode = false;
   // The page attaches the Clerk token by hand, off the same bridge the Apollo auth link reads.
   publishAuthBridge({ isLoaded: true, isSignedIn: true, getToken: async () => 'session-token' });
   fetchMock = vi.fn(async () => ({
@@ -166,4 +168,13 @@ test('the reset mints a fresh token rather than reusing a cached one (#1331)', a
     method: 'POST',
     headers: { Authorization: 'Bearer fresh-token' },
   });
+});
+
+// #1634: from demo mode the reset that empties every real company is not offered at all.
+it('offers no reset from demo mode and points at the demo reset instead', () => {
+  identity.demoMode = true;
+  renderPage();
+  expect(screen.getByText(/You are in demo mode/)).toBeInTheDocument();
+  expect(screen.queryByLabelText('Confirmation phrase')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Reset data' })).not.toBeInTheDocument();
 });
