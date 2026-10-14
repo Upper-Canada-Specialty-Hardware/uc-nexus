@@ -1,4 +1,5 @@
-import { Document, Page, Text, View, StyleSheet } from '@react-pdf/renderer';
+import { Document, Page, Text, View, Image, StyleSheet } from '@react-pdf/renderer';
+import { COMPANY_LOGO_PDF } from '../../assets/brand/companyLogoPdf';
 import type { DeliveryRequestValues } from './deliveryRequest';
 import { parseServerDay } from '../../utils/serverDate';
 
@@ -18,10 +19,7 @@ const styles = StyleSheet.create({
   page: { fontFamily: 'Helvetica', fontSize: 8, paddingVertical: 28, paddingHorizontal: 30, color: BLACK },
 
   headerRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 10 },
-  logoBox: { borderWidth: 1, borderColor: BLACK, width: 84, paddingVertical: 4, alignItems: 'center' },
-  logoMark: { fontFamily: 'Helvetica-Bold', fontSize: 20, letterSpacing: 1 },
-  logoRule: { borderBottomWidth: 1, borderBottomColor: BLACK, width: 66, marginVertical: 3 },
-  logoWord: { fontFamily: 'Helvetica-Bold', fontSize: 7, letterSpacing: 0.5 },
+  logo: { width: 96, height: 62 },
   titleWrap: { flex: 1, alignItems: 'center', paddingTop: 14 },
   title: { fontFamily: 'Helvetica-Bold', fontSize: 15 },
   titleSlip: { fontSize: 7.5, marginTop: 4 },
@@ -212,11 +210,7 @@ export default function DeliveryRequestDocument({
     <Document>
       <Page size="A4" style={styles.page}>
         <View style={styles.headerRow}>
-          <View style={styles.logoBox}>
-            <Text style={styles.logoMark}>UC</Text>
-            <View style={styles.logoRule} />
-            <Text style={styles.logoWord}>HARDWARE INC.</Text>
-          </View>
+          <Image src={COMPANY_LOGO_PDF} style={styles.logo} />
           <View style={styles.titleWrap}>
             <Text style={styles.title}>Delivery Request</Text>
             {/* The shipment this paper belongs to. Not in the SALES ORDER NUMBER box: that is a GP
