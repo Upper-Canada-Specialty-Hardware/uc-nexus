@@ -225,10 +225,13 @@ def seeded(_migrate_database):
     """Reset the demo company once for the module, with storage stood in for (the packing slips and
     acknowledgements the seed uploads), and wipe it again afterwards."""
     from app.database import SessionLocal
+    from app.repositories import demo_snapshot_repository
     from app.services import demo_reset, storage
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(user_repository, "get_user_demo_mode", lambda user_id: False)
+        # The made-up seed alone, whatever legacy export this database has stored (#1638 tests that one).
+        mp.setattr(demo_snapshot_repository, "rows", lambda session: [])
         mp.setattr(storage, "upload_file", lambda key, data, content_type, **kw: key)
         mp.setattr(storage, "delete_file", lambda key: None)
         with SessionLocal() as session:

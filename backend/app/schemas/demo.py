@@ -5,7 +5,9 @@ Who may do what was ruled on the issue:
   - every signed-in user turns demo mode on and off for themselves (`setMyDemoMode`), with no admin
     involved (#1629, replacing #1617's tenant-owner-only rule);
   - a UC NEXUS ADMIN turns it on or off for any account (`updateUserDemoMode`);
-  - a TENANT OWNER or UC NEXUS ADMIN who is in demo mode resets the demo company (`resetDemoData`).
+  - a TENANT OWNER or UC NEXUS ADMIN who is in demo mode resets the demo company (`resetDemoData`);
+  - a UC NEXUS ADMIN loads the legacy inventory export the demo warehouse is seeded from
+    (`uploadDemoInventorySnapshot`, #1638). It is the company's real data, so only an admin handles it.
 
 Turning demo mode on seeds the demo company the first time anybody does, so there is always a starting
 state to walk into.
@@ -18,14 +20,43 @@ import strawberry
 from app.auth import (
     ForbiddenError,
     current_user,
+    resolve_display_name,
     tenant_scope,
 )
+from app.database import SessionLocal
 from app.demo import DEMO_COMPANY
-from app.repositories import user_repository
-from app.services import demo_reset
+from app.errors import ValidationError
+from app.models.demo_inventory_snapshot import DemoInventorySnapshot
+from app.repositories import demo_snapshot_repository, user_repository
+from app.services import demo_reset, demo_snapshot
 
 from .converters import clerk_user_to_type
-from .types import ClerkUser
+from .types import ClerkUser, DemoInventorySnapshotSummary
+
+
+def _summary(snapshot: DemoInventorySnapshot) -> DemoInventorySnapshotSummary:
+    rows = [demo_snapshot.SnapshotRow.from_dict(r) for r in snapshot.rows]
+    entries = demo_snapshot.inventory_entries(rows)
+    return DemoInventorySnapshotSummary(
+        file_name=snapshot.file_name,
+        uploaded_by=snapshot.uploaded_by,
+        uploaded_at=snapshot.uploaded_at,
+        row_count=snapshot.row_count,
+        project_units=sum(e.quantity for e in entries if e.project_number),
+        pool_units=sum(e.quantity for e in entries if not e.project_number),
+        project_count=len(demo_snapshot.ongoing_projects(rows)),
+        schedule_count=len(demo_snapshot.schedules(rows)),
+    )
+
+
+@strawberry.type
+class DemoQueries:
+    @strawberry.field
+    def demo_inventory_snapshot(self, info: strawberry.Info) -> DemoInventorySnapshotSummary | None:
+        """UC NEXUS ADMIN: the stored export the demo warehouse is seeded from, or null when none is."""
+        with SessionLocal() as session:
+            snapshot = demo_snapshot_repository.current(session)
+            return _summary(snapshot) if snapshot else None
 
 
 @strawberry.type
@@ -59,3 +90,20 @@ class DemoMutations:
             raise ForbiddenError("Turn on demo mode to reset the demo data.")
         await demo_reset.reset()
         return True
+
+    @strawberry.mutation
+    def upload_demo_inventory_snapshot(
+        self, info: strawberry.Info, file_name: str, csv_text: str
+    ) -> DemoInventorySnapshotSummary:
+        """UC NEXUS ADMIN: store the legacy inventory export (#1638), replacing the one stored. Only what
+        the seed reads is kept. The demo data is not touched until its next reset, which seeds from it."""
+        actor = resolve_display_name(current_user(info)["user_id"])
+        try:
+            rows = demo_snapshot.parse_csv(csv_text)
+        except demo_snapshot.SnapshotError as e:
+            raise ValidationError(str(e), field="csvText") from e
+        with SessionLocal() as session:
+            snapshot = demo_snapshot_repository.store(session, file_name=file_name, rows=rows, uploaded_by=actor)
+            session.commit()
+            session.refresh(snapshot)
+            return _summary(snapshot)

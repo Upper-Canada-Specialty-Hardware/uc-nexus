@@ -32,6 +32,7 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.engine import Connection
 
 from app.models import Base
+from app.models.demo_inventory_snapshot import DemoInventorySnapshot
 from app.models.manufacturer_vendor_map import ManufacturerVendorMap
 from app.models.po_document_settings import PODocumentSettings
 from app.models.relay_install import RelayInstall
@@ -46,6 +47,8 @@ PRESERVED_MODELS = (
     Warehouse,
     ManufacturerVendorMap,
     PODocumentSettings,
+    # An upload, not project data (#1638): the demo is seeded from it, and nobody should have to load it again.
+    DemoInventorySnapshot,
 )
 
 # Human labels for the reset's summary line. `/admin/reset-data` returns `message` and the frontend
@@ -56,6 +59,7 @@ PRESERVED_LABELS: dict[str, tuple[str, str]] = {
     "warehouses": ("warehouse", "warehouses"),
     "manufacturer_vendor_map": ("manufacturer/vendor mapping", "manufacturer/vendor mappings"),
     "po_document_settings": ("PO document setting", "PO document settings"),
+    "demo_inventory_snapshots": ("demo inventory snapshot", "demo inventory snapshots"),
 }
 
 
