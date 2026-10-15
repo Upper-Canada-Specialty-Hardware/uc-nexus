@@ -4,7 +4,7 @@ import theme from '../../theme';
 import DemoProgressDialog from '../DemoProgressDialog';
 import type { DemoRun } from '../useDemoMode';
 
-// #1653: a reset or a seeding switch-on runs for the better part of a minute; it says so while it runs.
+// #1653: the first switch-on builds the demo for minutes (#1657); it says so while it runs.
 
 function renderDialog(running: DemoRun | null) {
   return render(
@@ -47,25 +47,25 @@ it('stays hidden for a run that ends at once, so a quick switch does not flash i
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 });
 
-it('shows a reset that is still running, with a bar and the time it has taken', () => {
-  renderDialog('reset');
+it('shows a build that is still running, with a bar and the time it has taken', () => {
+  renderDialog('enter');
   advance(1000);
-  const dialog = screen.getByRole('dialog', { name: 'Resetting the demo data' });
-  expect(dialog).toHaveTextContent(/can take up to a minute/);
-  expect(screen.getByRole('progressbar', { name: 'Resetting the demo data' })).toBeInTheDocument();
+  const dialog = screen.getByRole('dialog', { name: 'Setting up demo mode' });
+  expect(dialog).toHaveTextContent(/can take a few minutes/);
+  expect(screen.getByRole('progressbar', { name: 'Setting up demo mode' })).toBeInTheDocument();
   expect(dialog).toHaveTextContent('0:01 elapsed');
   advance(73_000);
   expect(dialog).toHaveTextContent('1:14 elapsed');
 });
 
-it('says what a seeding switch-on is doing', () => {
+it('says what the first switch-on is doing', () => {
   renderDialog('enter');
   advance(1000);
-  expect(screen.getByRole('dialog', { name: 'Setting up demo mode' })).toHaveTextContent(/seeded/);
+  expect(screen.getByRole('dialog', { name: 'Setting up demo mode' })).toHaveTextContent(/copy of UBC is built/);
 });
 
 it('cannot be dismissed while the run goes on', () => {
-  renderDialog('reset');
+  renderDialog('enter');
   advance(1000);
   fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
   advance(1000);
@@ -73,7 +73,7 @@ it('cannot be dismissed while the run goes on', () => {
 });
 
 it('closes when the run ends', () => {
-  const { rerender } = renderDialog('reset');
+  const { rerender } = renderDialog('enter');
   advance(1000);
   expect(screen.getByRole('dialog')).toBeInTheDocument();
   rerender(

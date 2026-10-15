@@ -720,33 +720,39 @@ export const UPDATE_USER_DEMO_MODE = gql`
   }
 `;
 
-// #1638: the legacy inventory export the demo warehouse is seeded from. Its figures are what the next demo
-// reset seeds, worked out from the stored rows.
-const DEMO_INVENTORY_SNAPSHOT_FIELDS = `
-  fileName
-  uploadedBy
-  uploadedAt
-  rowCount
+// #1657: the demo copy of UBC - what it is built from, and how its last build and nightly sync went.
+const DEMO_MIRROR_FIELDS = `
+  source
+  legacyList { readAt attemptedAt error }
+  legacyRows
+  gpMasters { readAt attemptedAt error }
+  vendorCount
+  projectCount
+  specialtiesProjectCount
   projectUnits
   poolUnits
-  projectCount
-  scheduleCount
+  openPoCount
+  demoProjectCount
+  building
+  buildStartedAt
+  buildStartedBy
+  buildFinishedAt
+  buildError
+  nightlyRanAt
+  nightlyError
+  nightlyProjectsAdded
+  nightlySchedulesAdded
 `;
 
-export const GET_DEMO_INVENTORY_SNAPSHOT = gql`
-  query DemoInventorySnapshot {
-    demoInventorySnapshot { ${DEMO_INVENTORY_SNAPSHOT_FIELDS} }
+export const GET_DEMO_MIRROR = gql`
+  query DemoMirror {
+    demoMirror { ${DEMO_MIRROR_FIELDS} }
   }
 `;
 
-export const UPLOAD_DEMO_INVENTORY_SNAPSHOT = gql`
-  mutation UploadDemoInventorySnapshot($fileName: String!, $csvText: String!) {
-    uploadDemoInventorySnapshot(fileName: $fileName, csvText: $csvText) { ${DEMO_INVENTORY_SNAPSHOT_FIELDS} }
-  }
-`;
-
-export const REMOVE_DEMO_INVENTORY_SNAPSHOT = gql`
-  mutation RemoveDemoInventorySnapshot {
-    removeDemoInventorySnapshot
+// Reads UBC again and rebuilds the demo from it in the background, wiping every demo user's role-play.
+export const REBUILD_DEMO = gql`
+  mutation RebuildDemo {
+    rebuildDemo { ${DEMO_MIRROR_FIELDS} }
   }
 `;

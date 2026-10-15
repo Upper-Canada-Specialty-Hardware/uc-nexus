@@ -1,4 +1,4 @@
-"""Demo mode (#1608): the demo company, its simulated GP, its seed and its reset.
+"""Demo mode (#1608): the demo company, its simulated GP, its build from the made-up company.
 
 Three groups:
 
@@ -6,10 +6,12 @@ Three groups:
     list, assigning an account) - no database needed;
   - the simulated GP: a call for the demo company is answered without the relay socket, and a real
     company is never answered by it;
-  - the seed and the reset, against the database: the seed runs the app's own mutations, so this is the
-    test that fails when a workflow changes shape under it. It checks every module has rows in every
-    state its screens act on, that a reset leaves no demo row behind, and that no real company's rows or
-    numbering move.
+  - the build from the made-up company (CI's source, #1657) and the wipe before it, against the
+    database: the build runs the app's own mutations, so this is the test that fails when a workflow
+    changes shape under it. It checks every module has rows in every state its screens act on, that a
+    wipe leaves no demo row behind, and that no real company's rows or numbering move.
+
+The build from UBC is tests/test_demo_mirror.py.
 """
 
 import asyncio
@@ -102,9 +104,9 @@ def test_the_demo_company_is_refused_while_a_reset_runs_except_to_the_seed(monke
     from app.auth import DEMO_SEEDING_KEY
 
     monkeypatch.setattr(demo, "_reset_running", SimpleNamespace(is_set=lambda: True))
-    with pytest.raises(ConflictError, match="being reset"):
+    with pytest.raises(ConflictError, match="being built"):
         tenant_scope(_Info([TENANT_OWNER_ROLE], company="TUBC", demo=True))
-    with pytest.raises(ConflictError, match="being reset"):
+    with pytest.raises(ConflictError, match="being built"):
         tenant_scope(_Info([NEXUS_ADMIN_ROLE], demo=True, header=DEMO_COMPANY))
     seeding = _Info([TENANT_OWNER_ROLE], company=DEMO_COMPANY, demo=True)
     seeding.context[DEMO_SEEDING_KEY] = True
@@ -145,17 +147,16 @@ def test_only_a_caller_in_demo_mode_reads_the_demo_company_gp():
     )
 
 
-@pytest.mark.parametrize("enabled", [True, False])
-def test_any_account_turns_demo_mode_on_and_off_for_itself(monkeypatch, enabled):
-    # #1629: no admin role needed either way - a Warehouse Manager is enough.
+def _switch(monkeypatch, enabled: bool, context: dict, *, target: str | None = None) -> tuple:
+    """Run setMyDemoMode (or, with `target`, updateUserDemoMode) with the build and the Clerk write stood in
+    for. Returns (errors, builds, writes)."""
     from app.schemas import demo as demo_schema
     from main import schema
 
-    resets, writes = [], []
+    builds, writes = [], []
 
-    async def _reset(*, only_if_empty=False):
-        resets.append(only_if_empty)
-        return True
+    async def _ensure_built(started_by):
+        builds.append(started_by)
 
     def _write(user_id, on):
         writes.append((user_id, on))
@@ -169,20 +170,63 @@ def test_any_account_turns_demo_mode_on_and_off_for_itself(monkeypatch, enabled)
             "demo_mode": on,
         }
 
-    monkeypatch.setattr(demo_schema.demo_reset, "reset", _reset)
+    monkeypatch.setattr(demo_schema.demo_build, "ensure_built", _ensure_built)
     monkeypatch.setattr(demo_schema.user_repository, "update_user_demo_mode", _write)
-    result = asyncio.run(
-        schema.execute(
-            "mutation M($on: Boolean!) { setMyDemoMode(enabled: $on) { demoMode } }",
-            variable_values={"on": enabled},
-            context_value={"request": None, "_auth_user_id": "u_wm", "_auth_roles": ["Warehouse Manager"]},
+    monkeypatch.setattr(demo_schema, "resolve_display_name", lambda user_id: user_id)
+    if target is None:
+        document = "mutation M($on: Boolean!) { setMyDemoMode(enabled: $on) { demoMode } }"
+        variables = {"on": enabled}
+    else:
+        document = (
+            "mutation M($u: String!, $on: Boolean!) { updateUserDemoMode(userId: $u, enabled: $on) { demoMode } }"
         )
+        variables = {"u": target, "on": enabled}
+    result = asyncio.run(
+        schema.execute(document, variable_values=variables, context_value={"request": None, **context})
     )
-    assert result.errors is None
-    assert result.data == {"setMyDemoMode": {"demoMode": enabled}}
+    return result.errors, builds, writes
+
+
+@pytest.mark.parametrize("company", ["UBC", "TUBC"])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_a_ubc_account_turns_demo_mode_on_and_off_for_itself(monkeypatch, enabled, company):
+    # #1629: no admin role needed either way - a Warehouse Manager is enough. #1658: of a UBC company - and
+    # TUBC counts (ruled on #1658), whose accounts land in the same copy of UBC.
+    wm = {"_auth_user_id": "u_wm", "_auth_roles": ["Warehouse Manager"], "_auth_company": company}
+    errors, builds, writes = _switch(monkeypatch, enabled, wm)
+    assert errors is None
     assert writes == [("u_wm", enabled)]
-    # Turning it on seeds a demo company nobody has seeded yet; turning it off touches nothing.
-    assert resets == ([True] if enabled else [])
+    # Turning it on builds the demo when nobody has yet; turning it off touches nothing.
+    assert builds == (["u_wm"] if enabled else [])
+
+
+@pytest.mark.parametrize("company", ["UCSH", None])
+def test_an_account_outside_ubc_cannot_turn_demo_mode_on_but_can_leave_it(monkeypatch, company):
+    # #1658: no UCSH account exists yet, and none may get in once one does - nor an unassigned one.
+    account = {"_auth_user_id": "u_x", "_auth_roles": ["Warehouse Manager"], "_auth_company": company}
+    errors, builds, writes = _switch(monkeypatch, True, account)
+    assert errors and "only for UBC" in errors[0].message
+    assert builds == [] and writes == []
+    # Whoever is in it already gets out.
+    errors, _, writes = _switch(monkeypatch, False, account)
+    assert errors is None and writes == [("u_x", False)]
+
+
+@pytest.mark.parametrize("acting, allowed", [("UBC", True), ("TUBC", True), ("UCSH", False)])
+def test_an_admin_turns_demo_mode_on_only_while_working_in_ubc(monkeypatch, acting, allowed):
+    admin = {"_auth_user_id": "u_admin", "_auth_roles": [NEXUS_ADMIN_ROLE], "_auth_acting_company": acting}
+    errors, builds, _ = _switch(monkeypatch, True, admin)
+    assert (errors is None) == allowed
+    assert builds == (["u_admin"] if allowed else [])
+
+
+@pytest.mark.parametrize("company, allowed", [("UBC", True), ("TUBC", True), ("UCSH", False), (None, False)])
+def test_an_admin_puts_only_a_ubc_account_into_demo_mode(monkeypatch, company, allowed):
+    monkeypatch.setattr(user_repository, "get_user_company", lambda user_id: company)
+    admin = {"_auth_user_id": "u_admin", "_auth_roles": [NEXUS_ADMIN_ROLE]}
+    errors, _, writes = _switch(monkeypatch, True, admin, target="u_someone")
+    assert (errors is None) == allowed
+    assert writes == ([("u_someone", True)] if allowed else [])
 
 
 # --- the simulated GP ----------------------------------------------------------------------------------
@@ -217,20 +261,20 @@ def test_the_simulated_gp_answers_every_op_the_backend_sends():
     assert relay_ops <= demo_gp.OPS, sorted(relay_ops - demo_gp.OPS)
 
 
-# --- the seed and the reset ----------------------------------------------------------------------------
+# --- the build from the made-up company and the wipe ------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
 def seeded(_migrate_database):
-    """Reset the demo company once for the module, with storage stood in for (the packing slips and
-    acknowledgements the seed uploads), and wipe it again afterwards."""
+    """Build the demo company from the made-up company once for the module, with storage stood in for (the
+    packing slips and acknowledgements the build uploads), and wipe it again afterwards."""
     from app.database import SessionLocal
     from app.repositories import demo_snapshot_repository
     from app.services import demo_reset, storage
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(user_repository, "get_user_demo_mode", lambda user_id: False)
-        # The made-up seed alone, whatever legacy export this database has stored (#1638 tests that one).
+        # The made-up company alone, whatever legacy list this database has stored (test_demo_mirror reads one).
         mp.setattr(demo_snapshot_repository, "rows", lambda session: [])
         mp.setattr(storage, "upload_file", lambda key, data, content_type, **kw: key)
         mp.setattr(storage, "delete_file", lambda key: None)

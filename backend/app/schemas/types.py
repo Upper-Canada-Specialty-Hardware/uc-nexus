@@ -2442,19 +2442,42 @@ class ProjectScheduleProduct:
 
 
 @strawberry.type
-class DemoInventorySnapshotSummary:
-    """The stored demo inventory snapshot (#1638), as the next demo reset will seed it."""
+class DemoSourceRead:
+    """One of the demo's two reads of UBC (#1657): when it last worked, and whether the latest try failed."""
 
-    file_name: str
-    uploaded_by: str
-    uploaded_at: datetime
-    row_count: int
-    # Units the reset puts on specialties projects, and units it puts in the stock pool.
+    read_at: datetime | None
+    attempted_at: datetime | None
+    error: str | None
+
+
+@strawberry.type
+class DemoMirrorStatus:
+    """The demo copy of UBC (#1657) for the admin page: what it is built from, and how its last build and
+    nightly sync went."""
+
+    # "ubc", or "made-up" where the made-up company stands in (CI, a local backend).
+    source: str
+    legacy_list: DemoSourceRead
+    legacy_rows: int
+    gp_masters: DemoSourceRead
+    vendor_count: int
+    # What a build from what is stored now would make.
+    project_count: int
+    specialties_project_count: int
     project_units: int
     pool_units: int
-    # Ongoing projects it adopts as demo projects, and how many of them get a made-up hardware schedule.
-    project_count: int
-    schedule_count: int
+    open_po_count: int
+    # How many demo projects there are now; 0 before the first build.
+    demo_project_count: int
+    building: bool
+    build_started_at: datetime | None
+    build_started_by: str | None
+    build_finished_at: datetime | None
+    build_error: str | None
+    nightly_ran_at: datetime | None
+    nightly_error: str | None
+    nightly_projects_added: list[str]
+    nightly_schedules_added: list[str]
 
 
 @strawberry.type

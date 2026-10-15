@@ -320,12 +320,13 @@ caught two failures that all three stacked PRs were reporting as clean:
 
 ### Demo mode (#1608)
 
-Demo mode puts an account on made-up data in the reserved company `DEMO`, with GP simulated in-process, so a demo walk needs no relay and writes nothing to GP. Anybody turns it on and off from the user menu or the banner; an admin or tenant owner resets it from the banner.
+Demo mode puts an account in the reserved company `DEMO`: one persistent copy of UBC that everybody in demo mode shares (#1657), with GP simulated in-process, so a demo walk needs no relay and writes nothing to GP or UBC. Only a UBC or TUBC account turns it on, from the user menu (#1658); anybody leaves from the menu or the banner. There is no reset on the banner: a UC Nexus Admin rebuilds it from Nexus Admin → Demo.
 
 - **Turning it on moves the tab, not the switcher.** The banner appears, every request carries `X-Nexus-Company: DEMO`, and the company switcher is gone. Scripted reads send `DEMO` the same way; a request on the wrong side of the account's flag is refused with `DEMO_MODE_CHANGED` and the tab reloads its user (#1633).
 - **Other tabs follow.** Turning demo mode on or off tells every open tab of the browser to reload its user. A tab the broadcast missed catches up on its next request.
-- **Reset is the starting state.** Reset demo data wipes every DEMO row and reseeds (~7s); requests for DEMO meanwhile get a `DEMO_RESETTING` conflict. The full Reset data page is refused from demo mode.
-- **What the seed leaves to try:** Office Retrofit (DEMO-1004) has no schedule - in demo mode the import wizard offers a made-up sample schedule for it. Tower A has staged hardware waiting to load (A105), an accepted request with its pull not started (A109) and A110 free to request; seeded draft POs register as they stand.
+- **Other people's role-play is real here.** Two demo users see each other's changes; nothing a walk does is undone for the next one. Leave things as a walk found them where it matters, or say what changed.
+- **A rebuild wipes everybody's demo.** It reads UBC again and builds from scratch, in the background, for minutes; requests for DEMO meanwhile get a `DEMO_RESETTING` conflict. The full Reset data page is refused from demo mode.
+- **What the build leaves to try:** UBC's projects (active in GP, or holding stock in the legacy list) with a made-up schedule each where the list has door hardware for it, the legacy warehouse as the stock pool to pull back from, specialties jobs holding their own inventory, and UBC's open POs to receive. A project with no schedule gets the import wizard's made-up sample schedule in demo mode.
 - **An admin request with no company header is unscoped and includes DEMO rows** (the `None` scope contract, #845). The app always sends the header, so this only shows in a script that forgets it.
 
 ## Getting Started (Every Session)

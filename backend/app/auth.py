@@ -390,7 +390,7 @@ def _refuse_while_demo_resets(context) -> None:
     would read is half a company, and what it would write the seed is about to delete or trip over. The
     seed's own requests carry `DEMO_SEEDING_KEY` past it."""
     if demo_reset_running() and not context.get(DEMO_SEEDING_KEY):
-        raise ConflictError("The demo data is being reset. Wait a moment, then reload.", code="DEMO_RESETTING")
+        raise ConflictError("The demo is being built. Wait for it to finish, then reload.", code="DEMO_RESETTING")
 
 
 def admin_acting_company(context) -> str | None:

@@ -6,30 +6,24 @@ import type { DemoRun } from './useDemoMode';
 /**
  * What a demo mode run is doing while it runs (#1653).
  *
- * A reset, and the first switch-on, reseed the demo company inside one mutation: with a legacy
- * inventory export loaded that is the better part of a minute, and before this the only sign of it was
- * a toast that faded after a few seconds. The server reports no progress, so the bar is indeterminate
+ * The first switch-on ever builds the demo copy of UBC inside one mutation (#1657): every project, the
+ * legacy inventory and the open POs, which is minutes, and before this the only sign of it was a toast
+ * that faded after a few seconds. The server reports no progress, so the bar is indeterminate
  * and the elapsed time is what says it is still going. It cannot be dismissed - the run carries on
  * server-side either way - and it closes when the run ends, on the hook's success or error toast.
  *
- * A run that ends inside SHOW_AFTER_MS never shows it: leaving, or switching on when the demo company is
- * already seeded, takes well under a second and a dialog flashing past would only be noise.
+ * A run that ends inside SHOW_AFTER_MS never shows it: leaving, or switching on when the demo is already
+ * built, takes well under a second and a dialog flashing past would only be noise.
  */
 
 const SHOW_AFTER_MS = 600;
 
 const COPY: Record<DemoRun, { title: string; body: string }> = {
-  reset: {
-    title: 'Resetting the demo data',
-    body:
-      'Every demo change is being wiped and the starting state seeded again, warehouse inventory included. ' +
-      'This can take up to a minute. Keep this tab open.',
-  },
   enter: {
     title: 'Setting up demo mode',
     body:
-      'The demo company is being made ready. The first time anybody turns demo mode on, its data is ' +
-      'seeded, which can take up to a minute. Keep this tab open.',
+      'The first time anybody turns demo mode on, the copy of UBC is built: its projects, the warehouse ' +
+      'and its open POs. That can take a few minutes. Keep this tab open.',
   },
   leave: {
     title: 'Leaving demo mode',
