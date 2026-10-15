@@ -191,6 +191,8 @@ def mirrored(_migrate_database):
                 [("HINGE", "HNG X", 10, 4), ("STOP", "ST Y", 5, 0)],
             )
             _po(session, t400, "MPO-DONE", POStatus.CLOSED, [("HINGE", "HNG X", 2, 2)])
+            # Open with no lines: the PO mirror skips such a read, and so does the copy.
+            _po(session, t400, "MPO-EMPTY", POStatus.GP_REGISTERED, [])
             session.commit()
             t200_id = str(t200.id)
 
@@ -293,7 +295,7 @@ def test_a_job_with_its_own_schedule_keeps_it_and_the_others_get_one_made_up(mir
     assert "T-400" not in openings  # nothing on the list to make one from
 
 
-def test_the_open_po_is_copied_onto_its_job_and_the_closed_one_is_not(mirrored):
+def test_the_open_po_is_copied_onto_its_job_and_the_closed_and_empty_ones_are_not(mirrored):
     pos = _scalar(
         "SELECT po.po_number, po.status, p.project_id, li.gp_line_ord, li.ordered_quantity, li.received_quantity "
         "FROM purchase_orders po JOIN po_line_items li ON li.po_id = po.id "
@@ -407,3 +409,37 @@ def test_the_nightly_sync_adds_a_job_that_turned_active_and_nothing_else(mirrore
     )
     # Again: nothing new, nothing added.
     assert asyncio.run(demo_build.nightly())["projects_added"] == []
+
+
+def test_a_vendor_whose_contact_gp_cannot_read_keeps_the_rest_of_the_read(monkeypatch):
+    # #1657: the contact read refused on UBC's GP for every vendor; that cost the whole read of the masters.
+    from app.services import demo_mirror, gp_load
+
+    source = demo_mirror.Source(
+        name="ubc",
+        jobs=[{"job_number": "T-1", "customer_number": "MCUST"}],
+        rows=[],
+        masters={},
+        open_pos=[{"po_number": "P1", "vendor_id": "MVEND"}],
+    )
+    monkeypatch.setattr(demo_mirror, "ubc_source", lambda session: source)
+    answers = {
+        "list_vendors": {
+            "vendors": [{"vendor_id": "MVEND", "vendor_name": "Mirror Hardware Supply", "contact": "Pat"}]
+        },
+        "list_vendor_addresses": {"addresses": [{"code": "MAIN"}]},
+        "list_divisions": {"divisions": ["MIRRDIV"]},
+    }
+
+    async def _call(company, op, payload=None, *, reads, **kw):
+        if op in ("get_vendor_contact", "list_customer_addresses"):
+            raise RelayCallError("Argument data type text is invalid for argument 1 of rtrim function.")
+        return {"result": answers.get(op, {})}
+
+    monkeypatch.setattr(gp_load, "paced_call", _call)
+    masters = asyncio.run(demo_mirror.read_gp_masters())
+    assert masters["vendors"] == [
+        {"vendor_id": "MVEND", "vendor_name": "Mirror Hardware Supply", "contact": "Pat", "email": None}
+    ]
+    assert masters["vendor_addresses"] == {"MVEND": [{"code": "MAIN"}]}
+    assert masters["customer_addresses"] == {"MCUST": []}

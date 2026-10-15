@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.database import SessionLocal
 from app.demo import MIRROR_COMPANY
+from app.errors import RelayCallError
 from app.models.enums import GpJobState, POStatus
 from app.models.hardware import HardwareItem
 from app.models.project import Opening, Project
@@ -151,7 +152,8 @@ def _job(project: Project) -> dict:
 
 def _open_pos(session: Session) -> list[dict]:
     """UBC's POs still open in GP, each as GP would read it back: its lines with what GP has received on
-    them so far (`received_base`), so receipts in the demo count on from there."""
+    them so far (`received_base`), so receipts in the demo count on from there. A PO with no lines is left
+    out, as the GP PO mirror leaves out a read with none: there is nothing on it to receive."""
     pos = session.scalars(
         select(PurchaseOrder)
         .where(
@@ -171,6 +173,8 @@ def _open_pos(session: Session) -> list[dict]:
     )
     out = []
     for po in pos:
+        if not po.line_items:
+            continue
         job = jobs.get(po.project_id)
         lines = sorted(po.line_items, key=lambda li: (li.gp_line_ord is None, li.gp_line_ord or 0, li.created_at))
         out.append(
@@ -317,6 +321,15 @@ async def read_gp_masters() -> dict:
     async def call(op: str, payload: dict | None = None) -> dict:
         return (await gp_load.paced_call(MIRROR_COMPANY, op, payload, reads=1))["result"] or {}
 
+    async def detail(op: str, payload: dict) -> dict:
+        """One vendor's or customer's detail. A failed one is that vendor's or customer's detail missing,
+        not the whole read lost: the simulated GP stands in a made-up address for it."""
+        try:
+            return await call(op, payload)
+        except RelayCallError as e:
+            logger.warning("demo mirror: %s %s could not be read: %s", op, payload, e)
+            return {}
+
     with SessionLocal() as session:
         source = ubc_source(session)
     vendor_ids = sorted({po["vendor_id"] for po in source.open_pos if po.get("vendor_id")})
@@ -328,11 +341,15 @@ async def read_gp_masters() -> dict:
     for vendor_id in vendor_ids:
         if vendor_id not in by_id:
             continue
-        contact = await call("get_vendor_contact", {"vendor_id": vendor_id})
-        by_id[vendor_id] = {**by_id[vendor_id], "contact": contact.get("contact_name"), "email": contact.get("email")}
-        addresses[vendor_id] = _list(await call("list_vendor_addresses", {"vendor_id": vendor_id}), "addresses")
+        contact = await detail("get_vendor_contact", {"vendor_id": vendor_id})
+        by_id[vendor_id] = {
+            **by_id[vendor_id],
+            "contact": contact.get("contact_name") or by_id[vendor_id].get("contact"),
+            "email": contact.get("email"),
+        }
+        addresses[vendor_id] = _list(await detail("list_vendor_addresses", {"vendor_id": vendor_id}), "addresses")
     customer_addresses = {
-        c: _list(await call("list_customer_addresses", {"customer": c}), "addresses") for c in customers
+        c: _list(await detail("list_customer_addresses", {"customer": c}), "addresses") for c in customers
     }
     divisions = _list(await call("list_divisions"), "divisions")
     cost_codes = {d: _list(await call("list_cost_code_master", {"division": d}), "cost_codes") for d in divisions}
